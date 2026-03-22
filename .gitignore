@@ -1,0 +1,5 @@
+/.venv/
+/docs/
+/test/
+/backend/venv/
+/backend/logs/

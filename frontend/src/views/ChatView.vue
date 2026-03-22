@@ -21,6 +21,9 @@ import {
   DollarSign,
   RotateCcw,
   OctagonPause,
+  TestTube,
+  Database,
+  Sparkles,
 } from 'lucide-vue-next'
 import api from '@/utils/api'
 
@@ -62,10 +65,13 @@ const showTaskModal = ref(false)
 const newTaskName = ref('')
 const newTaskDesc = ref('')
 const newTaskSpec = ref('')
+const pendingSpecFile = ref<File | null>(null)
+const useBrainstorm = ref(false)
 const creatingTask = ref(false)
 const uploadingSpec = ref(false)
 const selectedFileName = ref('')
 const showDeleteTaskConfirm = ref(false)
+const showInterruptConfirm = ref(false)
 const taskToDelete = ref<any>(null)
 
 // Engine state
@@ -106,24 +112,11 @@ const openNewTaskModal = () => {
   showTaskModal.value = true
 }
 
-const handleFileUpload = async (event: any) => {
+const handleFileUpload = (event: any) => {
   const file = event.target.files[0]
   if (!file) return
-  uploadingSpec.value = true
+  pendingSpecFile.value = file
   selectedFileName.value = file.name
-  const formData = new FormData()
-  formData.append('file', file)
-  try {
-    const res = await api.post('/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    newTaskSpec.value = res.data.path
-  } catch (e) {
-    console.error('Upload failed', e)
-    selectedFileName.value = 'Upload failed'
-  } finally {
-    uploadingSpec.value = false
-  }
 }
 
 const handleCreateTask = async () => {
@@ -131,19 +124,46 @@ const handleCreateTask = async () => {
   creatingTask.value = true
   try {
     const wsId = route.params.wsId
+    // 1. 创建任务
     const res = await api.post(`/workspaces/${wsId}/tasks`, {
       name: newTaskName.value,
       description: newTaskDesc.value,
-      spec_doc_path: newTaskSpec.value
+      use_brainstorm: useBrainstorm.value
     })
+    
+    const taskId = res.data.id
+
+    // 2. 如果选择了文件，关联上传
+    if (pendingSpecFile.value) {
+      uploadingSpec.value = true
+      const formData = new FormData()
+      formData.append('file', pendingSpecFile.value)
+      try {
+        await api.post(`/workspaces/${wsId}/tasks/${taskId}/upload-spec`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+      } catch (uploadError) {
+        console.error('Spec upload failed', uploadError)
+        // 即使上传失败，任务也已经创建，这里可以视情况报错或提示
+      } finally {
+        uploadingSpec.value = false
+      }
+    }
+
     showTaskModal.value = false
     newTaskName.value = ''
     newTaskDesc.value = ''
     newTaskSpec.value = ''
+    pendingSpecFile.value = null
+    useBrainstorm.value = false
     selectedFileName.value = ''
+    
     await loadTasks()
-    router.push(`/ws/${wsId}/chat/${res.data.id}`)
-    selectTask(res.data)
+    router.push(`/ws/${wsId}/chat/${taskId}`)
+    
+    // 重新获取一下最新的 task 对象（包含更新后的路径）
+    const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
+    selectTask(latestTaskRes.data)
   } catch (e) {
     console.error('Failed to create task', e)
   } finally {
@@ -166,12 +186,25 @@ const selectTask = async (task: any) => {
   connectWebSocket(task.id)
 }
 
-const handleInterrupt = async () => {
+const handleInterruptClick = () => {
+  if (!engineRunning.value) return
+  showInterruptConfirm.value = true
+}
+
+const confirmInterrupt = async () => {
   if (!currentTask.value) return
+  showInterruptConfirm.value = false
   engineRunning.value = false
+  pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status' && c.type !== 'hitl')
+  
   try {
     await api.post(`/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/cancel`)
     currentTask.value.status = 'FAILED'
+    
+    // 更新任务列表中的状态
+    const t = tasks.value.find(task => task.id === currentTask.value.id)
+    if (t) t.status = 'FAILED'
+
     messages.value.push({
       id: Date.now().toString(),
       role: 'system',
@@ -193,6 +226,11 @@ const handleInitialize = async () => {
   try {
     await api.post(`/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/initialize`)
     currentTask.value.status = 'CODING'
+    
+    // 更新任务列表中的状态
+    const t = tasks.value.find(task => task.id === currentTask.value.id)
+    if (t) t.status = 'CODING'
+
     messages.value.push({
       id: Date.now().toString(),
       role: 'system',
@@ -424,6 +462,32 @@ const sendChat = () => {
   scrollToBottom('chat')
 }
 
+// ─── 执行高阶 MCP 验证 ───
+const sendVerification = (type: 'ui' | 'api' | 'e2e') => {
+  if (!ws) return
+  let prompt = ''
+  if (type === 'ui') {
+    prompt = '请调度 Playwright MCP：直接在 Chrome 浏览器中模拟用户点击、输入、路由跳转，验证 UI 渲染与交互逻辑。注意：务必在测试结束后自行执行清理脏数据 (Teardown)。'
+  } else if (type === 'api') {
+    prompt = '请调度 Postman MCP：远程执行自动化 API 脚本，验证 HTTP 状态码、响应 JSON 结构、数据持久化成果。注意：务必在测试结束后自行执行清理脏数据 (Teardown)。'
+  } else if (type === 'e2e') {
+    prompt = '请串联调度 Playwright MCP + Postman MCP：通过 UI 触发请求，并从后端或 DB 验证数据一致性，完成全链路端到端测试。注意：务必在测试结束后自行清理脏数据 (Teardown)。'
+  }
+  
+  messages.value.push({
+    id: Date.now().toString(),
+    role: 'user',
+    content: `[高阶验证] ${prompt}`,
+  })
+
+  ws.send(JSON.stringify({
+    type: 'chat_message',
+    payload: { role: 'user', content: prompt }
+  }))
+  engineRunning.value = true
+  scrollToBottom('chat')
+}
+
 // ─── 启动引擎 ───
 const startTask = async () => {
   if (!currentTask.value) return
@@ -527,7 +591,7 @@ onUnmounted(() => {
           <button class="icon-btn" @click="handleInitialize" title="初始化 (重启CLI环境)">
             <RotateCcw class="w-4 h-4" />
           </button>
-          <button class="icon-btn danger" @click="handleInterrupt" title="中断当前任务" :disabled="!engineRunning">
+          <button class="icon-btn danger" @click="handleInterruptClick" title="中断当前任务" :disabled="!engineRunning">
             <OctagonPause class="w-4 h-4" />
           </button>
 
@@ -560,7 +624,7 @@ onUnmounted(() => {
             </div>
             <ChevronDown class="w-4 h-4 toggle-icon transition-transform" :class="{'rotate-180': thinkingExpanded}" />
           </div>
-          <div v-show="thinkingExpanded" class="card-body thinking-body">
+          <div v-show="thinkingExpanded" class="card-body thinking-body fixed-height">
             <pre>{{ thinkingContent }}</pre>
           </div>
         </div>
@@ -657,6 +721,20 @@ onUnmounted(() => {
         </div>
       </div>
 
+      <!-- Verification Quick Actions -->
+      <div v-if="!engineRunning && messages.length > 0" class="verification-actions">
+        <span class="verify-label">高阶测试:</span>
+        <button class="btn-micro" @click="sendVerification('ui')" title="Playwright UI">
+          <TestTube class="w-3" /> UI
+        </button>
+        <button class="btn-micro" @click="sendVerification('api')" title="Postman API">
+          <Database class="w-3" /> API
+        </button>
+        <button class="btn-micro" @click="sendVerification('e2e')" title="全链路集成">
+          <Sparkles class="w-3" /> E2E
+        </button>
+      </div>
+
       <!-- Input Area -->
       <div class="chat-input-area glass-panel">
         <input
@@ -739,6 +817,12 @@ onUnmounted(() => {
               <label for="spec-upload-chat" class="btn-primary file-choose-btn">选择</label>
             </div>
           </div>
+          <div class="form-group checkbox-group py-1">
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
+              <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded">
+              使用 /brainstorm 进行初期需求与架构头脑风暴
+            </label>
+          </div>
           <div class="modal-actions">
             <button type="button" class="btn-secondary" @click="showTaskModal = false">取消</button>
             <button type="submit" class="btn-primary" :disabled="creatingTask">
@@ -746,6 +830,24 @@ onUnmounted(() => {
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Interrupt Confirmation Modal -->
+    <div v-if="showInterruptConfirm" class="modal-overlay" @click.self="showInterruptConfirm = false">
+      <div class="modal glass-panel delete-modal">
+        <div class="modal-header danger">
+          <OctagonPause class="w-6 h-6" />
+          <span>中断任务确认</span>
+        </div>
+        <p class="delete-desc">
+          确定要强制中断当前正在运行的 Claude CLI 引擎吗？
+          中断后当前执行的原子动作可能无法回滚。
+        </p>
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="showInterruptConfirm = false">继续执行</button>
+          <button class="btn-danger" @click="confirmInterrupt">立即中断</button>
+        </div>
       </div>
     </div>
 
@@ -1019,6 +1121,10 @@ onUnmounted(() => {
   background: #F1F5F9;
   border: 1px solid #E2E8F0;
 }
+.thinking-body.fixed-height {
+  max-height: 200px;
+  overflow-y: auto;
+}
 .thinking-body pre {
   margin: 8px 0 0;
   font-family: var(--font-mono);
@@ -1026,8 +1132,6 @@ onUnmounted(() => {
   color: #64748B;
   white-space: pre-wrap;
   word-wrap: break-word;
-  max-height: 100px;
-  overflow-y: auto;
 }
 
 /* Status Card */
@@ -1361,6 +1465,40 @@ onUnmounted(() => {
   border-radius: var(--radius-md);
   font-weight: 500;
   cursor: pointer;
+}
+
+.btn-micro {
+  background: white;
+  color: #475569;
+  border: 1px solid #E2E8F0;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+.btn-micro:hover {
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+  border-color: var(--color-primary-200);
+}
+
+.verification-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  background-color: #F8FAFC;
+  border-top: 1px solid #F1F5F9;
+}
+.verify-label {
+  font-size: 0.75rem;
+  color: #94A3B8;
+  margin-right: 4px;
 }
 
 .btn-success {
