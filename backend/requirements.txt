@@ -1,0 +1,29 @@
+# FastAPI Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.1
+pymysql==1.1.1
+cryptography==44.0.0
+
+# Authentication
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Configuration
+pydantic-settings==2.7.1
+
+# Logging
+loguru==0.7.3
+
+# PTY Bridge (Windows)
+wexpect==4.0.0
+
+# WebSocket
+websockets==14.1
+
+# Utilities
+python-dateutil==2.9.0
