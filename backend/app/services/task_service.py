@@ -2,9 +2,12 @@
 任务服务 — CRUD + 启动 / 取消
 """
 
+import os
+import shutil
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func as sqlfunc
+from loguru import logger
 
 from app.models.task import SddTask, TaskStatus
 from app.models.user import User
@@ -36,7 +39,38 @@ def create_task(
     db.add(task)
     db.commit()
     db.refresh(task)
+
     return task
+
+
+def upload_task_spec(db: Session, task_id: str, file_name: str, file_content: bytes) -> str:
+    """
+    直接将上传的文件写入项目生成目录下的 .sdd 隔离文件夹中
+    """
+    from app.models.task import SddTask
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    if not task:
+        raise ValueError("Task not found")
+
+    # 使用任务关联的 project_path 作为基准
+    base_dir = task.project_path
+    target_dir = os.path.join(base_dir, ".sdd", "spec", task.id)
+    
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+    
+    file_path = os.path.join(target_dir, file_name)
+    
+    # 写入文件
+    with open(file_path, "wb") as f:
+        f.write(file_content)
+    
+    # 更新数据库中的绝对路径
+    task.spec_doc_path = os.path.abspath(file_path)
+    db.commit()
+    db.refresh(task)
+    
+    return task.spec_doc_path
 
 
 def list_tasks(

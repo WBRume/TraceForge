@@ -11,6 +11,7 @@ class TaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=300)
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None
+    use_brainstorm: Optional[bool] = False
 
 
 class TaskUpdate(BaseModel):

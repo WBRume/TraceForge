@@ -48,7 +48,7 @@ app.include_router(asset.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 
 # ── 静态文件挂载 ──
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # ── WebSocket 端点 ──
 @app.websocket("/ws/task/{task_id}")

@@ -3,7 +3,7 @@ Task API Routers
 """
 
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, File, UploadFile
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -32,10 +32,15 @@ def create_task(
     db: Session = Depends(get_db)
 ):
     verify_workspace_access(ws_id, current_user, db)
+    
+    desc = data.description or ""
+    if data.use_brainstorm:
+        desc += "\n\n请强制调用 `superpowers` 中的 `/brainstorm` 能力进行需求与架构的头脑风暴。"
+        
     task = task_service.create_task(
         db, current_user, ws_id, 
         name=data.name,
-        description=data.description,
+        description=desc.strip(),
         spec_doc_path=data.spec_doc_path
     )
     return task
@@ -184,3 +189,31 @@ def export_task(
     if not session_data:
         raise HTTPException(status_code=404, detail="Task not found")
     return session_data
+@router.post("/{task_id}/upload-spec", response_model=dict)
+async def upload_task_spec(
+    ws_id: str,
+    task_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    为指定任务上传需求文档，直接存储到项目路径下
+    """
+    # 校验权限
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    try:
+        content = await file.read()
+        file_path = task_service.upload_task_spec(db, task_id, file.filename, content)
+        return {
+            "status": "success",
+            "path": file_path,
+            "filename": file.filename
+        }
+    except Exception as e:
+        from loguru import logger
+        logger.error(f"Failed to upload spec for task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

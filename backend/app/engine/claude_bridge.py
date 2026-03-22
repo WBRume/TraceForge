@@ -94,7 +94,7 @@ class SubprocessCliBridge(CliBridgeBase):
         args.extend([
             "-p",
             "--output-format", "stream-json",
-            "--permission-mode", "acceptEdits",
+            "--permission-mode", "bypassPermissions",
             "--verbose",
         ])
 

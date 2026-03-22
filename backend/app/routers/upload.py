@@ -10,9 +10,10 @@ from app.models.user import User
 
 router = APIRouter(prefix="/upload", tags=["Upload"])
 
-UPLOAD_DIR = "uploads"
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+# 废弃 uploads 目录
+# UPLOAD_DIR = "uploads"
+# if not os.path.exists(UPLOAD_DIR):
+#     os.makedirs(UPLOAD_DIR)
 
 @router.post("", response_model=dict)
 async def upload_file(
@@ -35,4 +36,6 @@ async def upload_file(
             "url": f"/api/upload/files/{unique_name}"
         }
     except Exception as e:
+        from loguru import logger
+        logger.error(f"Upload API Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
