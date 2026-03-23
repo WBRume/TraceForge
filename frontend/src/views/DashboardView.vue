@@ -7,11 +7,11 @@ import {
   CheckCircle,
   Clock,
   TrendingUp,
-  Plus,
-  Upload,
+  Plus, 
   TerminalSquare
 } from 'lucide-vue-next'
 import api from '@/utils/api'
+import NewTaskModal from '@/components/NewTaskModal.vue'
 
 // ECharts imports
 import VChart from 'vue-echarts'
@@ -49,13 +49,6 @@ const workspace = ref<any>(null)
 
 // Task creation state
 const showTaskModal = ref(false)
-const newTaskName = ref('')
-const newTaskDesc = ref('')
-const creatingTask = ref(false)
-const uploadingSpec = ref(false)
-const selectedFileName = ref('')
-const pendingSpecFile = ref<File | null>(null)
-const useBrainstorm = ref(false)
 
 // Chart Options
 const successChartOptions = ref<any>({})
@@ -159,55 +152,9 @@ const openNewTaskModal = () => {
   showTaskModal.value = true
 }
 
-const handleFileUpload = (event: any) => {
-  const file = event.target.files[0]
-  if (!file) return
-  pendingSpecFile.value = file
-  selectedFileName.value = file.name
-}
-
-const handleCreateTask = async () => {
-  if (!newTaskName.value) return
-  creatingTask.value = true
-  try {
-    // 1. 创建任务
-    const res = await api.post(`/workspaces/${wsId}/tasks`, {
-      name: newTaskName.value,
-      description: newTaskDesc.value,
-      use_brainstorm: useBrainstorm.value
-    })
-    
-    const taskId = res.data.id
-
-    // 2. 关联上传 Spec
-    if (pendingSpecFile.value) {
-      uploadingSpec.value = true
-      const formData = new FormData()
-      formData.append('file', pendingSpecFile.value)
-      try {
-        await api.post(`/workspaces/${wsId}/tasks/${taskId}/upload-spec`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        })
-      } catch (uploadError) {
-        console.error('Spec upload failed', uploadError)
-      } finally {
-        uploadingSpec.value = false
-      }
-    }
-
-    showTaskModal.value = false
-    newTaskName.value = ''
-    newTaskDesc.value = ''
-    pendingSpecFile.value = null
-    useBrainstorm.value = false
-    selectedFileName.value = ''
-    
-    router.push(`/ws/${wsId}/chat/${taskId}`)
-  } catch (e) {
-    console.error('Failed to create task', e)
-  } finally {
-    creatingTask.value = false
-  }
+const onTaskCreated = (taskId: string) => {
+  showTaskModal.value = false
+  router.push(`/ws/${wsId}/chat/${taskId}`)
 }
 
 onMounted(() => {
@@ -302,51 +249,12 @@ watch(locale, () => {
       </div>
     </div>
 
-    <div v-if="showTaskModal" class="modal-overlay" @click.self="showTaskModal = false">
-      <div class="modal glass-panel">
-        <div class="modal-header">
-          <Plus class="w-6 h-6 text-primary" />
-          <h2>{{ $t('dashboard.new_task') }}</h2>
-        </div>
-        
-        <form @submit.prevent="handleCreateTask" class="modal-form">
-          <div class="form-group">
-            <label>{{ $t('dashboard.task_name') }}</label>
-            <input v-model="newTaskName" type="text" class="input-field" required :placeholder="$t('dashboard.task_name_placeholder')">
-          </div>
-          
-          <div class="form-group">
-            <label>{{ $t('dashboard.description') }}</label>
-            <textarea v-model="newTaskDesc" class="input-field" rows="3" :placeholder="$t('dashboard.desc_placeholder')"></textarea>
-          </div>
-          
-          <div class="form-group">
-            <label>{{ $t('dashboard.spec_doc') }}</label>
-            <div class="file-upload-box glass-panel">
-              <Upload class="w-5 h-5 text-primary" v-if="!uploadingSpec" />
-              <Loader2 class="w-5 h-5 spin text-primary" v-else />
-              <div class="file-name">{{ selectedFileName || $t('dashboard.spec_placeholder') }}</div>
-              <input type="file" @change="handleFileUpload" class="hidden-input" id="spec-upload-dashboard" accept=".pdf,.doc,.docx,.md,.txt">
-              <label for="spec-upload-dashboard" class="btn-primary file-choose-btn">{{ $t('common.confirm') }}</label>
-            </div>
-          </div>
-
-          <div class="form-group checkbox-group py-1">
-            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
-              <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded">
-              {{ $t('dashboard.brainstorm_hint') }}
-            </label>
-          </div>
-          
-          <div class="modal-actions">
-            <button type="button" class="btn-secondary" @click="showTaskModal = false">{{ $t('common.cancel') }}</button>
-            <button type="submit" class="btn-primary" :disabled="creatingTask">
-              {{ creatingTask ? $t('common.loading') : $t('chat.initialize') }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <NewTaskModal 
+      :show="showTaskModal" 
+      :wsId="(wsId as string)" 
+      @close="showTaskModal = false" 
+      @created="onTaskCreated" 
+    />
   </div>
 </template>
 
@@ -531,6 +439,27 @@ watch(locale, () => {
   border-radius: var(--radius-md);
   font-weight: 500;
   cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--color-primary-600);
+  color: white !important;
+  border: 1px solid var(--color-primary-700);
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-700);
+  box-shadow: var(--shadow-md);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .hidden-input {

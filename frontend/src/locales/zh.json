@@ -85,8 +85,11 @@
     "status_dist": "任务状态分布",
     "avg_phase": "平均阶段耗时",
     "retry_heatmap": "错误与重试热力图 (最近7天)",
+    "task_name": "任务名称",
+    "description": "初始化提示词",
+    "spec_doc": "规范文档",
     "task_name_placeholder": "例如：实现用户中心 API",
-    "desc_placeholder": "请详细描述功能需求或 Bug 现象...",
+    "desc_placeholder": "该描述将作为发送给 Claude CLI 的指令，请详细描述需求...",
     "spec_placeholder": "上传 SRS/规范文档...",
     "brainstorm_hint": "使用 /brainstorm 进行初期头脑风暴与架构设计",
     "delete_confirm": "确定删除会话 {name}？所有历史记录和过程资产将被清除，此操作不可逆。"
@@ -98,6 +101,8 @@
     "empty_hint": "选择一个任务查看会话",
     "interrupt_confirm": "中断任务确认",
     "interrupt_desc": "确定要强制中断当前正在运行的引擎吗？中断后当前执行的原子动作可能无法回滚。",
+    "interrupt_action": "确认中断",
+    "no_running_engine": "当前没有正在运行的引擎任务",
     "initialize": "初始化"
   },
   "workspaces": {

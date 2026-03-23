@@ -2,31 +2,10 @@
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import {
-  Send,
-  TerminalSquare,
-  AlertCircle,
-  CheckCircle2,
-  Plus,
-  Play,
-  Loader2,
-  Upload,
-  Download,
-  Trash2,
-  AlertTriangle,
-  ChevronDown,
-  Wrench,
-  Brain,
-  XCircle,
-  Clock,
-  DollarSign,
-  RotateCcw,
-  OctagonPause,
-  TestTube,
-  Database,
-  Sparkles,
-} from 'lucide-vue-next'
+import { Sparkles, Database, TestTube, OctagonPause, RotateCcw, DollarSign, Clock, XCircle, Brain, Wrench, ChevronDown, AlertTriangle, Trash2, Download, Loader2, Play, Plus, CheckCircle2, AlertCircle, TerminalSquare, Send } from 'lucide-vue-next'
 import api from '@/utils/api'
+import NewTaskModal from '@/components/NewTaskModal.vue'
+import { ElMessage } from 'element-plus'
 
 const { t } = useI18n()
 
@@ -65,14 +44,6 @@ const resultsSummary = ref({
 
 // Task creation modal
 const showTaskModal = ref(false)
-const newTaskName = ref('')
-const newTaskDesc = ref('')
-const newTaskSpec = ref('')
-const pendingSpecFile = ref<File | null>(null)
-const useBrainstorm = ref(false)
-const creatingTask = ref(false)
-const uploadingSpec = ref(false)
-const selectedFileName = ref('')
 const showDeleteTaskConfirm = ref(false)
 const showInterruptConfirm = ref(false)
 const taskToDelete = ref<any>(null)
@@ -115,63 +86,15 @@ const openNewTaskModal = () => {
   showTaskModal.value = true
 }
 
-const handleFileUpload = (event: any) => {
-  const file = event.target.files[0]
-  if (!file) return
-  pendingSpecFile.value = file
-  selectedFileName.value = file.name
-}
-
-const handleCreateTask = async () => {
-  if (!newTaskName.value) return
-  creatingTask.value = true
-  try {
-    const wsId = route.params.wsId
-    // 1. 创建任务
-    const res = await api.post(`/workspaces/${wsId}/tasks`, {
-      name: newTaskName.value,
-      description: newTaskDesc.value,
-      use_brainstorm: useBrainstorm.value
-    })
-    
-    const taskId = res.data.id
-
-    // 2. 如果选择了文件，关联上传
-    if (pendingSpecFile.value) {
-      uploadingSpec.value = true
-      const formData = new FormData()
-      formData.append('file', pendingSpecFile.value)
-      try {
-        await api.post(`/workspaces/${wsId}/tasks/${taskId}/upload-spec`, formData, {
-          headers: { 'Content-Type': 'multipart/form-data' }
-        })
-      } catch (uploadError) {
-        console.error('Spec upload failed', uploadError)
-        // 即使上传失败，任务也已经创建，这里可以视情况报错或提示
-      } finally {
-        uploadingSpec.value = false
-      }
-    }
-
-    showTaskModal.value = false
-    newTaskName.value = ''
-    newTaskDesc.value = ''
-    newTaskSpec.value = ''
-    pendingSpecFile.value = null
-    useBrainstorm.value = false
-    selectedFileName.value = ''
-    
-    await loadTasks()
-    router.push(`/ws/${wsId}/chat/${taskId}`)
-    
-    // 重新获取一下最新的 task 对象（包含更新后的路径）
-    const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
-    selectTask(latestTaskRes.data)
-  } catch (e) {
-    console.error('Failed to create task', e)
-  } finally {
-    creatingTask.value = false
-  }
+const onTaskCreated = async (taskId: string) => {
+  showTaskModal.value = false
+  const wsId = route.params.wsId
+  await loadTasks()
+  router.push(`/ws/${wsId}/chat/${taskId}`)
+  
+  // 重新获取一下最新的 task 对象
+  const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
+  selectTask(latestTaskRes.data)
 }
 
 const selectTask = async (task: any) => {
@@ -190,7 +113,10 @@ const selectTask = async (task: any) => {
 }
 
 const handleInterruptClick = () => {
-  if (!engineRunning.value) return
+  if (!engineRunning.value) {
+    ElMessage.warning(t('chat.no_running_engine'))
+    return
+  }
   showInterruptConfirm.value = true
 }
 
@@ -594,7 +520,7 @@ onUnmounted(() => {
           <button class="icon-btn" @click="handleInitialize" :title="$t('chat.initialize')">
             <RotateCcw class="w-4 h-4" />
           </button>
-          <button class="icon-btn danger" @click="handleInterruptClick" :title="$t('chat.interrupt_confirm')" :disabled="!engineRunning">
+          <button class="icon-btn danger" @click="handleInterruptClick" :title="$t('chat.interrupt_confirm')">
             <OctagonPause class="w-4 h-4" />
           </button>
 
@@ -794,47 +720,12 @@ onUnmounted(() => {
     </aside>
 
     <!-- ─── Modals ─── -->
-    <!-- New Task Modal -->
-    <div v-if="showTaskModal" class="modal-overlay" @click.self="showTaskModal = false">
-      <div class="modal glass-panel">
-        <div class="modal-header">
-          <Plus class="w-6 h-6 text-primary" />
-          <h2>{{ $t('dashboard.new_task') }}</h2>
-        </div>
-        <form @submit.prevent="handleCreateTask" class="modal-form">
-          <div class="form-group">
-            <label>{{ $t('dashboard.task_name') }}</label>
-            <input v-model="newTaskName" type="text" class="input-field" required :placeholder="$t('dashboard.task_name_placeholder')">
-          </div>
-          <div class="form-group">
-            <label>{{ $t('dashboard.description') }}</label>
-            <textarea v-model="newTaskDesc" class="input-field" rows="3" :placeholder="$t('dashboard.desc_placeholder')"></textarea>
-          </div>
-          <div class="form-group">
-            <label>{{ $t('dashboard.spec_doc') }}</label>
-            <div class="file-upload-box glass-panel">
-              <Upload class="w-5 h-5 text-primary" v-if="!uploadingSpec" />
-              <Loader2 class="w-5 h-5 spin text-primary" v-else />
-              <div class="file-name">{{ selectedFileName || $t('dashboard.spec_placeholder') }}</div>
-              <input type="file" @change="handleFileUpload" class="hidden-input" id="spec-upload-chat" accept=".pdf,.doc,.docx,.md,.txt">
-              <label for="spec-upload-chat" class="btn-primary file-choose-btn">{{ $t('common.confirm') }}</label>
-            </div>
-          </div>
-          <div class="form-group checkbox-group py-1">
-            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
-              <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded">
-              {{ $t('dashboard.brainstorm_hint') }}
-            </label>
-          </div>
-          <div class="modal-actions">
-            <button type="button" class="btn-secondary" @click="showTaskModal = false">{{ $t('common.cancel') }}</button>
-            <button type="submit" class="btn-primary" :disabled="creatingTask">
-              {{ creatingTask ? $t('common.loading') : $t('chat.initialize') }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <NewTaskModal 
+      :show="showTaskModal" 
+      :wsId="(route.params.wsId as string)" 
+      @close="showTaskModal = false" 
+      @created="onTaskCreated" 
+    />
 
     <!-- Interrupt Confirmation Modal -->
     <div v-if="showInterruptConfirm" class="modal-overlay" @click.self="showInterruptConfirm = false">
@@ -847,8 +738,8 @@ onUnmounted(() => {
           {{ $t('chat.interrupt_desc') }}
         </p>
         <div class="modal-actions">
-          <button class="btn-secondary" @click="showInterruptConfirm = false">{{ $t('common.confirm') }}</button>
-          <button class="btn-danger" @click="confirmInterrupt">{{ $t('chat.engine_start') }}</button>
+          <button class="btn-secondary" @click="showInterruptConfirm = false">{{ $t('common.cancel') }}</button>
+          <button class="btn-danger" @click="confirmInterrupt">{{ $t('chat.interrupt_action') }}</button>
         </div>
       </div>
     </div>

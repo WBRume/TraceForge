@@ -86,8 +86,11 @@
     "status_dist": "Task Status Distribution",
     "avg_phase": "Average Phase Duration",
     "retry_heatmap": "Error & Retry Heatmap (Last 7 Days)",
+    "task_name": "Task Name",
+    "description": "Initial Prompt",
+    "spec_doc": "Specification",
     "task_name_placeholder": "e.g. Implement User Profile API",
-    "desc_placeholder": "Describe the feature or bugfix in detail...",
+    "desc_placeholder": "This will be sent as the instruction to Claude CLI. Describe your requirements...",
     "spec_placeholder": "Upload Requirement Doc...",
     "brainstorm_hint": "Use /brainstorm for initial brainstorming and architecture design",
     "delete_confirm": "Are you sure to delete session {name}? All history and process assets will be cleared, this action is irreversible."
@@ -99,6 +102,8 @@
     "empty_hint": "Select a task to view conversation",
     "interrupt_confirm": "Interrupt Confirmation",
     "interrupt_desc": "Are you sure you want to interrupt the current engine? Atomical actions may not be reversible.",
+    "interrupt_action": "Confirm Interrupt",
+    "no_running_engine": "No engine task is currently running",
     "initialize": "Initialize"
   },
   "workspaces": {
