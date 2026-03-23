@@ -7,6 +7,7 @@
     "save": "Save",
     "cancel": "Cancel",
     "confirm": "Confirm",
+    "select": "Select",
     "loading": "Loading...",
     "success": "Success",
     "error": "Error",
@@ -53,13 +54,13 @@
       "quality": "Native Quality Control"
     },
     "footer_tagline": "Crafted by Deepmind Advanced Agentic Coding Lab",
-    "email_placeholder": "name@example.com",
+    "email_placeholder": "name{'@'}example.com",
     "password_placeholder": "******",
     "switch_lang_title": "Switch to Chinese"
   },
   "layout": {
     "dashboard": "Dashboard",
-    "chat": "AI Chatroom",
+    "chat": "SDD Session",
     "workspaces": "My Workspaces",
     "toggle_sidebar": "Collapse/Expand Sidebar"
   },
@@ -77,11 +78,12 @@
     "applied_instantly": "* Changes are applied instantly and saved to local storage."
   },
   "dashboard": {
-    "title": "System Dashboard",
+    "title": "Workspace Dashboard",
     "total_tasks": "Total Tasks",
     "success_rate": "Success Rate",
     "active_tasks": "Active Tasks",
     "time_saved": "Time Saved",
+    "total_cost": "Total cost",
     "new_task": "Start New Task",
     "status_dist": "Task Status Distribution",
     "avg_phase": "Average Phase Duration",
@@ -91,6 +93,8 @@
     "spec_doc": "Specification",
     "task_name_placeholder": "e.g. Implement User Profile API",
     "desc_placeholder": "This will be sent as the instruction to Claude CLI. Describe your requirements...",
+    "requirement_duration": "Requirement Duration (Hours)",
+    "requirement_placeholder": "e.g. 8",
     "spec_placeholder": "Upload Requirement Doc...",
     "brainstorm_hint": "Use /brainstorm for initial brainstorming and architecture design",
     "delete_confirm": "Are you sure to delete session {name}? All history and process assets will be cleared, this action is irreversible."
@@ -98,7 +102,7 @@
   "chat": {
     "engine_start": "Start Engine",
     "thinking": "AI Thinking...",
-    "terminal": "Agent Activity",
+    "terminal": "SDD Session Records",
     "empty_hint": "Select a task to view conversation",
     "interrupt_confirm": "Are you sure you want to interrupt the current task? You cannot resume from this point after interrupting.",
     "interrupt_desc": "Task interrupted by user",

@@ -30,6 +30,7 @@ class DashboardOverview(BaseModel):
     success_rate: float
     active_tasks: int
     avg_duration_minutes: float
+    total_cost_usd: float
 
 
 class SuccessRateData(BaseModel):
@@ -45,6 +46,7 @@ class PhaseDurationData(BaseModel):
 class RetryHeatmapData(BaseModel):
     date: str
     retry_count: int
+    failure_count: int
     task_count: int
 
 

@@ -7,6 +7,7 @@
     "save": "保存",
     "cancel": "取消",
     "confirm": "确定",
+    "select": "选择",
     "loading": "加载中...",
     "success": "成功",
     "error": "错误",
@@ -52,13 +53,13 @@
       "quality": "原生质量管控"
     },
     "footer_tagline": "Deepmind 高级辅助编程实验室出品",
-    "email_placeholder": "name@example.com",
+    "email_placeholder": "name{'@'}example.com",
     "password_placeholder": "******",
     "switch_lang_title": "切换至英文"
   },
   "layout": {
     "dashboard": "仪表盘",
-    "chat": "AI 聊天室",
+    "chat": "SDD 会话",
     "workspaces": "我的工作区",
     "toggle_sidebar": "收起/展开侧边栏"
   },
@@ -76,20 +77,34 @@
     "applied_instantly": "* 更改将立即生效并保存至本地存储。"
   },
   "dashboard": {
-    "title": "系统概览",
+    "title": "工作区看板",
     "total_tasks": "任务总数",
     "success_rate": "成功率",
     "active_tasks": "进行中任务",
     "time_saved": "累计节省",
+    "total_cost": "预计消耗",
     "new_task": "新建任务",
     "status_dist": "任务状态分布",
     "avg_phase": "平均阶段耗时",
-    "retry_heatmap": "错误与重试热力图 (最近7天)",
+    "retry_heatmap": "最近 7 天执行波动",
+    "status": {
+      "DONE": "已完成",
+      "FAILED": "已失败",
+      "PENDING": "等待中",
+      "RUNNING": "运行中"
+    },
+    "phases": {
+      "REQUIREMENT_DURATION": "需求预估",
+      "DURATION": "实际执行",
+      "UNIT_MIN": "分钟"
+    },
     "task_name": "任务名称",
     "description": "初始化提示词",
     "spec_doc": "规范文档",
     "task_name_placeholder": "例如：实现用户中心 API",
     "desc_placeholder": "该描述将作为发送给 Claude CLI 的指令，请详细描述需求...",
+    "requirement_duration": "需求预估时间 (小时)",
+    "requirement_placeholder": "例如：8",
     "spec_placeholder": "上传 SRS/规范文档...",
     "brainstorm_hint": "使用 /brainstorm 进行初期头脑风暴与架构设计",
     "delete_confirm": "确定删除会话 {name}？所有历史记录和过程资产将被清除，此操作不可逆。"
@@ -97,7 +112,7 @@
   "chat": {
     "engine_start": "启动引擎",
     "thinking": "AI 思考中...",
-    "terminal": "Agent 活动日志",
+    "terminal": "SDD 会话记录",
     "empty_hint": "选择一个任务查看会话",
     "interrupt_confirm": "确定要中断当前任务吗？中断后无法从此进度恢复运行。",
     "interrupt_desc": "用户手动中断任务",

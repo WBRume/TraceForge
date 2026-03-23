@@ -58,7 +58,7 @@ const heatmapOptions = ref<any>({})
 const loadDashboardData = async () => {
   loading.value = true
   try {
-    const [resOverview, resSuccess, resDuration] = await Promise.all([
+    const [resOverview, resSuccess, resDuration, resHeatmap] = await Promise.all([
       api.get(`/workspaces/${wsId}/dashboard/overview`),
       api.get(`/workspaces/${wsId}/dashboard/success-rate`),
       api.get(`/workspaces/${wsId}/dashboard/phase-duration`),
@@ -69,66 +69,174 @@ const loadDashboardData = async () => {
 
     // Pie Chart: Success Rate
     successChartOptions.value = {
-      tooltip: { trigger: 'item' },
-      legend: { bottom: '0%', left: 'center' },
-      color: ['#10B981', '#F59E0B', '#EF4444'],
+      tooltip: { 
+        trigger: 'item',
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        textStyle: { color: '#1e293b' },
+        borderWidth: 0,
+        boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'
+      },
+      legend: { bottom: '0%', left: 'center', icon: 'circle', textStyle: { color: '#64748b' } },
+      color: [
+        {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: '#10B981' }, { offset: 1, color: '#059669' }]
+        },
+        {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: '#EF4444' }, { offset: 1, color: '#DC2626' }]
+        }
+      ],
       series: [
         {
           name: 'Task Status',
           type: 'pie',
-          radius: ['40%', '70%'],
+          radius: ['50%', '75%'],
+          center: ['50%', '45%'],
           avoidLabelOverlap: false,
           itemStyle: {
-            borderRadius: 10,
+            borderRadius: 8,
             borderColor: '#fff',
             borderWidth: 2
           },
-          label: { show: false, position: 'center' },
+          label: { show: false },
           emphasis: {
-            label: { show: true, fontSize: 18, fontWeight: 'bold' }
+            scale: true,
+            scaleSize: 10,
           },
-          labelLine: { show: false },
           data: resSuccess.data.map((item: any) => ({
             value: item.count,
-            name: item.status
+            name: (locale.value === 'zh' ? ({
+              'DONE': '已完成',
+              'FAILED': '已失败'
+            } as Record<string, string>)[item.status] : item.status) || item.status
           }))
         }
       ]
     }
 
     // Bar Chart: Phase Duration
+    const phaseOrder = ['REQUIREMENT_DURATION', 'DURATION']
+    const sortedDuration = resDuration.data.sort((a: any, b: any) => 
+      phaseOrder.indexOf(a.phase) - phaseOrder.indexOf(b.phase)
+    )
+
     durationChartOptions.value = {
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-      xAxis: { type: 'category', data: resDuration.data.map((i: any) => i.phase) },
-      yAxis: { type: 'value', name: 'Avg Duration (s)' },
+      tooltip: { 
+        trigger: 'axis', 
+        axisPointer: { type: 'shadow' },
+        formatter: (params: any) => {
+          const p = params[0]
+          return `${p.name}<br/>${p.seriesName}: <b>${p.value}</b> ${locale.value === 'zh' ? '分钟' : 'min'}`
+        }
+      },
+      grid: { left: '3%', right: '4%', bottom: '8%', containLabel: true, top: '15%' },
+      xAxis: { 
+        type: 'category', 
+        data: sortedDuration.map((i: any) => {
+          if (locale.value === 'zh') {
+            return ({
+              'REQUIREMENT_DURATION': '需求预期',
+              'DURATION': '实际执行'
+            } as Record<string, string>)[i.phase] || i.phase
+          }
+          return i.phase
+        }),
+        axisLine: { lineStyle: { color: '#e2e8f0' } },
+        axisLabel: { color: '#64748b' }
+      },
+      yAxis: { 
+        type: 'value', 
+        name: locale.value === 'zh' ? '平均耗时 (分钟)' : 'Avg Duration (min)',
+        axisLine: { show: false },
+        splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } },
+        nameTextStyle: { color: '#64748b', padding: [0, 0, 0, 40] }
+      },
       series: [
         {
-          name: 'Duration',
+          name: locale.value === 'zh' ? '平均耗时' : 'Duration',
           type: 'bar',
-          barWidth: '60%',
-          itemStyle: { color: '#0EA5E9', borderRadius: [4, 4, 0, 0] },
-          data: resDuration.data.map((i: any) => i.avg_duration_ms / 1000)
+          barWidth: '40%',
+          itemStyle: { 
+            color: {
+              type: 'linear',
+              x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: '#3b82f6' },
+                { offset: 1, color: '#1d4ed8' }
+              ]
+            },
+            borderRadius: [6, 6, 0, 0]
+          },
+          data: sortedDuration.map((i: any) => i.avg_minutes)
         }
       ]
     }
 
-    // Heatmap (Mocked heavily here since ECharts Heatmap config is complex)
-    // In actual production, it requires coordinate systems [hour(0-23), day(0-6), value]
+    // 4. Heatmap: 2D Data (Retries & Failures)
+    const last7Days: string[] = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date()
+      d.setDate(d.getDate() - i)
+      last7Days.push(d.toISOString().split('T')[0])
+    }
+
+    const yCategories = locale.value === 'zh' ? ['失败', '重试'] : ['Failures', 'Retries']
+    const heatmapSeriesData: any[] = []
+
+    last7Days.forEach((dateStr, xIdx) => {
+      const dayData = resHeatmap.data.find((d: any) => d.date === dateStr)
+      
+      // yIdx 0: Failure, yIdx 1: Retry
+      heatmapSeriesData.push([xIdx, 0, dayData ? dayData.failure_count : 0])
+      heatmapSeriesData.push([xIdx, 1, dayData ? dayData.retry_count : 0])
+    })
+
     heatmapOptions.value = {
-      tooltip: { position: 'top' },
-      grid: { top: 30, bottom: 20 },
-      xAxis: { type: 'category', data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] },
-      yAxis: { type: 'category', data: ['Errors', 'Retries'] },
-      visualMap: { min: 0, max: 10, calculable: true, orient: 'horizontal', left: 'center', bottom: -20, inRange: { color: ['#F0F9FF', '#0EA5E9', '#0C4A6E'] } },
+      tooltip: {
+        position: 'top',
+        formatter: (params: any) => {
+          const xIdx = params.data[0]
+          const yIdx = params.data[1]
+          const val = params.data[2]
+          const date = last7Days[xIdx].split('-').slice(1).join('/')
+          return `${date}<br/>${yCategories[yIdx]}: <b>${val}</b>`
+        }
+      },
+      grid: { top: 20, bottom: 40, left: 60, right: 20 },
+      xAxis: { 
+        type: 'category', 
+        data: last7Days.map(d => d.split('-').slice(1).join('/')),
+        axisLine: { lineStyle: { color: '#e2e8f0' } }
+      },
+      yAxis: { 
+        type: 'category', 
+        data: yCategories,
+        splitArea: { show: true },
+        axisLine: { lineStyle: { color: '#e2e8f0' } }
+      },
+      visualMap: { 
+        min: 0, 
+        max: Math.max(...heatmapSeriesData.map(d => d[2]), 5), 
+        calculable: true, 
+        orient: 'horizontal', 
+        left: 'center', 
+        bottom: 0,
+        inRange: { color: ['#eff6ff', '#60a5fa', '#1e40af'] },
+        text: [locale.value === 'zh' ? '高' : 'High', locale.value === 'zh' ? '低' : 'Low'],
+        textStyle: { color: '#64748b' }
+      },
       series: [{
-        name: 'Retry Frequency',
+        name: '波动统计',
         type: 'heatmap',
-        data: [
-          [0, 0, 1], [1, 0, 4], [2, 0, 0], [3, 0, 2], [4, 0, 5], [5, 0, 1], [6, 0, 0],
-          [0, 1, 2], [1, 1, 1], [2, 1, 3], [3, 1, 4], [4, 1, 2], [5, 1, 0], [6, 1, 0]
-        ],
-        label: { show: true }
+        data: heatmapSeriesData,
+        label: { show: true, color: '#1e293b' },
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 10,
+            shadowColor: 'rgba(0, 0, 0, 0.5)'
+          }
+        }
       }]
     }
 
@@ -184,7 +292,7 @@ watch(locale, () => {
     </div>
 
     <!-- KPI Banner -->
-    <div class="kpi-grid grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+    <div class="kpi-grid grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <Activity class="w-5 h-5 text-primary-500" />
@@ -210,6 +318,14 @@ watch(locale, () => {
         </div>
         <div class="text-3xl font-bold text-slate-700">{{ overview.active_tasks }}</div>
       </div>
+
+      <div class="kpi-card glass-panel flex flex-col justify-center border-l-4 border-l-indigo-500">
+        <div class="flex items-center gap-3 text-slate-500 mb-2">
+          <TerminalSquare class="w-5 h-5 text-indigo-500" />
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.total_cost') }}</span>
+        </div>
+        <div class="text-3xl font-bold text-indigo-600">${{ overview.total_cost_usd?.toFixed(4) || '0.0000' }}</div>
+      </div>
       
       <div class="kpi-card bg-primary-600 text-white flex flex-col justify-center relative overflow-hidden">
         <div class="relative z-10">
@@ -217,7 +333,7 @@ watch(locale, () => {
             <CheckCircle class="w-5 h-5" />
             <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.time_saved') }}</span>
           </div>
-          <div class="text-3xl font-bold">~{{ Math.floor((overview.total_tasks * 2.5) / 24) || 2 }}d</div>
+          <div class="text-3xl font-bold">{{ overview.avg_duration_minutes?.toFixed(1) || '0.0' }}h</div>
         </div>
         <!-- Abstract shape -->
         <div class="absolute right-0 bottom-0 opacity-20 transform translate-x-4 translate-y-4">
@@ -307,7 +423,7 @@ watch(locale, () => {
 .text-center { text-align: center; }
 
 @media (min-width: 768px) {
-  .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .md\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 @media (min-width: 1024px) {
   .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }

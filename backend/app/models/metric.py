@@ -5,6 +5,7 @@
 from sqlalchemy import (
     Column, String, DateTime, ForeignKey, Float, func
 )
+from sqlalchemy.orm import relationship
 from app.database import Base
 from app.models.user import generate_uuid
 
@@ -18,3 +19,6 @@ class SddDashboardMetric(Base):
     metric_type = Column(String(100), nullable=False)
     metric_value = Column(Float, nullable=False)
     recorded_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    # Relationships
+    task = relationship("SddTask", back_populates="dashboard_metrics")

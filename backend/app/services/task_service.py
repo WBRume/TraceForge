@@ -22,6 +22,7 @@ def create_task(
     name: str,
     description: Optional[str] = None,
     spec_doc_path: Optional[str] = None,
+    requirement_duration_hours: float = 0.0,
 ) -> SddTask:
     # 从工作区获取默认路径
     from app.models.user import Workspace
@@ -45,12 +46,23 @@ def create_task(
         project_path=os.path.join(base_path, task_id),
         git_repo_url=ws.git_repo_url,
         spec_doc_path=spec_doc_path,
+        requirement_duration_hours=requirement_duration_hours,
     )
     
     # 确保物理目录存在
     os.makedirs(task.project_path, exist_ok=True)
 
     db.add(task)
+    db.flush()
+    
+    # 记录需求预估时间指标，用于持久化统计
+    from app.models.metric import SddDashboardMetric
+    task.dashboard_metrics.append(SddDashboardMetric(
+        workspace_id=workspace_id,
+        metric_type="REQUIREMENT_DURATION",
+        metric_value=float(requirement_duration_hours)
+    ))
+    
     db.commit()
     db.refresh(task)
 
@@ -131,6 +143,14 @@ def update_task_status(
 def cancel_task(db: Session, task: SddTask) -> SddTask:
     task.status = TaskStatus.FAILED
     task.error_message = "用户手动中断"
+
+    # 记录失败指标
+    from app.models.metric import SddDashboardMetric
+    task.dashboard_metrics.append(SddDashboardMetric(
+        workspace_id=task.workspace_id,
+        metric_type="TASK_RESULT", metric_value=0.0
+    ))
+
     db.commit()
     db.refresh(task)
     return task
@@ -139,6 +159,14 @@ def cancel_task(db: Session, task: SddTask) -> SddTask:
 def complete_task(db: Session, task: SddTask) -> SddTask:
     task.status = TaskStatus.DONE
     task.error_message = "用户手动标记完成"
+
+    # 记录成功指标
+    from app.models.metric import SddDashboardMetric
+    task.dashboard_metrics.append(SddDashboardMetric(
+        workspace_id=task.workspace_id,
+        metric_type="TASK_RESULT", metric_value=1.0
+    ))
+
     db.commit()
     db.refresh(task)
     return task

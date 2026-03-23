@@ -12,6 +12,7 @@ class TaskCreate(BaseModel):
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None
     use_brainstorm: Optional[bool] = False
+    requirement_duration_hours: float = 0.0
 
 
 class TaskUpdate(BaseModel):
@@ -48,6 +49,9 @@ class TaskResponse(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    requirement_duration_hours: float
+    total_cost_usd: float
+    total_duration_ms: int
 
     model_config = {"from_attributes": True}
 

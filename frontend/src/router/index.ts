@@ -10,6 +10,16 @@ const router = createRouter({
       component: () => import('../views/PortalView.vue')
     },
     {
+      path: '/docs',
+      name: 'docs',
+      component: () => import('../views/DocsView.vue')
+    },
+    {
+      path: '/architecture',
+      name: 'architecture',
+      component: () => import('../views/ArchitectureView.vue')
+    },
+    {
       path: '/login',
       redirect: '/'
     },

@@ -41,7 +41,8 @@ def create_task(
         db, current_user, ws_id, 
         name=data.name,
         description=desc.strip(),
-        spec_doc_path=data.spec_doc_path
+        spec_doc_path=data.spec_doc_path,
+        requirement_duration_hours=data.requirement_duration_hours
     )
     return task
 
@@ -128,10 +129,13 @@ async def initialize_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    # 中断现有运行
+    # 中断现有运行并计入重试次数
     engine = get_engine(task_id)
     if engine:
         await engine.stop()
+    
+    task.retry_count += 1
+    db.commit()
 
     prompt = task.description or f"请根据任务 '{task.name}' 开始工作"
     if task.spec_doc_path:

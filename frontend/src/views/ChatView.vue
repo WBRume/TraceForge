@@ -73,9 +73,8 @@ const loadTasks = async () => {
   tasks.value = res.data.items
 
   if (route.params.taskId) {
-    selectTask(tasks.value.find((t: any) => t.id === route.params.taskId))
-  } else if (tasks.value.length > 0) {
-    selectTask(tasks.value[0])
+    const task = tasks.value.find((t: any) => t.id === route.params.taskId)
+    if (task) selectTask(task)
   }
 }
 
@@ -109,7 +108,13 @@ const selectTask = async (task: any) => {
   pinnedCards.value = []
   thinkingContent.value = ''
   showThinking.value = false
-  resultsSummary.value = { visible: false, totalDurationMs: 0, totalCostUsd: 0, history: [], expanded: false }
+  resultsSummary.value = { 
+    visible: (task.total_cost_usd || 0) > 0 || (task.total_duration_ms || 0) > 0, 
+    totalDurationMs: task.total_duration_ms || 0, 
+    totalCostUsd: task.total_cost_usd || 0, 
+    history: [], 
+    expanded: false 
+  }
   engineRunning.value = false
 
   router.push(`/ws/${route.params.wsId}/chat/${task.id}`)

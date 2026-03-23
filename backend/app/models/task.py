@@ -5,7 +5,7 @@ SDD 任务与计划节点模型
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, Integer, func
+    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, func
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -48,6 +48,9 @@ class SddTask(Base):
     retry_count = Column(Integer, nullable=False, default=0)
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
+    requirement_duration_hours = Column(Integer, nullable=False, default=0) # 预估需求耗时(小时)
+    total_cost_usd = Column(Float, nullable=False, default=0.0) # 累计消耗费用
+    total_duration_ms = Column(BigInteger, nullable=False, default=0) # 累计执行耗时(ms)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -59,6 +62,7 @@ class SddTask(Base):
     test_results = relationship("SddTestResult", back_populates="task", cascade="all, delete-orphan")
     assets = relationship("SddAsset", back_populates="task", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="task", cascade="all, delete-orphan")
+    dashboard_metrics = relationship("SddDashboardMetric", back_populates="task", cascade="all, delete-orphan")
 
 
 class SddPlanNode(Base):

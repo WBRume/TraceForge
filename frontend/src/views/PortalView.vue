@@ -133,8 +133,8 @@ onMounted(() => {
         <span class="logo-text">{{ $t('portal.title') }}</span>
       </div>
       <div class="nav-links">
-        <a href="#" class="nav-link">{{ $t('portal.documentation') }}</a>
-        <a href="#" class="nav-link">{{ $t('portal.architecture') }}</a>
+        <router-link to="/docs" class="nav-link">{{ $t('portal.documentation') }}</router-link>
+        <router-link to="/architecture" class="nav-link">{{ $t('portal.architecture') }}</router-link>
         <div class="v-divider"></div>
         <template v-if="authStore.isAuthenticated">
           <div class="user-profile">

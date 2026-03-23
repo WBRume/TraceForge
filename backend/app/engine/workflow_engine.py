@@ -271,12 +271,55 @@ class WorkflowEngine:
         if is_error or subtype == "error":
             logger.error(f"CLI execution failed: {result_text[:200]}")
             self._update_task_status(TaskStatus.FAILED, result_text[:500])
+            self._update_task_metrics(cost, duration, "FAILED")
             await self._push_result(False, result_text, duration, cost)
             await self._push_status("FAILED", f"执行失败: {result_text[:200]}")
         else:
-            logger.info(f"CLI execution succeeded in {duration}ms")
-            # 注意：不立即标记 DONE，因为 superpowers 可能有多轮交互
+            logger.info(f"CLI execution succeeded in {duration}ms, cost: {cost}")
+            self._update_task_metrics(cost, duration)
             await self._push_result(True, result_text[:500], duration, cost)
+
+    def _update_task_metrics(self, cost: Optional[float], duration: Optional[int], status: Optional[str] = None):
+        """累加消耗并记录指标"""
+        from app.models.metric import SddDashboardMetric
+        db = SessionLocal()
+        try:
+            task = db.query(SddTask).filter(SddTask.id == self.task_id).first()
+            if not task:
+                return
+
+            # 如果任务已完成，不再增加统计 (HITL 后的额外操作可能需要用户决定)
+            if task.status == TaskStatus.DONE:
+                return
+
+            if cost:
+                task.total_cost_usd += cost
+                # 记录成本指标
+                task.dashboard_metrics.append(SddDashboardMetric(
+                    workspace_id=self.ws_id,
+                    metric_type="COST", metric_value=cost
+                ))
+            if duration:
+                task.total_duration_ms += duration
+                # 记录耗时指标
+                task.dashboard_metrics.append(SddDashboardMetric(
+                    workspace_id=self.ws_id,
+                    metric_type="DURATION", metric_value=duration
+                ))
+            
+            if status:
+                # 记录状态变更指标 (用于即使删了 Task 也保留统计)
+                task.dashboard_metrics.append(SddDashboardMetric(
+                    workspace_id=self.ws_id,
+                    metric_type="TASK_RESULT", metric_value=1.0 if status == "DONE" else 0.0
+                ))
+            
+            db.commit()
+        except Exception as e:
+            logger.error(f"Update task metrics failed: {e}")
+            db.rollback()
+        finally:
+            db.close()
 
     # ─────────────── 主执行流程 ───────────────
 
