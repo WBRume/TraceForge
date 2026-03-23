@@ -163,6 +163,26 @@ async def cancel_task(
 
     task = task_service.cancel_task(db, task)
     return {"msg": "Task cancelled"}
+
+
+@router.post("/{task_id}/complete")
+async def complete_task(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    engine = get_engine(task_id)
+    if engine:
+        await engine.stop()
+
+    task = task_service.complete_task(db, task)
+    return {"msg": "Task completed"}
 @router.delete("/{task_id}")
 def delete_task(
     ws_id: str,

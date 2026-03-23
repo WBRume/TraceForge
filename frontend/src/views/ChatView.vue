@@ -46,6 +46,7 @@ const resultsSummary = ref({
 const showTaskModal = ref(false)
 const showDeleteTaskConfirm = ref(false)
 const showInterruptConfirm = ref(false)
+const showCompleteConfirm = ref(false)
 const taskToDelete = ref<any>(null)
 
 // Engine state
@@ -57,6 +58,9 @@ let ws: WebSocket | null = null
 // ─── Computed ───
 const activeHitlCards = computed(() =>
   pinnedCards.value.filter(c => c.type === 'hitl' && !c.answered)
+)
+const isTerminalStatus = computed(() => 
+  ['DONE', 'FAILED'].includes(currentTask.value?.status)
 )
 const statusCards = computed(() =>
   pinnedCards.value.filter(c => c.type === 'status')
@@ -164,11 +168,51 @@ const loadHistory = async (taskId: string) => {
 }
 
 const handleInterruptClick = () => {
-  if (!engineRunning.value) {
+  const status = currentTask.value?.status
+  const isRunningStatus = status && !['DONE', 'FAILED'].includes(status)
+
+  if (!isRunningStatus && !engineRunning.value) {
     ElMessage.warning(t('chat.no_running_engine'))
     return
   }
   showInterruptConfirm.value = true
+}
+
+const handleCompleteClick = () => {
+  const status = currentTask.value?.status
+  const isRunningStatus = status && !['DONE', 'FAILED'].includes(status)
+
+  if (!isRunningStatus && !engineRunning.value) {
+    ElMessage.warning(t('chat.no_running_engine'))
+    return
+  }
+  showCompleteConfirm.value = true
+}
+
+const confirmComplete = async () => {
+  if (!currentTask.value) return
+  showCompleteConfirm.value = false
+  engineRunning.value = false
+  pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status' && c.type !== 'hitl')
+  
+  try {
+    await api.post(`/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/complete`)
+    currentTask.value.status = 'DONE'
+    
+    // 更新任务列表中的状态
+    const targetTask = tasks.value.find(task => task.id === currentTask.value.id)
+    if (targetTask) targetTask.status = 'DONE'
+
+    messages.value.push({
+      id: Date.now().toString(),
+      role: 'system',
+      content: '✅ ' + t('chat.complete_desc'),
+    })
+    scrollToBottom('chat')
+  } catch (e) {
+    console.error('Failed to complete task', e)
+    ElMessage.error('Failed to mark task as done')
+  }
 }
 
 const confirmInterrupt = async () => {
@@ -571,8 +615,11 @@ onUnmounted(() => {
           <button class="icon-btn" @click="handleInitialize" :title="$t('chat.initialize')">
             <RotateCcw class="w-4 h-4" />
           </button>
-          <button class="icon-btn danger" @click="handleInterruptClick" :title="$t('chat.interrupt_confirm')">
+          <button class="icon-btn danger" :disabled="isTerminalStatus" @click="handleInterruptClick" :title="$t('chat.interrupt_confirm')">
             <OctagonPause class="w-4 h-4" />
+          </button>
+          <button class="icon-btn success" :disabled="isTerminalStatus" @click="handleCompleteClick" :title="$t('chat.complete_task')">
+            <CheckCircle2 class="w-4 h-4" />
           </button>
 
           <button class="icon-btn" @click="handleExport" title="Export Session">
@@ -702,7 +749,7 @@ onUnmounted(() => {
       </div>
 
       <!-- Verification Quick Actions -->
-      <div v-if="!engineRunning && messages.length > 0" class="verification-actions">
+      <div v-if="!engineRunning && messages.length > 0 && !isTerminalStatus" class="verification-actions">
         <span class="verify-label">{{ $t('portal.architecture') }}:</span>
         <button class="btn-micro" @click="sendVerification('ui')" title="Playwright UI">
           <TestTube class="w-3" /> UI
@@ -716,15 +763,16 @@ onUnmounted(() => {
       </div>
 
       <!-- Input Area -->
-      <div class="chat-input-area glass-panel">
+      <div class="chat-input-area glass-panel" :class="{ 'is-disabled': isTerminalStatus }">
         <input
           v-model="chatInput"
           type="text"
-          :placeholder="$t('dashboard.desc_placeholder')"
+          :placeholder="isTerminalStatus ? $t('chat.terminal_status_hint') : $t('dashboard.desc_placeholder')"
+          :disabled="isTerminalStatus"
           @keyup.enter="sendChat"
           class="chat-input"
         >
-        <button class="send-btn" :disabled="!chatInput.trim()" @click="sendChat">
+        <button class="send-btn" :disabled="isTerminalStatus || !chatInput.trim()" @click="sendChat">
           <Send class="w-5 h-5" />
         </button>
       </div>
@@ -791,6 +839,22 @@ onUnmounted(() => {
         <div class="modal-actions">
           <button class="btn-secondary" @click="showInterruptConfirm = false">{{ $t('common.cancel') }}</button>
           <button class="btn-danger" @click="confirmInterrupt">{{ $t('chat.interrupt_action') }}</button>
+        </div>
+      </div>
+    </div>
+    <!-- Complete Confirmation Modal -->
+    <div v-if="showCompleteConfirm" class="modal-overlay" @click.self="showCompleteConfirm = false">
+      <div class="modal glass-panel delete-modal">
+        <div class="modal-header success">
+          <CheckCircle2 class="w-6 h-6" />
+          <span>{{ $t('chat.confirm_complete') }}</span>
+        </div>
+        <p class="delete-desc">
+          {{ $t('chat.complete_confirm') }}
+        </p>
+        <div class="modal-actions">
+          <button class="btn-secondary" @click="showCompleteConfirm = false">{{ $t('common.cancel') }}</button>
+          <button class="btn-success" @click="confirmComplete">{{ $t('common.confirm') }}</button>
         </div>
       </div>
     </div>
@@ -1009,6 +1073,8 @@ onUnmounted(() => {
 .icon-btn.active { color: var(--color-primary-600); background-color: var(--color-primary-50); }
 .icon-btn.danger { color: var(--color-accent-rose); }
 .icon-btn.danger:hover { background-color: rgba(239,68,68,0.05); }
+.icon-btn.success { color: var(--color-accent-emerald); }
+.icon-btn.success:hover { background-color: rgba(16,185,129,0.05); }
 
 .start-btn {
   display: flex;
@@ -1318,10 +1384,9 @@ onUnmounted(() => {
   font-size: 1.25rem;
   font-weight: 700;
 }
-.modal-header.danger {
-  color: var(--color-accent-rose);
-}
-.modal-header.danger span {
+.modal-header.danger { color: var(--color-accent-rose); border-bottom-color: #FEE2E2; }
+.modal-header.success { color: var(--color-accent-emerald); border-bottom-color: #D1FAE5; }
+.modal-header span {
   font-size: 1.2rem;
   font-weight: 700;
 }
@@ -1462,5 +1527,18 @@ onUnmounted(() => {
   border-radius: 6px;
   cursor: pointer;
   font-weight: 500;
+}
+.chat-input-area.is-disabled {
+  background-color: #F1F5F9;
+  cursor: not-allowed;
+}
+.chat-input-area.is-disabled .chat-input {
+  background-color: transparent;
+  cursor: not-allowed;
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 </style>

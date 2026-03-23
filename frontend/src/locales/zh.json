@@ -99,10 +99,15 @@
     "thinking": "AI 思考中...",
     "terminal": "Agent 活动日志",
     "empty_hint": "选择一个任务查看会话",
-    "interrupt_confirm": "中断任务确认",
-    "interrupt_desc": "确定要强制中断当前正在运行的引擎吗？中断后当前执行的原子动作可能无法回滚。",
+    "interrupt_confirm": "确定要中断当前任务吗？中断后无法从此进度恢复运行。",
+    "interrupt_desc": "用户手动中断任务",
     "interrupt_action": "确认中断",
     "no_running_engine": "当前没有正在运行的引擎任务",
+    "complete_task": "标记任务完成",
+    "complete_desc": "用户手动标记任务已完成",
+    "confirm_complete": "确认完成任务",
+    "complete_confirm": "确定要将此任务标记为已完成吗？",
+    "terminal_status_hint": "任务已结束，无法继续对话",
     "initialize": "初始化"
   },
   "workspaces": {

@@ -130,7 +130,15 @@ def update_task_status(
 
 def cancel_task(db: Session, task: SddTask) -> SddTask:
     task.status = TaskStatus.FAILED
-    task.error_message = "用户手动取消"
+    task.error_message = "用户手动中断"
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def complete_task(db: Session, task: SddTask) -> SddTask:
+    task.status = TaskStatus.DONE
+    task.error_message = "用户手动标记完成"
     db.commit()
     db.refresh(task)
     return task

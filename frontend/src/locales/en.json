@@ -100,10 +100,15 @@
     "thinking": "AI Thinking...",
     "terminal": "Agent Activity",
     "empty_hint": "Select a task to view conversation",
-    "interrupt_confirm": "Interrupt Confirmation",
-    "interrupt_desc": "Are you sure you want to interrupt the current engine? Atomical actions may not be reversible.",
+    "interrupt_confirm": "Are you sure you want to interrupt the current task? You cannot resume from this point after interrupting.",
+    "interrupt_desc": "Task interrupted by user",
     "interrupt_action": "Confirm Interrupt",
     "no_running_engine": "No engine task is currently running",
+    "complete_task": "Mark as Done",
+    "complete_desc": "Task marked as completed by user",
+    "confirm_complete": "Confirm Completion",
+    "complete_confirm": "Are you sure you want to mark this task as completed?",
+    "terminal_status_hint": "Task is terminal, chat is disabled",
     "initialize": "Initialize"
   },
   "workspaces": {
