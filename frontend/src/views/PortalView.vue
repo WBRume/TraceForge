@@ -142,7 +142,7 @@ onMounted(() => {
             <span class="user-name">{{ authStore.user?.display_name }}</span>
           </div>
           <button class="btn-ghost" @click="handleLogout">{{ $t('common.logout') }}</button>
-          <button class="btn-primary" @click="router.push('/workspaces')">{{ $t('common.workspace') }}</button>
+          <button class="btn-primary" @click="router.push('/workspaces')">{{ $t('portal.enter_workspace') }}</button>
         </template>
         <template v-else>
           <button class="btn-ghost" @click="openAuthModal('login')">{{ $t('common.login') }}</button>
