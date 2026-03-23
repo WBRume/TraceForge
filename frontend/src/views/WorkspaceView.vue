@@ -102,7 +102,7 @@ const confirmDeleteWorkspace = async () => {
 
     <main class="ws-main">
       <div class="ws-header-row">
-        <h2>{{ $t('workspaces.title') }}</h2>
+        <h2 class="title-gradient-small">{{ $t('workspaces.title') }}</h2>
         <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
           <Plus class="w-4 h-4" /> {{ $t('workspaces.new_workspace') }}
         </button>
@@ -119,15 +119,16 @@ const confirmDeleteWorkspace = async () => {
 
       <div v-else class="ws-grid">
         <div 
-          v-for="ws in wsStore.workspaces" 
+          v-for="(ws, index) in wsStore.workspaces" 
           :key="ws.id" 
-          class="ws-card glass-panel group relative"
+          class="ws-card glass-panel group hover-lift animate-pop-in"
+          :style="{ animationDelay: `${index * 50}ms` }"
           @click="enterWorkspace(ws)"
         >
           <div class="ws-card-header flex justify-between items-start">
             <h3>{{ ws.name }}</h3>
-            <button class="delete-ws-btn opacity-0 group-hover:opacity-100 transition-opacity" @click.stop="handleDeleteWorkspace(ws)">
-              <Trash2 class="w-4 h-4 text-slate-400 hover:text-rose-500" />
+            <button class="delete-ws-btn opacity-0 group-hover:opacity-100 transition-all hover:bg-rose-500 hover:text-white hover:shadow-lg hover:shadow-rose-500/30" @click.stop="handleDeleteWorkspace(ws)">
+              <Trash2 class="w-4 h-4" />
             </button>
           </div>
           <p class="ws-card-desc">{{ ws.description || $t('workspaces.no_desc') }}</p>
@@ -193,9 +194,12 @@ const confirmDeleteWorkspace = async () => {
 </template>
 
 <style scoped>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
 .ws-container {
   min-height: 100vh;
   background-color: var(--color-bg-base);
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
 }
 
 .ws-header {
@@ -259,7 +263,12 @@ const confirmDeleteWorkspace = async () => {
 
 .ws-header-row h2 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.75rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .ws-grid {
@@ -275,6 +284,28 @@ const confirmDeleteWorkspace = async () => {
   gap: var(--space-2);
   cursor: pointer;
   min-height: 160px;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.ws-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, #0ea5e9, #3b82f6);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.ws-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 20px 25px -5px rgba(14, 165, 233, 0.1), 0 10px 10px -5px rgba(14, 165, 233, 0.04);
+  border-color: rgba(14, 165, 233, 0.3);
+}
+
+.ws-card:hover::before {
+  opacity: 1;
 }
 
 .ws-card-header h3 {
@@ -294,10 +325,23 @@ const confirmDeleteWorkspace = async () => {
 }
 
 .delete-ws-btn {
-  background: transparent;
+  background: #f1f5f9;
   border: none;
   cursor: pointer;
-  padding: 4px;
+  padding: 6px;
+  border-radius: 8px;
+  color: #94a3b8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.delete-ws-btn:hover {
+  background-color: #ef4444 !important;
+  color: white !important;
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+  transform: translateY(-2px);
 }
 
 .ws-card-footer {
@@ -405,5 +449,15 @@ const confirmDeleteWorkspace = async () => {
   background: white;
   border-color: var(--color-primary-500);
   color: var(--color-primary-500);
+}
+
+/* Animations */
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-pop-in {
+  animation: popIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 </style>

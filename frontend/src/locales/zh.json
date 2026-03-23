@@ -98,7 +98,7 @@
     "empty_hint": "选择一个任务查看会话",
     "interrupt_confirm": "中断任务确认",
     "interrupt_desc": "确定要强制中断当前正在运行的引擎吗？中断后当前执行的原子动作可能无法回滚。",
-    "initialize": "初始化 (重启环境)"
+    "initialize": "初始化"
   },
   "workspaces": {
     "title": "我的工作区",

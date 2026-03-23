@@ -99,7 +99,7 @@
     "empty_hint": "Select a task to view conversation",
     "interrupt_confirm": "Interrupt Confirmation",
     "interrupt_desc": "Are you sure you want to interrupt the current engine? Atomical actions may not be reversible.",
-    "initialize": "Initialize (Restart Environment)"
+    "initialize": "Initialize"
   },
   "workspaces": {
     "title": "Your Workspaces",
