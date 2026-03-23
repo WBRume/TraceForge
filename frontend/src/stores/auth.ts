@@ -18,7 +18,7 @@ export const useAuthStore = defineStore('auth', () => {
     token.value = null
     user.value = null
     localStorage.removeItem('sdd_token')
-    router.push('/login')
+    router.push('/')
   }
   
   async function fetchCurrentUser() {

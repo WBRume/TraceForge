@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { ref, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { 
   Activity, 
   CheckCircle,
   Clock,
   TrendingUp,
   Plus,
-  Upload
+  Upload,
+  TerminalSquare
 } from 'lucide-vue-next'
-import { useRouter } from 'vue-router'
 import api from '@/utils/api'
 
 // ECharts imports
@@ -37,6 +38,7 @@ use([
   VisualMapComponent
 ])
 
+const { locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const wsId = route.params.wsId
@@ -49,10 +51,11 @@ const workspace = ref<any>(null)
 const showTaskModal = ref(false)
 const newTaskName = ref('')
 const newTaskDesc = ref('')
-const newTaskSpec = ref('')
 const creatingTask = ref(false)
 const uploadingSpec = ref(false)
 const selectedFileName = ref('')
+const pendingSpecFile = ref<File | null>(null)
+const useBrainstorm = ref(false)
 
 // Chart Options
 const successChartOptions = ref<any>({})
@@ -111,7 +114,7 @@ const loadDashboardData = async () => {
           name: 'Duration',
           type: 'bar',
           barWidth: '60%',
-          itemStyle: { color: '#3B82F6', borderRadius: [4, 4, 0, 0] },
+          itemStyle: { color: '#0EA5E9', borderRadius: [4, 4, 0, 0] },
           data: resDuration.data.map((i: any) => i.avg_duration_ms / 1000)
         }
       ]
@@ -124,7 +127,7 @@ const loadDashboardData = async () => {
       grid: { top: 30, bottom: 20 },
       xAxis: { type: 'category', data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] },
       yAxis: { type: 'category', data: ['Errors', 'Retries'] },
-      visualMap: { min: 0, max: 10, calculable: true, orient: 'horizontal', left: 'center', bottom: -20, inRange: { color: ['#EFF6FF', '#3B82F6', '#1E3A8A'] } },
+      visualMap: { min: 0, max: 10, calculable: true, orient: 'horizontal', left: 'center', bottom: -20, inRange: { color: ['#F0F9FF', '#0EA5E9', '#0C4A6E'] } },
       series: [{
         name: 'Retry Frequency',
         type: 'heatmap',
@@ -156,39 +159,50 @@ const openNewTaskModal = () => {
   showTaskModal.value = true
 }
 
-const handleFileUpload = async (event: any) => {
+const handleFileUpload = (event: any) => {
   const file = event.target.files[0]
   if (!file) return
-  
-  uploadingSpec.value = true
+  pendingSpecFile.value = file
   selectedFileName.value = file.name
-  const formData = new FormData()
-  formData.append('file', file)
-  
-  try {
-    const res = await api.post('/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    newTaskSpec.value = res.data.path
-  } catch (e) {
-    console.error('Upload failed', e)
-    selectedFileName.value = 'Upload failed'
-  } finally {
-    uploadingSpec.value = false
-  }
 }
 
 const handleCreateTask = async () => {
   if (!newTaskName.value) return
   creatingTask.value = true
   try {
+    // 1. 创建任务
     const res = await api.post(`/workspaces/${wsId}/tasks`, {
       name: newTaskName.value,
       description: newTaskDesc.value,
-      spec_doc_path: newTaskSpec.value
+      use_brainstorm: useBrainstorm.value
     })
+    
+    const taskId = res.data.id
+
+    // 2. 关联上传 Spec
+    if (pendingSpecFile.value) {
+      uploadingSpec.value = true
+      const formData = new FormData()
+      formData.append('file', pendingSpecFile.value)
+      try {
+        await api.post(`/workspaces/${wsId}/tasks/${taskId}/upload-spec`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+      } catch (uploadError) {
+        console.error('Spec upload failed', uploadError)
+      } finally {
+        uploadingSpec.value = false
+      }
+    }
+
     showTaskModal.value = false
-    router.push(`/ws/${wsId}/chat/${res.data.id}`)
+    newTaskName.value = ''
+    newTaskDesc.value = ''
+    pendingSpecFile.value = null
+    useBrainstorm.value = false
+    selectedFileName.value = ''
+    
+    router.push(`/ws/${wsId}/chat/${taskId}`)
   } catch (e) {
     console.error('Failed to create task', e)
   } finally {
@@ -200,20 +214,25 @@ onMounted(() => {
   loadDashboardData()
   loadWorkspace()
 })
+
+// 监听语言变化，重新生成图表配置（主要是 Title 和 Legend）
+watch(locale, () => {
+  loadDashboardData()
+})
 </script>
 
 <template>
   <div class="dashboard-wrap p-8">
     <div class="mb-8 flex justify-between items-center">
       <div class="flex-1">
-        <h1 class="text-3xl font-bold text-primary-900 mb-1">Metrics Dashboard</h1>
+        <h1 class="text-3xl font-bold text-primary-900 mb-1">{{ $t('dashboard.title') }}</h1>
         <div class="flex items-center gap-4 text-sm text-slate-500">
            <div class="flex items-center gap-1"><TerminalSquare class="w-4 h-4" /> {{ workspace?.project_path || 'No Path' }}</div>
            <div class="flex items-center gap-1" v-if="workspace?.git_repo_url"><Plus class="w-4 h-4 rotate-45" /> {{ workspace.git_repo_url }}</div>
         </div>
       </div>
       <button class="btn-primary flex items-center gap-2" @click="openNewTaskModal">
-        <Plus class="w-4 h-4" /> Start New Task
+        <Plus class="w-4 h-4" /> {{ $t('dashboard.new_task') }}
       </button>
     </div>
 
@@ -222,7 +241,7 @@ onMounted(() => {
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <Activity class="w-5 h-5 text-primary-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">Total Tasks</span>
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.total_tasks') }}</span>
         </div>
         <div class="text-3xl font-bold text-primary-900">{{ overview.total_tasks }}</div>
       </div>
@@ -230,7 +249,7 @@ onMounted(() => {
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <TrendingUp class="w-5 h-5 text-emerald-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">Success Rate</span>
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.success_rate') }}</span>
         </div>
         <div class="text-3xl font-bold" :class="overview.success_rate > 0.8 ? 'text-emerald-500' : 'text-amber-500'">
           {{ (overview.success_rate * 100).toFixed(1) }}%
@@ -240,7 +259,7 @@ onMounted(() => {
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <Clock class="w-5 h-5 text-amber-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">Active Tasks</span>
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.active_tasks') }}</span>
         </div>
         <div class="text-3xl font-bold text-slate-700">{{ overview.active_tasks }}</div>
       </div>
@@ -249,7 +268,7 @@ onMounted(() => {
         <div class="relative z-10">
           <div class="flex items-center gap-3 text-primary-100 mb-2">
             <CheckCircle class="w-5 h-5" />
-            <span class="font-medium text-sm text-uppercase tracking-wide">Time Saved</span>
+            <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.time_saved') }}</span>
           </div>
           <div class="text-3xl font-bold">~{{ Math.floor((overview.total_tasks * 2.5) / 24) || 2 }}d</div>
         </div>
@@ -266,59 +285,63 @@ onMounted(() => {
     <div v-else class="charts-grid grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Success Rate Pie -->
       <div class="chart-container glass-panel">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">Task Status Distribution</h3>
+        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.status_dist') }}</h3>
         <v-chart class="chart h-[300px]" :option="successChartOptions" autoresize />
       </div>
       
       <!-- Phase Duration Bar -->
       <div class="chart-container glass-panel">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">Average Phase Duration</h3>
+        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.avg_phase') }}</h3>
         <v-chart class="chart h-[300px]" :option="durationChartOptions" autoresize />
       </div>
       
       <!-- Error/Retry Heatmap -->
       <div class="chart-container glass-panel lg:col-span-2">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">Error & Retry Heatmap (Last 7 Days)</h3>
+        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.retry_heatmap') }}</h3>
         <v-chart class="chart h-[300px]" :option="heatmapOptions" autoresize />
       </div>
     </div>
 
-    <!-- Create Task Modal -->
     <div v-if="showTaskModal" class="modal-overlay" @click.self="showTaskModal = false">
       <div class="modal glass-panel">
-        <div class="flex items-center gap-3 mb-4">
-          <Plus class="w-6 h-6 text-primary-600" />
-          <h2 class="text-xl font-bold m-0">Initiate New Task</h2>
+        <div class="modal-header">
+          <Plus class="w-6 h-6 text-primary" />
+          <h2>{{ $t('dashboard.new_task') }}</h2>
         </div>
         
-        <form @submit.prevent="handleCreateTask" class="flex flex-col gap-4">
-          <div class="form-group flex flex-col gap-1">
-            <label class="text-sm font-medium text-slate-700">Task Name</label>
-            <input v-model="newTaskName" type="text" class="input-field" required placeholder="e.g. Implement User Profile API">
+        <form @submit.prevent="handleCreateTask" class="modal-form">
+          <div class="form-group">
+            <label>{{ $t('dashboard.task_name') }}</label>
+            <input v-model="newTaskName" type="text" class="input-field" required :placeholder="$t('dashboard.task_name_placeholder')">
           </div>
           
-          <div class="form-group flex flex-col gap-1">
-            <label class="text-sm font-medium text-slate-700">Description (Optional)</label>
-            <textarea v-model="newTaskDesc" class="input-field" rows="2" placeholder="Task goal details"></textarea>
+          <div class="form-group">
+            <label>{{ $t('dashboard.description') }}</label>
+            <textarea v-model="newTaskDesc" class="input-field" rows="3" :placeholder="$t('dashboard.desc_placeholder')"></textarea>
           </div>
           
-          <div class="form-group flex flex-col gap-1">
-            <label class="text-sm font-medium text-slate-700">SE (Specification) Document</label>
-            <div class="file-upload-box glass-panel flex items-center gap-3 p-3 mt-1">
-              <Upload class="w-5 h-5 text-primary-500" v-if="!uploadingSpec" />
-              <Loader2 class="w-5 h-5 animate-spin text-primary-500" v-else />
-              <div class="flex-1 text-sm truncate">
-                {{ selectedFileName || 'Upload Requirement Doc...' }}
-              </div>
-              <input type="file" @change="handleFileUpload" class="hidden-input" id="spec-upload" accept=".pdf,.doc,.docx,.md,.txt">
-              <label for="spec-upload" class="btn-primary py-1 px-3 text-xs cursor-pointer">Choose</label>
+          <div class="form-group">
+            <label>{{ $t('dashboard.spec_doc') }}</label>
+            <div class="file-upload-box glass-panel">
+              <Upload class="w-5 h-5 text-primary" v-if="!uploadingSpec" />
+              <Loader2 class="w-5 h-5 spin text-primary" v-else />
+              <div class="file-name">{{ selectedFileName || $t('dashboard.spec_placeholder') }}</div>
+              <input type="file" @change="handleFileUpload" class="hidden-input" id="spec-upload-dashboard" accept=".pdf,.doc,.docx,.md,.txt">
+              <label for="spec-upload-dashboard" class="btn-primary file-choose-btn">{{ $t('common.confirm') }}</label>
             </div>
           </div>
 
-          <div class="flex justify-end gap-3 mt-6">
-            <button type="button" class="btn-secondary" @click="showTaskModal = false">Cancel</button>
+          <div class="form-group checkbox-group py-1">
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
+              <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded">
+              {{ $t('dashboard.brainstorm_hint') }}
+            </label>
+          </div>
+          
+          <div class="modal-actions">
+            <button type="button" class="btn-secondary" @click="showTaskModal = false">{{ $t('common.cancel') }}</button>
             <button type="submit" class="btn-primary" :disabled="creatingTask">
-              {{ creatingTask ? 'Creating...' : 'Initialize SDD Loop' }}
+              {{ creatingTask ? $t('common.loading') : $t('chat.initialize') }}
             </button>
           </div>
         </form>
@@ -431,40 +454,95 @@ onMounted(() => {
   box-shadow: var(--shadow-2xl);
 }
 
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #475569;
+}
+
 .input-field {
   padding: 10px 14px;
   border: 1px solid #E2E8F0;
   border-radius: var(--radius-md);
   font-family: inherit;
   font-size: 1rem;
+  width: 100%;
+  box-sizing: border-box;
 }
-
 .input-field:focus {
   border-color: var(--color-primary-500);
   outline: none;
 }
 
-/* Button variants if not global */
-.btn-secondary {
-  background: #F1F5F9;
-  color: #475569;
-  padding: 10px 20px;
-  border-radius: var(--radius-md);
-  font-weight: 600;
-  border: none;
-  cursor: pointer;
-}
-
 .file-upload-box {
   border: 1px dashed var(--color-primary-100);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-top: 4px;
+}
+.file-upload-box:hover { border-style: solid; border-color: var(--color-primary-500); }
+.file-name {
+  flex: 1;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-choose-btn { padding: 4px 12px; font-size: 0.75rem; cursor: pointer; }
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
 }
 
-.file-upload-box:hover {
-  border-style: solid;
-  border-color: var(--color-primary-500);
+/* Button variants if not global */
+.btn-secondary {
+  background: white;
+  color: #475569;
+  border: 1px solid #E2E8F0;
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  cursor: pointer;
 }
 
 .hidden-input {
   display: none;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

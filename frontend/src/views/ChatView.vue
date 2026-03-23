@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import {
   Send,
   TerminalSquare,
@@ -26,6 +27,8 @@ import {
   Sparkles,
 } from 'lucide-vue-next'
 import api from '@/utils/api'
+
+const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -208,7 +211,7 @@ const confirmInterrupt = async () => {
     messages.value.push({
       id: Date.now().toString(),
       role: 'system',
-      content: '⚠️ 已强行中断任务。',
+      content: '⚠️ ' + t('chat.interrupt_desc'),
     })
   } catch(e) { console.error('Interrupt failed', e) }
 }
@@ -234,7 +237,7 @@ const handleInitialize = async () => {
     messages.value.push({
       id: Date.now().toString(),
       role: 'system',
-      content: '🔄 会话已初始化，正在重新规划和运行…',
+      content: '🔄 ' + t('chat.thinking'),
     })
   } catch(e) { console.error('Initialize failed', e) }
 }
@@ -506,7 +509,7 @@ const startTask = async () => {
   messages.value.push({
     id: Date.now().toString(),
     role: 'system',
-    content: '🚀 引擎已启动，Claude CLI 正在执行…',
+    content: '🚀 ' + t('dashboard.new_task') + '...',
   })
   scrollToBottom('chat')
 }
@@ -538,8 +541,8 @@ onUnmounted(() => {
     <!-- Left Sidebar: Task List -->
     <aside class="task-sidebar glass-panel">
       <div class="sidebar-header">
-        <h3>Task Sessions</h3>
-        <button class="icon-btn" @click="openNewTaskModal" title="New Task">
+        <h3>{{ $t('chat.terminal') }}</h3>
+        <button class="icon-btn" @click="openNewTaskModal" :title="$t('dashboard.new_task')">
           <Plus class="w-4 h-4" />
         </button>
       </div>
@@ -563,7 +566,7 @@ onUnmounted(() => {
           </button>
         </div>
         <div v-if="tasks.length === 0" class="empty-hint">
-          No tasks found. Create one.
+          {{ $t('chat.empty_hint') }}
         </div>
       </div>
     </aside>
@@ -583,15 +586,15 @@ onUnmounted(() => {
             class="btn-primary start-btn"
             @click="startTask"
           >
-            <Play class="w-4 h-4" /> Start Engine
+            <Play class="w-4 h-4" /> {{ $t('chat.engine_start') }}
           </button>
 
           <div class="action-divider"></div>
 
-          <button class="icon-btn" @click="handleInitialize" title="初始化 (重启CLI环境)">
+          <button class="icon-btn" @click="handleInitialize" :title="$t('chat.initialize')">
             <RotateCcw class="w-4 h-4" />
           </button>
-          <button class="icon-btn danger" @click="handleInterruptClick" title="中断当前任务" :disabled="!engineRunning">
+          <button class="icon-btn danger" @click="handleInterruptClick" :title="$t('chat.interrupt_confirm')" :disabled="!engineRunning">
             <OctagonPause class="w-4 h-4" />
           </button>
 
@@ -618,10 +621,10 @@ onUnmounted(() => {
         <!-- AI 思考面板 -->
         <div v-if="showThinking && thinkingContent" class="pinned-card thinking-card">
           <div class="card-header" @click="thinkingExpanded = !thinkingExpanded">
-            <div class="header-title flex items-center gap-2">
-              <Brain class="w-4 h-4" />
-              <span>AI 思考中…</span>
-            </div>
+          <div class="header-title flex items-center gap-2">
+            <Brain class="w-4 h-4" />
+            <span>{{ $t('chat.thinking') }}</span>
+          </div>
             <ChevronDown class="w-4 h-4 toggle-icon transition-transform" :class="{'rotate-180': thinkingExpanded}" />
           </div>
           <div v-show="thinkingExpanded" class="card-body thinking-body fixed-height">
@@ -645,7 +648,7 @@ onUnmounted(() => {
           <div class="card-header cursor-pointer" @click="resultsSummary.expanded = !resultsSummary.expanded">
             <div class="header-title flex items-center gap-2">
               <CheckCircle2 class="w-4 h-4 text-success" />
-              <span class="text-sm font-medium text-gray-700">阶段执行总览</span>
+              <span class="text-sm font-medium text-gray-700">{{ $t('dashboard.status_dist') }}</span>
             </div>
             <div class="card-meta flex gap-3 text-xs text-gray-500 items-center">
               <span>
@@ -676,7 +679,7 @@ onUnmounted(() => {
         <div v-for="card in activeHitlCards" :key="card.id" class="pinned-card hitl-card">
           <div class="card-header hitl-header">
             <AlertCircle class="w-5 h-5 text-amber" />
-            <h4>需要人工确认</h4>
+            <h4>{{ $t('chat.interrupt_confirm') }}</h4>
           </div>
           <div class="card-body">
             <p class="hitl-prompt">{{ card.prompt }}</p>
@@ -686,18 +689,18 @@ onUnmounted(() => {
           </div>
           <div class="hitl-actions">
             <template v-if="card.hitl_type === 'boolean'">
-              <button class="btn-success" @click="submitHitl(card.id, 'y')">确认 (Y)</button>
-              <button class="btn-danger" @click="submitHitl(card.id, 'n')">拒绝 (N)</button>
+              <button class="btn-success" @click="submitHitl(card.id, 'y')">{{ $t('common.confirm') }} (Y)</button>
+              <button class="btn-danger" @click="submitHitl(card.id, 'n')">{{ $t('common.cancel') }} (N)</button>
             </template>
             <template v-else>
               <input
                 type="text"
                 v-model="card.tempInput"
-                placeholder="输入回复…"
+                placeholder="..."
                 class="input-field hitl-input"
                 @keyup.enter="submitHitl(card.id, card.tempInput)"
               >
-              <button class="btn-primary" @click="submitHitl(card.id, card.tempInput)">提交</button>
+              <button class="btn-primary" @click="submitHitl(card.id, card.tempInput)">{{ $t('common.confirm') }}</button>
             </template>
           </div>
         </div>
@@ -717,13 +720,13 @@ onUnmounted(() => {
         </div>
 
         <div v-if="messages.length === 0" class="chat-empty-hint">
-          <p>发送消息开始对话，或点击 <strong>Start Engine</strong> 启动 SDD 流程</p>
+          <p>{{ $t('chat.empty_hint') }}</p>
         </div>
       </div>
 
       <!-- Verification Quick Actions -->
       <div v-if="!engineRunning && messages.length > 0" class="verification-actions">
-        <span class="verify-label">高阶测试:</span>
+        <span class="verify-label">{{ $t('portal.architecture') }}:</span>
         <button class="btn-micro" @click="sendVerification('ui')" title="Playwright UI">
           <TestTube class="w-3" /> UI
         </button>
@@ -740,7 +743,7 @@ onUnmounted(() => {
         <input
           v-model="chatInput"
           type="text"
-          placeholder="输入消息…"
+          :placeholder="$t('dashboard.desc_placeholder')"
           @keyup.enter="sendChat"
           class="chat-input"
         >
@@ -760,7 +763,7 @@ onUnmounted(() => {
     <aside class="terminal-sidebar glass-panel" :class="{ 'is-open': showTerminal }">
       <div class="terminal-header">
         <TerminalSquare class="w-4 h-4" />
-        <span>Agent Activity</span>
+        <span>{{ $t('chat.terminal') }}</span>
       </div>
       <div class="terminal-body" ref="terminalContainer">
         <template v-for="(entry, idx) in terminalLogs" :key="idx">
@@ -786,7 +789,7 @@ onUnmounted(() => {
           </div>
         </template>
 
-        <div v-if="terminalLogs.length === 0" class="term-empty">Waiting for activity…</div>
+        <div v-if="terminalLogs.length === 0" class="term-empty">{{ $t('common.loading') }}...</div>
       </div>
     </aside>
 
@@ -796,37 +799,37 @@ onUnmounted(() => {
       <div class="modal glass-panel">
         <div class="modal-header">
           <Plus class="w-6 h-6 text-primary" />
-          <h2>新建任务</h2>
+          <h2>{{ $t('dashboard.new_task') }}</h2>
         </div>
         <form @submit.prevent="handleCreateTask" class="modal-form">
           <div class="form-group">
-            <label>任务名称</label>
-            <input v-model="newTaskName" type="text" class="input-field" required placeholder="e.g. Implement User Profile API">
+            <label>{{ $t('dashboard.task_name') }}</label>
+            <input v-model="newTaskName" type="text" class="input-field" required :placeholder="$t('dashboard.task_name_placeholder')">
           </div>
           <div class="form-group">
-            <label>描述 (作为初始 Prompt)</label>
-            <textarea v-model="newTaskDesc" class="input-field" rows="3" placeholder="描述任务目标，这将作为 Claude CLI 的初始提示词…"></textarea>
+            <label>{{ $t('dashboard.description') }}</label>
+            <textarea v-model="newTaskDesc" class="input-field" rows="3" :placeholder="$t('dashboard.desc_placeholder')"></textarea>
           </div>
           <div class="form-group">
-            <label>规范文档 (可选)</label>
+            <label>{{ $t('dashboard.spec_doc') }}</label>
             <div class="file-upload-box glass-panel">
               <Upload class="w-5 h-5 text-primary" v-if="!uploadingSpec" />
               <Loader2 class="w-5 h-5 spin text-primary" v-else />
-              <div class="file-name">{{ selectedFileName || 'Upload Requirement Doc…' }}</div>
+              <div class="file-name">{{ selectedFileName || $t('dashboard.spec_placeholder') }}</div>
               <input type="file" @change="handleFileUpload" class="hidden-input" id="spec-upload-chat" accept=".pdf,.doc,.docx,.md,.txt">
-              <label for="spec-upload-chat" class="btn-primary file-choose-btn">选择</label>
+              <label for="spec-upload-chat" class="btn-primary file-choose-btn">{{ $t('common.confirm') }}</label>
             </div>
           </div>
           <div class="form-group checkbox-group py-1">
             <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
               <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded">
-              使用 /brainstorm 进行初期需求与架构头脑风暴
+              {{ $t('dashboard.brainstorm_hint') }}
             </label>
           </div>
           <div class="modal-actions">
-            <button type="button" class="btn-secondary" @click="showTaskModal = false">取消</button>
+            <button type="button" class="btn-secondary" @click="showTaskModal = false">{{ $t('common.cancel') }}</button>
             <button type="submit" class="btn-primary" :disabled="creatingTask">
-              {{ creatingTask ? '创建中…' : '初始化' }}
+              {{ creatingTask ? $t('common.loading') : $t('chat.initialize') }}
             </button>
           </div>
         </form>
@@ -838,15 +841,14 @@ onUnmounted(() => {
       <div class="modal glass-panel delete-modal">
         <div class="modal-header danger">
           <OctagonPause class="w-6 h-6" />
-          <span>中断任务确认</span>
+          <span>{{ $t('chat.interrupt_confirm') }}</span>
         </div>
         <p class="delete-desc">
-          确定要强制中断当前正在运行的 Claude CLI 引擎吗？
-          中断后当前执行的原子动作可能无法回滚。
+          {{ $t('chat.interrupt_desc') }}
         </p>
         <div class="modal-actions">
-          <button class="btn-secondary" @click="showInterruptConfirm = false">继续执行</button>
-          <button class="btn-danger" @click="confirmInterrupt">立即中断</button>
+          <button class="btn-secondary" @click="showInterruptConfirm = false">{{ $t('common.confirm') }}</button>
+          <button class="btn-danger" @click="confirmInterrupt">{{ $t('chat.engine_start') }}</button>
         </div>
       </div>
     </div>
@@ -856,15 +858,14 @@ onUnmounted(() => {
       <div class="modal glass-panel delete-modal">
         <div class="modal-header danger">
           <AlertTriangle class="w-6 h-6" />
-          <span>删除任务？</span>
+          <span>{{ $t('common.confirm') }}?</span>
         </div>
         <p class="delete-desc">
-          确定删除会话 <strong>{{ taskToDelete?.name }}</strong>？
-          所有历史记录和过程资产将被清除，此操作不可逆。
+          {{ $t('dashboard.delete_confirm', { name: taskToDelete?.name }) }}
         </p>
         <div class="modal-actions">
-          <button class="btn-secondary" @click="showDeleteTaskConfirm = false">保留</button>
-          <button class="btn-danger" @click="confirmDeleteTask">永久删除</button>
+          <button class="btn-secondary" @click="showDeleteTaskConfirm = false">{{ $t('common.cancel') }}</button>
+          <button class="btn-danger" @click="confirmDeleteTask">{{ $t('common.delete') }}</button>
         </div>
       </div>
     </div>
@@ -1035,7 +1036,7 @@ onUnmounted(() => {
   font-weight: 600;
   letter-spacing: 0.5px;
 }
-.badge.coding, .badge.running { background-color: #DBEAFE; color: #1E40AF; }
+.badge.coding, .badge.running { background-color: var(--color-primary-100); color: var(--color-primary-900); }
 .badge.done { background-color: #D1FAE5; color: #065F46; }
 .badge.failed { background-color: #FEE2E2; color: #991B1B; }
 
@@ -1137,7 +1138,7 @@ onUnmounted(() => {
 /* Status Card */
 .status-card {
   background: white;
-  border: 1px solid #DBEAFE;
+  border: 1px solid var(--color-primary-100);
   border-left: 3px solid var(--color-primary-500);
 }
 .status-card.is-error {

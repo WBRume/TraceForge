@@ -1,11 +1,12 @@
 /* sdd-native/design-system variables */
 :root {
   /* Color Palette - Light Blue & Crisp White */
-  --color-primary-50: #EFF6FF;
-  --color-primary-100: #DBEAFE;
-  --color-primary-500: #3B82F6;
-  --color-primary-600: #2563EB;
-  --color-primary-900: #1E3A8A;
+  --color-primary-50: #F0F9FF;
+  --color-primary-100: #E0F2FE;
+  --color-primary-500: #0EA5E9;
+  --color-primary-600: #0284C7;
+  --color-primary-700: #0369A1;
+  --color-primary-900: #0C4A6E;
   
   --color-secondary-50: #F0F9FF;
   --color-secondary-500: #0EA5E9;

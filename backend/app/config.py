@@ -45,7 +45,15 @@ class Settings(BaseSettings):
     MAX_RETRY_COUNT: int = 3
 
     # ── CORS ──
-    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+        "http://localhost:5176",
+        "http://localhost:5177",
+        "http://localhost:5178",
+        "http://localhost:3000"
+    ]
 
     # ── Logging ──
     LOG_LEVEL: str = "INFO"

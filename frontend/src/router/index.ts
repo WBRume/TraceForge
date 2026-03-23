@@ -11,8 +11,7 @@ const router = createRouter({
     },
     {
       path: '/login',
-      name: 'login',
-      component: () => import('../views/LoginView.vue')
+      redirect: '/'
     },
     {
       path: '/workspaces',
@@ -44,6 +43,11 @@ const router = createRouter({
           path: 'assets',
           name: 'assets',
           component: () => import('../views/AssetView.vue')
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: () => import('../views/SettingsView.vue')
         }
       ]
     }
