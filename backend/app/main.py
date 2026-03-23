@@ -68,6 +68,23 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
 
                 logger.info(f"User chat for task {task_id}: {user_content[:80]}")
 
+                # 保存用户消息到数据库
+                from app.database import SessionLocal
+                from app.services import task_service
+                db = SessionLocal()
+                try:
+                    # 获取工作区和用户 ID (由于 WS 端点已有这些，可以直接用)
+                    # 注意：websocket_endpoint 只有 task_id，其他需要从 task 对象或 session 中获取
+                    from app.services import task_service
+                    task_obj = task_service.get_task(db, task_id, "") # ws_id 在这里暂时拿不到完整的，可以用 task_id 查
+                    if task_obj:
+                        task_service.save_chat_message(
+                            db, task_id, task_obj.workspace_id, task_obj.creator_id,
+                            role="user", content=user_content
+                        )
+                finally:
+                    db.close()
+
                 engine = get_engine(task_id)
                 if engine:
                     # 引擎存在 → 以 --resume 方式启动新 CLI 轮次

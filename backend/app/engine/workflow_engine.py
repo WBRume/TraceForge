@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models.task import SddTask, TaskStatus
 from app.models.log import SddExecutionLog, LogType
+from app.models.chat import MessageRole, MessageType
+from app.services import task_service
 from app.engine.claude_bridge import create_cli_bridge, CliBridgeBase
 from app.ws.manager import manager as ws_manager
 from app.schemas.websocket import (
@@ -99,6 +101,17 @@ class WorkflowEngine:
         """推送自然语言对话消息到前端气泡区"""
         if not content.strip():
             return
+        
+        # 保存到数据库
+        db = SessionLocal()
+        try:
+            task_service.save_chat_message(
+                db, self.task_id, self.ws_id, self.user_id,
+                role=role, content=content, message_type="text"
+            )
+        finally:
+            db.close()
+
         await self._ws_push("chat_message", WSChatPayload(
             task_id=self.task_id, role=role, content=content,
         ).model_dump())
@@ -111,6 +124,14 @@ class WorkflowEngine:
 
     async def _push_tool_use(self, tool_name: str, tool_input: Any, tool_use_id: str = ""):
         """推送工具调用到前端（终端/日志面板）"""
+        import json
+        payload = {
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "tool_use_id": tool_use_id
+        }
+        self._save_log_sync(json.dumps(payload), LogType.STDOUT) # 统一存为 STDOUT 但带结构
+
         await self._ws_push("tool_use", WSToolUsePayload(
             task_id=self.task_id, tool_name=tool_name,
             tool_input=tool_input, tool_use_id=tool_use_id,
@@ -225,6 +246,14 @@ class WorkflowEngine:
                         if isinstance(item, dict)
                     ) if output else ""
                 tool_use_id = block.get("tool_use_id", "")
+                
+                import json
+                log_payload = {
+                    "tool_use_id": tool_use_id,
+                    "output": str(output)[:2000]
+                }
+                self._save_log_sync(json.dumps(log_payload), LogType.STDOUT)
+
                 await self._ws_push("tool_result", WSToolResultPayload(
                     task_id=self.task_id,
                     tool_use_id=tool_use_id,

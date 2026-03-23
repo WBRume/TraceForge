@@ -189,6 +189,18 @@ def export_task(
     if not session_data:
         raise HTTPException(status_code=404, detail="Task not found")
     return session_data
+
+
+@router.get("/{task_id}/history")
+def get_task_history(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_workspace_access(ws_id, current_user, db)
+    history = task_service.get_task_history(db, task_id, ws_id)
+    return history
 @router.post("/{task_id}/upload-spec", response_model=dict)
 async def upload_task_spec(
     ws_id: str,

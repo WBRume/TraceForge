@@ -109,7 +109,58 @@ const selectTask = async (task: any) => {
   engineRunning.value = false
 
   router.push(`/ws/${route.params.wsId}/chat/${task.id}`)
+  loadHistory(task.id)
   connectWebSocket(task.id)
+}
+
+const loadHistory = async (taskId: string) => {
+  try {
+    const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/history`)
+    const { messages: hMessages, logs: hLogs } = res.data
+    
+    // 还原消息
+    messages.value = hMessages.map((m: any) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content
+    }))
+
+    // 还原终端日志
+    terminalLogs.value = hLogs.map((l: any) => {
+      // 尝试解析 JSON 格式的结构化日志
+      try {
+        const parsed = JSON.parse(l.content)
+        if (parsed.tool_name) {
+          return {
+            type: 'tool_use',
+            tool_name: parsed.tool_name,
+            tool_input: parsed.tool_input,
+            tool_use_id: parsed.tool_use_id,
+            timestamp: new Date(l.created_at).toLocaleTimeString()
+          }
+        } else if (parsed.tool_use_id) {
+          return {
+            type: 'tool_result',
+            tool_use_id: parsed.tool_use_id,
+            output: parsed.output,
+            timestamp: new Date(l.created_at).toLocaleTimeString()
+          }
+        }
+      } catch (e) {
+        // 非 JSON 日志，按纯文本处理
+      }
+      return {
+        type: 'log',
+        content: l.content,
+        timestamp: new Date(l.created_at).toLocaleTimeString()
+      }
+    })
+
+    scrollToBottom('chat')
+    scrollToBottom('terminal')
+  } catch (e) {
+    console.error('Failed to load history', e)
+  }
 }
 
 const handleInterruptClick = () => {

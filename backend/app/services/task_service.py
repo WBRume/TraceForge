@@ -10,6 +10,8 @@ from sqlalchemy import func as sqlfunc
 from loguru import logger
 
 from app.models.task import SddTask, TaskStatus
+from app.models.chat import ChatMessage, MessageRole, MessageType
+from app.models.log import SddExecutionLog, LogType
 from app.models.user import User
 
 
@@ -150,7 +152,73 @@ def export_task_session(db: Session, task_id: str, workspace_id: str) -> Optiona
             {
                 "role": msg.role,
                 "content": msg.content,
+                "message_type": msg.message_type,
                 "created_at": msg.created_at.isoformat()
             } for msg in task.messages
+        ],
+        "logs": [
+            {
+                "log_type": log.log_type,
+                "content": log.content,
+                "created_at": log.created_at.isoformat()
+            } for log in task.execution_logs
         ]
+    }
+
+
+def save_chat_message(
+    db: Session,
+    task_id: str,
+    workspace_id: str,
+    creator_id: str,
+    role: str,
+    content: str,
+    message_type: str = "text"
+) -> ChatMessage:
+    msg = ChatMessage(
+        task_id=task_id,
+        workspace_id=workspace_id,
+        creator_id=creator_id,
+        role=role,
+        content=content,
+        message_type=message_type
+    )
+    db.add(msg)
+    db.commit()
+    db.refresh(msg)
+    return msg
+
+
+def get_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
+    task = db.query(SddTask).filter(
+        SddTask.id == task_id,
+        SddTask.workspace_id == workspace_id
+    ).first()
+    
+    if not task:
+        return {"messages": [], "logs": []}
+    
+    # 按照创建时间排序
+    messages = [
+        {
+            "id": msg.id,
+            "role": msg.role,
+            "content": msg.content,
+            "type": msg.message_type,
+            "created_at": msg.created_at.isoformat()
+        } for msg in sorted(task.messages, key=lambda x: x.created_at)
+    ]
+    
+    logs = [
+        {
+            "id": log.id,
+            "type": log.log_type,
+            "content": log.content,
+            "created_at": log.created_at.isoformat()
+        } for log in sorted(task.execution_logs, key=lambda x: x.created_at)
+    ]
+    
+    return {
+        "messages": messages,
+        "logs": logs
     }
