@@ -37,6 +37,7 @@ class User(Base):
     # Relationships
     owned_workspaces = relationship("Workspace", back_populates="owner")
     memberships = relationship("WorkspaceMember", back_populates="user")
+    skills = relationship("SddSkill", back_populates="creator")
 
 
 class Workspace(Base):
@@ -55,6 +56,7 @@ class Workspace(Base):
     owner = relationship("User", back_populates="owned_workspaces")
     members = relationship("WorkspaceMember", back_populates="workspace", cascade="all, delete-orphan")
     tasks = relationship("SddTask", back_populates="workspace", cascade="all, delete-orphan")
+    skills = relationship("SddSkill", back_populates="workspace", cascade="all, delete-orphan")
 
 
 class WorkspaceMember(Base):

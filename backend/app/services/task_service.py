@@ -23,12 +23,18 @@ def create_task(
     description: Optional[str] = None,
     spec_doc_path: Optional[str] = None,
     requirement_duration_hours: float = 0.0,
+    skill_ids: Optional[List[str]] = None,
 ) -> SddTask:
     # 从工作区获取默认路径
     from app.models.user import Workspace
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
         raise ValueError("Workspace not found")
+
+    from app.services import skill_service
+    selected_skills = skill_service.validate_task_skill_ids(
+        db, workspace_id=workspace_id, skill_ids=skill_ids or []
+    )
 
     # 核心：显式生成 ID 以防 SQLAlchemy 延迟加载导致 os.path.join 失败
     from app.models.user import generate_uuid
@@ -54,6 +60,21 @@ def create_task(
 
     db.add(task)
     db.flush()
+
+    # Bind selected skills to task
+    skill_service.bind_task_skills(db, task, selected_skills)
+    db.flush()
+
+    # Materialize selected skills immediately after task creation so they exist
+    # before any engine/CLI startup.
+    if selected_skills:
+        try:
+            skill_service.materialize_task_skills(db, task_id)
+        except Exception as e:
+            logger.error(f"Failed to materialize skills for task {task_id}: {e}")
+            db.rollback()
+            shutil.rmtree(task.project_path, ignore_errors=True)
+            raise ValueError("Failed to prepare selected skills for task")
     
     # 记录需求预估时间指标，用于持久化统计
     from app.models.metric import SddDashboardMetric

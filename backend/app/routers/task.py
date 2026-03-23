@@ -37,14 +37,18 @@ def create_task(
     if data.use_brainstorm:
         desc += "\n\n请强制调用 `superpowers` 中的 `/brainstorm` 能力进行需求与架构的头脑风暴。"
         
-    task = task_service.create_task(
-        db, current_user, ws_id, 
-        name=data.name,
-        description=desc.strip(),
-        spec_doc_path=data.spec_doc_path,
-        requirement_duration_hours=data.requirement_duration_hours
-    )
-    return task
+    try:
+        task = task_service.create_task(
+            db, current_user, ws_id,
+            name=data.name,
+            description=desc.strip(),
+            spec_doc_path=data.spec_doc_path,
+            requirement_duration_hours=data.requirement_duration_hours,
+            skill_ids=data.skill_ids,
+        )
+        return task
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("", response_model=TaskListResponse)

@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.config import settings
-from app.routers import auth, workspace, task, dashboard, asset, upload
+from app.routers import auth, workspace, task, dashboard, asset, upload, skill
 from app.ws.manager import manager
 from app.engine.workflow_engine import get_engine
 from app.schemas.websocket import WSMessage, WSChatPayload
@@ -46,6 +46,7 @@ app.include_router(task.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(asset.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
+app.include_router(skill.router, prefix="/api")
 
 # ── 静态文件挂载 ──
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")

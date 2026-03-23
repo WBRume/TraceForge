@@ -43,6 +43,7 @@ class Settings(BaseSettings):
 
     # ── Workflow ──
     MAX_RETRY_COUNT: int = 3
+    SKILLS_STORAGE_ROOT: str = "skills_store"
 
     # ── CORS ──
     CORS_ORIGINS: list[str] = [

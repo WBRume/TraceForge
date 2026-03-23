@@ -53,6 +53,7 @@ const goBack = () => router.push('/workspaces')
           <Box class="w-5 h-5" />
           <span v-show="!isCollapsed">{{ $t('common.workspace') }}</span>
         </router-link>
+
       </nav>
 
       <div class="sidebar-footer">

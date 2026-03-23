@@ -21,6 +21,7 @@ from app.models.test_result import SddTestResult
 from app.models.asset import SddAsset
 from app.models.metric import SddDashboardMetric
 from app.models.chat import ChatMessage
+from app.models.skill import SddSkill, SddTaskSkill
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

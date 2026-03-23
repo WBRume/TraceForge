@@ -10,6 +10,7 @@ from .test_result import SddTestResult, TestType, TestStatus
 from .asset import SddAsset, AssetType
 from .metric import SddDashboardMetric
 from .chat import ChatMessage, MessageRole, MessageType
+from .skill import SddSkill, SddTaskSkill, SkillDimension
 
 __all__ = [
     "User", "Workspace", "WorkspaceMember", "WorkspaceRole",
@@ -18,5 +19,6 @@ __all__ = [
     "SddTestResult", "TestType", "TestStatus",
     "SddAsset", "AssetType",
     "SddDashboardMetric",
-    "ChatMessage", "MessageRole", "MessageType"
+    "ChatMessage", "MessageRole", "MessageType",
+    "SddSkill", "SddTaskSkill", "SkillDimension"
 ]

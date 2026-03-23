@@ -150,5 +150,56 @@
       "git_placeholder": "例如：https://github.com/user/repo",
       "creating": "正在创建..."
     }
+  },
+  "skills": {
+    "entry": "技能配置",
+    "list": {
+      "back_to_workspaces": "返回工作区",
+      "title": "技能配置",
+      "subtitle": "独立页面管理技能，新增和编辑使用整页编辑器。",
+      "new_skill": "新增技能",
+      "current_workspace": "当前工作区",
+      "scope_all": "全部",
+      "scope_global": "全局",
+      "scope_workspace": "工作区",
+      "loading": "正在加载技能...",
+      "empty": "当前筛选下暂无技能。",
+      "no_description": "暂无描述",
+      "manage": "可管理",
+      "read_only": "只读",
+      "creator": "创建者",
+      "edit": "编辑",
+      "delete": "删除",
+      "confirm_delete": "确认删除技能“{name}”？该操作不可撤销。"
+    },
+    "editor": {
+      "page_title_new": "新增技能",
+      "page_title_edit": "编辑技能",
+      "back_to_skills": "返回技能列表",
+      "subtitle": "使用整页编辑器填写 Claude Skills Markdown 内容。",
+      "save": "保存技能",
+      "saving": "保存中...",
+      "loading": "正在加载技能...",
+      "current_workspace": "当前工作区",
+      "dimension": "维度",
+      "dimension_global": "全局",
+      "dimension_workspace": "工作区",
+      "target_workspace": "归属工作区",
+      "name": "名称",
+      "name_placeholder": "例如：frontend-testing-skill",
+      "description": "描述",
+      "description_placeholder": "可选，简要说明用途",
+      "content": "Markdown 内容",
+      "content_placeholder": "# Skill Name\\n## When to use\\n## Instructions"
+    },
+    "task_panel": {
+      "expand_title": "拓展设置：Skills 载入",
+      "hint": "按维度勾选要注入任务的 Skills（启动 Claude Code 前复制到任务目录）。",
+      "refresh": "刷新",
+      "loading": "加载中...",
+      "empty": "当前没有可用 Skills，请先到 Skills 配置页面新增。",
+      "workspace_group": "工作区 Skills",
+      "global_group": "全局 Skills"
+    }
   }
 }

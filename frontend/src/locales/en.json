@@ -140,5 +140,56 @@
       "git_placeholder": "e.g. https://github.com/user/repo",
       "creating": "Creating..."
     }
+  },
+  "skills": {
+    "entry": "Skills Configuration",
+    "list": {
+      "back_to_workspaces": "Back to Workspaces",
+      "title": "Skills Configuration",
+      "subtitle": "Independent page for managing skills. Create and edit open full-page editor.",
+      "new_skill": "New Skill",
+      "current_workspace": "Current Workspace",
+      "scope_all": "All",
+      "scope_global": "Global",
+      "scope_workspace": "Workspace",
+      "loading": "Loading skills...",
+      "empty": "No skills found under current filter.",
+      "no_description": "No description",
+      "manage": "Manage",
+      "read_only": "Read Only",
+      "creator": "Creator",
+      "edit": "Edit",
+      "delete": "Delete",
+      "confirm_delete": "Confirm delete skill \"{name}\"? This action cannot be undone."
+    },
+    "editor": {
+      "page_title_new": "New Skill",
+      "page_title_edit": "Edit Skill",
+      "back_to_skills": "Back to Skills",
+      "subtitle": "Full-page editor for Claude Skills Markdown content.",
+      "save": "Save Skill",
+      "saving": "Saving...",
+      "loading": "Loading skill...",
+      "current_workspace": "Current Workspace",
+      "dimension": "Dimension",
+      "dimension_global": "GLOBAL",
+      "dimension_workspace": "WORKSPACE",
+      "target_workspace": "Target Workspace",
+      "name": "Name",
+      "name_placeholder": "e.g. frontend-testing-skill",
+      "description": "Description",
+      "description_placeholder": "Optional short summary",
+      "content": "Markdown Content",
+      "content_placeholder": "# Skill Name\\n## When to use\\n## Instructions"
+    },
+    "task_panel": {
+      "expand_title": "Advanced: Skills Injection",
+      "hint": "Select skills by scope. Selected files are copied into task skill folder before Claude Code starts.",
+      "refresh": "Refresh",
+      "loading": "Loading...",
+      "empty": "No skills available. Please create skills in Skills Configuration first.",
+      "workspace_group": "Workspace Skills",
+      "global_group": "Global Skills"
+    }
   }
 }

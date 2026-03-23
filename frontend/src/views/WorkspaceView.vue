@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, LogOut, Trash2, AlertTriangle, Languages } from 'lucide-vue-next'
+import { Plus, Briefcase, LogOut, Trash2, AlertTriangle, Languages, BookCopy } from 'lucide-vue-next'
 import api from '@/utils/api'
 
 const { locale } = useI18n()
@@ -36,6 +36,11 @@ onMounted(async () => {
 const enterWorkspace = (ws: any) => {
   wsStore.setCurrent(ws)
   router.push(`/ws/${ws.id}/dashboard`)
+}
+
+const openSkillsConfig = (ws: any) => {
+  wsStore.setCurrent(ws)
+  router.push({ path: '/skills', query: { wsId: ws.id } })
 }
 
 const handleCreate = async () => {
@@ -103,9 +108,18 @@ const confirmDeleteWorkspace = async () => {
     <main class="ws-main">
       <div class="ws-header-row">
         <h2 class="title-gradient-small">{{ $t('workspaces.title') }}</h2>
-        <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
-          <Plus class="w-4 h-4" /> {{ $t('workspaces.new_workspace') }}
-        </button>
+        <div class="flex items-center gap-2">
+          <button
+            v-if="wsStore.workspaces.length > 0"
+            class="btn-secondary flex items-center gap-2"
+            @click="openSkillsConfig(wsStore.workspaces[0])"
+          >
+            <BookCopy class="w-4 h-4" /> {{ $t('skills.entry') }}
+          </button>
+          <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
+            <Plus class="w-4 h-4" /> {{ $t('workspaces.new_workspace') }}
+          </button>
+        </div>
       </div>
 
       <div v-if="loading" class="loading-state">{{ $t('workspaces.loading') }}</div>
@@ -348,6 +362,10 @@ const confirmDeleteWorkspace = async () => {
   margin-top: auto;
   padding-top: var(--space-4);
   border-top: 1px solid rgba(0,0,0,0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
 .text-muted { color: var(--color-text-muted); }

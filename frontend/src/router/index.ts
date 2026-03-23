@@ -30,6 +30,24 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/skills',
+      name: 'skillsHome',
+      component: () => import('../views/SkillsView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/skills/new',
+      name: 'skillsCreate',
+      component: () => import('../views/SkillEditorView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/skills/:skillId/edit',
+      name: 'skillsEdit',
+      component: () => import('../views/SkillEditorView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/ws/:wsId',
       component: () => import('../views/layouts/WorkspaceLayout.vue'),
       meta: { requiresAuth: true },

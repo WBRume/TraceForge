@@ -35,6 +35,7 @@ class PlanNodeStatus(str, PyEnum):
 
 class SddTask(Base):
     __tablename__ = "sdd_tasks"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -63,10 +64,16 @@ class SddTask(Base):
     assets = relationship("SddAsset", back_populates="task", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="task", cascade="all, delete-orphan")
     dashboard_metrics = relationship("SddDashboardMetric", back_populates="task", cascade="all, delete-orphan")
+    skill_links = relationship("SddTaskSkill", back_populates="task", cascade="all, delete-orphan")
+
+    @property
+    def skill_ids(self):
+        return [link.skill_id for link in self.skill_links]
 
 
 class SddPlanNode(Base):
     __tablename__ = "sdd_plan_nodes"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)

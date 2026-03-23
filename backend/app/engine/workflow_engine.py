@@ -13,7 +13,7 @@ from app.database import SessionLocal
 from app.models.task import SddTask, TaskStatus
 from app.models.log import SddExecutionLog, LogType
 from app.models.chat import MessageRole, MessageType
-from app.services import task_service
+from app.services import task_service, skill_service
 from app.engine.claude_bridge import create_cli_bridge, CliBridgeBase
 from app.ws.manager import manager as ws_manager
 from app.schemas.websocket import (
@@ -331,6 +331,13 @@ class WorkflowEngine:
         finally:
             db.close()
 
+    def _materialize_skills(self) -> None:
+        db = SessionLocal()
+        try:
+            skill_service.materialize_task_skills(db, self.task_id)
+        finally:
+            db.close()
+
     async def run(self, prompt: str):
         """
         主入口：将用户 prompt 发送给 Claude CLI 并处理事件流
@@ -345,6 +352,7 @@ class WorkflowEngine:
             self._update_task_status(TaskStatus.CODING)
 
             project_path = self._get_project_path()
+            self._materialize_skills()
 
             # 启动 CLI（传入 session_id 时会 --resume）
             self.session_id = await self.cli.start_session(
