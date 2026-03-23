@@ -43,7 +43,7 @@
       "safety": "安全可控",
       "safety_desc": "关键决策点引入人类参与，确保高危操作安全有序。"
     },
-    "version_badge": "2.0 版本现已发布",
+    "version_badge": "0.1 版本现已发布",
     "show_demo": "查看演示",
     "core_drivers_title": "核心驱动力",
     "core_drivers_desc": "基于 Trust & Authority 架构设计的四位一体开发体验",
