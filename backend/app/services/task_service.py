@@ -29,15 +29,27 @@ def create_task(
     if not ws:
         raise ValueError("Workspace not found")
 
+    # 核心：显式生成 ID 以防 SQLAlchemy 延迟加载导致 os.path.join 失败
+    from app.models.user import generate_uuid
+    task_id = generate_uuid()
+    
+    # 获取基础路径，如果工作区没配置则回退到当前目录
+    base_path = ws.project_path or os.getcwd()
+
     task = SddTask(
+        id=task_id,
         workspace_id=workspace_id,
         creator_id=user.id,
         name=name,
         description=description,
-        project_path=ws.project_path,    # 统一使用工作区地址
-        git_repo_url=ws.git_repo_url,    # 统一使用工作区地址
+        project_path=os.path.join(base_path, task_id),
+        git_repo_url=ws.git_repo_url,
         spec_doc_path=spec_doc_path,
     )
+    
+    # 确保物理目录存在
+    os.makedirs(task.project_path, exist_ok=True)
+
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -56,7 +68,7 @@ def upload_task_spec(db: Session, task_id: str, file_name: str, file_content: by
 
     # 使用任务关联的 project_path 作为基准
     base_dir = task.project_path
-    target_dir = os.path.join(base_dir, ".sdd", "spec", task.id)
+    target_dir = os.path.join(base_dir, ".sdd", "spec")
     
     if not os.path.exists(target_dir):
         os.makedirs(target_dir, exist_ok=True)
