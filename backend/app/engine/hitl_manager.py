@@ -5,9 +5,11 @@ HITL (Human-in-the-Loop) 管理器
 
 import asyncio
 from typing import Dict, Optional, Any
-from loguru import logger
-from app.ws.manager import manager as ws_manager
-from app.schemas.websocket import WSMessage, WSHitlRequest
+from app.core.logging import get_logger
+from app.domains.websocket.ws.manager import manager as ws_manager
+from app.domains.ai.schemas.websocket import WSMessage, WSHitlRequest
+
+logger = get_logger(__name__, category="task_execution")
 
 
 class HitlManager:

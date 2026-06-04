@@ -18,9 +18,54 @@ from app.models.user import User, Workspace, WorkspaceMember
 from app.models.task import SddTask, SddPlanNode
 from app.models.log import SddExecutionLog
 from app.models.test_result import SddTestResult
-from app.models.asset import SddAsset
+from app.models.asset import (
+    SddAsset,
+    SddAssetVersion,
+    SddAssetThread,
+    SddAssetThreadMessage,
+    SddAssetResolutionProposal,
+)
 from app.models.metric import SddDashboardMetric
 from app.models.chat import ChatMessage
+from app.models.skill import (
+    SddSkill,
+    SddTaskSkill,
+    SddSkillVersion,
+    SddSkillExpertRating,
+    SddSkillReviewComment,
+)
+from app.models.api_mock import (
+    SddApiMockProject,
+    SddApiMockSourceVersion,
+    SddApiMockEndpoint,
+    SddApiMockEntity,
+    SddApiMockRule,
+    SddApiMockCollabEvent,
+    SddApiMockJob,
+)
+from app.models.task_cli_bootstrap import SddTaskCliBootstrap
+from app.models.ai_job import SddAiJob
+from app.models.provision_job import SddProvisionJob
+from app.models.task_change import (
+    SddTaskChangeProposal,
+    SddTaskChangeProposalFile,
+    SddTaskVerificationRun,
+    SddTaskConflictReport,
+)
+from app.models.workspace_asset import (
+    SddAiOutput,
+    SddClarification,
+    SddDecision,
+    SddEvidence,
+    SddHumanDelta,
+    SddHumanReview,
+    SddKnowledgeAsset,
+    SddRequirement,
+    SddRequirementAuditLog,
+    SddRequirementImportBatch,
+    SddRequirementImportItem,
+    SddTaskRequirement,
+)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
