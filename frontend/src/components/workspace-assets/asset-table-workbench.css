@@ -1,0 +1,179 @@
+/*
+ * Shared styles for asset table workbench components
+ * (RequirementTableWorkbench / TaskTableWorkbench)
+ *
+ * Canonical source: RequirementTableWorkbench.vue
+ * This file mirrors the requirement table's styling so that the task table
+ * can import and reuse it without duplicating declarations.
+ *
+ * Class names follow the requirement table's naming convention.
+ */
+
+/* ── Root container ── */
+.asset-table-workbench {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.06);
+}
+
+/* ── Toolbar ── */
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.table-toolbar h3 {
+  margin: 4px 0;
+  color: #0f172a;
+  font-size: 20px;
+}
+
+.table-toolbar p {
+  margin: 0;
+  color: #64748b;
+  line-height: 1.55;
+}
+
+.eyebrow {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+/* ── Query bar ── */
+.query-bar {
+  padding: 1.25rem;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid rgba(226, 232, 240, 0.6);
+}
+
+.query-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 1.25rem;
+}
+
+.search-field {
+  flex: 1;
+  min-width: 320px;
+  margin-bottom: 0 !important;
+}
+
+.select-field {
+  width: 160px;
+  margin-bottom: 0 !important;
+}
+
+.search-field :deep(.el-input__wrapper) {
+  height: 42px;
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.8) inset;
+}
+
+.search-field :deep(.el-input__wrapper.is-focus) {
+  box-shadow: 0 0 0 1px #0ea5e9 inset !important;
+}
+
+:deep(.el-form-item__label) {
+  font-weight: 600;
+  color: #475569;
+  margin-bottom: 8px !important;
+  font-size: 0.875rem;
+  line-height: 1.2 !important;
+  padding: 0 !important;
+}
+
+.query-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-left: auto;
+  padding-top: 28px; /* Offset for top labels to align with inputs */
+}
+
+/* ── Action buttons ── */
+.action-btn {
+  height: 42px;
+  padding: 0 1.5rem;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 0.875rem;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-btn.secondary {
+  background: white;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+
+.action-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+}
+
+/* ── Table ── */
+.asset-table {
+  width: 100%;
+}
+
+.asset-table :deep(th.el-table__cell .cell) {
+  white-space: nowrap;
+}
+
+.asset-table :deep(.title-column .cell) {
+  display: flex;
+  align-items: center;
+}
+
+/* ── Title cell ── */
+.title-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
+  flex: 1;
+}
+
+.title-text {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 14px;
+}
+
+.parent-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 400;
+}
+
+/* ── Coverage cell ── */
+.coverage-cell {
+  display: grid;
+  gap: 4px;
+}
+
+.coverage-cell small {
+  color: #64748b;
+  line-height: 1.45;
+}
+
+/* ── Pagination ── */
+.pagination-row {
+  padding-top: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #64748b;
+  font-size: 13px;
+}

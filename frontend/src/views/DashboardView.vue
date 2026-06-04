@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { 
   Activity, 
   CheckCircle,
   Clock,
   TrendingUp,
-  Plus,
-  Upload
+  Plus, 
+  TerminalSquare
 } from 'lucide-vue-next'
-import { useRouter } from 'vue-router'
 import api from '@/utils/api'
+import NewTaskModal from '@/components/NewTaskModal.vue'
 
 // ECharts imports
 import VChart from 'vue-echarts'
@@ -37,6 +38,7 @@ use([
   VisualMapComponent
 ])
 
+const { locale, t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const wsId = route.params.wsId
@@ -44,15 +46,11 @@ const wsId = route.params.wsId
 const overview = ref<any>({ total_tasks: 0, success_rate: 0, active_tasks: 0 })
 const loading = ref(true)
 const workspace = ref<any>(null)
+const workspacePermissions = ref<any>(null)
+const canCreateTask = computed(() => Boolean(workspacePermissions.value?.create_task))
 
 // Task creation state
 const showTaskModal = ref(false)
-const newTaskName = ref('')
-const newTaskDesc = ref('')
-const newTaskSpec = ref('')
-const creatingTask = ref(false)
-const uploadingSpec = ref(false)
-const selectedFileName = ref('')
 
 // Chart Options
 const successChartOptions = ref<any>({})
@@ -62,7 +60,7 @@ const heatmapOptions = ref<any>({})
 const loadDashboardData = async () => {
   loading.value = true
   try {
-    const [resOverview, resSuccess, resDuration] = await Promise.all([
+    const [resOverview, resSuccess, resDuration, resHeatmap] = await Promise.all([
       api.get(`/workspaces/${wsId}/dashboard/overview`),
       api.get(`/workspaces/${wsId}/dashboard/success-rate`),
       api.get(`/workspaces/${wsId}/dashboard/phase-duration`),
@@ -73,66 +71,175 @@ const loadDashboardData = async () => {
 
     // Pie Chart: Success Rate
     successChartOptions.value = {
-      tooltip: { trigger: 'item' },
-      legend: { bottom: '0%', left: 'center' },
-      color: ['#10B981', '#F59E0B', '#EF4444'],
+      tooltip: { 
+        trigger: 'item',
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        textStyle: { color: '#1e293b' },
+        borderWidth: 0,
+        boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'
+      },
+      legend: { bottom: '0%', left: 'center', icon: 'circle', textStyle: { color: '#64748b' } },
+      color: [
+        {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: '#10B981' }, { offset: 1, color: '#059669' }]
+        },
+        {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: '#EF4444' }, { offset: 1, color: '#DC2626' }]
+        },
+        {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: '#60A5FA' }, { offset: 1, color: '#2563EB' }]
+        },
+        {
+          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
+          colorStops: [{ offset: 0, color: '#FDBA74' }, { offset: 1, color: '#EA580C' }]
+        }
+      ],
       series: [
         {
           name: 'Task Status',
           type: 'pie',
-          radius: ['40%', '70%'],
+          radius: ['50%', '75%'],
+          center: ['50%', '45%'],
           avoidLabelOverlap: false,
           itemStyle: {
-            borderRadius: 10,
+            borderRadius: 8,
             borderColor: '#fff',
             borderWidth: 2
           },
-          label: { show: false, position: 'center' },
+          label: { show: false },
           emphasis: {
-            label: { show: true, fontSize: 18, fontWeight: 'bold' }
+            scale: true,
+            scaleSize: 10,
           },
-          labelLine: { show: false },
           data: resSuccess.data.map((item: any) => ({
             value: item.count,
-            name: item.status
+            name: t(`dashboard.status.${item.status}`)
           }))
         }
       ]
     }
 
     // Bar Chart: Phase Duration
+    const phaseOrder = ['REQUIREMENT_DURATION', 'DURATION']
+    const normalizedDuration = phaseOrder.map(phase => {
+      const found = resDuration.data.find((i: any) => i.phase === phase)
+      return {
+        phase,
+        avg_minutes: found ? found.avg_minutes : 0
+      }
+    })
+
     durationChartOptions.value = {
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-      xAxis: { type: 'category', data: resDuration.data.map((i: any) => i.phase) },
-      yAxis: { type: 'value', name: 'Avg Duration (s)' },
+      tooltip: { 
+        trigger: 'axis', 
+        axisPointer: { type: 'shadow' },
+        formatter: (params: any) => {
+          const p = params[0]
+          return `${p.name}<br/>${p.seriesName}: <b>${p.value}</b> ${t('dashboard.phases.UNIT_MIN')}`
+        }
+      },
+      grid: { left: '3%', right: '4%', bottom: '8%', containLabel: true, top: '15%' },
+      xAxis: { 
+        type: 'category', 
+        data: normalizedDuration.map((i: any) => t(`dashboard.phases.${i.phase}`)),
+        axisLine: { lineStyle: { color: '#e2e8f0' } },
+        axisLabel: { color: '#64748b' }
+      },
+      yAxis: { 
+        type: 'value', 
+        name: `${t('dashboard.avg_phase')} (${t('dashboard.phases.UNIT_MIN')})`,
+        axisLine: { show: false },
+        splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } },
+        nameTextStyle: { color: '#64748b', padding: [0, 0, 0, 40] }
+      },
       series: [
         {
-          name: 'Duration',
+          name: t('dashboard.avg_phase'),
           type: 'bar',
-          barWidth: '60%',
-          itemStyle: { color: '#3B82F6', borderRadius: [4, 4, 0, 0] },
-          data: resDuration.data.map((i: any) => i.avg_duration_ms / 1000)
+          barWidth: '40%',
+          itemStyle: { 
+            color: {
+              type: 'linear',
+              x: 0, y: 0, x2: 0, y2: 1,
+              colorStops: [
+                { offset: 0, color: '#3b82f6' },
+                { offset: 1, color: '#1d4ed8' }
+              ]
+            },
+            borderRadius: [6, 6, 0, 0]
+          },
+          data: normalizedDuration.map((i: any) => i.avg_minutes)
         }
       ]
     }
 
-    // Heatmap (Mocked heavily here since ECharts Heatmap config is complex)
-    // In actual production, it requires coordinate systems [hour(0-23), day(0-6), value]
+    // 4. Heatmap: 2D Data (Retries & Failures)
+    const last7Days: string[] = []
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date()
+      d.setDate(d.getDate() - i)
+      last7Days.push(d.toISOString().split('T')[0])
+    }
+
+    const yCategories = locale.value === 'zh' ? ['失败', '重试'] : ['Failures', 'Retries']
+    const heatmapSeriesData: any[] = []
+
+    last7Days.forEach((dateStr, xIdx) => {
+      const dayData = resHeatmap.data.find((d: any) => d.date === dateStr)
+      
+      // yIdx 0: Failure, yIdx 1: Retry
+      heatmapSeriesData.push([xIdx, 0, dayData ? dayData.failure_count : 0])
+      heatmapSeriesData.push([xIdx, 1, dayData ? dayData.retry_count : 0])
+    })
+
     heatmapOptions.value = {
-      tooltip: { position: 'top' },
-      grid: { top: 30, bottom: 20 },
-      xAxis: { type: 'category', data: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] },
-      yAxis: { type: 'category', data: ['Errors', 'Retries'] },
-      visualMap: { min: 0, max: 10, calculable: true, orient: 'horizontal', left: 'center', bottom: -20, inRange: { color: ['#EFF6FF', '#3B82F6', '#1E3A8A'] } },
+      tooltip: {
+        position: 'top',
+        formatter: (params: any) => {
+          const xIdx = params.data[0]
+          const yIdx = params.data[1]
+          const val = params.data[2]
+          const date = last7Days[xIdx].split('-').slice(1).join('/')
+          return `${date}<br/>${yCategories[yIdx]}: <b>${val}</b>`
+        }
+      },
+      grid: { top: 20, bottom: 40, left: 60, right: 20 },
+      xAxis: { 
+        type: 'category', 
+        data: last7Days.map(d => d.split('-').slice(1).join('/')),
+        axisLine: { lineStyle: { color: '#e2e8f0' } }
+      },
+      yAxis: { 
+        type: 'category', 
+        data: yCategories,
+        splitArea: { show: true },
+        axisLine: { lineStyle: { color: '#e2e8f0' } }
+      },
+      visualMap: { 
+        min: 0, 
+        max: Math.max(...heatmapSeriesData.map(d => d[2]), 5), 
+        calculable: true, 
+        orient: 'horizontal', 
+        left: 'center', 
+        bottom: 0,
+        inRange: { color: ['#eff6ff', '#60a5fa', '#1e40af'] },
+        text: [locale.value === 'zh' ? '高' : 'High', locale.value === 'zh' ? '低' : 'Low'],
+        textStyle: { color: '#64748b' }
+      },
       series: [{
-        name: 'Retry Frequency',
+        name: '波动统计',
         type: 'heatmap',
-        data: [
-          [0, 0, 1], [1, 0, 4], [2, 0, 0], [3, 0, 2], [4, 0, 5], [5, 0, 1], [6, 0, 0],
-          [0, 1, 2], [1, 1, 1], [2, 1, 3], [3, 1, 4], [4, 1, 2], [5, 1, 0], [6, 1, 0]
-        ],
-        label: { show: true }
+        data: heatmapSeriesData,
+        label: { show: true, color: '#1e293b' },
+        emphasis: {
+          itemStyle: {
+            shadowBlur: 10,
+            shadowColor: 'rgba(0, 0, 0, 0.5)'
+          }
+        }
       }]
     }
 
@@ -145,60 +252,38 @@ const loadDashboardData = async () => {
 
 const loadWorkspace = async () => {
   try {
-    const res = await api.get(`/workspaces/${wsId}`)
-    workspace.value = res.data
+    const [wsRes, permissionRes] = await Promise.all([
+      api.get(`/workspaces/${wsId}`),
+      api.get(`/workspaces/${wsId}/permissions/me`),
+    ])
+    workspace.value = wsRes.data
+    workspacePermissions.value = permissionRes.data?.permissions || null
   } catch (e) {
     console.error('Failed to load workspace info', e)
   }
 }
 
 const openNewTaskModal = () => {
+  if (!canCreateTask.value) return
   showTaskModal.value = true
 }
 
-const handleFileUpload = async (event: any) => {
-  const file = event.target.files[0]
-  if (!file) return
-  
-  uploadingSpec.value = true
-  selectedFileName.value = file.name
-  const formData = new FormData()
-  formData.append('file', file)
-  
-  try {
-    const res = await api.post('/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-    newTaskSpec.value = res.data.path
-  } catch (e) {
-    console.error('Upload failed', e)
-    selectedFileName.value = 'Upload failed'
-  } finally {
-    uploadingSpec.value = false
-  }
-}
-
-const handleCreateTask = async () => {
-  if (!newTaskName.value) return
-  creatingTask.value = true
-  try {
-    const res = await api.post(`/workspaces/${wsId}/tasks`, {
-      name: newTaskName.value,
-      description: newTaskDesc.value,
-      spec_doc_path: newTaskSpec.value
-    })
-    showTaskModal.value = false
-    router.push(`/ws/${wsId}/chat/${res.data.id}`)
-  } catch (e) {
-    console.error('Failed to create task', e)
-  } finally {
-    creatingTask.value = false
-  }
+const onTaskCreated = (payload: { jobId: string; taskId: string; workspaceId: string; expectSpecUpload: boolean }) => {
+  const jobId = String(payload?.jobId || '').trim()
+  showTaskModal.value = false
+  if (!jobId) return
+  const expectSpec = payload.expectSpecUpload ? '?expectSpec=1' : ''
+  router.push(`/ops/queue/provision/${jobId}${expectSpec}`)
 }
 
 onMounted(() => {
   loadDashboardData()
   loadWorkspace()
+})
+
+// 监听语言变化，重新生成图表配置（主要是 Title 和 Legend）
+watch(locale, () => {
+  loadDashboardData()
 })
 </script>
 
@@ -206,23 +291,23 @@ onMounted(() => {
   <div class="dashboard-wrap p-8">
     <div class="mb-8 flex justify-between items-center">
       <div class="flex-1">
-        <h1 class="text-3xl font-bold text-primary-900 mb-1">Metrics Dashboard</h1>
+        <h1 class="text-3xl font-bold text-primary-900 mb-1">{{ $t('dashboard.title') }}</h1>
         <div class="flex items-center gap-4 text-sm text-slate-500">
            <div class="flex items-center gap-1"><TerminalSquare class="w-4 h-4" /> {{ workspace?.project_path || 'No Path' }}</div>
            <div class="flex items-center gap-1" v-if="workspace?.git_repo_url"><Plus class="w-4 h-4 rotate-45" /> {{ workspace.git_repo_url }}</div>
         </div>
       </div>
-      <button class="btn-primary flex items-center gap-2" @click="openNewTaskModal">
-        <Plus class="w-4 h-4" /> Start New Task
+      <button class="btn-primary flex items-center gap-2" :disabled="!canCreateTask" @click="openNewTaskModal">
+        <Plus class="w-4 h-4" /> {{ $t('dashboard.new_task') }}
       </button>
     </div>
 
     <!-- KPI Banner -->
-    <div class="kpi-grid grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+    <div class="kpi-grid grid grid-cols-1 md:grid-cols-5 gap-6 mb-8">
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <Activity class="w-5 h-5 text-primary-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">Total Tasks</span>
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.total_tasks') }}</span>
         </div>
         <div class="text-3xl font-bold text-primary-900">{{ overview.total_tasks }}</div>
       </div>
@@ -230,7 +315,7 @@ onMounted(() => {
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <TrendingUp class="w-5 h-5 text-emerald-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">Success Rate</span>
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.success_rate') }}</span>
         </div>
         <div class="text-3xl font-bold" :class="overview.success_rate > 0.8 ? 'text-emerald-500' : 'text-amber-500'">
           {{ (overview.success_rate * 100).toFixed(1) }}%
@@ -240,18 +325,26 @@ onMounted(() => {
       <div class="kpi-card glass-panel flex flex-col justify-center">
         <div class="flex items-center gap-3 text-slate-500 mb-2">
           <Clock class="w-5 h-5 text-amber-500" />
-          <span class="font-medium text-sm text-uppercase tracking-wide">Active Tasks</span>
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.active_tasks') }}</span>
         </div>
         <div class="text-3xl font-bold text-slate-700">{{ overview.active_tasks }}</div>
+      </div>
+
+      <div class="kpi-card glass-panel flex flex-col justify-center border-l-4 border-l-indigo-500">
+        <div class="flex items-center gap-3 text-slate-500 mb-2">
+          <TerminalSquare class="w-5 h-5 text-indigo-500" />
+          <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.total_cost') }}</span>
+        </div>
+        <div class="text-3xl font-bold text-indigo-600">${{ overview.total_cost_usd?.toFixed(4) || '0.0000' }}</div>
       </div>
       
       <div class="kpi-card bg-primary-600 text-white flex flex-col justify-center relative overflow-hidden">
         <div class="relative z-10">
           <div class="flex items-center gap-3 text-primary-100 mb-2">
             <CheckCircle class="w-5 h-5" />
-            <span class="font-medium text-sm text-uppercase tracking-wide">Time Saved</span>
+            <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.time_saved') }}</span>
           </div>
-          <div class="text-3xl font-bold">~{{ Math.floor((overview.total_tasks * 2.5) / 24) || 2 }}d</div>
+          <div class="text-3xl font-bold">{{ overview.avg_duration_minutes?.toFixed(1) || '0.0' }}h</div>
         </div>
         <!-- Abstract shape -->
         <div class="absolute right-0 bottom-0 opacity-20 transform translate-x-4 translate-y-4">
@@ -266,64 +359,29 @@ onMounted(() => {
     <div v-else class="charts-grid grid grid-cols-1 lg:grid-cols-2 gap-6">
       <!-- Success Rate Pie -->
       <div class="chart-container glass-panel">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">Task Status Distribution</h3>
+        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.status_dist') }}</h3>
         <v-chart class="chart h-[300px]" :option="successChartOptions" autoresize />
       </div>
       
       <!-- Phase Duration Bar -->
       <div class="chart-container glass-panel">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">Average Phase Duration</h3>
+        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.avg_phase') }}</h3>
         <v-chart class="chart h-[300px]" :option="durationChartOptions" autoresize />
       </div>
       
       <!-- Error/Retry Heatmap -->
       <div class="chart-container glass-panel lg:col-span-2">
-        <h3 class="font-semibold text-lg text-slate-800 mb-4">Error & Retry Heatmap (Last 7 Days)</h3>
+        <h3 class="font-semibold text-lg text-slate-800 mb-4">{{ $t('dashboard.retry_heatmap') }}</h3>
         <v-chart class="chart h-[300px]" :option="heatmapOptions" autoresize />
       </div>
     </div>
 
-    <!-- Create Task Modal -->
-    <div v-if="showTaskModal" class="modal-overlay" @click.self="showTaskModal = false">
-      <div class="modal glass-panel">
-        <div class="flex items-center gap-3 mb-4">
-          <Plus class="w-6 h-6 text-primary-600" />
-          <h2 class="text-xl font-bold m-0">Initiate New Task</h2>
-        </div>
-        
-        <form @submit.prevent="handleCreateTask" class="flex flex-col gap-4">
-          <div class="form-group flex flex-col gap-1">
-            <label class="text-sm font-medium text-slate-700">Task Name</label>
-            <input v-model="newTaskName" type="text" class="input-field" required placeholder="e.g. Implement User Profile API">
-          </div>
-          
-          <div class="form-group flex flex-col gap-1">
-            <label class="text-sm font-medium text-slate-700">Description (Optional)</label>
-            <textarea v-model="newTaskDesc" class="input-field" rows="2" placeholder="Task goal details"></textarea>
-          </div>
-          
-          <div class="form-group flex flex-col gap-1">
-            <label class="text-sm font-medium text-slate-700">SE (Specification) Document</label>
-            <div class="file-upload-box glass-panel flex items-center gap-3 p-3 mt-1">
-              <Upload class="w-5 h-5 text-primary-500" v-if="!uploadingSpec" />
-              <Loader2 class="w-5 h-5 animate-spin text-primary-500" v-else />
-              <div class="flex-1 text-sm truncate">
-                {{ selectedFileName || 'Upload Requirement Doc...' }}
-              </div>
-              <input type="file" @change="handleFileUpload" class="hidden-input" id="spec-upload" accept=".pdf,.doc,.docx,.md,.txt">
-              <label for="spec-upload" class="btn-primary py-1 px-3 text-xs cursor-pointer">Choose</label>
-            </div>
-          </div>
-
-          <div class="flex justify-end gap-3 mt-6">
-            <button type="button" class="btn-secondary" @click="showTaskModal = false">Cancel</button>
-            <button type="submit" class="btn-primary" :disabled="creatingTask">
-              {{ creatingTask ? 'Creating...' : 'Initialize SDD Loop' }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <NewTaskModal 
+      :show="showTaskModal" 
+      :wsId="(wsId as string)" 
+      @close="showTaskModal = false" 
+      @created="onTaskCreated" 
+    />
   </div>
 </template>
 
@@ -376,7 +434,7 @@ onMounted(() => {
 .text-center { text-align: center; }
 
 @media (min-width: 768px) {
-  .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .md\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 }
 @media (min-width: 1024px) {
   .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -431,40 +489,119 @@ onMounted(() => {
   box-shadow: var(--shadow-2xl);
 }
 
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #475569;
+}
+
 .input-field {
   padding: 10px 14px;
   border: 1px solid #E2E8F0;
   border-radius: var(--radius-md);
   font-family: inherit;
   font-size: 1rem;
+  width: 100%;
+  box-sizing: border-box;
 }
-
 .input-field:focus {
   border-color: var(--color-primary-500);
   outline: none;
 }
 
+.file-upload-box {
+  border: 1px dashed var(--color-primary-100);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-top: 4px;
+}
+.file-upload-box:hover { border-style: solid; border-color: var(--color-primary-500); }
+.file-name {
+  flex: 1;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-choose-btn { padding: 4px 12px; font-size: 0.75rem; cursor: pointer; }
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
 /* Button variants if not global */
 .btn-secondary {
-  background: #F1F5F9;
+  background: white;
   color: #475569;
-  padding: 10px 20px;
+  border: 1px solid #E2E8F0;
+  padding: 8px 18px;
   border-radius: var(--radius-md);
-  font-weight: 600;
-  border: none;
+  font-weight: 500;
   cursor: pointer;
 }
 
-.file-upload-box {
-  border: 1px dashed var(--color-primary-100);
+.btn-primary {
+  background: var(--color-primary-500);
+  color: white !important;
+  border: none;
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 6px -1px rgba(14, 165, 233, 0.2);
 }
 
-.file-upload-box:hover {
-  border-style: solid;
-  border-color: var(--color-primary-500);
+.btn-primary:hover {
+  background: var(--color-primary-600);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 15px -3px rgba(14, 165, 233, 0.3), 0 4px 6px -2px rgba(14, 165, 233, 0.1);
+  text-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+.btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .hidden-input {
   display: none;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

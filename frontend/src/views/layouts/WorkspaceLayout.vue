@@ -1,67 +1,142 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { LayoutDashboard, MessageSquare, Box, Settings, ArrowLeft } from 'lucide-vue-next'
+import { useLocalAgentStore } from '@/stores/localAgent'
+import { LayoutDashboard, MessageSquare, Box, Settings, Network } from 'lucide-vue-next'
+import AppSidebar from '@/components/AppSidebar.vue'
+import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
+const localAgent = useLocalAgentStore()
+const { electronAvailable, repoMapping } = storeToRefs(localAgent)
+const { t } = useI18n()
 
 const loading = ref(true)
+const showRepoSetupDialog = ref(false)
+let workspaceLoadSeq = 0
 
-onMounted(async () => {
-  const wsId = route.params.wsId as string
+const maybePromptRepoSetup = async () => {
+  const workspace = wsStore.currentWorkspace
+  showRepoSetupDialog.value = false
+  if (!workspace) return
+  await localAgent.loadLocalConfig()
+  await localAgent.setWorkspaceContext(workspace)
+  if (!electronAvailable.value) return
+  if (!String(workspace.git_repo_url || '').trim()) return
+  if (repoMapping.value?.localPath) return
+  showRepoSetupDialog.value = true
+}
+
+const skipRepoSetup = () => {
+  showRepoSetupDialog.value = false
+}
+
+const loadWorkspaceForRoute = async (wsId: string) => {
+  const seq = ++workspaceLoadSeq
+  loading.value = true
+  showRepoSetupDialog.value = false
+  if (!wsId) {
+    loading.value = false
+    return
+  }
   if (!wsStore.currentWorkspace || wsStore.currentWorkspace.id !== wsId) {
     localStorage.setItem('sdd_ws_id', wsId)
     await wsStore.restoreCurrent()
   }
+  if (seq !== workspaceLoadSeq) return
   loading.value = false
-})
+  await maybePromptRepoSetup()
+}
+
+watch(
+  () => route.params.wsId,
+  (value) => {
+    void loadWorkspaceForRoute(String(value || ''))
+  },
+  { immediate: true },
+)
 
 const goBack = () => router.push('/workspaces')
+
+const sidebarNavItems = computed(() => {
+  const wsId = route.params.wsId as string
+  const routeName = String(route.name ?? '')
+  const assetsActive = routeName.startsWith('workspaceAssets') || routeName === 'workspaceAssetTaskDetail'
+  return [
+    {
+      key: 'dashboard',
+      label: t('layout.dashboard'),
+      icon: LayoutDashboard,
+      to: `/ws/${wsId}/dashboard`,
+      active: routeName === 'dashboard',
+    },
+    {
+      key: 'chat',
+      label: t('layout.chat'),
+      icon: MessageSquare,
+      to: `/ws/${wsId}/chat`,
+      active: routeName === 'chat' || routeName === 'taskChat' || routeName === 'taskSpec',
+    },
+    {
+      key: 'assets',
+      label: t('workspace_assets.sidebar_label'),
+      icon: Box,
+      to: `/ws/${wsId}/assets/requirements`,
+      active: assetsActive,
+    },
+    {
+      key: 'api-mock',
+      label: t('layout.api_mock'),
+      icon: Network,
+      to: `/ws/${wsId}/api-mock`,
+      active: routeName === 'apiMock',
+    },
+  ]
+})
+
+const sidebarFooterItems = computed(() => {
+  const wsId = route.params.wsId as string
+  const routeName = String(route.name ?? '')
+  return [
+    {
+      key: 'settings',
+      label: t('common.settings'),
+      icon: Settings,
+      to: `/ws/${wsId}/settings`,
+      active: routeName === 'settings',
+    },
+  ]
+})
 </script>
 
 <template>
   <div class="layout-container">
-    <!-- Sidebar -->
-    <aside class="sidebar glass-panel">
-      <div class="sidebar-header">
-        <button class="back-btn" @click="goBack" title="Back to Workspaces">
-          <ArrowLeft class="w-5 h-5" />
-        </button>
-        <span class="ws-name truncate">{{ wsStore.currentWorkspace?.name || 'Loading...' }}</span>
-      </div>
-
-      <nav class="sidebar-nav">
-        <router-link :to="`/ws/${route.params.wsId}/dashboard`" class="nav-item" active-class="active">
-          <LayoutDashboard class="w-5 h-5" />
-          <span>Dashboard</span>
-        </router-link>
-        
-        <router-link :to="`/ws/${route.params.wsId}/chat`" class="nav-item" active-class="active">
-          <MessageSquare class="w-5 h-5" />
-          <span>SDD Chat</span>
-        </router-link>
-
-        <router-link :to="`/ws/${route.params.wsId}/assets`" class="nav-item" active-class="active">
-          <Box class="w-5 h-5" />
-          <span>Assets</span>
-        </router-link>
-      </nav>
-
-      <div class="sidebar-footer">
-        <div class="nav-item">
-          <Settings class="w-5 h-5" />
-          <span>Settings</span>
-        </div>
-      </div>
-    </aside>
+    <AppSidebar
+      :title="wsStore.currentWorkspace?.name || 'Loading...'"
+      :back-title="t('skills.list.back_to_workspaces')"
+      :toggle-title="t('layout.toggle_sidebar')"
+      :nav-items="sidebarNavItems"
+      :footer-items="sidebarFooterItems"
+      @back="goBack"
+    />
 
     <!-- Main Content Area -->
     <main class="main-content">
       <router-view v-if="!loading" />
     </main>
+
+    <WorkspaceRepoSetupDialog
+      :show="showRepoSetupDialog"
+      :workspace="wsStore.currentWorkspace"
+      @close="showRepoSetupDialog = false"
+      @skip="skipRepoSetup"
+      @saved="showRepoSetupDialog = false"
+    />
   </div>
 </template>
 
@@ -71,88 +146,6 @@ const goBack = () => router.push('/workspaces')
   height: 100vh;
   background-color: var(--color-bg-base);
   overflow: hidden;
-}
-
-.sidebar {
-  width: 260px;
-  display: flex;
-  flex-direction: column;
-  border-radius: 0 var(--radius-xl) var(--radius-xl) 0;
-  margin-right: var(--space-1);
-  box-shadow: 2px 0 10px rgba(0,0,0,0.02);
-  z-index: 10;
-}
-
-.sidebar-header {
-  padding: var(--space-6) var(--space-4);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  border-bottom: 1px solid rgba(0,0,0,0.05);
-}
-
-.back-btn {
-  background: transparent;
-  border: none;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: 4px;
-  border-radius: var(--radius-md);
-  transition: all var(--transition-fast);
-}
-
-.back-btn:hover {
-  background: rgba(0,0,0,0.05);
-  color: var(--color-text-title);
-}
-
-.ws-name {
-  font-weight: 600;
-  color: var(--color-primary-900);
-  font-size: 1rem;
-}
-
-.truncate {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.sidebar-nav {
-  padding: var(--space-4) var(--space-2);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  flex-grow: 1;
-}
-
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-md);
-  color: var(--color-text-body);
-  text-decoration: none;
-  font-weight: 500;
-  transition: all var(--transition-fast);
-  cursor: pointer;
-}
-
-.nav-item:hover {
-  background-color: var(--color-primary-50);
-  color: var(--color-primary-600);
-}
-
-.nav-item.active {
-  background-color: var(--color-primary-100);
-  color: var(--color-primary-600);
-  font-weight: 600;
-}
-
-.sidebar-footer {
-  padding: var(--space-4) var(--space-2);
-  border-top: 1px solid rgba(0,0,0,0.05);
 }
 
 .main-content {

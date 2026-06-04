@@ -1,14 +1,26 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, LogOut, Trash2, AlertTriangle } from 'lucide-vue-next'
+import { Plus, Briefcase, Languages, BookCopy, ServerCog } from 'lucide-vue-next'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import api from '@/utils/api'
+import { formatApiError } from '@/utils/error'
+import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
 
+const { locale, t } = useI18n()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const authStore = useAuthStore()
+
+const toggleLanguage = () => {
+  const newLang = locale.value === 'zh' ? 'en' : 'zh'
+  locale.value = newLang
+  localStorage.setItem('sdd_lang', newLang)
+}
 
 const loading = ref(true)
 const showCreateModal = ref(false)
@@ -17,12 +29,20 @@ const newWsDesc = ref('')
 const newWsPath = ref('')
 const newWsGit = ref('')
 const creating = ref(false)
+const createError = ref('')
 const showDeleteConfirm = ref(false)
+const deletingWorkspace = ref(false)
 const wsToDelete = ref<any>(null)
+const createModalOverlayArmed = ref(false)
 
 onMounted(async () => {
+  window.addEventListener('blur', cancelCreateModalOverlayClose)
   await wsStore.fetchWorkspaces()
   loading.value = false
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('blur', cancelCreateModalOverlayClose)
 })
 
 const enterWorkspace = (ws: any) => {
@@ -30,9 +50,18 @@ const enterWorkspace = (ws: any) => {
   router.push(`/ws/${ws.id}/dashboard`)
 }
 
+const openSkillsConfig = () => {
+  router.push('/skills')
+}
+
+const openQueueOps = () => {
+  router.push('/ops/queue')
+}
+
 const handleCreate = async () => {
   if (!newWsName.value) return
   creating.value = true
+  createError.value = ''
   try {
     const res = await api.post('/workspaces', {
       name: newWsName.value,
@@ -40,10 +69,20 @@ const handleCreate = async () => {
       project_path: newWsPath.value,
       git_repo_url: newWsGit.value
     })
-    await wsStore.fetchWorkspaces()
     showCreateModal.value = false
-    enterWorkspace(res.data)
+    const jobId = String(res.data?.job_id || '').trim()
+    if (!jobId) {
+      throw new Error(t('provisioning.invalid_job_id'))
+    }
+    await router.push({
+      path: `/ops/queue/provision/${jobId}`,
+    })
   } catch (e) {
+    createError.value = formatApiError(
+      e,
+      t('workspaces.errors.create_failed'),
+      t
+    )
     console.error('Failed to create workspace', e)
   } finally {
     creating.value = false
@@ -55,173 +94,260 @@ const logout = () => {
 }
 
 const handleDeleteWorkspace = (ws: any) => {
+  if (!ws?.can_delete_workspace) return
   wsToDelete.value = ws
   showDeleteConfirm.value = true
 }
 
+const closeDeleteWorkspaceModal = () => {
+  if (deletingWorkspace.value) return
+  showDeleteConfirm.value = false
+  wsToDelete.value = null
+}
+
 const confirmDeleteWorkspace = async () => {
   if (!wsToDelete.value) return
+  deletingWorkspace.value = true
   try {
     await api.delete(`/workspaces/${wsToDelete.value.id}`)
-    showDeleteConfirm.value = false
-    wsToDelete.value = null
     await wsStore.fetchWorkspaces()
   } catch (e) {
     console.error('Failed to delete workspace', e)
+  } finally {
+    deletingWorkspace.value = false
+    showDeleteConfirm.value = false
+    wsToDelete.value = null
   }
+}
+
+const armCreateModalOverlayClose = (event: PointerEvent) => {
+  if (event.button !== 0) return
+  createModalOverlayArmed.value = true
+}
+
+const cancelCreateModalOverlayClose = () => {
+  createModalOverlayArmed.value = false
+}
+
+const finishCreateModalOverlayClose = () => {
+  if (!createModalOverlayArmed.value) return
+  createModalOverlayArmed.value = false
+  createError.value = ''
+  showCreateModal.value = false
 }
 </script>
 
 <template>
   <div class="ws-container">
-    <nav class="ws-header glass-panel">
-      <div class="logo">SDD Native</div>
-      <div class="user-info">
-        <span>{{ authStore.user?.display_name }}</span>
-        <button class="icon-btn" @click="logout" title="Logout">
-          <LogOut class="w-5 h-5" />
+    <nav class="navbar">
+      <div class="logo">
+        <div class="logo-icon"></div>
+        <router-link to="/" class="logo-link logo-text">{{ $t('portal.title') }}</router-link>
+      </div>
+      <div class="nav-links">
+        <UserIdentityBadge
+          :display-name="authStore.user?.display_name"
+          :email="authStore.user?.email"
+          :user-id="authStore.user?.id"
+          :avatar-svg="authStore.user?.avatar_svg"
+          :avatar-url="authStore.user?.avatar_url"
+          size="sm"
+        />
+        <button class="btn-ghost" @click="logout">{{ $t('common.logout') }}</button>
+        <div class="v-divider"></div>
+        <button class="lang-switch-btn" @click="toggleLanguage" :title="$t('portal.switch_lang_title')">
+          <Languages class="w-4 h-4" />
+          <span>{{ locale === 'zh' ? 'EN' : 'ZH' }}</span>
         </button>
       </div>
     </nav>
 
     <main class="ws-main">
       <div class="ws-header-row">
-        <h2>Your Workspaces</h2>
-        <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
-          <Plus class="w-4 h-4" /> New Workspace
-        </button>
+        <h2 class="title-gradient-small">{{ $t('workspaces.title') }}</h2>
+        <div class="flex items-center gap-2">
+          <button
+            class="btn-secondary flex items-center gap-2"
+            @click="openQueueOps"
+          >
+            <ServerCog class="w-4 h-4" /> {{ $t('queue_ops.entry') }}
+          </button>
+          <button
+            class="btn-secondary flex items-center gap-2"
+            @click="openSkillsConfig"
+          >
+            <BookCopy class="w-4 h-4" /> {{ $t('skills.entry') }}
+          </button>
+          <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
+            <Plus class="w-4 h-4" /> {{ $t('workspaces.new_workspace') }}
+          </button>
+        </div>
       </div>
 
-      <div v-if="loading" class="loading-state">Loading workspaces...</div>
-      
+      <div v-if="loading" class="loading-state">{{ $t('workspaces.loading') }}</div>
+
       <div v-else-if="wsStore.workspaces.length === 0" class="empty-state glass-panel">
         <Briefcase class="w-12 h-12 text-muted mb-4" />
-        <h3>No Workspaces Yet</h3>
-        <p>Create your first workspace to start generating code.</p>
-        <button class="btn-primary mt-4" @click="showCreateModal = true">Create Workspace</button>
+        <h3>{{ $t('workspaces.no_workspaces') }}</h3>
+        <p>{{ $t('workspaces.empty_desc') }}</p>
+        <button class="btn-primary mt-4" @click="showCreateModal = true">{{ $t('workspaces.create_button') }}</button>
       </div>
 
       <div v-else class="ws-grid">
-        <div 
-          v-for="ws in wsStore.workspaces" 
-          :key="ws.id" 
-          class="ws-card glass-panel group relative"
+        <div
+          v-for="(ws, index) in wsStore.workspaces"
+          :key="ws.id"
+          class="ws-card glass-panel group hover-lift animate-pop-in"
+          :style="{ animationDelay: `${index * 50}ms` }"
           @click="enterWorkspace(ws)"
         >
           <div class="ws-card-header flex justify-between items-start">
             <h3>{{ ws.name }}</h3>
-            <button class="delete-ws-btn opacity-0 group-hover:opacity-100 transition-opacity" @click.stop="handleDeleteWorkspace(ws)">
-              <Trash2 class="w-4 h-4 text-slate-400 hover:text-rose-500" />
-            </button>
+            <DeleteActionButton
+              mode="icon"
+              class="opacity-0 group-hover:opacity-100 transition-all"
+              :title="$t('common.delete')"
+              :disabled="!ws.can_delete_workspace"
+              @click.stop="handleDeleteWorkspace(ws)"
+            />
           </div>
-          <p class="ws-card-desc">{{ ws.description || 'No description provided.' }}</p>
+          <p class="ws-card-desc">{{ ws.description || $t('workspaces.no_desc') }}</p>
           <div class="ws-card-footer">
-            <span class="text-xs text-muted">Created {{ new Date(ws.created_at).toLocaleDateString() }}</span>
+            <span class="text-xs text-muted">{{ $t('workspaces.created_at', { date: new Date(ws.created_at).toLocaleDateString(locale) }) }}</span>
           </div>
         </div>
       </div>
     </main>
 
     <!-- Modal -->
-    <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
+    <div
+      v-if="showCreateModal"
+      class="modal-overlay"
+      @pointerdown.self="armCreateModalOverlayClose"
+      @pointerup.self="finishCreateModalOverlayClose"
+      @pointerleave.self="cancelCreateModalOverlayClose"
+      @pointercancel.self="cancelCreateModalOverlayClose"
+    >
       <div class="modal glass-panel">
-        <h3>Create Workspace</h3>
+        <h3>{{ $t('workspaces.new_workspace') }}</h3>
         <form @submit.prevent="handleCreate" class="mt-4 flex flex-col gap-4">
           <div class="form-group flex flex-col gap-2">
-            <label>Name</label>
-            <input v-model="newWsName" type="text" class="input-field" required placeholder="e.g. Acme E-Commerce">
+            <label>{{ $t('workspaces.modal.name') }}</label>
+            <input v-model="newWsName" type="text" class="input-field" required :placeholder="$t('workspaces.modal.name_placeholder')">
           </div>
           <div class="form-group flex flex-col gap-2">
-            <label>Description (Optional)</label>
-            <textarea v-model="newWsDesc" class="input-field" rows="2" placeholder="What is this project about?"></textarea>
+            <label>{{ $t('workspaces.modal.desc') }}</label>
+            <textarea v-model="newWsDesc" class="input-field" rows="2" :placeholder="$t('workspaces.modal.desc_placeholder')"></textarea>
           </div>
           <div class="form-group flex flex-col gap-2">
-            <label>Generation Path (Mandatory)</label>
-            <input v-model="newWsPath" type="text" class="input-field" required placeholder="e.g. /home/user/projects/my-app">
+            <label>{{ $t('workspaces.modal.path') }}</label>
+            <input v-model="newWsPath" type="text" class="input-field" required :placeholder="$t('workspaces.modal.path_placeholder')">
           </div>
           <div class="form-group flex flex-col gap-2">
-            <label>GitHub Repo URL (Optional)</label>
-            <input v-model="newWsGit" type="text" class="input-field" placeholder="e.g. https://github.com/user/repo">
+            <label>{{ $t('workspaces.modal.git') }}</label>
+            <input v-model="newWsGit" type="text" class="input-field" :placeholder="$t('workspaces.modal.git_placeholder')">
           </div>
+          <p v-if="createError" class="create-error">{{ createError }}</p>
           <div class="flex justify-end gap-3 mt-4">
-            <button type="button" class="btn-secondary" @click="showCreateModal = false">Cancel</button>
+            <button type="button" class="btn-secondary" @click="createError = ''; showCreateModal = false">{{ $t('common.cancel') }}</button>
             <button type="submit" class="btn-primary" :disabled="creating">
-              {{ creating ? 'Creating...' : 'Create' }}
+              {{ creating ? $t('workspaces.modal.creating') : $t('common.confirm') }}
             </button>
           </div>
         </form>
       </div>
     </div>
 
-    <!-- Delete Confirmation Modal -->
-    <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="showDeleteConfirm = false">
-      <div class="modal glass-panel" style="border-top: 4px solid var(--color-accent-rose)">
-        <div class="flex items-center gap-3 mb-4 text-rose-600">
-          <AlertTriangle class="w-6 h-6 flex-shrink-0" />
-          <span class="text-xl font-bold leading-none">Delete Workspace?</span>
-        </div>
-        <p class="text-sm text-slate-600 mb-6">
-          Are you sure you want to delete <strong>{{ wsToDelete?.name }}</strong>?
-          <br/><br/>
-          This will permanently remove all associated tasks, logs, and assets. This action cannot be undone.
-        </p>
-        <div class="flex justify-end gap-3">
-          <button class="btn-secondary" @click="showDeleteConfirm = false">Keep It</button>
-          <button class="btn-primary bg-rose-500 border-rose-600 hover:shadow-rose-lg" @click="confirmDeleteWorkspace">
-            Delete Permanently
-          </button>
-        </div>
-      </div>
-    </div>
+    <ConfirmActionModal
+      :show="showDeleteConfirm"
+      :title="$t('workspaces.delete_ws')"
+      :message="$t('workspaces.delete_confirm', { name: wsToDelete?.name || '' })"
+      :emphasis-label="$t('workspaces.delete_path_label')"
+      :emphasis-value="wsToDelete?.project_path || $t('workspaces.path_not_set')"
+      :description="$t('workspaces.delete_warning')"
+      :cancel-text="$t('workspaces.keep_it')"
+      :confirm-text="$t('workspaces.delete_permanently')"
+      tone="danger"
+      :loading="deletingWorkspace"
+      @cancel="closeDeleteWorkspaceModal"
+      @confirm="confirmDeleteWorkspace"
+    />
   </div>
 </template>
 
 <style scoped>
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
+
 .ws-container {
   min-height: 100vh;
   background-color: var(--color-bg-base);
+  font-family: 'Open Sans', sans-serif;
 }
 
-.ws-header {
+.navbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: var(--space-4) var(--space-8);
-  margin-bottom: var(--space-8);
-  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  padding: 1.5rem 4rem;
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  border-bottom: 1px solid #e2e8f0;
 }
 
 .logo {
-  font-family: var(--font-heading);
-  font-weight: 700;
-  font-size: 1.25rem;
-  color: var(--color-primary-600);
-}
-
-.user-info {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  font-weight: 500;
+  gap: 0.75rem;
 }
 
-.icon-btn {
-  background: transparent;
+.logo-icon {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, #0ea5e9, #3b82f6);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
+}
+
+.logo-text {
+  font-family: 'Poppins', sans-serif;
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: #1e3a8a;
+}
+
+.logo-link {
+  text-decoration: none;
+  color: inherit;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
+
+.btn-ghost {
+  background: none;
   border: none;
-  color: var(--color-text-muted);
+  color: #475569;
+  font-weight: 600;
   cursor: pointer;
-  transition: color var(--transition-fast);
-  padding: 4px;
+  padding: 0.625rem 1rem;
+  transition: color 0.2s;
 }
 
-.icon-btn:hover {
-  color: var(--color-accent-rose);
+.btn-ghost:hover {
+  color: #0ea5e9;
 }
 
 .ws-main {
   max-width: 1000px;
-  margin: 0 auto;
-  padding: 0 var(--space-8);
+  margin: 2rem auto 0;
+  padding: 0 var(--space-8) var(--space-8);
 }
 
 .ws-header-row {
@@ -233,7 +359,12 @@ const confirmDeleteWorkspace = async () => {
 
 .ws-header-row h2 {
   margin: 0;
-  font-size: 1.5rem;
+  font-size: 1.75rem;
+  font-weight: 800;
+  background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .ws-grid {
@@ -249,6 +380,28 @@ const confirmDeleteWorkspace = async () => {
   gap: var(--space-2);
   cursor: pointer;
   min-height: 160px;
+  transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.ws-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 3px;
+  background: linear-gradient(90deg, #0ea5e9, #3b82f6);
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.ws-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 20px 25px -5px rgba(14, 165, 233, 0.1), 0 10px 10px -5px rgba(14, 165, 233, 0.04);
+  border-color: rgba(14, 165, 233, 0.3);
+}
+
+.ws-card:hover::before {
+  opacity: 1;
 }
 
 .ws-card-header h3 {
@@ -267,17 +420,14 @@ const confirmDeleteWorkspace = async () => {
   opacity: 1;
 }
 
-.delete-ws-btn {
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  padding: 4px;
-}
-
 .ws-card-footer {
   margin-top: auto;
   padding-top: var(--space-4);
   border-top: 1px solid rgba(0,0,0,0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
 }
 
 .text-muted { color: var(--color-text-muted); }
@@ -346,5 +496,61 @@ const confirmDeleteWorkspace = async () => {
 .input-field:focus {
   border-color: var(--color-primary-500);
   outline: none;
+}
+
+.create-error {
+  margin: 0;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-size: 0.875rem;
+}
+.v-divider {
+  width: 1px;
+  height: 24px;
+  background-color: #e2e8f0;
+}
+
+.lang-switch-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem 0.875rem;
+  border-radius: 8px;
+  color: #475569;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-size: 0.8125rem;
+  margin-left: 0.5rem;
+}
+
+.lang-switch-btn:hover {
+  background: #f1f5f9;
+  border-color: #0ea5e9;
+  color: #0ea5e9;
+}
+
+@media (max-width: 1024px) {
+  .navbar { padding: 1.5rem 2rem; }
+  .nav-links { gap: 1rem; }
+  .ws-main {
+    margin-top: 1.5rem;
+    padding: 0 var(--space-4) var(--space-8);
+  }
+}
+
+/* Animations */
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.95) translateY(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.animate-pop-in {
+  animation: popIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 </style>

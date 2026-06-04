@@ -1,21 +1,32 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
+import { formatApiError } from '@/utils/error'
 
 const router = useRouter()
+const { t } = useI18n()
 const authStore = useAuthStore()
 
 const isLoginMode = ref(true)
 const loading = ref(false)
 const errorMessage = ref('')
+const LAST_LOGIN_EMAIL_KEY = 'sdd_last_login_email'
 
 const form = ref({
   email: '',
   password: '',
   displayName: ''
 })
+
+const rememberLoginEmail = () => {
+  const email = form.value.email.trim()
+  if (email) {
+    localStorage.setItem(LAST_LOGIN_EMAIL_KEY, email)
+  }
+}
 
 const toggleMode = () => {
   isLoginMode.value = !isLoginMode.value
@@ -36,6 +47,7 @@ const handleSubmit = async () => {
       const res = await api.post('/auth/login', params)
       authStore.setToken(res.data.access_token)
       await authStore.fetchCurrentUser()
+      rememberLoginEmail()
       router.push('/workspaces')
       
     } else {
@@ -52,14 +64,19 @@ const handleSubmit = async () => {
       const res = await api.post('/auth/login', params)
       authStore.setToken(res.data.access_token)
       await authStore.fetchCurrentUser()
+      rememberLoginEmail()
       router.push('/workspaces')
     }
-  } catch (error: any) {
-    errorMessage.value = error.response?.data?.detail || 'Authentication failed'
+  } catch (error: unknown) {
+    errorMessage.value = formatApiError(error, t('auth.errors.auth_failed'), t)
   } finally {
     loading.value = false
   }
 }
+
+onMounted(() => {
+  form.value.email = localStorage.getItem(LAST_LOGIN_EMAIL_KEY)?.trim() ?? ''
+})
 </script>
 
 <template>
@@ -67,7 +84,7 @@ const handleSubmit = async () => {
     <div class="auth-card glass-panel">
       <div class="auth-header">
         <h2>{{ isLoginMode ? 'Welcome Back' : 'Create Account' }}</h2>
-        <p class="subtitle">SDD Native Platform</p>
+        <p class="subtitle">TraceForge Platform</p>
       </div>
 
       <form @submit.prevent="handleSubmit" class="auth-form">
@@ -206,7 +223,8 @@ label {
 .error-msg {
   color: var(--color-accent-rose);
   font-size: 0.875rem;
-  text-align: center;
+  text-align: left;
+  white-space: pre-line;
   background-color: rgba(244, 63, 94, 0.1);
   padding: var(--space-2);
   border-radius: var(--radius-sm);

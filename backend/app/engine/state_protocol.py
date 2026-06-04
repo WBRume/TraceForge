@@ -6,8 +6,10 @@ Agent 状态同步协议解析器
 import re
 import json
 from typing import Optional
-from loguru import logger
+from app.core.logging import get_logger
 from pydantic import BaseModel
+
+logger = get_logger(__name__, category="task_execution")
 
 
 class AgentStateSync(BaseModel):
