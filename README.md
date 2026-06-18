@@ -1,7 +1,7 @@
 # TraceForge
 
 <p align="center">
-  <strong>开发态资产管理 + AI 开发过程可追溯协作平台(Demo)</strong>
+  <strong>开发态资产管理 + AI 开发过程可追溯协作平台</strong>
 </p>
 
 <p align="center">
@@ -16,6 +16,10 @@
   <img alt="MySQL" src="https://img.shields.io/badge/MySQL-5.7%2B%20%7C%208.0%2B-orange">
   <img alt="Status" src="https://img.shields.io/badge/status-internal%20preview-yellow">
 </p>
+
+> **项目状态说明**  
+> 当前项目开发尚未完成，当前仅为 Demo / 概念验证项目，不保证功能完整性与稳定性，请勿用于生产环境。  
+> 项目中的 Agentic 能力当前没有严格按照完整的 Agent 开发规范建设，主要是为了验证 TraceForge 的业务流程和产品闭环，相关实现以简单提示词和流程串联为主，不代表生产级 Agent 架构或最佳实践。
 
 ---
 
@@ -558,8 +562,6 @@ alembic revision --autogenerate -m "message"  # 创建迁移
    - 日志文件（`logs/` 目录）
    - 本地临时文件
    - 敏感信息和密钥
-
-> **注意：本项目开发尚未完成，当前仅为 Demo / 概念验证项目，不保证功能完整性与稳定性，请勿用于生产环境。**
 
 ## License
 
