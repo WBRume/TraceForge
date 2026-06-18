@@ -1,7 +1,7 @@
 # TraceForge
 
 <p align="center">
-  <strong>开发态资产管理 + AI 开发过程可追溯协作平台</strong>
+  <strong>开发态资产管理 + AI 开发过程可追溯协作平台(Demo)</strong>
 </p>
 
 <p align="center">
