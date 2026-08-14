@@ -1,4 +1,4 @@
-﻿"""
+"""
 Workspace API routes.
 """
 
@@ -71,6 +71,11 @@ async def create_workspace(
                 "description": data.description,
                 "project_path": data.project_path,
                 "git_repo_url": data.git_repo_url,
+                "project_id": data.project_id,
+                "repositories": [
+                    {"repository_id": item.repository_id, "branch_name": item.branch_name}
+                    for item in (data.repositories or [])
+                ],
             },
             stage="QUEUED",
             message="Workspace provisioning queued",

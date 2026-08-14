@@ -15,6 +15,27 @@ class ChangeProposalCreateRequest(BaseModel):
     risk_notes: Optional[str] = Field(default=None, max_length=20000)
 
 
+class ChangeProposalRepoResponse(BaseModel):
+    id: str
+    proposal_id: str
+    repository_id: Optional[str] = None
+    repo_url: Optional[str] = None
+    repo_name: str
+    repo_slug: str
+    base_branch: str
+    base_commit_sha: str
+    cloud_task_branch: str
+    cloud_head_sha: Optional[str] = None
+    changed_files_count: int
+    insertions: int
+    deletions: int
+    patch_asset_id: Optional[str] = None
+    patch_asset_version_id: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class ChangeProposalResponse(BaseModel):
     id: str
     task_id: str
@@ -34,6 +55,7 @@ class ChangeProposalResponse(BaseModel):
     risk_notes: Optional[str] = None
     patch_asset_id: Optional[str] = None
     patch_asset_version_id: Optional[str] = None
+    repositories: List[ChangeProposalRepoResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: Optional[datetime] = None
 
@@ -51,6 +73,8 @@ class ChangeProposalFileResponse(BaseModel):
     file_path: str
     old_path: Optional[str] = None
     new_path: Optional[str] = None
+    repository_id: Optional[str] = None
+    proposal_repo_id: Optional[str] = None
     change_type: str
     insertions: int
     deletions: int

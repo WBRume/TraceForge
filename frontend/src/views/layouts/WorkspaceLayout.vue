@@ -13,7 +13,7 @@ const route = useRoute()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const localAgent = useLocalAgentStore()
-const { electronAvailable, repoMapping } = storeToRefs(localAgent)
+const { electronAvailable } = storeToRefs(localAgent)
 const { t } = useI18n()
 
 const loading = ref(true)
@@ -27,8 +27,12 @@ const maybePromptRepoSetup = async () => {
   await localAgent.loadLocalConfig()
   await localAgent.setWorkspaceContext(workspace)
   if (!electronAvailable.value) return
-  if (!String(workspace.git_repo_url || '').trim()) return
-  if (repoMapping.value?.localPath) return
+  const hasRemotes = (
+    String(workspace.git_repo_url || '').trim()
+    || (Array.isArray(workspace.repositories) && workspace.repositories.length > 0)
+  )
+  if (!hasRemotes) return
+  if (localAgent.missingRemotes.length === 0) return
   showRepoSetupDialog.value = true
 }
 

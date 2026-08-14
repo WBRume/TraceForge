@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, Languages, BookCopy, ServerCog } from 'lucide-vue-next'
+import { Plus, Briefcase, Languages, BookCopy, ServerCog, Package, FolderKanban, GitFork } from 'lucide-vue-next'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
+import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
 import api from '@/utils/api'
-import { formatApiError } from '@/utils/error'
 import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
 
-const { locale, t } = useI18n()
+const { locale } = useI18n()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const authStore = useAuthStore()
@@ -24,25 +24,13 @@ const toggleLanguage = () => {
 
 const loading = ref(true)
 const showCreateModal = ref(false)
-const newWsName = ref('')
-const newWsDesc = ref('')
-const newWsPath = ref('')
-const newWsGit = ref('')
-const creating = ref(false)
-const createError = ref('')
 const showDeleteConfirm = ref(false)
 const deletingWorkspace = ref(false)
 const wsToDelete = ref<any>(null)
-const createModalOverlayArmed = ref(false)
 
 onMounted(async () => {
-  window.addEventListener('blur', cancelCreateModalOverlayClose)
   await wsStore.fetchWorkspaces()
   loading.value = false
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('blur', cancelCreateModalOverlayClose)
 })
 
 const enterWorkspace = (ws: any) => {
@@ -58,35 +46,11 @@ const openQueueOps = () => {
   router.push('/ops/queue')
 }
 
-const handleCreate = async () => {
-  if (!newWsName.value) return
-  creating.value = true
-  createError.value = ''
-  try {
-    const res = await api.post('/workspaces', {
-      name: newWsName.value,
-      description: newWsDesc.value,
-      project_path: newWsPath.value,
-      git_repo_url: newWsGit.value
-    })
-    showCreateModal.value = false
-    const jobId = String(res.data?.job_id || '').trim()
-    if (!jobId) {
-      throw new Error(t('provisioning.invalid_job_id'))
-    }
-    await router.push({
-      path: `/ops/queue/provision/${jobId}`,
-    })
-  } catch (e) {
-    createError.value = formatApiError(
-      e,
-      t('workspaces.errors.create_failed'),
-      t
-    )
-    console.error('Failed to create workspace', e)
-  } finally {
-    creating.value = false
-  }
+const handleWorkspaceCreated = async (jobId: string) => {
+  showCreateModal.value = false
+  await router.push({
+    path: '/ops/queue/provision/' + jobId,
+  })
 }
 
 const logout = () => {
@@ -119,22 +83,6 @@ const confirmDeleteWorkspace = async () => {
     wsToDelete.value = null
   }
 }
-
-const armCreateModalOverlayClose = (event: PointerEvent) => {
-  if (event.button !== 0) return
-  createModalOverlayArmed.value = true
-}
-
-const cancelCreateModalOverlayClose = () => {
-  createModalOverlayArmed.value = false
-}
-
-const finishCreateModalOverlayClose = () => {
-  if (!createModalOverlayArmed.value) return
-  createModalOverlayArmed.value = false
-  createError.value = ''
-  showCreateModal.value = false
-}
 </script>
 
 <template>
@@ -166,6 +114,24 @@ const finishCreateModalOverlayClose = () => {
       <div class="ws-header-row">
         <h2 class="title-gradient-small">{{ $t('workspaces.title') }}</h2>
         <div class="flex items-center gap-2">
+          <button
+            class="btn-secondary flex items-center gap-2"
+            @click="router.push('/management/products')"
+          >
+            <Package class="w-4 h-4" /> {{ $t('management.entry_products') }}
+          </button>
+          <button
+            class="btn-secondary flex items-center gap-2"
+            @click="router.push('/management/projects')"
+          >
+            <FolderKanban class="w-4 h-4" /> {{ $t('management.entry_projects') }}
+          </button>
+          <button
+            class="btn-secondary flex items-center gap-2"
+            @click="router.push('/management/repositories')"
+          >
+            <GitFork class="w-4 h-4" /> {{ $t('management.entry_repositories') }}
+          </button>
           <button
             class="btn-secondary flex items-center gap-2"
             @click="openQueueOps"
@@ -219,44 +185,11 @@ const finishCreateModalOverlayClose = () => {
       </div>
     </main>
 
-    <!-- Modal -->
-    <div
-      v-if="showCreateModal"
-      class="modal-overlay"
-      @pointerdown.self="armCreateModalOverlayClose"
-      @pointerup.self="finishCreateModalOverlayClose"
-      @pointerleave.self="cancelCreateModalOverlayClose"
-      @pointercancel.self="cancelCreateModalOverlayClose"
-    >
-      <div class="modal glass-panel">
-        <h3>{{ $t('workspaces.new_workspace') }}</h3>
-        <form @submit.prevent="handleCreate" class="mt-4 flex flex-col gap-4">
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.name') }}</label>
-            <input v-model="newWsName" type="text" class="input-field" required :placeholder="$t('workspaces.modal.name_placeholder')">
-          </div>
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.desc') }}</label>
-            <textarea v-model="newWsDesc" class="input-field" rows="2" :placeholder="$t('workspaces.modal.desc_placeholder')"></textarea>
-          </div>
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.path') }}</label>
-            <input v-model="newWsPath" type="text" class="input-field" required :placeholder="$t('workspaces.modal.path_placeholder')">
-          </div>
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.git') }}</label>
-            <input v-model="newWsGit" type="text" class="input-field" :placeholder="$t('workspaces.modal.git_placeholder')">
-          </div>
-          <p v-if="createError" class="create-error">{{ createError }}</p>
-          <div class="flex justify-end gap-3 mt-4">
-            <button type="button" class="btn-secondary" @click="createError = ''; showCreateModal = false">{{ $t('common.cancel') }}</button>
-            <button type="submit" class="btn-primary" :disabled="creating">
-              {{ creating ? $t('workspaces.modal.creating') : $t('common.confirm') }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <WorkspaceCreateWorkflowDialog
+      :show="showCreateModal"
+      @close="showCreateModal = false"
+      @created="handleWorkspaceCreated"
+    />
 
     <ConfirmActionModal
       :show="showDeleteConfirm"

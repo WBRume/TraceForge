@@ -107,6 +107,12 @@ class SddTask(Base):
     )
     change_proposals = relationship("SddTaskChangeProposal", back_populates="task", cascade="all, delete-orphan")
     verification_runs = relationship("SddTaskVerificationRun", back_populates="task", cascade="all, delete-orphan")
+    repo_bindings = relationship(
+        "SddTaskRepository",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="SddTaskRepository.created_at.asc()",
+    )
     conflict_reports = relationship("SddTaskConflictReport", back_populates="task", cascade="all, delete-orphan")
     cli_bootstrap = relationship(
         "SddTaskCliBootstrap",
@@ -144,3 +150,8 @@ class SddPlanNode(Base):
     task = relationship("SddTask", back_populates="plan_nodes")
     children = relationship("SddPlanNode", back_populates="parent", cascade="all, delete-orphan")
     parent = relationship("SddPlanNode", back_populates="children", remote_side=[id])
+
+
+# Late import registers sdd_task_repositories into Base.metadata for
+# create_all / autogenerate completeness.
+from app.domains.task.models import task_repository as _task_repo_models  # noqa: E402,F401

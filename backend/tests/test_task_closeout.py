@@ -65,7 +65,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
                 "landing_method": "HUMAN_ADJUSTED",
                 "commit_id": "abc1234",
                 "human_delta": {
-                    "status": "CONFIRMED",
+                    "status": "READY",
                     "title": "Manual API adjustment",
                     "summary": "Changed the AI output to use the internal API.",
                     "change_category": "framework_api_misuse",
@@ -92,7 +92,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
             assert task is not None
             assert task.status == TaskStatus.DONE
             assert evidence.source_ref == "abc1234"
-            assert review.status.value == "OPEN"
+            assert review.status.value == "RESOLVED"
             assert review.review_type == "EXPERT_FINAL_REVIEW"
             assert summary.final_status.value == "PARTIAL"
             assert detail_task is not None

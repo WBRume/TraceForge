@@ -9,6 +9,7 @@ type AuthUser = {
   display_name: string
   avatar_url?: string | null
   avatar_svg?: string | null
+  is_admin?: boolean
   created_at?: string
 }
 

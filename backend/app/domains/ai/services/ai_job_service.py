@@ -1293,7 +1293,15 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             if _extract_block_text(item)
         ).strip()
         history_lines = _thread_history_lines(thread)
-        project_path = (task.project_path if task and task.project_path else ".").strip() or "."
+        from app.domains.task.services import task_service as task_service_module
+
+        project_path = (
+            task_service_module.resolve_task_cli_dir(db, task)
+            if task
+            else "."
+        )
+        if not os.path.isdir(project_path):
+            project_path = (task.project_path if task and task.project_path else ".").strip() or "."
         if not os.path.isdir(project_path):
             project_path = "."
         await _update_job_state(job_id, progress=24, message="Preparing AI prompt")

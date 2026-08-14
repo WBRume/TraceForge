@@ -292,12 +292,59 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, A
             context.get("description"),
             project_path=context.get("project_path"),
             git_repo_url=context.get("git_repo_url"),
+            project_id=context.get("project_id"),
+            repositories=context.get("repositories") if isinstance(context.get("repositories"), list) else None,
         )
+        repositories = [workspace_service.serialize_workspace_repository(row) for row in workspace.repositories]
         return {
             "workspace_id": workspace.id,
             "workspace_name": workspace.name,
             "project_path": workspace.project_path,
+            "project_id": workspace.project_id,
+            "repositories": repositories,
         }
+    finally:
+        db.close()
+
+
+def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:
+    import os as _os
+
+    from app.domains.workspace.models.workspace_repository import (
+        SddWorkspaceRepository,
+        WorkspaceRepositoryState,
+    )
+
+    db = SessionLocal()
+    try:
+        workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+        if workspace and workspace.project_path:
+            _os.makedirs(workspace.project_path, exist_ok=True)
+        rows = (
+            db.query(SddWorkspaceRepository)
+            .filter(SddWorkspaceRepository.workspace_id == workspace_id)
+            .order_by(SddWorkspaceRepository.created_at.asc())
+            .all()
+        )
+        results: Dict[str, Any] = {"repositories": []}
+        for row in rows:
+            try:
+                git_worktree_service.ensure_base_repository(row.repo_url, row.base_dir or "")
+                head = git_worktree_service.read_repo_head_sha(row.base_dir or "")
+                row.state = WorkspaceRepositoryState.READY
+                row.base_commit_sha = head
+                row.error_message = None
+                results["repositories"].append(
+                    {"repository_id": row.repository_id, "repo_name": row.repo_name, "state": "READY"}
+                )
+            except Exception as exc:
+                row.state = WorkspaceRepositoryState.FAILED
+                row.error_message = str(exc)
+                results["repositories"].append(
+                    {"repository_id": row.repository_id, "repo_name": row.repo_name, "state": "FAILED", "error": str(exc)}
+                )
+        db.commit()
+        return results
     finally:
         db.close()
 
@@ -365,12 +412,21 @@ def _mark_task_prepare_failed(*, workspace_id: str, task_id: str, error_message:
 
 
 def _workspace_uses_git(workspace_id: str) -> bool:
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
     db = SessionLocal()
     try:
         workspace = db.query(Workspace).filter(Workspace.id == str(workspace_id or "").strip()).first()
         if not workspace:
             return False
-        return git_worktree_service.should_use_git_worktree(workspace.project_path, workspace.git_repo_url)
+        if git_worktree_service.should_use_git_worktree(workspace.project_path, workspace.git_repo_url):
+            return True
+        repo_count = (
+            db.query(SddWorkspaceRepository)
+            .filter(SddWorkspaceRepository.workspace_id == workspace.id)
+            .count()
+        )
+        return repo_count > 0
     finally:
         db.close()
 
@@ -384,7 +440,10 @@ async def run_create_workspace_job(job_id: str) -> None:
     creator_id = str(payload.get("creator_id") or "").strip()
     project_path = str(context.get("project_path") or "").strip()
     git_repo_url = str(context.get("git_repo_url") or "").strip()
+    project_id = str(context.get("project_id") or "").strip()
+    use_multi_repo = bool(project_id)
     use_repo_lock = bool(project_path and git_repo_url)
+    creation_lock_url = git_repo_url if use_repo_lock else (f"project:{project_id}" if use_multi_repo else "")
 
     with bind_log_context(job_id=job_id, user_id=creator_id):
         try:
@@ -396,20 +455,40 @@ async def run_create_workspace_job(job_id: str) -> None:
             )
             async with queue_provision_jobs(queue_tag="create_workspace"):
                 mark_running(job_id, stage="VALIDATING_INPUT", progress=5, message="Validating workspace request")
-                if use_repo_lock:
+                if use_repo_lock or use_multi_repo:
                     mark_progress(job_id, stage="WAITING_REPO_LOCK", progress=15, message="Waiting for repository lock")
                     try:
                         async with lock_workspace_repo_creation(
                             project_path=project_path,
-                            git_repo_url=git_repo_url,
+                            git_repo_url=creation_lock_url,
                         ):
-                            mark_progress(job_id, stage="CLONING_REPOSITORY", progress=30, message="Cloning workspace repository")
-                            result = await asyncio.to_thread(
-                                _create_workspace_sync,
-                                job_id=job_id,
-                                creator_id=creator_id,
-                                context=context,
-                            )
+                            if use_multi_repo:
+                                mark_progress(job_id, stage="CREATING_WORKSPACE", progress=25, message="Creating workspace")
+                                result = await asyncio.to_thread(
+                                    _create_workspace_sync,
+                                    job_id=job_id,
+                                    creator_id=creator_id,
+                                    context=context,
+                                )
+                                mark_progress(
+                                    job_id,
+                                    stage="MATERIALIZE_REPOS",
+                                    progress=40,
+                                    message="Materializing workspace repositories",
+                                )
+                                repo_result = await asyncio.to_thread(
+                                    _materialize_workspace_repos_sync,
+                                    workspace_id=str(result.get("workspace_id") or "").strip(),
+                                )
+                                result["repository_materialization"] = repo_result
+                            else:
+                                mark_progress(job_id, stage="CLONING_REPOSITORY", progress=30, message="Cloning workspace repository")
+                                result = await asyncio.to_thread(
+                                    _create_workspace_sync,
+                                    job_id=job_id,
+                                    creator_id=creator_id,
+                                    context=context,
+                                )
                     except LockAcquireTimeout as exc:
                         raise ValueError("Workspace repository is busy. Please retry later.") from exc
                 else:
@@ -576,6 +655,71 @@ async def run_create_task_job(job_id: str) -> None:
                 workspace_id,
                 task_id,
                 str(exc),
+            )
+
+
+def _sync_repo_refs_sync(*, repository_id: str) -> Dict[str, Any]:
+    from app.domains.management.services import repository_service
+
+    db = SessionLocal()
+    try:
+        repository = repository_service.get_repository(db, repository_id)
+        if not repository:
+            raise ValueError("Repository not found")
+        return repository_service.sync_repository_refs(db, repository)
+    finally:
+        db.close()
+
+
+async def run_sync_repo_refs_job(job_id: str) -> None:
+    payload = _get_job_payload(job_id)
+    if not payload:
+        return
+
+    context = payload.get("context_json") if isinstance(payload.get("context_json"), dict) else {}
+    creator_id = str(payload.get("creator_id") or "").strip()
+    repository_id = str(context.get("repository_id") or "").strip()
+
+    with bind_log_context(job_id=job_id, user_id=creator_id):
+        try:
+            mark_progress(
+                job_id,
+                stage="WAITING_EXECUTION_QUEUE",
+                progress=1,
+                message="Waiting for repo ref sync execution slot",
+            )
+            async with queue_provision_jobs(queue_tag="sync_repo_refs"):
+                mark_running(job_id, stage="SYNCING_REFS", progress=20, message="Fetching branches and tags")
+                result = await asyncio.to_thread(
+                    _sync_repo_refs_sync,
+                    repository_id=repository_id,
+                )
+
+            mark_success(
+                job_id,
+                stage="COMPLETED",
+                message="Repository refs synced",
+                result_json=result,
+            )
+            audit_log(
+                action="sync_repository_refs",
+                outcome="success",
+                resource_type="repository",
+                resource_id=repository_id,
+                user_id=creator_id,
+                job_id=job_id,
+            )
+        except LockAcquireTimeout as exc:
+            err = "Provision queue is busy. Please retry later."
+            mark_failed(job_id, stage="FAILED", message="Repository ref sync failed", error_message=err)
+            logger.warning("Repo ref sync queue timeout: job_id={}, key={}", job_id, exc.lock_key)
+        except Exception as exc:
+            logger.exception("Repository ref sync job failed: job_id={}, error={}", job_id, str(exc))
+            mark_failed(
+                job_id,
+                stage="FAILED",
+                message="Repository ref sync failed",
+                error_message=str(exc),
             )
 
 

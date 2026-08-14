@@ -85,6 +85,42 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/management',
+      component: () => import('../views/management/ManagementLayout.vue'),
+      meta: { requiresAuth: true },
+      children: [
+        {
+          path: 'products',
+          name: 'productsHome',
+          component: () => import('../views/management/ProductsView.vue'),
+        },
+        {
+          path: 'products/:productId',
+          name: 'productDetail',
+          component: () => import('../views/management/ProductDetailView.vue'),
+        },
+        {
+          path: 'projects',
+          name: 'projectsHome',
+          component: () => import('../views/management/ProjectsView.vue'),
+        },
+        {
+          path: 'projects/:projectId',
+          name: 'projectDetail',
+          component: () => import('../views/management/ProjectDetailView.vue'),
+        },
+        {
+          path: 'repositories',
+          name: 'repositoriesHome',
+          component: () => import('../views/management/RepositoriesView.vue'),
+        },
+        {
+          path: '',
+          redirect: '/management/products',
+        },
+      ],
+    },
+    {
       path: '/ws/:wsId',
       component: () => import('../views/layouts/WorkspaceLayout.vue'),
       meta: { requiresAuth: true },

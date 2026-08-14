@@ -20,6 +20,35 @@ export type AgentTaskListResponse = {
   page_size: number
 }
 
+export type ChangeProposalRepo = {
+  id: string
+  proposal_id: string
+  repository_id?: string | null
+  repo_url?: string | null
+  repo_name: string
+  repo_slug: string
+  base_branch: string
+  base_commit_sha: string
+  cloud_task_branch: string
+  cloud_head_sha?: string | null
+  changed_files_count: number
+  insertions: number
+  deletions: number
+  patch_asset_id?: string | null
+  patch_asset_version_id?: string | null
+  created_at: string
+}
+
+export type ChangeProposalRepoPatch = ChangeProposalRepo & {
+  patch_text: string
+}
+
+export type ChangeProposalRepoPatchListResponse = {
+  proposal_id: string
+  items: ChangeProposalRepoPatch[]
+  total: number
+}
+
 export type ChangeProposal = {
   id: string
   task_id: string
@@ -39,6 +68,7 @@ export type ChangeProposal = {
   risk_notes?: string | null
   patch_asset_id?: string | null
   patch_asset_version_id?: string | null
+  repositories?: ChangeProposalRepo[]
   created_at: string
   updated_at?: string | null
 }
@@ -49,6 +79,8 @@ export type ChangeProposalFile = {
   file_path: string
   old_path?: string | null
   new_path?: string | null
+  repository_id?: string | null
+  proposal_repo_id?: string | null
   change_type: 'added' | 'modified' | 'deleted' | 'renamed' | string
   insertions: number
   deletions: number

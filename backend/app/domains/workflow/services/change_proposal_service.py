@@ -18,6 +18,7 @@ from app.domains.workflow.models.task_change import (
     ChangeProposalStatus,
     SddTaskChangeProposal,
     SddTaskChangeProposalFile,
+    SddTaskChangeProposalRepo,
     SddTaskConflictReport,
     SddTaskVerificationRun,
     VerificationRunStatus,
@@ -158,7 +159,8 @@ def create_change_proposal(
     risk_notes: Optional[str] = None,
 ) -> SddTaskChangeProposal:
     try:
-        snapshot = git_patch_service.generate_task_patch_snapshot(task, workspace)
+        snapshots = git_patch_service.generate_task_repo_patch_snapshots(task, workspace, db=db)
+        primary = snapshots[0]
         proposal_no = _next_task_sequence(db, task.id, SddTaskChangeProposal.proposal_no)
         patch_set_no = _next_task_sequence(db, task.id, SddTaskChangeProposal.patch_set_no)
         proposal = SddTaskChangeProposal(
@@ -167,55 +169,83 @@ def create_change_proposal(
             proposal_no=proposal_no,
             patch_set_no=patch_set_no,
             status=ChangeProposalStatus.GENERATED,
-            base_repo_url=snapshot.base_repo_url,
-            base_branch=snapshot.base_branch,
-            base_commit_sha=snapshot.base_commit_sha,
-            cloud_task_branch=snapshot.cloud_task_branch,
-            cloud_head_sha=snapshot.cloud_head_sha,
-            changed_files_count=snapshot.changed_files_count,
-            insertions=snapshot.insertions,
-            deletions=snapshot.deletions,
+            base_repo_url=primary.repo_url,
+            base_branch=primary.base_branch,
+            base_commit_sha=primary.base_commit_sha,
+            cloud_task_branch=primary.cloud_task_branch,
+            cloud_head_sha=primary.cloud_head_sha,
+            changed_files_count=sum(item.changed_files_count for item in snapshots),
+            insertions=sum(item.insertions for item in snapshots),
+            deletions=sum(item.deletions for item in snapshots),
             summary=(summary or "").strip() or f"Change proposal #{proposal_no}",
             risk_notes=(risk_notes or "").strip() or None,
         )
         db.add(proposal)
         db.flush()
 
-        patch_asset, patch_version = change_artifact_service.create_patch_asset(
-            db,
-            task,
-            creator_id=creator_id,
-            proposal_no=proposal_no,
-            patch_set_no=patch_set_no,
-            patch_text=snapshot.patch_text,
-            metadata={
-                "proposal_id": proposal.id,
-                "base_branch": snapshot.base_branch,
-                "base_commit_sha": snapshot.base_commit_sha,
-                "cloud_task_branch": snapshot.cloud_task_branch,
-                "cloud_head_sha": snapshot.cloud_head_sha,
-                "changed_files_count": snapshot.changed_files_count,
-                "insertions": snapshot.insertions,
-                "deletions": snapshot.deletions,
-            },
-        )
-        proposal.patch_asset_id = patch_asset.id
-        proposal.patch_asset_version_id = patch_version.id
-
-        for change in snapshot.files:
-            db.add(
-                SddTaskChangeProposalFile(
-                    proposal_id=proposal.id,
-                    file_path=change.file_path,
-                    old_path=change.old_path,
-                    new_path=change.new_path,
-                    change_type=_normalize_file_type(change.change_type),
-                    insertions=int(change.insertions or 0),
-                    deletions=int(change.deletions or 0),
-                    diff_excerpt=change.diff_excerpt,
-                    is_binary=bool(change.is_binary),
-                )
+        for snapshot in snapshots:
+            repo_patch = SddTaskChangeProposalRepo(
+                proposal_id=proposal.id,
+                repository_id=snapshot.repository_id,
+                repo_url=snapshot.repo_url,
+                repo_name=snapshot.repo_name,
+                repo_slug=snapshot.repo_slug,
+                base_branch=snapshot.base_branch,
+                base_commit_sha=snapshot.base_commit_sha,
+                cloud_task_branch=snapshot.cloud_task_branch,
+                cloud_head_sha=snapshot.cloud_head_sha,
+                changed_files_count=snapshot.changed_files_count,
+                insertions=snapshot.insertions,
+                deletions=snapshot.deletions,
             )
+            db.add(repo_patch)
+            db.flush()
+
+            patch_asset, patch_version = change_artifact_service.create_patch_asset(
+                db,
+                task,
+                creator_id=creator_id,
+                proposal_no=proposal_no,
+                patch_set_no=patch_set_no,
+                patch_text=snapshot.patch_text,
+                repo_slug=(snapshot.repo_slug if snapshot.repo_slug != "repo" else None),
+                metadata={
+                    "proposal_id": proposal.id,
+                    "repo_patch_id": repo_patch.id,
+                    "repository_id": snapshot.repository_id,
+                    "repo_slug": snapshot.repo_slug,
+                    "base_branch": snapshot.base_branch,
+                    "base_commit_sha": snapshot.base_commit_sha,
+                    "cloud_task_branch": snapshot.cloud_task_branch,
+                    "cloud_head_sha": snapshot.cloud_head_sha,
+                    "changed_files_count": snapshot.changed_files_count,
+                    "insertions": snapshot.insertions,
+                    "deletions": snapshot.deletions,
+                },
+            )
+            repo_patch.patch_asset_id = patch_asset.id
+            repo_patch.patch_asset_version_id = patch_version.id
+
+            if snapshot is primary:
+                proposal.patch_asset_id = patch_asset.id
+                proposal.patch_asset_version_id = patch_version.id
+
+            for change in snapshot.files:
+                db.add(
+                    SddTaskChangeProposalFile(
+                        proposal_id=proposal.id,
+                        repository_id=snapshot.repository_id,
+                        proposal_repo_id=repo_patch.id,
+                        file_path=change.file_path,
+                        old_path=change.old_path,
+                        new_path=change.new_path,
+                        change_type=_normalize_file_type(change.change_type),
+                        insertions=int(change.insertions or 0),
+                        deletions=int(change.deletions or 0),
+                        diff_excerpt=change.diff_excerpt,
+                        is_binary=bool(change.is_binary),
+                    )
+                )
 
         db.commit()
         db.refresh(proposal)
@@ -223,6 +253,68 @@ def create_change_proposal(
     except Exception:
         db.rollback()
         raise
+
+
+def list_proposal_repo_patches(
+    db: Session,
+    *,
+    proposal_id: str,
+) -> List[SddTaskChangeProposalRepo]:
+    return (
+        db.query(SddTaskChangeProposalRepo)
+        .filter(SddTaskChangeProposalRepo.proposal_id == proposal_id)
+        .order_by(SddTaskChangeProposalRepo.created_at.asc())
+        .all()
+    )
+
+
+def read_repo_patch_file(
+    db: Session,
+    repo_patch: SddTaskChangeProposalRepo,
+) -> Tuple[bytes, str]:
+    version_id = str(repo_patch.patch_asset_version_id or "").strip()
+    if not version_id:
+        raise ChangeProposalError("Patch artifact is missing", status_code=404)
+    version = db.query(SddAssetVersion).filter(SddAssetVersion.id == version_id).first()
+    if not version:
+        raise ChangeProposalError("Patch artifact version not found", status_code=404)
+    abs_path = os.path.abspath(str(version.original_path or "").strip())
+    if not abs_path or not os.path.isfile(abs_path):
+        raise ChangeProposalError("Patch file not found", status_code=404)
+    with open(abs_path, "rb") as handle:
+        raw = handle.read()
+    filename = os.path.basename(abs_path) or f"change-proposal-repo-{repo_patch.repo_slug}.patch"
+    return raw, filename
+
+
+def serialize_repo_patch(
+    db: Session,
+    repo_patch: SddTaskChangeProposalRepo,
+    *,
+    include_patch_text: bool = False,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "id": repo_patch.id,
+        "proposal_id": repo_patch.proposal_id,
+        "repository_id": repo_patch.repository_id,
+        "repo_url": repo_patch.repo_url,
+        "repo_name": repo_patch.repo_name,
+        "repo_slug": repo_patch.repo_slug,
+        "base_branch": repo_patch.base_branch,
+        "base_commit_sha": repo_patch.base_commit_sha,
+        "cloud_task_branch": repo_patch.cloud_task_branch,
+        "cloud_head_sha": repo_patch.cloud_head_sha,
+        "changed_files_count": repo_patch.changed_files_count,
+        "insertions": repo_patch.insertions,
+        "deletions": repo_patch.deletions,
+        "patch_asset_id": repo_patch.patch_asset_id,
+        "patch_asset_version_id": repo_patch.patch_asset_version_id,
+        "created_at": repo_patch.created_at,
+    }
+    if include_patch_text:
+        raw, _filename = read_repo_patch_file(db, repo_patch)
+        payload["patch_text"] = raw.decode("utf-8", errors="replace")
+    return payload
 
 
 def mark_patch_downloaded(db: Session, proposal: SddTaskChangeProposal) -> SddTaskChangeProposal:

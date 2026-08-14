@@ -383,3 +383,224 @@ def restore_archived_workspace(*, archive_path: str, original_project_path: str)
 
     os.makedirs(os.path.dirname(abs_original_path), exist_ok=True)
     shutil.move(abs_archive_path, abs_original_path)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Multi-repository workspace orchestration
+# ──────────────────────────────────────────────────────────────────────────────
+
+class RepoWorktreeBinding:
+    """A single repository binding used to orchestrate task worktrees."""
+
+    def __init__(
+        self,
+        *,
+        repo_url: str,
+        repo_name: str,
+        repo_slug: str,
+        branch_name: str,
+        base_dir: str,
+    ):
+        self.repo_url = str(repo_url or "").strip()
+        self.repo_name = str(repo_name or "").strip()
+        self.repo_slug = str(repo_slug or "").strip()
+        self.branch_name = str(branch_name or "").strip()
+        self.base_dir = str(base_dir or "").strip()
+
+
+def ensure_base_repository(repo_url: str, base_dir: str) -> str:
+    """Clone a workspace base repository into base_dir if missing, or verify it."""
+    repo_url = str(repo_url or "").strip()
+    abs_base = _to_abs_path(base_dir, label="base_dir")
+    if not repo_url:
+        raise GitWorktreeError("repo_url is required for base repository", status_code=400)
+    _assert_not_root_path(abs_base, label="base_dir")
+
+    if is_git_repository(abs_base):
+        ensure_workspace_repo_matches_remote(abs_base, repo_url)
+        return abs_base
+
+    if os.path.exists(abs_base):
+        raise GitWorktreeError(
+            f"Base repository path already exists and is not a git repository: {abs_base}",
+            status_code=409,
+        )
+
+    parent_dir = os.path.dirname(abs_base)
+    if not parent_dir:
+        raise GitWorktreeError("base_dir parent directory is invalid", status_code=400)
+    os.makedirs(parent_dir, exist_ok=True)
+
+    try:
+        _run_git_checked(["clone", repo_url, abs_base], status_code=400)
+        ensure_workspace_repo_matches_remote(abs_base, repo_url)
+    except Exception:
+        if os.path.isdir(abs_base):
+            shutil.rmtree(abs_base, ignore_errors=True)
+        raise
+    return abs_base
+
+
+def _cleanup_stale_worktree_dir(path: str) -> None:
+    try:
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
+
+
+def remove_single_repo_worktree(
+    *,
+    binding: RepoWorktreeBinding,
+    task_root: str,
+    task_id: str,
+    missing_ok: bool = True,
+) -> None:
+    """Remove one repository worktree (and its task branch) from a task root."""
+    abs_repo = _to_abs_path(binding.base_dir, label="base_dir")
+    abs_task = os.path.join(_to_abs_path(task_root, label="task_root"), binding.repo_slug)
+
+    if not os.path.isdir(abs_repo) or not is_git_repository(abs_repo):
+        if not missing_ok:
+            raise GitWorktreeError(f"Workspace repository is missing: {abs_repo}", status_code=409)
+        _cleanup_stale_worktree_dir(abs_task)
+        return
+
+    if os.path.exists(abs_task):
+        worktree_remove = _run_git_raw(["worktree", "remove", "--force", abs_task], cwd=abs_repo)
+        if worktree_remove.returncode != 0:
+            message = _command_output(worktree_remove)
+            if not (missing_ok and _is_missing_worktree_error(message)):
+                raise GitWorktreeError(
+                    f"Failed to remove task worktree {abs_task}: {message}",
+                    status_code=409,
+                )
+        _cleanup_stale_worktree_dir(abs_task)
+    elif not missing_ok:
+        raise GitWorktreeError(f"Task worktree path does not exist: {abs_task}", status_code=409)
+
+    branch = task_branch_name(task_id)
+    branch_remove = _run_git_raw(["branch", "-D", branch], cwd=abs_repo)
+    if branch_remove.returncode != 0:
+        message = _command_output(branch_remove)
+        if not (missing_ok and _is_missing_branch_error(message)):
+            raise GitWorktreeError(
+                f"Failed to delete task branch {branch} in {binding.repo_name}: {message}",
+                status_code=409,
+            )
+
+
+def create_task_worktrees(
+    *,
+    base_bindings: list,
+    task_root: str,
+    task_id: str,
+) -> list:
+    """Create one worktree per repository binding; roll back all on failure.
+
+    Branch name per repository: task/<task_id> (repositories are separate, so
+    the same branch name does not collide).
+    """
+    normalized_bindings = [b for b in base_bindings if isinstance(b, RepoWorktreeBinding)]
+    if not normalized_bindings:
+        raise GitWorktreeError("At least one repository binding is required", status_code=400)
+
+    abs_task_root = _to_abs_path(task_root, label="task_root")
+    _assert_not_root_path(abs_task_root, label="task_root")
+    task_branch = task_branch_name(task_id)
+
+    created: list = []
+    try:
+        for binding in normalized_bindings:
+            abs_repo = _to_abs_path(binding.base_dir, label="base_dir")
+            abs_task = os.path.join(abs_task_root, binding.repo_slug)
+
+            if not is_git_repository(abs_repo):
+                raise GitWorktreeError(
+                    f"Workspace repository '{binding.repo_name}' is not a git repository: {abs_repo}",
+                    status_code=409,
+                )
+            if binding.repo_url:
+                ensure_workspace_repo_matches_remote(abs_repo, binding.repo_url)
+            if os.path.exists(abs_task):
+                raise GitWorktreeError(
+                    f"Task worktree path already exists for '{binding.repo_name}': {abs_task}",
+                    status_code=409,
+                )
+            if _branch_exists(abs_repo, task_branch):
+                raise GitWorktreeError(
+                    f"Task branch already exists in '{binding.repo_name}': {task_branch}",
+                    status_code=409,
+                )
+
+            _run_git_checked(["fetch", "--all", "--prune"], cwd=abs_repo, status_code=409)
+
+            branch_name = binding.branch_name
+            branch_source = f"origin/{branch_name}"
+            if not _remote_branch_exists(abs_repo, f"origin/{branch_name}"):
+                raise GitWorktreeError(
+                    f"Branch '{branch_name}' does not exist on origin for repository '{binding.repo_name}'",
+                    status_code=409,
+                )
+
+            os.makedirs(os.path.dirname(abs_task), exist_ok=True)
+            _run_git_checked(
+                ["worktree", "add", "-b", task_branch, abs_task, branch_source],
+                cwd=abs_repo,
+                status_code=409,
+            )
+            created.append(binding)
+    except Exception:
+        for binding in created:
+            try:
+                remove_single_repo_worktree(
+                    binding=binding,
+                    task_root=abs_task_root,
+                    task_id=task_id,
+                    missing_ok=True,
+                )
+            except Exception as rollback_exc:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    f"Failed to rollback task worktree {binding.repo_name}: {rollback_exc}"
+                )
+        raise
+
+    return [task_branch] * len(normalized_bindings)
+
+
+def remove_task_worktrees(
+    *,
+    base_bindings: list,
+    task_root: str,
+    task_id: str,
+    missing_ok: bool = True,
+) -> None:
+    """Remove every repository worktree of a task (best effort per binding)."""
+    errors: list = []
+    for binding in base_bindings:
+        if not isinstance(binding, RepoWorktreeBinding):
+            continue
+        try:
+            remove_single_repo_worktree(
+                binding=binding,
+                task_root=task_root,
+                task_id=task_id,
+                missing_ok=missing_ok,
+            )
+        except GitWorktreeError as exc:
+            errors.append(str(exc))
+    if errors and not missing_ok:
+        raise GitWorktreeError(
+            "Failed to remove some task worktrees: " + " | ".join(errors),
+            status_code=409,
+        )
+
+
+def read_repo_head_sha(repo_path: str) -> Optional[str]:
+    result = _run_git_raw(["rev-parse", "HEAD"], cwd=repo_path)
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip() or None
+
