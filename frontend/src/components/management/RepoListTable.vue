@@ -1,30 +1,20 @@
 <script setup lang="ts">
-import { useI18n } from 'vue-i18n'
-import { GitFork, GitBranch, Tag, RefreshCw, Pencil } from 'lucide-vue-next'
-import DeleteActionButton from '@/components/DeleteActionButton.vue'
+import { Pencil, Trash2 } from 'lucide-vue-next'
+import IconActionButton from '@/components/management/IconActionButton.vue'
 import type { Repository } from '@/types/management'
 
-const props = withDefaults(defineProps<{
+withDefaults(defineProps<{
   items: Repository[];
   loading: boolean;
   canManage: boolean;
-  expandedRepoId: string | null;
 }>(), {
   loading: false,
-  expandedRepoId: null,
 })
 
 const emit = defineEmits<{
   (e: 'edit', repo: Repository): void;
   (e: 'remove', repo: Repository): void;
-  (e: 'toggleRefs', repo: Repository): void;
-  (e: 'sync', repo: Repository): void;
 }>()
-
-const { t } = useI18n()
-
-const syncedAt = (repo: Repository): string =>
-  repo.last_synced_at ?? t('management.repository.never_synced')
 </script>
 
 <template>
@@ -36,23 +26,21 @@ const syncedAt = (repo: Repository): string =>
           <th>{{ $t('management.repository.git_url') }}</th>
           <th>{{ $t('management.repository.repo_type') }}</th>
           <th>{{ $t('management.repository.default_branch') }}</th>
-          <th>{{ $t('management.repository.refs_branch') }}</th>
-          <th>{{ $t('management.repository.refs_tag') }}</th>
-          <th>{{ $t('management.repository.last_synced_at') }}</th>
+          <th>{{ $t('management.repository.group') }}</th>
           <th>{{ $t('management.common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
         <template v-if="loading">
           <tr>
-            <td colspan="8" class="mgmt-empty">
+            <td colspan="6" class="mgmt-empty">
               {{ $t('common.loading') }}
             </td>
           </tr>
         </template>
         <template v-else-if="!items.length">
           <tr>
-            <td colspan="8" class="mgmt-empty">
+            <td colspan="6" class="mgmt-empty">
               {{ $t('management.common.empty') }}
             </td>
           </tr>
@@ -69,57 +57,22 @@ const syncedAt = (repo: Repository): string =>
               </span>
             </td>
             <td>{{ repo.default_branch || '-' }}</td>
+            <td>{{ repo.group_name || $t('management.repository.no_group') }}</td>
             <td>
-              <span class="mgmt-count-cell">
-                <GitBranch class="mgmt-count-icon" />
-                {{ repo.branch_count }}
-              </span>
-            </td>
-            <td>
-              <span class="mgmt-count-cell">
-                <Tag class="mgmt-count-icon" />
-                {{ repo.tag_count }}
-              </span>
-            </td>
-            <td class="text-muted">{{ syncedAt(repo) }}</td>
-            <td>
-              <div class="row-actions">
-                <button
-                  class="btn-ghost mgmt-icon-btn"
-                  :class="{ 'is-active': repo.id === expandedRepoId }"
-                  :title="$t('common.expand')"
-                  @click="emit('toggleRefs', repo)"
-                >
-                  <GitFork class="mgmt-icon-btn-icon" />
-                </button>
-                <button
-                  v-if="canManage"
-                  class="btn-ghost mgmt-icon-btn"
-                  :title="$t('management.repository.sync')"
-                  @click="emit('sync', repo)"
-                >
-                  <RefreshCw class="mgmt-icon-btn-icon" />
-                </button>
-                <button
-                  v-if="canManage"
-                  class="btn-ghost mgmt-icon-btn"
+              <div v-if="canManage" class="row-actions">
+                <IconActionButton
+                  :icon="Pencil"
                   :title="$t('management.repository.edit')"
                   @click="emit('edit', repo)"
-                >
-                  <Pencil class="mgmt-icon-btn-icon" />
-                </button>
-                <DeleteActionButton
-                  v-if="canManage"
-                  mode="icon"
+                />
+                <IconActionButton
+                  :icon="Trash2"
                   :title="$t('common.delete')"
-                  @click.stop="emit('remove', repo)"
+                  tone="danger"
+                  @click="emit('remove', repo)"
                 />
               </div>
-            </td>
-          </tr>
-          <tr v-if="expandedRepoId === repo.id" class="mgmt-expanded-row">
-            <td colspan="8">
-              <slot name="expanded" :repo="repo" />
+              <span v-else class="text-muted">-</span>
             </td>
           </tr>
         </template>
@@ -142,41 +95,6 @@ const syncedAt = (repo: Repository): string =>
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.mgmt-count-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-}
-
-.mgmt-count-icon {
-  width: 0.9rem;
-  height: 0.9rem;
-  color: #64748b;
-}
-
-.mgmt-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.35rem;
-  border-radius: 8px;
-}
-
-.mgmt-icon-btn.is-active {
-  color: #0ea5e9;
-  background: rgba(14, 165, 233, 0.12);
-}
-
-.mgmt-icon-btn-icon {
-  width: 0.9rem;
-  height: 0.9rem;
-}
-
-.mgmt-expanded-row td {
-  background: rgba(14, 165, 233, 0.04);
-  padding: 0.25rem 0.9rem;
 }
 </style>
 

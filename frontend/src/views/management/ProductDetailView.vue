@@ -1,178 +1,134 @@
 <!--
-ProductDetailView: thin shell over product header + version list + modals.
+ProductDetailView: thin shell over product header + info card + repo bindings.
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { ArrowLeft } from 'lucide-vue-next'
-import AdminGuard from '@/components/management/AdminGuard.vue'
-import VersionListSection from '@/components/management/VersionListSection.vue'
-import VersionFormModal from '@/components/management/VersionFormModal.vue'
-import VersionRepoBindingPanel from '@/components/management/VersionRepoBindingPanel.vue'
-import ProductFormModal from '@/components/management/ProductFormModal.vue'
-import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import { deleteProductVersion, getProduct } from '@/services/managementApi'
-import { formatApiError } from '@/utils/error'
-import { useAuthStore } from '@/stores/auth'
-import type { ProductDetail, ProductVersion } from '@/types/management'
+import { computed, onMounted, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { useI18n } from 'vue-i18n';
+import { ElMessage } from 'element-plus';
+import { ArrowLeft } from 'lucide-vue-next';
+import AdminGuard from '@/components/management/AdminGuard.vue';
+import ProductFormModal from '@/components/management/ProductFormModal.vue';
+import ProductRepoBindingPanel from '@/components/management/ProductRepoBindingPanel.vue';
+import { getProduct } from '@/services/managementApi';
+import { formatApiError } from '@/utils/error';
+import { useAuthStore } from '@/stores/auth';
+import type { ProductDetail } from '@/types/management';
 
-const route = useRoute()
-const router = useRouter()
-const { t } = useI18n()
-const authStore = useAuthStore()
+const route = useRoute();
+const router = useRouter();
+const { t } = useI18n();
+const authStore = useAuthStore();
 
-const productId = computed(() => String(route.params.productId ?? ''))
+const productId = computed(() => String(route.params.productId ?? ''));
 
-const isAdmin = computed(() => Boolean(authStore.user?.is_admin))
+const isAdmin = computed(() => Boolean(authStore.user?.is_admin));
 
-const detail = ref<ProductDetail | null>(null)
-const loading = ref(false)
+const detail = ref<ProductDetail | null>(null);
+const loading = ref(false);
 
-const showEdit = ref(false)
-
-const showVersionForm = ref(false)
-const editingVersion = ref<ProductVersion | null>(null)
-
-const selectedBindingVersionId = ref<string | null>(null)
-
-const deleteVersionTarget = ref<ProductVersion | null>(null)
-const deletingVersion = ref(false)
+const showEdit = ref(false);
 
 const load = async () => {
-  loading.value = true
+  loading.value = true;
   try {
-    detail.value = await getProduct(productId.value)
+    detail.value = await getProduct(productId.value);
   } catch (err) {
-    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
+    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t));
   } finally {
-    loading.value = false
+    loading.value = false;
   }
-}
+};
 
-onMounted(load)
+onMounted(() => {
+  void load();
+});
 
 const goBack = () => {
-  if (window.history.length > 1) {
-    router.back()
-  } else {
-    router.push('/management/products')
-  }
-}
+  router.push('/management/products');
+};
 
 const onProductSaved = () => {
-  showEdit.value = false
-  load()
-}
+  showEdit.value = false;
+  void load();
+};
 
-const openAddVersion = () => {
-  editingVersion.value = null
-  showVersionForm.value = true
-}
-
-const openEditVersion = (version: ProductVersion) => {
-  editingVersion.value = version
-  showVersionForm.value = true
-}
-
-const onVersionSaved = () => {
-  showVersionForm.value = false
-  load()
-}
-
-const toggleBindings = (version: ProductVersion) => {
-  selectedBindingVersionId.value = selectedBindingVersionId.value === version.id ? null : version.id
-}
-
-const confirmDeleteVersion = async () => {
-  if (!deleteVersionTarget.value) return
-  deletingVersion.value = true
-  try {
-    await deleteProductVersion(productId.value, deleteVersionTarget.value.id)
-    ElMessage.success(t('management.common.deleted'))
-    deleteVersionTarget.value = null
-    load()
-  } catch (err) {
-    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
-  } finally {
-    deletingVersion.value = false
-  }
-}
+const onBindingsChanged = () => {
+  void load();
+};
 </script>
 
 <template>
   <div>
     <div class="mgmt-page-header">
       <div>
-        <button class="btn-ghost mgmt-back" @click="goBack">
+        <button class="btn-secondary mgmt-back" @click="goBack">
           <ArrowLeft class="w-4 h-4" />
           {{ $t('management.product.back_to_list') }}
         </button>
-        <h2 v-if="detail" class="mgmt-detail-title">{{ detail.name }}</h2>
-        <p v-if="detail" class="mgmt-subtitle">
-          <span class="mgmt-detail-code">{{ detail.code }}</span>
-          <span v-if="detail.product_line"> · {{ detail.product_line }}</span>
-        </p>
-        <p v-if="detail && detail.description" class="text-muted">{{ detail.description }}</p>
+        <h2 v-if="detail" class="mgmt-detail-title">
+          {{ detail.name }}
+          <span class="mgmt-version-badge">{{ detail.version_no }}</span>
+          <span
+            class="mgmt-status-pill"
+            :class="detail.status === 'ACTIVE' ? 'green' : 'gray'"
+          >
+            {{ detail.status === 'ACTIVE'
+              ? $t('management.product.status_active')
+              : $t('management.product.status_archived') }}
+          </span>
+        </h2>
+        <p v-if="detail" class="mgmt-subtitle">{{ detail.code }}</p>
       </div>
       <AdminGuard>
         <button v-if="detail" class="btn-secondary" @click="showEdit = true">
-          {{ $t('common.edit') }}
+          {{ $t('management.common.edit') }}
         </button>
       </AdminGuard>
     </div>
 
-    <VersionListSection
-      :versions="detail?.versions ?? []"
-      :can-manage="isAdmin"
-      @add="openAddVersion"
-      @edit="openEditVersion"
-      @remove="deleteVersionTarget = $event"
-      @toggle-bindings="toggleBindings"
-    />
+    <div v-if="loading" class="mgmt-empty">{{ $t('management.common.loading') }}</div>
 
-    <div
-      v-for="version in detail?.versions ?? []"
-      :key="version.id"
-    >
-      <VersionRepoBindingPanel
-        v-if="selectedBindingVersionId === version.id"
-        :product-id="productId"
-        :version="version"
+    <template v-else-if="detail">
+      <div class="mgmt-card">
+        <h3>{{ $t('management.product.title') }}</h3>
+        <dl class="mgmt-info-grid">
+          <div class="mgmt-info-item">
+            <dt>{{ $t('management.common.code') }}</dt>
+            <dd>{{ detail.code }}</dd>
+          </div>
+          <div class="mgmt-info-item">
+            <dt>{{ $t('management.product.product_line') }}</dt>
+            <dd>{{ detail.product_line || '-' }}</dd>
+          </div>
+          <div class="mgmt-info-item">
+            <dt>{{ $t('management.product.version_no') }}</dt>
+            <dd>{{ detail.version_no || '-' }}</dd>
+          </div>
+          <div class="mgmt-info-item">
+            <dt>{{ $t('management.product.release_date') }}</dt>
+            <dd>{{ detail.release_date ? detail.release_date.slice(0, 10) : '-' }}</dd>
+          </div>
+          <div class="mgmt-info-item full">
+            <dt>{{ $t('management.product.description') }}</dt>
+            <dd>{{ detail.description || '-' }}</dd>
+          </div>
+        </dl>
+      </div>
+
+      <ProductRepoBindingPanel
+        :product="detail"
         :can-manage="isAdmin"
-        @changed="load"
+        @changed="onBindingsChanged"
       />
-    </div>
 
-    <ProductFormModal
-      :show="showEdit"
-      :product="detail"
-      @saved="onProductSaved"
-      @cancel="showEdit = false"
-    />
-
-    <VersionFormModal
-      :show="showVersionForm"
-      :product-id="productId"
-      :version="editingVersion"
-      @saved="onVersionSaved"
-      @cancel="showVersionForm = false"
-    />
-
-    <ConfirmActionModal
-      :show="Boolean(deleteVersionTarget)"
-      :title="$t('management.product.versions_title')"
-      :message="$t('management.product.delete_version_confirm', {
-        version: deleteVersionTarget?.version_no ?? '',
-      })"
-      :cancel-text="$t('common.cancel')"
-      :confirm-text="$t('common.confirm')"
-      tone="danger"
-      :loading="deletingVersion"
-      @cancel="deleteVersionTarget = null"
-      @confirm="confirmDeleteVersion"
-    />
+      <ProductFormModal
+        :show="showEdit"
+        :product="detail"
+        @saved="onProductSaved"
+        @cancel="showEdit = false"
+      />
+    </template>
   </div>
 </template>
 
@@ -188,11 +144,48 @@ const confirmDeleteVersion = async () => {
 
 .mgmt-detail-title {
   margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
 }
 
-.mgmt-detail-code {
+.mgmt-version-badge {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  padding: 0.1rem 0.5rem;
+}
+
+.mgmt-info-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem 1.5rem;
+  margin: 0;
+}
+
+.mgmt-info-item.full {
+  grid-column: 1 / -1;
+}
+
+.mgmt-info-item dt {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.2rem;
+}
+
+.mgmt-info-item dd {
+  margin: 0;
   color: #334155;
+  font-size: 0.92rem;
+  word-break: break-word;
 }
 
 .w-4 {

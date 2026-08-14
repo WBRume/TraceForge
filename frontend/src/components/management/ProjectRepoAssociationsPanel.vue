@@ -2,13 +2,19 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Plus } from 'lucide-vue-next'
+import { GitBranch, Tag, Plus, Trash2 } from 'lucide-vue-next'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import IconActionButton from '@/components/management/IconActionButton.vue'
+import RefNameInput from '@/components/management/RefNameInput.vue'
 import RepoPickerDialog from '@/components/management/RepoPickerDialog.vue'
-import BranchSelect from '@/components/management/BranchSelect.vue'
 import { associateProjectRepo, dissociateProjectRepo } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
-import type { ProjectDetail, ProjectRepoAssociation, Repository } from '@/types/management'
+import type {
+  ProjectDetail,
+  ProjectRepoAssociation,
+  RepoRefType,
+  Repository,
+} from '@/types/management'
 
 const props = defineProps<{
   project: ProjectDetail;
@@ -37,12 +43,12 @@ const repoTypeLabel = (repoType: string | null): string => {
 // 添加关联
 const pickerShow = ref(false)
 const pendingRepo = ref<Repository | null>(null)
-const pendingBranch = ref<string>('')
+const pendingRef = ref<{ ref_type: RepoRefType; ref_name: string }>({ ref_type: 'BRANCH', ref_name: '' })
 const associating = ref(false)
 
 const handlePick = (repository: Repository) => {
   pendingRepo.value = repository
-  pendingBranch.value = repository.default_branch ?? ''
+  pendingRef.value = { ref_type: 'BRANCH', ref_name: repository.default_branch ?? '' }
   pickerShow.value = false
 }
 
@@ -52,10 +58,11 @@ const confirmAssociate = async () => {
   try {
     await associateProjectRepo(props.project.id, {
       repository_id: pendingRepo.value.id,
-      branch_name: pendingBranch.value || null,
+      ref_type: pendingRef.value.ref_type,
+      ref_name: pendingRef.value.ref_name || null,
     })
     pendingRepo.value = null
-    pendingBranch.value = ''
+    pendingRef.value = { ref_type: 'BRANCH', ref_name: '' }
     emit('changed')
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
@@ -67,7 +74,7 @@ const confirmAssociate = async () => {
 const cancelAssociate = () => {
   if (associating.value) return
   pendingRepo.value = null
-  pendingBranch.value = ''
+  pendingRef.value = { ref_type: 'BRANCH', ref_name: '' }
 }
 
 // 解除关联
@@ -104,7 +111,7 @@ const confirmRemove = async () => {
           <th>{{ $t('management.common.name') }}</th>
           <th>{{ $t('management.repository.git_url') }}</th>
           <th>{{ $t('management.common.type') }}</th>
-          <th>{{ $t('management.common.branch') }}</th>
+          <th>{{ $t('management.product.ref_name') }}</th>
           <th v-if="canManage">{{ $t('management.common.actions') }}</th>
         </tr>
       </thead>
@@ -117,16 +124,21 @@ const confirmRemove = async () => {
               {{ repoTypeLabel(assoc.repo_type) }}
             </span>
           </td>
-          <td class="mgmt-code-cell">{{ assoc.branch_name || '-' }}</td>
+          <td>
+            <span class="mgmt-ref-badge">
+              <GitBranch v-if="assoc.ref_type === 'BRANCH'" class="w-3.5 h-3.5" />
+              <Tag v-else class="w-3.5 h-3.5" />
+              <span class="mgmt-code-cell">{{ assoc.ref_name || '-' }}</span>
+            </span>
+          </td>
           <td v-if="canManage">
             <div class="row-actions">
-              <button
-                class="btn-ghost mgmt-assoc-remove"
+              <IconActionButton
+                :icon="Trash2"
                 :title="$t('common.delete')"
+                tone="danger"
                 @click="removing = assoc"
-              >
-                {{ $t('common.delete') }}
-              </button>
+              />
             </div>
           </td>
         </tr>
@@ -142,20 +154,23 @@ const confirmRemove = async () => {
       @close="pickerShow = false"
     />
 
-    <!-- 添加确认：选择分支 -->
+    <!-- 添加确认：选择分支 / Tag -->
     <div v-if="pendingRepo" class="mgmt-modal-overlay" @click.self="cancelAssociate">
       <div class="mgmt-modal glass-panel mgmt-assoc-modal">
         <h3>{{ $t('management.project.add_association') }}</h3>
         <p class="mgmt-assoc-repo-name">{{ pendingRepo.name }}</p>
         <div class="mgmt-field">
-          <label>{{ $t('management.common.branch') }}</label>
-          <BranchSelect v-model="pendingBranch" :repository-id="pendingRepo.id" />
+          <label>{{ $t('management.product.ref_name') }}</label>
+          <RefNameInput
+            v-model="pendingRef"
+            :repository-id="pendingRepo.id"
+          />
         </div>
         <div class="mgmt-modal-actions">
           <button class="btn-secondary" :disabled="associating" @click="cancelAssociate">
             {{ $t('common.cancel') }}
           </button>
-          <button class="btn-primary" :disabled="associating" @click="confirmAssociate">
+          <button class="btn-primary" :disabled="associating || !pendingRef.ref_name.trim()" @click="confirmAssociate">
             {{ associating ? $t('common.saving') : $t('common.confirm') }}
           </button>
         </div>
@@ -165,7 +180,9 @@ const confirmRemove = async () => {
     <ConfirmActionModal
       :show="Boolean(removing)"
       :title="$t('management.project.repos_title')"
-      :message="$t('management.project.association_remove_confirm', { name: removing?.repository_name || removing?.repository_id || '' })"
+      :message="$t('management.project.association_remove_confirm', {
+        name: removing?.repository_name || removing?.repository_id || '',
+      })"
       :cancel-text="$t('common.cancel')"
       :confirm-text="$t('common.confirm')"
       tone="danger"
@@ -204,19 +221,21 @@ const confirmRemove = async () => {
   word-break: break-all;
 }
 
-.mgmt-assoc-remove {
-  font-size: 0.78rem;
-  color: #b91c1c;
-}
-
 .mgmt-tag.gray {
   color: #475569;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
 }
 
+.mgmt-ref-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  color: #64748b;
+}
+
 .mgmt-assoc-modal {
-  max-width: 440px;
+  max-width: 500px;
 }
 
 .mgmt-assoc-repo-name {
@@ -228,6 +247,11 @@ const confirmRemove = async () => {
 .w-4 {
   width: 1rem;
   height: 1rem;
+}
+
+.w-3\.5 {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
 .btn-primary {

@@ -2,10 +2,10 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { X, Plus } from 'lucide-vue-next'
+import { GitBranch, Plus, Tag, X } from 'lucide-vue-next'
 import BaseSelect from '@/components/BaseSelect.vue'
+import RefNameInput from '@/components/management/RefNameInput.vue'
 import RepoPickerDialog from '@/components/management/RepoPickerDialog.vue'
-import BranchSelect from '@/components/management/BranchSelect.vue'
 import {
   createProjectRelease,
   getProduct,
@@ -17,8 +17,8 @@ import type {
   Product,
   ProductDetail,
   ProjectRelease,
+  RepoRefType,
   Repository,
-  VersionRepoBinding,
 } from '@/types/management'
 
 const props = withDefaults(defineProps<{
@@ -40,21 +40,20 @@ const isEditing = computed(() => Boolean(props.release?.id))
 
 interface Option {
   label: string;
-  value: any;
+  value: string | null;
 }
 
 interface CustomRepo {
-  key: string;
   repository_id: string;
   repository_name: string;
-  branch_name: string;
+  ref_type: RepoRefType;
+  ref_name: string;
 }
 
 const form = reactive<{
   release_no: string;
   name: string;
   product_id: string | null;
-  product_version_id: string | null;
   status: string;
   release_date: string;
   notes: string;
@@ -62,7 +61,6 @@ const form = reactive<{
   release_no: '',
   name: '',
   product_id: null,
-  product_version_id: null,
   status: 'DRAFT',
   release_date: '',
   notes: '',
@@ -70,7 +68,7 @@ const form = reactive<{
 
 const saving = ref(false)
 
-// 产品 / 版本下拉数据
+// 产品下拉
 const products = ref<Product[]>([])
 const productOptions = computed<Option[]>(() => [
   { label: t('management.project.release_product') + ' —', value: null },
@@ -78,24 +76,7 @@ const productOptions = computed<Option[]>(() => [
 ])
 
 const productDetail = ref<ProductDetail | null>(null)
-const versions = computed(() => productDetail.value?.versions ?? [])
-const versionOptions = computed<Option[]>(() => [
-  { label: t('management.project.release_version') + ' —', value: null },
-  ...versions.value.map((v) => ({ label: v.version_no, value: v.id })),
-])
-
-const ootbBindings = computed<VersionRepoBinding[]>(() => {
-  if (!form.product_version_id) return []
-  const selectedVersion = versions.value.find((v) => v.id === form.product_version_id)
-  return selectedVersion?.repo_bindings ?? []
-})
-
-// 定制仓
-const customRepos = ref<CustomRepo[]>([])
-const pickerShow = ref(false)
-let customRepoSeq = 0
-
-const customRepoKeys = computed(() => new Set(customRepos.value.map((r) => r.repository_id)))
+const ootbBindings = computed(() => productDetail.value?.repo_bindings ?? [])
 
 const loadProducts = async () => {
   try {
@@ -114,24 +95,36 @@ const loadProduct = async (productId: string) => {
   }
 }
 
-watch(() => form.product_id, (productId) => {
-  form.product_version_id = null
-  productDetail.value = null
-  if (productId) {
-    void loadProduct(productId)
+watch(
+  () => form.product_id,
+  (productId) => {
+    productDetail.value = null
+    if (productId) {
+      void loadProduct(productId)
+    }
   }
-})
+)
+
+// 定制仓
+const customRepos = ref<CustomRepo[]>([])
 
 const resetForm = () => {
   form.release_no = props.release?.release_no ?? ''
   form.name = props.release?.name ?? ''
   form.product_id = props.release?.product_id ?? null
-  form.product_version_id = props.release?.product_version_id ?? null
   form.status = props.release?.status ?? 'DRAFT'
   form.release_date = props.release?.release_date?.slice(0, 10) ?? ''
   form.notes = props.release?.notes ?? ''
-  customRepos.value = []
-  customRepoSeq = 0
+
+  customRepos.value = (props.release?.repos ?? [])
+    .filter((r) => r.repo_kind === 'CUSTOM')
+    .map((r) => ({
+      repository_id: r.repository_id,
+      repository_name: r.repository_name ?? r.repository_id,
+      ref_type: r.ref_type,
+      ref_name: r.ref_name,
+    }))
+
   productDetail.value = null
 }
 
@@ -158,29 +151,36 @@ const canSubmit = computed(
 )
 
 // 定制仓选择
-const openRepoPicker = () => {
-  pickerShow.value = true
-}
+const pickerShow = ref(false)
+const customRepoIds = computed(() => new Set(customRepos.value.map((r) => r.repository_id)))
 
 const handlePickRepo = (repository: Repository) => {
-  customRepoSeq += 1
   customRepos.value.push({
-    key: repository.id + ':' + customRepoSeq,
     repository_id: repository.id,
     repository_name: repository.name,
-    branch_name: repository.default_branch ?? '',
+    ref_type: 'BRANCH',
+    ref_name: repository.default_branch ?? '',
   })
   pickerShow.value = false
 }
 
-const removeCustomRepo = (key: string) => {
-  customRepos.value = customRepos.value.filter((r) => r.key !== key)
+const removeCustomRepo = (repositoryId: string) => {
+  customRepos.value = customRepos.value.filter((r) => r.repository_id !== repositoryId)
+}
+
+const updateCustomRef = (repositoryId: string, value: { ref_type: RepoRefType; ref_name: string }) => {
+  const repo = customRepos.value.find((r) => r.repository_id === repositoryId)
+  if (repo) {
+    repo.ref_type = value.ref_type
+    repo.ref_name = value.ref_name
+  }
 }
 
 const payloadCustomRepos = computed(() =>
   customRepos.value.map((r) => ({
     repository_id: r.repository_id,
-    branch_name: r.branch_name,
+    ref_type: r.ref_type,
+    ref_name: r.ref_name,
   }))
 )
 
@@ -207,7 +207,6 @@ const handleSave = async () => {
         release_no: form.release_no.trim(),
         name: form.name.trim(),
         product_id: form.product_id,
-        product_version_id: form.product_version_id,
         status: form.status,
         release_date: form.release_date ? form.release_date : null,
         notes: toNullable(form.notes),
@@ -250,15 +249,6 @@ const handleCancel = () => {
         </div>
 
         <div class="mgmt-field">
-          <label>{{ $t('management.project.release_version') }}</label>
-          <BaseSelect
-            v-model="form.product_version_id"
-            :options="versionOptions"
-            :disabled="!form.product_id"
-          />
-        </div>
-
-        <div class="mgmt-field">
           <label>{{ $t('management.common.status') }}</label>
           <BaseSelect v-model="form.status" :options="statusOptions" />
         </div>
@@ -279,7 +269,11 @@ const handleCancel = () => {
         <ul class="mgmt-ootb-list">
           <li v-for="binding in ootbBindings" :key="binding.id">
             <span class="mgmt-ootb-repo">{{ binding.repository_name }}</span>
-            <span class="mgmt-ootb-branch">{{ binding.branch_name }}</span>
+            <span class="mgmt-ootb-ref">
+              <GitBranch v-if="binding.ref_type === 'BRANCH'" class="w-3.5 h-3.5" />
+              <Tag v-else class="w-3.5 h-3.5" />
+              {{ binding.ref_name }}
+            </span>
           </li>
         </ul>
       </div>
@@ -287,22 +281,26 @@ const handleCancel = () => {
       <div class="mgmt-release-section">
         <div class="mgmt-selection-title">
           <h4>{{ $t('management.project.custom_repos') }}</h4>
-          <button class="btn-secondary" @click="openRepoPicker">
+          <button class="btn-secondary" @click="pickerShow = true">
             <Plus class="w-4 h-4" /> {{ $t('management.project.add_custom_repo') }}
           </button>
         </div>
         <p class="mgmt-hint">{{ $t('management.project.custom_repos_hint') }}</p>
 
         <div v-if="customRepos.length > 0" class="mgmt-custom-repos">
-          <div v-for="repo in customRepos" :key="repo.key" class="mgmt-custom-repo-row">
+          <div v-for="repo in customRepos" :key="repo.repository_id" class="mgmt-custom-repo-row">
             <span class="mgmt-custom-repo-name" :title="repo.repository_id">{{ repo.repository_name }}</span>
-            <div class="mgmt-custom-repo-branch">
-              <BranchSelect v-model="repo.branch_name" :repository-id="repo.repository_id" />
+            <div class="mgmt-custom-repo-ref">
+              <RefNameInput
+                :model-value="{ ref_type: repo.ref_type, ref_name: repo.ref_name }"
+                :repository-id="repo.repository_id"
+                @update:model-value="updateCustomRef(repo.repository_id, $event)"
+              />
             </div>
             <button
               class="btn-ghost mgmt-custom-repo-remove"
               :title="$t('common.delete')"
-              @click="removeCustomRepo(repo.key)"
+              @click="removeCustomRepo(repo.repository_id)"
             >
               <X class="w-4 h-4" />
             </button>
@@ -323,7 +321,7 @@ const handleCancel = () => {
 
   <RepoPickerDialog
     :show="pickerShow"
-    :exclude-ids="Array.from(customRepoKeys)"
+    :exclude-ids="Array.from(customRepoIds)"
     @pick="handlePickRepo"
     @close="pickerShow = false"
   />
@@ -381,7 +379,10 @@ const handleCancel = () => {
   font-weight: 600;
 }
 
-.mgmt-ootb-branch {
+.mgmt-ootb-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.76rem;
   color: #64748b;
@@ -410,8 +411,8 @@ const handleCancel = () => {
   white-space: nowrap;
 }
 
-.mgmt-custom-repo-branch {
-  width: 260px;
+.mgmt-custom-repo-ref {
+  width: 320px;
   flex-shrink: 0;
 }
 
@@ -422,5 +423,10 @@ const handleCancel = () => {
 .w-4 {
   width: 1rem;
   height: 1rem;
+}
+
+.w-3\.5 {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 </style>

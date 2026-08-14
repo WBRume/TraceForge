@@ -72,6 +72,7 @@ async def create_workspace(
                 "project_path": data.project_path,
                 "git_repo_url": data.git_repo_url,
                 "project_id": data.project_id,
+                "product_ids": list(data.product_ids or []),
                 "repositories": [
                     {"repository_id": item.repository_id, "branch_name": item.branch_name}
                     for item in (data.repositories or [])

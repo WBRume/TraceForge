@@ -1,5 +1,5 @@
 """
-Management domain API schemas (products, projects, repositories, org tree).
+Management domain API schemas (restructured).
 """
 
 from datetime import datetime
@@ -7,8 +7,6 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-
-# ── Shared pagination ─────────────────────────────────────────────────────
 
 class PaginatedList(BaseModel):
     items: List[dict] = Field(default_factory=list)
@@ -23,6 +21,8 @@ class ProductCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     code: str = Field(..., min_length=1, max_length=100)
     product_line: Optional[str] = Field(default=None, max_length=100)
+    version_no: str = Field(default="", max_length=50)
+    release_date: Optional[datetime] = None
     description: Optional[str] = None
     status: str = "ACTIVE"
 
@@ -36,36 +36,20 @@ class ProductUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     code: Optional[str] = Field(default=None, min_length=1, max_length=100)
     product_line: Optional[str] = Field(default=None, max_length=100)
+    version_no: Optional[str] = Field(default=None, max_length=50)
+    release_date: Optional[datetime] = None
     description: Optional[str] = None
     status: Optional[str] = None
 
 
-class ProductVersionCreate(BaseModel):
-    version_no: str = Field(..., min_length=1, max_length=50)
-    status: str = "PLANNED"
-    release_date: Optional[datetime] = None
-    description: Optional[str] = None
-
-    @field_validator("version_no")
-    @classmethod
-    def _normalize_version_no(cls, value: str) -> str:
-        return str(value).strip()
-
-
-class ProductVersionUpdate(BaseModel):
-    version_no: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    status: Optional[str] = None
-    release_date: Optional[datetime] = None
-    description: Optional[str] = None
-
-
-class VersionRepoBindCreate(BaseModel):
+class ProductRepoBindCreate(BaseModel):
     repository_id: str = Field(..., min_length=1)
-    branch_name: str = Field(..., min_length=1, max_length=255)
+    ref_type: str = Field(default="BRANCH", pattern="^(BRANCH|TAG)$")
+    ref_name: str = Field(..., min_length=1, max_length=255)
 
-    @field_validator("branch_name")
+    @field_validator("ref_name")
     @classmethod
-    def _normalize_branch(cls, value: str) -> str:
+    def _normalize_ref(cls, value: str) -> str:
         return str(value).strip()
 
 
@@ -96,15 +80,28 @@ class LifecycleTransitionRequest(BaseModel):
     target_status: str = Field(..., min_length=1, max_length=50)
 
 
+class ProjectProductCreate(BaseModel):
+    product_id: str = Field(..., min_length=1)
+
+
+class ProjectProductTransitionRequest(BaseModel):
+    target_status: str = Field(..., min_length=1, max_length=50)
+
+
+class ProjectReleaseCustomRepo(BaseModel):
+    repository_id: str = Field(..., min_length=1)
+    ref_type: str = Field(default="BRANCH", pattern="^(BRANCH|TAG)$")
+    ref_name: str = Field(..., min_length=1, max_length=255)
+
+
 class ProjectReleaseCreate(BaseModel):
     release_no: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=200)
     product_id: Optional[str] = None
-    product_version_id: Optional[str] = None
     status: str = "DRAFT"
     release_date: Optional[datetime] = None
     notes: Optional[str] = None
-    custom_repos: List[VersionRepoBindCreate] = Field(default_factory=list)
+    custom_repos: List[ProjectReleaseCustomRepo] = Field(default_factory=list)
 
 
 class ProjectReleaseUpdate(BaseModel):
@@ -115,28 +112,20 @@ class ProjectReleaseUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-class ProjectProductDepCreate(BaseModel):
-    product_id: str = Field(..., min_length=1)
-    product_version_id: Optional[str] = None
-
-
-class ProjectProductDepUpdate(BaseModel):
-    product_version_id: Optional[str] = None
-
-
 class ProjectRepoAssociateCreate(BaseModel):
     repository_id: str = Field(..., min_length=1)
-    branch_name: Optional[str] = Field(default=None, max_length=255)
+    ref_type: str = Field(default="BRANCH", pattern="^(BRANCH|TAG)$")
+    ref_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
 
 
-# ── Repositories / org tree ───────────────────────────────────────────────
+# ── Repositories / repo groups ────────────────────────────────────────────
 
 class RepositoryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     git_url: str = Field(..., min_length=1, max_length=500)
     repo_type: str = "OOTB"
     default_branch: str = Field(default="main", min_length=1, max_length=120)
-    org_node_id: Optional[str] = None
+    group_id: Optional[str] = None
     description: Optional[str] = None
 
     @field_validator("git_url")
@@ -150,7 +139,7 @@ class RepositoryUpdate(BaseModel):
     git_url: Optional[str] = Field(default=None, min_length=1, max_length=500)
     repo_type: Optional[str] = None
     default_branch: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    org_node_id: Optional[str] = None
+    group_id: Optional[str] = None
     description: Optional[str] = None
 
 
@@ -158,22 +147,22 @@ class ValidateAccessRequest(BaseModel):
     git_url: str = Field(..., min_length=1, max_length=500)
 
 
-class ValidateBranchRequest(BaseModel):
-    branch_name: str = Field(..., min_length=1, max_length=255)
+class ValidateRefRequest(BaseModel):
+    ref_type: str = Field(..., pattern="^(BRANCH|TAG)$")
+    ref_name: str = Field(..., min_length=1, max_length=255)
 
 
-class OrgNodeCreate(BaseModel):
-    parent_id: Optional[str] = None
+class RepoGroupCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    node_type: str = Field(..., min_length=1, max_length=50)
+    parent_id: Optional[str] = None
     order_index: int = 0
 
 
-class OrgNodeUpdate(BaseModel):
-    parent_id: Optional[str] = None
+class RepoGroupUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    parent_id: Optional[str] = None
     order_index: Optional[int] = None
 
 
 class RepoMoveRequest(BaseModel):
-    org_node_id: Optional[str] = None
+    group_id: Optional[str] = None

@@ -6,49 +6,35 @@ import { Plus } from 'lucide-vue-next'
 import { useAuthStore } from '@/stores/auth'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
-import OrgTreePanel from '@/components/management/OrgTreePanel.vue'
+import RepoGroupTreePanel from '@/components/management/RepoGroupTreePanel.vue'
 import RepoFormModal from '@/components/management/RepoFormModal.vue'
 import RepoListTable from '@/components/management/RepoListTable.vue'
-import RepoRefListPanel from '@/components/management/RepoRefListPanel.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
-import {
-  deleteRepository,
-  listRepositories,
-  syncRepositoryRefs,
-} from '@/services/managementApi'
+import { deleteRepository, getRepoGroupTree, listRepositories } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
-import type { OrgTreeNode, Repository } from '@/types/management'
+import type { Repository, RepoGroupTreeNode, RepositoryType } from '@/types/management'
 
 const { t } = useI18n()
 const authStore = useAuthStore()
 
 const isAdmin = computed(() => Boolean(authStore.user?.is_admin))
 
-// 筛选状态
 const keyword = ref('')
 const repoType = ref<string>('')
-const selectedOrgNodeId = ref<string | null>(null)
+const selectedGroupId = ref<string | null>(null)
 
-// 列表状态
 const items = ref<Repository[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const loading = ref(false)
-const syncingRepoId = ref<string | null>(null)
 
-// 组织树节点（供表单拍平）
-const orgNodes = ref<OrgTreeNode[]>([])
+const groups = ref<RepoGroupTreeNode[]>([])
 
-// 展开引用
-const expandedRepoId = ref<string | null>(null)
-
-// 表单弹窗
 const formVisible = ref(false)
 const editingRepo = ref<Repository | null>(null)
-const defaultOrgNodeId = ref<string | null>(null)
+const defaultGroupId = ref<string | null>(null)
 
-// 删除确认
 const deletingRepo = ref<Repository | null>(null)
 const deleteLoading = ref(false)
 
@@ -60,13 +46,22 @@ const repoTypeOptions = computed(() => [
   { label: t('management.repository.type_custom'), value: 'CUSTOM' },
 ])
 
+const loadGroups = async () => {
+  try {
+    const res = await getRepoGroupTree()
+    groups.value = res.items ?? []
+  } catch (err) {
+    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
+  }
+}
+
 const load = async () => {
   loading.value = true
   try {
     const res = await listRepositories({
       keyword: keyword.value || undefined,
-      repo_type: (repoType.value || '') as Repository['repo_type'] | '',
-      org_node_id: selectedOrgNodeId.value ?? undefined,
+      repo_type: (repoType.value || '') as RepositoryType | '',
+      group_id: selectedGroupId.value,
       page: page.value,
       page_size: pageSize,
     })
@@ -81,6 +76,7 @@ const load = async () => {
 
 onMounted(() => {
   void load()
+  void loadGroups()
 })
 
 watch(keyword, () => {
@@ -93,31 +89,33 @@ watch(repoType, () => {
   void load()
 })
 
-const handleSelectOrgNode = (nodeId: string | null) => {
-  selectedOrgNodeId.value = nodeId
+const handleSelectGroup = (groupId: string | null) => {
+  selectedGroupId.value = groupId
   page.value = 1
   void load()
 }
 
-const handleOrgLoad = (nodes: OrgTreeNode[]) => {
-  orgNodes.value = nodes
+const handleChanged = () => {
+  void loadGroups()
+  void load()
 }
 
 const openCreate = () => {
   editingRepo.value = null
-  defaultOrgNodeId.value = selectedOrgNodeId.value
+  defaultGroupId.value = selectedGroupId.value
   formVisible.value = true
 }
 
 const openEdit = (repo: Repository) => {
   editingRepo.value = repo
-  defaultOrgNodeId.value = repo.org_node_id ?? null
+  defaultGroupId.value = repo.group_id ?? null
   formVisible.value = true
 }
 
 const handleRepoSaved = () => {
   formVisible.value = false
   void load()
+  void loadGroups()
 }
 
 const openDelete = (repo: Repository) => {
@@ -129,31 +127,14 @@ const handleDeleteConfirm = async () => {
   deleteLoading.value = true
   try {
     await deleteRepository(deletingRepo.value.id)
-    ElMessage.success(t('common.success'))
+    ElMessage.success(t('management.common.deleted'))
     deletingRepo.value = null
     void load()
+    void loadGroups()
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
   } finally {
     deleteLoading.value = false
-  }
-}
-
-const toggleRefs = (repo: Repository) => {
-  expandedRepoId.value = expandedRepoId.value === repo.id ? null : repo.id
-}
-
-const handleSync = async (repo: Repository) => {
-  if (syncingRepoId.value) return
-  syncingRepoId.value = repo.id
-  try {
-    await syncRepositoryRefs(repo.id)
-    ElMessage.success(t('management.repository.sync_queued'))
-    void load()
-  } catch (err) {
-    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
-  } finally {
-    syncingRepoId.value = null
   }
 }
 
@@ -176,12 +157,11 @@ const goToPage = (target: number) => {
 
     <div class="mgmt-repo-layout">
       <div class="mgmt-repo-sidebar">
-        <OrgTreePanel
+        <RepoGroupTreePanel
           :can-manage="isAdmin"
-          :selected-repo-id="expandedRepoId"
-          @select="handleSelectOrgNode"
-          @changed="load"
-          @load="handleOrgLoad"
+          :selected-group-id="selectedGroupId"
+          @select-group="handleSelectGroup"
+          @changed="handleChanged"
         />
       </div>
 
@@ -192,11 +172,11 @@ const goToPage = (target: number) => {
             class="mgmt-search"
             type="text"
             :placeholder="$t('management.common.search_placeholder')"
+            @keyup.enter="page = 1; load()"
           />
           <BaseSelect
             v-model="repoType"
             :options="repoTypeOptions"
-            :placeholder="$t('management.repository.repo_type')"
             class="mgmt-repo-type-select"
           />
           <AdminGuard>
@@ -211,28 +191,15 @@ const goToPage = (target: number) => {
           :items="items"
           :loading="loading"
           :can-manage="isAdmin"
-          :expanded-repo-id="expandedRepoId"
           @edit="openEdit"
           @remove="openDelete"
-          @toggle-refs="toggleRefs"
-          @sync="handleSync"
-        >
-          <template #expanded="{ repo }">
-            <RepoRefListPanel :repository-id="repo.id" />
-          </template>
-        </RepoListTable>
+        />
 
         <div class="mgmt-pagination">
-          <button
-            class="btn-secondary"
-            :disabled="page <= 1"
-            @click="goToPage(page - 1)"
-          >
+          <button class="btn-secondary" :disabled="page <= 1" @click="goToPage(page - 1)">
             {{ $t('workspaces.queue.prev_page') }}
           </button>
-          <span class="mgmt-pagination-info">
-            {{ $t('settings.members.page_info', { page, total: totalPages }) }}
-          </span>
+          <span class="text-muted">{{ page }} / {{ totalPages }}</span>
           <button
             class="btn-secondary"
             :disabled="page >= totalPages"
@@ -245,20 +212,20 @@ const goToPage = (target: number) => {
         <RepoFormModal
           :show="formVisible"
           :repository="editingRepo"
-          :org-nodes="orgNodes"
-          :default-org-node-id="defaultOrgNodeId"
+          :groups="groups"
+          :default-group-id="defaultGroupId"
           @saved="handleRepoSaved"
           @cancel="formVisible = false"
         />
 
         <ConfirmActionModal
           :show="Boolean(deletingRepo)"
-          :title="t('management.repository.title')"
+          :title="$t('management.repository.title')"
           :message="$t('management.repository.delete_confirm', { name: deletingRepo?.name ?? '' })"
-          :cancel-text="t('common.cancel')"
-          :confirm-text="t('common.delete')"
+          :cancel-text="$t('common.cancel')"
+          :confirm-text="$t('common.delete')"
+          tone="danger"
           :loading="deleteLoading"
-          :tone="'danger'"
           @cancel="deletingRepo = null"
           @confirm="handleDeleteConfirm"
         />
@@ -300,11 +267,6 @@ const goToPage = (target: number) => {
   justify-content: flex-end;
   gap: 0.75rem;
   margin-top: 1rem;
-}
-
-.mgmt-pagination-info {
-  font-size: 0.85rem;
-  color: #64748b;
 }
 </style>
 

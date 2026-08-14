@@ -207,6 +207,7 @@ def serialize_workspace_repository(row) -> Dict[str, object]:
         "repo_name": row.repo_name,
         "repo_slug": row.repo_slug,
         "branch_name": row.branch_name,
+        "ref_type": row.ref_type,
         "base_dir": row.base_dir,
         "state": row.state.value if hasattr(row.state, "value") else str(row.state),
         "base_commit_sha": row.base_commit_sha,
@@ -246,6 +247,7 @@ def create_workspace(
     project_path: Optional[str] = None,
     git_repo_url: Optional[str] = None,
     project_id: Optional[str] = None,
+    product_ids: Optional[List[str]] = None,
     repositories: Optional[List[Dict[str, str]]] = None,
 ) -> Workspace:
     from app.domains.management.models.management import SddManagementProject
@@ -286,14 +288,9 @@ def create_workspace(
         db.add(workspace)
         db.flush()
 
-        overrides: Dict[str, str] = {}
-        for item in repositories or []:
-            repository_id = str((item or {}).get("repository_id") or "").strip()
-            branch_name = str((item or {}).get("branch_name") or "").strip()
-            if repository_id and branch_name:
-                overrides[repository_id] = branch_name
-
-        repo_set = project_service.resolve_project_repo_set(db, project, branch_overrides=overrides)
+        repo_set = project_service.resolve_project_repo_set(
+            db, project, product_ids=product_ids or None
+        )
         seen_slugs: set = set()
         for item in repo_set:
             slug = mgmt_repository_service.build_repo_slug(item["repository_name"])
@@ -311,7 +308,8 @@ def create_workspace(
                     repo_url=item["git_url"],
                     repo_name=item["repository_name"],
                     repo_slug=candidate,
-                    branch_name=item["branch_name"],
+                    branch_name=str(item.get("branch_name") or item.get("ref_name") or "").strip(),
+                    ref_type=str(item.get("ref_type") or "BRANCH").strip().upper(),
                     base_dir=base_dir,
                     state=WorkspaceRepositoryState.PENDING,
                 )

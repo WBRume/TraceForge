@@ -1,8 +1,8 @@
 """
-Project management API routes.
+Project management API routes (top-level entity with products and releases).
 """
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -13,8 +13,8 @@ from app.domains.auth.models.user import User
 from app.domains.management.schemas.management import (
     LifecycleTransitionRequest,
     ProjectCreate,
-    ProjectProductDepCreate,
-    ProjectProductDepUpdate,
+    ProjectProductCreate,
+    ProjectProductTransitionRequest,
     ProjectReleaseCreate,
     ProjectReleaseUpdate,
     ProjectRepoAssociateCreate,
@@ -133,13 +133,14 @@ def delete_project(
 @router.get("/{project_id}/repo-set")
 def get_project_repo_set(
     project_id: str,
+    product_ids: Optional[List[str]] = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     project = project_service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    repos = project_service.resolve_project_repo_set(db, project)
+    repos = project_service.resolve_project_repo_set(db, project, product_ids=product_ids)
     return {"project_id": project.id, "repositories": repos}
 
 
@@ -165,6 +166,69 @@ def transition_project_lifecycle(
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
+# ── Project products ───────────────────────────────────────────────────────
+
+@router.post("/{project_id}/products", status_code=201)
+def add_project_product(
+    project_id: str,
+    data: ProjectProductCreate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    project = project_service.get_project(db, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    try:
+        link = project_service.add_project_product(
+            db,
+            project,
+            product_id=data.product_id,
+            creator_id=current_user.id,
+        )
+        return project_service.serialize_project_product(link)
+    except project_service.ProjectServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.post("/{project_id}/products/{product_id}/transition")
+def transition_project_product_delivery(
+    project_id: str,
+    product_id: str,
+    data: ProjectProductTransitionRequest,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    link = project_service.get_project_product(db, project_id, product_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Project product not found")
+    try:
+        updated = project_service.transition_project_product_delivery(
+            db,
+            link,
+            target_status=data.target_status,
+            actor_user_id=current_user.id,
+        )
+        return project_service.serialize_project_product(updated)
+    except project_service.ProjectServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+
+@router.delete("/{project_id}/products/{product_id}")
+def remove_project_product(
+    project_id: str,
+    product_id: str,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    link = project_service.get_project_product(db, project_id, product_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Project product not found")
+    project_service.remove_project_product(db, link)
+    return {"msg": "Product removed from project"}
+
+
+# ── Releases ───────────────────────────────────────────────────────────────
+
 @router.post("/{project_id}/releases", status_code=201)
 def create_project_release(
     project_id: str,
@@ -182,7 +246,6 @@ def create_project_release(
             release_no=data.release_no,
             name=data.name,
             product_id=data.product_id,
-            product_version_id=data.product_version_id,
             status=data.status,
             release_date=data.release_date,
             notes=data.notes,
@@ -242,86 +305,7 @@ def delete_project_release(
     return {"msg": "Release deleted"}
 
 
-@router.post("/{project_id}/product-deps", status_code=201)
-def add_project_product_dep(
-    project_id: str,
-    data: ProjectProductDepCreate,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    project = project_service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        dep = project_service.add_product_dep(
-            db,
-            project,
-            product_id=data.product_id,
-            product_version_id=data.product_version_id,
-            creator_id=current_user.id,
-        )
-        return {
-            "id": dep.id,
-            "project_id": dep.project_id,
-            "product_id": dep.product_id,
-            "product_version_id": dep.product_version_id,
-        }
-    except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
-
-
-@router.put("/{project_id}/product-deps/{product_id}")
-def update_project_product_dep(
-    project_id: str,
-    product_id: str,
-    data: ProjectProductDepUpdate,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    project = project_service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    dep = next(
-        (item for item in project.product_deps if item.product_id == product_id),
-        None,
-    )
-    if not dep:
-        raise HTTPException(status_code=404, detail="Product dependency not found")
-    try:
-        updated = project_service.update_product_dep(
-            db,
-            dep,
-            product_version_id=data.product_version_id,
-        )
-        return {
-            "id": updated.id,
-            "project_id": updated.project_id,
-            "product_id": updated.product_id,
-            "product_version_id": updated.product_version_id,
-        }
-    except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
-
-
-@router.delete("/{project_id}/product-deps/{product_id}")
-def remove_project_product_dep(
-    project_id: str,
-    product_id: str,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    project = project_service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    dep = next(
-        (item for item in project.product_deps if item.product_id == product_id),
-        None,
-    )
-    if not dep:
-        raise HTTPException(status_code=404, detail="Product dependency not found")
-    project_service.remove_product_dep(db, dep)
-    return {"msg": "Product dependency removed"}
-
+# ── Custom repository associations ─────────────────────────────────────────
 
 @router.post("/{project_id}/repos", status_code=201)
 def associate_project_repository(
@@ -338,14 +322,16 @@ def associate_project_repository(
             db,
             project,
             repository_id=data.repository_id,
-            branch_name=data.branch_name,
+            ref_type=data.ref_type,
+            ref_name=data.ref_name,
             creator_id=current_user.id,
         )
         return {
             "id": assoc.id,
             "project_id": assoc.project_id,
             "repository_id": assoc.repository_id,
-            "branch_name": assoc.branch_name,
+            "ref_type": assoc.ref_type.value if hasattr(assoc.ref_type, "value") else str(assoc.ref_type),
+            "ref_name": assoc.ref_name,
         }
     except (project_service.ProjectServiceError, GitRefAccessError) as exc:
         raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
