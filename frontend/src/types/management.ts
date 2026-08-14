@@ -118,20 +118,9 @@ export interface ProjectRelease {
   repos: ProjectReleaseRepo[]
 }
 
-export interface ProjectRepoAssociation {
-  id: string
-  repository_id: string
-  repository_name: string | null
-  git_url: string | null
-  repo_type: RepositoryType | null
-  ref_type: RepoRefType
-  ref_name: string
-}
-
 export interface ProjectDetail extends Project {
   releases: ProjectRelease[]
   products: ProjectProduct[]
-  repo_associations: ProjectRepoAssociation[]
 }
 
 export interface ProjectRepoSetItem {

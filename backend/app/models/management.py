@@ -7,5 +7,4 @@ from app.domains.management.models.management import (  # noqa: F401
     SddManagementProjectProduct,
     SddManagementProjectRelease,
     SddManagementProjectReleaseRepo,
-    SddManagementProjectRepo,
 )

@@ -296,7 +296,12 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, A
             product_ids=context.get("product_ids") if isinstance(context.get("product_ids"), list) else None,
             repositories=context.get("repositories") if isinstance(context.get("repositories"), list) else None,
         )
-        repositories = [workspace_service.serialize_workspace_repository(row) for row in workspace.repositories]
+        repositories = []
+        for row in workspace.repositories:
+            item = workspace_service.serialize_workspace_repository(row)
+            # result_json is stored in a JSON column: convert datetime values.
+            item["created_at"] = _json_safe_value(item.get("created_at"))
+            repositories.append(item)
         return {
             "workspace_id": workspace.id,
             "workspace_name": workspace.name,
@@ -306,6 +311,12 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, A
         }
     finally:
         db.close()
+
+
+def _json_safe_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:

@@ -228,11 +228,6 @@ class SddManagementProject(Base):
         cascade="all, delete-orphan",
         order_by="SddManagementProjectProduct.created_at.asc()",
     )
-    repo_associations = relationship(
-        "SddManagementProjectRepo",
-        back_populates="project",
-        cascade="all, delete-orphan",
-    )
 
 
 class SddManagementProjectProduct(Base):
@@ -347,40 +342,6 @@ class SddManagementProjectReleaseRepo(Base):
     repository = relationship("SddManagementRepository")
 
 
-class SddManagementProjectRepo(Base):
-    """A custom repository associated with a project, bound to a ref."""
-
-    __tablename__ = "mgmt_project_repos"
-    __table_args__ = (
-        UniqueConstraint("project_id", "repository_id", name="uq_mgmt_project_repos_project_repo"),
-    )
-
-    id = Column(String(36), primary_key=True, default=generate_uuid)
-    project_id = Column(
-        String(36),
-        ForeignKey("mgmt_projects.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    repository_id = Column(
-        String(36),
-        ForeignKey("mgmt_repositories.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    ref_type = Column(
-        Enum(RepoRefType, values_callable=_enum_values),
-        nullable=False,
-        default=RepoRefType.BRANCH,
-    )
-    ref_name = Column(String(255), nullable=False)
-    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
-
-    creator = relationship("User", foreign_keys=[created_by])
-    project = relationship("SddManagementProject", back_populates="repo_associations")
-    repository = relationship("SddManagementRepository")
-
 
 __all__ = [
     "ProductStatus",
@@ -397,5 +358,4 @@ __all__ = [
     "SddManagementProjectProduct",
     "SddManagementProjectRelease",
     "SddManagementProjectReleaseRepo",
-    "SddManagementProjectRepo",
 ]

@@ -265,16 +265,3 @@ export const updateProjectRelease = async (projectId: string, releaseId: string,
 export const deleteProjectRelease = async (projectId: string, releaseId: string): Promise<void> => {
   await api.delete('/management/projects/' + projectId + '/releases/' + releaseId)
 }
-
-export const associateProjectRepo = async (projectId: string, payload: {
-  repository_id: string
-  ref_type?: string
-  ref_name?: string | null
-}): Promise<{ id: string; project_id: string; repository_id: string; ref_type: string; ref_name: string }> => {
-  const res = await api.post('/management/projects/' + projectId + '/repos', payload)
-  return res.data
-}
-
-export const dissociateProjectRepo = async (projectId: string, repositoryId: string): Promise<void> => {
-  await api.delete('/management/projects/' + projectId + '/repos/' + repositoryId)
-}
