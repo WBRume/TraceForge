@@ -61,6 +61,7 @@ class SddWorkspaceRepository(Base):
     repo_name = Column(String(200), nullable=False)
     repo_slug = Column(String(120), nullable=False)
     branch_name = Column(String(255), nullable=False)
+    ref_type = Column(String(20), nullable=True, default="BRANCH")
     base_dir = Column(String(500), nullable=True)
     state = Column(
         Enum(WorkspaceRepositoryState, values_callable=_enum_values),

@@ -1,6 +1,10 @@
 """
-Project management service: projects, delivery lifecycle state machine,
-release records and product/repository associations.
+Project management service.
+
+The project is the top-level entity: it contains multiple products, each
+tracking its own delivery progress (delivery_status state machine). Release
+records select a product and snapshot its repository bindings plus optional
+custom repositories.
 """
 
 from datetime import datetime
@@ -14,10 +18,11 @@ from app.domains.management.models.management import (
     ProjectLifecycleStatus,
     ReleaseRepoKind,
     ReleaseStatus,
+    RepoRefType,
     SddManagementProduct,
-    SddManagementProductVersion,
+    SddManagementProductRepo,
     SddManagementProject,
-    SddManagementProjectProductDep,
+    SddManagementProjectProduct,
     SddManagementProjectRelease,
     SddManagementProjectReleaseRepo,
     SddManagementProjectRepo,
@@ -57,6 +62,14 @@ def _normalize_release_status(value: str) -> ReleaseStatus:
         raise ProjectServiceError(f"Invalid release status '{value}'", status_code=400) from exc
 
 
+def _normalize_ref_type(value: str) -> RepoRefType:
+    normalized = str(value or "BRANCH").strip().upper()
+    try:
+        return RepoRefType(normalized)
+    except ValueError as exc:
+        raise ProjectServiceError("ref_type must be BRANCH or TAG", status_code=400) from exc
+
+
 def _value(value) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
@@ -74,6 +87,7 @@ def serialize_project(project: SddManagementProject) -> Dict[str, object]:
         "organization": project.organization,
         "lifecycle_status": _value(project.lifecycle_status),
         "description": project.description,
+        "product_count": len(project.products) if project.products is not None else None,
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -87,7 +101,10 @@ def list_projects(
     page: int = 1,
     page_size: int = 20,
 ) -> Tuple[List[Dict[str, object]], int]:
-    query = db.query(SddManagementProject)
+    query = (
+        db.query(SddManagementProject)
+        .options(joinedload(SddManagementProject.products))
+    )
     normalized_keyword = str(keyword or "").strip()
     if normalized_keyword:
         pattern = f"%{normalized_keyword}%"
@@ -119,17 +136,30 @@ def get_project(db: Session, project_id: str) -> Optional[SddManagementProject]:
         db.query(SddManagementProject)
         .options(
             joinedload(SddManagementProject.releases).joinedload(SddManagementProjectRelease.repos),
-            joinedload(SddManagementProject.product_deps),
-            joinedload(SddManagementProject.repo_associations),
+            joinedload(SddManagementProject.products).joinedload(SddManagementProjectProduct.product),
+            joinedload(SddManagementProject.repo_associations).joinedload(SddManagementProjectRepo.repository),
         )
         .filter(SddManagementProject.id == project_id)
         .first()
     )
 
 
+def serialize_project_product(link: SddManagementProjectProduct) -> Dict[str, object]:
+    product = link.product
+    return {
+        "id": link.id,
+        "project_id": link.project_id,
+        "product_id": link.product_id,
+        "product_name": product.name if product else None,
+        "product_code": product.code if product else None,
+        "product_version_no": product.version_no if product else None,
+        "delivery_status": _value(link.delivery_status),
+        "created_at": link.created_at,
+    }
+
+
 def serialize_release(release: SddManagementProjectRelease) -> Dict[str, object]:
     product = release.product
-    version = release.product_version
     return {
         "id": release.id,
         "project_id": release.project_id,
@@ -137,8 +167,7 @@ def serialize_release(release: SddManagementProjectRelease) -> Dict[str, object]
         "name": release.name,
         "product_id": release.product_id,
         "product_name": product.name if product else None,
-        "product_version_id": release.product_version_id,
-        "product_version_no": version.version_no if version else None,
+        "product_version_no": product.version_no if product else None,
         "status": _value(release.status),
         "release_date": release.release_date,
         "notes": release.notes,
@@ -149,7 +178,8 @@ def serialize_release(release: SddManagementProjectRelease) -> Dict[str, object]
                 "repository_id": repo.repository_id,
                 "repository_name": repo.repository.name if repo.repository else None,
                 "git_url": repo.repository.git_url if repo.repository else None,
-                "branch_name": repo.branch_name,
+                "ref_type": _value(repo.ref_type),
+                "ref_name": repo.ref_name,
                 "repo_kind": _value(repo.repo_kind),
             }
             for repo in release.repos
@@ -160,16 +190,7 @@ def serialize_release(release: SddManagementProjectRelease) -> Dict[str, object]
 def serialize_project_detail(project: SddManagementProject) -> Dict[str, object]:
     payload = serialize_project(project)
     payload["releases"] = [serialize_release(release) for release in project.releases]
-    payload["product_deps"] = [
-        {
-            "id": dep.id,
-            "product_id": dep.product_id,
-            "product_name": dep.product.name if dep.product else None,
-            "product_version_id": dep.product_version_id,
-            "product_version_no": dep.product_version.version_no if dep.product_version else None,
-        }
-        for dep in project.product_deps
-    ]
+    payload["products"] = [serialize_project_product(link) for link in project.products]
     payload["repo_associations"] = [
         {
             "id": assoc.id,
@@ -177,7 +198,8 @@ def serialize_project_detail(project: SddManagementProject) -> Dict[str, object]
             "repository_name": assoc.repository.name if assoc.repository else None,
             "git_url": assoc.repository.git_url if assoc.repository else None,
             "repo_type": _value(assoc.repository.repo_type) if assoc.repository and hasattr(assoc.repository.repo_type, "value") else None,
-            "branch_name": assoc.branch_name,
+            "ref_type": _value(assoc.ref_type),
+            "ref_name": assoc.ref_name,
         }
         for assoc in project.repo_associations
     ]
@@ -285,6 +307,93 @@ def transition_lifecycle(
     return project
 
 
+# ── Project products (with per-product delivery progress) ─────────────────
+
+def add_project_product(
+    db: Session,
+    project: SddManagementProject,
+    *,
+    product_id: str,
+    creator_id: Optional[str] = None,
+) -> SddManagementProjectProduct:
+    product = db.query(SddManagementProduct).filter(SddManagementProduct.id == product_id).first()
+    if not product:
+        raise ProjectServiceError("Product not found", status_code=404)
+    existing = (
+        db.query(SddManagementProjectProduct)
+        .filter(
+            SddManagementProjectProduct.project_id == project.id,
+            SddManagementProjectProduct.product_id == product.id,
+        )
+        .first()
+    )
+    if existing:
+        raise ProjectServiceError("This product is already in the project", status_code=409)
+    link = SddManagementProjectProduct(
+        project_id=project.id,
+        product_id=product.id,
+        delivery_status=ProjectLifecycleStatus.INITIATED,
+        created_by=creator_id,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+def remove_project_product(db: Session, link: SddManagementProjectProduct) -> None:
+    db.delete(link)
+    db.commit()
+
+
+def transition_project_product_delivery(
+    db: Session,
+    link: SddManagementProjectProduct,
+    target_status: str,
+    actor_user_id: str,
+) -> SddManagementProjectProduct:
+    target = _normalize_lifecycle(target_status)
+    expected = next_lifecycle_status(link.delivery_status)
+    if target == link.delivery_status:
+        raise ProjectServiceError("Product is already in this delivery status", status_code=409)
+    if expected != target:
+        raise ProjectServiceError(
+            f"Invalid delivery transition for product: {_value(link.delivery_status)} -> {_value(target)}. "
+            f"Next allowed status is {_value(expected) if expected else '(none)'}.",
+            status_code=409,
+        )
+    previous = _value(link.delivery_status)
+    link.delivery_status = target
+    db.commit()
+    db.refresh(link)
+    audit_log(
+        action="transition_project_product_delivery",
+        outcome="success",
+        resource_type="project_product",
+        resource_id=link.id,
+        user_id=actor_user_id,
+        project_id=link.project_id,
+        product_id=link.product_id,
+        previous_status=previous,
+        target_status=_value(target),
+    )
+    return link
+
+
+def get_project_product(db: Session, project_id: str, product_id: str) -> Optional[SddManagementProjectProduct]:
+    return (
+        db.query(SddManagementProjectProduct)
+        .options(joinedload(SddManagementProjectProduct.product))
+        .filter(
+            SddManagementProjectProduct.project_id == project_id,
+            SddManagementProjectProduct.product_id == product_id,
+        )
+        .first()
+    )
+
+
+# ── Releases ───────────────────────────────────────────────────────────────
+
 def create_release(
     db: Session,
     project: SddManagementProject,
@@ -292,7 +401,6 @@ def create_release(
     release_no: str,
     name: str,
     product_id: Optional[str],
-    product_version_id: Optional[str],
     status: str = "DRAFT",
     release_date: Optional[datetime] = None,
     notes: Optional[str] = None,
@@ -315,30 +423,16 @@ def create_release(
         raise ProjectServiceError("This release number already exists for the project", status_code=409)
 
     product = None
-    version = None
     if product_id:
         product = db.query(SddManagementProduct).filter(SddManagementProduct.id == product_id).first()
         if not product:
             raise ProjectServiceError("Product not found", status_code=404)
-    if product_version_id:
-        version = (
-            db.query(SddManagementProductVersion)
-            .filter(SddManagementProductVersion.id == product_version_id)
-            .first()
-        )
-        if not version:
-            raise ProjectServiceError("Product version not found", status_code=404)
-        if not product or version.product_id != product.id:
-            raise ProjectServiceError("Product version does not belong to the selected product", status_code=409)
-    if product_id and not product_version_id:
-        raise ProjectServiceError("product_version_id is required when product_id is provided", status_code=400)
 
     release = SddManagementProjectRelease(
         project_id=project.id,
         release_no=normalized_no,
         name=normalized_name,
         product_id=product.id if product else None,
-        product_version_id=version.id if version else None,
         status=_normalize_release_status(status or "DRAFT"),
         release_date=release_date,
         notes=notes,
@@ -347,13 +441,11 @@ def create_release(
     db.add(release)
     db.flush()
 
-    # OOTB repo set: product-version bindings (bound to branch), snapshotted into the release.
-    if version:
-        from app.domains.management.models.management import SddManagementProductVersionRepo
-
+    # OOTB repo set: snapshot the selected product's repository bindings.
+    if product:
         bindings = (
-            db.query(SddManagementProductVersionRepo)
-            .filter(SddManagementProductVersionRepo.product_version_id == version.id)
+            db.query(SddManagementProductRepo)
+            .filter(SddManagementProductRepo.product_id == product.id)
             .all()
         )
         for binding in bindings:
@@ -361,7 +453,8 @@ def create_release(
                 SddManagementProjectReleaseRepo(
                     release_id=release.id,
                     repository_id=binding.repository_id,
-                    branch_name=binding.branch_name,
+                    ref_type=binding.ref_type,
+                    ref_name=binding.ref_name,
                     repo_kind=ReleaseRepoKind.OOTB,
                 )
             )
@@ -369,20 +462,22 @@ def create_release(
     # Custom repositories appended to the release.
     for item in custom_repos or []:
         repository_id = str((item or {}).get("repository_id") or "").strip()
-        branch_name = str((item or {}).get("branch_name") or "").strip()
+        ref_name = str((item or {}).get("ref_name") or "").strip()
+        ref_type = _normalize_ref_type(str((item or {}).get("ref_type") or "BRANCH"))
         if not repository_id:
             continue
         repository = db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
         if not repository:
             raise ProjectServiceError(f"Repository not found: {repository_id}", status_code=404)
-        if not branch_name:
-            branch_name = repository.default_branch
-        git_ref_service.validate_branch_exists(repository.git_url, branch_name)
+        if not ref_name:
+            ref_name = repository.default_branch
+        git_ref_service.validate_ref_exists(repository.git_url, ref_type.value, ref_name)
         db.add(
             SddManagementProjectReleaseRepo(
                 release_id=release.id,
                 repository_id=repository.id,
-                branch_name=branch_name,
+                ref_type=ref_type,
+                ref_name=ref_name,
                 repo_kind=ReleaseRepoKind.CUSTOM,
             )
         )
@@ -446,85 +541,23 @@ def delete_release(db: Session, release: SddManagementProjectRelease) -> None:
     db.commit()
 
 
-def add_product_dep(
-    db: Session,
-    project: SddManagementProject,
-    *,
-    product_id: str,
-    product_version_id: Optional[str] = None,
-    creator_id: Optional[str] = None,
-) -> SddManagementProjectProductDep:
-    product = db.query(SddManagementProduct).filter(SddManagementProduct.id == product_id).first()
-    if not product:
-        raise ProjectServiceError("Product not found", status_code=404)
-    if product_version_id:
-        version = (
-            db.query(SddManagementProductVersion)
-            .filter(SddManagementProductVersion.id == product_version_id)
-            .first()
-        )
-        if not version or version.product_id != product.id:
-            raise ProjectServiceError("Product version does not belong to the selected product", status_code=409)
-    existing = (
-        db.query(SddManagementProjectProductDep)
-        .filter(
-            SddManagementProjectProductDep.project_id == project.id,
-            SddManagementProjectProductDep.product_id == product.id,
-        )
-        .first()
-    )
-    if existing:
-        raise ProjectServiceError("This product dependency already exists", status_code=409)
-    dep = SddManagementProjectProductDep(
-        project_id=project.id,
-        product_id=product.id,
-        product_version_id=product_version_id,
-        created_by=creator_id,
-    )
-    db.add(dep)
-    db.commit()
-    db.refresh(dep)
-    return dep
-
-
-def update_product_dep(
-    db: Session,
-    dep: SddManagementProjectProductDep,
-    *,
-    product_version_id: Optional[str] = None,
-) -> SddManagementProjectProductDep:
-    if product_version_id:
-        version = (
-            db.query(SddManagementProductVersion)
-            .filter(SddManagementProductVersion.id == product_version_id)
-            .first()
-        )
-        if not version or version.product_id != dep.product_id:
-            raise ProjectServiceError("Product version does not belong to the dependency product", status_code=409)
-    dep.product_version_id = product_version_id or None
-    db.commit()
-    db.refresh(dep)
-    return dep
-
-
-def remove_product_dep(db: Session, dep: SddManagementProjectProductDep) -> None:
-    db.delete(dep)
-    db.commit()
-
+# ── Project custom repository associations ────────────────────────────────
 
 def associate_repository(
     db: Session,
     project: SddManagementProject,
     *,
     repository_id: str,
-    branch_name: Optional[str] = None,
+    ref_type: str = "BRANCH",
+    ref_name: Optional[str] = None,
     creator_id: Optional[str] = None,
 ) -> SddManagementProjectRepo:
     repository = db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
     if not repository:
         raise ProjectServiceError("Repository not found", status_code=404)
-    normalized_branch = str(branch_name or "").strip() or repository.default_branch
-    git_ref_service.validate_branch_exists(repository.git_url, normalized_branch)
+    normalized_type = _normalize_ref_type(ref_type)
+    normalized_ref = str(ref_name or "").strip() or repository.default_branch
+    git_ref_service.validate_ref_exists(repository.git_url, normalized_type.value, normalized_ref)
     existing = (
         db.query(SddManagementProjectRepo)
         .filter(
@@ -538,7 +571,8 @@ def associate_repository(
     assoc = SddManagementProjectRepo(
         project_id=project.id,
         repository_id=repository.id,
-        branch_name=normalized_branch,
+        ref_type=normalized_type,
+        ref_name=normalized_ref,
         created_by=creator_id,
     )
     db.add(assoc)
@@ -562,63 +596,42 @@ def dissociate_repository(db: Session, project: SddManagementProject, repository
     db.commit()
 
 
+# ── Workspace repo set resolution ──────────────────────────────────────────
+
 def resolve_project_repo_set(
     db: Session,
     project: SddManagementProject,
-    *,
-    branch_overrides: Optional[Dict[str, str]] = None,
+    product_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, object]]:
-    """Resolve the effective repository set of a project:
+    """Resolve the effective repository set for a project and product selection.
 
-    - OOTB: version-bound repositories of the latest version of each product dependency.
+    - OOTB: tag/branch bindings of every selected product.
     - Custom: repositories explicitly associated with the project.
-    Branch overrides win over bound branches.
     """
-    overrides = {str(k): str(v) for k, v in (branch_overrides or {}).items()}
+    selected = {str(item).strip() for item in (product_ids or []) if str(item).strip()}
     repo_map: Dict[str, Dict[str, object]] = {}
 
-    deps = (
-        db.query(SddManagementProjectProductDep)
-        .filter(SddManagementProjectProductDep.project_id == project.id)
-        .all()
-    )
-    for dep in deps:
-        version_id = dep.product_version_id
-        version = None
-        if version_id:
-            version = (
-                db.query(SddManagementProductVersion)
-                .filter(SddManagementProductVersion.id == version_id)
-                .first()
-            )
-        if not version:
-            version = (
-                db.query(SddManagementProductVersion)
-                .filter(SddManagementProductVersion.product_id == dep.product_id)
-                .order_by(SddManagementProductVersion.created_at.desc())
-                .first()
-            )
-        if not version:
+    for link in project.products:
+        if selected and link.product_id not in selected:
             continue
-        from app.domains.management.models.management import SddManagementProductVersionRepo
-
         bindings = (
-            db.query(SddManagementProductVersionRepo)
-            .filter(SddManagementProductVersionRepo.product_version_id == version.id)
+            db.query(SddManagementProductRepo)
+            .filter(SddManagementProductRepo.product_id == link.product_id)
             .all()
         )
         for binding in bindings:
             repo = binding.repository
             if not repo:
                 continue
-            branch = overrides.get(binding.repository_id, binding.branch_name)
             repo_map[binding.repository_id] = {
                 "repository_id": repo.id,
                 "repository_name": repo.name,
                 "git_url": repo.git_url,
                 "repo_type": _value(repo.repo_type),
                 "default_branch": repo.default_branch,
-                "branch_name": branch,
+                "ref_type": _value(binding.ref_type),
+                "ref_name": binding.ref_name,
+                "branch_name": binding.ref_name,
                 "repo_kind": "OOTB",
             }
 
@@ -626,14 +639,15 @@ def resolve_project_repo_set(
         repo = assoc.repository
         if not repo:
             continue
-        branch = overrides.get(assoc.repository_id, assoc.branch_name or repo.default_branch)
         repo_map[assoc.repository_id] = {
             "repository_id": repo.id,
             "repository_name": repo.name,
             "git_url": repo.git_url,
             "repo_type": _value(repo.repo_type),
             "default_branch": repo.default_branch,
-            "branch_name": branch,
+            "ref_type": _value(assoc.ref_type),
+            "ref_name": assoc.ref_name,
+            "branch_name": assoc.ref_name,
             "repo_kind": "CUSTOM",
         }
 
@@ -652,13 +666,14 @@ __all__ = [
     "update_project",
     "delete_project",
     "transition_lifecycle",
+    "add_project_product",
+    "remove_project_product",
+    "transition_project_product_delivery",
+    "get_project_product",
     "create_release",
     "get_release",
     "update_release",
     "delete_release",
-    "add_product_dep",
-    "update_product_dep",
-    "remove_product_dep",
     "associate_repository",
     "dissociate_repository",
     "resolve_project_repo_set",

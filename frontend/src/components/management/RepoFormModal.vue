@@ -6,17 +6,17 @@ import { Loader2, ShieldCheck } from 'lucide-vue-next'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { createRepository, updateRepository, validateRepositoryAccess } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
-import type { OrgTreeNode, Repository } from '@/types/management'
+import type { Repository, RepoGroupTreeNode } from '@/types/management'
 
 const props = withDefaults(defineProps<{
   show: boolean;
   repository?: Repository | null;
-  orgNodes: OrgTreeNode[];
-  defaultOrgNodeId?: string | null;
+  groups: RepoGroupTreeNode[];
+  defaultGroupId?: string | null;
 }>(), {
   repository: null,
-  orgNodes: () => [],
-  defaultOrgNodeId: null,
+  groups: () => [],
+  defaultGroupId: null,
 })
 
 const emit = defineEmits<{
@@ -33,14 +33,14 @@ const form = reactive<{
   git_url: string;
   repo_type: string;
   default_branch: string;
-  org_node_id: string | null;
+  group_id: string | null;
   description: string;
 }>({
   name: '',
   git_url: '',
   repo_type: 'OOTB',
   default_branch: '',
-  org_node_id: null,
+  group_id: null,
   description: '',
 })
 
@@ -52,22 +52,27 @@ const repoTypeOptions = computed(() => [
   { label: t('management.repository.type_custom'), value: 'CUSTOM' },
 ])
 
-// 拍平项目组节点列表：「未归属」+ 全部 PROJECT_GROUP 节点
-const orgNodeOptions = computed(() => {
-  const options: { label: string; value: string | null }[] = [
-    { label: t('management.repository.no_org_node'), value: null },
-  ]
-  const collect = (nodes: OrgTreeNode[]) => {
+const flattenedGroups = computed(() => {
+  const result: { id: string; name: string }[] = []
+  const walk = (nodes: RepoGroupTreeNode[], prefix: string) => {
     for (const node of nodes) {
-      if (node.node_type === 'PROJECT_GROUP' && node.id) {
-        options.push({ label: node.name, value: node.id })
-      }
-      if (node.children && node.children.length) {
-        collect(node.children)
+      if (node.id !== null) {
+        result.push({ id: node.id, name: prefix ? prefix + ' / ' + node.name : node.name })
+        walk(node.children, node.name)
       }
     }
   }
-  collect(props.orgNodes)
+  walk(props.groups, '')
+  return result
+})
+
+const groupOptions = computed(() => {
+  const options: { label: string; value: string | null }[] = [
+    { label: t('management.repository.no_group'), value: null },
+  ]
+  for (const group of flattenedGroups.value) {
+    options.push({ label: group.name, value: group.id })
+  }
   return options
 })
 
@@ -76,9 +81,9 @@ const resetForm = () => {
   form.git_url = props.repository?.git_url ?? ''
   form.repo_type = props.repository?.repo_type ?? 'OOTB'
   form.default_branch = props.repository?.default_branch ?? ''
-  form.org_node_id = isEditing.value
-    ? (props.repository?.org_node_id ?? null)
-    : (props.defaultOrgNodeId ?? null)
+  form.group_id = isEditing.value
+    ? (props.repository?.group_id ?? null)
+    : (props.defaultGroupId ?? null)
   form.description = props.repository?.description ?? ''
 }
 
@@ -100,14 +105,10 @@ const handleValidate = async () => {
   validating.value = true
   try {
     const result = await validateRepositoryAccess(form.git_url.trim())
-    if (result.accessible) {
-      ElMessage.success(t('management.repository.validate_success', {
-        branch: result.branch_count,
-        tag: result.tag_count,
-      }))
-    } else {
-      ElMessage.error(t('management.repository.validate_failed'))
-    }
+    ElMessage.success(t('management.repository.validate_success', {
+      branch: result.branch_count ?? 0,
+      tag: result.tag_count ?? 0,
+    }))
   } catch (err) {
     ElMessage.error(
       t('management.repository.validate_failed') + ': ' + formatApiError(err, '', t),
@@ -130,7 +131,7 @@ const handleSave = async () => {
         git_url: form.git_url.trim(),
         repo_type: form.repo_type,
         default_branch: form.default_branch.trim(),
-        org_node_id: form.org_node_id,
+        group_id: form.group_id,
         description: form.description.trim() || null,
       })
       emit('saved', updated)
@@ -140,12 +141,11 @@ const handleSave = async () => {
         git_url: form.git_url.trim(),
         repo_type: form.repo_type,
         default_branch: form.default_branch.trim(),
-        org_node_id: form.org_node_id,
+        group_id: form.group_id,
         description: form.description.trim() || null,
       })
       emit('saved', created)
     }
-    ElMessage.success(t('common.success'))
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
   } finally {
@@ -186,8 +186,8 @@ const handleCancel = () => {
         </div>
 
         <div class="mgmt-field">
-          <label>{{ $t('management.repository.org_node') }}</label>
-          <BaseSelect v-model="form.org_node_id" :options="orgNodeOptions" />
+          <label>{{ $t('management.repository.group') }}</label>
+          <BaseSelect v-model="form.group_id" :options="groupOptions" />
         </div>
 
         <div class="mgmt-field full">

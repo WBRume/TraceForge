@@ -1,10 +1,10 @@
 """
-Repository management API routes: registration, org placement, git ref sync/validation.
+Repository management API routes: registration and repo-group placement.
 """
 
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.logging import audit_log
@@ -14,11 +14,10 @@ from app.domains.management.schemas.management import (
     RepositoryCreate,
     RepositoryUpdate,
     ValidateAccessRequest,
-    ValidateBranchRequest,
+    ValidateRefRequest,
 )
 from app.domains.management.services import repository_service
 from app.domains.management.services.git_ref_service import GitRefAccessError
-from app.domains.workflow.services import provision_job_service
 
 router = APIRouter(prefix="/management/repositories", tags=["Management Repositories"])
 
@@ -27,7 +26,7 @@ router = APIRouter(prefix="/management/repositories", tags=["Management Reposito
 def list_repositories(
     keyword: str = Query(default="", max_length=100),
     repo_type: Optional[str] = None,
-    org_node_id: Optional[str] = None,
+    group_id: Optional[str] = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -37,7 +36,7 @@ def list_repositories(
         db,
         keyword=keyword,
         repo_type=repo_type,
-        org_node_id=org_node_id,
+        group_id=group_id,
         page=page,
         page_size=page_size,
     )
@@ -57,7 +56,7 @@ def create_repository(
             git_url=data.git_url,
             repo_type=data.repo_type,
             default_branch=data.default_branch,
-            org_node_id=data.org_node_id,
+            group_id=data.group_id,
             description=data.description,
             creator_id=current_user.id,
         )
@@ -115,7 +114,7 @@ def update_repository(
             git_url=data.git_url,
             repo_type=data.repo_type,
             default_branch=data.default_branch,
-            org_node_id=data.org_node_id,
+            group_id=data.group_id,
             description=data.description,
         )
         return repository_service.serialize_repository(updated)
@@ -143,66 +142,10 @@ def delete_repository(
     return {"msg": "Repository deleted"}
 
 
-@router.get("/{repository_id}/refs")
-def list_repository_refs(
+@router.post("/{repository_id}/validate-ref")
+def validate_repository_ref(
     repository_id: str,
-    ref_type: Optional[str] = Query(default=None, pattern="^(branch|tag|BRANCH|TAG)$"),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    from app.domains.management.services.git_ref_service import list_repo_refs
-
-    repository = repository_service.get_repository(db, repository_id)
-    if not repository:
-        raise HTTPException(status_code=404, detail="Repository not found")
-    refs = list_repo_refs(db, repository, ref_type=ref_type)
-    items = [
-        {
-            "id": ref.id,
-            "ref_type": ref.ref_type.value if hasattr(ref.ref_type, "value") else str(ref.ref_type),
-            "ref_name": ref.ref_name,
-            "ref_sha": ref.ref_sha,
-            "synced_at": ref.synced_at,
-        }
-        for ref in refs
-    ]
-    return {"repository_id": repository.id, "items": items, "total": len(items), "last_synced_at": repository.last_synced_at}
-
-
-@router.post("/{repository_id}/sync", status_code=202)
-async def sync_repository_refs(
-    repository_id: str,
-    background_tasks: BackgroundTasks,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    repository = repository_service.get_repository(db, repository_id)
-    if not repository:
-        raise HTTPException(status_code=404, detail="Repository not found")
-    job = provision_job_service.create_job(
-        db,
-        job_type=provision_job_service.ProvisionJobType.SYNC_REPO_REFS,
-        creator_id=current_user.id,
-        context_json={"repository_id": repository.id, "repository_name": repository.name},
-        stage="QUEUED",
-        message="Repository ref sync queued",
-    )
-    background_tasks.add_task(provision_job_service.run_sync_repo_refs_job, job.id)
-    audit_log(
-        action="sync_repository_refs",
-        outcome="accepted",
-        resource_type="repository",
-        resource_id=repository.id,
-        user_id=current_user.id,
-        job_id=job.id,
-    )
-    return provision_job_service.serialize_accepted(job)
-
-
-@router.post("/{repository_id}/validate-branch")
-def validate_repository_branch(
-    repository_id: str,
-    data: ValidateBranchRequest,
+    data: ValidateRefRequest,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -210,6 +153,6 @@ def validate_repository_branch(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
     try:
-        return repository_service.validate_repository_branch(db, repository, data.branch_name)
+        return repository_service.validate_repository_ref(db, repository, data.ref_type, data.ref_name)
     except GitRefAccessError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))

@@ -1,5 +1,5 @@
 """
-Product management API routes.
+Product management API routes (product doubles as its version).
 """
 
 from typing import Optional
@@ -12,10 +12,8 @@ from app.dependencies import get_current_user, get_db, require_admin
 from app.domains.auth.models.user import User
 from app.domains.management.schemas.management import (
     ProductCreate,
+    ProductRepoBindCreate,
     ProductUpdate,
-    ProductVersionCreate,
-    ProductVersionUpdate,
-    VersionRepoBindCreate,
 )
 from app.domains.management.services import product_service
 from app.domains.management.services.git_ref_service import GitRefAccessError
@@ -54,6 +52,8 @@ def create_product(
             name=data.name,
             code=data.code,
             product_line=data.product_line,
+            version_no=data.version_no,
+            release_date=data.release_date,
             description=data.description,
             status=data.status,
             creator_id=current_user.id,
@@ -99,6 +99,8 @@ def update_product(
             name=data.name,
             code=data.code,
             product_line=data.product_line,
+            version_no=data.version_no,
+            release_date=data.release_date,
             description=data.description,
             status=data.status,
         )
@@ -127,10 +129,10 @@ def delete_product(
     return {"msg": "Product deleted"}
 
 
-@router.post("/{product_id}/versions", status_code=201)
-def create_product_version(
+@router.post("/{product_id}/repos", status_code=201)
+def bind_product_repository(
     product_id: str,
-    data: ProductVersionCreate,
+    data: ProductRepoBindCreate,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -138,111 +140,48 @@ def create_product_version(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     try:
-        version = product_service.create_version(
+        binding = product_service.bind_product_repo(
             db,
             product,
-            version_no=data.version_no,
-            status=data.status,
-            release_date=data.release_date,
-            description=data.description,
-            creator_id=current_user.id,
-        )
-        return product_service.serialize_version(version)
-    except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
-
-
-@router.put("/{product_id}/versions/{version_id}")
-def update_product_version(
-    product_id: str,
-    version_id: str,
-    data: ProductVersionUpdate,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    version = product_service.get_version(db, product_id, version_id)
-    if not version:
-        raise HTTPException(status_code=404, detail="Product version not found")
-    try:
-        updated = product_service.update_version(
-            db,
-            version,
-            version_no=data.version_no,
-            status=data.status,
-            release_date=data.release_date,
-            description=data.description,
-        )
-        return product_service.serialize_version(updated)
-    except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
-
-
-@router.delete("/{product_id}/versions/{version_id}")
-def delete_product_version(
-    product_id: str,
-    version_id: str,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    version = product_service.get_version(db, product_id, version_id)
-    if not version:
-        raise HTTPException(status_code=404, detail="Product version not found")
-    product_service.delete_version(db, version)
-    return {"msg": "Product version deleted"}
-
-
-@router.post("/{product_id}/versions/{version_id}/repos", status_code=201)
-def bind_version_repository(
-    product_id: str,
-    version_id: str,
-    data: VersionRepoBindCreate,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    version = product_service.get_version(db, product_id, version_id)
-    if not version:
-        raise HTTPException(status_code=404, detail="Product version not found")
-    try:
-        binding = product_service.bind_version_repo(
-            db,
-            version,
             repository_id=data.repository_id,
-            branch_name=data.branch_name,
+            ref_type=data.ref_type,
+            ref_name=data.ref_name,
             creator_id=current_user.id,
         )
         audit_log(
-            action="bind_product_version_repo",
+            action="bind_product_repo",
             outcome="success",
-            resource_type="product_version_repo",
+            resource_type="product_repo",
             resource_id=binding.id,
             user_id=current_user.id,
-            product_version_id=version.id,
+            product_id=product.id,
             repository_id=data.repository_id,
-            branch_name=data.branch_name,
+            ref_type=data.ref_type,
+            ref_name=data.ref_name,
         )
         return {
             "id": binding.id,
-            "product_version_id": binding.product_version_id,
+            "product_id": binding.product_id,
             "repository_id": binding.repository_id,
-            "branch_name": binding.branch_name,
+            "ref_type": binding.ref_type.value if hasattr(binding.ref_type, "value") else str(binding.ref_type),
+            "ref_name": binding.ref_name,
         }
     except (product_service.ProductServiceError, GitRefAccessError) as exc:
         raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
 
 
-@router.delete("/{product_id}/versions/{version_id}/repos/{repository_id}")
-def unbind_version_repository(
+@router.delete("/{product_id}/repos/{repository_id}")
+def unbind_product_repository(
     product_id: str,
-    version_id: str,
     repository_id: str,
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    version = product_service.get_version(db, product_id, version_id)
-    if not version:
-        raise HTTPException(status_code=404, detail="Product version not found")
+    product = product_service.get_product(db, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
     try:
-        product_service.unbind_version_repo(db, version, repository_id)
-        return {"msg": "Repository unbound from version"}
+        product_service.unbind_product_repo(db, product, repository_id)
+        return {"msg": "Repository unbound from product"}
     except product_service.ProductServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))

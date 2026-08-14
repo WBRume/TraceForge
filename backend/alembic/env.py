@@ -68,15 +68,13 @@ from app.models.workspace_asset import (
 )
 from app.models.management import (
     SddManagementProduct,
-    SddManagementProductVersion,
-    SddManagementOrgNode,
+    SddManagementRepoGroup,
     SddManagementRepository,
-    SddManagementRepoRef,
-    SddManagementProductVersionRepo,
+    SddManagementProductRepo,
     SddManagementProject,
+    SddManagementProjectProduct,
     SddManagementProjectRelease,
     SddManagementProjectReleaseRepo,
-    SddManagementProjectProductDep,
     SddManagementProjectRepo,
 )
 from app.models.workspace_repository import SddWorkspaceRepository

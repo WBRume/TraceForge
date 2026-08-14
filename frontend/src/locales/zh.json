@@ -2539,6 +2539,7 @@
       "search_placeholder": "搜索名称 / 编码",
       "add": "新建",
       "edit": "编辑",
+      "view": "查看",
       "save": "保存",
       "saving": "保存中...",
       "type": "类型",
@@ -2549,6 +2550,15 @@
       "admin_required": "仅管理员可执行此操作"
     },
     "product": {
+      "ref_type": "引用类型",
+      "ref_branch": "分支",
+      "ref_tag": "Tag",
+      "ref_name": "分支 / Tag 名称",
+      "ref_placeholder": "例如 main / v8r21.0",
+      "validate_ref": "校验",
+      "validate_ref_success": "引用存在：{ref}",
+      "select_repos_hint": "勾选仓库或仓库组（勾选仓库组将批量选择组内仓库）",
+      "batch_from_group": "来自仓库组「{group}」",
       "title": "产品管理",
       "subtitle": "维护产品、产品版本及按版本的仓库绑定",
       "create": "新建产品",
@@ -2580,6 +2590,14 @@
       "back_to_list": "返回产品列表"
     },
     "project": {
+      "products_title": "项目产品",
+      "no_products": "项目尚未包含产品",
+      "add_product": "添加产品",
+      "product_select": "选择产品",
+      "product_version_label": "产品版本",
+      "delivery_title": "交付进度",
+      "transition_product_confirm": "确认将产品「{product}」从「{from}」推进到「{to}」？",
+      "remove_product_confirm": "确认将产品「{name}」移出项目？",
       "title": "项目管理",
       "subtitle": "维护客户项目、交付态生命周期与发布记录",
       "create": "新建项目",
@@ -2630,7 +2648,22 @@
       "association_remove_confirm": "确认解除仓库「{name}」的关联？",
       "back_to_list": "返回项目列表"
     },
+    "repo_group": {
+      "title": "仓库组",
+      "add": "新建仓库组",
+      "edit": "编辑仓库组",
+      "delete": "删除仓库组",
+      "delete_confirm": "确认删除仓库组「{name}」？",
+      "name": "组名称",
+      "parent": "上级组",
+      "root": "根分组",
+      "unassigned": "未分组仓库",
+      "readonly_hint": "仓库组由管理员维护，当前为只读",
+      "move_repo_hint": "选择仓库归属组"
+    },
     "repository": {
+      "group": "所属仓库组",
+      "no_group": "未分组",
       "title": "仓库管理",
       "subtitle": "仓库登记、组织树与 Git 分支 / Tag 同步",
       "create": "登记仓库",
@@ -2680,6 +2713,11 @@
     }
   },
   "workspace_create": {
+    "step_products": "选择产品",
+    "products_title": "勾选产品",
+    "products_hint": "勾选本次工作区需要的产品，仓库集合由所选产品的仓库绑定（tag/分支）生成",
+    "no_products_hint": "所选项目尚未包含产品",
+    "repos_readonly_hint": "以下仓库将按所选产品的 tag/分支 绑定检出",
     "title": "新建工作区",
     "step_basic": "基本信息",
     "step_project": "选择项目",

@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { GitFork, Pencil, Plus } from 'lucide-vue-next'
-import DeleteActionButton from '@/components/DeleteActionButton.vue'
+import { GitFork, Pencil, Plus, Trash2 } from 'lucide-vue-next'
+import IconActionButton from '@/components/management/IconActionButton.vue'
 import type { ProjectRelease, ReleaseStatus } from '@/types/management'
 
-const props = defineProps<{
+defineProps<{
   releases: ProjectRelease[];
   canManage: boolean;
 }>()
@@ -30,18 +29,6 @@ const statusLabel = (status: ReleaseStatus): string =>
 const statusTone = (status: ReleaseStatus): string => statusToneMap[status] ?? 'gray'
 
 const formatDate = (value: string | null): string => (value ? value.slice(0, 10) : '-')
-
-const productVersionText = computed(() => {
-  const map: Record<string, string> = {}
-  for (const release of props.releases) {
-    if (release.product_name && release.product_version_no) {
-      map[release.id] = release.product_name + ' v' + release.product_version_no
-    } else {
-      map[release.id] = '-'
-    }
-  }
-  return map
-})
 </script>
 
 <template>
@@ -58,9 +45,10 @@ const productVersionText = computed(() => {
         <tr>
           <th>{{ $t('management.project.release_no') }}</th>
           <th>{{ $t('management.project.release_name') }}</th>
-          <th>{{ $t('management.project.release_product') }} + {{ $t('management.project.release_version') }}</th>
+          <th>{{ $t('management.project.release_product') }}</th>
           <th>{{ $t('management.common.status') }}</th>
           <th>{{ $t('management.project.release_date') }}</th>
+          <th>{{ $t('management.project.repos_title') }}</th>
           <th>{{ $t('management.common.actions') }}</th>
         </tr>
       </thead>
@@ -68,7 +56,7 @@ const productVersionText = computed(() => {
         <tr v-for="release in releases" :key="release.id">
           <td class="mgmt-code-cell">{{ release.release_no }}</td>
           <td>{{ release.name }}</td>
-          <td>{{ productVersionText[release.id] }}</td>
+          <td>{{ release.product_name || '-' }}</td>
           <td>
             <span class="mgmt-status-pill" :class="statusTone(release.status)">
               {{ statusLabel(release.status) }}
@@ -76,19 +64,25 @@ const productVersionText = computed(() => {
           </td>
           <td>{{ formatDate(release.release_date) }}</td>
           <td>
+            <span class="mgmt-repo-count">
+              <GitFork class="w-4 h-4" />
+              {{ release.repos.length }}
+            </span>
+          </td>
+          <td>
             <div class="row-actions">
-              <span v-if="release.repos.length > 0" class="mgmt-repo-count" :title="$t('management.project.repos_title')">
-                <GitFork class="w-4 h-4" />
-                {{ release.repos.length }}
-              </span>
-              <button class="btn-ghost" :title="$t('common.edit')" :disabled="!canManage" @click="emit('edit', release)">
-                <Pencil class="w-4 h-4" />
-              </button>
-              <DeleteActionButton
-                mode="icon"
+              <IconActionButton
+                :icon="Pencil"
+                :title="$t('management.common.edit')"
+                :disabled="!canManage"
+                @click="emit('edit', release)"
+              />
+              <IconActionButton
+                :icon="Trash2"
                 :title="$t('common.delete')"
                 :disabled="!canManage"
-                @click.stop="emit('remove', release)"
+                tone="danger"
+                @click="emit('remove', release)"
               />
             </div>
           </td>
@@ -96,14 +90,7 @@ const productVersionText = computed(() => {
       </tbody>
     </table>
 
-    <div v-else class="mgmt-empty">
-      {{ $t('management.project.no_releases') }}
-      <div v-if="canManage" class="mgmt-empty-action">
-        <button class="btn-secondary" @click="emit('add')">
-          <Plus class="w-4 h-4" /> {{ $t('management.project.add_release') }}
-        </button>
-      </div>
-    </div>
+    <div v-else class="mgmt-empty">{{ $t('management.project.no_releases') }}</div>
   </div>
 </template>
 
@@ -134,11 +121,6 @@ const productVersionText = computed(() => {
   gap: 0.25rem;
   font-size: 0.78rem;
   color: #64748b;
-  margin-right: 0.25rem;
-}
-
-.mgmt-empty-action {
-  margin-top: 0.75rem;
 }
 
 .w-4 {
@@ -146,13 +128,7 @@ const productVersionText = computed(() => {
   height: 1rem;
 }
 
-.row-actions button:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.btn-primary,
-.btn-secondary {
+.btn-primary {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;

@@ -273,6 +273,7 @@ class WorkspaceCreate(BaseModel):
     project_path: Optional[str] = None
     git_repo_url: Optional[str] = None
     project_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
     repositories: Optional[List[WorkspaceRepositoryCreate]] = None
 
 

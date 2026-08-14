@@ -1,35 +1,22 @@
-<!-- Workspace creation workflow: step 3 repository set confirmation. -->
+<!-- Workspace creation workflow: step 4 repository set confirmation (read-only). -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Boxes, FolderCog } from 'lucide-vue-next'
-import BranchSelect from '@/components/management/BranchSelect.vue'
+import { Boxes, FolderCog, Tag, GitBranch } from 'lucide-vue-next'
 import type { ProjectRepoSetItem } from '@/types/management'
 
 const props = defineProps<{
   repos: ProjectRepoSetItem[]
-  overrides: Record<string, string>
   loading: boolean
-}>()
-
-const emit = defineEmits<{
-  (e: 'update:overrides', value: Record<string, string>): void
 }>()
 
 const ootbRepos = computed(() => props.repos.filter((item) => item.repo_kind === 'OOTB'))
 const customRepos = computed(() => props.repos.filter((item) => item.repo_kind === 'CUSTOM'))
-
-const branchFor = (repo: ProjectRepoSetItem) => {
-  return props.overrides[repo.repository_id] || repo.branch_name
-}
-
-const onBranchChange = (repositoryId: string, branch: string) => {
-  const next = { ...props.overrides, [repositoryId]: branch }
-  emit('update:overrides', next)
-}
 </script>
 
 <template>
   <div class="wf-step">
+    <p class="mgmt-hint">{{ $t('workspace_create.repos_readonly_hint') }}</p>
+
     <div v-if="loading" class="mgmt-empty">{{ $t('management.common.loading') }}</div>
 
     <div v-else-if="repos.length === 0" class="mgmt-empty">
@@ -37,8 +24,6 @@ const onBranchChange = (repositoryId: string, branch: string) => {
     </div>
 
     <div v-else>
-      <p class="mgmt-hint">{{ $t('workspace_create.repos_hint') }}</p>
-
       <div v-if="ootbRepos.length > 0" class="wf-repo-group">
         <div class="wf-group-title">
           <Boxes class="w-4 h-4" />
@@ -49,13 +34,11 @@ const onBranchChange = (repositoryId: string, branch: string) => {
             <span class="wf-repo-name">{{ repo.repository_name }}</span>
             <span class="wf-repo-url">{{ repo.git_url }}</span>
           </div>
-          <div class="wf-repo-branch">
-            <BranchSelect
-              :model-value="branchFor(repo)"
-              :repository-id="repo.repository_id"
-              @update:model-value="onBranchChange(repo.repository_id, $event)"
-            />
-          </div>
+          <span class="wf-ref-badge" :class="repo.ref_type === 'TAG' ? 'tag' : 'branch'">
+            <Tag v-if="repo.ref_type === 'TAG'" class="w-3.5 h-3.5" />
+            <GitBranch v-else class="w-3.5 h-3.5" />
+            {{ repo.ref_name }}
+          </span>
         </div>
       </div>
 
@@ -69,13 +52,11 @@ const onBranchChange = (repositoryId: string, branch: string) => {
             <span class="wf-repo-name">{{ repo.repository_name }}</span>
             <span class="wf-repo-url">{{ repo.git_url }}</span>
           </div>
-          <div class="wf-repo-branch">
-            <BranchSelect
-              :model-value="branchFor(repo)"
-              :repository-id="repo.repository_id"
-              @update:model-value="onBranchChange(repo.repository_id, $event)"
-            />
-          </div>
+          <span class="wf-ref-badge" :class="repo.ref_type === 'TAG' ? 'tag' : 'branch'">
+            <Tag v-if="repo.ref_type === 'TAG'" class="w-3.5 h-3.5" />
+            <GitBranch v-else class="w-3.5 h-3.5" />
+            {{ repo.ref_name }}
+          </span>
         </div>
       </div>
     </div>
@@ -139,8 +120,27 @@ const onBranchChange = (repositoryId: string, branch: string) => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.wf-repo-branch {
-  width: 260px;
-  flex-shrink: 0;
+.wf-ref-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.wf-ref-badge.branch {
+  color: #1d4ed8;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+}
+
+.wf-ref-badge.tag {
+  color: #15803d;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
 }
 </style>

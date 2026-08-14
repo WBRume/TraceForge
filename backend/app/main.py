@@ -47,7 +47,7 @@ from app.domains.management.routers import (
     products_router,
     projects_router,
     repositories_router,
-    org_router,
+    repo_groups_router,
 )
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service
@@ -109,7 +109,7 @@ app.include_router(agent.router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(repositories_router, prefix="/api")
-app.include_router(org_router, prefix="/api")
+app.include_router(repo_groups_router, prefix="/api")
 app.include_router(api_mock.gateway_router)
 
 # ── 静态文件挂载 ──

@@ -1,4 +1,4 @@
-<!-- Workflow-style workspace creation dialog (stepper). -->
+<!-- Workflow-style workspace creation dialog: basic -> project -> products -> repos. -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -6,10 +6,11 @@ import { ElMessage } from 'element-plus'
 import { Briefcase, Check, FolderGit2 } from 'lucide-vue-next'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
-import { getProjectRepoSet, listProjects } from '@/services/managementApi'
-import type { Project, ProjectRepoSetItem } from '@/types/management'
+import { getProject, getProjectRepoSet, listProjects } from '@/services/managementApi'
+import type { Project, ProjectProduct, ProjectRepoSetItem } from '@/types/management'
 import BasicInfoStep, { type WorkspaceBasicInfo } from './BasicInfoStep.vue'
 import ProjectSelectStep from './ProjectSelectStep.vue'
+import ProductSelectStep from './ProductSelectStep.vue'
 import ReposConfirmStep from './ReposConfirmStep.vue'
 
 const props = defineProps<{
@@ -26,16 +27,18 @@ const { t } = useI18n()
 const STEPS = [
   { key: 'basic', label: () => t('workspace_create.step_basic') },
   { key: 'project', label: () => t('workspace_create.step_project') },
+  { key: 'products', label: () => t('workspace_create.step_products') },
   { key: 'repos', label: () => t('workspace_create.step_repos') },
 ]
 
 const currentStep = ref(0)
 const creating = ref(false)
 const projectsLoading = ref(false)
+const productsLoading = ref(false)
 const reposLoading = ref(false)
 const projects = ref<Project[]>([])
+const projectProducts = ref<ProjectProduct[]>([])
 const repos = ref<ProjectRepoSetItem[]>([])
-const branchOverrides = ref<Record<string, string>>({})
 
 const basicInfo = ref<WorkspaceBasicInfo>({
   name: '',
@@ -43,6 +46,7 @@ const basicInfo = ref<WorkspaceBasicInfo>({
   project_path: '',
 })
 const selectedProjectId = ref<string | null>(null)
+const selectedProductIds = ref<string[]>([])
 
 const stepLabels = computed(() => STEPS.map((step) => step.label()))
 
@@ -50,9 +54,13 @@ const basicValid = computed(() => {
   return Boolean(basicInfo.value.name.trim() && basicInfo.value.project_path.trim())
 })
 
+const productsValid = computed(() => {
+  return projectProducts.value.length === 0 || selectedProductIds.value.length > 0
+})
+
 const canNext = computed(() => {
   if (currentStep.value === 0) return basicValid.value
-  if (currentStep.value === 1) return true
+  if (currentStep.value === 2) return productsValid.value
   return true
 })
 
@@ -68,18 +76,30 @@ const loadProjects = async () => {
   }
 }
 
-const loadRepoSet = async () => {
-  if (!selectedProjectId.value) {
-    repos.value = []
-    return
+const loadProjectProducts = async () => {
+  projectProducts.value = []
+  selectedProductIds.value = []
+  if (!selectedProjectId.value) return
+  productsLoading.value = true
+  try {
+    const detail = await getProject(selectedProjectId.value)
+    projectProducts.value = detail.products || []
+  } catch (error) {
+    ElMessage.error(formatApiError(error, t('management.common.operation_failed'), t))
+  } finally {
+    productsLoading.value = false
   }
+}
+
+const loadRepoSet = async () => {
+  repos.value = []
+  if (!selectedProjectId.value) return
   reposLoading.value = true
   try {
-    const res = await getProjectRepoSet(selectedProjectId.value)
+    const res = await getProjectRepoSet(selectedProjectId.value, selectedProductIds.value)
     repos.value = res.repositories
   } catch (error) {
     ElMessage.error(formatApiError(error, t('management.common.operation_failed'), t))
-    repos.value = []
   } finally {
     reposLoading.value = false
   }
@@ -94,6 +114,11 @@ const goNext = async () => {
   }
   if (currentStep.value === 1) {
     currentStep.value = 2
+    await loadProjectProducts()
+    return
+  }
+  if (currentStep.value === 2) {
+    currentStep.value = 3
     await loadRepoSet()
     return
   }
@@ -109,8 +134,9 @@ const resetState = () => {
   currentStep.value = 0
   creating.value = false
   projects.value = []
+  projectProducts.value = []
   repos.value = []
-  branchOverrides.value = {}
+  selectedProductIds.value = []
   basicInfo.value = { name: '', description: '', project_path: '' }
   selectedProjectId.value = null
 }
@@ -126,13 +152,7 @@ const submit = async () => {
     }
     if (selectedProjectId.value) {
       payload.project_id = selectedProjectId.value
-      const overrideEntries = Object.entries(branchOverrides.value)
-      if (overrideEntries.length > 0) {
-        payload.repositories = overrideEntries.map(([repositoryId, branchName]) => ({
-          repository_id: repositoryId,
-          branch_name: branchName,
-        }))
-      }
+      payload.product_ids = selectedProductIds.value
     }
     const res = await api.post('/workspaces', payload)
     const jobId = String(res.data?.job_id || '').trim()
@@ -174,7 +194,6 @@ watch(
         </div>
       </header>
 
-      <!-- Stepper -->
       <ol class="wf-stepper">
         <li
           v-for="(label, index) in stepLabels"
@@ -199,12 +218,16 @@ watch(
           :loading="projectsLoading"
           @refresh="loadProjects"
         />
+        <ProductSelectStep
+          v-else-if="currentStep === 2"
+          v-model="selectedProductIds"
+          :products="projectProducts"
+          :loading="productsLoading"
+        />
         <ReposConfirmStep
           v-else
           :repos="repos"
-          :overrides="branchOverrides"
           :loading="reposLoading"
-          @update:overrides="branchOverrides = $event"
         />
       </div>
 
@@ -216,7 +239,7 @@ watch(
           {{ $t('common.cancel') }}
         </button>
 
-        <button v-if="currentStep < 2" type="button" class="btn-primary" :disabled="!canNext" @click="goNext">
+        <button v-if="currentStep < 3" type="button" class="btn-primary" :disabled="!canNext" @click="goNext">
           {{ $t('workspace_create.next') }}
         </button>
         <button v-else type="button" class="btn-primary" :disabled="creating" @click="submit">
@@ -265,6 +288,7 @@ watch(
   padding: 0.6rem 0.9rem;
   background: rgba(248, 250, 252, 0.8);
   border-radius: 12px;
+  flex-wrap: wrap;
 }
 
 .wf-step-item {
@@ -278,7 +302,7 @@ watch(
 
 .wf-step-item + .wf-step-item::before {
   content: '';
-  width: 26px;
+  width: 22px;
   height: 1.5px;
   background: #e2e8f0;
   margin-right: 0.45rem;

@@ -1,5 +1,9 @@
 """
-Product management service: products, versions and per-version repository bindings.
+Product management service.
+
+A product doubles as its version: it carries version_no/release_date and
+binds directly to multiple repositories. Every binding records the git tag
+or branch used for workspace checkout and is validated against the remote.
 """
 
 from datetime import datetime
@@ -10,10 +14,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.domains.management.models.management import (
     ProductStatus,
-    ProductVersionStatus,
+    RepoRefType,
     SddManagementProduct,
-    SddManagementProductVersion,
-    SddManagementProductVersionRepo,
+    SddManagementProductRepo,
     SddManagementRepository,
 )
 from app.domains.management.services import git_ref_service
@@ -33,44 +36,45 @@ def _normalize_status(enum_class, value: str):
         raise ProductServiceError(f"Invalid status '{value}'", status_code=400) from exc
 
 
-def serialize_version(version: SddManagementProductVersion) -> Dict[str, object]:
-    bindings = []
-    for binding in sorted(version.repo_bindings, key=lambda item: item.created_at):
-        repo = binding.repository
-        bindings.append(
-            {
-                "id": binding.id,
-                "repository_id": binding.repository_id,
-                "repository_name": repo.name if repo else binding.repository_id,
-                "git_url": repo.git_url if repo else None,
-                "repo_type": repo.repo_type.value if repo and hasattr(repo.repo_type, "value") else None,
-                "branch_name": binding.branch_name,
-                "created_at": binding.created_at,
-            }
-        )
-    return {
-        "id": version.id,
-        "product_id": version.product_id,
-        "version_no": version.version_no,
-        "status": version.status.value if hasattr(version.status, "value") else str(version.status),
-        "release_date": version.release_date,
-        "description": version.description,
-        "repo_bindings": bindings,
-        "created_at": version.created_at,
-        "updated_at": version.updated_at,
-    }
+def _normalize_ref_type(value: str) -> RepoRefType:
+    normalized = str(value or "BRANCH").strip().upper()
+    try:
+        return RepoRefType(normalized)
+    except ValueError as exc:
+        raise ProductServiceError("ref_type must be BRANCH or TAG", status_code=400) from exc
 
 
-def serialize_product(product: SddManagementProduct) -> Dict[str, object]:
-    return {
+def serialize_product(product: SddManagementProduct, *, include_bindings: bool = False) -> Dict[str, object]:
+    payload: Dict[str, object] = {
         "id": product.id,
         "name": product.name,
         "code": product.code,
         "product_line": product.product_line,
+        "version_no": product.version_no,
+        "release_date": product.release_date,
         "description": product.description,
         "status": product.status.value if hasattr(product.status, "value") else str(product.status),
         "created_at": product.created_at,
         "updated_at": product.updated_at,
+    }
+    if include_bindings:
+        payload["repo_bindings"] = [
+            _serialize_binding(binding) for binding in product.repo_bindings
+        ]
+    return payload
+
+
+def _serialize_binding(binding: SddManagementProductRepo) -> Dict[str, object]:
+    repo = binding.repository
+    return {
+        "id": binding.id,
+        "repository_id": binding.repository_id,
+        "repository_name": repo.name if repo else binding.repository_id,
+        "git_url": repo.git_url if repo else None,
+        "repo_type": repo.repo_type.value if repo and hasattr(repo.repo_type, "value") else None,
+        "ref_type": binding.ref_type.value if hasattr(binding.ref_type, "value") else str(binding.ref_type),
+        "ref_name": binding.ref_name,
+        "created_at": binding.created_at,
     }
 
 
@@ -91,6 +95,7 @@ def list_products(
                 SddManagementProduct.name.ilike(pattern),
                 SddManagementProduct.code.ilike(pattern),
                 SddManagementProduct.product_line.ilike(pattern),
+                SddManagementProduct.version_no.ilike(pattern),
             )
         )
     if status:
@@ -109,16 +114,14 @@ def list_products(
 def get_product(db: Session, product_id: str) -> Optional[SddManagementProduct]:
     return (
         db.query(SddManagementProduct)
-        .options(joinedload(SddManagementProduct.versions).joinedload(SddManagementProductVersion.repo_bindings))
+        .options(joinedload(SddManagementProduct.repo_bindings).joinedload(SddManagementProductRepo.repository))
         .filter(SddManagementProduct.id == product_id)
         .first()
     )
 
 
 def serialize_product_detail(product: SddManagementProduct) -> Dict[str, object]:
-    payload = serialize_product(product)
-    payload["versions"] = [serialize_version(version) for version in product.versions]
-    return payload
+    return serialize_product(product, include_bindings=True)
 
 
 def create_product(
@@ -127,6 +130,8 @@ def create_product(
     name: str,
     code: str,
     product_line: Optional[str] = None,
+    version_no: str = "",
+    release_date: Optional[datetime] = None,
     description: Optional[str] = None,
     status: str = "ACTIVE",
     creator_id: Optional[str] = None,
@@ -142,6 +147,8 @@ def create_product(
         name=normalized_name,
         code=normalized_code,
         product_line=(str(product_line or "").strip() or None),
+        version_no=str(version_no or "").strip(),
+        release_date=release_date,
         description=description,
         status=_normalize_status(ProductStatus, status or "ACTIVE"),
         created_by=creator_id,
@@ -159,6 +166,8 @@ def update_product(
     name: Optional[str] = None,
     code: Optional[str] = None,
     product_line: Optional[str] = None,
+    version_no: Optional[str] = None,
+    release_date: Optional[datetime] = None,
     description: Optional[str] = None,
     status: Optional[str] = None,
 ) -> SddManagementProduct:
@@ -176,6 +185,10 @@ def update_product(
         product.code = normalized_code
     if product_line is not None:
         product.product_line = str(product_line).strip() or None
+    if version_no is not None:
+        product.version_no = str(version_no).strip()
+    if release_date is not None:
+        product.release_date = release_date
     if description is not None:
         product.description = description
     if status is not None:
@@ -190,128 +203,47 @@ def delete_product(db: Session, product: SddManagementProduct) -> None:
     db.commit()
 
 
-def get_version(db: Session, product_id: str, version_id: str) -> Optional[SddManagementProductVersion]:
-    return (
-        db.query(SddManagementProductVersion)
-        .options(joinedload(SddManagementProductVersion.repo_bindings).joinedload(SddManagementProductVersionRepo.repository))
-        .filter(
-            SddManagementProductVersion.id == version_id,
-            SddManagementProductVersion.product_id == product_id,
-        )
-        .first()
-    )
-
-
-def create_version(
+def bind_product_repo(
     db: Session,
     product: SddManagementProduct,
     *,
-    version_no: str,
-    status: str = "PLANNED",
-    release_date: Optional[datetime] = None,
-    description: Optional[str] = None,
-    creator_id: Optional[str] = None,
-) -> SddManagementProductVersion:
-    normalized_no = str(version_no or "").strip()
-    if not normalized_no:
-        raise ProductServiceError("version_no is required", status_code=400)
-    existing = (
-        db.query(SddManagementProductVersion)
-        .filter(
-            SddManagementProductVersion.product_id == product.id,
-            SddManagementProductVersion.version_no == normalized_no,
-        )
-        .first()
-    )
-    if existing:
-        raise ProductServiceError("This version already exists for the product", status_code=409)
-    version = SddManagementProductVersion(
-        product_id=product.id,
-        version_no=normalized_no,
-        status=_normalize_status(ProductVersionStatus, status or "PLANNED"),
-        release_date=release_date,
-        description=description,
-        created_by=creator_id,
-    )
-    db.add(version)
-    db.commit()
-    db.refresh(version)
-    return version
-
-
-def update_version(
-    db: Session,
-    version: SddManagementProductVersion,
-    *,
-    version_no: Optional[str] = None,
-    status: Optional[str] = None,
-    release_date: Optional[datetime] = None,
-    description: Optional[str] = None,
-) -> SddManagementProductVersion:
-    if version_no is not None:
-        normalized_no = str(version_no).strip()
-        existing = (
-            db.query(SddManagementProductVersion)
-            .filter(
-                SddManagementProductVersion.product_id == version.product_id,
-                SddManagementProductVersion.version_no == normalized_no,
-                SddManagementProductVersion.id != version.id,
-            )
-            .first()
-        )
-        if existing:
-            raise ProductServiceError("This version already exists for the product", status_code=409)
-        version.version_no = normalized_no
-    if status is not None:
-        version.status = _normalize_status(ProductVersionStatus, status)
-    if release_date is not None:
-        version.release_date = release_date
-    if description is not None:
-        version.description = description
-    db.commit()
-    db.refresh(version)
-    return version
-
-
-def delete_version(db: Session, version: SddManagementProductVersion) -> None:
-    db.delete(version)
-    db.commit()
-
-
-def bind_version_repo(
-    db: Session,
-    version: SddManagementProductVersion,
-    *,
     repository_id: str,
-    branch_name: str,
+    ref_type: str,
+    ref_name: str,
     creator_id: Optional[str] = None,
-) -> SddManagementProductVersionRepo:
+) -> SddManagementProductRepo:
     repository = db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
     if not repository:
         raise ProductServiceError("Repository not found", status_code=404)
 
-    normalized_branch = str(branch_name or "").strip()
-    if not normalized_branch:
-        raise ProductServiceError("branch_name is required", status_code=400)
+    normalized_ref_name = str(ref_name or "").strip()
+    normalized_ref_type = _normalize_ref_type(ref_type or "BRANCH")
+    if not normalized_ref_name:
+        raise ProductServiceError("ref_name is required", status_code=400)
 
-    # Binding validation: the repository must be accessible and the branch must exist.
-    git_ref_service.validate_branch_exists(repository.git_url, normalized_branch)
+    # Binding validation: the remote must expose the branch/tag.
+    git_ref_service.validate_ref_exists(
+        repository.git_url,
+        normalized_ref_type.value,
+        normalized_ref_name,
+    )
 
     existing = (
-        db.query(SddManagementProductVersionRepo)
+        db.query(SddManagementProductRepo)
         .filter(
-            SddManagementProductVersionRepo.product_version_id == version.id,
-            SddManagementProductVersionRepo.repository_id == repository.id,
+            SddManagementProductRepo.product_id == product.id,
+            SddManagementProductRepo.repository_id == repository.id,
         )
         .first()
     )
     if existing:
-        raise ProductServiceError("This repository is already bound to the version", status_code=409)
+        raise ProductServiceError("This repository is already bound to the product", status_code=409)
 
-    binding = SddManagementProductVersionRepo(
-        product_version_id=version.id,
+    binding = SddManagementProductRepo(
+        product_id=product.id,
         repository_id=repository.id,
-        branch_name=normalized_branch,
+        ref_type=normalized_ref_type,
+        ref_name=normalized_ref_name,
         created_by=creator_id,
     )
     db.add(binding)
@@ -320,16 +252,12 @@ def bind_version_repo(
     return binding
 
 
-def unbind_version_repo(
-    db: Session,
-    version: SddManagementProductVersion,
-    repository_id: str,
-) -> None:
+def unbind_product_repo(db: Session, product: SddManagementProduct, repository_id: str) -> None:
     binding = (
-        db.query(SddManagementProductVersionRepo)
+        db.query(SddManagementProductRepo)
         .filter(
-            SddManagementProductVersionRepo.product_version_id == version.id,
-            SddManagementProductVersionRepo.repository_id == repository_id,
+            SddManagementProductRepo.product_id == product.id,
+            SddManagementProductRepo.repository_id == repository_id,
         )
         .first()
     )
@@ -337,13 +265,6 @@ def unbind_version_repo(
         raise ProductServiceError("Binding not found", status_code=404)
     db.delete(binding)
     db.commit()
-
-
-def version_repo_bindings(
-    db: Session,
-    version: SddManagementProductVersion,
-) -> List[Dict[str, object]]:
-    return serialize_version(version)["repo_bindings"]  # type: ignore[return-value]
 
 
 __all__ = [
@@ -355,10 +276,6 @@ __all__ = [
     "create_product",
     "update_product",
     "delete_product",
-    "get_version",
-    "create_version",
-    "update_version",
-    "delete_version",
-    "bind_version_repo",
-    "unbind_version_repo",
+    "bind_product_repo",
+    "unbind_product_repo",
 ]

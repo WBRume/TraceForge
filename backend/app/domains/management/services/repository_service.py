@@ -1,5 +1,5 @@
 """
-Repository registration service: CRUD, org-tree placement, git ref sync/validation.
+Repository registration service: CRUD and repo-group placement.
 """
 
 import re
@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.domains.management.models.management import (
     RepositoryType,
-    SddManagementRepoRef,
+    SddManagementRepoGroup,
     SddManagementRepository,
 )
 from app.domains.management.services import git_ref_service
@@ -41,42 +41,20 @@ def _normalize_repo_type(value: str) -> RepositoryType:
         ) from exc
 
 
-def serialize_repository(
-    repository: SddManagementRepository,
-    *,
-    ref_counts: Optional[Dict[str, int]] = None,
-) -> Dict[str, object]:
-    counts = ref_counts or {}
+def serialize_repository(repository: SddManagementRepository) -> Dict[str, object]:
+    group = repository.group
     return {
         "id": repository.id,
         "name": repository.name,
         "git_url": repository.git_url,
         "repo_type": repository.repo_type.value if hasattr(repository.repo_type, "value") else str(repository.repo_type),
         "default_branch": repository.default_branch,
-        "org_node_id": repository.org_node_id,
+        "group_id": repository.group_id,
+        "group_name": group.name if group else None,
         "description": repository.description,
-        "last_synced_at": repository.last_synced_at,
-        "branch_count": int(counts.get("BRANCH", 0)),
-        "tag_count": int(counts.get("TAG", 0)),
         "created_at": repository.created_at,
         "updated_at": repository.updated_at,
     }
-
-
-def _ref_counts_for(db: Session, repository_ids: List[str]) -> Dict[str, Dict[str, int]]:
-    counts: Dict[str, Dict[str, int]] = {repo_id: {"BRANCH": 0, "TAG": 0} for repo_id in repository_ids}
-    if not repository_ids:
-        return counts
-    rows = (
-        db.query(SddManagementRepoRef.repository_id, SddManagementRepoRef.ref_type)
-        .filter(SddManagementRepoRef.repository_id.in_(repository_ids))
-        .all()
-    )
-    for repository_id, ref_type in rows:
-        type_value = ref_type.value if hasattr(ref_type, "value") else str(ref_type)
-        bucket = counts.setdefault(repository_id, {"BRANCH": 0, "TAG": 0})
-        bucket[type_value] = bucket.get(type_value, 0) + 1
-    return counts
 
 
 def list_repositories(
@@ -84,7 +62,7 @@ def list_repositories(
     *,
     keyword: Optional[str] = None,
     repo_type: Optional[str] = None,
-    org_node_id: Optional[str] = None,
+    group_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
 ) -> Tuple[List[Dict[str, object]], int]:
@@ -100,8 +78,8 @@ def list_repositories(
         )
     if repo_type:
         query = query.filter(SddManagementRepository.repo_type == _normalize_repo_type(repo_type))
-    if org_node_id:
-        query = query.filter(SddManagementRepository.org_node_id == org_node_id)
+    if group_id:
+        query = query.filter(SddManagementRepository.group_id == group_id)
 
     total = query.count()
     repositories = (
@@ -110,9 +88,7 @@ def list_repositories(
         .limit(page_size)
         .all()
     )
-    counts = _ref_counts_for(db, [repo.id for repo in repositories])
-    items = [serialize_repository(repo, ref_counts=counts.get(repo.id)) for repo in repositories]
-    return items, total
+    return [serialize_repository(repo) for repo in repositories], total
 
 
 def get_repository(db: Session, repository_id: str) -> Optional[SddManagementRepository]:
@@ -126,7 +102,7 @@ def create_repository(
     git_url: str,
     repo_type: str,
     default_branch: str = "main",
-    org_node_id: Optional[str] = None,
+    group_id: Optional[str] = None,
     description: Optional[str] = None,
     creator_id: Optional[str] = None,
 ) -> SddManagementRepository:
@@ -150,7 +126,7 @@ def create_repository(
         git_url=normalized_url,
         repo_type=_normalize_repo_type(repo_type),
         default_branch=(str(default_branch or "").strip() or "main"),
-        org_node_id=org_node_id or None,
+        group_id=group_id or None,
         description=description,
         created_by=creator_id,
     )
@@ -168,7 +144,7 @@ def update_repository(
     git_url: Optional[str] = None,
     repo_type: Optional[str] = None,
     default_branch: Optional[str] = None,
-    org_node_id: Optional[str] = None,
+    group_id: Optional[str] = None,
     description: Optional[str] = None,
 ) -> SddManagementRepository:
     if name is not None:
@@ -195,8 +171,8 @@ def update_repository(
         repository.repo_type = _normalize_repo_type(repo_type)
     if default_branch is not None:
         repository.default_branch = str(default_branch).strip() or repository.default_branch
-    if org_node_id is not None:
-        repository.org_node_id = org_node_id or None
+    if group_id is not None:
+        repository.group_id = group_id or None
     if description is not None:
         repository.description = description
     db.commit()
@@ -205,39 +181,40 @@ def update_repository(
 
 
 def delete_repository(db: Session, repository: SddManagementRepository) -> None:
-    # Repository deletion cascades refs and version bindings; workspace/task
-    # snapshots keep denormalized copies via SET NULL foreign keys.
     db.delete(repository)
     db.commit()
 
 
-def sync_repository_refs(db: Session, repository: SddManagementRepository) -> Dict[str, object]:
-    count = git_ref_service.sync_repository_refs(db, repository)
-    from datetime import datetime
-
-    repository.last_synced_at = datetime.utcnow()
+def move_repository_to_group(
+    db: Session,
+    repository: SddManagementRepository,
+    group_id: Optional[str],
+) -> SddManagementRepository:
+    if group_id:
+        group = db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.id == group_id).first()
+        if not group:
+            raise RepositoryServiceError("Repository group not found", status_code=404)
+    repository.group_id = group_id or None
     db.commit()
     db.refresh(repository)
-    return {"repository_id": repository.id, "ref_count": int(count), "last_synced_at": repository.last_synced_at}
+    return repository
 
 
 def validate_repository_access(db: Session, git_url: str) -> Dict[str, object]:
-    refs = git_ref_service.fetch_remote_refs(git_url)
-    branches = sorted({name for ref_type, name, _sha in refs if ref_type == "BRANCH"})
-    tags = sorted({name for ref_type, name, _sha in refs if ref_type == "TAG"})
-    return {
-        "git_url": git_url,
-        "accessible": True,
-        "branch_count": len(branches),
-        "tag_count": len(tags),
-        "branches": branches[:200],
-        "tags": tags[:200],
-    }
+    payload = git_ref_service.list_refs_for_picker(git_url)
+    payload["branch_count"] = len(payload["branches"])
+    payload["tag_count"] = len(payload["tags"])
+    return payload
 
 
-def validate_repository_branch(db: Session, repository: SddManagementRepository, branch_name: str) -> Dict[str, object]:
-    git_ref_service.validate_branch_exists(repository.git_url, branch_name)
-    return {"repository_id": repository.id, "branch_name": branch_name, "exists": True}
+def validate_repository_ref(
+    db: Session,
+    repository: SddManagementRepository,
+    ref_type: str,
+    ref_name: str,
+) -> Dict[str, object]:
+    git_ref_service.validate_ref_exists(repository.git_url, ref_type, ref_name)
+    return {"repository_id": repository.id, "ref_type": str(ref_type).upper(), "ref_name": ref_name, "exists": True}
 
 
 __all__ = [
@@ -249,7 +226,7 @@ __all__ = [
     "update_repository",
     "delete_repository",
     "serialize_repository",
-    "sync_repository_refs",
+    "move_repository_to_group",
     "validate_repository_access",
-    "validate_repository_branch",
+    "validate_repository_ref",
 ]

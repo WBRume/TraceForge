@@ -293,6 +293,7 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, A
             project_path=context.get("project_path"),
             git_repo_url=context.get("git_repo_url"),
             project_id=context.get("project_id"),
+            product_ids=context.get("product_ids") if isinstance(context.get("product_ids"), list) else None,
             repositories=context.get("repositories") if isinstance(context.get("repositories"), list) else None,
         )
         repositories = [workspace_service.serialize_workspace_repository(row) for row in workspace.repositories]
@@ -655,71 +656,6 @@ async def run_create_task_job(job_id: str) -> None:
                 workspace_id,
                 task_id,
                 str(exc),
-            )
-
-
-def _sync_repo_refs_sync(*, repository_id: str) -> Dict[str, Any]:
-    from app.domains.management.services import repository_service
-
-    db = SessionLocal()
-    try:
-        repository = repository_service.get_repository(db, repository_id)
-        if not repository:
-            raise ValueError("Repository not found")
-        return repository_service.sync_repository_refs(db, repository)
-    finally:
-        db.close()
-
-
-async def run_sync_repo_refs_job(job_id: str) -> None:
-    payload = _get_job_payload(job_id)
-    if not payload:
-        return
-
-    context = payload.get("context_json") if isinstance(payload.get("context_json"), dict) else {}
-    creator_id = str(payload.get("creator_id") or "").strip()
-    repository_id = str(context.get("repository_id") or "").strip()
-
-    with bind_log_context(job_id=job_id, user_id=creator_id):
-        try:
-            mark_progress(
-                job_id,
-                stage="WAITING_EXECUTION_QUEUE",
-                progress=1,
-                message="Waiting for repo ref sync execution slot",
-            )
-            async with queue_provision_jobs(queue_tag="sync_repo_refs"):
-                mark_running(job_id, stage="SYNCING_REFS", progress=20, message="Fetching branches and tags")
-                result = await asyncio.to_thread(
-                    _sync_repo_refs_sync,
-                    repository_id=repository_id,
-                )
-
-            mark_success(
-                job_id,
-                stage="COMPLETED",
-                message="Repository refs synced",
-                result_json=result,
-            )
-            audit_log(
-                action="sync_repository_refs",
-                outcome="success",
-                resource_type="repository",
-                resource_id=repository_id,
-                user_id=creator_id,
-                job_id=job_id,
-            )
-        except LockAcquireTimeout as exc:
-            err = "Provision queue is busy. Please retry later."
-            mark_failed(job_id, stage="FAILED", message="Repository ref sync failed", error_message=err)
-            logger.warning("Repo ref sync queue timeout: job_id={}, key={}", job_id, exc.lock_key)
-        except Exception as exc:
-            logger.exception("Repository ref sync job failed: job_id={}, error={}", job_id, str(exc))
-            mark_failed(
-                job_id,
-                stage="FAILED",
-                message="Repository ref sync failed",
-                error_message=str(exc),
             )
 
 

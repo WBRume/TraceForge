@@ -2,22 +2,14 @@
 Git remote reference helpers for the management domain.
 
 Uses git ls-remote (read-only) to validate repository accessibility and to
-synchronize branch/tag lists into mgmt_repo_refs.
+verify that a branch or tag exists before a product/repository binding is
+created.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 from typing import List, Optional, Tuple
-
-from sqlalchemy.orm import Session
-
-from app.domains.management.models.management import (
-    RepoRefType,
-    SddManagementRepoRef,
-    SddManagementRepository,
-)
 
 
 _GIT_TIMEOUT_SECONDS = 60
@@ -103,70 +95,48 @@ def validate_repository_accessible(git_url: str) -> None:
         )
 
 
-def validate_branch_exists(git_url: str, branch_name: str) -> None:
-    branch = str(branch_name or "").strip()
-    if not branch:
-        raise GitRefAccessError("branch_name is required", status_code=400)
-    refs = fetch_remote_refs(git_url)
-    branch_names = {name for ref_type, name, _sha in refs if ref_type == "BRANCH"}
-    if branch not in branch_names:
-        available = ", ".join(sorted(branch_names)[:10]) or "(none)"
+def _normalize_ref_type(value: str) -> str:
+    normalized = str(value or "").strip().upper()
+    if normalized not in {"BRANCH", "TAG"}:
+        raise GitRefAccessError("ref_type must be BRANCH or TAG", status_code=400)
+    return normalized
+
+
+def validate_ref_exists(git_url: str, ref_type: str, ref_name: str) -> None:
+    """Validate that the given branch or tag exists on the remote."""
+    normalized_type = _normalize_ref_type(ref_type)
+    ref = str(ref_name or "").strip()
+    if not ref:
+        raise GitRefAccessError("ref_name is required", status_code=400)
+    remote_refs = fetch_remote_refs(git_url)
+    names = {name for ref_type_item, name, _sha in remote_refs if ref_type_item == normalized_type}
+    if ref not in names:
+        available = ", ".join(sorted(names)[:10]) or "(none)"
+        kind = "Branch" if normalized_type == "BRANCH" else "Tag"
         raise GitRefAccessError(
-            f"Branch '{branch}' does not exist in repository. Available branches: {available}",
+            f"{kind} '{ref}' does not exist in repository. Available: {available}",
             status_code=409,
         )
 
 
-def sync_repository_refs(db: Session, repository: SddManagementRepository) -> int:
-    """Fetch refs from the remote and upsert them into mgmt_repo_refs."""
-    refs = fetch_remote_refs(repository.git_url)
-    existing = {
-        (row.ref_type.value if hasattr(row.ref_type, "value") else str(row.ref_type), row.ref_name): row
-        for row in db.query(SddManagementRepoRef).filter(
-            SddManagementRepoRef.repository_id == repository.id
-        ).all()
+def list_refs_for_picker(git_url: str) -> dict:
+    """Return remote branches and tags for frontend pickers."""
+    refs = fetch_remote_refs(git_url)
+    branches = sorted({name for ref_type, name, _sha in refs if ref_type == "BRANCH"})
+    tags = sorted({name for ref_type, name, _sha in refs if ref_type == "TAG"})
+    return {
+        "git_url": git_url,
+        "accessible": True,
+        "branches": branches[:200],
+        "tags": tags[:200],
     }
-    seen: set = set()
-    for ref_type, ref_name, ref_sha in refs:
-        key = (ref_type, ref_name)
-        seen.add(key)
-        row = existing.get(key)
-        if row is None:
-            db.add(
-                SddManagementRepoRef(
-                    repository_id=repository.id,
-                    ref_type=RepoRefType(ref_type),
-                    ref_name=ref_name,
-                    ref_sha=ref_sha,
-                )
-            )
-        elif row.ref_sha != ref_sha:
-            row.ref_sha = ref_sha
-    stale_keys = set(existing.keys()) - seen
-    if stale_keys:
-        for key in stale_keys:
-            db.delete(existing[key])
-    return len(refs)
-
-
-def list_repo_refs(
-    db: Session,
-    repository: SddManagementRepository,
-    ref_type: Optional[str] = None,
-) -> List[SddManagementRepoRef]:
-    query = db.query(SddManagementRepoRef).filter(
-        SddManagementRepoRef.repository_id == repository.id
-    )
-    if ref_type:
-        query = query.filter(SddManagementRepoRef.ref_type == RepoRefType(str(ref_type).upper()))
-    return query.order_by(SddManagementRepoRef.ref_type.asc(), SddManagementRepoRef.ref_name.asc()).all()
 
 
 __all__ = [
     "GitRefAccessError",
+    "parse_ls_remote_output",
     "fetch_remote_refs",
     "validate_repository_accessible",
-    "validate_branch_exists",
-    "sync_repository_refs",
-    "list_repo_refs",
+    "validate_ref_exists",
+    "list_refs_for_picker",
 ]

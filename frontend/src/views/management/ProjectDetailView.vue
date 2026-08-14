@@ -6,9 +6,10 @@ import { ElMessage } from 'element-plus'
 import { ArrowLeft, Pencil } from 'lucide-vue-next'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import IconActionButton from '@/components/management/IconActionButton.vue'
 import ProjectFormModal from '@/components/management/ProjectFormModal.vue'
 import LifecycleTransitionPanel from '@/components/management/LifecycleTransitionPanel.vue'
-import ProjectDepsPanel from '@/components/management/ProjectDepsPanel.vue'
+import ProjectProductsPanel from '@/components/management/ProjectProductsPanel.vue'
 import ProjectRepoAssociationsPanel from '@/components/management/ProjectRepoAssociationsPanel.vue'
 import ReleaseListSection from '@/components/management/ReleaseListSection.vue'
 import ReleaseFormModal from '@/components/management/ReleaseFormModal.vue'
@@ -115,9 +116,12 @@ const confirmRemoveRelease = async () => {
         </p>
       </div>
       <AdminGuard :show-hint="false">
-        <button class="btn-secondary" :disabled="!project" @click="editShow = true">
-          <Pencil class="w-4 h-4" /> {{ $t('common.edit') }}
-        </button>
+        <IconActionButton
+          :icon="Pencil"
+          :title="$t('management.common.edit')"
+          :disabled="!project"
+          @click="editShow = true"
+        />
       </AdminGuard>
     </div>
 
@@ -132,7 +136,7 @@ const confirmRemoveRelease = async () => {
         @changed="handleLifecycleChanged"
       />
 
-      <ProjectDepsPanel
+      <ProjectProductsPanel
         :project="project"
         :can-manage="isAdmin"
         @changed="load"
@@ -209,11 +213,5 @@ const confirmRemoveRelease = async () => {
 .w-4 {
   width: 1rem;
   height: 1rem;
-}
-
-.btn-secondary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
 }
 </style>
