@@ -17,7 +17,6 @@ from app.domains.management.schemas.management import (
     ProjectProductTransitionRequest,
     ProjectReleaseCreate,
     ProjectReleaseUpdate,
-    ProjectRepoAssociateCreate,
     ProjectUpdate,
 )
 from app.domains.management.services import project_service
@@ -305,50 +304,4 @@ def delete_project_release(
     return {"msg": "Release deleted"}
 
 
-# ── Custom repository associations ─────────────────────────────────────────
 
-@router.post("/{project_id}/repos", status_code=201)
-def associate_project_repository(
-    project_id: str,
-    data: ProjectRepoAssociateCreate,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    project = project_service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        assoc = project_service.associate_repository(
-            db,
-            project,
-            repository_id=data.repository_id,
-            ref_type=data.ref_type,
-            ref_name=data.ref_name,
-            creator_id=current_user.id,
-        )
-        return {
-            "id": assoc.id,
-            "project_id": assoc.project_id,
-            "repository_id": assoc.repository_id,
-            "ref_type": assoc.ref_type.value if hasattr(assoc.ref_type, "value") else str(assoc.ref_type),
-            "ref_name": assoc.ref_name,
-        }
-    except (project_service.ProjectServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
-
-
-@router.delete("/{project_id}/repos/{repository_id}")
-def dissociate_project_repository(
-    project_id: str,
-    repository_id: str,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
-    project = project_service.get_project(db, project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    try:
-        project_service.dissociate_repository(db, project, repository_id)
-        return {"msg": "Repository association removed"}
-    except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))

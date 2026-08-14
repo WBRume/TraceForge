@@ -2638,9 +2638,6 @@
       "add_dep": "Add Product Dependency",
       "dep_remove_confirm": "Remove dependency on \"{name}\"?",
       "repos_title": "Repository Associations",
-      "no_associations": "No repository associations",
-      "add_association": "Associate Repository",
-      "association_remove_confirm": "Remove association with \"{name}\"?",
       "back_to_list": "Back to Projects"
     },
     "repo_group": {

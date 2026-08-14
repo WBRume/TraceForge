@@ -75,7 +75,6 @@ from app.models.management import (
     SddManagementProjectProduct,
     SddManagementProjectRelease,
     SddManagementProjectReleaseRepo,
-    SddManagementProjectRepo,
 )
 from app.models.workspace_repository import SddWorkspaceRepository
 from app.models.task_repository import SddTaskRepository

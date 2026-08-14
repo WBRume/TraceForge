@@ -10,7 +10,6 @@ import IconActionButton from '@/components/management/IconActionButton.vue'
 import ProjectFormModal from '@/components/management/ProjectFormModal.vue'
 import LifecycleTransitionPanel from '@/components/management/LifecycleTransitionPanel.vue'
 import ProjectProductsPanel from '@/components/management/ProjectProductsPanel.vue'
-import ProjectRepoAssociationsPanel from '@/components/management/ProjectRepoAssociationsPanel.vue'
 import ReleaseListSection from '@/components/management/ReleaseListSection.vue'
 import ReleaseFormModal from '@/components/management/ReleaseFormModal.vue'
 import { deleteProjectRelease, getProject } from '@/services/managementApi'
@@ -137,12 +136,6 @@ const confirmRemoveRelease = async () => {
       />
 
       <ProjectProductsPanel
-        :project="project"
-        :can-manage="isAdmin"
-        @changed="load"
-      />
-
-      <ProjectRepoAssociationsPanel
         :project="project"
         :can-manage="isAdmin"
         @changed="load"

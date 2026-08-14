@@ -285,8 +285,6 @@ class TestProjectService:
         product_b = product_service.create_product(db, name="B", code="B", creator_id="user-1")
         repo_a = _seed_repository(db, name="repo-a", git_url="https://git.example.com/repo-a.git")
         repo_b = _seed_repository(db, name="repo-b", git_url="https://git.example.com/repo-b.git")
-        custom_repo = _seed_repository(db, name="custom", repo_type="CUSTOM",
-                                       git_url="https://git.example.com/custom.git")
 
         with mock.patch(
             "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
@@ -295,33 +293,18 @@ class TestProjectService:
             product_service.bind_product_repo(db, product_b, repository_id=repo_b.id, ref_type="TAG", ref_name="v2.0", creator_id="user-1")
         project_service.add_project_product(db, project, product_id=product_a.id, creator_id="user-1")
         project_service.add_project_product(db, project, product_id=product_b.id, creator_id="user-1")
-        with mock.patch(
-            "app.domains.management.services.project_service.git_ref_service.validate_ref_exists"
-        ):
-            project_service.associate_repository(db, project, repository_id=custom_repo.id, ref_name="main", creator_id="user-1")
 
         project = project_service.get_project(db, project.id)
-        # Only product A selected: repo-a + custom repo.
+        # Only product A selected: only repo-a.
         repo_set = project_service.resolve_project_repo_set(db, project, product_ids=[product_a.id])
-        by_kind = {item["repo_kind"]: item for item in repo_set}
-        assert set(by_kind.keys()) == {"OOTB", "CUSTOM"}
-        assert by_kind["OOTB"]["repository_name"] == "repo-a"
-        assert by_kind["OOTB"]["ref_name"] == "main"
+        assert len(repo_set) == 1
+        assert repo_set[0]["repository_name"] == "repo-a"
+        assert repo_set[0]["repo_kind"] == "OOTB"
+        assert repo_set[0]["ref_name"] == "main"
 
         # No selection: every product binding appears.
         repo_set_all = project_service.resolve_project_repo_set(db, project, product_ids=[])
-        assert len(repo_set_all) == 3
-
-    def test_associate_repository_validates_ref(self, db_session):
-        db = db_session
-        project = self._seed_project(db)
-        repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.project_service.git_ref_service.validate_ref_exists"
-        ) as validate_ref:
-            assoc = project_service.associate_repository(db, project, repository_id=repo.id, ref_type="TAG", ref_name="v1.0", creator_id="user-1")
-            validate_ref.assert_called_once_with(repo.git_url, "TAG", "v1.0")
-        assert assoc.ref_name == "v1.0"
+        assert len(repo_set_all) == 2
 
 
 class TestRepositoryService:

@@ -25,7 +25,6 @@ from app.domains.management.models.management import (
     SddManagementProjectProduct,
     SddManagementProjectRelease,
     SddManagementProjectReleaseRepo,
-    SddManagementProjectRepo,
     SddManagementRepository,
 )
 from app.domains.management.services import git_ref_service
@@ -137,7 +136,6 @@ def get_project(db: Session, project_id: str) -> Optional[SddManagementProject]:
         .options(
             joinedload(SddManagementProject.releases).joinedload(SddManagementProjectRelease.repos),
             joinedload(SddManagementProject.products).joinedload(SddManagementProjectProduct.product),
-            joinedload(SddManagementProject.repo_associations).joinedload(SddManagementProjectRepo.repository),
         )
         .filter(SddManagementProject.id == project_id)
         .first()
@@ -191,18 +189,6 @@ def serialize_project_detail(project: SddManagementProject) -> Dict[str, object]
     payload = serialize_project(project)
     payload["releases"] = [serialize_release(release) for release in project.releases]
     payload["products"] = [serialize_project_product(link) for link in project.products]
-    payload["repo_associations"] = [
-        {
-            "id": assoc.id,
-            "repository_id": assoc.repository_id,
-            "repository_name": assoc.repository.name if assoc.repository else None,
-            "git_url": assoc.repository.git_url if assoc.repository else None,
-            "repo_type": _value(assoc.repository.repo_type) if assoc.repository and hasattr(assoc.repository.repo_type, "value") else None,
-            "ref_type": _value(assoc.ref_type),
-            "ref_name": assoc.ref_name,
-        }
-        for assoc in project.repo_associations
-    ]
     return payload
 
 
@@ -541,61 +527,6 @@ def delete_release(db: Session, release: SddManagementProjectRelease) -> None:
     db.commit()
 
 
-# ── Project custom repository associations ────────────────────────────────
-
-def associate_repository(
-    db: Session,
-    project: SddManagementProject,
-    *,
-    repository_id: str,
-    ref_type: str = "BRANCH",
-    ref_name: Optional[str] = None,
-    creator_id: Optional[str] = None,
-) -> SddManagementProjectRepo:
-    repository = db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
-    if not repository:
-        raise ProjectServiceError("Repository not found", status_code=404)
-    normalized_type = _normalize_ref_type(ref_type)
-    normalized_ref = str(ref_name or "").strip() or repository.default_branch
-    git_ref_service.validate_ref_exists(repository.git_url, normalized_type.value, normalized_ref)
-    existing = (
-        db.query(SddManagementProjectRepo)
-        .filter(
-            SddManagementProjectRepo.project_id == project.id,
-            SddManagementProjectRepo.repository_id == repository.id,
-        )
-        .first()
-    )
-    if existing:
-        raise ProjectServiceError("This repository is already associated with the project", status_code=409)
-    assoc = SddManagementProjectRepo(
-        project_id=project.id,
-        repository_id=repository.id,
-        ref_type=normalized_type,
-        ref_name=normalized_ref,
-        created_by=creator_id,
-    )
-    db.add(assoc)
-    db.commit()
-    db.refresh(assoc)
-    return assoc
-
-
-def dissociate_repository(db: Session, project: SddManagementProject, repository_id: str) -> None:
-    assoc = (
-        db.query(SddManagementProjectRepo)
-        .filter(
-            SddManagementProjectRepo.project_id == project.id,
-            SddManagementProjectRepo.repository_id == repository_id,
-        )
-        .first()
-    )
-    if not assoc:
-        raise ProjectServiceError("Repository association not found", status_code=404)
-    db.delete(assoc)
-    db.commit()
-
-
 # ── Workspace repo set resolution ──────────────────────────────────────────
 
 def resolve_project_repo_set(
@@ -605,8 +536,8 @@ def resolve_project_repo_set(
 ) -> List[Dict[str, object]]:
     """Resolve the effective repository set for a project and product selection.
 
-    - OOTB: tag/branch bindings of every selected product.
-    - Custom: repositories explicitly associated with the project.
+    The repository set is the union of the tag/branch bindings of every
+    selected product.
     """
     selected = {str(item).strip() for item in (product_ids or []) if str(item).strip()}
     repo_map: Dict[str, Dict[str, object]] = {}
@@ -635,22 +566,6 @@ def resolve_project_repo_set(
                 "repo_kind": "OOTB",
             }
 
-    for assoc in project.repo_associations:
-        repo = assoc.repository
-        if not repo:
-            continue
-        repo_map[assoc.repository_id] = {
-            "repository_id": repo.id,
-            "repository_name": repo.name,
-            "git_url": repo.git_url,
-            "repo_type": _value(repo.repo_type),
-            "default_branch": repo.default_branch,
-            "ref_type": _value(assoc.ref_type),
-            "ref_name": assoc.ref_name,
-            "branch_name": assoc.ref_name,
-            "repo_kind": "CUSTOM",
-        }
-
     return list(repo_map.values())
 
 
@@ -674,7 +589,5 @@ __all__ = [
     "get_release",
     "update_release",
     "delete_release",
-    "associate_repository",
-    "dissociate_repository",
     "resolve_project_repo_set",
 ]

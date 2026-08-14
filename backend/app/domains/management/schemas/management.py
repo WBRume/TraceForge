@@ -112,12 +112,6 @@ class ProjectReleaseUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-class ProjectRepoAssociateCreate(BaseModel):
-    repository_id: str = Field(..., min_length=1)
-    ref_type: str = Field(default="BRANCH", pattern="^(BRANCH|TAG)$")
-    ref_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-
-
 # ── Repositories / repo groups ────────────────────────────────────────────
 
 class RepositoryCreate(BaseModel):

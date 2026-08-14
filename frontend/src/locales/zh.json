@@ -2643,9 +2643,6 @@
       "add_dep": "添加产品依赖",
       "dep_remove_confirm": "确认移除产品「{name}」的依赖？",
       "repos_title": "项目仓库关联",
-      "no_associations": "暂无仓库关联",
-      "add_association": "关联仓库",
-      "association_remove_confirm": "确认解除仓库「{name}」的关联？",
       "back_to_list": "返回项目列表"
     },
     "repo_group": {
