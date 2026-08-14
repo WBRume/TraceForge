@@ -627,10 +627,14 @@ class WorkflowEngine:
     # ─────────────── 主执行流程 ───────────────
 
     def _get_project_path(self) -> str:
+        from app.domains.task.services import task_service
+
         db = SessionLocal()
         try:
             task = db.query(SddTask).filter(SddTask.id == self.task_id).first()
-            return task.project_path if task else "."
+            if not task:
+                return "."
+            return task_service.resolve_task_cli_dir(db, task)
         finally:
             db.close()
 

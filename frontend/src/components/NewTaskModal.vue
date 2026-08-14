@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Upload, Loader2, ChevronDown, Sparkles, Globe, FolderOpen } from 'lucide-vue-next'
+import { Plus, Upload, Loader2, ChevronDown, Sparkles, Globe, FolderOpen, GitFork } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -32,6 +32,22 @@ const skillsLoading = ref(false)
 const skills = ref<any[]>([])
 const selectedSkillIds = ref<string[]>([])
 const overlayCloseArmed = ref(false)
+
+const showRepoPanel = ref(false)
+const workspaceRepos = ref<any[]>([])
+const reposLoading = ref(false)
+
+const loadWorkspaceRepos = async () => {
+  reposLoading.value = true
+  try {
+    const res = await api.get('/workspaces/' + props.wsId)
+    workspaceRepos.value = res.data?.repositories || []
+  } catch (e) {
+    workspaceRepos.value = []
+  } finally {
+    reposLoading.value = false
+  }
+}
 
 const globalSkills = computed(() => skills.value.filter((s) => s.dimension === 'GLOBAL'))
 const workspaceSkills = computed(() => skills.value.filter((s) => s.dimension === 'WORKSPACE'))
@@ -109,6 +125,8 @@ const resetForm = () => {
   selectedFileName.value = ''
   showSkillPanel.value = false
   selectedSkillIds.value = []
+  showRepoPanel.value = false
+  workspaceRepos.value = []
 }
 
 const close = () => {
@@ -136,6 +154,7 @@ watch(
   async (visible) => {
     if (visible) {
       await loadSkills()
+      await loadWorkspaceRepos()
     } else {
       overlayCloseArmed.value = false
       resetForm()
@@ -228,6 +247,38 @@ onBeforeUnmount(() => {
             <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded" />
             {{ $t('dashboard.brainstorm_hint') }}
           </label>
+        </div>
+
+        <button
+          v-if="workspaceRepos.length > 0"
+          type="button"
+          class="expand-btn"
+          @click="showRepoPanel = !showRepoPanel"
+        >
+          <div class="expand-left">
+            <GitFork class="w-4 h-4" />
+            <span>{{ $t('dashboard.task_repo_preview', { count: workspaceRepos.length }) }}</span>
+          </div>
+          <ChevronDown class="w-4 h-4 chevron" :class="{ open: showRepoPanel }" />
+        </button>
+
+        <div v-if="showRepoPanel && workspaceRepos.length > 0" class="skills-panel repo-preview-panel">
+          <div class="skills-header">
+            <span>{{ $t('dashboard.task_repo_list_title') }}</span>
+          </div>
+          <div v-if="reposLoading" class="skills-state">
+            <Loader2 class="w-4 h-4 spin" />
+            <span>{{ $t('skills.task_panel.loading') }}</span>
+          </div>
+          <div v-else class="repo-preview-list">
+            <div v-for="repo in workspaceRepos" :key="repo.id" class="repo-preview-row">
+              <span class="repo-preview-dot" :class="{ failed: repo.state === 'FAILED' }"></span>
+              <div class="repo-preview-body">
+                <div class="repo-preview-name">{{ repo.repo_name }}</div>
+                <div class="repo-preview-meta">{{ repo.branch_name }} · {{ repo.repo_url }}</div>
+              </div>
+            </div>
+          </div>
         </div>
 
         <button type="button" class="expand-btn" @click="showSkillPanel = !showSkillPanel">

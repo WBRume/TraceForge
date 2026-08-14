@@ -181,12 +181,10 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
                 id="delta-1",
                 workspace_id=workspace.id,
                 task_id=task.id,
-                ai_output_id=ai_output.id,
-                review_id=review.id,
                 created_by_id=user.id,
-                status=HumanDeltaStatus.CONFIRMED,
-                title="Manual final adjustment",
-                diff_ref_json={"path": "src/checkout.ts"},
+                status=HumanDeltaStatus.READY,
+                change_category="manual_adjustment",
+                change_reason="Manual final adjustment",
             )
             evidence = SddEvidence(
                 id="evidence-1",
@@ -194,7 +192,7 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
                 requirement_id=requirement.id,
                 task_id=task.id,
                 ai_job_id=ai_job.id,
-                human_delta_id=delta.id,
+                human_review_id=review.id,
                 created_by_id=user.id,
                 status=EvidenceStatus.CONFIRMED,
                 source_type=EvidenceSourceType.COMMIT,
@@ -224,8 +222,8 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
             assert detail.requirement_links[0].relation_type == "COVERS"
             assert detail.evidence[0].source.source_type == "COMMIT"
             assert detail.evidence[0].source.source_ref == "abc123"
-            assert detail.human_deltas[0].ai_output_id == "output-1"
-            assert detail.human_deltas[0].review_id == "review-1"
+            assert detail.human_deltas[0].change_category == "manual_adjustment"
+            assert detail.human_deltas[0].change_reason == "Manual final adjustment"
             assert detail.specs[0].content_text == "Validate payment state before checkout completion."
             assert detail.specs[0].content_json["requirement_understanding"] == "Payment state must be validated."
             assert detail.plans[0].content_json["implementation_steps"] == ["Update checkout service."]
@@ -453,8 +451,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                 workspace_id=workspace.id,
                 task_id="task-human-delta",
                 created_by_id=user.id,
-                status=HumanDeltaStatus.CONFIRMED,
-                title="Human modified implementation",
+                status=HumanDeltaStatus.READY,
             )
             clarification = SddClarification(
                 id="matrix-clarification",

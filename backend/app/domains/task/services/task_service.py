@@ -53,6 +53,170 @@ def _build_task_project_path(base_path: str, task_id: str, task_name: str) -> st
     return project_path
 
 
+def _workspace_base_repo_dir(workspace_project_path: str, repo_slug: str) -> str:
+    return os.path.join(str(workspace_project_path or "").strip(), ".repos", repo_slug)
+
+
+def snapshot_workspace_repositories_into_task(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+) -> List:
+    """Snapshot workspace repository bindings into sdd_task_repositories."""
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+    from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
+
+    ws_repos = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == workspace.id)
+        .order_by(SddWorkspaceRepository.created_at.asc())
+        .all()
+    )
+    bindings: List = []
+    for ws_repo in ws_repos:
+        binding = SddTaskRepository(
+            task_id=task.id,
+            repository_id=ws_repo.repository_id,
+            repo_url=ws_repo.repo_url,
+            repo_name=ws_repo.repo_name,
+            repo_slug=ws_repo.repo_slug,
+            branch_name=ws_repo.branch_name,
+            rel_path=ws_repo.repo_slug,
+            state=TaskRepositoryState.PENDING,
+        )
+        db.add(binding)
+        bindings.append(binding)
+    return bindings
+
+
+def build_task_worktree_bindings(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+) -> List:
+    """Map task repository bindings to worktree orchestration bindings."""
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
+    ws_repos = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == workspace.id)
+        .all()
+    )
+    ws_by_id = {row.repository_id: row for row in ws_repos}
+    bindings: List = []
+    for repo in task.repo_bindings:
+        ws_repo = ws_by_id.get(repo.repository_id)
+        base_dir = (
+            ws_repo.base_dir
+            if ws_repo and ws_repo.base_dir
+            else _workspace_base_repo_dir(workspace.project_path or "", repo.repo_slug)
+        )
+        bindings.append(
+            git_worktree_service.RepoWorktreeBinding(
+                repo_url=repo.repo_url,
+                repo_name=repo.repo_name,
+                repo_slug=repo.repo_slug,
+                branch_name=repo.branch_name,
+                base_dir=base_dir,
+            )
+        )
+    return bindings
+
+
+def prepare_task_repositories(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+    task_repos: List,
+) -> None:
+    """Create worktrees for every repository binding and mark them READY."""
+    from app.domains.task.models.task_repository import TaskRepositoryState
+
+    bindings = build_task_worktree_bindings(db, workspace, task)
+    git_worktree_service.create_task_worktrees(
+        base_bindings=bindings,
+        task_root=task.project_path,
+        task_id=task.id,
+    )
+    for repo in task_repos:
+        worktree_dir = os.path.join(str(task.project_path or "").strip(), repo.rel_path)
+        repo.state = TaskRepositoryState.READY
+        repo.base_commit_sha = git_worktree_service.read_repo_head_sha(worktree_dir)
+        repo.error_message = None
+
+
+def cleanup_task_repositories(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+    missing_ok: bool = True,
+) -> None:
+    """Remove worktrees for every repository binding of a task."""
+    bindings = build_task_worktree_bindings(db, workspace, task)
+    if not bindings:
+        return
+    git_worktree_service.remove_task_worktrees(
+        base_bindings=bindings,
+        task_root=task.project_path,
+        task_id=task.id,
+        missing_ok=missing_ok,
+    )
+
+
+def resolve_task_cli_dir(db: Session, task: SddTask) -> str:
+    """Resolve the CLI working directory of a task.
+
+    Multi-repository tasks run inside the primary repository worktree
+    (the first binding); single-repository tasks keep task.project_path.
+    """
+    from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
+
+    bindings = (
+        db.query(SddTaskRepository)
+        .filter(
+            SddTaskRepository.task_id == task.id,
+            SddTaskRepository.state == TaskRepositoryState.READY,
+        )
+        .order_by(SddTaskRepository.created_at.asc())
+        .all()
+    )
+    if bindings:
+        primary = os.path.abspath(
+            os.path.join(str(task.project_path or "").strip(), bindings[0].rel_path)
+        )
+        if os.path.isdir(primary):
+            return primary
+    return str(task.project_path or "").strip() or "."
+
+
+def get_task_repositories(db: Session, task_id: str) -> List:
+    from app.domains.task.models.task_repository import SddTaskRepository
+
+    return (
+        db.query(SddTaskRepository)
+        .filter(SddTaskRepository.task_id == task_id)
+        .order_by(SddTaskRepository.created_at.asc())
+        .all()
+    )
+
+
+def serialize_task_repository(repo) -> dict:
+    return {
+        "id": repo.id,
+        "task_id": repo.task_id,
+        "repository_id": repo.repository_id,
+        "repo_url": repo.repo_url,
+        "repo_name": repo.repo_name,
+        "repo_slug": repo.repo_slug,
+        "branch_name": repo.branch_name,
+        "base_commit_sha": repo.base_commit_sha,
+        "rel_path": repo.rel_path,
+        "state": repo.state.value if hasattr(repo.state, "value") else str(repo.state),
+        "error_message": repo.error_message,
+        "created_at": repo.created_at,
+    }
+
+
 def create_task_record_for_provision(
     db: Session,
     user: User,
@@ -94,6 +258,10 @@ def create_task_record_for_provision(
         db.add(task)
         db.flush()
 
+        # Multi-repository workspace: snapshot the workspace repo set onto the task.
+        snapshot_workspace_repositories_into_task(db, ws, task)
+        db.flush()
+
         skill_service.bind_task_skills(db, task, selected_skills)
         db.flush()
 
@@ -128,10 +296,14 @@ def prepare_task_resources_for_provision(
         raise ValueError("Workspace not found")
 
     use_git_worktree = git_worktree_service.should_use_git_worktree(ws.project_path, ws.git_repo_url)
+    task_repos = get_task_repositories(db, task.id)
+    use_multi_repo = bool(task_repos)
     workspace_prepared = False
     with bind_task_context(task_id=task.id, workspace_id=workspace_id, user_id=task.creator_id):
         try:
-            if use_git_worktree:
+            if use_multi_repo:
+                prepare_task_repositories(db, ws, task, task_repos)
+            elif use_git_worktree:
                 git_worktree_service.create_task_worktree(
                     repo_path=ws.project_path or "",
                     task_id=task.id,
@@ -156,7 +328,12 @@ def prepare_task_resources_for_provision(
         except Exception:
             db.rollback()
             if workspace_prepared:
-                if use_git_worktree:
+                if use_multi_repo:
+                    try:
+                        cleanup_task_repositories(db, ws, task, missing_ok=True)
+                    except Exception as cleanup_exc:
+                        logger.warning(f"Failed to cleanup task worktrees {task.id}: {cleanup_exc}")
+                elif use_git_worktree:
                     try:
                         git_worktree_service.remove_task_worktree(
                             repo_path=ws.project_path or "",
@@ -645,7 +822,16 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
         else os.path.dirname(os.path.abspath(task.project_path))
     )
     task_remote = str(task.git_repo_url or "").strip()
-    if git_worktree_service.should_use_git_worktree(workspace_project_path, task_remote):
+
+    task_repos = get_task_repositories(db, task.id)
+    if task_repos:
+        if not workspace:
+            # Without a workspace we cannot resolve base dirs; fall back to
+            # removing the whole task root to avoid stale worktrees.
+            shutil.rmtree(task.project_path, ignore_errors=True)
+        else:
+            cleanup_task_repositories(db, workspace, task, missing_ok=True)
+    elif git_worktree_service.should_use_git_worktree(workspace_project_path, task_remote):
         git_worktree_service.remove_task_worktree(
             repo_path=workspace_project_path,
             task_id=task.id,

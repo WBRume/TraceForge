@@ -24,6 +24,25 @@ from app.domains.task.models.task import SddTask
 from app.domains.task.models.task import TaskStatus  # noqa: E402
 from app.domains.workflow.services import change_proposal_service
 
+# Register every mapped model so Base.metadata.create_all and mapper
+# configuration see the complete schema (User/SddTask reference models from
+# many domains via string relationships).
+import app.models.asset  # noqa: E402,F401
+import app.models.chat  # noqa: E402,F401
+import app.models.log  # noqa: E402,F401
+import app.models.test_result  # noqa: E402,F401
+import app.models.metric  # noqa: E402,F401
+import app.models.skill  # noqa: E402,F401
+import app.models.api_mock  # noqa: E402,F401
+import app.models.ai_job  # noqa: E402,F401
+import app.models.workspace_asset  # noqa: E402,F401
+import app.models.task_change  # noqa: E402,F401
+import app.models.task_cli_bootstrap  # noqa: E402,F401
+import app.models.provision_job  # noqa: E402,F401
+import app.models.management  # noqa: E402,F401
+import app.models.workspace_repository  # noqa: E402,F401
+import app.models.task_repository  # noqa: E402,F401
+
 
 def _run_git(args, cwd):
     result = subprocess.run(

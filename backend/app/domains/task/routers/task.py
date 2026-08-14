@@ -1,4 +1,4 @@
-﻿"""
+"""
 Task API routes.
 """
 
@@ -82,10 +82,19 @@ def verify_workspace_permission(
 
 
 def _workspace_uses_git_worktree(db: Session, ws_id: str) -> bool:
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
     workspace = db.query(Workspace).filter(Workspace.id == ws_id).first()
     if not workspace:
         return False
-    return bool(str(workspace.project_path or "").strip() and str(workspace.git_repo_url or "").strip())
+    if bool(str(workspace.project_path or "").strip() and str(workspace.git_repo_url or "").strip()):
+        return True
+    repo_count = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == ws_id)
+        .count()
+    )
+    return repo_count > 0
 
 
 def _raise_task_lock_conflict(exc: LockAcquireTimeout, *, message: str = _TASK_INITIALIZING_MSG) -> None:
@@ -238,6 +247,26 @@ def get_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+@router.get("/{task_id}/repositories")
+def get_task_repositories(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    repos = task_service.get_task_repositories(db, task.id)
+    return {
+        "task_id": task.id,
+        "primary_cli_dir": task_service.resolve_task_cli_dir(db, task),
+        "items": [task_service.serialize_task_repository(repo) for repo in repos],
+        "total": len(repos),
+    }
 
 
 @router.post("/{task_id}/change-proposals", response_model=ChangeProposalResponse, status_code=201)

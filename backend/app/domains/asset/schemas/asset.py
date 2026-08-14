@@ -1,4 +1,4 @@
-﻿"""
+"""
 Shared API schemas (assets, dashboard, workspaces).
 """
 
@@ -262,11 +262,33 @@ class WorkspacePermissionFlags(BaseModel):
     publish_api_mock: bool = False
 
 
+class WorkspaceRepositoryCreate(BaseModel):
+    repository_id: str = Field(..., min_length=1)
+    branch_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+
+
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     description: Optional[str] = None
     project_path: Optional[str] = None
     git_repo_url: Optional[str] = None
+    project_id: Optional[str] = None
+    repositories: Optional[List[WorkspaceRepositoryCreate]] = None
+
+
+class WorkspaceRepositoryResponse(BaseModel):
+    id: str
+    workspace_id: str
+    repository_id: Optional[str] = None
+    repo_url: str
+    repo_name: str
+    repo_slug: str
+    branch_name: str
+    base_dir: Optional[str] = None
+    state: str
+    base_commit_sha: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
 
 
 class WorkspaceResponse(BaseModel):
@@ -275,11 +297,13 @@ class WorkspaceResponse(BaseModel):
     description: Optional[str] = None
     project_path: Optional[str] = None
     git_repo_url: Optional[str] = None
+    project_id: Optional[str] = None
     owner_id: str
     created_at: datetime
     my_role: Optional[str] = None
     my_is_expert: Optional[bool] = None
     can_delete_workspace: Optional[bool] = None
+    repositories: List[WorkspaceRepositoryResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

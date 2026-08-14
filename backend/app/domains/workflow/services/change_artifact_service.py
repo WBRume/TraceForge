@@ -41,15 +41,20 @@ def create_patch_asset(
     patch_set_no: int,
     patch_text: str,
     metadata: Optional[Dict[str, Any]] = None,
+    repo_slug: Optional[str] = None,
 ) -> Tuple[SddAsset, SddAssetVersion]:
-    file_name = f"change-proposal-{proposal_no}-patch-set-{patch_set_no}.patch"
+    suffix = f"-{repo_slug}" if repo_slug else ""
+    file_name = f"change-proposal-{proposal_no}-patch-set-{patch_set_no}{suffix}.patch"
     raw = str(patch_text or "").encode("utf-8")
+    asset_name = f"Change Proposal #{proposal_no} Patch Set {patch_set_no}"
+    if repo_slug:
+        asset_name = f"{asset_name} [{repo_slug}]"
     return asset_document_service.create_task_asset_version_from_bytes(
         db,
         task,
         creator_id=creator_id,
         asset_type=AssetType.CODE_DIFF,
-        asset_name=f"Change Proposal #{proposal_no} Patch Set {patch_set_no}",
+        asset_name=asset_name,
         file_name=file_name,
         file_content=raw,
         content_text=_decode_excerpt(raw, limit=settings.TASK_CHANGE_DIFF_EXCERPT_CHARS),

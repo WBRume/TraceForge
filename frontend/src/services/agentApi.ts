@@ -5,6 +5,7 @@ import type {
   ApplyResultStatus,
   ChangeProposal,
   ChangeProposalFileListResponse,
+  ChangeProposalRepoPatchListResponse,
   ConflictReport,
   VerificationRun,
   VerificationRunStatus,
@@ -60,6 +61,11 @@ export const downloadChangeProposalPatch = async (proposalId: string): Promise<s
     transformResponse: [(data) => data],
   })
   return String(res.data || '')
+}
+
+export const listChangeProposalRepoPatches = async (proposalId: string): Promise<ChangeProposalRepoPatchListResponse> => {
+  const res = await api.get(`/agent/change-proposals/${proposalId}/repo-patches`)
+  return res.data as ChangeProposalRepoPatchListResponse
 }
 
 export const listChangeProposalFiles = async (proposalId: string): Promise<ChangeProposalFileListResponse> => {

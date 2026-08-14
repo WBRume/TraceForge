@@ -38,6 +38,7 @@ class UserResponse(BaseModel):
     display_name: str
     avatar_url: Optional[str] = None
     avatar_svg: Optional[str] = None
+    is_admin: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}
