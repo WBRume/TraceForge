@@ -141,3 +141,17 @@ const handleCancel = () => {
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
+
+<style scoped>
+/* 增加弹窗高度，保证父级分组下拉（BaseSelect 绝对定位展开）不被裁剪遮挡 */
+.mgmt-modal {
+  max-height: 92vh;
+  min-height: min(480px, 85vh);
+  display: flex;
+  flex-direction: column;
+}
+
+.mgmt-modal-actions {
+  margin-top: auto;
+}
+</style>

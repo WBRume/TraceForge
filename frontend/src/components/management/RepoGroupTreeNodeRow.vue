@@ -7,11 +7,13 @@ defineProps<{
   node: RepoGroupTreeNode;
   canManage: boolean;
   selectedGroupId: string | null;
+  selectedRepoId: string | null;
   depth: number;
 }>()
 
 const emit = defineEmits<{
   (e: 'select-group', groupId: string | null): void;
+  (e: 'select-repo', repositoryId: string): void;
   (e: 'add-child', groupId: string): void;
   (e: 'edit-group', group: { id: string; name: string; parent_id: string | null }): void;
   (e: 'delete-group', group: { id: string; name: string; parent_id: string | null }): void;
@@ -47,7 +49,8 @@ const emit = defineEmits<{
       v-for="repo in node.repositories"
       :key="repo.id"
       class="mgmt-repo-row"
-      @click="emit('select-group', node.id)"
+      :class="{ 'is-selected': selectedRepoId === repo.id }"
+      @click="emit('select-repo', repo.id)"
     >
       <GitBranch class="mgmt-repo-icon" />
       <span class="mgmt-repo-name">{{ repo.name }}</span>
@@ -60,8 +63,10 @@ const emit = defineEmits<{
         :node="child"
         :can-manage="canManage"
         :selected-group-id="selectedGroupId"
+        :selected-repo-id="selectedRepoId"
         :depth="depth + 1"
         @select-group="emit('select-group', $event)"
+        @select-repo="emit('select-repo', $event)"
         @add-child="emit('add-child', $event)"
         @edit-group="emit('edit-group', $event)"
         @delete-group="emit('delete-group', $event)"
@@ -140,6 +145,12 @@ const emit = defineEmits<{
 .mgmt-repo-row:hover {
   background: rgba(14, 165, 233, 0.05);
   color: #0ea5e9;
+}
+
+.mgmt-repo-row.is-selected {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0ea5e9;
+  font-weight: 600;
 }
 
 .mgmt-repo-icon {

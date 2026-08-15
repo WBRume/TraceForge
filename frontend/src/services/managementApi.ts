@@ -80,6 +80,8 @@ export const listRepositories = async (params: {
   keyword?: string
   repo_type?: RepositoryType | ''
   group_id?: string | null
+  repository_id?: string | null
+  unassigned_only?: boolean
   page?: number
   page_size?: number
 } = {}): Promise<Paginated<Repository>> => {
