@@ -54,7 +54,7 @@ export function useChatViewModel() {
   }
   type SpecDrawerLevel = 0 | 1 | 2 | 3
   type OpenSpecDrawerLevel = 1 | 2 | 3
-  type SpecDrawerTab = 'spec_doc' | 'superpowers_docs'
+  type SpecDrawerTab = 'spec_doc' | 'superpowers_docs' | 'diag_docs' | 'diag_code'
   type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
   type ChatWorkbenchMode = 'platform' | 'cli'
   type RuntimeSkillUsage = {
@@ -245,6 +245,7 @@ export function useChatViewModel() {
     Boolean(workspacePermissions.value?.upload_task_spec || workspacePermissions.value?.manage_task_status)
   ))
   const isTaskPreStart = computed(() => currentTask.value?.status === 'PENDING')
+  const isTaskProvisioning = computed(() => String(currentTask.value?.status || '') === 'PROVISIONING')
   const isTaskInterrupted = computed(() => currentTask.value?.status === 'INTERRUPTED')
   const isStartActionVisible = computed(() => Boolean(currentTask.value) && isTaskPreStart.value)
   const canClickStartAction = computed(() => (
@@ -261,15 +262,18 @@ export function useChatViewModel() {
     (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value && !isDiagnosisTask.value
   ))
   const isSpecPanelOpen = computed(() => specDrawerLevel.value > 0)
-  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value)
+  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value || isTaskProvisioning.value)
 
-  // 问题定位任务：诊断文档/代码路径抽屉
-  const diagnosisDocsDrawerOpen = ref(false)
+  // 问题定位任务：诊断文档/代码路径抽屉（复用 spec 抽屉三段式容器）
   const toggleDiagnosisDocsDrawer = () => {
-    diagnosisDocsDrawerOpen.value = !diagnosisDocsDrawerOpen.value
-  }
-  const closeDiagnosisDocsDrawer = () => {
-    diagnosisDocsDrawerOpen.value = false
+    if (!isDiagnosisTask.value || !currentTask.value) return
+    if (isSpecPanelOpen.value) {
+      specDrawerLevel.value = 0
+      return
+    }
+    specDrawerTab.value = 'diag_docs'
+    specDrawerLevel.value = 1
+    lastOpenSpecDrawerLevel.value = 1
   }
 
   const localUserMessageMeta = () => ({
@@ -364,6 +368,7 @@ export function useChatViewModel() {
     })
   }
   const chatInputPlaceholder = computed(() => {
+    if (isTaskProvisioning.value) return t('chat.task_provisioning_hint')
     if (isTaskPreStart.value) return t('chat.start_before_chat')
     if (isTerminalStatus.value) return t('chat.terminal_status_hint')
     if (isTaskInterrupted.value) return t('chat.resume_interrupted_placeholder')
@@ -1147,26 +1152,42 @@ export function useChatViewModel() {
     if (!canCreateTask.value) return
     showTaskModal.value = true
   }
-  
+
+  // 任务创建后：始终进入任务准备进度弹窗（等待 git worktree/clone 完成，防止提前启动会话）
+  const taskProvisionVisible = ref(false)
+  const taskProvisionJobId = ref('')
+  const taskProvisionTaskId = ref('')
+
   const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
     showTaskModal.value = false
     const taskId = typeof payload === 'string' ? payload : payload.taskId
-    const wsId = route.params.wsId
-
-    // 如果创建任务时上传了 spec 文件或问题定位文档，跳转到 provisioning 页面等待 job 完成
-    if (typeof payload !== 'string' && payload.jobId && (payload.expectSpecUpload || payload.expectDiagnosisDocs)) {
-      router.push(`/ops/queue/provision/${payload.jobId}?expectSpec=1`)
-      return
-    }
+    const jobId = typeof payload === 'string' ? '' : String(payload.jobId || '').trim()
 
     preferredSpecTaskId.value = taskId
     preferredSpecAssetId.value = typeof payload === 'string' ? '' : (payload.assetId || '')
     await loadTasks()
-    router.push(`/ws/${wsId}/chat/${taskId}`)
 
+    if (jobId) {
+      // 无论是否携带 spec/诊断文档，都先等待运维队列准备完成
+      taskProvisionJobId.value = jobId
+      taskProvisionTaskId.value = taskId
+      taskProvisionVisible.value = true
+      return
+    }
+    openTaskSession(taskId)
+  }
+
+  const openTaskSession = async (taskId: string) => {
+    const wsId = route.params.wsId
+    taskProvisionVisible.value = false
+    router.push(`/ws/${wsId}/chat/${taskId}`)
     // 重新获取一下最新的 task 对象
-    const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
-    selectTask(latestTaskRes.data)
+    try {
+      const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
+      selectTask(latestTaskRes.data)
+    } catch (e) {
+      console.warn('Failed to refresh task after provisioning', e)
+    }
   }
   
   const selectTask = async (task: any) => {
@@ -1175,12 +1196,11 @@ export function useChatViewModel() {
       preferredSpecAssetId.value = ''
     }
     specDrawerLevel.value = 0
-    diagnosisDocsDrawerOpen.value = false
     contextWindowDrawerOpen.value = false
     contextWindowDrawerLevel.value = 1
     contextWindow.reset()
     clearContextWindowRefreshTimer()
-    specDrawerTab.value = hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs'
+    specDrawerTab.value = isDiagnosisTask.value ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
     currentTask.value = task
     showTaskSkillsDrawer.value = false
     messages.value = []
@@ -1368,7 +1388,7 @@ export function useChatViewModel() {
   }
   
   const requestSpecDrawerLevel = (level: OpenSpecDrawerLevel) => {
-    if (!isSpecDrawerAvailable.value) return
+    if (!currentTask.value) return
     applySpecDrawerLevel(level)
   }
   
@@ -2525,9 +2545,12 @@ export function useChatViewModel() {
     messageAuthorLabel,
     messages,
     closeTaskSkillsDrawer,
-    closeDiagnosisDocsDrawer,
     openTaskSkillsDrawer,
-    diagnosisDocsDrawerOpen,
+    isTaskProvisioning,
+    taskProvisionVisible,
+    taskProvisionJobId,
+    taskProvisionTaskId,
+    openTaskSession,
     toggleDiagnosisDocsDrawer,
     createDiagnosisCase,
     diagnosisCaseCreating,

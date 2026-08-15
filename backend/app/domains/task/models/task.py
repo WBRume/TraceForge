@@ -13,6 +13,7 @@ from app.domains.auth.models.user import generate_uuid
 
 
 class TaskStatus(str, PyEnum):
+    PROVISIONING = "PROVISIONING"  # 任务资源准备中（git worktree/clone 未完成，禁止启动会话）
     PENDING = "PENDING"
     BRAINSTORMING = "BRAINSTORMING"
     PLANNING = "PLANNING"
