@@ -36,7 +36,6 @@ import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowD
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
-import DiagnosisResultPanel from '@/components/chat/DiagnosisResultPanel.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
 
@@ -406,20 +405,7 @@ const statusModelText = (card: any): string => {
         </button>
       </div>
 
-      <!-- 问题定位结果面板 -->
-      <DiagnosisResultPanel
-        v-if="vm.showDiagnosisResultPanel"
-        :task="vm.currentTask"
-        :result="vm.diagnosisResult"
-        :loading="vm.diagnosisResultLoading"
-        :saving="vm.diagnosisResultSaving"
-        :case-creating="vm.diagnosisCaseCreating"
-        :case-link="vm.diagnosisCaseLink"
-        @save="vm.saveDiagnosisResult()"
-        @confirm="vm.createDiagnosisCase(false)"
-        @confirm-and-submit="vm.createDiagnosisCase(true)"
-        @open-case="(caseId: string) => vm.router.push(`/ws/${vm.route.params.wsId}/cases?case=${caseId}`)"
-      />
+      <!-- 问题定位结果已改为会话内 AI 气泡卡片（DiagnosisResultCard），此处不再渲染独立面板 -->
 
       <!-- Input Area -->
       <ChatExecutionInput

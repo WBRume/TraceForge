@@ -55,6 +55,7 @@ from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
 from app.domains.task.services import git_patch_service, task_cli_state_service, task_service, context_token_service, task_session_control_service
+from app.domains.task.services import diagnosis_result_service
 from app.domains.workflow.services import change_proposal_service, provision_job_service
 from app.domains.workspace.services import workspace_service
 
@@ -142,19 +143,8 @@ def _serialize_asset(asset) -> AssetResponse:
 
 
 def _diagnosis_prompt_suffix(task) -> str:
-    """问题定位任务：把现象与优先级注入 AI 会话 prompt。"""
-    if getattr(task, "task_type", None) != "DIAGNOSIS":
-        return ""
-    task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
-    parts = ["[问题定位任务]"]
-    phenomenon = str(task_meta.get("phenomenon") or "").strip()
-    if phenomenon:
-        parts.append(f"现象: {phenomenon}")
-    priority = str(task_meta.get("priority") or "").strip()
-    if priority:
-        parts.append(f"优先级: {priority}")
-    parts.append("请定位问题根因，输出根因结论、证据链、修复建议与置信度。")
-    return "\n\n" + "\n".join(parts)
+    """问题定位任务：把任务性质与工作契约注入 AI 会话 prompt（见 diagnosis_result_service）。"""
+    return diagnosis_result_service.build_diagnosis_prompt_suffix(task)
 
 
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
@@ -1149,7 +1139,7 @@ def get_diagnosis_result(
     result = task.diagnosis_result
     if not result:
         raise HTTPException(status_code=404, detail="Diagnosis result not found")
-    return result
+    return diagnosis_result_service.serialize_diagnosis_result(result)
 
 
 @router.put("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse)
@@ -1169,27 +1159,12 @@ def upsert_diagnosis_result(
     )
     task = _require_diagnosis_task(db, task_id, ws_id)
 
-    from app.domains.task.models.diagnosis import SddDiagnosisResult, DiagnosisResultStatus
-
-    result = task.diagnosis_result
-    if not result:
-        result = SddDiagnosisResult(
-            task_id=task.id,
-            workspace_id=ws_id,
-            created_by_id=current_user.id,
-            status=DiagnosisResultStatus.DRAFT.value,
-        )
-        db.add(result)
-    if data.root_cause is not None:
-        result.root_cause = data.root_cause
-    if data.evidence_chain is not None:
-        result.evidence_chain = data.evidence_chain
-    if data.fix_suggestion is not None:
-        result.fix_suggestion = data.fix_suggestion
-    if data.confidence is not None:
-        result.confidence = data.confidence
-    db.commit()
-    db.refresh(result)
+    result = diagnosis_result_service.upsert_diagnosis_result_from_user(
+        db,
+        task=task,
+        data=data,
+        actor_user_id=current_user.id,
+    )
     audit_log(
         action="diagnosis_result_upsert",
         outcome="success",
@@ -1199,7 +1174,7 @@ def upsert_diagnosis_result(
         workspace_id=ws_id,
         task_id=task.id,
     )
-    return result
+    return diagnosis_result_service.serialize_diagnosis_result(result)
 
 
 @router.post("/{task_id}/case-draft", response_model=CaseResponse, status_code=201)

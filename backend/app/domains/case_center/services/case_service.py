@@ -71,6 +71,7 @@ def serialize_case(case: SddCase) -> dict:
             }
         )
     snapshot = case.conversation_snapshot_json
+    diagnosis_detail = case.diagnosis_detail_json
     return {
         "id": case.id,
         "workspace_id": case.workspace_id,
@@ -90,6 +91,7 @@ def serialize_case(case: SddCase) -> dict:
         "status": case.status,
         "review_round": case.review_round,
         "conversation_snapshot": snapshot if isinstance(snapshot, list) else None,
+        "diagnosis_detail": diagnosis_detail if isinstance(diagnosis_detail, dict) else None,
         "submitted_at": case.submitted_at,
         "reviewed_at": case.reviewed_at,
         "rejected_comment": case.rejected_comment,
@@ -404,6 +406,51 @@ def resubmit_case(
     return _require_case(db, case.id, workspace_id)
 
 
+def _format_call_chain(items) -> Optional[str]:
+    """调用链路 → 可读文本。"""
+    lines = []
+    for node in items or []:
+        if not isinstance(node, dict):
+            continue
+        module = str(node.get("module") or "").strip()
+        function = str(node.get("function") or "").strip()
+        file_path = str(node.get("file_path") or "").strip()
+        description = str(node.get("description") or "").strip()
+        label = ".".join(part for part in (module, function) if part)
+        if not label and not file_path:
+            continue
+        seq = node.get("seq")
+        prefix = f"{seq}. " if seq is not None else ""
+        body = " - ".join(part for part in (label or file_path, description) if part)
+        lines.append(prefix + body)
+    return "调用链路:\n" + "\n".join(lines) if lines else None
+
+
+def _format_code_context_items(items) -> Optional[str]:
+    """相关代码上下文条目 → 可读文本。"""
+    lines = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        file_path = str(item.get("file_path") or "").strip()
+        if not file_path:
+            continue
+        start = item.get("start_line")
+        end = item.get("end_line")
+        if start and end and end != start:
+            location = f":{start}-{end}"
+        elif start:
+            location = f":{start}"
+        else:
+            location = ""
+        note = str(item.get("note") or "").strip()
+        line = f"{file_path}{location}"
+        if note:
+            line += f" - {note}"
+        lines.append(line)
+    return "相关代码上下文:\n" + "\n".join(lines) if lines else None
+
+
 def capture_conversation_snapshot(db: Session, task: SddTask) -> Optional[list]:
     """从任务会话历史生成对话回放快照（精简字段）。"""
     history = task_service.get_task_history(
@@ -518,13 +565,47 @@ def create_case_draft_from_task(
     if diagnosis_result is not None:
         diagnosis_result.status = "CONFIRMED"
         # 定位结果 → 案例结构化字段映射：
-        # 证据链 → 分析过程；根因结论 → 根因；修复建议 → 方案。
+        # 证据链+调用链路 → 分析过程；根因结论 → 根因；修复建议+修复代码 → 方案；
+        # 相关代码上下文 → 代码上下文；结构化明细 → diagnosis_detail_json。
         analysis_parts = [part for part in [diagnosis_result.evidence_chain] if part]
+        chain_text = _format_call_chain(diagnosis_result.call_chain_json)
+        if chain_text:
+            analysis_parts.append(chain_text)
         confidence = diagnosis_result.confidence if diagnosis_result.confidence is not None else 0
         analysis_parts.append(f"置信度: {confidence}%")
         case.analysis_process = "\n\n".join(analysis_parts) or None
         case.root_cause = diagnosis_result.root_cause or None
-        case.solution = diagnosis_result.fix_suggestion or None
+
+        solution_parts = [part for part in [diagnosis_result.fix_suggestion] if part]
+        fix_code = str(diagnosis_result.fix_code or "").strip()
+        if fix_code:
+            solution_parts.append("修复代码:\n" + fix_code)
+        case.solution = "\n\n".join(solution_parts) or None
+
+        context_items_text = _format_code_context_items(diagnosis_result.code_context_json)
+        context_parts = [part for part in [case.code_context] if part]
+        if context_items_text:
+            context_parts.append(context_items_text)
+        case.code_context = "\n\n".join(context_parts) or None
+
+        case.diagnosis_detail_json = {
+            "similar_cases": (
+                diagnosis_result.similar_cases_json
+                if isinstance(diagnosis_result.similar_cases_json, list)
+                else []
+            ),
+            "call_chain": (
+                diagnosis_result.call_chain_json
+                if isinstance(diagnosis_result.call_chain_json, list)
+                else []
+            ),
+            "code_context": (
+                diagnosis_result.code_context_json
+                if isinstance(diagnosis_result.code_context_json, list)
+                else []
+            ),
+            "fix_code": diagnosis_result.fix_code,
+        }
 
     db.commit()
     db.refresh(case)

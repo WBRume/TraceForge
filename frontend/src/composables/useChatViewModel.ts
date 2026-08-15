@@ -13,6 +13,10 @@ import { useTaskSkillRuntimeTrace } from '@/composables/useTaskSkillRuntimeTrace
 import { useAuthStore } from '@/stores/auth'
 import type { ContextCompactionLocatePayload, ContextTokenCategory } from '@/types/contextWindow'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
+import {
+  normalizeDiagnosisPayload,
+  type DiagnosisResultPayload,
+} from '@/types/diagnosis'
 
 
 export function useChatViewModel() {
@@ -1212,7 +1216,6 @@ export function useChatViewModel() {
   const isDiagnosisTask = computed(() => String(currentTask.value?.task_type || '') === 'DIAGNOSIS')
   /** 问题定位不需要 git patch/diff 相关业务，隐藏对应入口 */
   const hidePatchWorkflows = computed(() => isDiagnosisTask.value)
-  const showDiagnosisResultPanel = computed(() => Boolean(currentTask.value?.id) && isDiagnosisTask.value && !isTaskPreStart.value)
 
   const diagnosisResult = ref<any>(null)
   const diagnosisResultLoading = ref(false)
@@ -1233,8 +1236,8 @@ export function useChatViewModel() {
       diagnosisResult.value = res.data
     } catch (e: any) {
       if (e?.response?.status === 404) {
-        // 尚无结果：提供空表单供填写
-        diagnosisResult.value = { root_cause: '', evidence_chain: '', fix_suggestion: '', confidence: 0, status: 'DRAFT' }
+        // 尚无结果：等待 AI 会话收敛反填（卡片由会话消息驱动）
+        diagnosisResult.value = null
         return
       }
       console.warn('Failed to load diagnosis result', e)
@@ -1252,18 +1255,24 @@ export function useChatViewModel() {
     }
   }
 
-  const saveDiagnosisResult = async () => {
+  const patchMessageMetadata = (messageId: string, payload: DiagnosisResultPayload) => {
+    const message = messages.value.find(item => String(item.id || '') === String(messageId || ''))
+    if (!message) return
+    const normalized = normalizeDiagnosisPayload(payload)
+    message.metadata = normalized
+    message.content = String(normalized.summary || normalized.root_cause || '')
+  }
+
+  const saveDiagnosisResult = async (payload: DiagnosisResultPayload, messageId?: string) => {
     const taskId = currentTask.value?.id
-    if (!taskId || !diagnosisResult.value) return
+    if (!taskId) return
     diagnosisResultSaving.value = true
     try {
-      const res = await api.put(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`, {
-        root_cause: String(diagnosisResult.value.root_cause || ''),
-        evidence_chain: String(diagnosisResult.value.evidence_chain || ''),
-        fix_suggestion: String(diagnosisResult.value.fix_suggestion || ''),
-        confidence: Number(diagnosisResult.value.confidence ?? 0),
-      })
+      const res = await api.put(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`, payload)
       diagnosisResult.value = res.data
+      if (messageId) {
+        patchMessageMetadata(messageId, payload)
+      }
       ElMessage.success(t('diagnosis.result_saved'))
     } catch (e) {
       ElMessage.error(formatApiError(e, t('diagnosis.result_save_failed'), t))
@@ -1393,6 +1402,7 @@ export function useChatViewModel() {
         creator_is_workspace_expert: Boolean(m.creator_is_workspace_expert),
         client_message_id: m.client_message_id || null,
         decision_id: m.decision_id || null,
+        metadata: m.metadata || null,
       }))
   
       if (reset) {
@@ -1926,7 +1936,7 @@ export function useChatViewModel() {
   
     switch (type) {
       case 'chat_message': {
-        // 自然语言对话气泡 (user / assistant text)
+        // 自然语言对话气泡 (user / assistant text) 与定位结果卡片
         upsertChatMessage({
           id: payload.id || Date.now().toString(),
           role: payload.role,
@@ -1938,6 +1948,7 @@ export function useChatViewModel() {
           creator_is_workspace_expert: Boolean(payload.creator_is_workspace_expert),
           client_message_id: payload.client_message_id || null,
           decision_id: payload.decision_id || null,
+          metadata: payload.metadata || null,
           delivery_status: 'sent',
         })
         scrollToBottom('chat')
@@ -1959,6 +1970,7 @@ export function useChatViewModel() {
           creator_is_workspace_expert: Boolean(payload.creator_is_workspace_expert),
           client_message_id: clientMessageId || null,
           decision_id: payload.decision_id || null,
+          metadata: payload.metadata || null,
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
@@ -2512,8 +2524,8 @@ export function useChatViewModel() {
     hidePatchWorkflows,
     isDiagnosisTask,
     loadDiagnosisResult,
+    patchMessageMetadata,
     saveDiagnosisResult,
-    showDiagnosisResultPanel,
     taskTypeFilter,
     applyTaskTypeFilter,
     openContextWindowDrawer,
