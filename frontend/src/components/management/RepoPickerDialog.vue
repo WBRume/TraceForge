@@ -66,62 +66,64 @@ const pick = (repo: Repository) => {
 </script>
 
 <template>
-  <div v-if="show" class="mgmt-modal-overlay" @pointerdown.self="emit('close')">
-    <div class="mgmt-modal glass-panel">
-      <h3>{{ $t('management.product.binding_repo') }}</h3>
+  <Teleport to="body">
+    <div v-if="show" class="mgmt-modal-overlay" @pointerdown.self="emit('close')">
+      <div class="mgmt-modal glass-panel">
+        <h3>{{ $t('management.product.binding_repo') }}</h3>
 
-      <div class="mgmt-toolbar">
-        <div class="mgmt-repo-search">
-          <Search class="mgmt-repo-search-icon" />
-          <input
-            v-model="keyword"
-            class="mgmt-search"
-            type="text"
-            :placeholder="$t('management.common.search_placeholder')"
-            @keyup.enter="load"
-          />
+        <div class="mgmt-toolbar">
+          <div class="mgmt-repo-search">
+            <Search class="mgmt-repo-search-icon" />
+            <input
+              v-model="keyword"
+              class="mgmt-search"
+              type="text"
+              :placeholder="$t('management.common.search_placeholder')"
+              @keyup.enter="load"
+            />
+          </div>
+          <button class="btn-secondary" @click="load">{{ $t('common.refresh') }}</button>
         </div>
-        <button class="btn-secondary" @click="load">{{ $t('common.refresh') }}</button>
-      </div>
 
-      <div class="mgmt-chips">
-        <button
-          v-for="chip in typeChips"
-          :key="chip.key"
-          class="mgmt-chip"
-          :class="{ active: typeFilter === chip.key }"
-          @click="typeFilter = chip.key; load()"
-        >
-          {{ chip.key === 'ALL' ? $t('chat.session_filter_all') : $t(chip.label) }}
-        </button>
-      </div>
+        <div class="mgmt-chips">
+          <button
+            v-for="chip in typeChips"
+            :key="chip.key"
+            class="mgmt-chip"
+            :class="{ active: typeFilter === chip.key }"
+            @click="typeFilter = chip.key; load()"
+          >
+            {{ chip.key === 'ALL' ? $t('chat.session_filter_all') : $t(chip.label) }}
+          </button>
+        </div>
 
-      <div v-if="loading" class="mgmt-empty">{{ $t('management.common.loading') }}</div>
-      <div v-else-if="filtered.length === 0" class="mgmt-empty">{{ $t('management.common.empty') }}</div>
-      <table v-else class="mgmt-table">
-        <thead>
-          <tr>
-            <th>{{ $t('management.common.name') }}</th>
-            <th>{{ $t('management.repository.git_url') }}</th>
-            <th>{{ $t('management.common.type') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="repo in filtered" :key="repo.id" class="mgmt-repo-row" @click="pick(repo)">
-            <td>{{ repo.name }}</td>
-            <td>{{ repo.git_url }}</td>
-            <td>
-              <span class="mgmt-tag" :class="repo.repo_type === 'OOTB' ? 'ootb' : 'custom'">
-                {{ repo.repo_type === 'OOTB'
-                  ? $t('management.repository.type_ootb')
-                  : $t('management.repository.type_custom') }}
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+        <div v-if="loading" class="mgmt-empty">{{ $t('management.common.loading') }}</div>
+        <div v-else-if="filtered.length === 0" class="mgmt-empty">{{ $t('management.common.empty') }}</div>
+        <table v-else class="mgmt-table">
+          <thead>
+            <tr>
+              <th>{{ $t('management.common.name') }}</th>
+              <th>{{ $t('management.repository.git_url') }}</th>
+              <th>{{ $t('management.common.type') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="repo in filtered" :key="repo.id" class="mgmt-repo-row" @click="pick(repo)">
+              <td>{{ repo.name }}</td>
+              <td>{{ repo.git_url }}</td>
+              <td>
+                <span class="mgmt-tag" :class="repo.repo_type === 'OOTB' ? 'ootb' : 'custom'">
+                  {{ repo.repo_type === 'OOTB'
+                    ? $t('management.repository.type_ootb')
+                    : $t('management.repository.type_custom') }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
