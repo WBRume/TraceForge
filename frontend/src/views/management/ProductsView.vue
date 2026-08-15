@@ -96,8 +96,7 @@ const openCreate = () => {
 };
 
 const openEdit = (product: Product) => {
-  editingProduct.value = product;
-  showForm.value = true;
+  router.push({ path: '/management/products/' + product.id, query: { mode: 'edit' } });
 };
 
 const onSaved = () => {
@@ -122,7 +121,7 @@ const confirmDelete = async () => {
 };
 
 const openDetail = (product: Product) => {
-  router.push('/management/products/' + product.id);
+  router.push({ path: '/management/products/' + product.id, query: { mode: 'view' } });
 };
 
 const changePage = (delta: number) => {

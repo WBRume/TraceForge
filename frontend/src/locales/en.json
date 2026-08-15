@@ -2542,7 +2542,9 @@
       "required": "This field is required",
       "deleted": "Deleted",
       "operation_failed": "Operation failed",
-      "admin_required": "Only platform administrators can perform this operation"
+      "admin_required": "Only platform administrators can perform this operation",
+      "view_mode": "Read-only mode",
+      "edit_mode": "Edit mode"
     },
     "product": {
       "title": "Products",

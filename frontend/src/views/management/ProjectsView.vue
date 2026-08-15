@@ -94,8 +94,7 @@ const openCreate = () => {
 }
 
 const openEdit = (project: Project) => {
-  editing.value = project
-  formShow.value = true
+  router.push({ path: '/management/projects/' + project.id, query: { mode: 'edit' } })
 }
 
 const handleSaved = () => {
@@ -123,7 +122,7 @@ const confirmRemove = async () => {
 }
 
 const openDetail = (project: Project) => {
-  router.push('/management/projects/' + project.id)
+  router.push({ path: '/management/projects/' + project.id, query: { mode: 'view' } })
 }
 </script>
 

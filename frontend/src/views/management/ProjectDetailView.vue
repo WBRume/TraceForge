@@ -24,6 +24,10 @@ const authStore = useAuthStore()
 
 const isAdmin = computed(() => Boolean(authStore.user?.is_admin))
 
+// 查看（默认 / ?mode=view）为只读；编辑（?mode=edit）开放完整编辑能力（含产品/发布等）
+const editMode = computed(() => route.query.mode === 'edit')
+const canManage = computed(() => editMode.value && isAdmin.value)
+
 const projectId = computed(() => String(route.params.projectId ?? ''))
 
 const project = ref<ProjectDetail | null>(null)
@@ -112,10 +116,14 @@ const confirmRemoveRelease = async () => {
           <span class="mgmt-code">{{ project?.code ?? '' }}</span>
           <template v-if="project?.customer"> · {{ project.customer }}</template>
           <template v-if="project?.organization"> · {{ project.organization }}</template>
+          <span v-if="project" class="mgmt-mode-badge" :class="editMode ? 'edit' : 'view'">
+            {{ editMode ? $t('management.common.edit_mode') : $t('management.common.view_mode') }}
+          </span>
         </p>
       </div>
       <AdminGuard :show-hint="false">
         <IconActionButton
+          v-if="project && editMode"
           :icon="Pencil"
           :title="$t('management.common.edit')"
           :disabled="!project"
@@ -131,19 +139,19 @@ const confirmRemoveRelease = async () => {
     <template v-else-if="project">
       <LifecycleTransitionPanel
         :project="project"
-        :can-manage="isAdmin"
+        :can-manage="canManage"
         @changed="handleLifecycleChanged"
       />
 
       <ProjectProductsPanel
         :project="project"
-        :can-manage="isAdmin"
+        :can-manage="canManage"
         @changed="load"
       />
 
       <ReleaseListSection
         :releases="project.releases"
-        :can-manage="isAdmin"
+        :can-manage="canManage"
         @add="openAddRelease"
         @edit="openEditRelease"
         @remove="removingRelease = $event"
@@ -201,6 +209,27 @@ const confirmRemoveRelease = async () => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.82rem;
   color: #64748b;
+}
+
+.mgmt-mode-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 0.1rem 0.5rem;
+  margin-left: 0.5rem;
+}
+
+.mgmt-mode-badge.view {
+  color: #64748b;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+
+.mgmt-mode-badge.edit {
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
 }
 
 .w-4 {
