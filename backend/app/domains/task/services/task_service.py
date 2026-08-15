@@ -54,7 +54,7 @@ def _build_task_project_path(base_path: str, task_id: str, task_name: str) -> st
 
 
 def _workspace_base_repo_dir(workspace_project_path: str, repo_slug: str) -> str:
-    return os.path.join(str(workspace_project_path or "").strip(), ".repos", repo_slug)
+    return os.path.join(str(workspace_project_path or "").strip(), repo_slug)
 
 
 def snapshot_workspace_repositories_into_task(

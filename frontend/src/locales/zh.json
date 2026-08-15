@@ -2728,7 +2728,7 @@
     "project_hint": "选择项目后，工作区仓库集合由项目的产品依赖与定制仓自动生成",
     "project_none": "不关联项目（本地空工作区）",
     "repos_title": "仓库集合确认",
-    "repos_hint": "以下仓库将在创建工作区时逐一 clone 到 .repos 目录，可覆盖绑定分支",
+    "repos_hint": "以下仓库将在创建工作区时逐一 clone 到工作区根目录下的对应子目录，可覆盖绑定分支",
     "ootb_repos": "OOTB 基线仓库",
     "custom_repos": "定制仓库",
     "branch_override": "分支覆盖",

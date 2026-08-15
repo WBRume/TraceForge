@@ -3,7 +3,7 @@ Workspace repository bindings.
 
 A workspace is a collection of git repositories. Each row snapshots one
 repository of the workspace (name/url/branch) and tracks the state of its
-local base clone inside the workspace root (.repos/<slug>).
+local base clone directly inside the workspace root (<slug>).
 """
 
 from enum import Enum as PyEnum
