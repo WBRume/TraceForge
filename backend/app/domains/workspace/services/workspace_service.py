@@ -300,7 +300,7 @@ def create_workspace(
                 candidate = f"{slug}-{sequence}"
                 sequence += 1
             seen_slugs.add(candidate)
-            base_dir = os.path.join(normalized_project_path or "", ".repos", candidate)
+            base_dir = os.path.join(normalized_project_path or "", candidate)
             db.add(
                 SddWorkspaceRepository(
                     workspace_id=workspace.id,

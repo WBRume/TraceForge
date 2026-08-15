@@ -16,7 +16,7 @@ from app.domains.task.services import git_worktree_service
 from app.domains.task.services.git_worktree_service import RepoWorktreeBinding
 
 
-def _binding(name="billing-core", slug="billing-core", branch="main", base="C:/ws/.repos/billing-core"):
+def _binding(name="billing-core", slug="billing-core", branch="main", base="C:/ws/billing-core"):
     return RepoWorktreeBinding(
         repo_url="https://git.example.com/billing-core.git",
         repo_name=name,
@@ -30,18 +30,18 @@ class MultiRepoWorktreeServiceTest(unittest.TestCase):
     def test_ensure_base_repository_clones_when_missing(self):
         with mock.patch.object(git_worktree_service, "is_git_repository", return_value=False),                 mock.patch.object(git_worktree_service, "_run_git_checked") as run_checked,                 mock.patch.object(git_worktree_service, "ensure_workspace_repo_matches_remote"),                 mock.patch.object(os.path, "exists", return_value=False),                 mock.patch("os.makedirs"):
             base = git_worktree_service.ensure_base_repository(
-                "https://git.example.com/r.git", "C:/ws/.repos/r"
+                "https://git.example.com/r.git", "C:/ws/r"
             )
-            self.assertEqual(base, os.path.abspath("C:/ws/.repos/r"))
+            self.assertEqual(base, os.path.abspath("C:/ws/r"))
             clone_call = run_checked.call_args_list[0]
             self.assertIn("clone", clone_call.args[0])
 
     def test_ensure_base_repository_verifies_existing_repo(self):
         with mock.patch.object(git_worktree_service, "is_git_repository", return_value=True),                 mock.patch.object(git_worktree_service, "ensure_workspace_repo_matches_remote") as ensure_remote,                 mock.patch.object(os.path, "exists", return_value=True):
             base = git_worktree_service.ensure_base_repository(
-                "https://git.example.com/r.git", "C:/ws/.repos/r"
+                "https://git.example.com/r.git", "C:/ws/r"
             )
-            self.assertEqual(base, os.path.abspath("C:/ws/.repos/r"))
+            self.assertEqual(base, os.path.abspath("C:/ws/r"))
             ensure_remote.assert_called_once()
 
     def test_create_task_worktrees_executes_per_repo(self):

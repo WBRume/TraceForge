@@ -2723,7 +2723,7 @@
     "project_hint": "The workspace repository set is generated from the project product dependencies and custom repos",
     "project_none": "No project (local empty workspace)",
     "repos_title": "Repository Set",
-    "repos_hint": "Each repository will be cloned under .repos when the workspace is created. Branch overrides are supported.",
+    "repos_hint": "Each repository will be cloned directly into a subdirectory of the workspace root when the workspace is created. Branch overrides are supported.",
     "ootb_repos": "OOTB Baseline Repositories",
     "custom_repos": "Custom Repositories",
     "branch_override": "Branch Override",
