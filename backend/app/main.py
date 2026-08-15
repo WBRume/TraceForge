@@ -42,6 +42,7 @@ from app.domains.workflow.routers import provision
 from app.domains.ai.routers import queue
 from app.domains.workspace_asset.routers import workspace_asset
 from app.domains.task.routers import task_closeout
+from app.domains.case_center.routers import case as case_center_router
 from app.domains.asset.routers import decision
 from app.domains.management.routers import (
     products_router,
@@ -96,6 +97,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(task_closeout.router, prefix="/api")
+app.include_router(case_center_router.router, prefix="/api")
 app.include_router(decision.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
 app.include_router(asset.router, prefix="/api")

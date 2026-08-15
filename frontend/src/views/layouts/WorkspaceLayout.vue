@@ -5,7 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useLocalAgentStore } from '@/stores/localAgent'
-import { LayoutDashboard, MessageSquare, Box, Settings, Network } from 'lucide-vue-next'
+import { LayoutDashboard, MessageSquare, Box, BookMarked, Settings, Network } from 'lucide-vue-next'
 import AppSidebar from '@/components/AppSidebar.vue'
 import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
 
@@ -85,6 +85,13 @@ const sidebarNavItems = computed(() => {
       icon: MessageSquare,
       to: `/ws/${wsId}/chat`,
       active: routeName === 'chat' || routeName === 'taskChat' || routeName === 'taskSpec',
+    },
+    {
+      key: 'cases',
+      label: t('layout.case_center'),
+      icon: BookMarked,
+      to: `/ws/${wsId}/cases`,
+      active: routeName === 'workspaceCases',
     },
     {
       key: 'assets',

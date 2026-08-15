@@ -36,6 +36,7 @@ import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowD
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
+import DiagnosisResultPanel from '@/components/chat/DiagnosisResultPanel.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
 
@@ -77,6 +78,17 @@ const statusModelText = (card: any): string => {
             size="sm"
             class="task-filter-select"
             @update:modelValue="vm.applyTaskStatusFilter"
+          />
+          <BaseSelect
+            v-model="vm.taskTypeFilter"
+            :options="[
+              { label: $t('chat.session_type_all'), value: 'ALL' },
+              { label: $t('task_types.development'), value: 'DEVELOPMENT' },
+              { label: $t('task_types.diagnosis'), value: 'DIAGNOSIS' },
+            ]"
+            size="sm"
+            class="task-filter-select"
+            @update:modelValue="vm.applyTaskTypeFilter"
           />
         </div>
       </div>
@@ -164,7 +176,7 @@ const statusModelText = (card: any): string => {
           <button class="icon-btn" :disabled="!vm.canExportTask" @click="vm.handleExport" title="Export Session">
             <Download class="w-4 h-4" />
           </button>
-          <button class="btn-micro" :disabled="!vm.currentTask" @click="showApplyPatchDrawer = true">
+          <button class="btn-micro" v-if="!vm.hidePatchWorkflows" :disabled="!vm.currentTask" @click="showApplyPatchDrawer = true">
             <GitPullRequest class="w-4 h-4" />
             {{ $t('chat.change_apply_button') }}
           </button>
@@ -381,7 +393,7 @@ const statusModelText = (card: any): string => {
       </div>
 
       <!-- Verification Quick Actions -->
-      <div v-if="!vm.engineRunning && vm.messages.length > 0 && !vm.isChatLocked" class="verification-actions">
+      <div v-if="!vm.hidePatchWorkflows && !vm.engineRunning && vm.messages.length > 0 && !vm.isChatLocked" class="verification-actions">
         <span class="verify-label">{{ $t('portal.architecture') }}:</span>
         <button class="btn-micro" @click="vm.sendVerification('ui')" title="Playwright UI">
           <TestTube class="w-3" /> UI
@@ -393,6 +405,21 @@ const statusModelText = (card: any): string => {
           <Sparkles class="w-3" /> E2E
         </button>
       </div>
+
+      <!-- 问题定位结果面板 -->
+      <DiagnosisResultPanel
+        v-if="vm.showDiagnosisResultPanel"
+        :task="vm.currentTask"
+        :result="vm.diagnosisResult"
+        :loading="vm.diagnosisResultLoading"
+        :saving="vm.diagnosisResultSaving"
+        :case-creating="vm.diagnosisCaseCreating"
+        :case-link="vm.diagnosisCaseLink"
+        @save="vm.saveDiagnosisResult()"
+        @confirm="vm.createDiagnosisCase(false)"
+        @confirm-and-submit="vm.createDiagnosisCase(true)"
+        @open-case="(caseId: string) => vm.router.push(`/ws/${vm.route.params.wsId}/cases?case=${caseId}`)"
+      />
 
       <!-- Input Area -->
       <ChatExecutionInput

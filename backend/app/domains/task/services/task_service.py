@@ -226,6 +226,9 @@ def create_task_record_for_provision(
     spec_doc_path: Optional[str] = None,
     requirement_duration_hours: float = 0.0,
     skill_ids: Optional[List[str]] = None,
+    task_type: str = "DEVELOPMENT",
+    phenomenon: Optional[str] = None,
+    priority: Optional[str] = None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -239,10 +242,22 @@ def create_task_record_for_provision(
     base_path = ws.project_path or os.getcwd()
     task_project_path = _build_task_project_path(base_path, task_id, name)
 
+    task_meta = None
+    if task_type == "DIAGNOSIS":
+        task_meta = {}
+        phenomenon_text = str(phenomenon or "").strip()
+        if phenomenon_text:
+            task_meta["phenomenon"] = phenomenon_text
+        priority_text = str(priority or "").strip().upper()
+        if priority_text in {"P0", "P1", "P2", "P3"}:
+            task_meta["priority"] = priority_text
+
     task = SddTask(
         id=task_id,
         workspace_id=workspace_id,
         creator_id=user.id,
+        task_type=task_type,
+        task_meta_json=task_meta,
         name=name,
         description=description,
         project_path=task_project_path,
@@ -772,11 +787,15 @@ def list_tasks(
     status_filter: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
+    task_type: Optional[str] = None,
 ) -> Tuple[List[SddTask], int]:
     query = db.query(SddTask).options(joinedload(SddTask.creator)).filter(SddTask.workspace_id == workspace_id)
 
     if status_filter:
         query = query.filter(SddTask.status == status_filter)
+
+    if task_type:
+        query = query.filter(SddTask.task_type == task_type)
 
     total = query.count()
     items = (

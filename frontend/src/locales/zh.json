@@ -84,6 +84,7 @@
   "layout": {
     "dashboard": "仪表盘",
     "chat": "SDD 会话",
+    "case_center": "案例中心",
     "api_mock": "API MOCK",
     "workspaces": "我的工作区",
     "toggle_sidebar": "收起/展开侧边栏"
@@ -249,6 +250,7 @@
       "UNIT_MIN": "分钟"
     },
     "task_name": "任务名称",
+    "task_type_label": "任务类型",
     "description": "初始化提示词",
     "spec_doc": "规范文档",
     "task_name_placeholder": "例如：实现用户中心 API",
@@ -366,6 +368,7 @@
     "cli_tool_raw_payload": "查看原始参数(JSON)",
     "session_filter_label": "状态筛选",
     "session_filter_all": "全部",
+    "session_type_all": "全部类型",
     "session_filter_success": "成功",
     "session_filter_failed": "失败",
     "session_scroll_load_more": "下滑到底自动加载更多会话",
@@ -2746,5 +2749,137 @@
     "next": "下一步",
     "create": "创建工作区",
     "creating": "提交中..."
+  },
+  "task_types": {
+    "development": "研发态任务",
+    "development_desc": "AI 辅助研发全流程：需求、规划、编码、测试与收尾资产沉淀",
+    "diagnosis": "问题定位任务",
+    "diagnosis_desc": "描述现象与优先级，AI 会话定位根因，确认采纳后可一键沉淀为案例"
+  },
+  "diagnosis": {
+    "panel_title": "定位结果",
+    "phenomenon": "现象",
+    "phenomenon_placeholder": "描述问题现象，例如：接口在高峰期偶发超时，错误码 504",
+    "priority": "优先级",
+    "root_cause": "根因结论",
+    "root_cause_placeholder": "AI 会话收敛后，填写问题根因结论",
+    "evidence_chain": "证据链",
+    "evidence_chain_placeholder": "支持根因的关键证据，例如：日志片段、复现步骤、调用栈",
+    "fix_suggestion": "修复建议",
+    "fix_suggestion_placeholder": "针对根因的修复方案与建议",
+    "confidence": "置信度",
+    "save_draft": "保存草稿",
+    "confirm_create_case": "确认采纳 · 生成案例",
+    "create_and_submit": "生成并提交评审",
+    "view_case": "查看案例",
+    "panel_hint": "对话收敛后填写定位结果；确认采纳将生成案例草稿，可一键提交专家评审",
+    "result_draft": "草稿",
+    "result_confirmed": "已确认",
+    "result_load_failed": "定位结果加载失败，请刷新重试",
+    "result_saved": "定位结果已保存",
+    "result_save_failed": "定位结果保存失败",
+    "case_created": "已生成案例草稿",
+    "case_created_and_submitted": "案例已生成并提交专家评审",
+    "case_already_exists": "该任务已有关联案例，已为你打开",
+    "case_create_failed": "生成案例失败"
+  },
+  "case_center": {
+    "title": "功能案例中心",
+    "subtitle": "结构化沉淀问题定位与处理经验，专家评审入库，团队可检索复用",
+    "search": "检索",
+    "search_placeholder": "按标题 / 问题描述 / 根因 / 方案 / 代码上下文关键词检索",
+    "create_button": "新建案例",
+    "filter_all": "全部",
+    "status_all": "全部状态",
+    "priority_all": "全部优先级",
+    "category": {
+      "PUBLIC": "公共",
+      "PRODUCT": "产品",
+      "SITE": "局点",
+      "TEMPORARY": "临时"
+    },
+    "status": {
+      "DRAFT": "草稿",
+      "PENDING_REVIEW": "待评审",
+      "IN_REVIEW": "评审中",
+      "APPROVED": "已入库",
+      "REJECTED": "已驳回"
+    },
+    "role": {
+      "user": "用户",
+      "assistant": "AI",
+      "system": "系统"
+    },
+    "action": {
+      "submit": "提交评审",
+      "start_review": "开始评审",
+      "approve": "通过入库",
+      "reject": "驳回打回",
+      "resubmit": "重新提交"
+    },
+    "review_action": {
+      "start": "接单评审",
+      "approve": "通过入库",
+      "reject": "驳回打回"
+    },
+    "field": {
+      "title": "案例标题",
+      "problem_description": "问题描述",
+      "product_name": "产品",
+      "product_version": "版本",
+      "site_name": "局点",
+      "workspace": "工作区",
+      "code_context": "代码上下文",
+      "analysis_process": "分析过程",
+      "root_cause": "根因",
+      "solution": "方案",
+      "category": "分类",
+      "priority": "优先级"
+    },
+    "placeholder": {
+      "title": "例如：接口偶发超时根因定位",
+      "problem_description": "问题发生的背景、现象与影响范围",
+      "product_name": "关联产品，如：Billing",
+      "product_version": "产品版本号",
+      "site_name": "局点，如：华东局点",
+      "code_context": "涉及的关键代码位置、仓库与文件",
+      "analysis_process": "从现象到根因的分析推导过程与证据",
+      "root_cause": "问题根因结论",
+      "solution": "解决方案与修复建议",
+      "site_name_short": "如：华东局点"
+    },
+    "tab": {
+      "info": "案例信息",
+      "replay": "对话回放",
+      "review_records": "评审记录"
+    },
+    "review_comment_placeholder": "填写评审意见（驳回时必填）",
+    "rejected_comment_label": "驳回意见",
+    "review_round": "第 {round} 轮评审",
+    "creator": "创建人",
+    "created_at": "创建时间",
+    "updated_at": "更新时间",
+    "current_workspace": "当前工作区",
+    "not_set": "未填写",
+    "empty": "暂无案例，点击右上角「新建案例」或从问题定位任务一键转案例",
+    "replay_empty": "暂无对话记录",
+    "replay_snapshot_note": "对话回放来自生成案例时的会话快照",
+    "replay_live_note": "对话回放来自源任务实时会话",
+    "review_records_empty": "暂无评审记录",
+    "approved_note": "该案例已通过专家评审并入库",
+    "load_failed": "案例列表加载失败",
+    "detail_load_failed": "案例详情加载失败",
+    "save_success": "案例保存成功",
+    "save_failed": "案例保存失败",
+    "title_required": "请填写案例标题",
+    "action_failed": "操作失败，请稍后重试",
+    "submit_success": "已提交专家评审",
+    "start_review_success": "已接单，进入评审中",
+    "approve_success": "已通过评审并入库",
+    "reject_success": "已驳回打回",
+    "resubmit_success": "已重新提交评审",
+    "delete_success": "案例已删除",
+    "create_title": "新建案例",
+    "edit_title": "编辑案例"
   }
 }
