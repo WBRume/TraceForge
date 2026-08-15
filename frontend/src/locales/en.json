@@ -2653,7 +2653,8 @@
       "root": "Root",
       "unassigned": "Unassigned Repositories",
       "readonly_hint": "Repo groups are maintained by administrators (read-only for you)",
-      "move_repo_hint": "Choose the group for this repository"
+      "move_repo_hint": "Choose the group for this repository",
+      "search_placeholder": "Search groups / repositories"
     },
     "repository": {
       "group": "Repo Group",

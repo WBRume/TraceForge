@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Folder, Info, Plus } from 'lucide-vue-next'
+import { Folder, GitBranch, Info, Plus, Search } from 'lucide-vue-next'
 import RepoGroupTreeNodeRow from '@/components/management/RepoGroupTreeNodeRow.vue'
 import RepoGroupFormModal from '@/components/management/RepoGroupFormModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -13,10 +13,13 @@ import type { RepoGroupTreeNode } from '@/types/management'
 const props = defineProps<{
   canManage: boolean;
   selectedGroupId: string | null;
+  selectedRepoId: string | null;
+  showUnassigned: boolean;
 }>()
 
 const emit = defineEmits<{
   (e: 'select-group', groupId: string | null): void;
+  (e: 'select-repo', repositoryId: string): void;
   (e: 'changed'): void;
 }>()
 
@@ -24,6 +27,7 @@ const { t } = useI18n()
 
 const tree = ref<RepoGroupTreeNode[]>([])
 const loading = ref(false)
+const searchKeyword = ref('')
 
 const formVisible = ref(false)
 const editingGroup = ref<{ id: string; name: string; parent_id: string | null } | null>(null)
@@ -83,8 +87,34 @@ const handleDeleteConfirm = async () => {
   }
 }
 
-const unassignedGroups = computed(() => tree.value.filter((node) => node.id === null))
-const groupedNodes = computed(() => tree.value.filter((node) => node.id !== null))
+// 树形搜索过滤：组名匹配时保留整棵子树；否则仅保留名称匹配的仓库与匹配的子孙组
+const filteredTree = computed<RepoGroupTreeNode[]>(() => {
+  const kw = searchKeyword.value.trim().toLowerCase()
+  if (!kw) return tree.value
+  const matchText = (text: string): boolean =>
+    String(text || '').toLowerCase().includes(kw)
+  const filterNode = (node: RepoGroupTreeNode): RepoGroupTreeNode | null => {
+    const nameMatch = matchText(node.name)
+    const repos = (node.repositories || []).filter((repo) => matchText(repo.name))
+    const children: RepoGroupTreeNode[] = []
+    for (const child of node.children || []) {
+      const filtered = filterNode(child)
+      if (filtered) children.push(filtered)
+    }
+    if (!nameMatch && repos.length === 0 && children.length === 0) return null
+    return {
+      ...node,
+      repositories: nameMatch ? (node.repositories || []) : repos,
+      children,
+    }
+  }
+  return tree.value
+    .map(filterNode)
+    .filter((node): node is RepoGroupTreeNode => node !== null)
+})
+
+const unassignedGroups = computed(() => filteredTree.value.filter((node) => node.id === null))
+const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id !== null))
 </script>
 
 <template>
@@ -102,6 +132,16 @@ const groupedNodes = computed(() => tree.value.filter((node) => node.id !== null
       </button>
     </div>
 
+    <div class="mgmt-repo-group-search">
+      <Search class="mgmt-repo-group-search-icon" />
+      <input
+        v-model="searchKeyword"
+        class="mgmt-repo-group-search-input"
+        type="text"
+        :placeholder="$t('management.repo_group.search_placeholder')"
+      />
+    </div>
+
     <div v-if="!canManage" class="mgmt-readonly-banner">
       <Info class="w-4 h-4" />
       <span>{{ $t('management.repo_group.readonly_hint') }}</span>
@@ -112,20 +152,22 @@ const groupedNodes = computed(() => tree.value.filter((node) => node.id !== null
     <template v-else>
       <div
         class="mgmt-group-row mgmt-group-unassigned"
-        :class="{ 'is-selected': selectedGroupId === null }"
+        :class="{ 'is-selected': showUnassigned && !selectedRepoId }"
         @click="emit('select-group', null)"
       >
         <Folder class="mgmt-group-icon" />
         <span class="mgmt-group-name">{{ $t('management.repo_group.unassigned') }}</span>
       </div>
 
-      <template v-for="node in unassignedGroups" :key="'unassigned-' + node.repositories.length">
+      <template v-for="(node, index) in unassignedGroups" :key="'unassigned-' + index">
         <div
           v-for="repo in node.repositories"
           :key="repo.id"
           class="mgmt-repo-row"
-          @click="emit('select-group', null)"
+          :class="{ 'is-selected': selectedRepoId === repo.id }"
+          @click="emit('select-repo', repo.id)"
         >
+          <GitBranch class="mgmt-repo-icon" />
           <span class="mgmt-repo-name">{{ repo.name }}</span>
         </div>
       </template>
@@ -136,8 +178,10 @@ const groupedNodes = computed(() => tree.value.filter((node) => node.id !== null
         :node="node"
         :can-manage="canManage"
         :selected-group-id="selectedGroupId"
+        :selected-repo-id="selectedRepoId"
         :depth="0"
         @select-group="emit('select-group', $event)"
+        @select-repo="emit('select-repo', $event)"
         @edit-group="openEdit"
         @delete-group="openDelete"
         @changed="handleChanged"
@@ -204,6 +248,40 @@ const groupedNodes = computed(() => tree.value.filter((node) => node.id !== null
   height: 0.85rem;
 }
 
+.mgmt-repo-group-search {
+  position: relative;
+  margin-bottom: 0.75rem;
+}
+
+.mgmt-repo-group-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 12px 8px 32px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  color: #334155;
+  background: rgba(255, 255, 255, 0.8);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.mgmt-repo-group-search-input:focus {
+  border-color: #0ea5e9;
+}
+
+.mgmt-repo-group-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0.9rem;
+  height: 0.9rem;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
 .mgmt-group-row {
   display: flex;
   align-items: center;
@@ -258,6 +336,18 @@ const groupedNodes = computed(() => tree.value.filter((node) => node.id !== null
 .mgmt-repo-row:hover {
   background: rgba(14, 165, 233, 0.05);
   color: #0ea5e9;
+}
+
+.mgmt-repo-row.is-selected {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0ea5e9;
+  font-weight: 600;
+}
+
+.mgmt-repo-icon {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex-shrink: 0;
 }
 
 .mgmt-repo-name {

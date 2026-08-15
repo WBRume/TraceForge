@@ -27,6 +27,8 @@ def list_repositories(
     keyword: str = Query(default="", max_length=100),
     repo_type: Optional[str] = None,
     group_id: Optional[str] = None,
+    repository_id: Optional[str] = None,
+    unassigned_only: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -37,6 +39,8 @@ def list_repositories(
         keyword=keyword,
         repo_type=repo_type,
         group_id=group_id,
+        repository_id=repository_id,
+        unassigned_only=unassigned_only,
         page=page,
         page_size=page_size,
     )

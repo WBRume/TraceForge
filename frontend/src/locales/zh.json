@@ -2658,7 +2658,8 @@
       "root": "根分组",
       "unassigned": "未分组仓库",
       "readonly_hint": "仓库组由管理员维护，当前为只读",
-      "move_repo_hint": "选择仓库归属组"
+      "move_repo_hint": "选择仓库归属组",
+      "search_placeholder": "搜索仓库组 / 仓库"
     },
     "repository": {
       "group": "所属仓库组",

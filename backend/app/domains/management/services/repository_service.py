@@ -63,6 +63,8 @@ def list_repositories(
     keyword: Optional[str] = None,
     repo_type: Optional[str] = None,
     group_id: Optional[str] = None,
+    repository_id: Optional[str] = None,
+    unassigned_only: bool = False,
     page: int = 1,
     page_size: int = 20,
 ) -> Tuple[List[Dict[str, object]], int]:
@@ -80,6 +82,10 @@ def list_repositories(
         query = query.filter(SddManagementRepository.repo_type == _normalize_repo_type(repo_type))
     if group_id:
         query = query.filter(SddManagementRepository.group_id == group_id)
+    if repository_id:
+        query = query.filter(SddManagementRepository.id == repository_id)
+    if unassigned_only:
+        query = query.filter(SddManagementRepository.group_id.is_(None))
 
     total = query.count()
     repositories = (

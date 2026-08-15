@@ -22,6 +22,8 @@ const isAdmin = computed(() => Boolean(authStore.user?.is_admin))
 const keyword = ref('')
 const repoType = ref<string>('')
 const selectedGroupId = ref<string | null>(null)
+const selectedRepoId = ref<string | null>(null)
+const showUnassigned = ref(false)
 
 const items = ref<Repository[]>([])
 const total = ref(0)
@@ -62,6 +64,8 @@ const load = async () => {
       keyword: keyword.value || undefined,
       repo_type: (repoType.value || '') as RepositoryType | '',
       group_id: selectedGroupId.value,
+      repository_id: selectedRepoId.value,
+      unassigned_only: showUnassigned.value || undefined,
       page: page.value,
       page_size: pageSize,
     })
@@ -81,16 +85,31 @@ onMounted(() => {
 
 watch(keyword, () => {
   page.value = 1
+  selectedRepoId.value = null
+  showUnassigned.value = false
   void load()
 })
 
 watch(repoType, () => {
   page.value = 1
+  selectedRepoId.value = null
+  showUnassigned.value = false
   void load()
 })
 
 const handleSelectGroup = (groupId: string | null) => {
   selectedGroupId.value = groupId
+  selectedRepoId.value = null
+  // groupId 为 null 表示「未分组仓库」：仅展示未分组仓库（区别于初始的「全部」）
+  showUnassigned.value = groupId === null
+  page.value = 1
+  void load()
+}
+
+const handleSelectRepo = (repositoryId: string) => {
+  selectedGroupId.value = null
+  selectedRepoId.value = repositoryId
+  showUnassigned.value = false
   page.value = 1
   void load()
 }
@@ -160,7 +179,10 @@ const goToPage = (target: number) => {
         <RepoGroupTreePanel
           :can-manage="isAdmin"
           :selected-group-id="selectedGroupId"
+          :selected-repo-id="selectedRepoId"
+          :show-unassigned="showUnassigned"
           @select-group="handleSelectGroup"
+          @select-repo="handleSelectRepo"
           @changed="handleChanged"
         />
       </div>
