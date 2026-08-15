@@ -110,32 +110,34 @@ const handleCancel = () => {
 </script>
 
 <template>
-  <div v-if="show" class="mgmt-modal-overlay" @click.self="handleCancel">
-    <div class="mgmt-modal glass-panel">
-      <h3>{{ isEditing ? $t('management.repo_group.edit') : $t('management.repo_group.add') }}</h3>
+  <Teleport to="body">
+    <div v-if="show" class="mgmt-modal-overlay" @click.self="handleCancel">
+      <div class="mgmt-modal glass-panel">
+        <h3>{{ isEditing ? $t('management.repo_group.edit') : $t('management.repo_group.add') }}</h3>
 
-      <div class="mgmt-form-grid">
-        <div class="mgmt-field full">
-          <label>{{ $t('management.repo_group.name') }}</label>
-          <input v-model="form.name" class="mgmt-input" type="text" />
+        <div class="mgmt-form-grid">
+          <div class="mgmt-field full">
+            <label>{{ $t('management.repo_group.name') }}</label>
+            <input v-model="form.name" class="mgmt-input" type="text" />
+          </div>
+
+          <div class="mgmt-field full">
+            <label>{{ $t('management.repo_group.parent') }}</label>
+            <BaseSelect v-model="form.parent_id" :options="parentOptions" />
+          </div>
         </div>
 
-        <div class="mgmt-field full">
-          <label>{{ $t('management.repo_group.parent') }}</label>
-          <BaseSelect v-model="form.parent_id" :options="parentOptions" />
+        <div class="mgmt-modal-actions">
+          <button class="btn-secondary" :disabled="saving" @click="handleCancel">
+            {{ $t('common.cancel') }}
+          </button>
+          <button class="btn-primary" :disabled="!canSubmit" @click="handleSave">
+            {{ saving ? $t('common.saving') : $t('common.save') }}
+          </button>
         </div>
-      </div>
-
-      <div class="mgmt-modal-actions">
-        <button class="btn-secondary" :disabled="saving" @click="handleCancel">
-          {{ $t('common.cancel') }}
-        </button>
-        <button class="btn-primary" :disabled="!canSubmit" @click="handleSave">
-          {{ saving ? $t('common.saving') : $t('common.save') }}
-        </button>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
