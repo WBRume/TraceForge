@@ -149,6 +149,20 @@ const onBindingsChanged = () => {
   align-items: center;
   gap: 0.4rem;
   margin-bottom: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--color-primary-600);
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-primary-100);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.mgmt-back:hover {
+  background: var(--color-primary-50);
+  border-color: var(--color-primary-100);
 }
 
 .mgmt-detail-title {
@@ -157,6 +171,13 @@ const onBindingsChanged = () => {
   align-items: center;
   gap: 0.6rem;
   flex-wrap: wrap;
+}
+
+/* h2 渐变文字（background-clip: text）会把 -webkit-text-fill-color: transparent
+   继承给内部徽标/气泡，覆盖其自身 color，导致文字不可见；此处恢复为 currentColor */
+.mgmt-detail-title .mgmt-version-badge,
+.mgmt-detail-title .mgmt-status-pill {
+  -webkit-text-fill-color: currentColor;
 }
 
 .mgmt-version-badge {
