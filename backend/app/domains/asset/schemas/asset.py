@@ -292,6 +292,27 @@ class WorkspaceRepositoryResponse(BaseModel):
     created_at: datetime
 
 
+class WorkspaceProjectSummary(BaseModel):
+    id: str
+    name: str
+    code: str
+
+
+class WorkspaceProductSummary(BaseModel):
+    id: str
+    name: str
+    code: str
+    version_no: Optional[str] = None
+
+
+class WorkspaceOwnerSummary(BaseModel):
+    id: str
+    display_name: str
+    email: str
+    avatar_svg: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
 class WorkspaceResponse(BaseModel):
     id: str
     name: str
@@ -304,6 +325,9 @@ class WorkspaceResponse(BaseModel):
     my_role: Optional[str] = None
     my_is_expert: Optional[bool] = None
     can_delete_workspace: Optional[bool] = None
+    project: Optional[WorkspaceProjectSummary] = None
+    products: List[WorkspaceProductSummary] = Field(default_factory=list)
+    owner: Optional[WorkspaceOwnerSummary] = None
     repositories: List[WorkspaceRepositoryResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

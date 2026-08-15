@@ -616,6 +616,11 @@
     "keep_it": "保留它",
     "delete_permanently": "永久删除",
     "no_desc": "暂未提供描述。",
+    "card_project": "项目",
+    "card_products": "产品",
+    "card_repositories": "关联仓库",
+    "card_creator": "创建人",
+    "not_set": "未设置",
     "tabs": {
       "workspaces": "工作区",
       "queue": "后台队列"

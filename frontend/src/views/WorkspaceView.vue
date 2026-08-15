@@ -10,11 +10,27 @@ import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
 import api from '@/utils/api'
 import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
+import UserAvatar from '@/components/user/UserAvatar.vue'
 
 const { locale } = useI18n()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const authStore = useAuthStore()
+
+/**
+ * Summarize an array of items into a compact label list, e.g.
+ * "repo-a, repo-b +2" when there are more than `max` items.
+ */
+const summarize = (items: any[] | undefined, labelOf: (item: any) => string, max = 2) => {
+  const labels = (items || []).map(labelOf).filter((label) => label)
+  if (labels.length === 0) return ''
+  const shown = labels.slice(0, max)
+  const extra = labels.length - shown.length
+  return extra > 0 ? `${shown.join(', ')} +${extra}` : shown.join(', ')
+}
+
+const productLabel = (product: any) =>
+  product?.version_no ? `${product.name} (${product.version_no})` : product?.name
 
 const toggleLanguage = () => {
   const newLang = locale.value === 'zh' ? 'en' : 'zh'
@@ -178,6 +194,36 @@ const confirmDeleteWorkspace = async () => {
             />
           </div>
           <p class="ws-card-desc">{{ ws.description || $t('workspaces.no_desc') }}</p>
+          <div class="ws-card-meta">
+            <div class="ws-meta-row" :title="ws.project?.name">
+              <FolderKanban class="ws-meta-icon" />
+              <span class="ws-meta-label">{{ $t('workspaces.card_project') }}</span>
+              <span class="ws-meta-value">{{ ws.project?.name || $t('workspaces.not_set') }}</span>
+            </div>
+            <div class="ws-meta-row" :title="summarize(ws.products, productLabel, 10)">
+              <Package class="ws-meta-icon" />
+              <span class="ws-meta-label">{{ $t('workspaces.card_products') }}</span>
+              <span class="ws-meta-value">{{ summarize(ws.products, productLabel) || $t('workspaces.not_set') }}</span>
+            </div>
+            <div class="ws-meta-row" :title="summarize(ws.repositories, (repo) => repo?.repo_name, 10)">
+              <GitFork class="ws-meta-icon" />
+              <span class="ws-meta-label">{{ $t('workspaces.card_repositories') }}</span>
+              <span class="ws-meta-value">{{ summarize(ws.repositories, (repo) => repo?.repo_name) || $t('workspaces.not_set') }}</span>
+            </div>
+            <div class="ws-meta-row" :title="ws.owner?.display_name || ws.owner?.email">
+              <UserAvatar
+                class="ws-meta-icon ws-meta-avatar"
+                :display-name="ws.owner?.display_name"
+                :email="ws.owner?.email"
+                :user-id="ws.owner?.id"
+                :avatar-svg="ws.owner?.avatar_svg"
+                :avatar-url="ws.owner?.avatar_url"
+                size="xs"
+              />
+              <span class="ws-meta-label">{{ $t('workspaces.card_creator') }}</span>
+              <span class="ws-meta-value">{{ ws.owner?.display_name || ws.owner?.email || $t('workspaces.not_set') }}</span>
+            </div>
+          </div>
           <div class="ws-card-footer">
             <span class="text-xs text-muted">{{ $t('workspaces.created_at', { date: new Date(ws.created_at).toLocaleDateString(locale) }) }}</span>
           </div>
@@ -347,6 +393,46 @@ const confirmDeleteWorkspace = async () => {
   color: var(--color-text-body);
   flex-grow: 1;
   font-size: 0.95rem;
+}
+
+.ws-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.ws-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  min-width: 0;
+}
+
+.ws-meta-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-muted);
+}
+
+.ws-meta-avatar {
+  border-radius: 50%;
+}
+
+.ws-meta-label {
+  flex-shrink: 0;
+  width: 3.75rem;
+  color: var(--color-text-muted);
+}
+
+.ws-meta-value {
+  color: var(--color-text-body);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .group:hover .group-hover\:opacity-100 {
