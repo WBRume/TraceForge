@@ -106,29 +106,34 @@ const statusModelText = (card: any): string => {
           </button>
         </div>
         <div class="sidebar-filter-row">
-          <span class="sidebar-filter-label">{{ $t('chat.session_filter_label') }}</span>
-          <BaseSelect
-            v-model="vm.taskStatusFilter"
-            :options="[
-              { label: $t('chat.session_filter_all'), value: 'ALL' },
-              { label: $t('chat.session_filter_success'), value: 'DONE' },
-              { label: $t('chat.session_filter_failed'), value: 'FAILED' },
-            ]"
-            size="sm"
-            class="task-filter-select"
-            @update:modelValue="vm.applyTaskStatusFilter"
-          />
-          <BaseSelect
-            v-model="vm.taskTypeFilter"
-            :options="[
-              { label: $t('chat.session_type_all'), value: 'ALL' },
-              { label: $t('task_types.development'), value: 'DEVELOPMENT' },
-              { label: $t('task_types.diagnosis'), value: 'DIAGNOSIS' },
-            ]"
-            size="sm"
-            class="task-filter-select"
-            @update:modelValue="vm.applyTaskTypeFilter"
-          />
+          <div class="sidebar-filter-item">
+            <span class="sidebar-filter-label">{{ $t('chat.session_filter_label') }}</span>
+            <BaseSelect
+              v-model="vm.taskStatusFilter"
+              :options="[
+                { label: $t('chat.session_filter_all'), value: 'ALL' },
+                { label: $t('chat.session_filter_success'), value: 'DONE' },
+                { label: $t('chat.session_filter_failed'), value: 'FAILED' },
+              ]"
+              size="sm"
+              class="task-filter-select"
+              @update:modelValue="vm.applyTaskStatusFilter"
+            />
+          </div>
+          <div class="sidebar-filter-item">
+            <span class="sidebar-filter-label">{{ $t('chat.session_type_label') }}</span>
+            <BaseSelect
+              v-model="vm.taskTypeFilter"
+              :options="[
+                { label: $t('chat.session_type_all'), value: 'ALL' },
+                { label: $t('task_types.development'), value: 'DEVELOPMENT' },
+                { label: $t('task_types.diagnosis'), value: 'DIAGNOSIS' },
+              ]"
+              size="sm"
+              class="task-filter-select"
+              @update:modelValue="vm.applyTaskTypeFilter"
+            />
+          </div>
         </div>
       </div>
       <div class="task-list" :ref="rawVm.taskListContainer" @scroll="vm.handleTaskListScroll">
@@ -142,6 +147,12 @@ const statusModelText = (card: any): string => {
           <div class="task-item-content">
             <div class="task-name-row">
               <div class="task-name">{{ task.name }}</div>
+              <span
+                class="task-type-tag"
+                :class="task.task_type === 'DIAGNOSIS' ? 'is-diagnosis' : 'is-development'"
+              >
+                {{ task.task_type === 'DIAGNOSIS' ? $t('task_types.diagnosis') : $t('task_types.development') }}
+              </span>
               <div class="task-status">
                 <span class="status-dot" :class="task.status.toLowerCase()"></span>
                 {{ task.status }}

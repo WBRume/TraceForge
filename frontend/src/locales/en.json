@@ -269,7 +269,7 @@
     "start_confirm_message": "After the engine starts, the requirement document becomes read-only.",
     "start_confirm_description": "Please finish browsing and editing in the standalone document workspace first. After confirmation, chat will use a drawer view.",
     "thinking": "AI Thinking...",
-    "terminal": "SDD Session Records",
+    "terminal": "Task List",
     "decision": {
       "mark": "Mark as Decision",
       "mark_short": "Decision",
@@ -367,6 +367,7 @@
     "cli_result_cost": "Cost",
     "cli_tool_raw_payload": "View raw payload (JSON)",
     "session_filter_label": "Filter",
+    "session_type_label": "Task Type",
     "session_filter_all": "All",
     "session_type_all": "All Types",
     "session_filter_success": "Success",
@@ -2924,6 +2925,19 @@
     "resubmit_success": "Resubmitted for review",
     "delete_success": "Case deleted",
     "create_title": "New Case",
-    "edit_title": "Edit Case"
+    "edit_title": "Edit Case",
+    "report": {
+      "back": "Back to Case Center",
+      "kicker": "Case Analysis Report",
+      "not_found": "Case not found or has been deleted",
+      "analysis_title": "Analysis Process",
+      "info_title": "Case Info",
+      "open_session": "Open Source Session",
+      "stat_status": "Status",
+      "stat_priority": "Priority",
+      "stat_category": "Category",
+      "stat_round": "Review Round",
+      "round_short": "Round {round}"
+    }
   }
 }

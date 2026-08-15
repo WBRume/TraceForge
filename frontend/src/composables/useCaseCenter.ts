@@ -97,6 +97,23 @@ export function useCaseCenter() {
     }
   }
 
+  /**
+   * 独立报告页加载案例详情（不依赖抽屉状态，也不回写 ?case= 查询参数）。
+   */
+  const loadCaseById = async (caseId: string) => {
+    detailLoading.value = true
+    currentCase.value = null
+    try {
+      const wsId = String(route.params.wsId || '')
+      const res = await api.get(`/workspaces/${wsId}/cases/${caseId}`)
+      currentCase.value = res.data
+    } catch (e) {
+      ElMessage.error(formatApiError(e, t('case_center.detail_load_failed'), t))
+    } finally {
+      detailLoading.value = false
+    }
+  }
+
   const closeDrawer = () => {
     drawerOpen.value = false
     currentCase.value = null
@@ -285,6 +302,7 @@ export function useCaseCenter() {
     myCanManage,
     myCanReview,
     openCase,
+    loadCaseById,
     closeDrawer,
     refreshCurrentCase,
     formVisible,

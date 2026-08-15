@@ -91,7 +91,7 @@ const sidebarNavItems = computed(() => {
       label: t('layout.case_center'),
       icon: BookMarked,
       to: `/ws/${wsId}/cases`,
-      active: routeName === 'workspaceCases',
+      active: routeName === 'workspaceCases' || routeName === 'workspaceCaseDetail',
     },
     {
       key: 'assets',

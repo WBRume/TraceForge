@@ -52,7 +52,7 @@ function handleSaveDiagnosis(payload: Record<string, any>) {
 }
 
 function openDiagnosisCase(caseId: string) {
-  props.vm.router.push(`/ws/${props.vm.route.params.wsId}/cases?case=${caseId}`)
+  props.vm.router.push(`/ws/${props.vm.route.params.wsId}/cases/${caseId}`)
 }
 </script>
 
