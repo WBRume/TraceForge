@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   ShieldCheck,
   Bot,
   UserRound,
 } from 'lucide-vue-next'
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
+import DiagnosisResultCard from './DiagnosisResultCard.vue'
+import { diagnosisPayloadFromMessage } from '@/types/diagnosis'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
 
 const props = defineProps<{
@@ -14,6 +16,23 @@ const props = defineProps<{
 }>()
 
 const isPopoverOpen = ref(false)
+
+const isDiagnosisResult = computed(() => String(props.msg?.message_type || props.msg?.type || '') === 'diagnosis_result')
+
+const diagnosisPayload = computed(() => {
+  if (!isDiagnosisResult.value) return null
+  return diagnosisPayloadFromMessage(props.msg)
+})
+
+const diagnosisStatus = computed(() => {
+  const status = props.vm?.diagnosisResult?.status
+  return status ? String(status) : 'DRAFT'
+})
+
+const diagnosisExtractedFromAi = computed(() => {
+  const flag = props.vm?.diagnosisResult?.extracted_from_ai
+  return flag === undefined ? true : Boolean(flag)
+})
 
 function handleOpenPopover() {
   isPopoverOpen.value = true
@@ -26,6 +45,14 @@ function handleClosePopover() {
 async function handleSubmitDecision(payload: ChatDecisionPayload) {
   await props.vm.submitMessageDecision(props.msg.id, payload)
   isPopoverOpen.value = false
+}
+
+function handleSaveDiagnosis(payload: Record<string, any>) {
+  props.vm.saveDiagnosisResult(payload, props.msg.id)
+}
+
+function openDiagnosisCase(caseId: string) {
+  props.vm.router.push(`/ws/${props.vm.route.params.wsId}/cases?case=${caseId}`)
 }
 </script>
 
@@ -52,7 +79,22 @@ async function handleSubmitDecision(payload: ChatDecisionPayload) {
         <UserRound v-else class="w-3 h-3 message-role-icon" />
       </div>
       
-      <div class="message-bubble">
+      <!-- 问题定位结果：AI 会话反填的结构化卡片（对话内展示，替代独立面板） -->
+      <DiagnosisResultCard
+        v-if="isDiagnosisResult && diagnosisPayload"
+        :payload="diagnosisPayload"
+        :status="diagnosisStatus"
+        :extracted-from-ai="diagnosisExtractedFromAi"
+        :case-link="String(vm.diagnosisCaseLink || '')"
+        :saving="Boolean(vm.diagnosisResultSaving)"
+        :case-creating="Boolean(vm.diagnosisCaseCreating)"
+        @save="handleSaveDiagnosis"
+        @confirm="vm.createDiagnosisCase(false)"
+        @confirm-and-submit="vm.createDiagnosisCase(true)"
+        @open-case="openDiagnosisCase"
+      />
+
+      <div v-else class="message-bubble">
         <div class="msg-content">{{ msg.content }}</div>
       </div>
       

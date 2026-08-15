@@ -87,6 +87,7 @@ class CaseResponse(BaseModel):
     status: str
     review_round: int = 1
     conversation_snapshot: Optional[list] = None
+    diagnosis_detail: Optional[dict] = None
     submitted_at: Optional[datetime] = None
     reviewed_at: Optional[datetime] = None
     rejected_comment: Optional[str] = None

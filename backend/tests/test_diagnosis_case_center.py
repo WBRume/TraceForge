@@ -102,13 +102,30 @@ def test_diagnosis_result_upsert_and_validation():
         resp = client.get(f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-result")
         assert resp.status_code == 404, resp.text
 
-        # upsert
+        # upsert（含结构化章节）
         resp = client.put(
             f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-result",
             json={
+                "summary": "连接池在高峰期被耗尽，导致获取连接超时",
                 "root_cause": "连接池耗尽",
                 "evidence_chain": "1. 日志显示获取连接超时\n2. 压测复现",
                 "fix_suggestion": "扩容连接池并增加熔断",
+                "fix_code": "pool.maxActive = 200",
+                "code_context": [
+                    {
+                        "file_path": "src/pool.py",
+                        "start_line": 12,
+                        "end_line": 34,
+                        "snippet": "pool = Pool(maxActive=50)",
+                        "note": "连接池配置",
+                    }
+                ],
+                "similar_cases": [
+                    {"title": "连接池耗尽排查", "similarity": "高", "summary": "同类超时", "reference": "case-1"}
+                ],
+                "call_chain": [
+                    {"seq": 1, "module": "Gateway", "function": "handleRequest", "description": "入口"}
+                ],
                 "confidence": 85,
             },
         )
@@ -117,6 +134,19 @@ def test_diagnosis_result_upsert_and_validation():
         assert payload["root_cause"] == "连接池耗尽"
         assert payload["confidence"] == 85
         assert payload["status"] == "DRAFT"
+        assert payload["summary"] == "连接池在高峰期被耗尽，导致获取连接超时"
+        assert payload["fix_code"] == "pool.maxActive = 200"
+        assert payload["code_context"][0]["file_path"] == "src/pool.py"
+        assert payload["code_context"][0]["note"] == "连接池配置"
+        assert payload["similar_cases"][0]["title"] == "连接池耗尽排查"
+        assert payload["call_chain"][0]["function"] == "handleRequest"
+        assert payload["extracted_from_ai"] is False  # 用户手动保存（非 AI 反填）
+        assert payload["source_chat_message_id"]
+
+        # 保存后刷新 GET 与 PUT 一致
+        resp = client.get(f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-result")
+        assert resp.status_code == 200
+        assert resp.json()["fix_code"] == "pool.maxActive = 200"
 
         # 置信度越界
         resp = client.put(
@@ -162,7 +192,17 @@ def test_case_lifecycle_full_flow():
                     root_cause="空指针异常",
                     evidence_chain="堆栈证据",
                     fix_suggestion="判空处理",
+                    fix_code="if (obj != null) { obj.run(); }",
                     confidence=90,
+                    code_context_json=[
+                        {"file_path": "src/Service.java", "start_line": 10, "end_line": 20, "note": "入口调用"}
+                    ],
+                    similar_cases_json=[
+                        {"title": "历史空指针案例", "similarity": "高", "reference": "case-9"}
+                    ],
+                    call_chain_json=[
+                        {"seq": 1, "module": "Controller", "function": "handle", "description": "请求入口"}
+                    ],
                 )
             )
             db.commit()
@@ -184,7 +224,12 @@ def test_case_lifecycle_full_flow():
         assert case["site_name"] == "华东局点"
         assert case["problem_description"] and "接口偶发超时" in case["problem_description"]
         assert case["root_cause"] == "空指针异常"
-        assert case["solution"] == "判空处理"
+        assert case["solution"] == "判空处理\n\n修复代码:\nif (obj != null) { obj.run(); }"
+        assert case["analysis_process"] and "调用链路:" in case["analysis_process"]
+        assert case["code_context"] and "相关代码上下文:" in case["code_context"]
+        assert case["diagnosis_detail"]["similar_cases"][0]["reference"] == "case-9"
+        assert case["diagnosis_detail"]["call_chain"][0]["function"] == "handle"
+        assert case["diagnosis_detail"]["fix_code"] == "if (obj != null) { obj.run(); }"
         assert case["review_records"] == []
 
         # 重复转案例 → 409

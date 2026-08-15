@@ -74,6 +74,7 @@ class SddCase(Base):
     status = Column(String(20), nullable=False, default=CaseStatus.DRAFT.value, index=True)
     review_round = Column(Integer, nullable=False, default=1)  # 评审轮次，驳回重提后 +1
     conversation_snapshot_json = Column(JSON, nullable=True)  # 对话回放快照
+    diagnosis_detail_json = Column(JSON, nullable=True)  # 问题定位结构化明细 {similar_cases, call_chain, code_context, fix_code}
     submitted_at = Column(DateTime, nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     rejected_comment = Column(Text, nullable=True)  # 最近一次驳回意见

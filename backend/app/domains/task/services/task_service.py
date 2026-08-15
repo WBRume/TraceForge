@@ -989,6 +989,7 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
             "creator_is_workspace_expert": msg.creator_id in expert_user_ids,
             "client_message_id": metadata.get("client_message_id"),
             "decision_id": decisions_by_message_id.get(msg.id),
+            "metadata": metadata or None,
         })
 
     has_more = (page * page_size) < total
