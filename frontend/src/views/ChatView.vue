@@ -23,6 +23,7 @@ import {
   BarChart3,
   FileText,
   GitPullRequest,
+  FolderGit2,
 } from 'lucide-vue-next'
 import NewTaskModal from '@/components/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -36,6 +37,7 @@ import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowD
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
+import DiagnosisDocsDrawer from '@/components/chat/DiagnosisDocsDrawer.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
 
@@ -160,6 +162,17 @@ const statusModelText = (card: any): string => {
           <button class="btn-micro" :disabled="!vm.currentTask" @click="vm.openTaskSkillsDrawer">
             <Wrench class="w-4 h-4" />
             {{ $t('chat.task_skills_button', { count: vm.taskRuntimeSkillCount }) }}
+          </button>
+
+          <button
+            v-if="vm.isDiagnosisTask"
+            class="btn-micro"
+            :class="{ active: vm.diagnosisDocsDrawerOpen }"
+            :disabled="!vm.currentTask"
+            @click="vm.toggleDiagnosisDocsDrawer"
+          >
+            <FolderGit2 class="w-4 h-4" />
+            {{ $t('diagnosis.docs_drawer_button') }}
           </button>
 
           <button class="icon-btn" :disabled="!vm.canInitializeAction" @click="vm.handleInitialize" :title="$t('chat.initialize')">
@@ -520,6 +533,15 @@ const statusModelText = (card: any): string => {
         {{ $t('chat.spec_drawer_empty') }}
       </div>
     </aside>
+
+    <!-- 问题定位任务：诊断文档/代码路径抽屉（替代需求文档抽屉） -->
+    <DiagnosisDocsDrawer
+      v-if="vm.isDiagnosisTask && vm.currentTask"
+      :open="vm.diagnosisDocsDrawerOpen"
+      :ws-id="String(vm.route.params.wsId || '')"
+      :task-id="vm.currentTask.id"
+      @close="vm.closeDiagnosisDocsDrawer"
+    />
 
     <!-- ─── Modals and Drawers ─── -->
     <NewTaskModal 

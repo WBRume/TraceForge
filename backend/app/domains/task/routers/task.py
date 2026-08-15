@@ -1127,6 +1127,61 @@ def _require_diagnosis_task(db: Session, task_id: str, ws_id: str):
     return task
 
 
+@router.post("/{task_id}/upload-diagnosis-doc", response_model=dict)
+async def upload_task_diagnosis_doc(
+    ws_id: str,
+    task_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：上传需求/日志等辅助文档（供 AI 会话与诊断文档抽屉使用）。"""
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.UPLOAD_TASK_SPEC,
+        "No permission to upload diagnosis documents",
+    )
+
+    with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
+        try:
+            async with lock_task(task_id):
+                task = task_service.get_task(db, task_id, ws_id)
+                if not task:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                _ensure_task_not_baselined(task)
+                if getattr(task, "task_type", None) != "DIAGNOSIS":
+                    raise HTTPException(status_code=403, detail="Only diagnosis tasks support diagnosis documents")
+                content = await file.read()
+                if len(content) > 20 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
+                asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
+                    db,
+                    task,
+                    creator_id=current_user.id,
+                    file_name=file.filename,
+                    file_content=content,
+                    change_note="Uploaded diagnosis document",
+                )
+                db.commit()
+                db.refresh(asset)
+                return {
+                    "status": "success",
+                    "path": cli_path,
+                    "filename": file.filename,
+                    "asset_id": asset.id,
+                    "version_id": version.id,
+                }
+        except LockAcquireTimeout as exc:
+            _raise_task_lock_conflict(exc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(f"Failed to upload diagnosis doc for task {task_id}: {exc}")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+
 @router.get("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse)
 def get_diagnosis_result(
     ws_id: str,

@@ -100,20 +100,25 @@ describe('DiagnosisResultCard', () => {
 
     expect(buttonByText(wrapper, 'diagnosis.edit')).toBeUndefined()
     expect(buttonByText(wrapper, 'diagnosis.confirm_create_case')).toBeUndefined()
-    expect(buttonByText(wrapper, 'diagnosis.create_and_submit')).toBeUndefined()
     expect(wrapper.text()).toContain('diagnosis.result_confirmed')
     expect(wrapper.text()).toContain('diagnosis.view_case')
   })
 
-  it('emits confirm / confirmAndSubmit / openCase actions', async () => {
+  it('has no redundant submit-review button and no card hint', () => {
+    const wrapper = mountCard({ caseLink: 'case-7' })
+
+    expect(buttonByText(wrapper, 'diagnosis.create_and_submit')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('diagnosis.card_hint')
+  })
+
+  it('emits confirm and openCase actions', async () => {
     const wrapper = mountCard({ caseLink: 'case-7' })
 
     await buttonByText(wrapper, 'diagnosis.confirm_create_case')!.trigger('click')
-    await buttonByText(wrapper, 'diagnosis.create_and_submit')!.trigger('click')
     await buttonByText(wrapper, 'diagnosis.view_case')!.trigger('click')
 
     expect(wrapper.emitted('confirm')).toHaveLength(1)
-    expect(wrapper.emitted('confirmAndSubmit')).toHaveLength(1)
+    expect(wrapper.emitted('confirmAndSubmit')).toBeUndefined()
     expect(wrapper.emitted('openCase')![0]).toEqual(['case-7'])
   })
 

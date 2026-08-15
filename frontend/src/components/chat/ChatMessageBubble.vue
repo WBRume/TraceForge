@@ -90,7 +90,6 @@ function openDiagnosisCase(caseId: string) {
         :case-creating="Boolean(vm.diagnosisCaseCreating)"
         @save="handleSaveDiagnosis"
         @confirm="vm.createDiagnosisCase(false)"
-        @confirm-and-submit="vm.createDiagnosisCase(true)"
         @open-case="openDiagnosisCase"
       />
 

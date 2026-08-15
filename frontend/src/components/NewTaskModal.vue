@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Upload, Loader2, ChevronDown, Sparkles, Globe, FolderOpen, GitFork, Hammer, Stethoscope } from 'lucide-vue-next'
+import { Plus, Upload, Loader2, ChevronDown, Sparkles, Globe, FolderOpen, GitFork, Hammer, Stethoscope, FileText, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -15,7 +15,7 @@ const { t } = useI18n()
 
 const emit = defineEmits<{
   close: []
-  created: [{ jobId: string; taskId: string; workspaceId: string; expectSpecUpload: boolean }]
+  created: [{ jobId: string; taskId: string; workspaceId: string; expectSpecUpload: boolean; expectDiagnosisDocs: boolean }]
 }>()
 
 type TaskTypeValue = 'DEVELOPMENT' | 'DIAGNOSIS'
@@ -30,6 +30,7 @@ const useBrainstorm = ref(false)
 const creatingTask = ref(false)
 const selectedFileName = ref('')
 const pendingSpecFile = ref<File | null>(null)
+const diagnosisFiles = ref<File[]>([])
 const provisioningStore = useProvisioningStore()
 
 const showSkillPanel = ref(false)
@@ -66,6 +67,17 @@ const handleFileUpload = (event: any) => {
   selectedFileName.value = file.name
 }
 
+const handleDiagnosisFiles = (event: any) => {
+  const files = Array.from(event.target.files || []) as File[]
+  if (files.length === 0) return
+  diagnosisFiles.value = [...diagnosisFiles.value, ...files]
+  event.target.value = ''
+}
+
+const removeDiagnosisFile = (index: number) => {
+  diagnosisFiles.value.splice(index, 1)
+}
+
 const loadSkills = async () => {
   skillsLoading.value = true
   try {
@@ -91,6 +103,8 @@ const handleCreateTask = async () => {
       skill_ids: selectedSkillIds.value,
     }
     if (isDiagnosisTask.value) {
+      // 诊断任务：现象即初始化描述，不再单独传 description（避免与现象冗余）
+      payload.description = undefined
       payload.phenomenon = newTaskPhenomenon.value
       payload.priority = newTaskPriority.value
     } else {
@@ -112,12 +126,20 @@ const handleCreateTask = async () => {
         file: pendingSpecFile.value,
       })
     }
+    if (diagnosisFiles.value.length > 0) {
+      provisioningStore.setPendingTaskDocs(jobId, {
+        workspaceId: props.wsId,
+        taskId,
+        files: [...diagnosisFiles.value],
+      })
+    }
 
     emit('created', {
       jobId,
       taskId,
       workspaceId: props.wsId,
       expectSpecUpload: Boolean(pendingSpecFile.value),
+      expectDiagnosisDocs: diagnosisFiles.value.length > 0,
     })
     resetForm()
   } catch (e) {
@@ -136,6 +158,7 @@ const resetForm = () => {
   newTaskPriority.value = 'P2'
   requirementDuration.value = 8
   pendingSpecFile.value = null
+  diagnosisFiles.value = []
   useBrainstorm.value = false
   selectedFileName.value = ''
   showSkillPanel.value = false
@@ -243,7 +266,7 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <div class="form-group">
+        <div v-if="!isDiagnosisTask" class="form-group">
           <label>{{ $t('dashboard.description') }}</label>
           <textarea
             v-model="newTaskDesc"
@@ -262,6 +285,38 @@ onBeforeUnmount(() => {
               rows="3"
               :placeholder="$t('diagnosis.phenomenon_placeholder')"
             />
+          </div>
+
+          <div class="form-group">
+            <label>{{ $t('diagnosis.docs_upload_label') }}</label>
+            <div class="file-upload-box glass-panel">
+              <Upload v-if="!creatingTask" class="w-5 h-5 text-primary" />
+              <Loader2 v-else class="w-5 h-5 spin text-primary" />
+              <div class="file-name text-slate-600">
+                {{ $t('diagnosis.docs_upload_placeholder') }}
+              </div>
+              <input
+                :id="`diag-docs-upload-${props.wsId}`"
+                type="file"
+                class="hidden-input"
+                multiple
+                accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
+                @change="handleDiagnosisFiles"
+              />
+              <label :for="`diag-docs-upload-${props.wsId}`" class="btn-primary file-choose-btn">
+                {{ $t('common.select') }}
+              </label>
+            </div>
+            <div v-if="diagnosisFiles.length > 0" class="diagnosis-files-list">
+              <div v-for="(file, index) in diagnosisFiles" :key="`${file.name}-${index}`" class="diagnosis-file-row">
+                <FileText class="w-4 h-4 diagnosis-file-icon" />
+                <span class="diagnosis-file-name">{{ file.name }}</span>
+                <button type="button" class="diagnosis-file-remove" :title="$t('common.delete')" @click="removeDiagnosisFile(index)">
+                  <X class="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <p class="diagnosis-docs-hint">{{ $t('diagnosis.docs_upload_hint') }}</p>
           </div>
 
           <div class="form-group">
@@ -842,6 +897,59 @@ onBeforeUnmount(() => {
 
 .hidden-input {
   display: none;
+}
+
+.diagnosis-files-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.diagnosis-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  font-size: 0.8rem;
+}
+
+.diagnosis-file-icon {
+  flex-shrink: 0;
+  color: #64748b;
+}
+
+.diagnosis-file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #1e293b;
+}
+
+.diagnosis-file-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.diagnosis-file-remove:hover {
+  color: #dc2626;
+}
+
+.diagnosis-docs-hint {
+  margin: 4px 0 0;
+  font-size: 0.72rem;
+  color: #94a3b8;
 }
 
 .spin {

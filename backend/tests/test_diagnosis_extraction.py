@@ -115,13 +115,50 @@ def test_extract_unwraps_diagnosis_key():
     assert payload.summary == "连接池耗尽"
 
 
-def test_extract_confidence_out_of_range_falls_back_to_summary():
+def test_extract_confidence_out_of_range_is_clamped():
     block = _JSON_BLOCK.replace('"confidence": 88', '"confidence": 150')
     text = f"```json\n{block}\n```"
     payload = diagnosis_result_service.extract_payload_from_text(text)
     assert payload is not None
-    assert payload.summary and payload.summary.startswith("```json")  # 降级为原文摘要
-    assert payload.root_cause is None
+    assert payload.root_cause == "池配置过小"  # 字段级容错：越界置信度被夹取，不导致整体失败
+    assert payload.confidence == 100
+
+
+def test_extract_confidence_string_value_tolerated():
+    block = _JSON_BLOCK.replace('"confidence": 88', '"confidence": "85%"')
+    text = f"```json\n{block}\n```"
+    payload = diagnosis_result_service.extract_payload_from_text(text)
+    assert payload is not None
+    assert payload.root_cause == "池配置过小"
+    assert payload.confidence == 85
+
+
+def test_extract_fence_without_json_prefix():
+    text = f"```\n{_JSON_BLOCK}\n```"
+    payload = diagnosis_result_service.extract_payload_from_text(text)
+    assert payload is not None
+    assert payload.root_cause == "池配置过小"
+
+
+def test_extract_naked_json_without_fence():
+    text = f"结论如下：\n{_JSON_BLOCK}"
+    payload = diagnosis_result_service.extract_payload_from_text(text)
+    assert payload is not None
+    assert payload.root_cause == "池配置过小"
+    assert payload.code_context[0].file_path == "src/pool.py"
+
+
+def test_extract_with_nested_code_fence_in_fix_code():
+    """fix_code 内含 ```python 代码块时，fence 截断后由 raw_decode 兜底解析。"""
+    block = _JSON_BLOCK.replace(
+        '"fix_code": "maxActive=200"',
+        '"fix_code": "```python\\npool.maxActive = 200\\n```"',
+    )
+    text = f"```json\n{block}\n```"
+    payload = diagnosis_result_service.extract_payload_from_text(text)
+    assert payload is not None
+    assert payload.root_cause == "池配置过小"
+    assert "```python" in payload.fix_code
 
 
 def test_extract_fallback_summary_only_for_plain_text():

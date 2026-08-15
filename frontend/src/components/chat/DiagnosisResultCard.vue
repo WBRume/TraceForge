@@ -17,7 +17,6 @@ import {
   Pencil,
   Plus,
   Save,
-  SendHorizonal,
   Trash2,
   X,
 } from 'lucide-vue-next'
@@ -40,7 +39,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   save: [payload: DiagnosisResultPayload]
   confirm: []
-  confirmAndSubmit: []
   openCase: [caseId: string]
 }>()
 
@@ -366,10 +364,6 @@ function chainLabel(node: DiagnosisCallChainNode): string {
           <CheckCircle2 v-else class="dc-btn-icon-svg" />
           {{ t('diagnosis.confirm_create_case') }}
         </button>
-        <button class="dc-btn dc-btn-primary dc-btn-submit" type="button" :disabled="saving || caseCreating" @click="emit('confirmAndSubmit')">
-          <SendHorizonal class="dc-btn-icon-svg" />
-          {{ t('diagnosis.create_and_submit') }}
-        </button>
       </template>
     </div>
     <div v-if="caseLink" class="dc-actions">
@@ -378,18 +372,17 @@ function chainLabel(node: DiagnosisCallChainNode): string {
         {{ t('diagnosis.view_case') }}
       </button>
     </div>
-    <p class="dc-hint">{{ t('diagnosis.card_hint') }}</p>
   </div>
 </template>
 
 <style scoped>
 .diagnosis-card {
   width: min(100%, 640px);
-  border: 1px solid rgba(14, 165, 233, 0.25);
+  border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: var(--radius-lg, 12px);
-  background: #ffffff;
+  background: #fffbeb;
   padding: 14px 16px;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  box-shadow: 0 10px 24px rgba(120, 53, 15, 0.08);
 }
 
 .dc-header-row {
@@ -403,13 +396,13 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   flex-shrink: 0;
   width: 18px;
   height: 18px;
-  color: var(--color-primary-600, #0284c7);
+  color: #d97706;
 }
 
 .dc-title {
   font-weight: 700;
   font-size: 0.95rem;
-  color: var(--color-primary-900, #0c4a6e);
+  color: #92400e;
 }
 
 .dc-pill {
@@ -428,14 +421,14 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   height: 11px;
 }
 
-.dc-pill-ai { color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; }
+.dc-pill-ai { color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; }
 .dc-pill-confirmed { color: #14532d; background: #dcfce7; border: 1px solid #86efac; }
 .dc-pill-draft { color: #7c2d12; background: #ffedd5; border: 1px solid #fdba74; }
 
 .dc-empty {
   padding: 10px 0 2px;
   font-size: 0.82rem;
-  color: #94a3b8;
+  color: #a16207;
 }
 
 .dc-body {
@@ -457,39 +450,39 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   gap: 6px;
   font-size: 0.78rem;
   font-weight: 700;
-  color: #334155;
+  color: #78350f;
 }
 
 .dc-section-icon {
   width: 14px;
   height: 14px;
-  color: #64748b;
+  color: #b45309;
 }
 
 .dc-label {
   font-size: 0.75rem;
   font-weight: 600;
-  color: #334155;
+  color: #78350f;
 }
 
 .dc-text {
   margin: 0;
   font-size: 0.85rem;
   line-height: 1.6;
-  color: #1f2937;
+  color: #451a03;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .dc-summary {
   font-weight: 600;
-  color: #0f172a;
+  color: #451a03;
 }
 
 .dc-root-cause {
   padding: 8px 10px;
-  border-left: 3px solid var(--color-primary-500, #0ea5e9);
-  background: #f0f9ff;
+  border-left: 3px solid #f59e0b;
+  background: #fef3c7;
   border-radius: 4px;
 }
 
@@ -497,37 +490,37 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
-  border: 1px solid #d6d3d1;
+  border: 1px solid #fcd34d;
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 0.82rem;
   line-height: 1.5;
-  color: #1f2937;
-  background: #fbfaf9;
+  color: #451a03;
+  background: #fffdf5;
   font-family: inherit;
 }
 
 .dc-textarea:focus {
   outline: none;
-  border-color: var(--color-primary-500, #0ea5e9);
+  border-color: #f59e0b;
 }
 
 .dc-input {
   box-sizing: border-box;
   min-width: 0;
   flex: 1;
-  border: 1px solid #d6d3d1;
+  border: 1px solid #fcd34d;
   border-radius: 8px;
   padding: 6px 9px;
   font-size: 0.8rem;
-  color: #1f2937;
-  background: #fbfaf9;
+  color: #451a03;
+  background: #fffdf5;
   font-family: inherit;
 }
 
 .dc-input:focus {
   outline: none;
-  border-color: var(--color-primary-500, #0ea5e9);
+  border-color: #f59e0b;
 }
 
 .dc-input-num { flex: 0 0 76px; }
@@ -538,9 +531,9 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   flex-direction: column;
   gap: 5px;
   padding: 8px 10px;
-  border: 1px solid #e8e6e3;
+  border: 1px solid #fde68a;
   border-radius: 8px;
-  background: #fcfbfa;
+  background: #fffdf5;
 }
 
 .dc-item-row {
@@ -555,7 +548,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   gap: 6px;
   font-size: 0.8rem;
   font-weight: 650;
-  color: #0f172a;
+  color: #451a03;
   flex-wrap: wrap;
   min-width: 0;
 }
@@ -563,25 +556,25 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 .dc-item-icon {
   width: 13px;
   height: 13px;
-  color: #64748b;
+  color: #b45309;
   flex-shrink: 0;
 }
 
 .dc-item-note {
   font-size: 0.7rem;
   font-weight: 500;
-  color: #64748b;
+  color: #92400e;
 }
 
-.dc-item-text { font-size: 0.78rem; color: #334155; }
-.dc-item-ref { font-size: 0.75rem; color: #2563eb; }
+.dc-item-text { font-size: 0.78rem; color: #78350f; }
+.dc-item-ref { font-size: 0.75rem; color: #b45309; }
 
 .dc-snippet,
 .dc-code {
   margin: 0;
   border-radius: 6px;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: #451a03;
+  color: #fef3c7;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.75rem;
   line-height: 1.55;
@@ -607,7 +600,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   position: absolute;
   top: 6px;
   right: 6px;
-  color: #cbd5e1;
+  color: #fde68a;
 }
 
 .dc-btn-add {
@@ -615,18 +608,18 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   align-items: center;
   gap: 4px;
   align-self: flex-start;
-  border: 1px dashed #cbd5e1;
+  border: 1px dashed #fcd34d;
   border-radius: 8px;
   background: transparent;
-  color: #475569;
+  color: #92400e;
   font-size: 0.75rem;
   padding: 4px 10px;
   cursor: pointer;
 }
 
 .dc-btn-add:hover {
-  border-color: var(--color-primary-500, #0ea5e9);
-  color: var(--color-primary-600, #0284c7);
+  border-color: #f59e0b;
+  color: #b45309;
 }
 
 .dc-btn-icon {
@@ -639,11 +632,11 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #64748b;
+  color: #92400e;
   cursor: pointer;
 }
 
-.dc-btn-icon:hover { background: #f1f5f9; color: #334155; }
+.dc-btn-icon:hover { background: #fef3c7; color: #78350f; }
 
 .dc-btn-danger:hover { background: #fef2f2; color: #b91c1c; }
 
@@ -666,8 +659,8 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   width: 20px;
   height: 20px;
   border-radius: 999px;
-  background: #e0f2fe;
-  color: #0369a1;
+  background: #fde68a;
+  color: #92400e;
   font-size: 0.7rem;
   font-weight: 700;
 }
@@ -685,15 +678,15 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 }
 
 .dc-confidence {
-  border: 1px solid #e8e6e3;
+  border: 1px solid #fde68a;
   border-radius: 8px;
   padding: 6px 10px 2px;
-  background: #fcfbfa;
+  background: #fffdf5;
 }
 
 .dc-confidence-value {
   margin-left: auto;
-  color: var(--color-primary-600, #0284c7);
+  color: #d97706;
   font-weight: 700;
 }
 
@@ -704,7 +697,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   flex-wrap: wrap;
   margin-top: 12px;
   padding-top: 10px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid #fde68a;
 }
 
 .dc-btn {
@@ -726,50 +719,35 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 }
 
 .dc-btn-primary {
-  background: var(--color-primary-600, #0284c7);
+  background: #d97706;
   color: #ffffff;
 }
 
 .dc-btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-700, #0369a1);
+  background: #b45309;
   transform: translateY(-1px);
 }
 
 .dc-btn-secondary {
   background: #ffffff;
-  border-color: #d6d3d1;
-  color: #334155;
+  border-color: #fcd34d;
+  color: #78350f;
 }
 
 .dc-btn-secondary:hover:not(:disabled) {
-  background: #f8fafc;
-  border-color: #94a3b8;
-}
-
-.dc-btn-submit {
-  background: #166534;
-}
-
-.dc-btn-submit:hover:not(:disabled) {
-  background: #14532d;
-  transform: translateY(-1px);
+  background: #fef3c7;
+  border-color: #f59e0b;
 }
 
 .dc-btn-link {
   background: transparent;
-  color: #2563eb;
+  color: #b45309;
   padding-left: 2px;
   padding-right: 2px;
 }
 
 .dc-btn-link:hover {
   text-decoration: underline;
-}
-
-.dc-hint {
-  margin: 8px 0 0;
-  font-size: 0.72rem;
-  color: #94a3b8;
 }
 
 .dc-spin {

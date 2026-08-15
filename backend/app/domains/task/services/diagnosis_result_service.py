@@ -12,7 +12,7 @@
 import json
 import re
 from datetime import datetime
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -28,10 +28,13 @@ from app.domains.websocket.ws.manager import manager as ws_manager
 
 logger = get_logger(__name__, category="diagnosis_result")
 
-# fenced json 代码块（允许 ```json / ```）
-_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+# fenced json 代码块（允许 ```json / ```JSON / ```，兼容 AI 输出变体）
+_FENCED_JSON_RE = re.compile(r"```(?:json|JSON)?\s*\n?(.*?)```", re.DOTALL)
 
 _SUMMARY_MAX_CHARS = 4000
+
+# raw_decode 扫描 `{` 位置的最大数量（防性能退化）
+_MAX_RAW_DECODE_SCANS = 300
 
 
 # ────────────────────────── Prompt 契约 ──────────────────────────
@@ -86,6 +89,8 @@ def _clean(value) -> Optional[str]:
 
 
 def _coerce_confidence(value) -> int:
+    if isinstance(value, str):
+        value = value.strip().rstrip("%").strip()
     try:
         confidence = int(float(value))
     except (TypeError, ValueError):
@@ -93,42 +98,176 @@ def _coerce_confidence(value) -> int:
     return max(0, min(100, confidence))
 
 
-def extract_payload_from_text(text: str) -> Optional[DiagnosisResultPayload]:
-    """从 AI 回复文本中提取最后一个合法 fenced JSON 定位结果块。
-
-    降级策略：无合法 JSON 块时返回 summary-only 载荷（内容仍来自 AI 会话原文），
-    由调用方决定是否落库。
-    """
-    raw = str(text or "").strip()
-    if not raw:
+def _coerce_int(value) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
         return None
 
-    for block in reversed(_FENCED_JSON_RE.findall(raw)):
+
+def _str_list_field(raw: Any, key: str) -> Optional[str]:
+    if not isinstance(raw, dict):
+        return None
+    return _clean(raw.get(key))
+
+
+def _normalize_code_context(raw: Any) -> List[Dict[str, Any]]:
+    items = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        entry: Dict[str, Any] = {}
+        file_path = _clean(item.get("file_path"))
+        if not file_path:
+            continue
+        entry["file_path"] = file_path
+        start = _coerce_int(item.get("start_line"))
+        end = _coerce_int(item.get("end_line"))
+        if start is not None:
+            entry["start_line"] = start
+        if end is not None:
+            entry["end_line"] = end
+        snippet = _clean(item.get("snippet"))
+        note = _clean(item.get("note"))
+        if snippet:
+            entry["snippet"] = snippet
+        if note:
+            entry["note"] = note
+        items.append(entry)
+    return items
+
+
+def _normalize_similar_cases(raw: Any) -> List[Dict[str, Any]]:
+    items = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        title = _clean(item.get("title"))
+        if not title:
+            continue
+        entry: Dict[str, Any] = {"title": title}
+        for key in ("similarity", "summary", "reference"):
+            value = _clean(item.get(key))
+            if value:
+                entry[key] = value
+        items.append(entry)
+    return items
+
+
+def _normalize_call_chain(raw: Any) -> List[Dict[str, Any]]:
+    items = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        entry: Dict[str, Any] = {}
+        seq = _coerce_int(item.get("seq"))
+        if seq is not None:
+            entry["seq"] = seq
+        for key in ("module", "function", "file_path", "description"):
+            value = _clean(item.get(key))
+            if value:
+                entry[key] = value
+        if not entry:
+            continue
+        items.append(entry)
+    return items
+
+
+def _normalize_payload(data: Dict[str, Any]) -> Optional[DiagnosisResultPayload]:
+    """字段级容错归一化：任何单个字段异常（越界/类型不符）都不应导致整体提取失败。"""
+    try:
+        payload = DiagnosisResultPayload(
+            summary=_clean(data.get("summary")),
+            root_cause=_clean(data.get("root_cause")),
+            evidence_chain=_clean(data.get("evidence_chain")),
+            fix_suggestion=_clean(data.get("fix_suggestion")),
+            fix_code=_clean(data.get("fix_code")),
+            code_context=_normalize_code_context(data.get("code_context")),
+            similar_cases=_normalize_similar_cases(data.get("similar_cases")),
+            call_chain=_normalize_call_chain(data.get("call_chain")),
+            confidence=_coerce_confidence(data.get("confidence")),
+        )
+    except Exception:
+        return None
+    if not any(
+        (
+            payload.summary,
+            payload.root_cause,
+            payload.evidence_chain,
+            payload.fix_suggestion,
+            payload.fix_code,
+            payload.code_context,
+            payload.similar_cases,
+            payload.call_chain,
+        )
+    ):
+        return None
+    return payload
+
+
+def _try_parse_payload(candidate: str) -> Optional[DiagnosisResultPayload]:
+    """尝试把一个候选文本解析为定位结果载荷（支持直接 json / 含散文包裹的 json）。"""
+    text = str(candidate or "").strip()
+    if not text:
+        return None
+
+    # 1) 直接整体解析
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict):
+            if isinstance(data.get("diagnosis"), dict):
+                data = data["diagnosis"]
+            payload = _normalize_payload(data)
+            if payload:
+                return payload
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # 2) raw_decode 扫描：从每个 `{` 位置尝试解码（能正确处理字符串内括号与嵌套代码块）
+    decoder = json.JSONDecoder()
+    scanned = 0
+    for match in re.finditer(r"\{", text):
+        scanned += 1
+        if scanned > _MAX_RAW_DECODE_SCANS:
+            break
         try:
-            data = json.loads(block)
-        except (json.JSONDecodeError, TypeError):
+            data, _ = decoder.raw_decode(text, match.start())
+        except (json.JSONDecodeError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
         if isinstance(data.get("diagnosis"), dict):
             data = data["diagnosis"]
-        try:
-            payload = DiagnosisResultPayload.model_validate(data)
-        except Exception:
-            continue
-        if not any(
-            (
-                payload.summary,
-                payload.root_cause,
-                payload.evidence_chain,
-                payload.fix_suggestion,
-                payload.fix_code,
-                payload.code_context,
-                payload.similar_cases,
-                payload.call_chain,
-            )
-        ):
-            continue
+        payload = _normalize_payload(data)
+        if payload:
+            return payload
+    return None
+
+
+def extract_payload_from_text(text: str) -> Optional[DiagnosisResultPayload]:
+    """从 AI 回复文本中提取结构化定位结果。
+
+    候选来源（按优先级）：
+    1. fenced JSON 代码块（```json / ```JSON / ```），多个块时取最后一个合法结果；
+    2. 未使用 fence 的裸 JSON（raw_decode 逐 `{` 扫描）。
+    字段级容错：confidence 越界/类型异常、列表项缺失等都不会导致整体失败。
+
+    降级策略：全部失败时返回 summary-only 载荷（内容仍来自 AI 会话原文）。
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    # fence 候选：最后一个合法块优先
+    fenced_candidates = [block for block in _FENCED_JSON_RE.findall(raw) if block.strip()]
+    for candidate in reversed(fenced_candidates):
+        payload = _try_parse_payload(candidate)
+        if payload:
+            return payload
+
+    # 非 fence 裸 JSON 候选（整段文本）
+    payload = _try_parse_payload(raw)
+    if payload:
         return payload
 
     logger.warning("No valid diagnosis JSON block in AI reply; falling back to summary-only payload")
