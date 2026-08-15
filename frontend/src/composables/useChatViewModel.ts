@@ -255,12 +255,22 @@ export function useChatViewModel() {
   ))
   const currentTaskHasSpec = computed(() => hasTaskSpecification(currentTask.value))
   const isSuperpowersDocsAvailable = computed(() => Boolean(currentTask.value) && !isTaskPreStart.value)
-  const showSpecEntryButton = computed(() => currentTaskHasSpec.value || isSuperpowersDocsAvailable.value)
+  // 问题定位任务：不展示需求文档抽屉（spec drawer），改用诊断文档/代码路径抽屉
+  const showSpecEntryButton = computed(() => (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isDiagnosisTask.value)
   const isSpecDrawerAvailable = computed(() => (
-    (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value
+    (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value && !isDiagnosisTask.value
   ))
   const isSpecPanelOpen = computed(() => specDrawerLevel.value > 0)
   const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value)
+
+  // 问题定位任务：诊断文档/代码路径抽屉
+  const diagnosisDocsDrawerOpen = ref(false)
+  const toggleDiagnosisDocsDrawer = () => {
+    diagnosisDocsDrawerOpen.value = !diagnosisDocsDrawerOpen.value
+  }
+  const closeDiagnosisDocsDrawer = () => {
+    diagnosisDocsDrawerOpen.value = false
+  }
 
   const localUserMessageMeta = () => ({
     creator_id: authStore.user?.id || null,
@@ -1138,13 +1148,13 @@ export function useChatViewModel() {
     showTaskModal.value = true
   }
   
-  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean }) => {
+  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
     showTaskModal.value = false
     const taskId = typeof payload === 'string' ? payload : payload.taskId
     const wsId = route.params.wsId
 
-    // 如果创建任务时上传了 spec 文件，跳转到 provisioning 页面等待 job 完成
-    if (typeof payload !== 'string' && payload.expectSpecUpload && payload.jobId) {
+    // 如果创建任务时上传了 spec 文件或问题定位文档，跳转到 provisioning 页面等待 job 完成
+    if (typeof payload !== 'string' && payload.jobId && (payload.expectSpecUpload || payload.expectDiagnosisDocs)) {
       router.push(`/ops/queue/provision/${payload.jobId}?expectSpec=1`)
       return
     }
@@ -1165,6 +1175,7 @@ export function useChatViewModel() {
       preferredSpecAssetId.value = ''
     }
     specDrawerLevel.value = 0
+    diagnosisDocsDrawerOpen.value = false
     contextWindowDrawerOpen.value = false
     contextWindowDrawerLevel.value = 1
     contextWindow.reset()
@@ -2514,7 +2525,10 @@ export function useChatViewModel() {
     messageAuthorLabel,
     messages,
     closeTaskSkillsDrawer,
+    closeDiagnosisDocsDrawer,
     openTaskSkillsDrawer,
+    diagnosisDocsDrawerOpen,
+    toggleDiagnosisDocsDrawer,
     createDiagnosisCase,
     diagnosisCaseCreating,
     diagnosisCaseLink,

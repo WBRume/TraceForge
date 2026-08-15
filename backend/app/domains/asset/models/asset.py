@@ -31,6 +31,7 @@ class AssetType(str, PyEnum):
     UT_REPORT = "UT_REPORT"
     E2E_REPORT = "E2E_REPORT"
     ERROR_STACK = "ERROR_STACK"
+    DIAGNOSIS_DOC = "DIAGNOSIS_DOC"  # 问题定位任务上传的需求/日志等辅助文档
 
 
 class AssetThreadStatus(str, PyEnum):

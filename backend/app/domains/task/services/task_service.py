@@ -251,6 +251,9 @@ def create_task_record_for_provision(
         priority_text = str(priority or "").strip().upper()
         if priority_text in {"P0", "P1", "P2", "P3"}:
             task_meta["priority"] = priority_text
+        # 诊断任务：现象即初始化描述，避免描述为空（前端不再单独填写描述）
+        if not str(description or "").strip() and phenomenon_text:
+            description = phenomenon_text
 
     task = SddTask(
         id=task_id,

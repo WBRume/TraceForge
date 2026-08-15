@@ -1635,6 +1635,95 @@ def create_asset_version_from_upload(
     return asset, version
 
 
+def get_diagnosis_doc_asset_by_task_and_name(
+    db: Session, task_id: str, file_name: str
+) -> Optional[SddAsset]:
+    return (
+        db.query(SddAsset)
+        .filter(
+            SddAsset.task_id == task_id,
+            SddAsset.asset_type == AssetType.DIAGNOSIS_DOC,
+            SddAsset.name == file_name,
+        )
+        .order_by(SddAsset.created_at.asc())
+        .first()
+    )
+
+
+def create_diagnosis_doc_asset_version(
+    db: Session,
+    task: SddTask,
+    *,
+    creator_id: str,
+    file_name: str,
+    file_content: bytes,
+    change_note: Optional[str] = None,
+) -> Tuple[SddAsset, SddAssetVersion, str]:
+    """问题定位任务：上传需求/日志等辅助文档。
+
+    - 按「任务 + 文件名」复用同一 DIAGNOSIS_DOC 资产（重复上传生成新版本）；
+    - 原始文件同时写入任务 CLI 工作区 `.sdd/diagnosis/` 目录，AI 会话可直接读取；
+    - 返回 (asset, version, cli_path)。
+    """
+    safe_name = _normalize_filename(file_name)
+    payload = parse_document_payload(safe_name, file_content)
+    asset = get_diagnosis_doc_asset_by_task_and_name(db, task.id, safe_name)
+    if asset is None:
+        asset = SddAsset(
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=creator_id,
+            asset_type=AssetType.DIAGNOSIS_DOC,
+            name=safe_name,
+            source_file_name=payload.get("source_file_name"),
+            source_ext=payload.get("source_ext"),
+            source_mime=payload.get("source_mime"),
+        )
+        db.add(asset)
+        db.flush()
+
+    base_version_id = asset.active_version_id
+    version_no = _next_version_no(db, asset.id)
+    original_path = _write_original_file(task, asset, version_no, safe_name, file_content)
+    version = SddAssetVersion(
+        asset_id=asset.id,
+        version_no=version_no,
+        base_version_id=base_version_id,
+        original_path=original_path,
+        original_ext=payload.get("source_ext"),
+        original_mime=payload.get("source_mime"),
+        normalized_markdown=payload.get("normalized_markdown"),
+        blocks_json=payload.get("blocks_json"),
+        render_json=payload.get("render_json"),
+        change_note=change_note,
+        created_by=creator_id,
+    )
+    db.add(version)
+    db.flush()
+
+    asset.active_version_id = version.id
+    asset.content_text = payload.get("normalized_markdown")
+    asset.content_json = {
+        "active_version_no": version_no,
+        "block_count": len(payload.get("blocks_json") or []),
+    }
+    asset.source_file_name = payload.get("source_file_name")
+    asset.source_ext = payload.get("source_ext")
+    asset.source_mime = payload.get("source_mime")
+    asset.name = safe_name
+
+    # CLI 工作区副本：.sdd/diagnosis/<file>（AI 会话可直接读取辅助文档）
+    base_dir = str(getattr(task, "project_path", "") or "").strip() or os.getcwd()
+    cli_dir = os.path.abspath(os.path.join(base_dir, ".sdd", "diagnosis"))
+    os.makedirs(cli_dir, exist_ok=True)
+    cli_path = os.path.join(cli_dir, safe_name)
+    with open(cli_path, "wb") as f:
+        f.write(file_content)
+
+    db.flush()
+    return asset, version, cli_path
+
+
 def create_asset_version_from_normalized_content(
     db: Session,
     asset: SddAsset,

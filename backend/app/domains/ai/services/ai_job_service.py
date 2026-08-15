@@ -1545,7 +1545,11 @@ async def _on_engine_result(
 
 
 async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -> None:
-    """DIAGNOSIS 任务：从 AI 会话结果提取结构化定位结果并推送卡片消息。"""
+    """DIAGNOSIS 任务：从 AI 会话结果提取结构化定位结果并推送卡片消息。
+
+    拼接该轮（job 创建后）所有 assistant 文本消息，避免 CLI result 事件只携带
+    最后一段文本时丢失末尾的 JSON 结果块。
+    """
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -1554,7 +1558,32 @@ async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task or task.task_type != "DIAGNOSIS":
             return
-        payload = diagnosis_result_service.extract_payload_from_text(result_text)
+
+        from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+
+        turn_texts = []
+        since = job.created_at
+        rows = (
+            db.query(ChatMessage)
+            .filter(
+                ChatMessage.task_id == task.id,
+                ChatMessage.role == MessageRole.ASSISTANT,
+                ChatMessage.message_type == MessageType.TEXT,
+            )
+            .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+            .all()
+        )
+        if since is not None:
+            rows = [row for row in rows if row.created_at is not None and row.created_at >= since]
+        for row in rows:
+            content = str(row.content or "").strip()
+            if content:
+                turn_texts.append(content)
+        combined = "\n\n".join(turn_texts).strip()
+        if not combined:
+            combined = str(result_text or "").strip()
+
+        payload = diagnosis_result_service.extract_payload_from_text(combined)
         if payload is None:
             return
         result = diagnosis_result_service.upsert_diagnosis_result_from_ai(
@@ -1565,8 +1594,6 @@ async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -
         )
         if result is None or not result.source_chat_message_id:
             return
-        from app.domains.task.models.chat import ChatMessage
-
         message = (
             db.query(ChatMessage)
             .filter(ChatMessage.id == result.source_chat_message_id)

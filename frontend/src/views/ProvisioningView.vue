@@ -92,6 +92,27 @@ const uploadPendingTaskSpecIfNeeded = async (currentJob: ProvisionJob) => {
   }
 }
 
+const uploadPendingTaskDocsIfNeeded = async (currentJob: ProvisionJob) => {
+  if (currentJob.job_type !== 'CREATE_TASK') return
+  const currentJobId = String(currentJob.job_id || '').trim()
+  const pending = provisioningStore.consumePendingTaskDocs(currentJobId)
+  if (!pending || pending.files.length === 0) return
+
+  for (const file of pending.files) {
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      await api.post(
+        `/workspaces/${pending.workspaceId}/tasks/${pending.taskId}/upload-diagnosis-doc`,
+        formData,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      )
+    } catch (err) {
+      ElMessage.warning(formatApiError(err, t('provisioning.docs_upload_failed'), t))
+    }
+  }
+}
+
 const navigateOnSuccess = async (currentJob: ProvisionJob) => {
   if (redirecting.value) return
   redirecting.value = true
@@ -115,6 +136,7 @@ const navigateOnSuccess = async (currentJob: ProvisionJob) => {
 
   if (currentJob.job_type === 'CREATE_TASK') {
     await uploadPendingTaskSpecIfNeeded(currentJob)
+    await uploadPendingTaskDocsIfNeeded(currentJob)
     const workspaceId = String(currentJob.workspace_id || '').trim()
     const taskId = String(currentJob.task_id || '').trim()
     if (workspaceId && taskId) {
