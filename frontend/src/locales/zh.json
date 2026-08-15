@@ -2547,7 +2547,9 @@
       "required": "该字段为必填项",
       "deleted": "已删除",
       "operation_failed": "操作失败",
-      "admin_required": "仅管理员可执行此操作"
+      "admin_required": "仅管理员可执行此操作",
+      "view_mode": "只读模式",
+      "edit_mode": "编辑模式"
     },
     "product": {
       "ref_type": "引用类型",

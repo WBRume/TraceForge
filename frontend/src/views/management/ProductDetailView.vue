@@ -24,6 +24,10 @@ const productId = computed(() => String(route.params.productId ?? ''));
 
 const isAdmin = computed(() => Boolean(authStore.user?.is_admin));
 
+// 查看（默认 / ?mode=view）为只读；编辑（?mode=edit）开放完整编辑能力（含仓库绑定等）
+const editMode = computed(() => route.query.mode === 'edit');
+const canManage = computed(() => editMode.value && isAdmin.value);
+
 const detail = ref<ProductDetail | null>(null);
 const loading = ref(false);
 
@@ -78,10 +82,15 @@ const onBindingsChanged = () => {
               : $t('management.product.status_archived') }}
           </span>
         </h2>
-        <p v-if="detail" class="mgmt-subtitle">{{ detail.code }}</p>
+        <p v-if="detail" class="mgmt-subtitle">
+          {{ detail.code }}
+          <span class="mgmt-mode-badge" :class="editMode ? 'edit' : 'view'">
+            {{ editMode ? $t('management.common.edit_mode') : $t('management.common.view_mode') }}
+          </span>
+        </p>
       </div>
       <AdminGuard>
-        <button v-if="detail" class="btn-secondary" @click="showEdit = true">
+        <button v-if="detail && editMode" class="btn-secondary" @click="showEdit = true">
           {{ $t('management.common.edit') }}
         </button>
       </AdminGuard>
@@ -118,7 +127,7 @@ const onBindingsChanged = () => {
 
       <ProductRepoBindingPanel
         :product="detail"
-        :can-manage="isAdmin"
+        :can-manage="canManage"
         @changed="onBindingsChanged"
       />
 
@@ -159,6 +168,28 @@ const onBindingsChanged = () => {
   border: 1px solid #bfdbfe;
   border-radius: 6px;
   padding: 0.1rem 0.5rem;
+}
+
+.mgmt-mode-badge {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 0.1rem 0.5rem;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+.mgmt-mode-badge.view {
+  color: #64748b;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+}
+
+.mgmt-mode-badge.edit {
+  color: #b45309;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
 }
 
 .mgmt-info-grid {
