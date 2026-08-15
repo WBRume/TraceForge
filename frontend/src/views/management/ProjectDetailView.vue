@@ -203,6 +203,19 @@ const confirmRemoveRelease = async () => {
   align-items: center;
   gap: 0.4rem;
   font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.4rem 0.9rem;
+  color: var(--color-primary-600);
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-primary-100);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.mgmt-back-btn:hover {
+  background: var(--color-primary-50);
+  border-color: var(--color-primary-100);
 }
 
 .mgmt-code {
