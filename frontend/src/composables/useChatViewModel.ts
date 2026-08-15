@@ -1264,10 +1264,11 @@ export function useChatViewModel() {
     diagnosisResultLoading.value = true
     try {
       const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`)
-      diagnosisResult.value = res.data
+      // 尚无结果时后端返回 200 + null（AI 会话收敛后自动反填，卡片由会话消息驱动）
+      diagnosisResult.value = res.data || null
     } catch (e: any) {
       if (e?.response?.status === 404) {
-        // 尚无结果：等待 AI 会话收敛反填（卡片由会话消息驱动）
+        // 兼容旧后端：尚无结果
         diagnosisResult.value = null
         return
       }

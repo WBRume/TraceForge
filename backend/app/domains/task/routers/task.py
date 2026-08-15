@@ -1189,7 +1189,7 @@ async def upload_task_diagnosis_doc(
             raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse)
+@router.get("/{task_id}/diagnosis-result", response_model=Optional[DiagnosisResultResponse])
 def get_diagnosis_result(
     ws_id: str,
     task_id: str,
@@ -1200,7 +1200,8 @@ def get_diagnosis_result(
     task = _require_diagnosis_task(db, task_id, ws_id)
     result = task.diagnosis_result
     if not result:
-        raise HTTPException(status_code=404, detail="Diagnosis result not found")
+        # 尚无定位结果（AI 会话收敛后自动反填）：返回 200 + null，避免 404 噪音
+        return None
     return diagnosis_result_service.serialize_diagnosis_result(result)
 
 

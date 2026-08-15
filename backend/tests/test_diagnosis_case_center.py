@@ -98,9 +98,10 @@ def test_diagnosis_result_upsert_and_validation():
         client = TestClient(_build_app(SessionLocal, user))
         ws_id, task_id = workspace.id, task.id
 
-        # 未创建时 404
+        # 未创建时返回 200 + null（尚无结果，等待 AI 会话收敛反填）
         resp = client.get(f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-result")
-        assert resp.status_code == 404, resp.text
+        assert resp.status_code == 200, resp.text
+        assert resp.json() is None
 
         # upsert（含结构化章节）
         resp = client.put(
