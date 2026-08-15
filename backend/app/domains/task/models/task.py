@@ -27,6 +27,11 @@ class TaskStatus(str, PyEnum):
     BASELINED = "BASELINED"
 
 
+class TaskType(str, PyEnum):
+    DEVELOPMENT = "DEVELOPMENT"  # 研发态任务（默认，存量数据兼容）
+    DIAGNOSIS = "DIAGNOSIS"      # 问题定位任务
+
+
 class PlanNodeStatus(str, PyEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -42,6 +47,8 @@ class SddTask(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    task_type = Column(String(40), nullable=False, default=TaskType.DEVELOPMENT.value, index=True)
+    task_meta_json = Column(JSON, nullable=True)  # 任务类型扩展元数据，如问题定位的 {phenomenon, priority}
     name = Column(String(300), nullable=False)
     description = Column(Text, nullable=True)
     spec_doc_path = Column(String(500), nullable=True)
@@ -75,6 +82,12 @@ class SddTask(Base):
     test_results = relationship("SddTestResult", back_populates="task", cascade="all, delete-orphan")
     assets = relationship("SddAsset", back_populates="task", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="task", cascade="all, delete-orphan")
+    diagnosis_result = relationship(
+        "SddDiagnosisResult",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     dashboard_metrics = relationship("SddDashboardMetric", back_populates="task", cascade="all, delete-orphan")
     skill_links = relationship("SddTaskSkill", back_populates="task", cascade="all, delete-orphan")
     api_mock_projects = relationship("SddApiMockProject", back_populates="task", cascade="all, delete-orphan")

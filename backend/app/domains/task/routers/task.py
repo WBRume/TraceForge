@@ -44,6 +44,12 @@ from app.domains.task.schemas.task import (
     TaskResumeInterruptedRequest,
     TaskStartRequest,
 )
+from app.domains.task.schemas.diagnosis import (
+    DiagnosisResultResponse,
+    DiagnosisResultUpsertRequest,
+)
+from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseResponse
+from app.domains.case_center.services import case_service
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
@@ -135,6 +141,22 @@ def _serialize_asset(asset) -> AssetResponse:
     )
 
 
+def _diagnosis_prompt_suffix(task) -> str:
+    """问题定位任务：把现象与优先级注入 AI 会话 prompt。"""
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        return ""
+    task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
+    parts = ["[问题定位任务]"]
+    phenomenon = str(task_meta.get("phenomenon") or "").strip()
+    if phenomenon:
+        parts.append(f"现象: {phenomenon}")
+    priority = str(task_meta.get("priority") or "").strip()
+    if priority:
+        parts.append(f"优先级: {priority}")
+    parts.append("请定位问题根因，输出根因结论、证据链、修复建议与置信度。")
+    return "\n\n" + "\n".join(parts)
+
+
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
 async def create_task(
     ws_id: str,
@@ -165,6 +187,9 @@ async def create_task(
             spec_doc_path=data.spec_doc_path,
             requirement_duration_hours=data.requirement_duration_hours,
             skill_ids=data.skill_ids,
+            task_type=data.task_type,
+            phenomenon=data.phenomenon,
+            priority=data.priority,
         )
         job = provision_job_service.create_job(
             db,
@@ -220,13 +245,14 @@ async def create_task(
 def list_tasks(
     ws_id: str,
     status: Optional[str] = None,
+    task_type: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user, db)
-    items, total = task_service.list_tasks(db, ws_id, status, page, page_size)
+    items, total = task_service.list_tasks(db, ws_id, status, page, page_size, task_type=task_type)
     return {
         "items": items,
         "total": total,
@@ -411,6 +437,8 @@ async def start_task(
                     f"Absolute path: {abs_path}"
                 )
 
+            prompt += _diagnosis_prompt_suffix(task)
+
             task.status = TaskStatus.CODING
             task.error_message = None
             task.session_id = None
@@ -499,6 +527,8 @@ async def initialize_task(
                     "\n\nPlease read and strictly implement all requirements in the specification file. "
                     f"Absolute path: {abs_path}"
                 )
+
+            prompt += _diagnosis_prompt_suffix(task)
 
             init_reason_text = (body.reason or "").strip()
             task_service.save_chat_message(
@@ -1093,3 +1123,114 @@ async def upload_task_spec(
         except Exception as exc:
             logger.exception(f"Failed to upload spec for task {task_id}: {exc}")
             raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── 问题定位任务：定位结果与一键转案例 ───
+
+
+def _require_diagnosis_task(db: Session, task_id: str, ws_id: str):
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        raise HTTPException(status_code=403, detail="Only diagnosis tasks support diagnosis results")
+    return task
+
+
+@router.get("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse)
+def get_diagnosis_result(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = _require_diagnosis_task(db, task_id, ws_id)
+    result = task.diagnosis_result
+    if not result:
+        raise HTTPException(status_code=404, detail="Diagnosis result not found")
+    return result
+
+
+@router.put("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse)
+def upsert_diagnosis_result(
+    ws_id: str,
+    task_id: str,
+    data: DiagnosisResultUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to update diagnosis results",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+
+    from app.domains.task.models.diagnosis import SddDiagnosisResult, DiagnosisResultStatus
+
+    result = task.diagnosis_result
+    if not result:
+        result = SddDiagnosisResult(
+            task_id=task.id,
+            workspace_id=ws_id,
+            created_by_id=current_user.id,
+            status=DiagnosisResultStatus.DRAFT.value,
+        )
+        db.add(result)
+    if data.root_cause is not None:
+        result.root_cause = data.root_cause
+    if data.evidence_chain is not None:
+        result.evidence_chain = data.evidence_chain
+    if data.fix_suggestion is not None:
+        result.fix_suggestion = data.fix_suggestion
+    if data.confidence is not None:
+        result.confidence = data.confidence
+    db.commit()
+    db.refresh(result)
+    audit_log(
+        action="diagnosis_result_upsert",
+        outcome="success",
+        resource_type="task_diagnosis_result",
+        resource_id=result.id,
+        user_id=current_user.id,
+        workspace_id=ws_id,
+        task_id=task.id,
+    )
+    return result
+
+
+@router.post("/{task_id}/case-draft", response_model=CaseResponse, status_code=201)
+def create_case_draft_from_task(
+    ws_id: str,
+    task_id: str,
+    data: CaseDraftCreateRequest = Body(default=CaseDraftCreateRequest()),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：确认采纳 → 一键转案例（生成案例草稿，可一步提交专家评审）。"""
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.CREATE_TASK,
+        "No permission to create cases",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+    try:
+        case = case_service.create_case_draft_from_task(
+            db,
+            task=task,
+            creator=current_user,
+            workspace_id=ws_id,
+            data=data,
+        )
+    except case_service.CaseError as exc:
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+    member = workspace_service.get_workspace_member(db, ws_id, current_user.id)
+    payload = case_service.serialize_case(case)
+    payload["my_can_manage"] = True
+    payload["my_can_review"] = bool(member.is_expert) if member else False
+    return payload

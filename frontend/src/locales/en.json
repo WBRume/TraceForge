@@ -84,6 +84,7 @@
   "layout": {
     "dashboard": "Dashboard",
     "chat": "SDD Session",
+    "case_center": "Case Center",
     "api_mock": "API MOCK",
     "workspaces": "My Workspaces",
     "toggle_sidebar": "Collapse/Expand Sidebar"
@@ -249,6 +250,7 @@
       "UNIT_MIN": "min"
     },
     "task_name": "Task Name",
+    "task_type_label": "Task Type",
     "description": "Initial Prompt",
     "spec_doc": "Specification",
     "task_name_placeholder": "e.g. Implement User Profile API",
@@ -366,6 +368,7 @@
     "cli_tool_raw_payload": "View raw payload (JSON)",
     "session_filter_label": "Filter",
     "session_filter_all": "All",
+    "session_type_all": "All Types",
     "session_filter_success": "Success",
     "session_filter_failed": "Failed",
     "session_scroll_load_more": "Scroll to the bottom to load more sessions",
@@ -2741,5 +2744,137 @@
     "next": "Next",
     "create": "Create Workspace",
     "creating": "Submitting..."
+  },
+  "task_types": {
+    "development": "Development Task",
+    "development_desc": "Full AI-assisted dev workflow: requirements, planning, coding, testing and asset closeout",
+    "diagnosis": "Diagnosis Task",
+    "diagnosis_desc": "Describe the symptom and priority; an AI session locates the root cause and can be converted into a case"
+  },
+  "diagnosis": {
+    "panel_title": "Diagnosis Result",
+    "phenomenon": "Symptom",
+    "phenomenon_placeholder": "Describe the symptom, e.g. the API times out intermittently during peak hours with error 504",
+    "priority": "Priority",
+    "root_cause": "Root Cause",
+    "root_cause_placeholder": "After the conversation converges, fill in the root cause conclusion",
+    "evidence_chain": "Evidence Chain",
+    "evidence_chain_placeholder": "Key evidence supporting the root cause: log excerpts, repro steps, stack traces",
+    "fix_suggestion": "Fix Suggestion",
+    "fix_suggestion_placeholder": "The fix plan and recommendations for the root cause",
+    "confidence": "Confidence",
+    "save_draft": "Save Draft",
+    "confirm_create_case": "Accept & Create Case",
+    "create_and_submit": "Create & Submit Review",
+    "view_case": "View Case",
+    "panel_hint": "Fill in the result after the conversation converges; accepting generates a case draft and can submit it for expert review in one click",
+    "result_draft": "Draft",
+    "result_confirmed": "Confirmed",
+    "result_load_failed": "Failed to load diagnosis result, please refresh",
+    "result_saved": "Diagnosis result saved",
+    "result_save_failed": "Failed to save diagnosis result",
+    "case_created": "Case draft created",
+    "case_created_and_submitted": "Case created and submitted for expert review",
+    "case_already_exists": "A case already exists for this task; opened it for you",
+    "case_create_failed": "Failed to create case"
+  },
+  "case_center": {
+    "title": "Feature Case Center",
+    "subtitle": "Structured accumulation of diagnosis and handling experience; expert-reviewed and searchable by the team",
+    "search": "Search",
+    "search_placeholder": "Search by title / problem description / root cause / solution / code context keywords",
+    "create_button": "New Case",
+    "filter_all": "All",
+    "status_all": "All Statuses",
+    "priority_all": "All Priorities",
+    "category": {
+      "PUBLIC": "Public",
+      "PRODUCT": "Product",
+      "SITE": "Site",
+      "TEMPORARY": "Temporary"
+    },
+    "status": {
+      "DRAFT": "Draft",
+      "PENDING_REVIEW": "Pending Review",
+      "IN_REVIEW": "In Review",
+      "APPROVED": "Approved",
+      "REJECTED": "Rejected"
+    },
+    "role": {
+      "user": "User",
+      "assistant": "AI",
+      "system": "System"
+    },
+    "action": {
+      "submit": "Submit for Review",
+      "start_review": "Start Review",
+      "approve": "Approve & Publish",
+      "reject": "Reject & Return",
+      "resubmit": "Resubmit"
+    },
+    "review_action": {
+      "start": "Took up review",
+      "approve": "Approved & published",
+      "reject": "Rejected & returned"
+    },
+    "field": {
+      "title": "Case Title",
+      "problem_description": "Problem Description",
+      "product_name": "Product",
+      "product_version": "Version",
+      "site_name": "Site",
+      "workspace": "Workspace",
+      "code_context": "Code Context",
+      "analysis_process": "Analysis Process",
+      "root_cause": "Root Cause",
+      "solution": "Solution",
+      "category": "Category",
+      "priority": "Priority"
+    },
+    "placeholder": {
+      "title": "e.g. Root cause of intermittent API timeout",
+      "problem_description": "Background, symptom and impact of the problem",
+      "product_name": "Related product, e.g. Billing",
+      "product_version": "Product version",
+      "site_name": "Site, e.g. East China site",
+      "code_context": "Key code locations, repositories and files involved",
+      "analysis_process": "The reasoning and evidence from symptom to root cause",
+      "root_cause": "Root cause conclusion",
+      "solution": "Solution and fix recommendations",
+      "site_name_short": "e.g. East China site"
+    },
+    "tab": {
+      "info": "Case Info",
+      "replay": "Conversation Replay",
+      "review_records": "Review Records"
+    },
+    "review_comment_placeholder": "Enter review comment (required when rejecting)",
+    "rejected_comment_label": "Rejection Comment",
+    "review_round": "Round {round}",
+    "creator": "Creator",
+    "created_at": "Created",
+    "updated_at": "Updated",
+    "current_workspace": "Current workspace",
+    "not_set": "Not set",
+    "empty": "No cases yet. Click \"New Case\" in the top-right corner or convert from a diagnosis task",
+    "replay_empty": "No conversation records",
+    "replay_snapshot_note": "Replay comes from the conversation snapshot taken when the case was created",
+    "replay_live_note": "Replay comes from the live source task conversation",
+    "review_records_empty": "No review records yet",
+    "approved_note": "This case passed expert review and is published",
+    "load_failed": "Failed to load cases",
+    "detail_load_failed": "Failed to load case detail",
+    "save_success": "Case saved",
+    "save_failed": "Failed to save case",
+    "title_required": "Please enter a case title",
+    "action_failed": "Operation failed, please retry later",
+    "submit_success": "Submitted for expert review",
+    "start_review_success": "Review started",
+    "approve_success": "Approved and published",
+    "reject_success": "Rejected and returned",
+    "resubmit_success": "Resubmitted for review",
+    "delete_success": "Case deleted",
+    "create_title": "New Case",
+    "edit_title": "Edit Case"
   }
 }

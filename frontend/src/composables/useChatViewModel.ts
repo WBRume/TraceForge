@@ -1044,6 +1044,9 @@ export function useChatViewModel() {
       if (statusQuery) {
         params.status = statusQuery
       }
+      if (taskTypeFilter.value !== 'ALL') {
+        params.task_type = taskTypeFilter.value
+      }
 
       const res = await api.get(`/workspaces/${wsId}/tasks`, { params })
       const items = Array.isArray(res.data?.items) ? res.data.items : []
@@ -1188,6 +1191,12 @@ export function useChatViewModel() {
     }
     loadHistory(task.id)
     loadActiveChatJobs(task.id)
+    if (isDiagnosisTask.value) {
+      void loadDiagnosisResult()
+    } else {
+      diagnosisResult.value = null
+      diagnosisCaseLink.value = ''
+    }
     loadTaskRuntimeSkills({ silent: true, hydrateEditor: false })
     if (hasTaskSpecification(task)) {
       loadTaskSpecBootstrap(task.id, task)
@@ -1197,6 +1206,112 @@ export function useChatViewModel() {
       requestSpecDrawerLevel(lastOpenSpecDrawerLevel.value)
     }
     connectWebSocket(task.id)
+  }
+
+  // ─── 问题定位任务（DIAGNOSIS） ───
+  const isDiagnosisTask = computed(() => String(currentTask.value?.task_type || '') === 'DIAGNOSIS')
+  /** 问题定位不需要 git patch/diff 相关业务，隐藏对应入口 */
+  const hidePatchWorkflows = computed(() => isDiagnosisTask.value)
+  const showDiagnosisResultPanel = computed(() => Boolean(currentTask.value?.id) && isDiagnosisTask.value && !isTaskPreStart.value)
+
+  const diagnosisResult = ref<any>(null)
+  const diagnosisResultLoading = ref(false)
+  const diagnosisResultSaving = ref(false)
+  const diagnosisCaseCreating = ref(false)
+  const diagnosisCaseLink = ref('')
+
+  const loadDiagnosisResult = async () => {
+    const taskId = currentTask.value?.id
+    if (!taskId || !isDiagnosisTask.value) {
+      diagnosisResult.value = null
+      diagnosisCaseLink.value = ''
+      return
+    }
+    diagnosisResultLoading.value = true
+    try {
+      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`)
+      diagnosisResult.value = res.data
+    } catch (e: any) {
+      if (e?.response?.status === 404) {
+        // 尚无结果：提供空表单供填写
+        diagnosisResult.value = { root_cause: '', evidence_chain: '', fix_suggestion: '', confidence: 0, status: 'DRAFT' }
+        return
+      }
+      console.warn('Failed to load diagnosis result', e)
+    } finally {
+      diagnosisResultLoading.value = false
+    }
+    try {
+      const casesRes = await api.get(`/workspaces/${route.params.wsId}/cases`, {
+        params: { source_task_id: taskId, page: 1, page_size: 1 },
+      })
+      const linked = (casesRes.data?.items || [])[0]
+      diagnosisCaseLink.value = linked?.id || ''
+    } catch (e) {
+      diagnosisCaseLink.value = ''
+    }
+  }
+
+  const saveDiagnosisResult = async () => {
+    const taskId = currentTask.value?.id
+    if (!taskId || !diagnosisResult.value) return
+    diagnosisResultSaving.value = true
+    try {
+      const res = await api.put(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`, {
+        root_cause: String(diagnosisResult.value.root_cause || ''),
+        evidence_chain: String(diagnosisResult.value.evidence_chain || ''),
+        fix_suggestion: String(diagnosisResult.value.fix_suggestion || ''),
+        confidence: Number(diagnosisResult.value.confidence ?? 0),
+      })
+      diagnosisResult.value = res.data
+      ElMessage.success(t('diagnosis.result_saved'))
+    } catch (e) {
+      ElMessage.error(formatApiError(e, t('diagnosis.result_save_failed'), t))
+      console.error('Failed to save diagnosis result', e)
+    } finally {
+      diagnosisResultSaving.value = false
+    }
+  }
+
+  const createDiagnosisCase = async (submitForReview: boolean): Promise<string> => {
+    const taskId = currentTask.value?.id
+    if (!taskId) return ''
+    diagnosisCaseCreating.value = true
+    try {
+      const res = await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/case-draft`, {
+        submit_for_review: Boolean(submitForReview),
+      })
+      const caseId = String(res.data?.id || '')
+      diagnosisCaseLink.value = caseId
+      ElMessage.success(t(submitForReview ? 'diagnosis.case_created_and_submitted' : 'diagnosis.case_created'))
+      router.push(`/ws/${route.params.wsId}/cases?case=${caseId}`)
+      return caseId
+    } catch (e: any) {
+      if (e?.response?.status === 409) {
+        const detail = String(e?.response?.data?.detail || '')
+        const match = detail.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+        const existingId = match ? match[0] : ''
+        if (existingId) {
+          diagnosisCaseLink.value = existingId
+          ElMessage.info(t('diagnosis.case_already_exists'))
+          router.push(`/ws/${route.params.wsId}/cases?case=${existingId}`)
+          return existingId
+        }
+      }
+      ElMessage.error(formatApiError(e, t('diagnosis.case_create_failed'), t))
+      console.error('Failed to create diagnosis case', e)
+      return ''
+    } finally {
+      diagnosisCaseCreating.value = false
+    }
+  }
+
+  // ─── 任务类型过滤（会话列表） ───
+  type TaskTypeFilterValue = 'ALL' | 'DEVELOPMENT' | 'DIAGNOSIS'
+  const taskTypeFilter = ref<TaskTypeFilterValue>('ALL')
+
+  const applyTaskTypeFilter = async () => {
+    await loadTasks({ reset: true, trySelectRouteTask: false })
   }
   
   const openSpecWorkspace = () => {
@@ -2388,6 +2503,19 @@ export function useChatViewModel() {
     messages,
     closeTaskSkillsDrawer,
     openTaskSkillsDrawer,
+    createDiagnosisCase,
+    diagnosisCaseCreating,
+    diagnosisCaseLink,
+    diagnosisResult,
+    diagnosisResultLoading,
+    diagnosisResultSaving,
+    hidePatchWorkflows,
+    isDiagnosisTask,
+    loadDiagnosisResult,
+    saveDiagnosisResult,
+    showDiagnosisResultPanel,
+    taskTypeFilter,
+    applyTaskTypeFilter,
     openContextWindowDrawer,
     onTaskCreated,
     openNewTaskModal,

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Upload, Loader2, ChevronDown, Sparkles, Globe, FolderOpen, GitFork } from 'lucide-vue-next'
+import { Plus, Upload, Loader2, ChevronDown, Sparkles, Globe, FolderOpen, GitFork, Hammer, Stethoscope } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -18,8 +18,13 @@ const emit = defineEmits<{
   created: [{ jobId: string; taskId: string; workspaceId: string; expectSpecUpload: boolean }]
 }>()
 
+type TaskTypeValue = 'DEVELOPMENT' | 'DIAGNOSIS'
+const taskType = ref<TaskTypeValue>('DEVELOPMENT')
+const isDiagnosisTask = computed(() => taskType.value === 'DIAGNOSIS')
 const newTaskName = ref('')
 const newTaskDesc = ref('')
+const newTaskPhenomenon = ref('')
+const newTaskPriority = ref('P2')
 const requirementDuration = ref(8)
 const useBrainstorm = ref(false)
 const creatingTask = ref(false)
@@ -79,13 +84,20 @@ const handleCreateTask = async () => {
   if (!newTaskName.value) return
   creatingTask.value = true
   try {
-    const res = await api.post(`/workspaces/${props.wsId}/tasks`, {
+    const payload: Record<string, unknown> = {
       name: newTaskName.value,
       description: newTaskDesc.value,
-      use_brainstorm: useBrainstorm.value,
-      requirement_duration_hours: Number(requirementDuration.value),
+      task_type: taskType.value,
       skill_ids: selectedSkillIds.value,
-    })
+    }
+    if (isDiagnosisTask.value) {
+      payload.phenomenon = newTaskPhenomenon.value
+      payload.priority = newTaskPriority.value
+    } else {
+      payload.use_brainstorm = useBrainstorm.value
+      payload.requirement_duration_hours = Number(requirementDuration.value)
+    }
+    const res = await api.post(`/workspaces/${props.wsId}/tasks`, payload)
 
     const jobId = String(res.data?.job_id || '').trim()
     const taskId = String(res.data?.task_id || '').trim()
@@ -117,8 +129,11 @@ const handleCreateTask = async () => {
 }
 
 const resetForm = () => {
+  taskType.value = 'DEVELOPMENT'
   newTaskName.value = ''
   newTaskDesc.value = ''
+  newTaskPhenomenon.value = ''
+  newTaskPriority.value = 'P2'
   requirementDuration.value = 8
   pendingSpecFile.value = null
   useBrainstorm.value = false
@@ -188,6 +203,36 @@ onBeforeUnmount(() => {
 
       <form @submit.prevent="handleCreateTask" class="modal-form">
         <div class="form-group">
+          <label>{{ $t('dashboard.task_type_label') }}</label>
+          <div class="task-type-grid">
+            <button
+              type="button"
+              class="task-type-card"
+              :class="{ active: taskType === 'DEVELOPMENT' }"
+              @click="taskType = 'DEVELOPMENT'"
+            >
+              <Hammer class="w-5 h-5 task-type-icon" />
+              <div class="task-type-body">
+                <div class="task-type-name">{{ $t('task_types.development') }}</div>
+                <div class="task-type-desc">{{ $t('task_types.development_desc') }}</div>
+              </div>
+            </button>
+            <button
+              type="button"
+              class="task-type-card"
+              :class="{ active: taskType === 'DIAGNOSIS' }"
+              @click="taskType = 'DIAGNOSIS'"
+            >
+              <Stethoscope class="w-5 h-5 task-type-icon" />
+              <div class="task-type-body">
+                <div class="task-type-name">{{ $t('task_types.diagnosis') }}</div>
+                <div class="task-type-desc">{{ $t('task_types.diagnosis_desc') }}</div>
+              </div>
+            </button>
+          </div>
+        </div>
+
+        <div class="form-group">
           <label>{{ $t('dashboard.task_name') }}</label>
           <input
             v-model="newTaskName"
@@ -208,145 +253,175 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <div class="form-group">
-          <label>{{ $t('dashboard.requirement_duration') }}</label>
-          <input
-            v-model="requirementDuration"
-            type="number"
-            class="input-field"
-            required
-            min="0"
-            step="0.5"
-            :placeholder="$t('dashboard.requirement_placeholder')"
-          />
-        </div>
-
-        <div class="form-group">
-          <label>{{ $t('dashboard.spec_doc') }}</label>
-          <div class="file-upload-box glass-panel">
-            <Upload v-if="!creatingTask" class="w-5 h-5 text-primary" />
-            <Loader2 v-else class="w-5 h-5 spin text-primary" />
-            <div class="file-name text-slate-600">
-              {{ selectedFileName || $t('dashboard.spec_placeholder') }}
-            </div>
-            <input
-              :id="`spec-upload-${props.wsId}`"
-              type="file"
-              class="hidden-input"
-              accept=".pdf,.doc,.docx,.md,.txt"
-              @change="handleFileUpload"
+        <template v-if="isDiagnosisTask">
+          <div class="form-group">
+            <label>{{ $t('diagnosis.phenomenon') }}</label>
+            <textarea
+              v-model="newTaskPhenomenon"
+              class="input-field"
+              rows="3"
+              :placeholder="$t('diagnosis.phenomenon_placeholder')"
             />
-            <label :for="`spec-upload-${props.wsId}`" class="btn-primary file-choose-btn">
-              {{ $t('common.select') }}
+          </div>
+
+          <div class="form-group">
+            <label>{{ $t('diagnosis.priority') }}</label>
+            <div class="priority-options">
+              <button
+                v-for="p in ['P0', 'P1', 'P2', 'P3']"
+                :key="p"
+                type="button"
+                class="priority-option"
+                :class="{ active: newTaskPriority === p, [`prio-${p.toLowerCase()}`]: true }"
+                @click="newTaskPriority = p"
+              >
+                {{ p }}
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="form-group">
+            <label>{{ $t('dashboard.requirement_duration') }}</label>
+            <input
+              v-model="requirementDuration"
+              type="number"
+              class="input-field"
+              required
+              min="0"
+              step="0.5"
+              :placeholder="$t('dashboard.requirement_placeholder')"
+            />
+          </div>
+
+          <div class="form-group">
+            <label>{{ $t('dashboard.spec_doc') }}</label>
+            <div class="file-upload-box glass-panel">
+              <Upload v-if="!creatingTask" class="w-5 h-5 text-primary" />
+              <Loader2 v-else class="w-5 h-5 spin text-primary" />
+              <div class="file-name text-slate-600">
+                {{ selectedFileName || $t('dashboard.spec_placeholder') }}
+              </div>
+              <input
+                :id="`spec-upload-${props.wsId}`"
+                type="file"
+                class="hidden-input"
+                accept=".pdf,.doc,.docx,.md,.txt"
+                @change="handleFileUpload"
+              />
+              <label :for="`spec-upload-${props.wsId}`" class="btn-primary file-choose-btn">
+                {{ $t('common.select') }}
+              </label>
+            </div>
+          </div>
+
+          <div class="form-group checkbox-group py-1">
+            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
+              <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded" />
+              {{ $t('dashboard.brainstorm_hint') }}
             </label>
           </div>
-        </div>
 
-        <div class="form-group checkbox-group py-1">
-          <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
-            <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded" />
-            {{ $t('dashboard.brainstorm_hint') }}
-          </label>
-        </div>
-
-        <button
-          v-if="workspaceRepos.length > 0"
-          type="button"
-          class="expand-btn"
-          @click="showRepoPanel = !showRepoPanel"
-        >
-          <div class="expand-left">
-            <GitFork class="w-4 h-4" />
-            <span>{{ $t('dashboard.task_repo_preview', { count: workspaceRepos.length }) }}</span>
-          </div>
-          <ChevronDown class="w-4 h-4 chevron" :class="{ open: showRepoPanel }" />
-        </button>
-
-        <div v-if="showRepoPanel && workspaceRepos.length > 0" class="skills-panel repo-preview-panel">
-          <div class="skills-header">
-            <span>{{ $t('dashboard.task_repo_list_title') }}</span>
-          </div>
-          <div v-if="reposLoading" class="skills-state">
-            <Loader2 class="w-4 h-4 spin" />
-            <span>{{ $t('skills.task_panel.loading') }}</span>
-          </div>
-          <div v-else class="repo-preview-list">
-            <div v-for="repo in workspaceRepos" :key="repo.id" class="repo-preview-row">
-              <span class="repo-preview-dot" :class="{ failed: repo.state === 'FAILED' }"></span>
-              <div class="repo-preview-body">
-                <div class="repo-preview-name">{{ repo.repo_name }}</div>
-                <div class="repo-preview-meta">{{ repo.branch_name }} · {{ repo.repo_url }}</div>
-              </div>
+          <button
+            v-if="workspaceRepos.length > 0"
+            type="button"
+            class="expand-btn"
+            @click="showRepoPanel = !showRepoPanel"
+          >
+            <div class="expand-left">
+              <GitFork class="w-4 h-4" />
+              <span>{{ $t('dashboard.task_repo_preview', { count: workspaceRepos.length }) }}</span>
             </div>
-          </div>
-        </div>
+            <ChevronDown class="w-4 h-4 chevron" :class="{ open: showRepoPanel }" />
+          </button>
 
-        <button type="button" class="expand-btn" @click="showSkillPanel = !showSkillPanel">
-          <div class="expand-left">
-            <Sparkles class="w-4 h-4" />
-            <span>{{ $t('skills.task_panel.expand_title') }}</span>
-          </div>
-          <ChevronDown class="w-4 h-4 chevron" :class="{ open: showSkillPanel }" />
-        </button>
-
-        <div v-if="showSkillPanel" class="skills-panel">
-          <div class="skills-header">
-            <span>{{ $t('skills.task_panel.hint') }}</span>
-            <button type="button" class="link-btn" @click="loadSkills">{{ $t('skills.task_panel.refresh') }}</button>
-          </div>
-          <div v-if="hasDraftSkills" class="skills-state-note">
-            {{ $t('skills.task_panel.draft_publish_hint') }}
-          </div>
-
-          <div v-if="skillsLoading" class="skills-state">
-            <Loader2 class="w-4 h-4 spin" />
-            <span>{{ $t('skills.task_panel.loading') }}</span>
-          </div>
-
-          <div v-else-if="skills.length === 0" class="skills-state empty">
-            {{ $t('skills.task_panel.empty') }}
-          </div>
-
-          <div v-else class="skills-groups">
-            <div v-if="workspaceSkills.length > 0" class="skills-group">
-              <div class="group-title">
-                <FolderOpen class="w-4 h-4" />
-                <span>{{ $t('skills.task_panel.workspace_group') }}</span>
-              </div>
-              <label v-for="skill in workspaceSkills" :key="skill.id" class="skill-item">
-                <input v-model="selectedSkillIds" type="checkbox" :value="skill.id" />
-                <div class="skill-item-body">
-                  <div class="skill-title-row">
-                    <div class="skill-name">{{ skill.name }}</div>
-                    <span class="skill-status-tag" :class="{ draft: isDraftSkill(skill) }">
-                      {{ isDraftSkill(skill) ? $t('skills.task_panel.status_draft') : $t('skills.task_panel.status_published') }}
-                    </span>
-                  </div>
-                  <div class="skill-desc">{{ skill.description || $t('skills.list.no_description') }}</div>
+          <div v-if="showRepoPanel && workspaceRepos.length > 0" class="skills-panel repo-preview-panel">
+            <div class="skills-header">
+              <span>{{ $t('dashboard.task_repo_list_title') }}</span>
+            </div>
+            <div v-if="reposLoading" class="skills-state">
+              <Loader2 class="w-4 h-4 spin" />
+              <span>{{ $t('skills.task_panel.loading') }}</span>
+            </div>
+            <div v-else class="repo-preview-list">
+              <div v-for="repo in workspaceRepos" :key="repo.id" class="repo-preview-row">
+                <span class="repo-preview-dot" :class="{ failed: repo.state === 'FAILED' }"></span>
+                <div class="repo-preview-body">
+                  <div class="repo-preview-name">{{ repo.repo_name }}</div>
+                  <div class="repo-preview-meta">{{ repo.branch_name }} · {{ repo.repo_url }}</div>
                 </div>
-              </label>
-            </div>
-
-            <div v-if="globalSkills.length > 0" class="skills-group">
-              <div class="group-title">
-                <Globe class="w-4 h-4" />
-                <span>{{ $t('skills.task_panel.global_group') }}</span>
               </div>
-              <label v-for="skill in globalSkills" :key="skill.id" class="skill-item">
-                <input v-model="selectedSkillIds" type="checkbox" :value="skill.id" />
-                <div class="skill-item-body">
-                  <div class="skill-title-row">
-                    <div class="skill-name">{{ skill.name }}</div>
-                    <span class="skill-status-tag" :class="{ draft: isDraftSkill(skill) }">
-                      {{ isDraftSkill(skill) ? $t('skills.task_panel.status_draft') : $t('skills.task_panel.status_published') }}
-                    </span>
-                  </div>
-                  <div class="skill-desc">{{ skill.description || $t('skills.list.no_description') }}</div>
-                </div>
-              </label>
             </div>
           </div>
-        </div>
+
+          <button type="button" class="expand-btn" @click="showSkillPanel = !showSkillPanel">
+            <div class="expand-left">
+              <Sparkles class="w-4 h-4" />
+              <span>{{ $t('skills.task_panel.expand_title') }}</span>
+            </div>
+            <ChevronDown class="w-4 h-4 chevron" :class="{ open: showSkillPanel }" />
+          </button>
+
+          <div v-if="showSkillPanel" class="skills-panel">
+            <div class="skills-header">
+              <span>{{ $t('skills.task_panel.hint') }}</span>
+              <button type="button" class="link-btn" @click="loadSkills">{{ $t('skills.task_panel.refresh') }}</button>
+            </div>
+            <div v-if="hasDraftSkills" class="skills-state-note">
+              {{ $t('skills.task_panel.draft_publish_hint') }}
+            </div>
+
+            <div v-if="skillsLoading" class="skills-state">
+              <Loader2 class="w-4 h-4 spin" />
+              <span>{{ $t('skills.task_panel.loading') }}</span>
+            </div>
+
+            <div v-else-if="skills.length === 0" class="skills-state empty">
+              {{ $t('skills.task_panel.empty') }}
+            </div>
+
+            <div v-else class="skills-groups">
+              <div v-if="workspaceSkills.length > 0" class="skills-group">
+                <div class="group-title">
+                  <FolderOpen class="w-4 h-4" />
+                  <span>{{ $t('skills.task_panel.workspace_group') }}</span>
+                </div>
+                <label v-for="skill in workspaceSkills" :key="skill.id" class="skill-item">
+                  <input v-model="selectedSkillIds" type="checkbox" :value="skill.id" />
+                  <div class="skill-item-body">
+                    <div class="skill-title-row">
+                      <div class="skill-name">{{ skill.name }}</div>
+                      <span class="skill-status-tag" :class="{ draft: isDraftSkill(skill) }">
+                        {{ isDraftSkill(skill) ? $t('skills.task_panel.status_draft') : $t('skills.task_panel.status_published') }}
+                      </span>
+                    </div>
+                    <div class="skill-desc">{{ skill.description || $t('skills.list.no_description') }}</div>
+                  </div>
+                </label>
+              </div>
+
+              <div v-if="globalSkills.length > 0" class="skills-group">
+                <div class="group-title">
+                  <Globe class="w-4 h-4" />
+                  <span>{{ $t('skills.task_panel.global_group') }}</span>
+                </div>
+                <label v-for="skill in globalSkills" :key="skill.id" class="skill-item">
+                  <input v-model="selectedSkillIds" type="checkbox" :value="skill.id" />
+                  <div class="skill-item-body">
+                    <div class="skill-title-row">
+                      <div class="skill-name">{{ skill.name }}</div>
+                      <span class="skill-status-tag" :class="{ draft: isDraftSkill(skill) }">
+                        {{ isDraftSkill(skill) ? $t('skills.task_panel.status_draft') : $t('skills.task_panel.status_published') }}
+                      </span>
+                    </div>
+                    <div class="skill-desc">{{ skill.description || $t('skills.list.no_description') }}</div>
+                  </div>
+                </label>
+              </div>
+            </div>
+          </div>
+        </template>
 
         <div class="modal-actions">
           <button type="button" class="btn-secondary" @click="close">{{ $t('common.cancel') }}</button>
@@ -408,6 +483,107 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.task-type-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.task-type-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.task-type-card:hover {
+  border-color: #7dd3fc;
+  background: #f0f9ff;
+}
+
+.task-type-card.active {
+  border-color: var(--color-primary-500);
+  background: #f0f9ff;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.15);
+}
+
+.task-type-icon {
+  flex-shrink: 0;
+  color: #64748b;
+  margin-top: 1px;
+}
+
+.task-type-card.active .task-type-icon {
+  color: var(--color-primary-600);
+}
+
+.task-type-body {
+  min-width: 0;
+}
+
+.task-type-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.task-type-desc {
+  margin-top: 2px;
+  font-size: 0.75rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.priority-options {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.priority-option {
+  flex: 1;
+  padding: 8px 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.priority-option.active.prio-p0 {
+  border-color: #ef4444;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.priority-option.active.prio-p1 {
+  border-color: #f97316;
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.priority-option.active.prio-p2 {
+  border-color: #3b82f6;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.priority-option.active.prio-p3 {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #475569;
 }
 
 .form-group label {
