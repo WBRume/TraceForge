@@ -269,7 +269,7 @@
     "start_confirm_message": "启动后需求文档将切换为只读模式，不能继续修改。",
     "start_confirm_description": "请先在独立需求文档页面完成浏览与编辑。确认启动后，将进入会话协作并改为抽屉浏览。",
     "thinking": "AI 思考中...",
-    "terminal": "SDD 会话记录",
+    "terminal": "任务列表",
     "decision": {
       "mark": "标记为关键决策",
       "mark_short": "标记决策",
@@ -367,6 +367,7 @@
     "cli_result_cost": "成本",
     "cli_tool_raw_payload": "查看原始参数(JSON)",
     "session_filter_label": "状态筛选",
+    "session_type_label": "任务类型",
     "session_filter_all": "全部",
     "session_type_all": "全部类型",
     "session_filter_success": "成功",
@@ -2929,6 +2930,19 @@
     "resubmit_success": "已重新提交评审",
     "delete_success": "案例已删除",
     "create_title": "新建案例",
-    "edit_title": "编辑案例"
+    "edit_title": "编辑案例",
+    "report": {
+      "back": "返回案例中心",
+      "kicker": "案例分析报告",
+      "not_found": "案例不存在或已被删除",
+      "analysis_title": "分析过程",
+      "info_title": "案例信息",
+      "open_session": "跳转对应会话",
+      "stat_status": "状态",
+      "stat_priority": "优先级",
+      "stat_category": "分类",
+      "stat_round": "评审轮次",
+      "round_short": "第 {round} 轮"
+    }
   }
 }

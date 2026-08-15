@@ -1,17 +1,17 @@
 <script setup lang="ts">
 import { onMounted, proxyRefs, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Search, Plus, Loader2, BookMarked, RefreshCw } from 'lucide-vue-next'
 import { useCaseCenter } from '@/composables/useCaseCenter'
 import CaseStatusPill from './CaseStatusPill.vue'
 import CaseCategoryTag from './CaseCategoryTag.vue'
 import CasePriorityTag from './CasePriorityTag.vue'
-import CaseDetailDrawer from './CaseDetailDrawer.vue'
 import CaseFormDialog from './CaseFormDialog.vue'
 
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
 const vm = proxyRefs(useCaseCenter())
 
 const searchInput = ref('')
@@ -37,25 +37,37 @@ const selectCategory = (value: string) => {
   vm.applyFilters()
 }
 
+const goToReport = (caseId: string) => {
+  router.push({
+    name: 'workspaceCaseDetail',
+    params: { wsId: String(route.params.wsId || ''), caseId },
+  })
+}
+
 const handleOpenCase = (caseId: string) => {
-  vm.openCase(caseId)
+  goToReport(caseId)
+}
+
+// 兼容旧的 ?case= 深链：直接跳转到独立报告页
+const redirectQueryCase = () => {
+  const caseId = String(route.query.case || '')
+  if (caseId) {
+    router.replace({
+      name: 'workspaceCaseDetail',
+      params: { wsId: String(route.params.wsId || ''), caseId },
+    })
+  }
 }
 
 onMounted(async () => {
   await vm.loadCases({ reset: true })
-  const caseId = String(route.query.case || '')
-  if (caseId) {
-    vm.openCase(caseId)
-  }
+  redirectQueryCase()
 })
 
 watch(
   () => route.query.case,
   (value) => {
-    const caseId = String(value || '')
-    if (caseId && String(vm.currentCase?.id || '') !== caseId) {
-      vm.openCase(caseId)
-    }
+    if (value) redirectQueryCase()
   },
 )
 </script>
@@ -151,23 +163,6 @@ watch(
         </div>
       </div>
     </div>
-
-    <CaseDetailDrawer
-      :visible="vm.drawerOpen"
-      :ws-id="String(route.params.wsId || '')"
-      :case-data="vm.currentCase"
-      :loading="vm.detailLoading"
-      :action-loading="vm.actionLoading"
-      :my-can-manage="vm.myCanManage"
-      :my-can-review="vm.myCanReview"
-      @close="vm.closeDrawer()"
-      @edit="vm.openEditForm()"
-      @submit="vm.submitCase()"
-      @start-review="vm.startReview()"
-      @resubmit="vm.resubmitCase()"
-      @delete="vm.deleteCase()"
-      @review="(payload: any) => { vm.reviewConclusion = payload.conclusion; vm.reviewComment = payload.comment; vm.confirmReview() }"
-    />
 
     <CaseFormDialog
       :visible="vm.formVisible"

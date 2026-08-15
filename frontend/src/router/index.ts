@@ -191,6 +191,11 @@ const router = createRouter({
           component: () => import('../views/CaseCenterView.vue')
         },
         {
+          path: 'cases/:caseId',
+          name: 'workspaceCaseDetail',
+          component: () => import('../views/CaseReportView.vue')
+        },
+        {
           path: 'assets/knowledge-base',
           name: 'workspaceAssetsKnowledgeBase',
           component: () => import('../views/AssetView.vue')
