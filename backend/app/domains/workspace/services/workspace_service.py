@@ -16,6 +16,10 @@ from app.domains.auth.models.user import (
     WorkspacePermission,
     WorkspaceRole,
 )
+from app.domains.management.models.management import (
+    SddManagementProject,
+    SddManagementProjectProduct,
+)
 from app.domains.task.services import git_worktree_service
 
 
@@ -164,7 +168,18 @@ def get_workspace_and_member(db: Session, workspace_id: str, user_id: str) -> Op
     if not member:
         return None
 
-    workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    workspace = (
+        db.query(Workspace)
+        .options(
+            joinedload(Workspace.owner),
+            joinedload(Workspace.project)
+            .joinedload(SddManagementProject.products)
+            .joinedload(SddManagementProjectProduct.product),
+            joinedload(Workspace.repositories),
+        )
+        .filter(Workspace.id == workspace_id)
+        .first()
+    )
     if not workspace:
         return None
 
@@ -216,8 +231,50 @@ def serialize_workspace_repository(row) -> Dict[str, object]:
     }
 
 
+def serialize_workspace_owner(owner) -> Optional[Dict[str, object]]:
+    if owner is None:
+        return None
+    return {
+        "id": owner.id,
+        "display_name": owner.display_name,
+        "email": owner.email,
+        "avatar_svg": owner.avatar_svg,
+        "avatar_url": owner.avatar_url,
+    }
+
+
+def serialize_workspace_project(project) -> Optional[Dict[str, object]]:
+    if project is None:
+        return None
+    return {
+        "id": project.id,
+        "name": project.name,
+        "code": project.code,
+    }
+
+
+def serialize_workspace_products(project) -> List[Dict[str, object]]:
+    if project is None:
+        return []
+    products = []
+    for link in project.products or []:
+        product = link.product
+        if product is None:
+            continue
+        products.append(
+            {
+                "id": product.id,
+                "name": product.name,
+                "code": product.code,
+                "version_no": product.version_no,
+            }
+        )
+    return products
+
+
 def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[str, object]:
     repositories = [serialize_workspace_repository(row) for row in workspace.repositories]
+    project = workspace.project
     return {
         "id": workspace.id,
         "name": workspace.name,
@@ -230,6 +287,9 @@ def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[s
         "my_role": member.role.value if hasattr(member.role, "value") else str(member.role),
         "my_is_expert": bool(member.is_expert),
         "can_delete_workspace": member.role == WorkspaceRole.OWNER,
+        "project": serialize_workspace_project(project),
+        "products": serialize_workspace_products(project),
+        "owner": serialize_workspace_owner(workspace.owner),
         "repositories": repositories,
     }
 
@@ -250,7 +310,6 @@ def create_workspace(
     product_ids: Optional[List[str]] = None,
     repositories: Optional[List[Dict[str, str]]] = None,
 ) -> Workspace:
-    from app.domains.management.models.management import SddManagementProject
     from app.domains.management.services import project_service
     from app.domains.management.services import repository_service as mgmt_repository_service
     from app.domains.workspace.models.workspace_repository import (
@@ -384,6 +443,13 @@ def list_user_workspace_summaries(db: Session, user: User) -> List[Dict[str, obj
     workspaces = (
         db.query(Workspace)
         .filter(Workspace.id.in_(list(by_workspace.keys())))
+        .options(
+            joinedload(Workspace.owner),
+            joinedload(Workspace.project)
+            .joinedload(SddManagementProject.products)
+            .joinedload(SddManagementProjectProduct.product),
+            joinedload(Workspace.repositories),
+        )
         .order_by(Workspace.created_at.desc())
         .all()
     )

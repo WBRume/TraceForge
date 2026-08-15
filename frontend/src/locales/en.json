@@ -616,6 +616,11 @@
     "keep_it": "Keep It",
     "delete_permanently": "Delete Permanently",
     "no_desc": "No description provided.",
+    "card_project": "Project",
+    "card_products": "Products",
+    "card_repositories": "Repositories",
+    "card_creator": "Creator",
+    "not_set": "Not set",
     "tabs": {
       "workspaces": "Workspaces",
       "queue": "Queue"
