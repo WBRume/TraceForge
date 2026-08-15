@@ -406,6 +406,8 @@ async def start_task(
             existing_engine = get_engine(task.id)
             if existing_engine and existing_engine.running:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
+            if task.status == TaskStatus.PROVISIONING:
+                raise HTTPException(status_code=409, detail="Task is still being provisioned. Please wait until the workspace is ready.")
             if task.status == TaskStatus.CODING:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
             if task.status == TaskStatus.INTERRUPTED:
@@ -474,6 +476,11 @@ async def initialize_task(
             if not task:
                 raise HTTPException(status_code=404, detail="Task not found")
             _ensure_task_not_baselined(task)
+            if task.status == TaskStatus.PROVISIONING:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Task is still being provisioned. Please wait until the workspace is ready.",
+                )
 
             cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
                 db,

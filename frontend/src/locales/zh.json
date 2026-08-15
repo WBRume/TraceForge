@@ -374,6 +374,7 @@
     "session_scroll_load_more": "下滑到底自动加载更多会话",
     "empty_hint": "选择一个任务查看会话",
     "start_before_chat": "请先启动引擎后再发送消息",
+    "task_provisioning_hint": "任务工作区准备中（git worktree/clone），完成后即可启动会话",
     "send_message": "发送消息",
     "resume_interrupted_placeholder": "输入新的提示词，继续保留上下文的会话",
     "spec_prestart_hint": "当前引擎未启动，请先在独立需求文档界面完成浏览与编辑。",
@@ -788,6 +789,9 @@
     "failed_fallback": "准备失败，请稍后重试。",
     "back": "返回",
     "invalid_job_id": "未获取到有效的准备任务 ID。",
+    "task_provision_title": "任务准备中",
+    "task_provision_waiting": "正在准备任务工作区（仓库 clone / git worktree），请稍候…",
+    "task_provision_enter_session": "进入任务会话",
     "spec_upload_failed": "任务已创建，但需求文档上传失败，请在会话中手动上传。",
     "spec_lost_warning": "检测到你在创建时选择了需求文档，但页面刷新后文件已丢失，请进入任务后手动上传。",
     "docs_upload_failed": "任务已创建，但部分诊断文档上传失败，可进入会话后重新上传。"

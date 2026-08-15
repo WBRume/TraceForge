@@ -376,6 +376,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 </template>
 
 <style scoped>
+/* 背景淡黄；其余元素独立配色（靛蓝强调 / 石板文字 / 深色代码块） */
 .diagnosis-card {
   width: min(100%, 640px);
   border: 1px solid rgba(245, 158, 11, 0.35);
@@ -396,13 +397,13 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   flex-shrink: 0;
   width: 18px;
   height: 18px;
-  color: #d97706;
+  color: #1d4ed8;
 }
 
 .dc-title {
   font-weight: 700;
   font-size: 0.95rem;
-  color: #92400e;
+  color: #1e3a8a;
 }
 
 .dc-pill {
@@ -421,14 +422,14 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   height: 11px;
 }
 
-.dc-pill-ai { color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; }
-.dc-pill-confirmed { color: #14532d; background: #dcfce7; border: 1px solid #86efac; }
-.dc-pill-draft { color: #7c2d12; background: #ffedd5; border: 1px solid #fdba74; }
+.dc-pill-ai { color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; }
+.dc-pill-confirmed { color: #15803d; background: #dcfce7; border: 1px solid #86efac; }
+.dc-pill-draft { color: #9a3412; background: #ffedd5; border: 1px solid #fdba74; }
 
 .dc-empty {
   padding: 10px 0 2px;
   font-size: 0.82rem;
-  color: #a16207;
+  color: #78716c;
 }
 
 .dc-body {
@@ -450,39 +451,39 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   gap: 6px;
   font-size: 0.78rem;
   font-weight: 700;
-  color: #78350f;
+  color: #334155;
 }
 
 .dc-section-icon {
   width: 14px;
   height: 14px;
-  color: #b45309;
+  color: #64748b;
 }
 
 .dc-label {
   font-size: 0.75rem;
   font-weight: 600;
-  color: #78350f;
+  color: #334155;
 }
 
 .dc-text {
   margin: 0;
   font-size: 0.85rem;
   line-height: 1.6;
-  color: #451a03;
+  color: #1f2937;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .dc-summary {
   font-weight: 600;
-  color: #451a03;
+  color: #111827;
 }
 
 .dc-root-cause {
   padding: 8px 10px;
-  border-left: 3px solid #f59e0b;
-  background: #fef3c7;
+  border-left: 3px solid #2563eb;
+  background: #eff6ff;
   border-radius: 4px;
 }
 
@@ -490,37 +491,39 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
-  border: 1px solid #fcd34d;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 8px 10px;
   font-size: 0.82rem;
   line-height: 1.5;
-  color: #451a03;
-  background: #fffdf5;
+  color: #1f2937;
+  background: #ffffff;
   font-family: inherit;
 }
 
 .dc-textarea:focus {
   outline: none;
-  border-color: #f59e0b;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
 
 .dc-input {
   box-sizing: border-box;
   min-width: 0;
   flex: 1;
-  border: 1px solid #fcd34d;
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 6px 9px;
   font-size: 0.8rem;
-  color: #451a03;
-  background: #fffdf5;
+  color: #1f2937;
+  background: #ffffff;
   font-family: inherit;
 }
 
 .dc-input:focus {
   outline: none;
-  border-color: #f59e0b;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
 }
 
 .dc-input-num { flex: 0 0 76px; }
@@ -531,9 +534,9 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   flex-direction: column;
   gap: 5px;
   padding: 8px 10px;
-  border: 1px solid #fde68a;
+  border: 1px solid #e8e6e3;
   border-radius: 8px;
-  background: #fffdf5;
+  background: #ffffff;
 }
 
 .dc-item-row {
@@ -548,7 +551,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   gap: 6px;
   font-size: 0.8rem;
   font-weight: 650;
-  color: #451a03;
+  color: #111827;
   flex-wrap: wrap;
   min-width: 0;
 }
@@ -556,25 +559,27 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 .dc-item-icon {
   width: 13px;
   height: 13px;
-  color: #b45309;
+  color: #2563eb;
   flex-shrink: 0;
 }
 
 .dc-item-note {
   font-size: 0.7rem;
   font-weight: 500;
-  color: #92400e;
+  color: #64748b;
 }
 
-.dc-item-text { font-size: 0.78rem; color: #78350f; }
-.dc-item-ref { font-size: 0.75rem; color: #b45309; }
+.dc-item-text { font-size: 0.78rem; color: #334155; }
+.dc-item-ref { font-size: 0.75rem; color: #2563eb; }
 
+/* 代码类内容：深色主题 */
 .dc-snippet,
 .dc-code {
   margin: 0;
   border-radius: 6px;
-  background: #451a03;
-  color: #fef3c7;
+  border: 1px solid #1e293b;
+  background: #0f172a;
+  color: #e2e8f0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.75rem;
   line-height: 1.55;
@@ -600,7 +605,12 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   position: absolute;
   top: 6px;
   right: 6px;
-  color: #fde68a;
+  color: #94a3b8;
+}
+
+.dc-code-block .dc-btn-icon:hover {
+  background: #1e293b;
+  color: #e2e8f0;
 }
 
 .dc-btn-add {
@@ -608,18 +618,19 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   align-items: center;
   gap: 4px;
   align-self: flex-start;
-  border: 1px dashed #fcd34d;
+  border: 1px dashed #cbd5e1;
   border-radius: 8px;
   background: transparent;
-  color: #92400e;
+  color: #475569;
   font-size: 0.75rem;
   padding: 4px 10px;
   cursor: pointer;
 }
 
 .dc-btn-add:hover {
-  border-color: #f59e0b;
-  color: #b45309;
+  border-color: #2563eb;
+  color: #2563eb;
+  background: #eff6ff;
 }
 
 .dc-btn-icon {
@@ -632,11 +643,11 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #92400e;
+  color: #64748b;
   cursor: pointer;
 }
 
-.dc-btn-icon:hover { background: #fef3c7; color: #78350f; }
+.dc-btn-icon:hover { background: #f1f5f9; color: #334155; }
 
 .dc-btn-danger:hover { background: #fef2f2; color: #b91c1c; }
 
@@ -659,8 +670,8 @@ function chainLabel(node: DiagnosisCallChainNode): string {
   width: 20px;
   height: 20px;
   border-radius: 999px;
-  background: #fde68a;
-  color: #92400e;
+  background: #dbeafe;
+  color: #1d4ed8;
   font-size: 0.7rem;
   font-weight: 700;
 }
@@ -678,15 +689,15 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 }
 
 .dc-confidence {
-  border: 1px solid #fde68a;
+  border: 1px solid #e8e6e3;
   border-radius: 8px;
   padding: 6px 10px 2px;
-  background: #fffdf5;
+  background: #ffffff;
 }
 
 .dc-confidence-value {
   margin-left: auto;
-  color: #d97706;
+  color: #2563eb;
   font-weight: 700;
 }
 
@@ -719,29 +730,29 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 }
 
 .dc-btn-primary {
-  background: #d97706;
+  background: #2563eb;
   color: #ffffff;
 }
 
 .dc-btn-primary:hover:not(:disabled) {
-  background: #b45309;
+  background: #1d4ed8;
   transform: translateY(-1px);
 }
 
 .dc-btn-secondary {
   background: #ffffff;
-  border-color: #fcd34d;
-  color: #78350f;
+  border-color: #e2e8f0;
+  color: #334155;
 }
 
 .dc-btn-secondary:hover:not(:disabled) {
-  background: #fef3c7;
-  border-color: #f59e0b;
+  background: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .dc-btn-link {
   background: transparent;
-  color: #b45309;
+  color: #2563eb;
   padding-left: 2px;
   padding-right: 2px;
 }

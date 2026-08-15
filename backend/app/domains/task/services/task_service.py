@@ -267,7 +267,8 @@ def create_task_record_for_provision(
         git_repo_url=ws.git_repo_url,
         spec_doc_path=spec_doc_path,
         requirement_duration_hours=requirement_duration_hours,
-        status=TaskStatus.PENDING,
+        # 创建即进入准备态：git worktree/clone 未完成前禁止启动任务会话
+        status=TaskStatus.PROVISIONING,
         current_phase="PREPARING",
         error_message=None,
     )
