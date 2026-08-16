@@ -8,8 +8,9 @@ import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
 import { ArrowLeft } from 'lucide-vue-next';
 import AdminGuard from '@/components/management/AdminGuard.vue';
+import ProductBaseReposPanel from '@/components/management/ProductBaseReposPanel.vue';
 import ProductFormModal from '@/components/management/ProductFormModal.vue';
-import ProductRepoBindingPanel from '@/components/management/ProductRepoBindingPanel.vue';
+import ProductVersionsPanel from '@/components/management/ProductVersionsPanel.vue';
 import { getProduct } from '@/services/managementApi';
 import { formatApiError } from '@/utils/error';
 import { useAuthStore } from '@/stores/auth';
@@ -32,6 +33,7 @@ const detail = ref<ProductDetail | null>(null);
 const loading = ref(false);
 
 const showEdit = ref(false);
+const baseReposVisible = ref(false);
 
 const load = async () => {
   loading.value = true;
@@ -72,7 +74,6 @@ const onBindingsChanged = () => {
         </button>
         <h2 v-if="detail" class="mgmt-detail-title">
           {{ detail.name }}
-          <span class="mgmt-version-badge">{{ detail.version_no }}</span>
           <span
             class="mgmt-status-pill"
             :class="detail.status === 'ACTIVE' ? 'green' : 'gray'"
@@ -107,16 +108,14 @@ const onBindingsChanged = () => {
             <dd>{{ detail.code }}</dd>
           </div>
           <div class="mgmt-info-item">
-            <dt>{{ $t('management.product.product_line') }}</dt>
-            <dd>{{ detail.product_line || '-' }}</dd>
+            <dt>{{ $t('management.product.product_type') }}</dt>
+            <dd>{{ detail.product_type === 'CUSTOM'
+              ? $t('management.product.type_custom')
+              : $t('management.product.type_ootb') }}</dd>
           </div>
-          <div class="mgmt-info-item">
-            <dt>{{ $t('management.product.version_no') }}</dt>
-            <dd>{{ detail.version_no || '-' }}</dd>
-          </div>
-          <div class="mgmt-info-item">
-            <dt>{{ $t('management.product.release_date') }}</dt>
-            <dd>{{ detail.release_date ? detail.release_date.slice(0, 10) : '-' }}</dd>
+          <div v-if="detail.product_type === 'CUSTOM'" class="mgmt-info-item full">
+            <dt>{{ $t('management.product.baseline_product') }}</dt>
+            <dd>{{ detail.baseline_product_name || '-' }}</dd>
           </div>
           <div class="mgmt-info-item full">
             <dt>{{ $t('management.product.description') }}</dt>
@@ -125,7 +124,21 @@ const onBindingsChanged = () => {
         </dl>
       </div>
 
-      <ProductRepoBindingPanel
+      <div class="mgmt-card mgmt-compact-card">
+        <div class="mgmt-compact-head">
+          <div>
+            <h3>{{ $t('management.product.base_repos_title') }}</h3>
+            <p class="mgmt-hint">
+              {{ $t('management.product.base_repos_count', { count: detail.base_repos.length }) }}
+            </p>
+          </div>
+          <button class="btn-secondary" @click="baseReposVisible = true">
+            {{ $t('management.product.view_base_repos') }}
+          </button>
+        </div>
+      </div>
+
+      <ProductVersionsPanel
         :product="detail"
         :can-manage="canManage"
         @changed="onBindingsChanged"
@@ -138,6 +151,23 @@ const onBindingsChanged = () => {
         @cancel="showEdit = false"
       />
     </template>
+
+    <Teleport to="body">
+      <div v-if="baseReposVisible" class="mgmt-modal-overlay" @pointerdown.self="baseReposVisible = false">
+        <div class="mgmt-modal mgmt-modal-wide glass-panel">
+          <ProductBaseReposPanel
+            :product="detail"
+            :can-manage="canManage"
+            @changed="onBindingsChanged"
+          />
+          <div class="mgmt-modal-actions">
+            <button class="btn-secondary" @click="baseReposVisible = false">
+              {{ $t('common.close') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -175,20 +205,8 @@ const onBindingsChanged = () => {
 
 /* h2 渐变文字（background-clip: text）会把 -webkit-text-fill-color: transparent
    继承给内部徽标/气泡，覆盖其自身 color，导致文字不可见；此处恢复为 currentColor */
-.mgmt-detail-title .mgmt-version-badge,
 .mgmt-detail-title .mgmt-status-pill {
   -webkit-text-fill-color: currentColor;
-}
-
-.mgmt-version-badge {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: #1d4ed8;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
-  padding: 0.1rem 0.5rem;
 }
 
 .mgmt-mode-badge {
@@ -243,5 +261,26 @@ const onBindingsChanged = () => {
 .w-4 {
   width: 1rem;
   height: 1rem;
+}
+
+.mgmt-compact-card {
+  margin-bottom: 1rem;
+}
+
+.mgmt-compact-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mgmt-compact-head h3 {
+  margin: 0 0 0.25rem;
+}
+
+.mgmt-modal-wide {
+  max-width: 760px;
+  max-height: 88vh;
+  overflow-y: auto;
 }
 </style>

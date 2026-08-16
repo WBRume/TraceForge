@@ -34,6 +34,17 @@ class ProductStatus(str, PyEnum):
     ARCHIVED = "ARCHIVED"
 
 
+class ProductType(str, PyEnum):
+    OOTB = "OOTB"
+    CUSTOM = "CUSTOM"
+
+
+class ProductVersionStatus(str, PyEnum):
+    PLANNED = "PLANNED"
+    ACTIVE = "ACTIVE"
+    EOL = "EOL"
+
+
 class RepositoryType(str, PyEnum):
     OOTB = "OOTB"
     CUSTOM = "CUSTOM"
@@ -68,7 +79,7 @@ def _enum_values(enum_class: type[PyEnum]) -> list[str]:
 
 
 class SddManagementProduct(Base):
-    """A product doubles as its version: it carries version_no and release_date."""
+    """A product evolves through multiple versions (see SddManagementProductVersion)."""
 
     __tablename__ = "mgmt_products"
 
@@ -85,19 +96,145 @@ class SddManagementProduct(Base):
         default=ProductStatus.ACTIVE,
         index=True,
     )
+    product_type = Column(
+        Enum(ProductType, values_callable=_enum_values),
+        nullable=False,
+        default=ProductType.OOTB,
+        index=True,
+    )
+    baseline_product_id = Column(
+        String(36),
+        ForeignKey("mgmt_products.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     creator = relationship("User", foreign_keys=[created_by])
-    repo_bindings = relationship(
+    baseline_product = relationship(
+        "SddManagementProduct",
+        remote_side=[id],
+        foreign_keys=[baseline_product_id],
+        back_populates="custom_products",
+    )
+    custom_products = relationship(
+        "SddManagementProduct",
+        remote_side=[baseline_product_id],
+        foreign_keys=[baseline_product_id],
+        back_populates="baseline_product",
+    )
+    base_repos = relationship(
         "SddManagementProductRepo",
         back_populates="product",
         cascade="all, delete-orphan",
+        order_by="SddManagementProductRepo.created_at.asc()",
+    )
+    versions = relationship(
+        "SddManagementProductVersion",
+        back_populates="product",
+        cascade="all, delete-orphan",
+        order_by="SddManagementProductVersion.created_at.asc()",
     )
     project_links = relationship(
         "SddManagementProjectProduct",
         back_populates="product",
+        cascade="all, delete-orphan",
+    )
+
+
+class SddManagementProductRepo(Base):
+    """Product-level base repository pool.
+
+    A product records the repositories it is built from; versions are created
+    independently afterwards and may inherit this pool or bind version-specific
+    repositories.
+    """
+
+    __tablename__ = "mgmt_product_repos"
+    __table_args__ = (
+        UniqueConstraint("product_id", "repository_id", name="uq_mgmt_product_repos_product_repo"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    product_id = Column(
+        String(36),
+        ForeignKey("mgmt_products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    repository_id = Column(
+        String(36),
+        ForeignKey("mgmt_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    creator = relationship("User", foreign_keys=[created_by])
+    product = relationship("SddManagementProduct", back_populates="base_repos")
+    repository = relationship("SddManagementRepository", back_populates="product_base_bindings")
+
+
+class SddManagementProductVersion(Base):
+    """A product version: products evolve A1 -> A2 -> ..., each version binds
+    its own set of repositories (tag/branch) and carries its own release date."""
+
+    __tablename__ = "mgmt_product_versions"
+    __table_args__ = (
+        UniqueConstraint("product_id", "version_no", name="uq_mgmt_product_versions_product_version"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    product_id = Column(
+        String(36),
+        ForeignKey("mgmt_products.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version_no = Column(String(50), nullable=False)
+    status = Column(
+        Enum(ProductVersionStatus, values_callable=_enum_values),
+        nullable=False,
+        default=ProductVersionStatus.ACTIVE,
+        index=True,
+    )
+    release_date = Column(DateTime, nullable=True)
+    description = Column(Text, nullable=True)
+    baseline_product_version_id = Column(
+        String(36),
+        ForeignKey("mgmt_product_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    creator = relationship("User", foreign_keys=[created_by])
+    product = relationship("SddManagementProduct", back_populates="versions")
+    baseline_version = relationship(
+        "SddManagementProductVersion",
+        remote_side=[id],
+        foreign_keys=[baseline_product_version_id],
+        back_populates="custom_versions",
+    )
+    custom_versions = relationship(
+        "SddManagementProductVersion",
+        remote_side=[baseline_product_version_id],
+        foreign_keys=[baseline_product_version_id],
+        back_populates="baseline_version",
+    )
+    repo_bindings = relationship(
+        "SddManagementProductVersionRepo",
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
+    baseline_exclusions = relationship(
+        "SddManagementProductVersionBaselineExclusion",
+        back_populates="version",
         cascade="all, delete-orphan",
     )
 
@@ -154,25 +291,34 @@ class SddManagementRepository(Base):
 
     creator = relationship("User", foreign_keys=[created_by])
     group = relationship("SddManagementRepoGroup", back_populates="repositories")
-    product_bindings = relationship(
+    product_base_bindings = relationship(
         "SddManagementProductRepo",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+    )
+    version_bindings = relationship(
+        "SddManagementProductVersionRepo",
         back_populates="repository",
         cascade="all, delete-orphan",
     )
 
 
-class SddManagementProductRepo(Base):
-    """A product binds a repository to a specific git branch or tag."""
+class SddManagementProductVersionRepo(Base):
+    """A product version binds a repository to a specific git branch or tag."""
 
-    __tablename__ = "mgmt_product_repos"
+    __tablename__ = "mgmt_product_version_repos"
     __table_args__ = (
-        UniqueConstraint("product_id", "repository_id", name="uq_mgmt_product_repos_product_repo"),
+        UniqueConstraint(
+            "product_version_id",
+            "repository_id",
+            name="uq_mgmt_product_version_repos_version_repo",
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    product_id = Column(
+    product_version_id = Column(
         String(36),
-        ForeignKey("mgmt_products.id", ondelete="CASCADE"),
+        ForeignKey("mgmt_product_versions.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -192,8 +338,41 @@ class SddManagementProductRepo(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     creator = relationship("User", foreign_keys=[created_by])
-    product = relationship("SddManagementProduct", back_populates="repo_bindings")
-    repository = relationship("SddManagementRepository", back_populates="product_bindings")
+    version = relationship("SddManagementProductVersion", back_populates="repo_bindings")
+    repository = relationship("SddManagementRepository", back_populates="version_bindings")
+
+
+class SddManagementProductVersionBaselineExclusion(Base):
+    """A custom product version can exclude a repository from its baseline version."""
+
+    __tablename__ = "mgmt_product_version_baseline_exclusions"
+    __table_args__ = (
+        UniqueConstraint(
+            "product_version_id",
+            "repository_id",
+            name="uq_mgmt_product_version_baseline_exclusion",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    product_version_id = Column(
+        String(36),
+        ForeignKey("mgmt_product_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    repository_id = Column(
+        String(36),
+        ForeignKey("mgmt_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_by = Column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    creator = relationship("User", foreign_keys=[created_by])
+    version = relationship("SddManagementProductVersion", back_populates="baseline_exclusions")
+    repository = relationship("SddManagementRepository")
 
 
 class SddManagementProject(Base):
@@ -251,6 +430,12 @@ class SddManagementProjectProduct(Base):
         nullable=False,
         index=True,
     )
+    product_version_id = Column(
+        String(36),
+        ForeignKey("mgmt_product_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     delivery_status = Column(
         Enum(ProjectLifecycleStatus, values_callable=_enum_values, name="projectlifecyclestatus"),
         nullable=False,
@@ -264,6 +449,7 @@ class SddManagementProjectProduct(Base):
     creator = relationship("User", foreign_keys=[created_by])
     project = relationship("SddManagementProject", back_populates="products")
     product = relationship("SddManagementProduct", back_populates="project_links")
+    version = relationship("SddManagementProductVersion")
 
 
 class SddManagementProjectRelease(Base):
@@ -345,15 +531,20 @@ class SddManagementProjectReleaseRepo(Base):
 
 __all__ = [
     "ProductStatus",
+    "ProductType",
+    "ProductVersionStatus",
     "RepositoryType",
     "RepoRefType",
     "ProjectLifecycleStatus",
     "ReleaseStatus",
     "ReleaseRepoKind",
     "SddManagementProduct",
+    "SddManagementProductRepo",
+    "SddManagementProductVersion",
+    "SddManagementProductVersionBaselineExclusion",
     "SddManagementRepoGroup",
     "SddManagementRepository",
-    "SddManagementProductRepo",
+    "SddManagementProductVersionRepo",
     "SddManagementProject",
     "SddManagementProjectProduct",
     "SddManagementProjectRelease",

@@ -76,7 +76,12 @@ const productOptions = computed<Option[]>(() => [
 ])
 
 const productDetail = ref<ProductDetail | null>(null)
-const ootbBindings = computed(() => productDetail.value?.repo_bindings ?? [])
+// OOTB 仓库预览：产品最新版本的仓库绑定
+const ootbBindings = computed(() => {
+  const versions = productDetail.value?.versions ?? []
+  if (versions.length === 0) return []
+  return versions[versions.length - 1].repo_bindings
+})
 
 const loadProducts = async () => {
   try {

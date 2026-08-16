@@ -15,6 +15,7 @@ from app.domains.management.schemas.management import (
     ProjectCreate,
     ProjectProductCreate,
     ProjectProductTransitionRequest,
+    ProjectProductVersionUpdate,
     ProjectReleaseCreate,
     ProjectReleaseUpdate,
     ProjectUpdate,
@@ -118,7 +119,10 @@ def delete_project(
     project = project_service.get_project(db, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    project_service.delete_project(db, project)
+    try:
+        project_service.delete_project(db, project)
+    except project_service.ProjectServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
     audit_log(
         action="delete_project",
         outcome="success",
@@ -182,6 +186,7 @@ def add_project_product(
             db,
             project,
             product_id=data.product_id,
+            product_version_id=data.product_version_id,
             creator_id=current_user.id,
         )
         return project_service.serialize_project_product(link)
@@ -224,6 +229,29 @@ def remove_project_product(
         raise HTTPException(status_code=404, detail="Project product not found")
     project_service.remove_project_product(db, link)
     return {"msg": "Product removed from project"}
+
+
+@router.put("/{project_id}/products/{product_id}/version")
+def update_project_product_version(
+    project_id: str,
+    product_id: str,
+    data: ProjectProductVersionUpdate,
+    current_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    link = project_service.get_project_product(db, project_id, product_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Project product not found")
+    try:
+        updated = project_service.update_project_product_version(
+            db,
+            link,
+            product_version_id=data.product_version_id,
+            actor_user_id=current_user.id,
+        )
+        return project_service.serialize_project_product(updated)
+    except project_service.ProjectServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 # ── Releases ───────────────────────────────────────────────────────────────

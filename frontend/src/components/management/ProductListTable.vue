@@ -38,7 +38,6 @@ const formatDate = (value: string): string => {
           <th>{{ $t('management.common.name') }}</th>
           <th>{{ $t('management.common.code') }}</th>
           <th>{{ $t('management.product.version_no') }}</th>
-          <th>{{ $t('management.product.product_line') }}</th>
           <th>{{ $t('management.common.status') }}</th>
           <th>{{ $t('management.common.created_at') }}</th>
           <th>{{ $t('management.common.actions') }}</th>
@@ -49,7 +48,6 @@ const formatDate = (value: string): string => {
           <td>{{ item.name }}</td>
           <td>{{ item.code }}</td>
           <td>{{ item.version_no || '-' }}</td>
-          <td>{{ item.product_line || '-' }}</td>
           <td>
             <span
               class="mgmt-status-pill"

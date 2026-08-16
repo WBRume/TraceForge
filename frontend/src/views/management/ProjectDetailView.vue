@@ -115,7 +115,6 @@ const confirmRemoveRelease = async () => {
         <p class="mgmt-subtitle">
           <span class="mgmt-code">{{ project?.code ?? '' }}</span>
           <template v-if="project?.customer"> · {{ project.customer }}</template>
-          <template v-if="project?.organization"> · {{ project.organization }}</template>
           <span v-if="project" class="mgmt-mode-badge" :class="editMode ? 'edit' : 'view'">
             {{ editMode ? $t('management.common.edit_mode') : $t('management.common.view_mode') }}
           </span>

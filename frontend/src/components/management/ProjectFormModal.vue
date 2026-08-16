@@ -26,13 +26,11 @@ const form = reactive<{
   name: string;
   code: string;
   customer: string;
-  organization: string;
   description: string;
 }>({
   name: '',
   code: '',
   customer: '',
-  organization: '',
   description: '',
 })
 
@@ -42,7 +40,6 @@ const resetForm = () => {
   form.name = props.project?.name ?? ''
   form.code = props.project?.code ?? ''
   form.customer = props.project?.customer ?? ''
-  form.organization = props.project?.organization ?? ''
   form.description = props.project?.description ?? ''
 }
 
@@ -69,7 +66,6 @@ const handleSave = async () => {
       name: form.name.trim(),
       code: form.code.trim(),
       customer: toNullable(form.customer),
-      organization: toNullable(form.organization),
       description: toNullable(form.description),
     }
     if (isEditing.value) {
@@ -111,11 +107,6 @@ const handleCancel = () => {
         <div class="mgmt-field">
           <label>{{ $t('management.project.customer') }}</label>
           <input v-model="form.customer" class="mgmt-input" type="text" />
-        </div>
-
-        <div class="mgmt-field">
-          <label>{{ $t('management.project.organization') }}</label>
-          <input v-model="form.organization" class="mgmt-input" type="text" />
         </div>
 
         <div class="mgmt-field full">

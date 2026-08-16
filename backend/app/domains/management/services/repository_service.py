@@ -10,6 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.domains.management.models.management import (
     RepositoryType,
+    SddManagementProduct,
+    SddManagementProductRepo,
+    SddManagementProductVersion,
+    SddManagementProductVersionRepo,
+    SddManagementProject,
+    SddManagementProjectRelease,
+    SddManagementProjectReleaseRepo,
     SddManagementRepoGroup,
     SddManagementRepository,
 )
@@ -28,6 +35,28 @@ _SLUG_PATTERN = re.compile(r"[^a-z0-9-]+")
 def build_repo_slug(name: str) -> str:
     normalized = _SLUG_PATTERN.sub("-", str(name or "").strip().lower()).strip("-")
     return normalized[:120] or "repo"
+
+
+def _collect_group_subtree_ids(db: Session, group_id: str) -> List[str]:
+    """Return the given group id and all descendant group ids."""
+    groups = db.query(SddManagementRepoGroup).all()
+    children_by_parent: Dict[str, List[str]] = {}
+    for group in groups:
+        if group.parent_id:
+            children_by_parent.setdefault(group.parent_id, []).append(group.id)
+
+    group_ids: List[str] = [group_id]
+    visited = {group_id}
+    stack = [group_id]
+    while stack:
+        parent_id = stack.pop()
+        for child_id in children_by_parent.get(parent_id, []):
+            if child_id in visited:
+                continue
+            visited.add(child_id)
+            group_ids.append(child_id)
+            stack.append(child_id)
+    return group_ids
 
 
 def _normalize_repo_type(value: str) -> RepositoryType:
@@ -81,7 +110,8 @@ def list_repositories(
     if repo_type:
         query = query.filter(SddManagementRepository.repo_type == _normalize_repo_type(repo_type))
     if group_id:
-        query = query.filter(SddManagementRepository.group_id == group_id)
+        group_ids = _collect_group_subtree_ids(db, group_id)
+        query = query.filter(SddManagementRepository.group_id.in_(group_ids))
     if repository_id:
         query = query.filter(SddManagementRepository.id == repository_id)
     if unassigned_only:
@@ -186,7 +216,75 @@ def update_repository(
     return repository
 
 
+def _repository_reference_lines(
+    db: Session,
+    repository: SddManagementRepository,
+) -> List[str]:
+    """Return human-readable references to a repository from products/projects."""
+    lines: List[str] = []
+
+    base_refs = (
+        db.query(SddManagementProductRepo, SddManagementProduct)
+        .join(SddManagementProduct, SddManagementProduct.id == SddManagementProductRepo.product_id)
+        .filter(SddManagementProductRepo.repository_id == repository.id)
+        .all()
+    )
+    for _, product in base_refs:
+        lines.append(f"product '{product.name}' base repositories")
+
+    product_refs = (
+        db.query(
+            SddManagementProductVersionRepo,
+            SddManagementProductVersion,
+            SddManagementProduct,
+        )
+        .join(
+            SddManagementProductVersion,
+            SddManagementProductVersion.id == SddManagementProductVersionRepo.product_version_id,
+        )
+        .join(
+            SddManagementProduct,
+            SddManagementProduct.id == SddManagementProductVersion.product_id,
+        )
+        .filter(SddManagementProductVersionRepo.repository_id == repository.id)
+        .all()
+    )
+    for _, version, product in product_refs:
+        lines.append(f"product '{product.name}' version '{version.version_no}'")
+
+    project_refs = (
+        db.query(
+            SddManagementProjectReleaseRepo,
+            SddManagementProjectRelease,
+            SddManagementProject,
+        )
+        .join(
+            SddManagementProjectRelease,
+            SddManagementProjectRelease.id == SddManagementProjectReleaseRepo.release_id,
+        )
+        .join(
+            SddManagementProject,
+            SddManagementProject.id == SddManagementProjectRelease.project_id,
+        )
+        .filter(SddManagementProjectReleaseRepo.repository_id == repository.id)
+        .all()
+    )
+    for _, release, project in project_refs:
+        lines.append(f"project '{project.name}' release '{release.release_no}'")
+
+    return lines
+
+
 def delete_repository(db: Session, repository: SddManagementRepository) -> None:
+    references = _repository_reference_lines(db, repository)
+    if references:
+        raise RepositoryServiceError(
+            "Cannot delete repository '{name}' because it is still referenced by: {refs}".format(
+                name=repository.name,
+                refs="; ".join(references),
+            ),
+            status_code=409,
+        )
     db.delete(repository)
     db.commit()
 

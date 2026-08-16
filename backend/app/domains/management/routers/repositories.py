@@ -135,7 +135,10 @@ def delete_repository(
     repository = repository_service.get_repository(db, repository_id)
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
-    repository_service.delete_repository(db, repository)
+    try:
+        repository_service.delete_repository(db, repository)
+    except repository_service.RepositoryServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
     audit_log(
         action="delete_repository",
         outcome="success",

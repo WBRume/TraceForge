@@ -202,7 +202,14 @@ const goToPage = (target: number) => {
             class="mgmt-repo-type-select"
           />
           <AdminGuard>
-            <button class="btn-primary" @click="openCreate">
+            <button
+              class="btn-primary"
+              :disabled="!selectedGroupId"
+              :title="selectedGroupId
+                ? $t('management.repository.create')
+                : $t('management.repository.create_requires_group')"
+              @click="openCreate"
+            >
               <Plus class="mgmt-create-icon" />
               {{ $t('management.repository.create') }}
             </button>

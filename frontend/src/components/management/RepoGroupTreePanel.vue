@@ -32,6 +32,7 @@ const searchKeyword = ref('')
 const formVisible = ref(false)
 const editingGroup = ref<{ id: string; name: string; parent_id: string | null } | null>(null)
 const defaultParentId = ref<string | null>(null)
+const lockParent = ref(false)
 
 const deletingGroup = ref<{ id: string; name: string; parent_id: string | null } | null>(null)
 const deleteLoading = ref(false)
@@ -57,15 +58,24 @@ const handleChanged = () => {
   emit('changed')
 }
 
+const handleGroupSaved = () => {
+  formVisible.value = false
+  handleChanged()
+}
+
 const openCreate = () => {
   editingGroup.value = null
+  // 从树中选中的仓库组直接作为新组的上级组，且不允许变更；
+  // 未选中任何组时（且未选中仓库）允许自由选择上级组。
   defaultParentId.value = props.selectedGroupId
+  lockParent.value = props.selectedGroupId !== null && !props.selectedRepoId
   formVisible.value = true
 }
 
 const openEdit = (group: { id: string; name: string; parent_id: string | null }) => {
   editingGroup.value = group
   defaultParentId.value = null
+  lockParent.value = false
   formVisible.value = true
 }
 
@@ -79,6 +89,7 @@ const handleDeleteConfirm = async () => {
   try {
     await deleteRepoGroup(deletingGroup.value.id)
     deletingGroup.value = null
+    ElMessage.success(t('common.success'))
     handleChanged()
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
@@ -87,28 +98,31 @@ const handleDeleteConfirm = async () => {
   }
 }
 
-// 树形搜索过滤：组名匹配时保留整棵子树；否则仅保留名称匹配的仓库与匹配的子孙组
+// 树形搜索过滤：仅按仓库组名称匹配；命中的组展示整棵子树，
+// 未命中的祖先组仅作为路径保留（不展示其直属仓库）。
 const filteredTree = computed<RepoGroupTreeNode[]>(() => {
   const kw = searchKeyword.value.trim().toLowerCase()
   if (!kw) return tree.value
   const matchText = (text: string): boolean =>
     String(text || '').toLowerCase().includes(kw)
   const filterNode = (node: RepoGroupTreeNode): RepoGroupTreeNode | null => {
-    const nameMatch = matchText(node.name)
-    const repos = (node.repositories || []).filter((repo) => matchText(repo.name))
+    if (matchText(node.name)) {
+      return { ...node }
+    }
     const children: RepoGroupTreeNode[] = []
     for (const child of node.children || []) {
       const filtered = filterNode(child)
       if (filtered) children.push(filtered)
     }
-    if (!nameMatch && repos.length === 0 && children.length === 0) return null
+    if (children.length === 0) return null
     return {
       ...node,
-      repositories: nameMatch ? (node.repositories || []) : repos,
+      repositories: [],
       children,
     }
   }
   return tree.value
+    .filter((node) => !kw || node.id !== null)
     .map(filterNode)
     .filter((node): node is RepoGroupTreeNode => node !== null)
 })
@@ -124,7 +138,11 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
       <button
         v-if="canManage"
         class="btn-ghost mgmt-repo-group-add"
-        :title="$t('management.repo_group.add')"
+        :class="{ 'is-disabled': Boolean(selectedRepoId) }"
+        :disabled="Boolean(selectedRepoId)"
+        :title="selectedRepoId
+          ? $t('management.repo_group.add_requires_group')
+          : $t('management.repo_group.add')"
         @click="openCreate"
       >
         <Plus class="mgmt-repo-group-add-icon" />
@@ -196,8 +214,9 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
       :show="formVisible"
       :group="editingGroup"
       :parent-id="defaultParentId"
+      :lock-parent="lockParent"
       :groups="groupedNodes"
-      @saved="handleChanged"
+      @saved="handleGroupSaved"
       @cancel="formVisible = false"
     />
 
@@ -241,6 +260,12 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
   gap: 0.35rem;
   font-size: 0.8rem;
   padding: 0.35rem 0.6rem;
+}
+
+.mgmt-repo-group-add.is-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .mgmt-repo-group-add-icon {

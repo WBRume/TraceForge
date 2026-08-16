@@ -6,6 +6,7 @@
 /docs/
 /test/
 /backend/venv/
+/backend/.venv/
 /backend/logs/
 /backend/storage/
 /backend/tmp/
@@ -24,3 +25,30 @@ backend/scratch/
 /backend/app/uploads/
 /.trae/
 /uploads/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Editors / OS
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+
+# Logs
+*.log
