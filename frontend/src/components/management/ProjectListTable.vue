@@ -25,7 +25,6 @@ const emit = defineEmits<{
           <th>{{ $t('management.project.name') }}</th>
           <th>{{ $t('management.project.code') }}</th>
           <th>{{ $t('management.project.customer') }}</th>
-          <th>{{ $t('management.project.organization') }}</th>
           <th>{{ $t('management.project.lifecycle_title') }}</th>
           <th>{{ $t('management.project.products_title') }}</th>
           <th>{{ $t('management.common.actions') }}</th>
@@ -36,7 +35,6 @@ const emit = defineEmits<{
           <td>{{ item.name }}</td>
           <td class="mgmt-code-cell">{{ item.code }}</td>
           <td>{{ item.customer || '-' }}</td>
-          <td>{{ item.organization || '-' }}</td>
           <td><LifecycleBadge :status="item.lifecycle_status" /></td>
           <td>{{ item.product_count ?? '-' }}</td>
           <td>

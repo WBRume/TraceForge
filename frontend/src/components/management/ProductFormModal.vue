@@ -1,15 +1,15 @@
 <!--
-ProductFormModal: create / edit product form. Product carries its own
-version_no / release_date and is bound to repositories directly.
+ProductFormModal: create / edit product form. Products start without versions;
+versions are created later from the product's base repository pool.
 -->
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
 import BaseSelect from '@/components/BaseSelect.vue';
-import { createProduct, updateProduct } from '@/services/managementApi';
+import { createProduct, listProducts, updateProduct } from '@/services/managementApi';
 import { formatApiError } from '@/utils/error';
-import type { Product, ProductStatus } from '@/types/management';
+import type { Product, ProductStatus, ProductType } from '@/types/management';
 
 const props = defineProps<{
   show: boolean;
@@ -28,14 +28,31 @@ const isEdit = () => Boolean(props.product);
 const form = reactive({
   name: '',
   code: '',
-  product_line: '',
-  version_no: '',
-  release_date: '',
   description: '',
   status: 'ACTIVE' as ProductStatus,
+  product_type: 'OOTB' as ProductType,
+  baseline_product_id: null as string | null,
 });
 
 const loading = ref(false);
+const baselineProducts = ref<Product[]>([]);
+
+const typeOptions = (): { label: string; value: ProductType }[] => [
+  { label: t('management.product.type_ootb'), value: 'OOTB' },
+  { label: t('management.product.type_custom'), value: 'CUSTOM' },
+];
+
+const baselineOptions = (): { label: string; value: string }[] =>
+  baselineProducts.value.map((p) => ({ label: p.name, value: p.id }));
+
+const loadBaselineProducts = async () => {
+  try {
+    const res = await listProducts({ page_size: 100, status: 'ACTIVE' });
+    baselineProducts.value = (res.items ?? []).filter((p) => p.product_type === 'OOTB');
+  } catch {
+    baselineProducts.value = [];
+  }
+};
 
 const statusOptions = (): { label: string; value: ProductStatus }[] => [
   { label: t('management.product.status_active'), value: 'ACTIVE' },
@@ -48,11 +65,14 @@ watch(
     if (!visible) return;
     form.name = props.product?.name ?? '';
     form.code = props.product?.code ?? '';
-    form.product_line = props.product?.product_line ?? '';
-    form.version_no = props.product?.version_no ?? '';
-    form.release_date = props.product?.release_date?.slice(0, 10) ?? '';
+    // 产品创建时不带版本；版本在研发/发布流程中另行创建。
     form.description = props.product?.description ?? '';
     form.status = props.product?.status ?? 'ACTIVE';
+    form.product_type = props.product?.product_type ?? 'OOTB';
+    form.baseline_product_id = props.product?.baseline_product_id ?? null;
+    if (visible) {
+      void loadBaselineProducts();
+    }
   },
 );
 
@@ -71,16 +91,22 @@ const submit = async () => {
     const payload = {
       name: form.name.trim(),
       code: form.code.trim(),
-      product_line: form.product_line.trim() || null,
-      version_no: form.version_no.trim() || undefined,
-      release_date: form.release_date || null,
       description: form.description.trim() || null,
+      product_type: form.product_type,
+      baseline_product_id: form.product_type === 'CUSTOM' ? form.baseline_product_id : null,
     };
     let saved: Product;
     if (props.product) {
-      saved = await updateProduct(props.product.id, { ...payload, version_no: form.version_no.trim(), status: form.status });
+      saved = await updateProduct(props.product.id, {
+        name: payload.name,
+        code: payload.code,
+        description: payload.description,
+        status: form.status,
+        product_type: payload.product_type,
+        baseline_product_id: payload.baseline_product_id,
+      });
     } else {
-      saved = await createProduct({ ...payload, version_no: form.version_no.trim(), status: form.status });
+      saved = await createProduct(payload);
     }
     emit('saved', saved);
   } catch (err) {
@@ -106,16 +132,12 @@ const submit = async () => {
           <input v-model="form.code" class="mgmt-input" type="text" />
         </div>
         <div class="mgmt-field">
-          <label>{{ $t('management.product.product_line') }}</label>
-          <input v-model="form.product_line" class="mgmt-input" type="text" />
+          <label>{{ $t('management.product.product_type') }}</label>
+          <BaseSelect v-model="form.product_type" :options="typeOptions()" />
         </div>
-        <div class="mgmt-field">
-          <label>{{ $t('management.product.version_no') }}</label>
-          <input v-model="form.version_no" class="mgmt-input" type="text" />
-        </div>
-        <div class="mgmt-field">
-          <label>{{ $t('management.product.release_date') }}</label>
-          <input v-model="form.release_date" class="mgmt-input" type="date" />
+        <div v-if="form.product_type === 'CUSTOM'" class="mgmt-field">
+          <label>{{ $t('management.product.baseline_product') }}</label>
+          <BaseSelect v-model="form.baseline_product_id" :options="baselineOptions()" :placeholder="$t('management.product.select_baseline_product')" />
         </div>
         <div v-if="isEdit()" class="mgmt-field">
           <label>{{ $t('management.common.status') }}</label>

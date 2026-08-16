@@ -3,9 +3,11 @@ import type {
   Paginated,
   Product,
   ProductDetail,
+  ProductVersion,
   Project,
   ProjectDetail,
   ProjectLifecycleStatus,
+  ProjectProduct,
   ProjectRelease,
   ProjectRepoSetItem,
   RemoteRefsPayload,
@@ -19,6 +21,7 @@ import type {
 export const listProducts = async (params: {
   keyword?: string
   status?: string
+  include_versions?: boolean
   page?: number
   page_size?: number
 } = {}): Promise<Paginated<Product>> => {
@@ -35,10 +38,10 @@ export const createProduct = async (payload: {
   name: string
   code: string
   product_line?: string | null
-  version_no?: string
-  release_date?: string | null
   description?: string | null
   status?: string
+  product_type?: string
+  baseline_product_id?: string | null
 }): Promise<Product> => {
   const res = await api.post('/management/products', payload)
   return res.data as Product
@@ -48,10 +51,10 @@ export const updateProduct = async (productId: string, payload: Partial<{
   name: string
   code: string
   product_line: string | null
-  version_no: string
-  release_date: string | null
   description: string | null
   status: string
+  product_type: string
+  baseline_product_id: string | null
 }>): Promise<Product> => {
   const res = await api.put('/management/products/' + productId, payload)
   return res.data as Product
@@ -59,6 +62,22 @@ export const updateProduct = async (productId: string, payload: Partial<{
 
 export const deleteProduct = async (productId: string): Promise<void> => {
   await api.delete('/management/products/' + productId)
+}
+
+export const addProductBaseRepo = async (productId: string, repositoryId: string): Promise<{
+  id: string
+  product_id: string
+  repository_id: string
+  repository_name: string | null
+}> => {
+  const res = await api.post('/management/products/' + productId + '/base-repos', {
+    repository_id: repositoryId,
+  })
+  return res.data
+}
+
+export const removeProductBaseRepo = async (productId: string, repositoryId: string): Promise<void> => {
+  await api.delete('/management/products/' + productId + '/base-repos/' + repositoryId)
 }
 
 export const bindProductRepo = async (productId: string, payload: {
@@ -72,6 +91,88 @@ export const bindProductRepo = async (productId: string, payload: {
 
 export const unbindProductRepo = async (productId: string, repositoryId: string): Promise<void> => {
   await api.delete('/management/products/' + productId + '/repos/' + repositoryId)
+}
+
+// ── Product versions ──────────────────────────────────────────────────────
+
+export const createProductVersion = async (productId: string, payload: {
+  version_no: string
+  status?: string
+  release_date?: string | null
+  description?: string | null
+  from_version_id?: string | null
+  baseline_product_version_id?: string | null
+  inherit_product_repos?: boolean
+  inherit_ref_type?: string | null
+  inherit_ref_name?: string | null
+}): Promise<ProductVersion> => {
+  const res = await api.post('/management/products/' + productId + '/versions', payload)
+  return res.data as ProductVersion
+}
+
+export const updateProductVersion = async (productId: string, versionId: string, payload: Partial<{
+  version_no: string
+  status: string
+  release_date: string | null
+  description: string | null
+}>): Promise<ProductVersion> => {
+  const res = await api.put('/management/products/' + productId + '/versions/' + versionId, payload)
+  return res.data as ProductVersion
+}
+
+export const deleteProductVersion = async (productId: string, versionId: string): Promise<void> => {
+  await api.delete('/management/products/' + productId + '/versions/' + versionId)
+}
+
+export const bindVersionRepo = async (productId: string, versionId: string, payload: {
+  repository_id: string
+  ref_type: string
+  ref_name: string
+}): Promise<{ id: string; product_id: string; product_version_id: string; repository_id: string; ref_type: string; ref_name: string }> => {
+  const res = await api.post('/management/products/' + productId + '/versions/' + versionId + '/repos', payload)
+  return res.data
+}
+
+export const updateVersionRepoRefsBatch = async (
+  productId: string,
+  versionId: string,
+  payload: { ref_type: string; ref_name: string; scope?: string },
+): Promise<{ updated_count: number; items: { id: string; product_version_id: string; repository_id: string; ref_type: string; ref_name: string }[] }> => {
+  const res = await api.post('/management/products/' + productId + '/versions/' + versionId + '/repos/batch-ref', payload)
+  return res.data
+}
+
+export const updateVersionRepoRef = async (
+  productId: string,
+  versionId: string,
+  repositoryId: string,
+  payload: { ref_type: string; ref_name: string },
+): Promise<{ id: string; product_id: string; product_version_id: string; repository_id: string; ref_type: string; ref_name: string }> => {
+  const res = await api.put('/management/products/' + productId + '/versions/' + versionId + '/repos/' + repositoryId, payload)
+  return res.data
+}
+
+export const unbindVersionRepo = async (productId: string, versionId: string, repositoryId: string): Promise<void> => {
+  await api.delete('/management/products/' + productId + '/versions/' + versionId + '/repos/' + repositoryId)
+}
+
+export const addBaselineExclusion = async (
+  productId: string,
+  versionId: string,
+  repositoryId: string,
+): Promise<{ id: string; product_version_id: string; repository_id: string }> => {
+  const res = await api.post('/management/products/' + productId + '/versions/' + versionId + '/baseline-exclusions', {
+    repository_id: repositoryId,
+  })
+  return res.data
+}
+
+export const removeBaselineExclusion = async (
+  productId: string,
+  versionId: string,
+  repositoryId: string,
+): Promise<void> => {
+  await api.delete('/management/products/' + productId + '/versions/' + versionId + '/baseline-exclusions/' + repositoryId)
 }
 
 // ── Repositories / repo groups ────────────────────────────────────────────
@@ -224,8 +325,11 @@ export const getProjectRepoSet = async (projectId: string, productIds: string[])
   return res.data
 }
 
-export const addProjectProduct = async (projectId: string, productId: string): Promise<{ id: string; project_id: string; product_id: string }> => {
-  const res = await api.post('/management/projects/' + projectId + '/products', { product_id: productId })
+export const addProjectProduct = async (projectId: string, productId: string, productVersionId?: string): Promise<{ id: string; project_id: string; product_id: string }> => {
+  const res = await api.post('/management/projects/' + projectId + '/products', {
+    product_id: productId,
+    product_version_id: productVersionId,
+  })
   return res.data
 }
 
@@ -238,6 +342,13 @@ export const transitionProjectProductDelivery = async (projectId: string, produc
     target_status: targetStatus,
   })
   return res.data
+}
+
+export const updateProjectProductVersion = async (projectId: string, productId: string, productVersionId: string): Promise<ProjectProduct> => {
+  const res = await api.put('/management/projects/' + projectId + '/products/' + productId + '/version', {
+    product_version_id: productVersionId,
+  })
+  return res.data as ProjectProduct
 }
 
 export const createProjectRelease = async (projectId: string, payload: {

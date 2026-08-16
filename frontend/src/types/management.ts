@@ -1,4 +1,6 @@
 export type ProductStatus = 'ACTIVE' | 'ARCHIVED'
+export type ProductType = 'OOTB' | 'CUSTOM'
+export type ProductVersionStatus = 'PLANNED' | 'ACTIVE' | 'EOL'
 export type RepositoryType = 'OOTB' | 'CUSTOM'
 export type RepoRefType = 'BRANCH' | 'TAG'
 export type ProjectLifecycleStatus = 'INITIATED' | 'DEVELOPING' | 'DELIVERING' | 'MAINTAINING' | 'RETIRED'
@@ -12,6 +14,17 @@ export interface Paginated<T> {
   page_size: number
 }
 
+export interface ProductBaseRepo {
+  id: string
+  product_id: string
+  repository_id: string
+  repository_name: string
+  git_url: string | null
+  repo_type: RepositoryType | null
+  default_branch: string | null
+  created_at: string
+}
+
 export interface ProductRepoBinding {
   id: string
   repository_id: string
@@ -23,6 +36,30 @@ export interface ProductRepoBinding {
   created_at: string
 }
 
+export interface ProductVersion {
+  id: string
+  product_id: string
+  version_no: string
+  status: ProductVersionStatus
+  release_date: string | null
+  description: string | null
+  baseline_product_version_id: string | null
+  baseline_version_no: string | null
+  baseline_product_name: string | null
+  created_at: string
+  updated_at: string | null
+}
+
+export interface EffectiveRepoBinding extends ProductRepoBinding {
+  source: 'baseline' | 'custom' | 'custom_override'
+  default_branch: string | null
+}
+
+export interface ProductVersionDetail extends ProductVersion {
+  repo_bindings: ProductRepoBinding[]
+  effective_repo_bindings: EffectiveRepoBinding[]
+}
+
 export interface Product {
   id: string
   name: string
@@ -32,12 +69,18 @@ export interface Product {
   release_date: string | null
   description: string | null
   status: ProductStatus
+  product_type: ProductType
+  baseline_product_id: string | null
+  baseline_product_name: string | null
   created_at: string
   updated_at: string | null
+  /** Present when listProducts is called with include_versions=true. */
+  versions?: ProductVersion[]
 }
 
 export interface ProductDetail extends Product {
-  repo_bindings: ProductRepoBinding[]
+  base_repos: ProductBaseRepo[]
+  versions: ProductVersionDetail[]
 }
 
 export interface Repository {
@@ -86,6 +129,7 @@ export interface ProjectProduct {
   id: string
   project_id: string
   product_id: string
+  product_version_id: string | null
   product_name: string | null
   product_code: string | null
   product_version_no: string | null
@@ -150,4 +194,12 @@ export const LIFECYCLE_FLOW: Record<ProjectLifecycleStatus, ProjectLifecycleStat
   DELIVERING: 'MAINTAINING',
   MAINTAINING: 'RETIRED',
   RETIRED: null,
+}
+
+export const LIFECYCLE_PREV: Record<ProjectLifecycleStatus, ProjectLifecycleStatus | null> = {
+  INITIATED: null,
+  DEVELOPING: 'INITIATED',
+  DELIVERING: 'DEVELOPING',
+  MAINTAINING: 'DELIVERING',
+  RETIRED: 'MAINTAINING',
 }

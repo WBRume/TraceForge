@@ -11,10 +11,12 @@ const props = withDefaults(defineProps<{
   show: boolean;
   group?: { id: string; name: string; parent_id: string | null } | null;
   parentId?: string | null;
+  lockParent?: boolean;
   groups: RepoGroupTreeNode[];
 }>(), {
   group: null,
   parentId: null,
+  lockParent: false,
   groups: () => [],
 })
 
@@ -95,6 +97,7 @@ const handleSave = async () => {
         parent_id: form.parent_id,
       })
     }
+    ElMessage.success(t('common.success'))
     emit('saved')
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
@@ -117,13 +120,20 @@ const handleCancel = () => {
 
         <div class="mgmt-form-grid">
           <div class="mgmt-field full">
-            <label>{{ $t('management.repo_group.name') }}</label>
-            <input v-model="form.name" class="mgmt-input" type="text" />
+            <label>{{ $t('management.repo_group.parent') }}</label>
+            <BaseSelect
+              v-model="form.parent_id"
+              :options="parentOptions"
+              :disabled="isEditing ? false : props.lockParent"
+            />
+            <p v-if="!isEditing && props.lockParent" class="mgmt-hint">
+              {{ $t('management.repo_group.parent_locked_hint') }}
+            </p>
           </div>
 
           <div class="mgmt-field full">
-            <label>{{ $t('management.repo_group.parent') }}</label>
-            <BaseSelect v-model="form.parent_id" :options="parentOptions" />
+            <label>{{ $t('management.repo_group.name') }}</label>
+            <input v-model="form.name" class="mgmt-input" type="text" />
           </div>
         </div>
 

@@ -2,12 +2,12 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ArrowRight } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight } from 'lucide-vue-next'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import LifecycleBadge from '@/components/management/LifecycleBadge.vue'
 import { transitionProjectLifecycle } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
-import { LIFECYCLE_FLOW } from '@/types/management'
+import { LIFECYCLE_FLOW, LIFECYCLE_PREV } from '@/types/management'
 import type { Project, ProjectDetail, ProjectLifecycleStatus } from '@/types/management'
 
 const props = defineProps<{
@@ -45,25 +45,42 @@ const nextStatus = computed<ProjectLifecycleStatus | null>(
   () => LIFECYCLE_FLOW[props.project.lifecycle_status] ?? null
 )
 
+const prevStatus = computed<ProjectLifecycleStatus | null>(
+  () => LIFECYCLE_PREV[props.project.lifecycle_status] ?? null
+)
+
 const showTransition = computed(
   () => Boolean(nextStatus.value) && props.canManage
 )
 
+const showBackTransition = computed(
+  () => Boolean(prevStatus.value) && props.canManage
+)
+
 const fromLabel = computed(() => lifecycleLabel(props.project.lifecycle_status))
 const toLabel = computed(() => (nextStatus.value ? lifecycleLabel(nextStatus.value) : ''))
+const backLabel = computed(() => (prevStatus.value ? lifecycleLabel(prevStatus.value) : ''))
 
 const confirmShow = ref(false)
 const transitioning = ref(false)
+const backward = ref(false)
 
 const openConfirm = () => {
+  backward.value = false
+  confirmShow.value = true
+}
+
+const openBackConfirm = () => {
+  backward.value = true
   confirmShow.value = true
 }
 
 const handleConfirm = async () => {
-  if (!nextStatus.value) return
+  const target = backward.value ? prevStatus.value : nextStatus.value
+  if (!target) return
   transitioning.value = true
   try {
-    const updated = await transitionProjectLifecycle(props.project.id, nextStatus.value)
+    const updated = await transitionProjectLifecycle(props.project.id, target)
     confirmShow.value = false
     emit('changed', updated)
     ElMessage.success(t('common.success'))
@@ -104,19 +121,29 @@ const handleConfirm = async () => {
 
     <div class="mgmt-lifecycle-actions">
       <button
+        v-if="showBackTransition"
+        class="btn-secondary"
+        @click="openBackConfirm"
+      >
+        <ArrowLeft class="w-4 h-4" />
+        {{ $t('management.project.previous_transition', { target: backLabel }) }}
+      </button>
+      <button
         v-if="showTransition"
         class="btn-primary"
         @click="openConfirm"
       >
         {{ $t('management.project.next_transition', { target: toLabel }) }}
       </button>
-      <span v-else-if="!nextStatus" class="mgmt-hint">{{ $t('management.project.lifecycle_retired') }}</span>
+      <span v-else-if="!nextStatus && !prevStatus" class="mgmt-hint">{{ $t('management.project.lifecycle_retired') }}</span>
     </div>
 
     <ConfirmActionModal
       :show="confirmShow"
       :title="$t('management.project.lifecycle_title')"
-      :message="$t('management.project.transition_confirm', { from: fromLabel, to: toLabel })"
+      :message="backward
+        ? $t('management.project.transition_back_confirm', { from: fromLabel, to: backLabel })
+        : $t('management.project.transition_confirm', { from: fromLabel, to: toLabel })"
       :cancel-text="$t('common.cancel')"
       :confirm-text="$t('common.confirm')"
       tone="primary"
@@ -179,5 +206,10 @@ const handleConfirm = async () => {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.w-4 {
+  width: 1rem;
+  height: 1rem;
 }
 </style>
