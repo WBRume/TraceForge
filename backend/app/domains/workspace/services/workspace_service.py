@@ -350,6 +350,25 @@ def create_workspace(
         repo_set = project_service.resolve_project_repo_set(
             db, project, product_ids=product_ids or None
         )
+        if repositories is not None:
+            selected_ids = {
+                str(item.get("repository_id") or "").strip()
+                for item in repositories
+                if str(item.get("repository_id") or "").strip()
+            }
+            available_ids = {
+                str(item["repository_id"]) for item in repo_set
+            }
+            unknown = selected_ids - available_ids
+            if unknown:
+                raise ValueError(
+                    "Selected repositories are not part of the project repository set: "
+                    + ", ".join(sorted(unknown))
+                )
+            repo_set = [
+                item for item in repo_set
+                if str(item["repository_id"]) in selected_ids
+            ]
         seen_slugs: set = set()
         for item in repo_set:
             slug = mgmt_repository_service.build_repo_slug(item["repository_name"])

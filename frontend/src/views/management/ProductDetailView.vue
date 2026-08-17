@@ -22,6 +22,7 @@ const { t } = useI18n();
 const authStore = useAuthStore();
 
 const productId = computed(() => String(route.params.productId ?? ''));
+const focusVersionId = computed(() => String(route.query.version ?? '') || null);
 
 const isAdmin = computed(() => Boolean(authStore.user?.is_admin));
 
@@ -34,6 +35,7 @@ const loading = ref(false);
 
 const showEdit = ref(false);
 const baseReposVisible = ref(false);
+const customProductsVisible = ref(false);
 
 const load = async () => {
   loading.value = true;
@@ -52,6 +54,10 @@ onMounted(() => {
 
 const goBack = () => {
   router.push('/management/products');
+};
+
+const openProduct = (productId: string) => {
+  router.push({ path: '/management/products/' + productId, query: { mode: 'view' } });
 };
 
 const onProductSaved = () => {
@@ -115,13 +121,33 @@ const onBindingsChanged = () => {
           </div>
           <div v-if="detail.product_type === 'CUSTOM'" class="mgmt-info-item full">
             <dt>{{ $t('management.product.baseline_product') }}</dt>
-            <dd>{{ detail.baseline_product_name || '-' }}</dd>
+            <dd>
+              <a
+                v-if="detail.baseline_product_id"
+                class="mgmt-link"
+                href="javascript:void(0)"
+                @click="openProduct(detail.baseline_product_id)"
+              >{{ detail.baseline_product_name || '-' }}</a>
+              <template v-else>{{ detail.baseline_product_name || '-' }}</template>
+            </dd>
           </div>
           <div class="mgmt-info-item full">
             <dt>{{ $t('management.product.description') }}</dt>
             <dd>{{ detail.description || '-' }}</dd>
           </div>
         </dl>
+      </div>
+
+      <div v-if="detail.custom_products && detail.custom_products.length > 0" class="mgmt-card mgmt-compact-card">
+        <div class="mgmt-compact-head">
+          <div>
+            <h3>{{ $t('management.product.custom_products_title') }}</h3>
+            <p class="mgmt-hint">{{ $t('management.product.custom_products_hint') }}</p>
+          </div>
+          <button class="btn-secondary" @click="customProductsVisible = true">
+            {{ $t('management.product.view_custom_products', { count: detail.custom_products.length }) }}
+          </button>
+        </div>
       </div>
 
       <div class="mgmt-card mgmt-compact-card">
@@ -141,6 +167,7 @@ const onBindingsChanged = () => {
       <ProductVersionsPanel
         :product="detail"
         :can-manage="canManage"
+        :focus-version-id="focusVersionId"
         @changed="onBindingsChanged"
       />
 
@@ -162,6 +189,35 @@ const onBindingsChanged = () => {
           />
           <div class="mgmt-modal-actions">
             <button class="btn-secondary" @click="baseReposVisible = false">
+              {{ $t('common.close') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div v-if="customProductsVisible && detail" class="mgmt-modal-overlay" @pointerdown.self="customProductsVisible = false">
+        <div class="mgmt-modal mgmt-modal-wide glass-panel">
+          <h3>{{ $t('management.product.custom_products_title') }}</h3>
+          <p class="mgmt-hint">{{ $t('management.product.custom_products_hint') }}</p>
+          <div class="mgmt-modal-list">
+            <a
+              v-for="cp in detail.custom_products ?? []"
+              :key="cp.id"
+              class="mgmt-modal-list-item"
+              href="javascript:void(0)"
+              @click="openProduct(cp.id)"
+            >
+              <span class="mgmt-modal-list-name">{{ cp.name }}</span>
+              <span class="mgmt-modal-list-sub">{{ cp.code }} {{ cp.version_no ? '· ' + cp.version_no : '' }}</span>
+            </a>
+            <div v-if="!(detail.custom_products ?? []).length" class="mgmt-empty">
+              {{ $t('management.common.empty') }}
+            </div>
+          </div>
+          <div class="mgmt-modal-actions">
+            <button class="btn-secondary" @click="customProductsVisible = false">
               {{ $t('common.close') }}
             </button>
           </div>
@@ -276,6 +332,45 @@ const onBindingsChanged = () => {
 
 .mgmt-compact-head h3 {
   margin: 0 0 0.25rem;
+}
+
+.mgmt-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.mgmt-modal-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.mgmt-modal-list-item:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.mgmt-modal-list-name {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.mgmt-modal-list-sub {
+  font-size: 0.78rem;
+  color: #64748b;
 }
 
 .mgmt-modal-wide {

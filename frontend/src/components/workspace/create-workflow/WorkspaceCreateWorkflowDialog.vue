@@ -39,6 +39,7 @@ const reposLoading = ref(false)
 const projects = ref<Project[]>([])
 const projectProducts = ref<ProjectProduct[]>([])
 const repos = ref<ProjectRepoSetItem[]>([])
+const selectedRepoIds = ref<string[]>([])
 
 const basicInfo = ref<WorkspaceBasicInfo>({
   name: '',
@@ -58,9 +59,14 @@ const productsValid = computed(() => {
   return projectProducts.value.length === 0 || selectedProductIds.value.length > 0
 })
 
+const reposValid = computed(() => {
+  return repos.value.length === 0 || selectedRepoIds.value.length > 0
+})
+
 const canNext = computed(() => {
   if (currentStep.value === 0) return basicValid.value
   if (currentStep.value === 2) return productsValid.value
+  if (currentStep.value === 3) return reposValid.value
   return true
 })
 
@@ -93,11 +99,13 @@ const loadProjectProducts = async () => {
 
 const loadRepoSet = async () => {
   repos.value = []
+  selectedRepoIds.value = []
   if (!selectedProjectId.value) return
   reposLoading.value = true
   try {
     const res = await getProjectRepoSet(selectedProjectId.value, selectedProductIds.value)
     repos.value = res.repositories
+    selectedRepoIds.value = res.repositories.map((item) => item.repository_id)
   } catch (error) {
     ElMessage.error(formatApiError(error, t('management.common.operation_failed'), t))
   } finally {
@@ -136,6 +144,7 @@ const resetState = () => {
   projects.value = []
   projectProducts.value = []
   repos.value = []
+  selectedRepoIds.value = []
   selectedProductIds.value = []
   basicInfo.value = { name: '', description: '', project_path: '' }
   selectedProjectId.value = null
@@ -143,6 +152,10 @@ const resetState = () => {
 
 const submit = async () => {
   if (creating.value) return
+  if (!reposValid.value) {
+    ElMessage.warning(t('workspace_create.repos_required'))
+    return
+  }
   creating.value = true
   try {
     const payload: Record<string, unknown> = {
@@ -153,6 +166,13 @@ const submit = async () => {
     if (selectedProjectId.value) {
       payload.project_id = selectedProjectId.value
       payload.product_ids = selectedProductIds.value
+      const selectedRepos = repos.value.filter((item) =>
+        selectedRepoIds.value.includes(item.repository_id)
+      )
+      payload.repositories = selectedRepos.map((item) => ({
+        repository_id: item.repository_id,
+        branch_name: item.ref_name,
+      }))
     }
     const res = await api.post('/workspaces', payload)
     const jobId = String(res.data?.job_id || '').trim()
@@ -226,6 +246,7 @@ watch(
         />
         <ReposConfirmStep
           v-else
+          v-model="selectedRepoIds"
           :repos="repos"
           :loading="reposLoading"
         />
@@ -242,7 +263,7 @@ watch(
         <button v-if="currentStep < 3" type="button" class="btn-primary" :disabled="!canNext" @click="goNext">
           {{ $t('workspace_create.next') }}
         </button>
-        <button v-else type="button" class="btn-primary" :disabled="creating" @click="submit">
+        <button v-else type="button" class="btn-primary" :disabled="creating || !reposValid" @click="submit">
           <FolderGit2 class="w-4 h-4" />
           {{ creating ? $t('workspace_create.creating') : $t('workspace_create.create') }}
         </button>

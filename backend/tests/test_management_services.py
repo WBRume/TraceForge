@@ -266,6 +266,39 @@ class TestProductService:
         effective = product_service.resolve_effective_version_bindings(custom_version)
         assert {item["repository_id"] for item in effective} == {repo_a.id, custom_repo.id}
 
+
+    def test_serialize_custom_product_and_version_reverse_links(self, db_session):
+        db = db_session
+        baseline = product_service.create_product(
+            db, name="OOTB Base", code="OOTB-BASE", creator_id="user-1", product_type="OOTB"
+        )
+        baseline_version = _seed_product_version(db, baseline, version_no="V1")
+        custom = product_service.create_product(
+            db, name="Customer Custom", code="CUSTOM-1", creator_id="user-1",
+            product_type="CUSTOM", baseline_product_id=baseline.id,
+        )
+        custom_version = product_service.create_version(
+            db, custom, version_no="C1", baseline_product_version_id=baseline_version.id, creator_id="user-1"
+        )
+
+        baseline_detail = product_service.serialize_product_detail(
+            product_service.get_product(db, baseline.id)
+        )
+        assert [cp["id"] for cp in baseline_detail["custom_products"]] == [custom.id]
+        baseline_version_payload = next(
+            v for v in baseline_detail["versions"] if v["id"] == baseline_version.id
+        )
+        assert baseline_version_payload["custom_versions"][0]["id"] == custom_version.id
+        assert baseline_version_payload["custom_versions"][0]["product_name"] == custom.name
+
+        custom_payload = product_service.serialize_version(
+            product_service.get_version(db, custom.id, custom_version.id)
+        )
+        assert custom_payload["baseline_product_id"] == baseline.id
+        assert custom_payload["baseline_product_version_id"] == baseline_version.id
+        assert custom_payload["baseline_product_name"] == baseline.name
+        assert custom_payload["baseline_version_no"] == baseline_version.version_no
+
     def test_batch_update_scope_baseline(self, db_session):
         db = db_session
         ootb = product_service.create_product(
@@ -751,6 +784,44 @@ class TestProjectService:
         # No selection: every product binding appears.
         repo_set_all = project_service.resolve_project_repo_set(db, project, product_ids=[])
         assert len(repo_set_all) == 2
+
+    def test_resolve_project_repo_set_reports_ootb_and_custom_kinds(self, db_session):
+        db = db_session
+        project = self._seed_project(db)
+        ootb = product_service.create_product(
+            db, name="OOTB Base", code="OOTB-BASE", creator_id="user-1", product_type="OOTB"
+        )
+        ootb_version = _seed_product_version(db, ootb, version_no="V1")
+        ootb_repo = _seed_repository(db, name="base-repo", git_url="https://git.example.com/base.git")
+        custom = product_service.create_product(
+            db, name="Customer Custom", code="CUSTOM-1", creator_id="user-1",
+            product_type="CUSTOM", baseline_product_id=ootb.id,
+        )
+        custom_version = product_service.create_version(
+            db, custom, version_no="C1", baseline_product_version_id=ootb_version.id, creator_id="user-1"
+        )
+        custom_repo = _seed_repository(
+            db, name="custom-repo", git_url="https://git.example.com/custom.git", repo_type="CUSTOM"
+        )
+        with mock.patch(
+            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
+        ):
+            product_service.bind_version_repo(
+                db, ootb_version, repository_id=ootb_repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
+            )
+            product_service.bind_version_repo(
+                db, custom_version, repository_id=custom_repo.id, ref_type="BRANCH", ref_name="dev", creator_id="user-1"
+            )
+        project_service.add_project_product(
+            db, project, product_id=custom.id, product_version_id=custom_version.id, creator_id="user-1"
+        )
+
+        repo_set = project_service.resolve_project_repo_set(db, project, product_ids=[custom.id])
+        kinds = {item["repo_kind"] for item in repo_set}
+        assert kinds == {"OOTB", "CUSTOM"}
+        assert any(item["repository_name"] == "base-repo" for item in repo_set)
+        assert any(item["repository_name"] == "custom-repo" for item in repo_set)
+
 
 
 class TestRepositoryService:

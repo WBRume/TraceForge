@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import or_
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.domains.management.models.management import (
     ProductStatus,
@@ -160,6 +160,29 @@ def _serialize_base_repo(binding: SddManagementProductRepo) -> Dict[str, object]
     }
 
 
+def _serialize_custom_version_ref(version: SddManagementProductVersion) -> Dict[str, object]:
+    product = version.product
+    return {
+        "id": version.id,
+        "product_id": version.product_id,
+        "product_name": product.name if product else version.product_id,
+        "product_code": product.code if product else None,
+        "version_no": version.version_no,
+        "status": version.status.value if hasattr(version.status, "value") else str(version.status),
+    }
+
+
+def _serialize_custom_product_ref(product: SddManagementProduct) -> Dict[str, object]:
+    latest = _latest_version(product)
+    return {
+        "id": product.id,
+        "name": product.name,
+        "code": product.code,
+        "version_no": latest.version_no if latest else (product.version_no or ""),
+        "status": product.status.value if hasattr(product.status, "value") else str(product.status),
+    }
+
+
 def serialize_version(
     version: SddManagementProductVersion,
     *,
@@ -174,7 +197,12 @@ def serialize_version(
         "description": version.description,
         "baseline_product_version_id": version.baseline_product_version_id,
         "baseline_version_no": version.baseline_version.version_no if version.baseline_version else None,
+        "baseline_product_id": version.baseline_version.product_id if version.baseline_version else None,
+        "baseline_product_code": version.baseline_version.product.code if version.baseline_version and version.baseline_version.product else None,
         "baseline_product_name": version.baseline_version.product.name if version.baseline_version and version.baseline_version.product else None,
+        "custom_versions": [
+            _serialize_custom_version_ref(cv) for cv in (version.custom_versions or [])
+        ],
         "created_at": version.created_at,
         "updated_at": version.updated_at,
     }
@@ -219,6 +247,9 @@ def serialize_product(product: SddManagementProduct, *, include_bindings: bool =
         payload["versions"] = [
             serialize_version(version, include_bindings=True) for version in product.versions
         ]
+        payload["custom_products"] = [
+            _serialize_custom_product_ref(cp) for cp in (product.custom_products or [])
+        ]
     return payload
 
 
@@ -246,11 +277,20 @@ def list_products(
         query = query.filter(SddManagementProduct.status == _normalize_status(ProductStatus, status))
 
     total = query.count()
+    options = [
+        joinedload(SddManagementProduct.versions),
+        joinedload(SddManagementProduct.base_repos).joinedload(SddManagementProductRepo.repository),
+    ]
+    if include_versions:
+        options.extend([
+            selectinload(SddManagementProduct.custom_products)
+            .selectinload(SddManagementProduct.versions),
+            joinedload(SddManagementProduct.versions)
+            .selectinload(SddManagementProductVersion.custom_versions)
+            .joinedload(SddManagementProductVersion.product),
+        ])
     products = (
-        query.options(
-            joinedload(SddManagementProduct.versions),
-            joinedload(SddManagementProduct.base_repos).joinedload(SddManagementProductRepo.repository),
-        )
+        query.options(*options)
         .order_by(SddManagementProduct.created_at.desc())
         .offset((max(1, page) - 1) * page_size)
         .limit(page_size)
@@ -267,6 +307,11 @@ def get_product(db: Session, product_id: str) -> Optional[SddManagementProduct]:
         db.query(SddManagementProduct)
         .options(
             joinedload(SddManagementProduct.baseline_product),
+            selectinload(SddManagementProduct.custom_products)
+            .selectinload(SddManagementProduct.versions),
+            joinedload(SddManagementProduct.versions)
+            .selectinload(SddManagementProductVersion.custom_versions)
+            .joinedload(SddManagementProductVersion.product),
             joinedload(SddManagementProduct.base_repos).joinedload(SddManagementProductRepo.repository),
             joinedload(SddManagementProduct.versions)
             .joinedload(SddManagementProductVersion.repo_bindings)
@@ -295,6 +340,8 @@ def get_version(
             joinedload(SddManagementProductVersion.repo_bindings)
             .joinedload(SddManagementProductVersionRepo.repository),
             joinedload(SddManagementProductVersion.baseline_version)
+            .joinedload(SddManagementProductVersion.product),
+            selectinload(SddManagementProductVersion.custom_versions)
             .joinedload(SddManagementProductVersion.product),
         )
         .filter(

@@ -7,6 +7,7 @@ version, or start empty.
 -->
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { CalendarDays, Check, GitBranch, Pencil, Plus, Tag as TagIcon, Trash2, X } from 'lucide-vue-next'
@@ -29,6 +30,7 @@ import {
 } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'
 import type {
+  CustomProductVersionRef,
   EffectiveRepoBinding,
   ProductDetail,
   ProductRepoBinding,
@@ -42,6 +44,7 @@ import type {
 const props = defineProps<{
   product: ProductDetail | null;
   canManage: boolean;
+  focusVersionId?: string | null;
 }>()
 
 const emit = defineEmits<{
@@ -49,6 +52,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const router = useRouter()
 
 const versions = computed<ProductVersionDetail[]>(() => props.product?.versions ?? [])
 
@@ -69,6 +73,56 @@ const toggleVersionRepos = (version: ProductVersionDetail): void => {
   repoKeyword.value = ''
   repoPage.value = 1
 }
+
+const openProductVersion = (productId: string, versionId: string): void => {
+  router.push({
+    path: '/management/products/' + productId,
+    query: { mode: 'view', version: versionId },
+  })
+}
+
+const customVersionsModal = ref<{ title: string; items: CustomProductVersionRef[] } | null>(null)
+
+const openCustomVersionsModal = (version: ProductVersionDetail): void => {
+  customVersionsModal.value = {
+    title: version.version_no,
+    items: version.custom_versions ?? [],
+  }
+}
+
+const closeCustomVersionsModal = (): void => {
+  customVersionsModal.value = null
+}
+
+const jumpToCustomVersion = (item: CustomProductVersionRef): void => {
+  customVersionsModal.value = null
+  openProductVersion(item.product_id, item.id)
+}
+
+watch(
+  () => props.focusVersionId,
+  (id) => {
+    if (id && versions.value.some((v) => v.id === id)) {
+      expandedVersionId.value = id
+      repoKeyword.value = ''
+      repoPage.value = 1
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  versions,
+  (list) => {
+    const id = props.focusVersionId
+    if (id && list.some((v) => v.id === id)) {
+      expandedVersionId.value = id
+      repoKeyword.value = ''
+      repoPage.value = 1
+    }
+  },
+  { immediate: true },
+)
 
 const filteredBindings = (version: ProductVersionDetail): EffectiveRepoBinding[] => {
   const kw = repoKeyword.value.trim().toLowerCase()
@@ -660,6 +714,22 @@ watch(
 
         <p v-if="version.description" class="version-desc">{{ version.description }}</p>
 
+        <div v-if="version.baseline_product_version_id" class="version-baseline-info">
+          <span class="mgmt-hint">{{ $t('management.product.baseline_product') }}:
+            <a class="mgmt-link" href="javascript:void(0)" @click="openProductVersion(version.baseline_product_id ?? '', version.baseline_product_version_id)">{{ version.baseline_product_name || '-' }}</a>
+          </span>
+          <span class="mgmt-hint">{{ $t('management.product.baseline_product_version') }}:
+            <a class="mgmt-link" href="javascript:void(0)" @click="openProductVersion(version.baseline_product_id ?? '', version.baseline_product_version_id)">{{ version.baseline_version_no || '-' }}</a>
+          </span>
+        </div>
+
+        <div v-if="version.custom_versions && version.custom_versions.length > 0" class="version-custom-inheritors">
+          <span class="version-custom-inheritors-title">{{ $t('management.product.custom_versions_title') }}</span>
+          <button class="btn-ghost version-bind-btn" @click="openCustomVersionsModal(version)">
+            {{ $t('management.product.view_custom_versions', { count: version.custom_versions.length }) }}
+          </button>
+        </div>
+
         <div v-if="expandedVersionId === version.id" class="version-bindings">
           <div class="version-bindings-head">
             <span class="version-bindings-title">{{ $t('management.product.bindings_title') }}</span>
@@ -976,6 +1046,36 @@ watch(
       </div>
     </Teleport>
 
+    <!-- 查看引用了该基线版本的定制产品版本 -->
+    <Teleport to="body">
+      <div v-if="customVersionsModal" class="mgmt-modal-overlay" @pointerdown.self="closeCustomVersionsModal">
+        <div class="mgmt-modal mgmt-modal-wide glass-panel">
+          <h3>{{ $t('management.product.custom_versions_modal_title', { version: customVersionsModal.title }) }}</h3>
+          <p class="mgmt-hint">{{ $t('management.product.custom_versions_hint') }}</p>
+          <div class="mgmt-modal-list">
+            <a
+              v-for="item in customVersionsModal.items"
+              :key="item.id"
+              class="mgmt-modal-list-item"
+              href="javascript:void(0)"
+              @click="jumpToCustomVersion(item)"
+            >
+              <span class="mgmt-modal-list-name">{{ item.product_name }}</span>
+              <span class="mgmt-modal-list-sub">{{ item.product_code || '' }} · {{ item.version_no }}</span>
+            </a>
+            <div v-if="customVersionsModal.items.length === 0" class="mgmt-empty">
+              {{ $t('management.common.empty') }}
+            </div>
+          </div>
+          <div class="mgmt-modal-actions">
+            <button class="btn-secondary" @click="closeCustomVersionsModal">
+              {{ $t('common.close') }}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <RepoGroupPicker
       :show="pickerVisible"
       :exclude-ids="pickerTargetVersionId
@@ -1088,6 +1188,81 @@ watch(
 .version-desc {
   margin: 0.5rem 0 0;
   font-size: 0.82rem;
+  color: #64748b;
+}
+
+.version-baseline-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #475569;
+}
+
+.mgmt-link {
+  color: #1d4ed8;
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dashed #93c5fd;
+}
+
+.mgmt-link:hover {
+  color: #1e40af;
+  border-bottom-style: solid;
+}
+
+.version-custom-inheritors {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.version-custom-inheritors-title {
+  font-weight: 600;
+  color: #475569;
+}
+
+.mgmt-modal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.mgmt-modal-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  text-decoration: none;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.mgmt-modal-list-item:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.mgmt-modal-list-name {
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
+.mgmt-modal-list-sub {
+  font-size: 0.78rem;
   color: #64748b;
 }
 
