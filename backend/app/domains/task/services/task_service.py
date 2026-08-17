@@ -166,26 +166,14 @@ def cleanup_task_repositories(
 def resolve_task_cli_dir(db: Session, task: SddTask) -> str:
     """Resolve the CLI working directory of a task.
 
-    Multi-repository tasks run inside the primary repository worktree
-    (the first binding); single-repository tasks keep task.project_path.
+    Always returns the task working directory root (task.project_path), so
+    Claude CLI runs from the task root and can access every repository
+    worktree materialized underneath it (one per repository binding).
     """
-    from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
-
-    bindings = (
-        db.query(SddTaskRepository)
-        .filter(
-            SddTaskRepository.task_id == task.id,
-            SddTaskRepository.state == TaskRepositoryState.READY,
-        )
-        .order_by(SddTaskRepository.created_at.asc())
-        .all()
-    )
-    if bindings:
-        primary = os.path.abspath(
-            os.path.join(str(task.project_path or "").strip(), bindings[0].rel_path)
-        )
-        if os.path.isdir(primary):
-            return primary
+    # The task root is where all repository worktrees are materialized
+    # (<task_root>/<repo_slug>/...). Running the CLI anywhere deeper (e.g. the
+    # primary repository worktree) would hide the other repositories from the
+    # session, so keep the root for both single- and multi-repository tasks.
     return str(task.project_path or "").strip() or "."
 
 
