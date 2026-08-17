@@ -673,7 +673,7 @@ def resolve_project_repo_set(
                 "ref_type": binding["ref_type"],
                 "ref_name": binding["ref_name"],
                 "branch_name": binding["ref_name"],
-                "repo_kind": "OOTB",
+                "repo_kind": str(binding.get("repo_type") or "OOTB").strip().upper(),
             }
 
     return list(repo_map.values())

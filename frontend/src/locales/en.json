@@ -2642,6 +2642,13 @@
       "batch_scope_custom": "Custom repositories (default)",
       "batch_scope_baseline": "Baseline repositories",
       "unbind_confirm": "Unbind repository \"{name}\"?",
+      "custom_products_title": "Custom Products Inheriting This Product",
+      "custom_products_hint": "These custom products use this product as their baseline. Click to open the product.",
+      "custom_versions_title": "Custom Product Versions Inheriting This Version",
+      "view_custom_versions": "View Referencing Custom Versions ({count})",
+      "custom_versions_modal_title": "Custom Versions Referencing Baseline {version}",
+      "custom_versions_hint": "These custom product versions reference this baseline version. Click to open the custom product.",
+      "view_custom_products": "View Inheriting Custom Products ({count})",
       "back_to_list": "Back to Products"
     },
     "project": {
@@ -2781,6 +2788,8 @@
     "products_hint": "Check the products for this workspace; the repository set is generated from their tag/branch bindings",
     "no_products_hint": "The selected project has no products yet",
     "repos_readonly_hint": "Repositories below will be checked out at the selected products tag/branch bindings",
+    "repos_select_hint": "Check the baseline and custom repositories to initialize in this workspace (multi-select)",
+    "repos_required": "Select at least one repository to initialize the workspace",
     "title": "New Workspace",
     "step_basic": "Basic Info",
     "step_project": "Select Project",

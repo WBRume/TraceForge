@@ -36,6 +36,23 @@ export interface ProductRepoBinding {
   created_at: string
 }
 
+export interface CustomProductVersionRef {
+  id: string
+  product_id: string
+  product_name: string
+  product_code: string | null
+  version_no: string
+  status: ProductVersionStatus
+}
+
+export interface CustomProductRef {
+  id: string
+  name: string
+  code: string
+  version_no: string
+  status: ProductStatus
+}
+
 export interface ProductVersion {
   id: string
   product_id: string
@@ -44,8 +61,11 @@ export interface ProductVersion {
   release_date: string | null
   description: string | null
   baseline_product_version_id: string | null
+  baseline_product_id: string | null
+  baseline_product_code: string | null
   baseline_version_no: string | null
   baseline_product_name: string | null
+  custom_versions?: CustomProductVersionRef[]
   created_at: string
   updated_at: string | null
 }
@@ -81,6 +101,7 @@ export interface Product {
 export interface ProductDetail extends Product {
   base_repos: ProductBaseRepo[]
   versions: ProductVersionDetail[]
+  custom_products?: CustomProductRef[]
 }
 
 export interface Repository {

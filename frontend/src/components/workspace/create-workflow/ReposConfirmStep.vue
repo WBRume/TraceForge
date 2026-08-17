@@ -1,21 +1,38 @@
-<!-- Workspace creation workflow: step 4 repository set confirmation (read-only). -->
+<!-- Workspace creation workflow: step 4 repository selection (baseline + custom, multi-select). -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import { Boxes, FolderCog, Tag, GitBranch } from 'lucide-vue-next'
 import type { ProjectRepoSetItem } from '@/types/management'
 
 const props = defineProps<{
+  modelValue: string[]
   repos: ProjectRepoSetItem[]
   loading: boolean
 }>()
 
+const emit = defineEmits<{
+  (e: 'update:modelValue', value: string[]): void
+}>()
+
 const ootbRepos = computed(() => props.repos.filter((item) => item.repo_kind === 'OOTB'))
 const customRepos = computed(() => props.repos.filter((item) => item.repo_kind === 'CUSTOM'))
+
+const isSelected = (repoId: string): boolean => props.modelValue.includes(repoId)
+
+const toggle = (repoId: string): void => {
+  const selected = new Set(props.modelValue)
+  if (selected.has(repoId)) {
+    selected.delete(repoId)
+  } else {
+    selected.add(repoId)
+  }
+  emit('update:modelValue', [...selected])
+}
 </script>
 
 <template>
   <div class="wf-step">
-    <p class="mgmt-hint">{{ $t('workspace_create.repos_readonly_hint') }}</p>
+    <p class="mgmt-hint">{{ $t('workspace_create.repos_select_hint') }}</p>
 
     <div v-if="loading" class="mgmt-empty">{{ $t('management.common.loading') }}</div>
 
@@ -27,9 +44,20 @@ const customRepos = computed(() => props.repos.filter((item) => item.repo_kind =
       <div v-if="ootbRepos.length > 0" class="wf-repo-group">
         <div class="wf-group-title">
           <Boxes class="w-4 h-4" />
-          <span>{{ $t('workspace_create.ootb_repos') }}</span>
+          <span>{{ $t('workspace_create.ootb_repos') }}（{{ ootbRepos.length }}）</span>
         </div>
-        <div v-for="repo in ootbRepos" :key="repo.repository_id" class="wf-repo-row">
+        <label
+          v-for="repo in ootbRepos"
+          :key="repo.repository_id"
+          class="wf-repo-row"
+          :class="{ selected: isSelected(repo.repository_id) }"
+        >
+          <input
+            type="checkbox"
+            class="wf-checkbox"
+            :checked="isSelected(repo.repository_id)"
+            @change="toggle(repo.repository_id)"
+          />
           <div class="wf-repo-info">
             <span class="wf-repo-name">{{ repo.repository_name }}</span>
             <span class="wf-repo-url">{{ repo.git_url }}</span>
@@ -39,15 +67,26 @@ const customRepos = computed(() => props.repos.filter((item) => item.repo_kind =
             <GitBranch v-else class="w-3.5 h-3.5" />
             {{ repo.ref_name }}
           </span>
-        </div>
+        </label>
       </div>
 
       <div v-if="customRepos.length > 0" class="wf-repo-group">
         <div class="wf-group-title">
           <FolderCog class="w-4 h-4" />
-          <span>{{ $t('workspace_create.custom_repos') }}</span>
+          <span>{{ $t('workspace_create.custom_repos') }}（{{ customRepos.length }}）</span>
         </div>
-        <div v-for="repo in customRepos" :key="repo.repository_id" class="wf-repo-row">
+        <label
+          v-for="repo in customRepos"
+          :key="repo.repository_id"
+          class="wf-repo-row"
+          :class="{ selected: isSelected(repo.repository_id) }"
+        >
+          <input
+            type="checkbox"
+            class="wf-checkbox"
+            :checked="isSelected(repo.repository_id)"
+            @change="toggle(repo.repository_id)"
+          />
           <div class="wf-repo-info">
             <span class="wf-repo-name">{{ repo.repository_name }}</span>
             <span class="wf-repo-url">{{ repo.git_url }}</span>
@@ -57,7 +96,7 @@ const customRepos = computed(() => props.repos.filter((item) => item.repo_kind =
             <GitBranch v-else class="w-3.5 h-3.5" />
             {{ repo.ref_name }}
           </span>
-        </div>
+        </label>
       </div>
     </div>
   </div>
@@ -88,14 +127,38 @@ const customRepos = computed(() => props.repos.filter((item) => item.repo_kind =
 }
 
 .wf-repo-row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  border: 1px solid #e2e8f0;
+  border: 1.5px solid #e2e8f0;
   border-radius: 10px;
-  padding: 0.6rem 0.9rem;
+  padding: 0.6rem 0.9rem 0.6rem 2.4rem;
   background: rgba(248, 250, 252, 0.7);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.wf-repo-row:hover {
+  border-color: #7dd3fc;
+  background: #f0f9ff;
+}
+
+.wf-repo-row.selected {
+  border-color: #0ea5e9;
+  background: #f0f9ff;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
+}
+
+.wf-checkbox {
+  position: absolute;
+  left: 0.8rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1rem;
+  height: 1rem;
+  accent-color: #0ea5e9;
 }
 
 .wf-repo-info {

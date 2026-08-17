@@ -2647,6 +2647,13 @@
       "batch_scope_custom": "定制仓库（默认）",
       "batch_scope_baseline": "基线仓库",
       "unbind_confirm": "确认解绑仓库「{name}」？",
+      "custom_products_title": "继承此产品的定制产品",
+      "custom_products_hint": "以下定制产品以本产品为基线，点击可跳转到对应产品。",
+      "custom_versions_title": "继承此版本的定制产品版本",
+      "view_custom_versions": "查看引用的定制版本（{count}）",
+      "custom_versions_modal_title": "引用基线版本 {version} 的定制版本",
+      "custom_versions_hint": "以下定制产品版本引用了该基线版本，点击可跳转到对应定制产品详情。",
+      "view_custom_products": "查看继承的定制产品（{count}）",
       "back_to_list": "返回产品列表"
     },
     "project": {
@@ -2786,6 +2793,8 @@
     "products_hint": "勾选本次工作区需要的产品，仓库集合由所选产品的仓库绑定（tag/分支）生成",
     "no_products_hint": "所选项目尚未包含产品",
     "repos_readonly_hint": "以下仓库将按所选产品的 tag/分支 绑定检出",
+    "repos_select_hint": "请分别勾选要在工作区初始化的基线仓库与定制仓库（可多选）",
+    "repos_required": "请至少选择一个仓库用于工作区初始化",
     "title": "新建工作区",
     "step_basic": "基本信息",
     "step_project": "选择项目",
