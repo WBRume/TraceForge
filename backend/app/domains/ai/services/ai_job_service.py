@@ -1702,7 +1702,9 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
             )
             if fresh_session:
                 engine.session_id = None
-            elif job.session_id and not engine.session_id:
+            elif job.session_id:
+                # 恢复上次中断（或继续）的会话：总是以 DB 持久化的 session_id
+                # 为准，保证下次启动使用 --resume 重新进入原会话，而不是新开会话。
                 engine.session_id = job.session_id
     finally:
         db.close()
@@ -1956,7 +1958,9 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
                     on_session=_on_engine_session,
                     on_error=_on_engine_error,
                 )
-                if job.session_id and not engine.session_id:
+                if job.session_id:
+                    # 恢复中断/HITL 挂起会话：以 DB 持久化的 session_id 为准，
+                    # 保证下一步用 --resume 回到原会话而非新开会话。
                     engine.session_id = job.session_id
         finally:
             db.close()
