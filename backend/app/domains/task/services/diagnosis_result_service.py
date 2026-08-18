@@ -14,6 +14,7 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -318,11 +319,25 @@ def _sync_card_message(
         .first()
     )
     summary = _clean(payload.summary) or _clean(payload.root_cause) or "Diagnosis result"
+    metadata = _payload_dict(payload)
     if existing:
+        # 原位更新时间内容，但保留它首次创建时的顺序位（多轮会话卡片不后移）
+        previous_meta = existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
+        if previous_meta.get("order_index") is not None:
+            metadata["order_index"] = previous_meta["order_index"]
         existing.content = summary
-        existing.metadata_json = _payload_dict(payload)
+        existing.metadata_json = metadata
         message = existing
     else:
+        # 卡片消息同样要分配 order_index，否则重新加载历史时它会按 0 排到
+        # 最后一条 assistant 文本之前，造成“定位结果卡片”与最后回复顺序倒转。
+        order_index = (
+            db.query(func.count(ChatMessage.id))
+            .filter(ChatMessage.task_id == task.id)
+            .scalar()
+            or 0
+        )
+        metadata["order_index"] = order_index
         message = ChatMessage(
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -330,7 +345,7 @@ def _sync_card_message(
             role=MessageRole.ASSISTANT,
             content=summary,
             message_type=MessageType.DIAGNOSIS_RESULT,
-            metadata_json=_payload_dict(payload),
+            metadata_json=metadata,
         )
         db.add(message)
     db.flush()
