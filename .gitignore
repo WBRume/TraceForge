@@ -23,6 +23,7 @@ backend/scratch/
 /backend/scripts/
 /.claude/
 /backend/app/uploads/
+/backend/uploads/
 /.trae/
 /uploads/
 
