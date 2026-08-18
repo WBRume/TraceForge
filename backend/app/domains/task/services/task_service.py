@@ -8,11 +8,11 @@ from typing import Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import case, func as sqlfunc
+from sqlalchemy import func as sqlfunc
 
 from app.core.logging import bind_task_context, get_logger
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.log import SddExecutionLog, LogType
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, generate_uuid
@@ -856,6 +856,31 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
     return True
 
 
+def _message_order_index(msg) -> int:
+    meta = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
+    try:
+        return int(meta.get("order_index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def sort_chat_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
+    """按真实落库先后稳定排序：created_at -> 写入序号 -> id 兜底。
+
+    created_at 只有秒级精度，同一轮流式回复的多条消息会落在同一秒；
+    必须用写入时分配的 order_index 兜底，否则按随机 uuid id 排序会
+    导致重新加载历史时气泡顺序被随机打乱（逆序 / 不稳定）。
+    """
+    return sorted(
+        messages,
+        key=lambda msg: (
+            msg.created_at or datetime.min,
+            _message_order_index(msg),
+            msg.id,
+        ),
+    )
+
+
 def export_task_session(db: Session, task_id: str, workspace_id: str) -> Optional[dict]:
     task = db.query(SddTask).filter(
         SddTask.id == task_id, SddTask.workspace_id == workspace_id
@@ -875,7 +900,7 @@ def export_task_session(db: Session, task_id: str, workspace_id: str) -> Optiona
                 "content": msg.content,
                 "message_type": msg.message_type,
                 "created_at": msg.created_at.isoformat()
-            } for msg in task.messages
+            } for msg in sort_chat_messages(list(task.messages or []))
         ],
         "logs": [
             {
@@ -897,6 +922,15 @@ def save_chat_message(
     message_type: str = "text",
     metadata_json: Optional[dict] = None,
 ) -> ChatMessage:
+    # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
+    order_index = (
+        db.query(sqlfunc.count(ChatMessage.id))
+        .filter(ChatMessage.task_id == task_id)
+        .scalar()
+        or 0
+    )
+    merged_metadata = dict(metadata_json or {})
+    merged_metadata["order_index"] = order_index
     msg = ChatMessage(
         task_id=task_id,
         workspace_id=workspace_id,
@@ -904,7 +938,7 @@ def save_chat_message(
         role=role,
         content=content,
         message_type=message_type,
-        metadata_json=metadata_json if isinstance(metadata_json, dict) else None,
+        metadata_json=merged_metadata,
     )
     db.add(msg)
     db.commit()
@@ -922,26 +956,15 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
     if not task:
         return {"messages": [], "logs": [], "page": page, "page_size": page_size, "total": 0, "has_more": False}
 
-    # 使用数据库查询分页，按 created_at 降序（最新在前）
-    from app.domains.task.models.chat import ChatMessage
-
-    total = db.query(ChatMessage).filter(ChatMessage.task_id == task_id).count()
-
-    init_reason_rank = case(
-        (ChatMessage.message_type == MessageType.INIT_REASON.value, 0),
-        else_=1,
-    )
-
-    msg_query = db.query(ChatMessage).filter(
+    messages_all = db.query(ChatMessage).filter(
         ChatMessage.task_id == task_id
-    ).order_by(
-        ChatMessage.created_at.desc(),
-        init_reason_rank.desc(),
-        ChatMessage.id.desc(),
-    ).offset((page - 1) * page_size).limit(page_size).all()
+    ).all()
+    messages_all = sort_chat_messages(messages_all)
+    total = len(messages_all)
 
-    # 反转回正序（前端渲染需要正序）
-    msg_query = list(reversed(msg_query))
+    # 按真实落库顺序分页（created_at + order_index + id），保持正序返回
+    start = (page - 1) * page_size
+    msg_query = messages_all[start:start + page_size]
     creator_ids = sorted({str(msg.creator_id or "") for msg in msg_query if str(msg.creator_id or "").strip()})
     message_ids = [msg.id for msg in msg_query]
     creators_by_id = {

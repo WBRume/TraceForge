@@ -1560,6 +1560,7 @@ async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -
             return
 
         from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+        from app.domains.task.services import task_service as task_service_module
 
         turn_texts = []
         since = job.created_at
@@ -1570,9 +1571,9 @@ async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -
                 ChatMessage.role == MessageRole.ASSISTANT,
                 ChatMessage.message_type == MessageType.TEXT,
             )
-            .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
             .all()
         )
+        rows = task_service_module.sort_chat_messages(rows)
         if since is not None:
             rows = [row for row in rows if row.created_at is not None and row.created_at >= since]
         for row in rows:
