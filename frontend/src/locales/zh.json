@@ -2894,7 +2894,14 @@
     "case_created": "已生成案例草稿",
     "case_created_and_submitted": "案例已生成并提交专家评审",
     "case_already_exists": "该任务已有关联案例，已为你打开",
-    "case_create_failed": "生成案例失败"
+    "case_create_failed": "生成案例失败",
+    "summarize_case_button": "一键总结问题案例",
+    "summarizing": "总结中…",
+    "summary_started": "已开始生成定位结果，请稍候",
+    "summary_failed": "生成定位结果失败",
+    "summary_job_missing": "未获取到总结任务",
+    "export_markdown": "导出 Markdown",
+    "regenerate": "重新生成"
   },
   "case_center": {
     "title": "功能案例中心",

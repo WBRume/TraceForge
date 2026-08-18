@@ -1253,6 +1253,8 @@ export function useChatViewModel() {
   const diagnosisResultSaving = ref(false)
   const diagnosisCaseCreating = ref(false)
   const diagnosisCaseLink = ref('')
+  const diagnosisSummarizing = ref(false)
+  const diagnosisSummaryJobId = ref('')
 
   const loadDiagnosisResult = async () => {
     const taskId = currentTask.value?.id
@@ -1345,6 +1347,113 @@ export function useChatViewModel() {
     } finally {
       diagnosisCaseCreating.value = false
     }
+  }
+
+  const waitForDiagnosisSummary = async (jobId: string, taskId: string): Promise<void> => {
+    // 轮询后端任务状态直至收敛（SUCCESS / FAILED / CANCELLED），最多等待 3 分钟
+    const terminal = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
+    const deadline = Date.now() + 3 * 60 * 1000
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000))
+      try {
+        const res = await api.get(
+          `/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary/${jobId}`,
+        )
+        const status = String(res.data?.status || '')
+        if (terminal.has(status)) {
+          break
+        }
+      } catch (e) {
+        console.warn('Failed to poll diagnosis summary status', e)
+        // 短时抖动不终止轮询，直到超时
+      }
+    }
+    // 延迟一拍再拉取，确保定位结果卡片已由后端写入并广播
+    await new Promise((resolve) => window.setTimeout(resolve, 1500))
+    await loadDiagnosisResult()
+  }
+
+  const generateDiagnosisSummary = async (): Promise<boolean> => {
+    const taskId = currentTask.value?.id
+    if (!taskId || !isDiagnosisTask.value || diagnosisSummarizing.value) return false
+    diagnosisSummarizing.value = true
+    diagnosisSummaryJobId.value = ''
+    try {
+      const res = await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary`)
+      const jobId = String(res.data?.job_id || '')
+      if (!jobId) {
+        throw new Error(t('diagnosis.summary_job_missing'))
+      }
+      diagnosisSummaryJobId.value = jobId
+      ElMessage.success(t('diagnosis.summary_started'))
+      await waitForDiagnosisSummary(jobId, taskId)
+      return true
+    } catch (e) {
+      ElMessage.error(formatApiError(e, t('diagnosis.summary_failed'), t))
+      console.error('Failed to generate diagnosis summary', e)
+      return false
+    } finally {
+      diagnosisSummarizing.value = false
+      diagnosisSummaryJobId.value = ''
+    }
+  }
+
+  const exportDiagnosisResult = (payload: DiagnosisResultPayload) => {
+    if (!payload) return
+    const norm = normalizeDiagnosisPayload(payload)
+    const taskName = currentTask.value?.name || ''
+    const lines: string[] = []
+    lines.push(`# 问题定位结果 · ${taskName}`)
+    lines.push('')
+    if (norm.summary) lines.push(`## 结果内容\n\n${norm.summary}\n`)
+    if (norm.root_cause) lines.push(`## 根因结论\n\n${norm.root_cause}\n`)
+    if (norm.evidence_chain) lines.push(`## 证据链\n\n${norm.evidence_chain}\n`)
+    if (norm.fix_suggestion) lines.push(`## 修复方案\n\n${norm.fix_suggestion}\n`)
+    if (norm.fix_code) lines.push(`## 修复代码\n\n\`\`\`\n${norm.fix_code}\n\`\`\`\n`)
+    if (norm.code_context.length) {
+      lines.push('## 相关代码上下文\n')
+      norm.code_context.forEach((item, index) => {
+        const start = item.start_line ?? ''
+        const end = item.end_line ?? ''
+        const loc = start ? (end && end !== start ? `:${start}-${end}` : `:${start}`) : ''
+        lines.push(`${index + 1}. \`${item.file_path || ''}${loc}\``)
+        if (item.note) lines.push(`   - 说明：${item.note}`)
+        if (item.snippet) lines.push(`   \`\`\`\n   ${item.snippet.replace(/\n/g, '\n   ')}\n   \`\`\``)
+      })
+      lines.push('')
+    }
+    if (norm.similar_cases.length) {
+      lines.push('## 相似案例\n')
+      norm.similar_cases.forEach((item) => {
+        lines.push(`- **${item.title || ''}**${item.similarity ? `（相似度：${item.similarity}）` : ''}`)
+        if (item.summary) lines.push(`  - ${item.summary}`)
+        if (item.reference) lines.push(`  - 参考：${item.reference}`)
+      })
+      lines.push('')
+    }
+    if (norm.call_chain.length) {
+      lines.push('## 调用链路\n')
+      norm.call_chain.forEach((node, index) => {
+        const seq = node.seq ?? index + 1
+        const label = [node.module, node.function].filter(Boolean).join('.') || node.file_path || ''
+        lines.push(`${seq}. ${label || '（未命名节点）'}${node.file_path ? ` — \`${node.file_path}\`` : ''}`)
+        if (node.description) lines.push(`   - ${node.description}`)
+      })
+      lines.push('')
+    }
+    lines.push(`## 置信度\n\n${norm.confidence}%`)
+    lines.push('')
+    const markdown = lines.join('\n')
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safeName = (taskName || 'diagnosis-result').replace(/[\\/:*?"<>|]/g, '_')
+    link.href = url
+    link.download = `${safeName}-定位结果.md`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   // ─── 任务类型过滤（会话列表） ───
@@ -2559,6 +2668,10 @@ export function useChatViewModel() {
     diagnosisResult,
     diagnosisResultLoading,
     diagnosisResultSaving,
+    diagnosisSummarizing,
+    diagnosisSummaryJobId,
+    exportDiagnosisResult,
+    generateDiagnosisSummary,
     hidePatchWorkflows,
     isDiagnosisTask,
     loadDiagnosisResult,

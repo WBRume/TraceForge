@@ -122,6 +122,26 @@ describe('DiagnosisResultCard', () => {
     expect(wrapper.emitted('openCase')![0]).toEqual(['case-7'])
   })
 
+  it('emits export and regenerate actions', async () => {
+    const wrapper = mountCard({ caseLink: 'case-7' })
+
+    await buttonByText(wrapper, 'diagnosis.export_markdown')!.trigger('click')
+    await buttonByText(wrapper, 'diagnosis.regenerate')!.trigger('click')
+
+    const exportEvents = wrapper.emitted('export')!
+    expect(exportEvents).toHaveLength(1)
+    expect((exportEvents[0][0] as DiagnosisResultPayload).root_cause).toBe('连接池配置过小')
+    expect(wrapper.emitted('regenerate')).toHaveLength(1)
+  })
+
+  it('keeps export available on a CONFIRMED result and hides regenerate', () => {
+    const wrapper = mountCard({ status: 'CONFIRMED', caseLink: 'case-9' })
+
+    expect(buttonByText(wrapper, 'diagnosis.export_markdown')).toBeTruthy()
+    expect(buttonByText(wrapper, 'diagnosis.regenerate')).toBeUndefined()
+    expect(wrapper.text()).toContain('diagnosis.view_case')
+  })
+
   it('adds and removes editable list items', async () => {
     const wrapper = mountCard()
 
