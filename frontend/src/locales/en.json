@@ -2889,7 +2889,14 @@
     "case_created": "Case draft created",
     "case_created_and_submitted": "Case created and submitted for expert review",
     "case_already_exists": "A case already exists for this task; opened it for you",
-    "case_create_failed": "Failed to create case"
+    "case_create_failed": "Failed to create case",
+    "summarize_case_button": "Summarize Issue Case",
+    "summarizing": "Summarizing…",
+    "summary_started": "Started generating the diagnosis result, please wait",
+    "summary_failed": "Failed to generate diagnosis result",
+    "summary_job_missing": "No summary job was returned",
+    "export_markdown": "Export Markdown",
+    "regenerate": "Regenerate"
   },
   "case_center": {
     "title": "Feature Case Center",

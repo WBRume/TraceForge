@@ -53,10 +53,11 @@ def test_prompt_suffix_declares_diagnosis_contract():
             # 多轮 HITL 补充线索
             assert "多轮交互（HITL）" in suffix
             assert "索取新的问题线索" in suffix
-            # 结构化结果输出约定
-            assert '```json' in suffix
-            assert '"code_context"' in suffix and '"similar_cases"' in suffix and '"call_chain"' in suffix
-            assert '"confidence"' in suffix
+            # 初始化提示词不再内嵌「每轮输出 JSON 定位结果」的约定（已收敛为「一键总结」生成）
+            assert '```json' not in suffix
+            assert '"confidence"' not in suffix
+            assert '"call_chain"' not in suffix
+            assert "每轮回复结束时" not in suffix
     finally:
         engine.dispose()
 
@@ -69,6 +70,35 @@ def test_prompt_suffix_empty_for_development_task():
             task.task_type = TaskType.DEVELOPMENT.value
             db.commit()
             assert diagnosis_result_service.build_diagnosis_prompt_suffix(task) == ""
+    finally:
+        engine.dispose()
+
+
+def test_build_diagnosis_summary_prompt_reuses_removed_json_contract():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            _, _, task = _seed_diagnosis_task(db)
+            prompt = diagnosis_result_service.build_diagnosis_summary_prompt(
+                task,
+                "[用户] 接口偶发超时\n[AI] 排查连接池",
+            )
+            assert "现象: 接口偶发超时" in prompt
+            assert "优先级: P1" in prompt
+            assert "会话记录" in prompt
+            assert "[用户] 接口偶发超时" in prompt
+            # 复用了原定位结果 JSON 契约
+            assert "```json" in prompt
+            assert '"summary"' in prompt
+            assert '"root_cause"' in prompt
+            assert '"code_context"' in prompt
+            assert '"similar_cases"' in prompt
+            assert '"call_chain"' in prompt
+            assert '"confidence"' in prompt
+
+            # 无会话内容时给出兜底说明
+            empty_prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, "")
+            assert "暂无私聊内容" in empty_prompt
     finally:
         engine.dispose()
 

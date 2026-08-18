@@ -453,18 +453,35 @@ const statusModelText = (card: any): string => {
         </div>
       </div>
 
-      <!-- Verification Quick Actions -->
-      <div v-if="!vm.hidePatchWorkflows && !vm.engineRunning && vm.messages.length > 0 && !vm.isChatLocked" class="verification-actions">
-        <span class="verify-label">{{ $t('portal.architecture') }}:</span>
-        <button class="btn-micro" @click="vm.sendVerification('ui')" title="Playwright UI">
-          <TestTube class="w-3" /> UI
-        </button>
-        <button class="btn-micro" @click="vm.sendVerification('api')" title="Postman API">
-          <Database class="w-3" /> API
-        </button>
-        <button class="btn-micro" @click="vm.sendVerification('e2e')" :title="$t('chat.verification_e2e_title')">
-          <Sparkles class="w-3" /> E2E
-        </button>
+      <!-- 快捷操作行：研发态任务显示快捷验证按钮；问题定位任务显示一键总结问题案例（样式与位置保持一致） -->
+      <div
+        v-if="vm.messages.length > 0 && !vm.isChatLocked && (vm.isDiagnosisTask || !vm.engineRunning)"
+        class="verification-actions"
+      >
+        <template v-if="!vm.hidePatchWorkflows">
+          <span class="verify-label">{{ $t('portal.architecture') }}:</span>
+          <button class="btn-micro" @click="vm.sendVerification('ui')" title="Playwright UI">
+            <TestTube class="w-3" /> UI
+          </button>
+          <button class="btn-micro" @click="vm.sendVerification('api')" title="Postman API">
+            <Database class="w-3" /> API
+          </button>
+          <button class="btn-micro" @click="vm.sendVerification('e2e')" :title="$t('chat.verification_e2e_title')">
+            <Sparkles class="w-3" /> E2E
+          </button>
+        </template>
+        <template v-else>
+          <button
+            class="btn-micro"
+            :disabled="vm.engineRunning || vm.diagnosisSummarizing"
+            :title="$t('diagnosis.summarize_case_button')"
+            @click="vm.generateDiagnosisSummary"
+          >
+            <Loader2 v-if="vm.diagnosisSummarizing" class="w-3 h-3 spin" />
+            <Sparkles v-else class="w-3 h-3" />
+            {{ vm.diagnosisSummarizing ? $t('diagnosis.summarizing') : $t('diagnosis.summarize_case_button') }}
+          </button>
+        </template>
       </div>
 
       <!-- 问题定位结果已改为会话内 AI 气泡卡片（DiagnosisResultCard），此处不再渲染独立面板 -->

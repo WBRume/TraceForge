@@ -57,6 +57,7 @@ TASK_QUEUE_PAUSED_STATUSES = {TaskStatus.INTERRUPTED, TaskStatus.FAILED}
 JOB_KIND_THREAD_AI_REPLY = "THREAD_AI_REPLY"
 JOB_KIND_RESOLUTION_PROPOSAL = "RESOLUTION_PROPOSAL"
 JOB_KIND_RESOLUTION_REWRITE = "RESOLUTION_REWRITE"
+JOB_KIND_DIAGNOSIS_SUMMARY = "DIAGNOSIS_SUMMARY"
 
 _QUEUE_LOCKS: Dict[str, asyncio.Lock] = {}
 _QUEUE_RUNNERS: Dict[str, asyncio.Task] = {}
@@ -455,6 +456,43 @@ def create_task_chat_job(
         )
     except Exception as exc:
         logger.warning(f"Failed to seed context token snapshot for job {job.id}: {exc}")
+    return job
+
+
+def create_diagnosis_summary_job(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+    creator_id: str,
+) -> SddAiJob:
+    """问题定位任务「一键总结问题案例」：创建后台 AI 总结任务。
+
+    复用 TASK_CHAT 通道（同一任务串行队列），通过 context_json.job_kind 标记
+    JOB_KIND_DIAGNOSIS_SUMMARY。执行时走独立的一次性总结流程，不写入会话气泡，
+    完成后原位刷新「定位结果」卡片并广播到任务房间。
+    """
+    payload_context = {
+        "source": "task_chat",
+        "job_kind": JOB_KIND_DIAGNOSIS_SUMMARY,
+    }
+    job = SddAiJob(
+        workspace_id=workspace_id,
+        task_id=task_id,
+        asset_id=None,
+        thread_id=None,
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=_queue_key_for_task(task_id),
+        status=AiJobStatus.PENDING,
+        progress=0,
+        message="一键总结问题案例已进入队列",
+        prompt_text="[一键总结问题案例]",
+        context_json=payload_context,
+        creator_id=creator_id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
     return job
 
 
@@ -1640,6 +1678,10 @@ async def _execute_task_chat_job(job_id: str) -> None:
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task:
             raise ValueError("Task not found for AI job")
+        # 问题定位任务「一键总结问题案例」：一次性总结任务，不写会话气泡，走独立执行器
+        job_context = job.context_json if isinstance(job.context_json, dict) else {}
+        if str(job_context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
+            return await _execute_diagnosis_summary_job(job_id)
     finally:
         db.close()
 
@@ -1665,6 +1707,160 @@ async def _execute_task_chat_job(job_id: str) -> None:
         )
 
         await _run_task_chat_turn(job_id, prompt)
+
+
+def _collect_diagnosis_transcript(task_id: str, max_chars: int = 60000) -> str:
+    """汇总问题定位任务的会话文本（user/assistant/system），供一键总结使用。"""
+    from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+    from app.domains.task.services import task_service as task_service_module
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ChatMessage)
+            .filter(
+                ChatMessage.task_id == task_id,
+                ChatMessage.message_type.in_([MessageType.TEXT, MessageType.INIT_REASON]),
+            )
+            .all()
+        )
+        rows = task_service_module.sort_chat_messages(rows)
+        parts: List[str] = []
+        for row in rows:
+            role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)
+            if role == "user":
+                label = "用户"
+            elif role == "system":
+                label = "系统"
+            else:
+                label = "AI"
+            content = str(row.content or "").strip()
+            if not content:
+                continue
+            parts.append(f"[{label}] {content}")
+        transcript = "\n\n".join(parts).strip()
+    finally:
+        db.close()
+    if not transcript:
+        return ""
+    limit = max(0, int(max_chars or 60000))
+    if len(transcript) > limit:
+        head = transcript[: limit * 3 // 4]
+        tail = transcript[-limit // 4:]
+        transcript = f"{head}\n\n…（中间内容过长已截断）…\n\n{tail}"
+    return transcript
+
+
+def _resolve_task_project_path(task) -> str:
+    """解析任务 CLI 工作目录（与正常会话引擎一致）。"""
+    project_path = str(getattr(task, "project_path", None) or "").strip() or "."
+    try:
+        os.makedirs(project_path, exist_ok=True)
+    except Exception:
+        pass
+    return project_path
+
+
+async def _publish_diagnosis_summary_card(db: Session, task, result_record) -> None:
+    if result_record is None or not result_record.source_chat_message_id:
+        return
+    from app.domains.task.models.chat import ChatMessage
+
+    message = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.id == result_record.source_chat_message_id)
+        .first()
+    )
+    if not message:
+        return
+    await diagnosis_result_service.publish_diagnosis_result_message(db, task=task, message=message)
+
+
+async def _execute_diagnosis_summary_job(job_id: str) -> None:
+    """问题定位任务「一键总结问题案例」执行器。
+
+    汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并广播。
+    与正常聊天不同：不向会话写入 AI 回复气泡。
+    """
+    db = SessionLocal()
+    task = None
+    creator_id = ""
+    try:
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        if not job:
+            return
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+        if not task or getattr(task, "task_type", None) != "DIAGNOSIS":
+            raise ValueError("Only diagnosis tasks support diagnosis summary")
+        creator_id = str(job.creator_id or "")
+    finally:
+        db.close()
+
+    with bind_task_context(
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        user_id=creator_id,
+    ), bind_ai_context(
+        job_id=job_id,
+        task_id=task.id,
+        session_id=None,
+        event_type="diagnosis_summary",
+    ):
+        await _update_job_state(
+            job_id,
+            status=AiJobStatus.RUNNING,
+            progress=40,
+            message="正在汇总会话并生成定位结果",
+            context_patch={"job_kind": JOB_KIND_DIAGNOSIS_SUMMARY},
+        )
+        project_path = _resolve_task_project_path(task)
+        transcript = _collect_diagnosis_transcript(task.id)
+        prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
+
+        await _update_job_state(job_id, progress=55, message="AI 正在生成结构化定位结果")
+        result = await run_cli_single_turn(
+            prompt,
+            project_path,
+            session_id=None,
+            should_cancel=lambda: _is_cancel_requested(job_id),
+        )
+        summary_text = str(result.get("text") or "").strip()
+        if not summary_text:
+            raise ValueError("Diagnosis summary reply is empty")
+
+        payload = diagnosis_result_service.extract_payload_from_text(summary_text)
+        if payload is None:
+            raise ValueError("Failed to parse structured diagnosis summary")
+
+        db = SessionLocal()
+        try:
+            latest_task = db.query(SddTask).filter(SddTask.id == task.id).first()
+            if not latest_task:
+                raise ValueError("Task disappeared during diagnosis summary")
+            result_record = diagnosis_result_service.upsert_diagnosis_result_from_ai(
+                db,
+                task=latest_task,
+                payload=payload,
+                actor_user_id=creator_id,
+            )
+            await _publish_diagnosis_summary_card(db, latest_task, result_record)
+        finally:
+            db.close()
+
+        await _update_job_state(
+            job_id,
+            status=AiJobStatus.SUCCESS,
+            progress=100,
+            message="定位结果已生成",
+            result_patch={
+                "summary_excerpt": str(
+                    payload.summary or payload.root_cause or summary_text
+                )[:1200],
+                "summary_source": "diagnosis_summary",
+            },
+            session_id=str(result.get("session_id") or "") or None,
+            finalize=True,
+        )
 
 
 async def _run_task_chat_turn(job_id: str, prompt: str) -> None:

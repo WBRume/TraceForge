@@ -61,22 +61,62 @@ def build_diagnosis_prompt_suffix(task) -> str:
         "但禁止一次性全量修复——定位优先，避免长时间占用；现网问题请保持最小侵入、快速收敛。\n"
         "2. 修复方案不需要在会话内大规模实施，请以建议形式写入最终结果 JSON 的 fix_suggestion 与 fix_code 字段。\n"
         "3. 本会话支持多轮交互（HITL）：你可以通过提问向用户索取新的问题线索（日志、复现步骤、环境信息、变更记录等），"
-        "收到新线索后继续收敛定位。\n"
-        "4. 每轮回复结束时，请在回复末尾输出一个 ```json 代码块，包含定位结果，结构如下：\n"
-        "{\n"
-        '  "summary": "结果内容概述",\n'
-        '  "root_cause": "根因结论（未收敛时写当前最可能根因）",\n'
-        '  "evidence_chain": "证据链（日志片段、复现步骤、调用栈、测试用例输出）",\n'
-        '  "fix_suggestion": "修复方案说明",\n'
-        '  "fix_code": "修复代码/补丁",\n'
-        '  "code_context": [{"file_path": "", "start_line": 0, "end_line": 0, "snippet": "", "note": ""}],\n'
-        '  "similar_cases": [{"title": "", "similarity": "高/中/低", "summary": "", "reference": ""}],\n'
-        '  "call_chain": [{"seq": 1, "module": "", "function": "", "file_path": "", "description": ""}],\n'
-        '  "confidence": 0\n'
-        "}\n"
-        "confidence 为 0-100 的整数，反映当前定位的确定性；定位未收敛时也要输出当前进展，后续轮次会原位刷新结果。"
+        "收到新线索后继续收敛定位。"
     )
     return "\n\n" + "\n".join(parts)
+
+
+# 一键总结问题案例：结构化定位结果 JSON 契约（原每轮回复末尾输出的格式，改为在
+# 「一键总结」时由独立后台任务生成一次，输出展示格式与原定位结果气泡保持一致）
+DIAGNOSIS_RESULT_JSON_CONTRACT = """{
+  "summary": "结果内容概述",
+  "root_cause": "根因结论（未收敛时写当前最可能根因）",
+  "evidence_chain": "证据链（日志片段、复现步骤、调用栈、测试用例输出）",
+  "fix_suggestion": "修复方案说明",
+  "fix_code": "修复代码/补丁",
+  "code_context": [{"file_path": "", "start_line": 0, "end_line": 0, "snippet": "", "note": ""}],
+  "similar_cases": [{"title": "", "similarity": "高/中/低", "summary": "", "reference": ""}],
+  "call_chain": [{"seq": 1, "module": "", "function": "", "file_path": "", "description": ""}],
+  "confidence": 0
+}"""
+
+
+def build_diagnosis_summary_prompt(task, transcript: str) -> str:
+    """一键总结问题案例：把会话过程汇总为一份结构化定位结果。
+
+    复用上线时移出初始化提示词的 JSON 契约，仅要求输出一个 fenced JSON 代码块，
+    供 extract_payload_from_text 提取后反填入「定位结果」卡片。
+    """
+    task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
+    phenomenon = str(task_meta.get("phenomenon") or "").strip()
+    priority = str(task_meta.get("priority") or "").strip()
+
+    lines = ["你把「问题定位任务」的完整会话过程总结为一份结构化「问题案例」定位结果。"]
+    if phenomenon:
+        lines.append(f"现象: {phenomenon}")
+    if priority:
+        lines.append(f"优先级: {priority}")
+
+    lines.append("")
+    lines.append("请基于以下完整会话记录收敛问题根因并输出定位结果；信息不足以收敛时，")
+    lines.append("root_cause 写明当前最可能根因，confidence 相应调低，其余字段尽量补全。")
+    lines.append("")
+    lines.append("仅输出一个 fenced JSON 代码块（```json ... ```），不要输出任何额外文字或 Markdown，结构如下：")
+    lines.append("```json")
+    lines.append(DIAGNOSIS_RESULT_JSON_CONTRACT)
+    lines.append("```")
+    lines.append("")
+    lines.append("字段说明：")
+    lines.append("- summary: 本次定位的结果内容概述。")
+    lines.append("- root_cause: 根因结论（未收敛时写当前最可能根因）。")
+    lines.append("- evidence_chain: 证据链（日志片段、复现步骤、调用栈、测试用例输出）。")
+    lines.append("- fix_suggestion: 修复方案说明；fix_code 为修复代码/补丁建议。")
+    lines.append("- confidence: 0-100 的整数，反映当前定位的确定性。")
+    lines.append("")
+    lines.append("会话记录：")
+    lines.append("")
+    lines.append(str(transcript or "").strip() or "（暂无私聊内容，请基于现象给出初步定位结论。）")
+    return "\n".join(lines)
 
 
 # ────────────────────────── 结果提取 ──────────────────────────

@@ -8,6 +8,7 @@ import {
   ClipboardList,
   Code2,
   Copy,
+  Download,
   ExternalLink,
   FileCode2,
   GitBranch,
@@ -16,6 +17,7 @@ import {
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   Trash2,
   X,
@@ -34,12 +36,15 @@ const props = defineProps<{
   caseLink: string
   saving: boolean
   caseCreating: boolean
+  summarizing?: boolean
 }>()
 
 const emit = defineEmits<{
   save: [payload: DiagnosisResultPayload]
   confirm: []
   openCase: [caseId: string]
+  export: [payload: DiagnosisResultPayload]
+  regenerate: []
 }>()
 
 const { t } = useI18n()
@@ -359,14 +364,33 @@ function chainLabel(node: DiagnosisCallChainNode): string {
           <Pencil class="dc-btn-icon-svg" />
           {{ t('diagnosis.edit') }}
         </button>
-        <button class="dc-btn dc-btn-primary" type="button" :disabled="saving || caseCreating" @click="emit('confirm')">
+        <button v-if="hasContent" class="dc-btn dc-btn-secondary" type="button" @click="emit('export', local)">
+          <Download class="dc-btn-icon-svg" />
+          {{ t('diagnosis.export_markdown') }}
+        </button>
+        <button v-if="canEdit" class="dc-btn dc-btn-secondary" type="button" :disabled="saving || summarizing" @click="emit('regenerate')">
+          <Loader2 v-if="summarizing" class="dc-btn-icon-svg dc-spin" />
+          <RefreshCw v-else class="dc-btn-icon-svg" />
+          {{ t('diagnosis.regenerate') }}
+        </button>
+        <button class="dc-btn dc-btn-primary" type="button" :disabled="saving || caseCreating || summarizing" @click="emit('confirm')">
           <Loader2 v-if="caseCreating" class="dc-btn-icon-svg dc-spin" />
           <CheckCircle2 v-else class="dc-btn-icon-svg" />
           {{ t('diagnosis.confirm_create_case') }}
         </button>
       </template>
     </div>
-    <div v-if="caseLink" class="dc-actions">
+    <div v-if="resultConfirmed && hasContent" class="dc-actions">
+      <button class="dc-btn dc-btn-secondary" type="button" @click="emit('export', local)">
+        <Download class="dc-btn-icon-svg" />
+        {{ t('diagnosis.export_markdown') }}
+      </button>
+      <button v-if="caseLink" class="dc-btn dc-btn-link" type="button" @click="emit('openCase', caseLink)">
+        <ExternalLink class="dc-btn-icon-svg" />
+        {{ t('diagnosis.view_case') }}
+      </button>
+    </div>
+    <div v-if="caseLink && !resultConfirmed" class="dc-actions">
       <button class="dc-btn dc-btn-link" type="button" @click="emit('openCase', caseLink)">
         <ExternalLink class="dc-btn-icon-svg" />
         {{ t('diagnosis.view_case') }}

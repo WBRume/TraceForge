@@ -51,6 +51,18 @@ function handleSaveDiagnosis(payload: Record<string, any>) {
   props.vm.saveDiagnosisResult(payload, props.msg.id)
 }
 
+function handleExportDiagnosis(payload: Record<string, any>) {
+  if (typeof props.vm.exportDiagnosisResult === 'function') {
+    props.vm.exportDiagnosisResult(payload)
+  }
+}
+
+function handleRegenerateDiagnosis() {
+  if (typeof props.vm.generateDiagnosisSummary === 'function') {
+    props.vm.generateDiagnosisSummary()
+  }
+}
+
 function openDiagnosisCase(caseId: string) {
   props.vm.router.push(`/ws/${props.vm.route.params.wsId}/cases/${caseId}`)
 }
@@ -88,9 +100,12 @@ function openDiagnosisCase(caseId: string) {
         :case-link="String(vm.diagnosisCaseLink || '')"
         :saving="Boolean(vm.diagnosisResultSaving)"
         :case-creating="Boolean(vm.diagnosisCaseCreating)"
+        :summarizing="Boolean(vm.diagnosisSummarizing)"
         @save="handleSaveDiagnosis"
         @confirm="vm.createDiagnosisCase(false)"
         @open-case="openDiagnosisCase"
+        @export="handleExportDiagnosis"
+        @regenerate="handleRegenerateDiagnosis"
       />
 
       <div v-else class="message-bubble">

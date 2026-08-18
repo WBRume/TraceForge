@@ -1272,3 +1272,101 @@ def create_case_draft_from_task(
     payload["my_can_manage"] = True
     payload["my_can_review"] = bool(member.is_expert) if member else False
     return payload
+
+
+@router.post("/{task_id}/diagnosis-summary", response_model=dict)
+async def trigger_diagnosis_summary(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：一键总结问题案例。
+
+    创建一次性的「诊断总结」后台 AI 任务：汇总问题定位会话过程，按原定位结果
+    JSON 契约生成结构化结果，完成后原位刷新「定位结果」卡片并广播到任务房间。
+    同任务已有进行中的总结任务时直接返回既有任务（幂等）。
+    """
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to summarize diagnosis cases",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+
+    active_job = (
+        db.query(ai_job_service.SddAiJob)
+        .filter(
+            ai_job_service.SddAiJob.task_id == task.id,
+            ai_job_service.SddAiJob.channel == ai_job_service.AiJobChannel.TASK_CHAT,
+            ai_job_service.SddAiJob.status.in_(
+                [
+                    ai_job_service.AiJobStatus.PENDING.value,
+                    ai_job_service.AiJobStatus.RUNNING.value,
+                ]
+            ),
+        )
+        .order_by(ai_job_service.SddAiJob.created_at.desc())
+        .first()
+    )
+    if active_job is not None:
+        active_context = (
+            active_job.context_json
+            if isinstance(active_job.context_json, dict)
+            else {}
+        )
+        if str(active_context.get("job_kind") or "").strip().upper() == "DIAGNOSIS_SUMMARY":
+            return {
+                "job_id": active_job.id,
+                "status": ai_job_service.serialize_job(active_job).get("status"),
+                "task_id": task.id,
+            }
+
+    job = ai_job_service.create_diagnosis_summary_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=current_user.id,
+    )
+    audit_log(
+        action="diagnosis_summary_triggered",
+        outcome="success",
+        resource_type="ai_job",
+        resource_id=job.id,
+        user_id=current_user.id,
+        workspace_id=ws_id,
+        task_id=task.id,
+    )
+    await ai_job_service.enqueue_task_chat_job(job.id)
+    return {"job_id": job.id, "status": "PENDING", "task_id": task.id}
+
+
+@router.get("/{task_id}/diagnosis-summary/{job_id}", response_model=dict)
+def get_diagnosis_summary_status(
+    ws_id: str,
+    task_id: str,
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：查询「一键总结问题案例」后台任务状态（供前端轮询收敛）。"""
+    verify_workspace_access(ws_id, current_user, db)
+    job = (
+        db.query(ai_job_service.SddAiJob)
+        .filter(
+            ai_job_service.SddAiJob.id == job_id,
+            ai_job_service.SddAiJob.task_id == task_id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Diagnosis summary job not found")
+    payload = ai_job_service.serialize_job(job)
+    return {
+        "job_id": job.id,
+        "task_id": task_id,
+        "status": str(payload.get("status") or ""),
+        "message": payload.get("message"),
+    }
