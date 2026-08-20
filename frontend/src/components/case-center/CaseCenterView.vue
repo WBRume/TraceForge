@@ -1,18 +1,48 @@
 <script setup lang="ts">
-import { onMounted, proxyRefs, ref, watch } from 'vue'
+import { computed, onMounted, proxyRefs, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { Search, Plus, Loader2, BookMarked, RefreshCw } from 'lucide-vue-next'
+import BaseSelect from '@/components/BaseSelect.vue'
 import { useCaseCenter } from '@/composables/useCaseCenter'
 import CaseStatusPill from './CaseStatusPill.vue'
 import CaseCategoryTag from './CaseCategoryTag.vue'
 import CasePriorityTag from './CasePriorityTag.vue'
 import CaseFormDialog from './CaseFormDialog.vue'
 
+interface WorkspaceOption {
+  label: string
+  value: string
+}
+
+const props = withDefaults(defineProps<{
+  workspaceId?: string
+  embedded?: boolean
+  workspaceOptions?: WorkspaceOption[]
+}>(), {
+  embedded: false,
+  workspaceOptions: () => [],
+})
+
+const emit = defineEmits<{
+  (e: 'update:workspaceId', value: string): void
+}>()
+
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-const vm = proxyRefs(useCaseCenter())
+
+const activeWorkspaceId = computed(() => {
+  if (props.workspaceId !== undefined) return String(props.workspaceId || '')
+  return String(route.params.wsId || '')
+})
+
+const vm = proxyRefs(useCaseCenter({ workspaceId: () => activeWorkspaceId.value }))
+
+const workspaceFilter = computed({
+  get: () => props.workspaceId ?? '',
+  set: (value: string) => emit('update:workspaceId', String(value || '')),
+})
 
 const searchInput = ref('')
 
@@ -37,26 +67,32 @@ const selectCategory = (value: string) => {
   vm.applyFilters()
 }
 
-const goToReport = (caseId: string) => {
-  router.push({
-    name: 'workspaceCaseDetail',
-    params: { wsId: String(route.params.wsId || ''), caseId },
-  })
+const goToReport = (caseId: string, item?: { workspace_id?: string }) => {
+  const wsId = String(item?.workspace_id || route.params.wsId || '')
+  if (!wsId) return
+  router.push(
+    props.embedded
+      ? { name: 'knowledgeCaseDetail', params: { wsId, caseId } }
+      : { name: 'workspaceCaseDetail', params: { wsId, caseId } },
+  )
 }
 
-const handleOpenCase = (caseId: string) => {
-  goToReport(caseId)
+const handleOpenCase = (item: { id: string; workspace_id?: string }) => {
+  goToReport(item.id, item)
 }
 
 // 兼容旧的 ?case= 深链：直接跳转到独立报告页
 const redirectQueryCase = () => {
   const caseId = String(route.query.case || '')
-  if (caseId) {
-    router.replace({
-      name: 'workspaceCaseDetail',
-      params: { wsId: String(route.params.wsId || ''), caseId },
-    })
-  }
+  if (!caseId) return
+  const target = vm.items.find((item) => item.id === caseId)
+  const wsId = String(target?.workspace_id || route.params.wsId || '')
+  if (!wsId) return
+  router.replace(
+    props.embedded
+      ? { name: 'knowledgeCaseDetail', params: { wsId, caseId } }
+      : { name: 'workspaceCaseDetail', params: { wsId, caseId } },
+  )
 }
 
 onMounted(async () => {
@@ -70,12 +106,16 @@ watch(
     if (value) redirectQueryCase()
   },
 )
+
+watch(activeWorkspaceId, () => {
+  void vm.loadCases({ reset: true })
+})
 </script>
 
 <template>
-  <div class="case-center">
-    <div class="cc-header">
-      <div class="cc-title-row">
+  <div class="case-center" :class="{ 'case-center--embedded': embedded }">
+    <div class="cc-header" :class="{ 'cc-header-embedded': embedded }">
+      <div v-if="!embedded" class="cc-title-row">
         <BookMarked class="w-6 h-6 cc-icon" />
         <div>
           <h2 class="cc-title">{{ t('case_center.title') }}</h2>
@@ -113,6 +153,13 @@ watch(
         </button>
       </div>
       <div class="filter-selects">
+        <BaseSelect
+          v-if="workspaceOptions.length > 0"
+          v-model="workspaceFilter"
+          :options="workspaceOptions"
+          size="sm"
+          class="workspace-filter-select"
+        />
         <el-select v-model="vm.status" size="small" class="filter-select" @change="vm.applyFilters()">
           <el-option v-for="s in statusOptions" :key="s" :label="s === 'ALL' ? t('case_center.status_all') : t(`case_center.status.${s}`)" :value="s" />
         </el-select>
@@ -137,7 +184,7 @@ watch(
       </div>
 
       <div v-else class="cc-list-inner">
-        <div v-for="item in vm.items" :key="item.id" class="cc-row" @click="handleOpenCase(item.id)">
+        <div v-for="item in vm.items" :key="item.id" class="cc-row" @click="handleOpenCase(item)">
           <div class="cc-row-main">
             <div class="cc-row-title">{{ item.title }}</div>
             <div class="cc-row-desc" v-if="item.problem_description">{{ item.problem_description }}</div>
@@ -145,6 +192,7 @@ watch(
               <CaseCategoryTag :category="item.category" />
               <CasePriorityTag :priority="item.priority" />
               <CaseStatusPill :status="item.status" />
+              <span v-if="item.workspace_name" class="cc-row-source">{{ item.workspace_name }}</span>
               <span v-if="item.source_task_name" class="cc-row-source">{{ item.source_task_name }}</span>
               <span class="cc-row-creator">{{ item.creator_name || '-' }}</span>
             </div>
@@ -181,9 +229,15 @@ watch(
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 1200px;
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
+}
+
+.case-center--embedded {
+  padding: 0;
+  max-width: none;
+  margin: 0;
 }
 
 .cc-header {
@@ -192,6 +246,10 @@ watch(
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.cc-header-embedded {
+  justify-content: flex-end;
 }
 
 .cc-title-row {
@@ -303,6 +361,10 @@ watch(
 
 .filter-select {
   width: 130px;
+}
+
+.workspace-filter-select {
+  width: 160px;
 }
 
 .refresh-btn {

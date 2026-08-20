@@ -42,52 +42,31 @@ const router = createRouter({
       component: () => import('../views/ProvisioningView.vue'),
       meta: { requiresAuth: true }
     },
-    {
-      path: '/ops/queue',
-      name: 'opsQueueList',
-      component: () => import('../views/OpsQueueListView.vue'),
-      meta: { requiresAuth: true }
-    },
-    {
-      path: '/ops/queue/:source/:jobId',
-      name: 'opsQueueDetail',
-      component: () => import('../views/OpsQueueDetailView.vue'),
-      meta: { requiresAuth: true }
-    },
+    // Legacy URLs kept working: skills now live inside the Operations Center (/ops).
     {
       path: '/skills',
-      name: 'skillsHome',
-      component: () => import('../views/SkillsView.vue'),
-      meta: { requiresAuth: true }
+      redirect: '/ops/skills',
     },
     {
       path: '/skills/new',
-      name: 'skillsCreate',
-      component: () => import('../views/SkillEditorView.vue'),
-      meta: { requiresAuth: true }
+      redirect: '/ops/skills/new',
     },
     {
       path: '/skills/:skillId/edit',
-      name: 'skillsEdit',
-      component: () => import('../views/SkillEditorView.vue'),
-      meta: { requiresAuth: true }
+      redirect: (to) => ({ path: `/ops/skills/${to.params.skillId}/edit` }),
     },
     {
       path: '/skills/:skillId/edit/analysis',
-      name: 'skillsEditAnalysis',
-      component: () => import('../views/SkillEditorView.vue'),
-      meta: { requiresAuth: true }
+      redirect: (to) => ({ path: `/ops/skills/${to.params.skillId}/edit/analysis` }),
     },
     {
       path: '/skills/:skillId/edit/analysis/risks/:riskKey',
-      name: 'skillsEditAnalysisRisk',
-      component: () => import('../views/SkillEditorView.vue'),
-      meta: { requiresAuth: true }
+      redirect: (to) => ({ path: `/ops/skills/${to.params.skillId}/edit/analysis/risks/${to.params.riskKey}` }),
     },
     {
       path: '/management',
       component: () => import('../views/management/ManagementLayout.vue'),
-      meta: { requiresAuth: true },
+      meta: { requiresAuth: true, center: 'config' },
       children: [
         {
           path: 'products',
@@ -117,6 +96,93 @@ const router = createRouter({
         {
           path: '',
           redirect: '/management/products',
+        },
+      ],
+    },
+    {
+      path: '/ops',
+      component: () => import('../views/management/ManagementLayout.vue'),
+      meta: { requiresAuth: true, center: 'ops' },
+      children: [
+        {
+          path: 'queue',
+          name: 'opsQueueList',
+          component: () => import('../views/OpsQueueListView.vue'),
+        },
+        {
+          path: 'queue/:source/:jobId',
+          name: 'opsQueueDetail',
+          component: () => import('../views/OpsQueueDetailView.vue'),
+        },
+        {
+          path: 'skills',
+          name: 'skillsHome',
+          component: () => import('../views/SkillsView.vue'),
+        },
+        {
+          path: 'skills/new',
+          name: 'skillsCreate',
+          component: () => import('../views/SkillEditorView.vue'),
+        },
+        {
+          path: 'skills/:skillId/edit',
+          name: 'skillsEdit',
+          component: () => import('../views/SkillEditorView.vue'),
+        },
+        {
+          path: 'skills/:skillId/edit/analysis',
+          name: 'skillsEditAnalysis',
+          component: () => import('../views/SkillEditorView.vue'),
+        },
+        {
+          path: 'skills/:skillId/edit/analysis/risks/:riskKey',
+          name: 'skillsEditAnalysisRisk',
+          component: () => import('../views/SkillEditorView.vue'),
+        },
+        {
+          path: '',
+          redirect: '/ops/queue',
+        },
+      ],
+    },
+    {
+      path: '/knowledge',
+      component: () => import('../views/management/ManagementLayout.vue'),
+      meta: { requiresAuth: true, center: 'knowledge' },
+      children: [
+        {
+          path: 'business',
+          name: 'knowledgeBusiness',
+          component: () => import('../views/knowledge/BusinessKnowledgeView.vue'),
+        },
+        {
+          path: 'framework',
+          name: 'knowledgeFramework',
+          component: () => import('../views/knowledge/FrameworkKnowledgeView.vue'),
+        },
+        {
+          path: 'maintenance',
+          name: 'knowledgeMaintenance',
+          component: () => import('../views/knowledge/MaintenanceKnowledgeView.vue'),
+        },
+        {
+          path: 'cases',
+          name: 'knowledgeCases',
+          component: () => import('../views/knowledge/KnowledgeCaseCenterView.vue'),
+        },
+        {
+          path: 'cases/:wsId',
+          name: 'knowledgeCasesWorkspace',
+          component: () => import('../views/knowledge/KnowledgeCaseCenterView.vue'),
+        },
+{
+          path: 'cases/:wsId/:caseId',
+          name: 'knowledgeCaseDetail',
+          component: () => import('../views/CaseReportView.vue'),
+        },
+        {
+          path: '',
+          redirect: '/knowledge/business',
         },
       ],
     },

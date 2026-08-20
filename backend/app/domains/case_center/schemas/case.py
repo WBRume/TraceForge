@@ -1,5 +1,5 @@
 """
-案例中心 Pydantic Schemas
+案例知识中心 Pydantic Schemas
 """
 
 from typing import List, Literal, Optional
@@ -71,6 +71,10 @@ class CaseReviewRecordResponse(BaseModel):
 class CaseResponse(BaseModel):
     id: str
     workspace_id: str
+    workspace_name: Optional[str] = None
+    project_name: Optional[str] = None
+    project_products: List[dict] = Field(default_factory=list)
+    repositories: List[dict] = Field(default_factory=list)
     creator_id: str
     source_task_id: Optional[str] = None
     title: str

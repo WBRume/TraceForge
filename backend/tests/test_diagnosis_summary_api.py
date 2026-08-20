@@ -20,6 +20,7 @@ if TEST_ROOT not in sys.path:
 from app.domains.task.models.task import TaskType  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
+from app.domains.ai.services import ai_job_service  # noqa: E402
 from test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
 
@@ -81,6 +82,57 @@ def test_trigger_diagnosis_summary_creates_job_and_polls_status():
         assert status_resp.status_code == 200, status_resp.text
         assert status_resp.json()["job_id"] == job_id
         assert status_resp.json()["status"] == AiJobStatus.PENDING.value
+    finally:
+        engine.dispose()
+
+
+def test_diagnosis_summary_rejected_after_case_adopted():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_diagnosis_task(
+                db,
+                workspace_id="ws-summary-adopted",
+                task_id="task-summary-adopted",
+            )
+            ws_id, task_id = workspace.id, task.id
+        client = TestClient(_build_app(SessionLocal, user))
+
+        # 确认采纳 → 一键生成案例草稿
+        adopt_resp = client.post(
+            f"/api/workspaces/{ws_id}/tasks/{task_id}/case-draft",
+            json={},
+        )
+        assert adopt_resp.status_code == 201, adopt_resp.text
+
+        # 案例已被采纳后禁止再次一键总结
+        resp = client.post(
+            f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-summary"
+        )
+        assert resp.status_code == 409, resp.text
+        assert "already adopted" in resp.json()["detail"]
+    finally:
+        engine.dispose()
+
+
+def test_diagnosis_summary_job_marker_blocks_auto_fill():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_diagnosis_task(
+                db,
+                workspace_id="ws-summary-marker",
+                task_id="task-summary-marker",
+            )
+            assert ai_job_service._has_diagnosis_summary_job(db, task.id) is False
+            job = ai_job_service.create_diagnosis_summary_job(
+                db,
+                workspace_id=workspace.id,
+                task_id=task.id,
+                creator_id=user.id,
+            )
+            assert job is not None
+            assert ai_job_service._has_diagnosis_summary_job(db, task.id) is True
     finally:
         engine.dispose()
 

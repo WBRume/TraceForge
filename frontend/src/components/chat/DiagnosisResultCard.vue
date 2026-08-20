@@ -37,6 +37,7 @@ const props = defineProps<{
   saving: boolean
   caseCreating: boolean
   summarizing?: boolean
+  adopted?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -62,7 +63,8 @@ watch(
 )
 
 const resultConfirmed = computed(() => String(props.status || '') === 'CONFIRMED')
-const canEdit = computed(() => !resultConfirmed.value && !props.saving)
+const adopted = computed(() => props.adopted || resultConfirmed.value || Boolean(props.caseLink))
+const canEdit = computed(() => !adopted.value && !props.saving)
 
 const hasContent = computed(() => {
   const value = local.value
@@ -166,7 +168,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
         <span v-if="resultConfirmed" class="dc-pill dc-pill-confirmed">{{ t('diagnosis.result_confirmed') }}</span>
         <span v-else class="dc-pill dc-pill-draft">{{ t('diagnosis.result_draft') }}</span>
         <button
-          v-if="canEdit && !editing"
+          v-if="canEdit && !editing && !summarizing"
           class="dc-btn-icon"
           type="button"
           :title="t('diagnosis.edit')"
@@ -347,20 +349,20 @@ function chainLabel(node: DiagnosisCallChainNode): string {
       </div>
     </div>
 
-    <div v-if="!resultConfirmed" class="dc-actions">
+    <div v-if="!adopted" class="dc-actions">
       <template v-if="editing">
         <button class="dc-btn dc-btn-secondary" type="button" :disabled="saving" @click="cancelEdit">
           <X class="dc-btn-icon-svg" />
           {{ t('diagnosis.cancel_edit') }}
         </button>
-        <button class="dc-btn dc-btn-primary" type="button" :disabled="saving" @click="handleSave">
+        <button class="dc-btn dc-btn-primary" type="button" :disabled="saving || summarizing" @click="handleSave">
           <Loader2 v-if="saving" class="dc-btn-icon-svg dc-spin" />
           <Save v-else class="dc-btn-icon-svg" />
           {{ t('diagnosis.save_draft') }}
         </button>
       </template>
       <template v-else>
-        <button v-if="canEdit" class="dc-btn dc-btn-secondary" type="button" @click="startEdit">
+        <button v-if="canEdit && !summarizing" class="dc-btn dc-btn-secondary" type="button" @click="startEdit">
           <Pencil class="dc-btn-icon-svg" />
           {{ t('diagnosis.edit') }}
         </button>
@@ -380,7 +382,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
         </button>
       </template>
     </div>
-    <div v-if="resultConfirmed && hasContent" class="dc-actions">
+    <div v-if="adopted && hasContent" class="dc-actions">
       <button class="dc-btn dc-btn-secondary" type="button" @click="emit('export', local)">
         <Download class="dc-btn-icon-svg" />
         {{ t('diagnosis.export_markdown') }}
@@ -390,7 +392,7 @@ function chainLabel(node: DiagnosisCallChainNode): string {
         {{ t('diagnosis.view_case') }}
       </button>
     </div>
-    <div v-if="caseLink && !resultConfirmed" class="dc-actions">
+    <div v-if="caseLink && !resultConfirmed && !hasContent" class="dc-actions">
       <button class="dc-btn dc-btn-link" type="button" @click="emit('openCase', caseLink)">
         <ExternalLink class="dc-btn-icon-svg" />
         {{ t('diagnosis.view_case') }}

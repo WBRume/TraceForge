@@ -120,3 +120,66 @@ def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):
     # 最后一条必须是定位结果卡片，而不是与上一个 assistant 文本气泡倒转
     assert types[-1] == MessageType.DIAGNOSIS_RESULT.value
     assert types[:-1] == ["text", "text", "text"]
+
+
+def test_diagnosis_result_card_moves_to_end_when_updated_again(db_session):
+    db = db_session
+    task = _seed_task(db)
+    task.task_type = "DIAGNOSIS"
+    db.commit()
+
+    for index in range(3):
+        task_service.save_chat_message(
+            db,
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            role="assistant",
+            content=f"stream-chunk-{index}",
+            message_type="text",
+        )
+
+    diagnosis_result_service.upsert_diagnosis_result_from_ai(
+        db,
+        task=task,
+        payload=DiagnosisResultPayload(summary="first result", root_cause="R1"),
+        actor_user_id=task.creator_id,
+    )
+
+    # 卡片生成后，会话又追加了两条回复
+    for index in range(2):
+        task_service.save_chat_message(
+            db,
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            role="assistant",
+            content=f"later-chunk-{index}",
+            message_type="text",
+        )
+
+    # 一键总结再次更新定位结果，卡片应移动到会话最后
+    diagnosis_result_service.upsert_diagnosis_result_from_ai(
+        db,
+        task=task,
+        payload=DiagnosisResultPayload(summary="updated summary", root_cause="R2"),
+        actor_user_id=task.creator_id,
+    )
+
+    same_time = datetime.utcnow()
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
+        {"created_at": same_time}
+    )
+    db.commit()
+
+    history = task_service.get_task_history(db, task.id, task.workspace_id)
+    types = [m["type"] for m in history.get("messages", [])]
+    assert types == [
+        "text",
+        "text",
+        "text",
+        "text",
+        "text",
+        MessageType.DIAGNOSIS_RESULT.value,
+    ]
+    assert history["messages"][-1]["metadata"]["summary"] == "updated summary"

@@ -1,20 +1,34 @@
 <!--
-Management domain shell: navbar + sidebar navigation + router-view.
-Route views stay thin; feature UI lives in components/management/*.
+Knowledge/Management domain shell: navbar + sidebar navigation + router-view.
+Serves centers distinguished by route meta.center:
+  - 'config'    (配置中心 / Config Center): products / projects / repositories
+  - 'ops'       (管理中心 / Management Center): queue ops / skills
+  - 'knowledge' (知识中心 / Knowledge Center): business / framework / maintenance / cases
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Package, FolderKanban, GitFork, ArrowLeft } from 'lucide-vue-next'
+import { Package, FolderKanban, GitFork, ServerCog, Wrench, BookMarked, Briefcase, Layers } from 'lucide-vue-next'
+import AppSidebar from '@/components/AppSidebar.vue'
 
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 
 const routeName = computed(() => String(route.name ?? ''))
+const center = computed(() => String(route.meta.center || 'config'))
 
-const navItems = computed(() => [
+const isEditorRoute = computed(() =>
+  ['skillsCreate', 'skillsEdit', 'skillsEditAnalysis', 'skillsEditAnalysisRisk'].includes(routeName.value))
+
+const layoutTitle = computed(() => {
+  if (center.value === 'ops') return t('management.ops_layout_title')
+  if (center.value === 'knowledge') return t('knowledge.layout_title')
+  return t('management.layout_title')
+})
+
+const configNavItems = computed(() => [
   {
     key: 'products',
     label: t('management.nav_products'),
@@ -38,6 +52,60 @@ const navItems = computed(() => [
   },
 ])
 
+const opsNavItems = computed(() => [
+  {
+    key: 'queue',
+    label: t('queue_ops.entry'),
+    icon: ServerCog,
+    to: '/ops/queue',
+    active: routeName.value === 'opsQueueList' || routeName.value === 'opsQueueDetail',
+  },
+  {
+    key: 'skills',
+    label: t('skills.entry'),
+    icon: Wrench,
+    to: '/ops/skills',
+    active: ['skillsHome', 'skillsCreate', 'skillsEdit', 'skillsEditAnalysis', 'skillsEditAnalysisRisk'].includes(routeName.value),
+  },
+])
+
+const knowledgeNavItems = computed(() => [
+  {
+    key: 'business',
+    label: t('knowledge.nav.business'),
+    icon: Briefcase,
+    to: '/knowledge/business',
+    active: routeName.value === 'knowledgeBusiness',
+  },
+  {
+    key: 'framework',
+    label: t('knowledge.nav.framework'),
+    icon: Layers,
+    to: '/knowledge/framework',
+    active: routeName.value === 'knowledgeFramework',
+  },
+  {
+    key: 'maintenance',
+    label: t('knowledge.nav.maintenance'),
+    icon: Wrench,
+    to: '/knowledge/maintenance',
+    active: routeName.value === 'knowledgeMaintenance',
+  },
+  {
+    key: 'cases',
+    label: t('knowledge.nav.cases'),
+    icon: BookMarked,
+    to: '/knowledge/cases',
+    active: routeName.value === 'knowledgeCases' || routeName.value === 'knowledgeCasesWorkspace' || routeName.value === 'knowledgeCaseDetail',
+  },
+])
+
+const navItems = computed(() => {
+  if (center.value === 'ops') return opsNavItems.value
+  if (center.value === 'knowledge') return knowledgeNavItems.value
+  return configNavItems.value
+})
+
 const goBack = () => {
   router.push('/workspaces')
 }
@@ -45,37 +113,20 @@ const goBack = () => {
 
 <template>
   <div class="mgmt-container">
-    <nav class="mgmt-navbar">
-      <div class="mgmt-logo">
-        <div class="mgmt-logo-icon"></div>
-        <router-link to="/" class="mgmt-logo-text">{{ $t('portal.title') }}</router-link>
-        <span class="mgmt-subtitle">· {{ $t('management.layout_title') }}</span>
-      </div>
-      <div class="mgmt-nav-actions">
-        <button class="btn-secondary flex items-center gap-2" @click="goBack">
-          <ArrowLeft class="w-4 h-4" /> {{ $t('management.back_to_workspaces') }}
-        </button>
-      </div>
-    </nav>
+    <AppSidebar
+      :title="layoutTitle"
+      :nav-items="navItems"
+      :back-title="t('management.back_to_workspaces')"
+      :collapsible="true"
+      :default-collapsed="false"
+      :show-back="true"
+      :show-toggle="true"
+      @back="goBack"
+    />
 
-    <div class="mgmt-layout">
-      <aside class="mgmt-sidebar glass-panel">
-        <router-link
-          v-for="item in navItems"
-          :key="item.key"
-          :to="item.to"
-          class="mgmt-nav-item"
-          :class="{ active: item.active }"
-        >
-          <component :is="item.icon" class="w-5 h-5" />
-          <span>{{ item.label }}</span>
-        </router-link>
-      </aside>
-
-      <main class="mgmt-content">
-        <router-view />
-      </main>
-    </div>
+    <main class="mgmt-content" :class="{ 'full-bleed': isEditorRoute }">
+      <router-view />
+    </main>
   </div>
 </template>
 

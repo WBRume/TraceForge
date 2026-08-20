@@ -84,7 +84,7 @@
   "layout": {
     "dashboard": "Dashboard",
     "chat": "SDD Session",
-    "case_center": "Case Center",
+    "case_center": "Case Knowledge Center",
     "api_mock": "API MOCK",
     "workspaces": "My Workspaces",
     "toggle_sidebar": "Collapse/Expand Sidebar"
@@ -756,6 +756,7 @@
   "queue_ops": {
     "entry": "Queue Ops",
     "title": "Background Queue Operations",
+    "subtitle": "Central view for background jobs: workspace provisioning, API mock, skill analysis, etc.",
     "back_workspaces": "Back to Workspaces",
     "back_list": "Back to Queue List",
     "detail_title": "Job Details",
@@ -2527,12 +2528,13 @@
     }
   },
   "management": {
-    "entry_products": "Products",
-    "entry_projects": "Projects",
-    "entry_repositories": "Repositories",
+    "entry_config_center": "Config Center",
+    "entry_ops_center": "Management Center",
+    "entry_knowledge_center": "Knowledge Center",
     "back_to_workspaces": "Back to Workspaces",
-    "layout_title": "Platform Management",
-    "layout_subtitle": "Products / Projects / Repositories",
+    "layout_title": "Config Center",
+    "layout_subtitle": "Base config · Projects / Products / Repositories",
+    "ops_layout_title": "Management Center",
     "nav_products": "Products",
     "nav_projects": "Projects",
     "nav_repositories": "Repositories",
@@ -2782,6 +2784,42 @@
       "readonly_hint": "The org tree is maintained by administrators (read-only for you)"
     }
   },
+  "knowledge": {
+    "layout_title": "Knowledge Center",
+    "nav": {
+      "business": "Business Knowledge",
+      "framework": "Framework Knowledge",
+      "maintenance": "Maintenance Knowledge",
+      "cases": "Case Knowledge Center"
+    },
+    "business": {
+      "title": "Business Knowledge Center",
+      "subtitle": "Business concepts, rules and domain knowledge",
+      "placeholder_title": "Module under construction",
+      "placeholder_desc": "The Business Knowledge Center is coming soon and will continuously aggregate business domain knowledge for the team."
+    },
+    "framework": {
+      "title": "Framework Knowledge Center",
+      "subtitle": "Framework selection, architecture design and technical standards",
+      "placeholder_title": "Module under construction",
+      "placeholder_desc": "The Framework Knowledge Center is coming soon and will continuously aggregate framework and architecture knowledge for the team."
+    },
+    "maintenance": {
+      "title": "Maintenance Knowledge Center",
+      "subtitle": "Maintenance playbooks, incident handling and operations experience",
+      "placeholder_title": "Module under construction",
+      "placeholder_desc": "The Maintenance Knowledge Center is coming soon and will continuously aggregate maintenance and operations knowledge for the team."
+    },
+    "cases": {
+      "title": "Case Knowledge Center",
+      "subtitle": "Manage and search diagnosis and handling experience cases by case category",
+      "workspace_label": "Workspace",
+      "workspace_all": "All Workspaces",
+      "workspace_placeholder": "Select a workspace",
+      "pick_title": "Select a workspace",
+      "pick_desc": "Cases are isolated per workspace. Pick a workspace to view and search its cases."
+    }
+  },
   "workspace_create": {
     "step_products": "Select Products",
     "products_title": "Select Products",
@@ -2892,6 +2930,8 @@
     "case_create_failed": "Failed to create case",
     "summarize_case_button": "Summarize Issue Case",
     "summarizing": "Summarizing…",
+    "case_already_adopted_no_summary": "Case has been adopted; summarization is not allowed",
+    "case_adopted_label": "Adopted",
     "summary_started": "Started generating the diagnosis result, please wait",
     "summary_failed": "Failed to generate diagnosis result",
     "summary_job_missing": "No summary job was returned",
@@ -2899,11 +2939,12 @@
     "regenerate": "Regenerate"
   },
   "case_center": {
-    "title": "Feature Case Center",
+    "title": "Case Knowledge Center",
     "subtitle": "Structured accumulation of diagnosis and handling experience; expert-reviewed and searchable by the team",
     "search": "Search",
     "search_placeholder": "Search by title / problem description / root cause / solution / code context keywords",
     "create_button": "New Case",
+    "workspace_required": "Please select a workspace first to perform this action",
     "filter_all": "All",
     "status_all": "All Statuses",
     "priority_all": "All Priorities",
@@ -2942,6 +2983,8 @@
       "problem_description": "Problem Description",
       "product_name": "Product",
       "product_version": "Version",
+      "project": "Project",
+      "repositories": "Repositories",
       "site_name": "Site",
       "workspace": "Workspace",
       "code_context": "Code Context",
@@ -2997,7 +3040,7 @@
     "create_title": "New Case",
     "edit_title": "Edit Case",
     "report": {
-      "back": "Back to Case Center",
+      "back": "Back to Case Knowledge Center",
       "kicker": "Case Analysis Report",
       "not_found": "Case not found or has been deleted",
       "analysis_title": "Analysis Process",
