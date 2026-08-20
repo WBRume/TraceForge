@@ -1,5 +1,5 @@
 /**
- * 案例中心视图模型：列表检索过滤、案例详情、CRUD 与评审状态机动作。
+ * 案例知识中心视图模型：列表检索过滤、案例详情、CRUD 与评审状态机动作。
  */
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -12,10 +12,20 @@ export type CaseFilterValue = 'ALL' | string
 
 const PAGE_SIZE = 20
 
-export function useCaseCenter() {
+interface UseCaseCenterOptions {
+  workspaceId?: () => string
+}
+
+export function useCaseCenter(options: UseCaseCenterOptions = {}) {
   const route = useRoute()
   const router = useRouter()
   const { t } = useI18n()
+
+  const routeWorkspaceId = computed(() => String(route.params.wsId || ''))
+  const workspaceId = computed(() => {
+    if (options.workspaceId) return String(options.workspaceId())
+    return routeWorkspaceId.value
+  })
 
   // ─── 列表 ───
   const items = ref<any[]>([])
@@ -44,8 +54,9 @@ export function useCaseCenter() {
     loading.value = true
     const pageNo = reset ? 1 : page.value + 1
     try {
-      const wsId = String(route.params.wsId || '')
-      const res = await api.get(`/workspaces/${wsId}/cases`, { params: buildParams(pageNo, PAGE_SIZE) })
+      const wsId = workspaceId.value
+      const endpoint = wsId ? `/workspaces/${wsId}/cases` : '/cases'
+      const res = await api.get(endpoint, { params: buildParams(pageNo, PAGE_SIZE) })
       const nextItems = Array.isArray(res.data?.items) ? res.data.items : []
       total.value = Number(res.data?.total || 0)
       items.value = reset ? nextItems : [...items.value, ...nextItems]
@@ -83,7 +94,7 @@ export function useCaseCenter() {
     detailLoading.value = true
     currentCase.value = null
     try {
-      const wsId = String(route.params.wsId || '')
+      const wsId = workspaceId.value
       const res = await api.get(`/workspaces/${wsId}/cases/${caseId}`)
       currentCase.value = res.data
       if (route.query.case !== caseId) {
@@ -104,7 +115,7 @@ export function useCaseCenter() {
     detailLoading.value = true
     currentCase.value = null
     try {
-      const wsId = String(route.params.wsId || '')
+      const wsId = workspaceId.value
       const res = await api.get(`/workspaces/${wsId}/cases/${caseId}`)
       currentCase.value = res.data
     } catch (e) {
@@ -126,7 +137,8 @@ export function useCaseCenter() {
 
   const refreshCurrentCase = async () => {
     if (!currentCase.value?.id) return
-    const wsId = String(route.params.wsId || '')
+    const wsId = workspaceId.value || currentCase.value?.workspace_id || ''
+    if (!wsId) return
     try {
       const res = await api.get(`/workspaces/${wsId}/cases/${currentCase.value.id}`)
       currentCase.value = res.data
@@ -204,9 +216,13 @@ export function useCaseCenter() {
       ElMessage.warning(t('case_center.title_required'))
       return
     }
+    const wsId = workspaceId.value || currentCase.value?.workspace_id || ''
+    if (!wsId) {
+      ElMessage.warning(t('case_center.workspace_required'))
+      return
+    }
     formSaving.value = true
     try {
-      const wsId = String(route.params.wsId || '')
       const payload = { ...formModel.value }
       if (editingId.value) {
         const res = await api.put(`/workspaces/${wsId}/cases/${editingId.value}`, payload)
@@ -241,20 +257,35 @@ export function useCaseCenter() {
     }
   }
 
-  const submitCase = () => runAction(async () => {
-    const wsId = String(route.params.wsId || '')
-    await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/submit`)
-  }, 'case_center.submit_success')
+  const requireWorkspace = () => {
+    const wsId = workspaceId.value || currentCase.value?.workspace_id || ''
+    if (!wsId) ElMessage.warning(t('case_center.workspace_required'))
+    return wsId
+  }
 
-  const startReview = () => runAction(async () => {
-    const wsId = String(route.params.wsId || '')
-    await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/start-review`)
-  }, 'case_center.start_review_success')
+  const submitCase = () => {
+    const wsId = requireWorkspace()
+    if (!wsId) return
+    return runAction(async () => {
+      await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/submit`)
+    }, 'case_center.submit_success')
+  }
 
-  const resubmitCase = () => runAction(async () => {
-    const wsId = String(route.params.wsId || '')
-    await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/resubmit`)
-  }, 'case_center.resubmit_success')
+  const startReview = () => {
+    const wsId = requireWorkspace()
+    if (!wsId) return
+    return runAction(async () => {
+      await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/start-review`)
+    }, 'case_center.start_review_success')
+  }
+
+  const resubmitCase = () => {
+    const wsId = requireWorkspace()
+    if (!wsId) return
+    return runAction(async () => {
+      await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/resubmit`)
+    }, 'case_center.resubmit_success')
+  }
 
   // 评审裁决对话框
   const reviewDialogVisible = ref(false)
@@ -267,20 +298,26 @@ export function useCaseCenter() {
     reviewDialogVisible.value = true
   }
 
-  const confirmReview = () => runAction(async () => {
-    const wsId = String(route.params.wsId || '')
-    await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/review`, {
-      conclusion: reviewConclusion.value,
-      comment: reviewComment.value,
-    })
-  }, reviewConclusion.value === 'approve' ? 'case_center.approve_success' : 'case_center.reject_success')
+  const confirmReview = () => {
+    const wsId = requireWorkspace()
+    if (!wsId) return
+    return runAction(async () => {
+      await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/review`, {
+        conclusion: reviewConclusion.value,
+        comment: reviewComment.value,
+      })
+    }, reviewConclusion.value === 'approve' ? 'case_center.approve_success' : 'case_center.reject_success')
+  }
 
-  const deleteCase = () => runAction(async () => {
-    const wsId = String(route.params.wsId || '')
-    await api.delete(`/workspaces/${wsId}/cases/${currentCase.value.id}`)
-    drawerOpen.value = false
-    currentCase.value = null
-  }, 'case_center.delete_success')
+  const deleteCase = () => {
+    const wsId = requireWorkspace()
+    if (!wsId) return
+    return runAction(async () => {
+      await api.delete(`/workspaces/${wsId}/cases/${currentCase.value.id}`)
+      drawerOpen.value = false
+      currentCase.value = null
+    }, 'case_center.delete_success')
+  }
 
   return {
     items,

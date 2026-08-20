@@ -1,5 +1,5 @@
 """
-案例中心：结构化功能案例模型与专家评审记录。
+案例知识中心：结构化功能案例模型与专家评审记录。
 
 案例来源：问题定位任务「确认采纳 → 一键转案例」生成的草稿，或手工创建。
 生命周期：草稿 → 待评审 → 评审中 → 已入库 / 已驳回（附评审意见），驳回后可重新提交。
@@ -10,7 +10,7 @@ from enum import Enum as PyEnum
 from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, JSON, func
 from sqlalchemy.orm import relationship
 from app.database import Base
-from app.domains.auth.models.user import generate_uuid
+from app.domains.auth.models.user import Workspace, generate_uuid
 
 
 class CaseCategory(str, PyEnum):
@@ -85,6 +85,7 @@ class SddCase(Base):
     # Relationships
     creator = relationship("User", foreign_keys=[creator_id])
     source_task = relationship("SddTask", foreign_keys=[source_task_id])
+    workspace = relationship("Workspace", foreign_keys=[workspace_id])
     review_records = relationship(
         "SddCaseReviewRecord",
         back_populates="case",

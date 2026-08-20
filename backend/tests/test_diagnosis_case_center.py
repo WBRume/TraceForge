@@ -39,6 +39,7 @@ def _build_app(SessionLocal, user):
     app = FastAPI()
     app.include_router(task_router.router, prefix="/api")
     app.include_router(case_center_router.router, prefix="/api")
+    app.include_router(case_center_router.global_router, prefix="/api")
     app.dependency_overrides[task_router.get_db] = _override_db
     app.dependency_overrides[task_router.get_current_user] = lambda: user
     app.dependency_overrides[case_center_router.get_db] = _override_db
@@ -409,5 +410,44 @@ def test_case_review_requires_expert():
         resp = client.post(f"/api/workspaces/{ws_id}/cases/{case_id}/start-review")
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "IN_REVIEW"
+    finally:
+        engine.dispose()
+
+
+def test_global_case_list_across_accessible_workspaces():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_diagnosis_task(db, workspace_id="ws-global", task_id="task-global")
+            ws_id = workspace.id
+        client = TestClient(_build_app(SessionLocal, user))
+
+        for title, category, priority in [
+            ("连接池耗尽排查", "PRODUCT", "P0"),
+            ("白屏问题定位", "SITE", "P1"),
+        ]:
+            resp = client.post(
+                f"/api/workspaces/{ws_id}/cases",
+                json={"title": title, "category": category, "priority": priority},
+            )
+            assert resp.status_code == 201, resp.text
+
+        resp = client.get("/api/cases")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["total"] == 2
+        assert all(item["workspace_name"] == "Workspace" for item in resp.json()["items"])
+        assert all(item["my_can_manage"] is True for item in resp.json()["items"])
+
+        resp = client.get("/api/cases", params={"category": "SITE"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 1
+        assert resp.json()["items"][0]["title"] == "白屏问题定位"
+
+        resp = client.get("/api/cases", params={"ws_id": ws_id})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 2
+
+        resp = client.get("/api/cases", params={"ws_id": "ws-not-member"})
+        assert resp.status_code == 403, resp.text
     finally:
         engine.dispose()

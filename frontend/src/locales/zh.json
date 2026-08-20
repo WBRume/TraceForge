@@ -84,7 +84,7 @@
   "layout": {
     "dashboard": "仪表盘",
     "chat": "SDD 会话",
-    "case_center": "案例中心",
+    "case_center": "案例知识中心",
     "api_mock": "API MOCK",
     "workspaces": "我的工作区",
     "toggle_sidebar": "收起/展开侧边栏"
@@ -756,6 +756,7 @@
   "queue_ops": {
     "entry": "队列运维",
     "title": "后台任务队列运维",
+    "subtitle": "统一查看与处理工作区创建、API Mock、技能分析等后台任务",
     "back_workspaces": "返回工作区",
     "back_list": "返回队列列表",
     "detail_title": "任务详情",
@@ -2532,12 +2533,13 @@
     }
   },
   "management": {
-    "entry_products": "产品",
-    "entry_projects": "项目",
-    "entry_repositories": "仓库",
+    "entry_config_center": "配置中心",
+    "entry_ops_center": "管理中心",
+    "entry_knowledge_center": "知识中心",
     "back_to_workspaces": "返回工作区",
-    "layout_title": "平台管理",
-    "layout_subtitle": "产品 / 项目 / 仓库统一管理",
+    "layout_title": "配置中心",
+    "layout_subtitle": "基础配置 · 项目 / 产品 / 仓库",
+    "ops_layout_title": "管理中心",
     "nav_products": "产品管理",
     "nav_projects": "项目管理",
     "nav_repositories": "仓库管理",
@@ -2787,6 +2789,42 @@
       "readonly_hint": "组织树由管理员维护，当前为只读"
     }
   },
+  "knowledge": {
+    "layout_title": "知识中心",
+    "nav": {
+      "business": "业务知识中心",
+      "framework": "框架知识中心",
+      "maintenance": "维护知识中心",
+      "cases": "案例知识中心"
+    },
+    "business": {
+      "title": "业务知识中心",
+      "subtitle": "沉淀业务概念、业务规则与领域模型知识",
+      "placeholder_title": "模块建设中",
+      "placeholder_desc": "业务知识中心即将上线，后续将持续沉淀业务领域知识，供团队统一查阅与复用。"
+    },
+    "framework": {
+      "title": "框架知识中心",
+      "subtitle": "沉淀框架选型、架构设计与技术规范知识",
+      "placeholder_title": "模块建设中",
+      "placeholder_desc": "框架知识中心即将上线，后续将持续沉淀框架与架构知识，供团队统一查阅与复用。"
+    },
+    "maintenance": {
+      "title": "维护知识中心",
+      "subtitle": "沉淀维护预案、故障处置与运维经验知识",
+      "placeholder_title": "模块建设中",
+      "placeholder_desc": "维护知识中心即将上线，后续将持续沉淀维护与运维知识，供团队统一查阅与复用。"
+    },
+    "cases": {
+      "title": "案例知识中心",
+      "subtitle": "按案例分类统一管理与检索问题定位、处理经验案例",
+      "workspace_label": "工作区",
+      "workspace_all": "全部工作区",
+      "workspace_placeholder": "请选择工作区",
+      "pick_title": "请选择一个工作区",
+      "pick_desc": "案例按工作区隔离，选择工作区后可查看并检索该工作区的案例。"
+    }
+  },
   "workspace_create": {
     "step_products": "选择产品",
     "products_title": "勾选产品",
@@ -2897,6 +2935,8 @@
     "case_create_failed": "生成案例失败",
     "summarize_case_button": "一键总结问题案例",
     "summarizing": "总结中…",
+    "case_already_adopted_no_summary": "案例已被采纳，无法再次一键总结",
+    "case_adopted_label": "已采纳",
     "summary_started": "已开始生成定位结果，请稍候",
     "summary_failed": "生成定位结果失败",
     "summary_job_missing": "未获取到总结任务",
@@ -2904,11 +2944,12 @@
     "regenerate": "重新生成"
   },
   "case_center": {
-    "title": "功能案例中心",
+    "title": "案例知识中心",
     "subtitle": "结构化沉淀问题定位与处理经验，专家评审入库，团队可检索复用",
     "search": "检索",
     "search_placeholder": "按标题 / 问题描述 / 根因 / 方案 / 代码上下文关键词检索",
     "create_button": "新建案例",
+    "workspace_required": "请先选择工作区再执行该操作",
     "filter_all": "全部",
     "status_all": "全部状态",
     "priority_all": "全部优先级",
@@ -2947,6 +2988,8 @@
       "problem_description": "问题描述",
       "product_name": "产品",
       "product_version": "版本",
+      "project": "项目",
+      "repositories": "关联仓库",
       "site_name": "局点",
       "workspace": "工作区",
       "code_context": "代码上下文",
@@ -3002,7 +3045,7 @@
     "create_title": "新建案例",
     "edit_title": "编辑案例",
     "report": {
-      "back": "返回案例中心",
+      "back": "返回案例知识中心",
       "kicker": "案例分析报告",
       "not_found": "案例不存在或已被删除",
       "analysis_title": "分析过程",

@@ -1,5 +1,5 @@
 """
-案例中心 API routes.
+案例知识中心 API routes.
 """
 
 from typing import Optional
@@ -19,7 +19,8 @@ from app.domains.case_center.schemas.case import (
 from app.domains.case_center.services import case_service
 from app.domains.workspace.services import workspace_service
 
-router = APIRouter(prefix="/workspaces/{ws_id}/cases", tags=["Case Center"])
+router = APIRouter(prefix="/workspaces/{ws_id}/cases", tags=["Case Knowledge Center"])
+global_router = APIRouter(prefix="/cases", tags=["Case Knowledge Center"])
 
 
 def _verify_access(ws_id: str, current_user: User, db: Session):
@@ -87,6 +88,53 @@ def list_cases(
             _decorate(case_service.serialize_case(item), db=db, ws_id=ws_id, user=current_user, member=member)
             for item in items
         ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
+
+
+@global_router.get("", response_model=CaseListResponse)
+def list_all_cases(
+    ws_id: Optional[str] = Query(default=None),
+    keyword: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    priority: Optional[str] = Query(default=None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    accessible_ids = [w.id for w in workspace_service.list_user_workspaces(db, current_user)]
+    if ws_id:
+        if ws_id not in accessible_ids:
+            raise HTTPException(status_code=403, detail="No access to this workspace")
+        workspace_ids = [ws_id]
+    else:
+        workspace_ids = accessible_ids
+
+    items, total = case_service.list_cases_in_workspaces(
+        db,
+        workspace_ids,
+        keyword=keyword,
+        category=category,
+        status=status,
+        priority=priority,
+        page=page,
+        page_size=page_size,
+    )
+    serialized = []
+    for item in items:
+        payload = case_service.serialize_case(item)
+        member = workspace_service.get_workspace_member(db, item.workspace_id, current_user.id)
+        payload["my_can_manage"] = bool(
+            workspace_service.user_has_permission(db, item.workspace_id, current_user.id, WorkspacePermission.CREATE_TASK)
+        )
+        payload["my_can_review"] = bool(member and member.is_expert)
+        serialized.append(payload)
+    return {
+        "items": serialized,
         "total": total,
         "page": page,
         "page_size": page_size,

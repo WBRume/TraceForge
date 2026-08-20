@@ -1,5 +1,5 @@
 """
-案例中心服务：案例 CRUD、生命周期状态机与「一键转案例」。
+案例知识中心服务：案例 CRUD、生命周期状态机与「一键转案例」。
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.logging import audit_log
-from app.domains.auth.models.user import User
+from app.domains.auth.models.user import User, Workspace
 from app.domains.case_center.models.case import (
     CaseCategory,
     CasePriority,
@@ -49,6 +49,8 @@ def _case_query(db: Session):
     return db.query(SddCase).options(
         joinedload(SddCase.creator),
         joinedload(SddCase.source_task),
+        joinedload(SddCase.workspace).joinedload(Workspace.project),
+        joinedload(SddCase.workspace).joinedload(Workspace.repositories),
         joinedload(SddCase.review_records).joinedload(SddCaseReviewRecord.reviewer),
     )
 
@@ -72,15 +74,56 @@ def serialize_case(case: SddCase) -> dict:
         )
     snapshot = case.conversation_snapshot_json
     diagnosis_detail = case.diagnosis_detail_json
+
+    workspace = case.workspace
+    project = workspace.project if workspace else None
+    project_products = []
+    if project:
+        for link in project.products or []:
+            product = link.product
+            if product is None:
+                continue
+            project_products.append(
+                {
+                    "id": product.id,
+                    "name": product.name,
+                    "code": product.code,
+                    "version_no": product.version_no,
+                }
+            )
+
+    repositories = []
+    if workspace:
+        repositories = [
+            {
+                "id": repo.id,
+                "name": repo.repo_name,
+                "repo_name": repo.repo_name,
+                "repo_url": repo.repo_url,
+                "repo_slug": repo.repo_slug,
+                "branch_name": repo.branch_name,
+            }
+            for repo in workspace.repositories or []
+        ]
+
+    product_name = _clean(case.product_name) or (_clean(project_products[0]["name"]) if project_products else None)
+    product_version = _clean(case.product_version) or (
+        _clean(project_products[0].get("version_no")) if project_products else None
+    )
+
     return {
         "id": case.id,
         "workspace_id": case.workspace_id,
+        "workspace_name": workspace.name if workspace else None,
+        "project_name": project.name if project else None,
+        "project_products": project_products,
+        "repositories": repositories,
         "creator_id": case.creator_id,
         "source_task_id": case.source_task_id,
         "title": case.title,
         "problem_description": case.problem_description,
-        "product_name": case.product_name,
-        "product_version": case.product_version,
+        "product_name": product_name,
+        "product_version": product_version,
         "site_name": case.site_name,
         "code_context": case.code_context,
         "analysis_process": case.analysis_process,
@@ -103,20 +146,15 @@ def serialize_case(case: SddCase) -> dict:
     }
 
 
-def list_cases(
-    db: Session,
-    workspace_id: str,
+def _apply_case_filters(
+    query,
     *,
     keyword: Optional[str] = None,
     category: Optional[str] = None,
     status: Optional[str] = None,
     priority: Optional[str] = None,
     source_task_id: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20,
-) -> Tuple[List[SddCase], int]:
-    query = _case_query(db).filter(SddCase.workspace_id == workspace_id)
-
+):
     if source_task_id:
         query = query.filter(SddCase.source_task_id == source_task_id)
     if keyword:
@@ -135,7 +173,10 @@ def list_cases(
         query = query.filter(SddCase.status == status)
     if priority:
         query = query.filter(SddCase.priority == priority)
+    return query
 
+
+def _paginate_cases(query, page: int, page_size: int) -> Tuple[List[SddCase], int]:
     total = query.count()
     items = (
         query.order_by(SddCase.updated_at.desc(), SddCase.created_at.desc())
@@ -144,6 +185,52 @@ def list_cases(
         .all()
     )
     return items, total
+
+
+def list_cases(
+    db: Session,
+    workspace_id: str,
+    *,
+    keyword: Optional[str] = None,
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    source_task_id: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> Tuple[List[SddCase], int]:
+    query = _apply_case_filters(
+        _case_query(db).filter(SddCase.workspace_id == workspace_id),
+        keyword=keyword,
+        category=category,
+        status=status,
+        priority=priority,
+        source_task_id=source_task_id,
+    )
+    return _paginate_cases(query, page, page_size)
+
+
+def list_cases_in_workspaces(
+    db: Session,
+    workspace_ids: List[str],
+    *,
+    keyword: Optional[str] = None,
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+) -> Tuple[List[SddCase], int]:
+    if not workspace_ids:
+        return [], 0
+    query = _apply_case_filters(
+        _case_query(db).filter(SddCase.workspace_id.in_(workspace_ids)),
+        keyword=keyword,
+        category=category,
+        status=status,
+        priority=priority,
+    )
+    return _paginate_cases(query, page, page_size)
 
 
 def get_case(db: Session, case_id: str, workspace_id: str) -> Optional[SddCase]:

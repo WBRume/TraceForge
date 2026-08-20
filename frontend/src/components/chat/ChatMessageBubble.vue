@@ -101,6 +101,7 @@ function openDiagnosisCase(caseId: string) {
         :saving="Boolean(vm.diagnosisResultSaving)"
         :case-creating="Boolean(vm.diagnosisCaseCreating)"
         :summarizing="Boolean(vm.diagnosisSummarizing)"
+        :adopted="Boolean(vm.isDiagnosisAdopted)"
         @save="handleSaveDiagnosis"
         @confirm="vm.createDiagnosisCase(false)"
         @open-case="openDiagnosisCase"

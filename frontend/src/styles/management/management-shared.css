@@ -2,7 +2,9 @@
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
 
 .mgmt-container {
-  min-height: 100vh;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
   background-color: var(--color-bg-base);
   font-family: 'Open Sans', sans-serif;
 }
@@ -94,10 +96,17 @@
 }
 
 .mgmt-content {
-  flex-grow: 1;
-  padding: 2rem 3rem;
+  flex: 1;
+  min-width: 0;
+  padding: 1.5rem 2rem;
   overflow-y: auto;
-  max-width: 1200px;
+  max-width: none;
+}
+
+/* Full-bleed container for workbench-style pages (e.g. skill editor). */
+.mgmt-content.full-bleed {
+  max-width: none;
+  padding: 1rem 1.5rem;
 }
 
 .mgmt-page-header {

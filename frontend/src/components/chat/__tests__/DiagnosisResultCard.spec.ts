@@ -111,19 +111,35 @@ describe('DiagnosisResultCard', () => {
     expect(wrapper.text()).not.toContain('diagnosis.card_hint')
   })
 
-  it('emits confirm and openCase actions', async () => {
+  it('hides edit while a summary is running', () => {
+    const wrapper = mountCard({ summarizing: true })
+
+    expect(buttonByText(wrapper, 'diagnosis.edit')).toBeUndefined()
+    expect(buttonByText(wrapper, 'diagnosis.regenerate')).toBeDefined()
+  })
+
+  it('hides edit/confirm/regenerate when a linked case already exists', () => {
     const wrapper = mountCard({ caseLink: 'case-7' })
 
-    await buttonByText(wrapper, 'diagnosis.confirm_create_case')!.trigger('click')
-    await buttonByText(wrapper, 'diagnosis.view_case')!.trigger('click')
+    expect(buttonByText(wrapper, 'diagnosis.edit')).toBeUndefined()
+    expect(buttonByText(wrapper, 'diagnosis.confirm_create_case')).toBeUndefined()
+    expect(buttonByText(wrapper, 'diagnosis.regenerate')).toBeUndefined()
+    expect(buttonByText(wrapper, 'diagnosis.view_case')).toBeTruthy()
+  })
 
-    expect(wrapper.emitted('confirm')).toHaveLength(1)
-    expect(wrapper.emitted('confirmAndSubmit')).toBeUndefined()
-    expect(wrapper.emitted('openCase')![0]).toEqual(['case-7'])
+  it('emits confirm and openCase actions', async () => {
+    const draftWrapper = mountCard({ caseLink: '' })
+    await buttonByText(draftWrapper, 'diagnosis.confirm_create_case')!.trigger('click')
+    expect(draftWrapper.emitted('confirm')).toHaveLength(1)
+    expect(draftWrapper.emitted('confirmAndSubmit')).toBeUndefined()
+
+    const adoptedWrapper = mountCard({ status: 'CONFIRMED', caseLink: 'case-7' })
+    await buttonByText(adoptedWrapper, 'diagnosis.view_case')!.trigger('click')
+    expect(adoptedWrapper.emitted('openCase')![0]).toEqual(['case-7'])
   })
 
   it('emits export and regenerate actions', async () => {
-    const wrapper = mountCard({ caseLink: 'case-7' })
+    const wrapper = mountCard({ caseLink: '' })
 
     await buttonByText(wrapper, 'diagnosis.export_markdown')!.trigger('click')
     await buttonByText(wrapper, 'diagnosis.regenerate')!.trigger('click')

@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, Languages, BookCopy, ServerCog, Package, FolderKanban, GitFork } from 'lucide-vue-next'
+import { Plus, Briefcase, Languages, Package, FolderKanban, GitFork, Settings2, ServerCog, LibraryBig } from 'lucide-vue-next'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
@@ -52,14 +52,6 @@ onMounted(async () => {
 const enterWorkspace = (ws: any) => {
   wsStore.setCurrent(ws)
   router.push(`/ws/${ws.id}/dashboard`)
-}
-
-const openSkillsConfig = () => {
-  router.push('/skills')
-}
-
-const openQueueOps = () => {
-  router.push('/ops/queue')
 }
 
 const handleWorkspaceCreated = async (jobId: string) => {
@@ -132,33 +124,21 @@ const confirmDeleteWorkspace = async () => {
         <div class="flex items-center gap-2">
           <button
             class="btn-secondary flex items-center gap-2"
-            @click="router.push('/management/products')"
+            @click="router.push('/management')"
           >
-            <Package class="w-4 h-4" /> {{ $t('management.entry_products') }}
+            <Settings2 class="w-4 h-4" /> {{ $t('management.entry_config_center') }}
           </button>
           <button
             class="btn-secondary flex items-center gap-2"
-            @click="router.push('/management/projects')"
+            @click="router.push('/ops')"
           >
-            <FolderKanban class="w-4 h-4" /> {{ $t('management.entry_projects') }}
+            <ServerCog class="w-4 h-4" /> {{ $t('management.entry_ops_center') }}
           </button>
           <button
             class="btn-secondary flex items-center gap-2"
-            @click="router.push('/management/repositories')"
+            @click="router.push('/knowledge')"
           >
-            <GitFork class="w-4 h-4" /> {{ $t('management.entry_repositories') }}
-          </button>
-          <button
-            class="btn-secondary flex items-center gap-2"
-            @click="openQueueOps"
-          >
-            <ServerCog class="w-4 h-4" /> {{ $t('queue_ops.entry') }}
-          </button>
-          <button
-            class="btn-secondary flex items-center gap-2"
-            @click="openSkillsConfig"
-          >
-            <BookCopy class="w-4 h-4" /> {{ $t('skills.entry') }}
+            <LibraryBig class="w-4 h-4" /> {{ $t('management.entry_knowledge_center') }}
           </button>
           <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
             <Plus class="w-4 h-4" /> {{ $t('workspaces.new_workspace') }}

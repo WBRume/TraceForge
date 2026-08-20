@@ -340,6 +340,18 @@ def _payload_dict(payload: DiagnosisResultPayload) -> dict:
     return payload.model_dump()
 
 
+def _next_message_order_index(db: Session, task_id: str) -> int:
+    """返回任务下一条消息应使用的 order_index（基于现有最大值 + 1）。"""
+    messages = db.query(ChatMessage.metadata_json).filter(ChatMessage.task_id == task_id).all()
+    max_order = 0
+    for (metadata,) in messages:
+        try:
+            max_order = max(max_order, int((metadata or {}).get("order_index") or 0))
+        except (TypeError, ValueError):
+            continue
+    return max_order + 1
+
+
 def _sync_card_message(
     db: Session,
     *,
@@ -348,7 +360,7 @@ def _sync_card_message(
     payload: DiagnosisResultPayload,
     actor_user_id: str,
 ) -> Optional[ChatMessage]:
-    """定位结果卡片消息：同一任务只保留一条，多轮会话原位更新。"""
+    """定位结果卡片消息：同一任务只保留一条，每次更新都移动到会话最后。"""
     existing = (
         db.query(ChatMessage)
         .filter(
@@ -360,24 +372,15 @@ def _sync_card_message(
     )
     summary = _clean(payload.summary) or _clean(payload.root_cause) or "Diagnosis result"
     metadata = _payload_dict(payload)
+    metadata["order_index"] = _next_message_order_index(db, task.id)
     if existing:
-        # 原位更新时间内容，但保留它首次创建时的顺序位（多轮会话卡片不后移）
-        previous_meta = existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
-        if previous_meta.get("order_index") is not None:
-            metadata["order_index"] = previous_meta["order_index"]
         existing.content = summary
         existing.metadata_json = metadata
+        # 同时刷新落库时间（使用数据库服务器时间，与普通消息 created_at 同源），
+        # 确保排序时卡片出现在最新消息之后
+        existing.created_at = db.query(func.now()).scalar()
         message = existing
     else:
-        # 卡片消息同样要分配 order_index，否则重新加载历史时它会按 0 排到
-        # 最后一条 assistant 文本之前，造成“定位结果卡片”与最后回复顺序倒转。
-        order_index = (
-            db.query(func.count(ChatMessage.id))
-            .filter(ChatMessage.task_id == task.id)
-            .scalar()
-            or 0
-        )
-        metadata["order_index"] = order_index
         message = ChatMessage(
             task_id=task.id,
             workspace_id=task.workspace_id,

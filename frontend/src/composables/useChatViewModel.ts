@@ -332,10 +332,17 @@ export function useChatViewModel() {
     }
     const index = messages.value.findIndex(existing => messageIdentity(existing) === key)
     if (index >= 0) {
-      messages.value[index] = {
+      const merged = {
         ...messages.value[index],
         ...item,
       }
+      // 定位结果卡片更新时把它移到会话末尾，确保最新结果展示在最后一次返回上
+      if (String(item.message_type || item.type || '') === 'diagnosis_result') {
+        messages.value.splice(index, 1)
+        messages.value.push(merged)
+        return
+      }
+      messages.value[index] = merged
       return
     }
     messages.value.push(item)
@@ -1253,8 +1260,15 @@ export function useChatViewModel() {
   const diagnosisResultSaving = ref(false)
   const diagnosisCaseCreating = ref(false)
   const diagnosisCaseLink = ref('')
-  const diagnosisSummarizing = ref(false)
+  // 每个任务/对话窗口独立记录总结中状态，互不覆盖
+  const diagnosisSummarizingTasks = ref<Record<string, boolean>>({})
+  const diagnosisSummarizing = computed(() => Boolean(
+    currentTask.value?.id && diagnosisSummarizingTasks.value[currentTask.value.id],
+  ))
   const diagnosisSummaryJobId = ref('')
+  const isDiagnosisAdopted = computed(() => Boolean(
+    diagnosisResult.value?.status === 'CONFIRMED' || diagnosisCaseLink.value,
+  ))
 
   const loadDiagnosisResult = async () => {
     const taskId = currentTask.value?.id
@@ -1305,7 +1319,8 @@ export function useChatViewModel() {
       const res = await api.put(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`, payload)
       diagnosisResult.value = res.data
       if (messageId) {
-        patchMessageMetadata(messageId, payload)
+        // 以后端返回的规范化结果回填气泡，确保编辑后的值真正反映到卡片上
+        patchMessageMetadata(messageId, res.data as DiagnosisResultPayload)
       }
       ElMessage.success(t('diagnosis.result_saved'))
     } catch (e) {
@@ -1370,13 +1385,22 @@ export function useChatViewModel() {
     }
     // 延迟一拍再拉取，确保定位结果卡片已由后端写入并广播
     await new Promise((resolve) => window.setTimeout(resolve, 1500))
-    await loadDiagnosisResult()
+    if (currentTask.value?.id === taskId) {
+      await loadDiagnosisResult()
+    }
   }
 
   const generateDiagnosisSummary = async (): Promise<boolean> => {
     const taskId = currentTask.value?.id
     if (!taskId || !isDiagnosisTask.value || diagnosisSummarizing.value) return false
-    diagnosisSummarizing.value = true
+    if (isDiagnosisAdopted.value) {
+      ElMessage.warning(t('diagnosis.case_already_adopted_no_summary'))
+      return false
+    }
+    diagnosisSummarizingTasks.value = {
+      ...diagnosisSummarizingTasks.value,
+      [taskId]: true,
+    }
     diagnosisSummaryJobId.value = ''
     try {
       const res = await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary`)
@@ -1393,8 +1417,13 @@ export function useChatViewModel() {
       console.error('Failed to generate diagnosis summary', e)
       return false
     } finally {
-      diagnosisSummarizing.value = false
-      diagnosisSummaryJobId.value = ''
+      // 只清除当前任务自己的总结状态，避免影响其他对话窗口的独立按钮
+      if (diagnosisSummarizingTasks.value[taskId]) {
+        const next = { ...diagnosisSummarizingTasks.value }
+        delete next[taskId]
+        diagnosisSummarizingTasks.value = next
+        diagnosisSummaryJobId.value = ''
+      }
     }
   }
 
@@ -2670,6 +2699,7 @@ export function useChatViewModel() {
     diagnosisResultSaving,
     diagnosisSummarizing,
     diagnosisSummaryJobId,
+    isDiagnosisAdopted,
     exportDiagnosisResult,
     generateDiagnosisSummary,
     hidePatchWorkflows,

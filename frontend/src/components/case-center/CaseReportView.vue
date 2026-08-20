@@ -9,7 +9,6 @@ import {
   Target,
   Wrench,
   Loader2,
-  FolderKanban,
   Pencil,
   SendHorizonal,
   RotateCcw,
@@ -21,8 +20,6 @@ import {
   Boxes,
   History,
   MessagesSquare,
-  CalendarDays,
-  UserRound,
   BookMarked,
 } from 'lucide-vue-next'
 import { useCaseCenter } from '@/composables/useCaseCenter'
@@ -52,6 +49,10 @@ const formatDateTime = (value?: string | null) => {
 }
 
 const goBackToList = () => {
+  if (route.name === 'knowledgeCaseDetail') {
+    router.push(wsId.value ? `/knowledge/cases/${wsId.value}` : '/knowledge/cases')
+    return
+  }
   router.push({ name: 'workspaceCases', params: { wsId: wsId.value } })
 }
 
@@ -68,21 +69,21 @@ const handleDelete = async () => {
   }
 }
 
-// ─── 统计条：状态 / 优先级 / 分类 / 评审轮次的语义色圆点 ───
-const statusDotTone = (status: string) => ({
-  DRAFT: 'dot-slate',
-  PENDING_REVIEW: 'dot-sky',
-  IN_REVIEW: 'dot-amber',
-  APPROVED: 'dot-emerald',
-  REJECTED: 'dot-rose',
-}[status] || 'dot-slate')
+// ─── 顶部标题徽标：状态 / 优先级 / 分类 / 评审轮次的语义色 ───
+const statusPillTone = (status: string) => ({
+  DRAFT: 'gray',
+  PENDING_REVIEW: 'blue',
+  IN_REVIEW: 'amber',
+  APPROVED: 'green',
+  REJECTED: 'red',
+}[status] || 'gray')
 
-const priorityDotTone = (priority: string) => (
-  priority === 'P0' ? 'dot-rose' : priority === 'P1' ? 'dot-amber' : priority === 'P2' ? 'dot-sky' : 'dot-slate'
+const priorityPillTone = (priority: string) => (
+  priority === 'P0' ? 'red' : priority === 'P1' ? 'amber' : priority === 'P2' ? 'blue' : 'gray'
 )
 
-const categoryDotTone = (category: string) => (
-  ({ PUBLIC: 'dot-emerald', PRODUCT: 'dot-sky', SITE: 'dot-amber' } as Record<string, string>)[category] || 'dot-slate'
+const categoryPillTone = (category: string) => (
+  ({ PUBLIC: 'green', PRODUCT: 'blue', SITE: 'amber' } as Record<string, string>)[category] || 'gray'
 )
 </script>
 
@@ -104,130 +105,84 @@ const categoryDotTone = (category: string) => (
     </div>
 
     <template v-else>
-      <!-- ─── Report Hero ─── -->
-      <header class="report-hero">
-        <div class="hero-top">
-          <button class="back-btn" type="button" @click="goBackToList">
-            <ArrowLeft :size="16" />
-            <span>{{ t('case_center.report.back') }}</span>
-          </button>
-          <span
-            v-if="vm.currentCase.source_task_name"
-            class="source-task"
-            :title="vm.currentCase.source_task_id || ''"
-            @click="openSourceSession"
-          >
-            <FolderKanban :size="14" />
-            {{ vm.currentCase.source_task_name }}
-          </span>
-        </div>
-
-        <div class="hero-title-block">
-          <p class="hero-kicker">
-            <span class="kicker-dot"></span>
-            {{ t('case_center.report.kicker') }}
+      <!-- ─── Report Header（对齐产品 / 项目详情风格） ─── -->
+      <div class="mgmt-page-header">
+        <div>
+          <div class="mgmt-back-row">
+            <button class="mgmt-back-btn" type="button" @click="goBackToList">
+              <ArrowLeft :size="16" /> {{ t('case_center.report.back') }}
+            </button>
+          </div>
+          <h2 class="mgmt-detail-title">
+            {{ vm.currentCase.title }}
+            <span
+              class="mgmt-status-pill"
+              :class="statusPillTone(vm.currentCase.status)"
+            >{{ t(`case_center.status.${vm.currentCase.status || 'DRAFT'}`) }}</span>
+            <span class="mgmt-status-pill" :class="priorityPillTone(vm.currentCase.priority)">
+              {{ vm.currentCase.priority || '-' }}
+            </span>
+            <span class="mgmt-status-pill" :class="categoryPillTone(vm.currentCase.category)">
+              {{ t(`case_center.category.${vm.currentCase.category || 'TEMPORARY'}`) }}
+            </span>
+          </h2>
+          <p class="mgmt-subtitle">
+            <span class="mgmt-case-meta">{{ t('case_center.creator') }}: {{ vm.currentCase.creator_name || '-' }}</span>
+            <span class="mgmt-case-meta">{{ t('case_center.created_at') }}: {{ formatDateTime(vm.currentCase.created_at) }}</span>
+            <span v-if="vm.currentCase.updated_at" class="mgmt-case-meta">{{ t('case_center.updated_at') }}: {{ formatDateTime(vm.currentCase.updated_at) }}</span>
+            <span v-if="vm.currentCase.review_round > 1" class="mgmt-case-meta">{{ t('case_center.report.round_short', { round: vm.currentCase.review_round }) }}</span>
           </p>
-          <h1 class="hero-title">{{ vm.currentCase.title }}</h1>
+          <p v-if="vm.currentCase.status === 'REJECTED' && vm.currentCase.rejected_comment" class="case-reject-note">
+            <XCircle :size="15" />
+            <span><strong>{{ t('case_center.rejected_comment_label') }}:</strong> {{ vm.currentCase.rejected_comment }}</span>
+          </p>
         </div>
 
-        <div class="hero-meta">
-          <span class="hero-meta-item">
-            <UserRound :size="14" />
-            {{ t('case_center.creator') }}: {{ vm.currentCase.creator_name || '-' }}
-          </span>
-          <span class="hero-meta-item">
-            <CalendarDays :size="14" />
-            {{ t('case_center.created_at') }}: {{ formatDateTime(vm.currentCase.created_at) }}
-          </span>
-          <span v-if="vm.currentCase.updated_at" class="hero-meta-item">
-            <CalendarDays :size="14" />
-            {{ t('case_center.updated_at') }}: {{ formatDateTime(vm.currentCase.updated_at) }}
-          </span>
-        </div>
-
-        <!-- KPI 统计条：现代仪表盘式色彩区分 -->
-        <div class="stat-strip">
-          <div class="stat-card">
-            <span class="stat-dot" :class="statusDotTone(vm.currentCase.status)"></span>
-            <div class="stat-body">
-              <span class="stat-label">{{ t('case_center.report.stat_status') }}</span>
-              <span class="stat-value">{{ t(`case_center.status.${vm.currentCase.status || 'DRAFT'}`) }}</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <span class="stat-dot" :class="priorityDotTone(vm.currentCase.priority)"></span>
-            <div class="stat-body">
-              <span class="stat-label">{{ t('case_center.report.stat_priority') }}</span>
-              <span class="stat-value">{{ vm.currentCase.priority || '-' }}</span>
-            </div>
-          </div>
-          <div class="stat-card">
-            <span class="stat-dot" :class="categoryDotTone(vm.currentCase.category)"></span>
-            <div class="stat-body">
-              <span class="stat-label">{{ t('case_center.report.stat_category') }}</span>
-              <span class="stat-value">{{ t(`case_center.category.${vm.currentCase.category || 'TEMPORARY'}`) }}</span>
-            </div>
-          </div>
-          <div v-if="vm.currentCase.review_round > 1" class="stat-card">
-            <span class="stat-dot dot-amber"></span>
-            <div class="stat-body">
-              <span class="stat-label">{{ t('case_center.report.stat_round') }}</span>
-              <span class="stat-value">{{ t('case_center.report.round_short', { round: vm.currentCase.review_round }) }}</span>
-            </div>
-          </div>
-        </div>
-
-        <p v-if="vm.currentCase.status === 'REJECTED' && vm.currentCase.rejected_comment" class="rejected-banner">
-          <XCircle :size="16" class="report-reject-icon" />
-          <span><strong>{{ t('case_center.rejected_comment_label') }}:</strong> {{ vm.currentCase.rejected_comment }}</span>
-        </p>
-
-        <!-- State-machine action bar -->
-        <div class="hero-actions">
+        <div class="case-report-actions">
           <template v-if="vm.currentCase.source_task_id">
-            <el-button class="open-session-btn" :disabled="vm.actionLoading" @click="openSourceSession">
+            <button class="btn-secondary" type="button" :disabled="vm.actionLoading" @click="openSourceSession">
               <MessagesSquare :size="16" /> {{ t('case_center.report.open_session') }}
-            </el-button>
+            </button>
             <span class="action-separator"></span>
           </template>
 
           <template v-if="vm.currentCase.status === 'DRAFT' && vm.myCanManage">
-            <el-button :disabled="vm.actionLoading" @click="vm.openEditForm()">
+            <button class="btn-secondary" type="button" :disabled="vm.actionLoading" @click="vm.openEditForm()">
               <Pencil :size="16" /> {{ t('common.edit') }}
-            </el-button>
-            <el-button type="danger" plain :disabled="vm.actionLoading" @click="handleDelete">
+            </button>
+            <button class="btn-secondary case-btn-danger" type="button" :disabled="vm.actionLoading" @click="handleDelete">
               <Trash2 :size="16" /> {{ t('common.delete') }}
-            </el-button>
-            <el-button type="primary" :loading="vm.actionLoading" @click="vm.submitCase()">
+            </button>
+            <button class="btn-primary" type="button" :disabled="vm.actionLoading" @click="vm.submitCase()">
               <SendHorizonal :size="16" /> {{ t('case_center.action.submit') }}
-            </el-button>
+            </button>
           </template>
 
           <template v-else-if="vm.currentCase.status === 'PENDING_REVIEW' && vm.myCanReview">
-            <el-button type="primary" :loading="vm.actionLoading" @click="vm.startReview()">
+            <button class="btn-primary" type="button" :disabled="vm.actionLoading" @click="vm.startReview()">
               <UserCheck :size="16" /> {{ t('case_center.action.start_review') }}
-            </el-button>
+            </button>
           </template>
 
           <template v-else-if="vm.currentCase.status === 'IN_REVIEW' && vm.myCanReview">
-            <el-button type="danger" plain :disabled="vm.actionLoading" @click="vm.openReviewDialog('reject')">
+            <button class="btn-secondary case-btn-danger" type="button" :disabled="vm.actionLoading" @click="vm.openReviewDialog('reject')">
               <XCircle :size="16" /> {{ t('case_center.action.reject') }}
-            </el-button>
-            <el-button type="success" :disabled="vm.actionLoading" @click="vm.openReviewDialog('approve')">
+            </button>
+            <button class="btn-primary" type="button" :disabled="vm.actionLoading" @click="vm.openReviewDialog('approve')">
               <CheckCircle2 :size="16" /> {{ t('case_center.action.approve') }}
-            </el-button>
+            </button>
           </template>
 
           <template v-else-if="vm.currentCase.status === 'REJECTED' && vm.myCanManage">
-            <el-button :disabled="vm.actionLoading" @click="vm.openEditForm()">
+            <button class="btn-secondary" type="button" :disabled="vm.actionLoading" @click="vm.openEditForm()">
               <Pencil :size="16" /> {{ t('common.edit') }}
-            </el-button>
-            <el-button type="danger" plain :disabled="vm.actionLoading" @click="handleDelete">
+            </button>
+            <button class="btn-secondary case-btn-danger" type="button" :disabled="vm.actionLoading" @click="handleDelete">
               <Trash2 :size="16" /> {{ t('common.delete') }}
-            </el-button>
-            <el-button type="primary" :loading="vm.actionLoading" @click="vm.resubmitCase()">
+            </button>
+            <button class="btn-primary" type="button" :disabled="vm.actionLoading" @click="vm.resubmitCase()">
               <RotateCcw :size="16" /> {{ t('case_center.action.resubmit') }}
-            </el-button>
+            </button>
           </template>
 
           <template v-else-if="vm.currentCase.status === 'APPROVED'">
@@ -237,7 +192,7 @@ const categoryDotTone = (category: string) => (
             </span>
           </template>
         </div>
-      </header>
+      </div>
 
       <!-- ─── Report Body ─── -->
       <div class="report-grid">
@@ -276,12 +231,25 @@ const categoryDotTone = (category: string) => (
                 <dd>{{ vm.currentCase.product_version || t('case_center.not_set') }}</dd>
               </div>
               <div class="info-row">
-                <dt>{{ t('case_center.field.site_name') }}</dt>
-                <dd>{{ vm.currentCase.site_name || t('case_center.not_set') }}</dd>
+                <dt>{{ t('case_center.field.project') }}</dt>
+                <dd>{{ vm.currentCase.project_name || t('case_center.not_set') }}</dd>
+              </div>
+              <div class="info-row">
+                <dt>{{ t('case_center.field.repositories') }}</dt>
+                <dd>
+                  <template v-if="Array.isArray(vm.currentCase.repositories) && vm.currentCase.repositories.length">
+                    <span
+                      v-for="repo in vm.currentCase.repositories"
+                      :key="repo.id || repo.name"
+                      class="repo-chip"
+                    >{{ repo.name }}</span>
+                  </template>
+                  <span v-else>{{ t('case_center.not_set') }}</span>
+                </dd>
               </div>
               <div class="info-row">
                 <dt>{{ t('case_center.field.workspace') }}</dt>
-                <dd>{{ t('case_center.current_workspace') }}</dd>
+                <dd>{{ vm.currentCase.workspace_name || t('case_center.current_workspace') }}</dd>
               </div>
               <div class="info-row">
                 <dt>{{ t('case_center.field.code_context') }}</dt>
@@ -338,17 +306,109 @@ const categoryDotTone = (category: string) => (
   </div>
 </template>
 
+<style scoped src="@/styles/management/management-shared.css"></style>
 <style scoped>
 .case-report {
-  padding: 24px;
+  padding: 1.5rem 2rem;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 1240px;
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
   overflow-y: auto;
   height: 100%;
+}
+/* ─── 顶部标题区：与产品 / 项目详情统一 ─── */
+.mgmt-back-row {
+  margin-bottom: 0.5rem;
+}
+
+.mgmt-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 0.4rem 0.9rem;
+  color: var(--color-primary-600);
+  background: var(--color-surface-white);
+  border: 1px solid var(--color-primary-100);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.mgmt-back-btn:hover {
+  background: var(--color-primary-50);
+  border-color: var(--color-primary-100);
+}
+
+.mgmt-detail-title {
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.mgmt-detail-title .mgmt-status-pill {
+  -webkit-text-fill-color: currentColor;
+}
+
+.mgmt-case-meta {
+  color: #64748b;
+  font-size: 0.85rem;
+  margin-right: 0.8rem;
+}
+
+.case-reject-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0.6rem 0 0;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.82rem;
+}
+
+.case-report-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+.case-btn-danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.case-btn-danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+.case-report-actions .btn-primary,
+.case-report-actions .btn-secondary,
+.case-report-actions .case-btn-danger {
+  height: 36px;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.25;
+  box-sizing: border-box;
+}
+
+.case-report-actions .btn-primary {
+  box-shadow: none;
+}
+
+.case-report-actions .btn-primary:hover {
+  transform: none;
+  box-shadow: none;
+  text-shadow: none;
 }
 
 .report-state {
@@ -627,7 +687,7 @@ const categoryDotTone = (category: string) => (
 /* ─── Grid ─── */
 .report-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
   gap: 16px;
   align-items: start;
 }
@@ -760,6 +820,16 @@ const categoryDotTone = (category: string) => (
   max-height: 220px;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.repo-chip {
+  display: inline-block;
+  margin: 2px 6px 2px 0;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  font-size: 0.75rem;
+  color: #334155;
 }
 
 @media (max-width: 1100px) {

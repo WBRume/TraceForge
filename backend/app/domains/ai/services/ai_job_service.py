@@ -138,6 +138,23 @@ def _job_kind_from_job(job: SddAiJob) -> str:
     return _normalize_job_kind(str(context.get("job_kind") or ""))
 
 
+def _has_diagnosis_summary_job(db, task_id: str) -> bool:
+    """任务是否发起过「一键总结问题案例」任务（含进行中/成功/失败历史）。"""
+    jobs = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        )
+        .all()
+    )
+    for job in jobs:
+        context = job.context_json if isinstance(job.context_json, dict) else {}
+        if str(context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
+            return True
+    return False
+
+
 def serialize_job(job: SddAiJob) -> Dict[str, Any]:
     return {
         "id": job.id,
@@ -1595,6 +1612,13 @@ async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -
             return
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task or task.task_type != "DIAGNOSIS":
+            return
+        # 用户已经使用「一键总结问题案例」后，普通问答的自动反填不得再覆盖定位结果卡片
+        if _has_diagnosis_summary_job(db, task.id):
+            logger.info(
+                "Skip diagnosis result auto-fill for task %s: summary job exists",
+                task.id,
+            )
             return
 
         from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType

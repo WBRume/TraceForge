@@ -473,13 +473,13 @@ const statusModelText = (card: any): string => {
         <template v-else>
           <button
             class="btn-micro"
-            :disabled="vm.engineRunning || vm.diagnosisSummarizing"
-            :title="$t('diagnosis.summarize_case_button')"
+            :disabled="vm.engineRunning || vm.diagnosisSummarizing || vm.isDiagnosisAdopted"
+            :title="vm.isDiagnosisAdopted ? $t('diagnosis.case_already_adopted_no_summary') : $t('diagnosis.summarize_case_button')"
             @click="vm.generateDiagnosisSummary"
           >
             <Loader2 v-if="vm.diagnosisSummarizing" class="w-3 h-3 spin" />
             <Sparkles v-else class="w-3 h-3" />
-            {{ vm.diagnosisSummarizing ? $t('diagnosis.summarizing') : $t('diagnosis.summarize_case_button') }}
+            {{ vm.isDiagnosisAdopted ? $t('diagnosis.case_adopted_label') : vm.diagnosisSummarizing ? $t('diagnosis.summarizing') : $t('diagnosis.summarize_case_button') }}
           </button>
         </template>
       </div>

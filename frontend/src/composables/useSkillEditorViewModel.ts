@@ -526,7 +526,7 @@ export function useSkillEditorViewModel() {
   }
 
   const navigateBack = () => {
-    router.push({ path: '/skills' })
+    router.push({ path: '/ops/skills' })
   }
 
   const editorTabQuery = () => {

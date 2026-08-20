@@ -74,6 +74,19 @@ describe('useCaseCenter', () => {
     expect(vm.total.value).toBe(1)
   })
 
+  it('loads all accessible cases when no workspace id is provided', async () => {
+    apiMock.get.mockResolvedValueOnce({
+      data: { items: [caseItem()], total: 1, page: 1, page_size: 20 },
+    })
+    const vm = useCaseCenter({ workspaceId: () => '' })
+    await vm.loadCases({ reset: true })
+
+    expect(apiMock.get).toHaveBeenCalledWith('/cases', {
+      params: { page: 1, page_size: 20 },
+    })
+    expect(vm.items.value).toHaveLength(1)
+  })
+
   it('opens case detail and exposes permission flags', async () => {
     apiMock.get.mockResolvedValueOnce({ data: caseItem({ my_can_review: true }) })
     const vm = useCaseCenter()

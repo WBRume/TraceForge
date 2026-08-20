@@ -56,7 +56,7 @@ const actionMeta = (action: string) => {
 .timeline-list {
   display: flex;
   flex-direction: column;
-  padding-left: 4px;
+  padding: 4px 16px 4px 14px;
 }
 
 .timeline-item {
@@ -87,6 +87,11 @@ const actionMeta = (action: string) => {
   z-index: 1;
 }
 
+.timeline-marker svg {
+  width: 15px !important;
+  height: 15px !important;
+}
+
 .timeline-start { color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; }
 .timeline-approve { color: #047857; background: #ecfdf5; border: 1px solid #a7f3d0; }
 .timeline-reject { color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca; }
@@ -94,7 +99,11 @@ const actionMeta = (action: string) => {
 .timeline-body {
   min-width: 0;
   flex: 1;
-  padding-top: 4px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: 0;
+  min-height: 30px;
 }
 
 .timeline-title {
@@ -102,6 +111,8 @@ const actionMeta = (action: string) => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-height: 30px;
+  line-height: 1.3;
 }
 
 .timeline-action {

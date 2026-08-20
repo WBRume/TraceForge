@@ -49,6 +49,7 @@ from app.domains.task.schemas.diagnosis import (
     DiagnosisResultUpsertRequest,
 )
 from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseResponse
+from app.domains.case_center.models.case import SddCase
 from app.domains.case_center.services import case_service
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.ai.services import ai_job_service
@@ -1295,6 +1296,22 @@ async def trigger_diagnosis_summary(
         "No permission to summarize diagnosis cases",
     )
     task = _require_diagnosis_task(db, task_id, ws_id)
+
+    # 案例被采纳（已生成案例草案 / 定位结果已 CONFIRMED）后，禁止再次一键总结
+    existing_case = (
+        db.query(SddCase)
+        .filter(
+            SddCase.workspace_id == ws_id,
+            SddCase.source_task_id == task.id,
+        )
+        .first()
+    )
+    diagnosis_result = getattr(task, "diagnosis_result", None)
+    if existing_case is not None or (diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"):
+        raise HTTPException(
+            status_code=409,
+            detail="Case already adopted, diagnosis summarization is not allowed",
+        )
 
     active_job = (
         db.query(ai_job_service.SddAiJob)

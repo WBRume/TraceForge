@@ -109,7 +109,6 @@ const handleConfirm = async () => {
           <span class="mgmt-lifecycle-stage-badge">
             <LifecycleBadge :status="stage.status" />
           </span>
-          <span class="mgmt-lifecycle-stage-label">{{ stage.label }}</span>
         </div>
         <ArrowRight
           v-if="idx < stageLabels.length - 1"
@@ -184,18 +183,11 @@ const handleConfirm = async () => {
   transform: scale(1.05);
 }
 
-.mgmt-lifecycle-stage-label {
-  font-size: 0.72rem;
-  color: #64748b;
-  font-weight: 600;
-}
-
 .mgmt-lifecycle-arrow {
   width: 1rem;
   height: 1rem;
   color: #cbd5e1;
   flex-shrink: 0;
-  margin-bottom: 1.2rem;
 }
 
 .mgmt-lifecycle-arrow.passed {

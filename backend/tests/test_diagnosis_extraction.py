@@ -267,6 +267,60 @@ def test_upsert_from_ai_creates_and_updates_single_card_message():
         engine.dispose()
 
 
+def test_upsert_from_user_persists_edits_to_result_and_card():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, _, task = _seed_diagnosis_task(db)
+            diagnosis_result_service.upsert_diagnosis_result_from_ai(
+                db,
+                task=task,
+                payload=DiagnosisResultPayload.model_validate(
+                    {"summary": "AI 初稿", "root_cause": "AI 根因", "confidence": 60}
+                ),
+                actor_user_id=user.id,
+            )
+
+            edited = DiagnosisResultPayload.model_validate(
+                {
+                    "summary": "用户修正后的总结",
+                    "root_cause": "用户修正根因",
+                    "evidence_chain": "证据链已补充",
+                    "fix_suggestion": "修复建议已补充",
+                    "confidence": 88,
+                    "code_context": [{"file_path": "src/pool.py", "start_line": 12}],
+                    "similar_cases": [{"title": "用户补充案例"}],
+                    "call_chain": [{"seq": 1, "module": "Gateway", "function": "handle"}],
+                }
+            )
+            result = diagnosis_result_service.upsert_diagnosis_result_from_user(
+                db,
+                task=task,
+                data=edited,
+                actor_user_id=user.id,
+            )
+            assert result.summary == "用户修正后的总结"
+            assert result.root_cause == "用户修正根因"
+            assert result.evidence_chain == "证据链已补充"
+            assert result.fix_suggestion == "修复建议已补充"
+            assert result.confidence == 88
+            assert result.code_context_json[0]["file_path"] == "src/pool.py"
+            assert result.similar_cases_json[0]["title"] == "用户补充案例"
+            assert result.call_chain_json[0]["module"] == "Gateway"
+
+            message = (
+                db.query(ChatMessage)
+                .filter(ChatMessage.id == result.source_chat_message_id)
+                .first()
+            )
+            assert message is not None
+            assert message.metadata_json["summary"] == "用户修正后的总结"
+            assert message.metadata_json["root_cause"] == "用户修正根因"
+            assert message.metadata_json["confidence"] == 88
+    finally:
+        engine.dispose()
+
+
 def test_upsert_from_ai_skips_confirmed_result():
     engine, SessionLocal = _build_db()
     try:
