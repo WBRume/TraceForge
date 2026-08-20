@@ -1,0 +1,86 @@
+[
+  {
+    "id": "evt_tool_called",
+    "type": "session.next.tool.called",
+    "data": {
+      "timestamp": 1787228102962,
+      "sessionID": "ses_demo",
+      "assistantMessageID": "msg_demo_1",
+      "callID": "call-demo-1",
+      "tool": "read",
+      "input": {"path": "."},
+      "provider": {"executed": false}
+    }
+  },
+  {
+    "id": "evt_tool_success",
+    "type": "session.next.tool.success",
+    "data": {
+      "timestamp": 1787228103002,
+      "sessionID": "ses_demo",
+      "assistantMessageID": "msg_demo_1",
+      "callID": "call-demo-1",
+      "structured": {
+        "entries": [
+          {"path": ".git", "type": "directory"},
+          {"path": "backend", "type": "directory"},
+          {"path": "README.md", "type": "file"}
+        ],
+        "truncated": false
+      },
+      "content": [],
+      "provider": {"executed": false}
+    }
+  },
+  {
+    "id": "evt_text_started",
+    "type": "session.next.text.started",
+    "data": {
+      "timestamp": 1787228105265,
+      "sessionID": "ses_demo",
+      "assistantMessageID": "msg_demo_2",
+      "textID": "text-0"
+    }
+  },
+  {
+    "id": "evt_text_ended",
+    "type": "session.next.text.ended",
+    "data": {
+      "timestamp": 1787228105810,
+      "sessionID": "ses_demo",
+      "assistantMessageID": "msg_demo_2",
+      "textID": "text-0",
+      "text": "Current directory: .git, backend, README.md"
+    }
+  },
+  {
+    "id": "evt_step_ended",
+    "type": "session.next.step.ended",
+    "data": {
+      "timestamp": 1787228106106,
+      "sessionID": "ses_demo",
+      "assistantMessageID": "msg_demo_2",
+      "finish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 1590,
+        "output": 24,
+        "reasoning": 76,
+        "cache": {"read": 2176, "write": 0}
+      },
+      "snapshot": "abc",
+      "files": []
+    }
+  },
+  {
+    "id": "evt_permission_asked",
+    "type": "permission.v2.asked",
+    "data": {
+      "id": "per_demo",
+      "sessionID": "ses_demo",
+      "action": "write",
+      "resources": ["/tmp/foo.txt"],
+      "save": []
+    }
+  }
+]

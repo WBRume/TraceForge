@@ -47,6 +47,20 @@ def _find_running_task_job(db: Session, task_id: str, engine: WorkflowEngine) ->
     return query.order_by(SddAiJob.created_at.desc()).first()
 
 
+def _find_active_task_job(db: Session, task_id: str) -> Optional[SddAiJob]:
+    """查找尚未结束的 TASK_CHAT 作业（PENDING/RUNNING/WAITING_HITL）。"""
+    return (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status.in_([AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL]),
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .first()
+    )
+
+
 def _find_latest_interrupted_job(db: Session, task_id: str) -> Optional[SddAiJob]:
     return (
         db.query(SddAiJob)
@@ -88,50 +102,77 @@ async def interrupt_task(
     reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     engine = get_engine(task.id)
-    if not engine or not engine.running:
-        raise TaskSessionControlError("No running Claude CLI session to interrupt", status_code=409)
+    if engine and engine.running:
+        job = _find_running_task_job(db, task.id, engine)
+        if not job:
+            raise TaskSessionControlError("No running AI job to interrupt", status_code=409)
 
-    job = _find_running_task_job(db, task.id, engine)
-    if not job:
-        raise TaskSessionControlError("No running AI job to interrupt", status_code=409)
+        now = datetime.utcnow()
+        reason_text = str(reason or "User temporarily interrupted the AI session").strip()
+        session_id = str(engine.session_id or job.session_id or task.session_id or "").strip() or None
 
-    now = datetime.utcnow()
-    reason_text = str(reason or "User temporarily interrupted the AI session").strip()
-    session_id = str(engine.session_id or job.session_id or task.session_id or "").strip() or None
+        task.status = TaskStatus.INTERRUPTED
+        task.session_id = session_id
+        task.error_message = None
+        task.interrupt_reason = reason_text
+        task.interrupted_by_id = actor_user_id
+        task.interrupted_at = now
 
-    task.status = TaskStatus.INTERRUPTED
-    task.session_id = session_id
-    task.error_message = None
-    task.interrupt_reason = reason_text
-    task.interrupted_by_id = actor_user_id
-    task.interrupted_at = now
+        job.status = AiJobStatus.INTERRUPTED
+        job.message = "AI session interrupted by user"
+        job.error_message = None
+        job.session_id = session_id
+        job.interrupt_reason = reason_text
+        job.interrupted_by_id = actor_user_id
+        job.interrupted_at = now
+        job.finished_at = now
+        job.context_json = _merge_json(
+            job.context_json,
+            {
+                "interrupted": True,
+                "interrupted_at": now.isoformat() + "Z",
+                "interrupted_by_id": actor_user_id,
+            },
+        )
+        db.commit()
+        db.refresh(task)
+        db.refresh(job)
 
-    job.status = AiJobStatus.INTERRUPTED
-    job.message = "AI session interrupted by user"
-    job.error_message = None
-    job.session_id = session_id
-    job.interrupt_reason = reason_text
-    job.interrupted_by_id = actor_user_id
-    job.interrupted_at = now
-    job.finished_at = now
-    job.context_json = _merge_json(
-        job.context_json,
-        {
-            "interrupted": True,
-            "interrupted_at": now.isoformat() + "Z",
-            "interrupted_by_id": actor_user_id,
-        },
+        await engine.interrupt()
+        db.refresh(task)
+        db.refresh(job)
+
+        await ai_job_service.publish_job(job.id, final=False)
+        job_payload = ai_job_service.serialize_job(job)
+        await _broadcast_task_event("task_interrupted", task, job_payload)
+        return _task_payload(task, job_payload)
+
+    # 没有 running engine：可能是任务还在排队/刚结束，前端把停止按钮置为可点。
+    # 此时不再报“No running Claude CLI session”，而是取消尚未真正启动的 AI job，
+    # 让前端可以正确回刷运行状态。
+    active_job = _find_active_task_job(db, task.id)
+    if not active_job:
+        raise TaskSessionControlError(
+            "No running Claude CLI session or active AI job to interrupt",
+            status_code=409,
+        )
+
+    cancelled_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+        db,
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        message=str(reason or "Task execution stopped before Claude session started").strip(),
     )
-    db.commit()
-    db.refresh(task)
-    db.refresh(job)
+    if not cancelled_ids:
+        raise TaskSessionControlError(
+            "No active AI job to interrupt",
+            status_code=409,
+        )
 
-    await engine.interrupt()
-    db.refresh(task)
-    db.refresh(job)
-
-    await ai_job_service.publish_job(job.id, final=False)
-    job_payload = ai_job_service.serialize_job(job)
+    db.refresh(active_job)
+    for job_id in cancelled_ids:
+        await ai_job_service.publish_job(job_id, final=True)
+    job_payload = ai_job_service.serialize_job(active_job)
     await _broadcast_task_event("task_interrupted", task, job_payload)
     return _task_payload(task, job_payload)
 

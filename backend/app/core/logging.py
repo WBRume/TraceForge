@@ -181,6 +181,15 @@ def _debug_filter(record: Dict[str, Any]) -> bool:
     return record["level"].name == "DEBUG"
 
 
+def _is_safe_extra_value(value: Any) -> bool:
+    """仅放行可序列化的标量值，避免把 uvicorn websocket/app 等对象带进 loguru enqueue 队列。"""
+    if value is None:
+        return True
+    if isinstance(value, (str, int, float, bool)):
+        return True
+    return False
+
+
 class _InterceptHandler(logging.Handler):
     def __init__(self, *, category: Optional[str] = None):
         super().__init__()
@@ -224,6 +233,8 @@ class _InterceptHandler(logging.Handler):
             if key in std_keys:
                 continue
             if key.startswith("_"):
+                continue
+            if not _is_safe_extra_value(value):
                 continue
             bound_payload[key] = value
 
