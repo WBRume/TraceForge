@@ -1,0 +1,11 @@
+{"type":"session","version":0,"id":"ses_demo","createdAt":0,"cwd":"/tmp","delegationDepth":0}
+{"type":"assistant/chunk","seq":11,"time":0,"data":{"turn":1,"step":1,"chunk":{"type":"usage","usage":{"inputTokens":3,"outputTokens":3}}}}
+{"type":"assistant/chunk","seq":12,"time":0,"data":{"turn":1,"step":1,"chunk":{"type":"finish","reason":{"kind":"tool-calls"}}}}
+{"type":"tool/call","seq":14,"time":0,"data":{"turn":1,"step":1,"callId":"call-1","name":"read_file","arguments":"{\"path\": \"README.md\"}"}}
+{"type":"tool/result","seq":15,"time":0,"data":{"turn":1,"step":1,"message":{"source":{"kind":"tool","callId":"call-1"},"content":[{"type":"tool-result","toolCallId":"call-1","content":[{"type":"text","text":"Hello DSH"}],"isError":false}],"role":"user","id":"msg_tool"}},"sourceEventSeqs":[14],"surfaceOp":"append"}
+{"type":"assistant/chunk","seq":76,"time":0,"data":{"turn":1,"step":2,"chunk":{"type":"block-start","index":0,"blockType":"text"}}}
+{"type":"assistant/chunk","seq":77,"time":0,"data":{"turn":1,"step":2,"chunk":{"type":"text-delta","index":0,"text":"Hello"}}}
+{"type":"assistant/chunk","seq":78,"time":0,"data":{"turn":1,"step":2,"chunk":{"type":"block-end","index":0,"block":{"type":"text","text":"Hello"}}}}
+{"type":"assistant/message","seq":81,"time":0,"data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"Hello"}],"source":{"kind":"model","provider":"deepseek-official","model":"smoke-model"},"id":"msg_hello"}},"usage":{"inputTokens":3,"outputTokens":3},"sourceEventSeqs":[76,77,78,79,80],"surfaceOp":"append"}
+{"type":"step/end","seq":82,"time":0,"data":{"turn":1,"step":2}}
+{"type":"turn/end","seq":83,"time":0,"data":{"turn":1,"reason":{"kind":"completed"}}}

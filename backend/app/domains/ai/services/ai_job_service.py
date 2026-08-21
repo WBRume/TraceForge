@@ -1699,6 +1699,9 @@ async def _execute_task_chat_job(job_id: str) -> None:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if not job or job.channel != AiJobChannel.TASK_CHAT:
             return
+        # 防止“停止/中断”发生在排队阶段时，任务稍后仍被启动
+        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.CANCELLED}:
+            return
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task:
             raise ValueError("Task not found for AI job")
