@@ -50,6 +50,9 @@ describe('TaskProvisionProgressModal', () => {
         .mockResolvedValueOnce({
           data: { job_id: 'job-1', job_type: 'CREATE_TASK', status: 'SUCCESS', progress: 100, stage: 'COMPLETED', message: 'Task is ready' },
         })
+        .mockResolvedValueOnce({
+          data: { id: 'task-1', status: 'PENDING' },
+        })
 
       const wrapper = mountModal()
       await flushPromises()
@@ -85,9 +88,13 @@ describe('TaskProvisionProgressModal', () => {
       files: [new File(['log'], 'issue.log', { type: 'text/plain' })],
     })
 
-    apiMock.get.mockResolvedValue({
-      data: { job_id: 'job-1', job_type: 'CREATE_TASK', status: 'SUCCESS', progress: 100, stage: 'COMPLETED' },
-    })
+    apiMock.get
+      .mockResolvedValueOnce({
+        data: { job_id: 'job-1', job_type: 'CREATE_TASK', status: 'SUCCESS', progress: 100, stage: 'COMPLETED' },
+      })
+      .mockResolvedValue({
+        data: { id: 'task-1', status: 'PENDING' },
+      })
     apiMock.post.mockResolvedValue({ data: { status: 'success' } })
 
     const wrapper = mountModal()

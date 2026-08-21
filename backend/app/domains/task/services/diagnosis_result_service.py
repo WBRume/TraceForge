@@ -18,6 +18,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.domains.case_center.models.case import CaseStatus, SddCase
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
 from app.domains.task.models.diagnosis import (
     DiagnosisResultStatus,
@@ -26,6 +27,7 @@ from app.domains.task.models.diagnosis import (
 from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.websocket.ws.manager import manager as ws_manager
+from app.domains.rag.services import outbox_service as rag_outbox_service
 
 logger = get_logger(__name__, category="diagnosis_result")
 
@@ -404,6 +406,26 @@ def _find_result(db: Session, task_id: str) -> Optional[SddDiagnosisResult]:
     )
 
 
+def _enqueue_approved_case_update(db: Session, task, result: SddDiagnosisResult) -> None:
+    """审批通过后，定位结果被修改时更新同一案例的 RAG 终态文档。"""
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        return
+    case = (
+        db.query(SddCase)
+        .filter(
+            SddCase.source_task_id == task.id,
+            SddCase.status == CaseStatus.APPROVED.value,
+        )
+        .first()
+    )
+    if case is None:
+        return
+    try:
+        rag_outbox_service.enqueue_case_published(db, case, diagnosis_result=result)
+    except Exception:
+        logger.exception("Failed to enqueue RAG update for approved case task=%s", task.id)
+
+
 def upsert_diagnosis_result_from_ai(
     db: Session,
     *,
@@ -470,6 +492,7 @@ def upsert_diagnosis_result_from_user(
     )
     db.commit()
     db.refresh(result)
+    _enqueue_approved_case_update(db, task, result)
     return result
 
 

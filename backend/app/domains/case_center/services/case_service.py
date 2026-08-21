@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.logging import audit_log
+from app.core.logging import audit_log, get_logger
 from app.domains.auth.models.user import User, Workspace
 from app.domains.case_center.models.case import (
     CaseCategory,
@@ -28,6 +28,9 @@ from app.domains.task.models.task import SddTask, TaskType
 from app.domains.task.services import task_service
 from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
 from app.domains.workspace.services import workspace_service
+from app.domains.rag.services import outbox_service as rag_outbox_service
+
+logger = get_logger(__name__, category="case")
 
 
 class CaseError(ValueError):
@@ -460,6 +463,11 @@ def review_case(
         workspace_id=workspace_id,
         conclusion=conclusion,
     )
+    if conclusion == "approve":
+        try:
+            rag_outbox_service.enqueue_case_published(db, case)
+        except Exception:
+            logger.exception("Failed to enqueue RAG document for approved case %s", case.id)
     return _require_case(db, case.id, workspace_id)
 
 

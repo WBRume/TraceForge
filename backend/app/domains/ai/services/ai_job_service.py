@@ -1566,11 +1566,8 @@ async def _on_engine_result(
         db.close()
 
     if success:
-        # 问题定位任务：对话结束后从 AI 会话结果反填「定位结果」卡片
-        try:
-            await _extract_and_publish_diagnosis_result(job_id, result)
-        except Exception:
-            logger.exception("Diagnosis result extraction failed; job finalization continues")
+        # 问题定位卡片只在用户点击「一键总结问题案例」时生成；
+        # 普通 AI 会话结束不再自动反填定位结果卡片。
         await _update_job_state(
             job_id,
             status=AiJobStatus.SUCCESS,
@@ -1597,80 +1594,6 @@ async def _on_engine_result(
         },
         finalize=True,
     )
-
-
-async def _extract_and_publish_diagnosis_result(job_id: str, result_text: str) -> None:
-    """DIAGNOSIS 任务：从 AI 会话结果提取结构化定位结果并推送卡片消息。
-
-    拼接该轮（job 创建后）所有 assistant 文本消息，避免 CLI result 事件只携带
-    最后一段文本时丢失末尾的 JSON 结果块。
-    """
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job or not job.task_id:
-            return
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-        if not task or task.task_type != "DIAGNOSIS":
-            return
-        # 用户已经使用「一键总结问题案例」后，普通问答的自动反填不得再覆盖定位结果卡片
-        if _has_diagnosis_summary_job(db, task.id):
-            logger.info(
-                "Skip diagnosis result auto-fill for task %s: summary job exists",
-                task.id,
-            )
-            return
-
-        from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
-        from app.domains.task.services import task_service as task_service_module
-
-        turn_texts = []
-        since = job.created_at
-        rows = (
-            db.query(ChatMessage)
-            .filter(
-                ChatMessage.task_id == task.id,
-                ChatMessage.role == MessageRole.ASSISTANT,
-                ChatMessage.message_type == MessageType.TEXT,
-            )
-            .all()
-        )
-        rows = task_service_module.sort_chat_messages(rows)
-        if since is not None:
-            rows = [row for row in rows if row.created_at is not None and row.created_at >= since]
-        for row in rows:
-            content = str(row.content or "").strip()
-            if content:
-                turn_texts.append(content)
-        combined = "\n\n".join(turn_texts).strip()
-        if not combined:
-            combined = str(result_text or "").strip()
-
-        payload = diagnosis_result_service.extract_payload_from_text(combined)
-        if payload is None:
-            return
-        result = diagnosis_result_service.upsert_diagnosis_result_from_ai(
-            db,
-            task=task,
-            payload=payload,
-            actor_user_id=str(job.creator_id or ""),
-        )
-        if result is None or not result.source_chat_message_id:
-            return
-        message = (
-            db.query(ChatMessage)
-            .filter(ChatMessage.id == result.source_chat_message_id)
-            .first()
-        )
-        if not message:
-            return
-        await diagnosis_result_service.publish_diagnosis_result_message(
-            db, task=task, message=message
-        )
-    except Exception:
-        logger.exception("Diagnosis result extraction failed")
-    finally:
-        db.close()
 
 
 async def _on_engine_error(error_text: str, job_id: str) -> None:
@@ -1987,12 +1910,6 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             payload = serialize_job(job)
     finally:
         db.close()
-    if engine.last_result_success is True:
-        # 问题定位任务兜底：callback 未触发时仍从会话结果反填定位结果卡片
-        try:
-            await _extract_and_publish_diagnosis_result(job_id, engine.last_result_text)
-        except Exception:
-            logger.exception("Diagnosis result fallback extraction failed")
     await _broadcast_job_payload(payload, final=True)
     queue_key = str(payload.get("queue_key") or "")
     if queue_key:

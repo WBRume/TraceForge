@@ -61,12 +61,15 @@ from app.domains.workspace.services import workspace_service
 from app.domains.websocket.ws.manager import manager
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
+from app.domains.rag.services import ingest_worker as rag_ingest_worker
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description="规范驱动开发基础平台 API"
 )
+
+_rag_ingest_task: asyncio.Task | None = None
 
 # ── CORS ──
 app.add_middleware(
@@ -81,8 +84,19 @@ app.add_middleware(
 app.add_middleware(LoggingMiddleware)
 
 
+@app.on_event("startup")
+async def _on_startup() -> None:
+    global _rag_ingest_task
+    if settings.RAG_ENABLED:
+        _rag_ingest_task = asyncio.create_task(rag_ingest_worker.run_ingest_worker())
+
+
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
+    global _rag_ingest_task
+    if _rag_ingest_task is not None:
+        _rag_ingest_task.cancel()
+        _rag_ingest_task = None
     try:
         await api_mock_ws_manager.shutdown()
     except Exception:
