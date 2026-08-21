@@ -642,6 +642,11 @@ AGENT_DSH_SESSION_ROOT=
 AGENT_HITL_MODE=turn_based
 ```
 
+> **实际落地说明**：当前 TraceForge 后端 `config.py` / `.env` 使用简化名
+> `AGENT_BACKEND`（默认 `claude-code`）、`OPENCODE_SERVER_URL`、`DSH_CLI_PATH`，
+> 映射关系与示例见 `docs/agent-adapter-phase2-progress.md#10-配置适配实际落地`；
+> 后续可将这些项平滑别名到本节 `AGENT_*` 约定名。
+
 ### 8.1.1 旧配置 → 新配置映射
 
 | 旧配置 | 新配置 | 说明 |

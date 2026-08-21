@@ -116,7 +116,8 @@ opencode acp --help
   - `permission.v2.asked` / `question.v2.asked`
 - 最终消息/用量可从 `GET /api/session/{id}/message` 的 assistant message 获取：
   `tokens.input/output/reasoning/cache.read/write`、`finish="stop"`。
-- 结论：TraceForge 接入 OpenCode 应采用 **Server 模式**；`OpenCodeAdapter` 骨架与 `map_opencode_event()` 已落地。
+- `OpenCodeAdapter.run()` 已用 Server 模式接线并真实验证：创建 session → 发送 prompt → SSE 事件流（text/usage/result）→ 获取最终 message；单轮 `只回复OK` 成功返回 OK，`finish_reason` 归一化为 `completed`。
+- 结论：TraceForge 接入 OpenCode 应采用 **Server 模式**；`OpenCodeAdapter.run()` 与 `map_opencode_event()` 已落地。
 
 ---
 
