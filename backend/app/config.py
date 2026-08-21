@@ -138,6 +138,18 @@ class Settings(BaseSettings):
     API_MOCK_QUEUE_MAX_CONCURRENT: int = 2
     BOOTSTRAP_QUEUE_MAX_CONCURRENT: int = 2
 
+    # ── RAG 适配层 ──
+    # 当前只实现适配层：httpx / mock；具体平台（WeKnora / LLMWiki 等）后续按选型结果追加
+    RAG_ENABLED: bool = False
+    RAG_PROVIDER: str = "mock"
+    RAG_API_BASE_URL: str = ""
+    RAG_API_KEY: str = ""
+    RAG_API_TIMEOUT_SECONDS: int = 10
+    RAG_INGEST_BATCH_SIZE: int = 20
+    RAG_INGEST_INTERVAL_SECONDS: float = 5.0
+    RAG_RETRY_MAX: int = 5
+    RAG_RETRY_BACKOFF_BASE_SECONDS: int = 2
+
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",

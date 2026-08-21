@@ -247,9 +247,11 @@ export function useChatViewModel() {
   const isTaskPreStart = computed(() => currentTask.value?.status === 'PENDING')
   const isTaskProvisioning = computed(() => String(currentTask.value?.status || '') === 'PROVISIONING')
   const isTaskInterrupted = computed(() => currentTask.value?.status === 'INTERRUPTED')
-  const isStartActionVisible = computed(() => Boolean(currentTask.value) && isTaskPreStart.value)
+  // 任务创建后处于 PROVISIONING 时也保留启动引擎按钮（禁用态），避免按钮凭空消失；
+  // 只有资源准备完成回到 PENDING 后才允许真正启动。
+  const isStartActionVisible = computed(() => Boolean(currentTask.value) && (isTaskPreStart.value || isTaskProvisioning.value))
   const canClickStartAction = computed(() => (
-    isStartActionVisible.value && canStartTask.value && !startingTask.value
+    isTaskPreStart.value && canStartTask.value && !startingTask.value
   ))
   const canInitializeAction = computed(() => (
     Boolean(currentTask.value) && !isTaskPreStart.value && canManageTaskStatus.value
@@ -1174,6 +1176,12 @@ export function useChatViewModel() {
     preferredSpecAssetId.value = typeof payload === 'string' ? '' : (payload.assetId || '')
     await loadTasks()
 
+    // 任务创建后即使仍在 PROVISIONING，也先选中新任务，避免准备弹窗期间/关闭后看不到会话与启动按钮
+    const createdTask = tasks.value.find((task: any) => task.id === taskId)
+    if (createdTask && currentTask.value?.id !== taskId) {
+      await selectTask(createdTask)
+    }
+
     if (jobId) {
       // 无论是否携带 spec/诊断文档，都先等待运维队列准备完成
       taskProvisionJobId.value = jobId
@@ -1184,14 +1192,30 @@ export function useChatViewModel() {
     openTaskSession(taskId)
   }
 
+  const closeTaskProvision = () => {
+    const taskId = taskProvisionTaskId.value
+    if (taskId) {
+      void openTaskSession(taskId)
+    } else {
+      taskProvisionVisible.value = false
+    }
+  }
+
   const openTaskSession = async (taskId: string) => {
     const wsId = route.params.wsId
     taskProvisionVisible.value = false
     router.push(`/ws/${wsId}/chat/${taskId}`)
-    // 重新获取一下最新的 task 对象
+    // 重新获取一下最新的 task 对象，并同步到任务列表，避免后续 loadTasks 用旧 PROVISIONING 覆盖当前状态
     try {
       const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
-      selectTask(latestTaskRes.data)
+      const latestTask = latestTaskRes.data
+      const taskIndex = tasks.value.findIndex((task: any) => task.id === latestTask?.id)
+      if (taskIndex >= 0) {
+        tasks.value[taskIndex] = { ...tasks.value[taskIndex], ...latestTask }
+      } else if (latestTask?.id) {
+        tasks.value.unshift(latestTask)
+      }
+      await selectTask(latestTask)
     } catch (e) {
       console.warn('Failed to refresh task after provisioning', e)
     }
@@ -2505,6 +2529,10 @@ export function useChatViewModel() {
   const startTask = async (): Promise<boolean> => {
     if (!currentTask.value) return false
     if (!isStartActionVisible.value) return false
+    if (isTaskProvisioning.value) {
+      ElMessage.warning(t('chat.task_provisioning_hint'))
+      return false
+    }
     if (!canStartTask.value) {
       ElMessage.warning(t('chat.errors.no_permission_start_task'))
       return false
@@ -2549,6 +2577,10 @@ export function useChatViewModel() {
   const handleStartClick = () => {
     if (!currentTask.value) return
     if (!isStartActionVisible.value) return
+    if (isTaskProvisioning.value) {
+      ElMessage.warning(t('chat.task_provisioning_hint'))
+      return
+    }
     if (!canStartTask.value) {
       ElMessage.warning(t('chat.errors.no_permission_start_task'))
       return
@@ -2700,6 +2732,7 @@ export function useChatViewModel() {
     taskProvisionVisible,
     taskProvisionJobId,
     taskProvisionTaskId,
+    closeTaskProvision,
     openTaskSession,
     toggleDiagnosisDocsDrawer,
     createDiagnosisCase,

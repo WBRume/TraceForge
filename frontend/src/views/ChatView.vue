@@ -201,6 +201,7 @@ const statusModelText = (card: any): string => {
             v-if="vm.isStartActionVisible"
             class="btn-primary start-btn"
             :disabled="!vm.canClickStartAction"
+            :title="vm.isTaskProvisioning ? $t('chat.task_provisioning_hint') : ''"
             @click="vm.handleStartClick"
           >
             <Play class="w-4 h-4" /> {{ $t('chat.engine_start') }}
@@ -597,55 +598,80 @@ const statusModelText = (card: any): string => {
             v-show="vm.specDrawerTab === 'diag_docs'"
           >
             <div class="diag-panel">
-              <div class="diag-upload-row">
-                <input
-                  id="diag-panel-file"
-                  type="file"
-                  class="diag-hidden-input"
-                  multiple
-                  accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
-                  @change="handleDiagnosisDocSelect"
-                />
-                <label for="diag-panel-file" class="diag-upload-btn" :class="{ disabled: diagDocs.uploading }">
-                  <Loader2 v-if="diagDocs.uploading" class="w-3.5 h-3.5 diag-spin" />
-                  <Upload v-else class="w-3.5 h-3.5" />
-                  <span>{{ $t('diagnosis.upload_docs') }}</span>
-                </label>
-              </div>
-
-              <div v-if="diagDocs.docsLoading" class="diag-state">
-                <Loader2 class="w-4 h-4 diag-spin" />
-                <span>{{ $t('common.loading') }}</span>
-              </div>
-              <div v-else-if="diagDocs.docs.length === 0" class="diag-state">{{ $t('diagnosis.docs_empty') }}</div>
-              <div v-else class="diag-doc-list">
-                <button
-                  v-for="doc in diagDocs.docs"
-                  :key="doc.id"
-                  type="button"
-                  class="diag-doc-item"
-                  :class="{ active: diagDocs.activeDoc?.id === doc.id }"
-                  @click="diagDocs.selectDoc(doc)"
-                >
-                  <FileText class="diag-doc-icon" />
-                  <div class="diag-doc-body">
-                    <div class="diag-doc-name">{{ doc.name.split('/').pop() }}</div>
-                    <div class="diag-doc-meta">{{ diagDocMeta(doc) }}</div>
+              <header class="diag-panel-header">
+                <div class="diag-panel-title-group">
+                  <div class="diag-panel-title-line">
+                    <div class="diag-panel-title-icon">
+                      <FileText :size="18" :stroke-width="2.5" />
+                    </div>
+                    <span>{{ $t('diagnosis.docs_drawer_title') }}</span>
                   </div>
-                </button>
-              </div>
-
-              <div v-if="diagDocs.activeDocLoading" class="diag-state">
-                <Loader2 class="w-4 h-4 diag-spin" />
-                <span>{{ $t('common.loading') }}</span>
-              </div>
-              <div v-else-if="diagDocs.activeDoc" class="diag-doc-preview">
-                <div class="diag-preview-title">
-                  <FileText class="w-3.5 h-3.5" />
-                  <span>{{ diagDocs.activeDoc.name.split('/').pop() }}</span>
+                  <p class="diag-panel-subtitle">{{ $t('diagnosis.docs_upload_hint') }}</p>
                 </div>
-                <pre v-if="diagDocs.activeDoc.content_text" class="diag-preview-content">{{ diagDocs.activeDoc.content_text }}</pre>
-                <div v-else class="diag-state">{{ $t('diagnosis.docs_preview_empty') }}</div>
+                <div class="diag-panel-actions">
+                  <input
+                    id="diag-panel-file"
+                    type="file"
+                    class="diag-hidden-input"
+                    multiple
+                    accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
+                    @change="handleDiagnosisDocSelect"
+                  />
+                  <label for="diag-panel-file" class="btn-ghost diag-upload-btn" :class="{ disabled: diagDocs.uploading }">
+                    <Loader2 v-if="diagDocs.uploading" class="w-4 h-4 diag-spin" />
+                    <Upload v-else class="w-4 h-4" />
+                    <span>{{ $t('diagnosis.upload_docs') }}</span>
+                  </label>
+                </div>
+              </header>
+
+              <div class="diag-body">
+                <aside class="diag-doc-list-pane">
+                  <div v-if="diagDocs.docsLoading" class="diag-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else-if="diagDocs.docs.length === 0" class="diag-state">{{ $t('diagnosis.docs_empty') }}</div>
+                  <div v-else class="diag-doc-list">
+                    <button
+                      v-for="doc in diagDocs.docs"
+                      :key="doc.id"
+                      type="button"
+                      class="diag-doc-item"
+                      :class="{ active: diagDocs.activeDoc?.id === doc.id }"
+                      @click="diagDocs.selectDoc(doc)"
+                    >
+                      <div class="diag-doc-icon-container blue">
+                        <FileText :size="14" :stroke-width="2.5" />
+                      </div>
+                      <div class="diag-doc-body">
+                        <span class="diag-doc-name">{{ doc.name.split('/').pop() }}</span>
+                        <span class="diag-doc-meta">{{ diagDocMeta(doc) }}</span>
+                      </div>
+                    </button>
+                  </div>
+                </aside>
+
+                <section class="diag-doc-preview-pane">
+                  <div v-if="diagDocs.activeDocLoading" class="diag-state diag-preview-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else-if="diagDocs.activeDoc" class="diag-doc-preview">
+                    <div class="diag-preview-title">
+                      <div class="diag-doc-icon-container blue">
+                        <FileText :size="14" :stroke-width="2.5" />
+                      </div>
+                      <span>{{ diagDocs.activeDoc.name.split('/').pop() }}</span>
+                    </div>
+                    <pre v-if="diagDocs.activeDoc.content_text" class="diag-preview-content">{{ diagDocs.activeDoc.content_text }}</pre>
+                    <div v-else class="diag-state diag-preview-state">{{ $t('diagnosis.docs_preview_empty') }}</div>
+                  </div>
+                  <div v-else class="diag-state diag-preview-state">
+                    <FileText class="w-10 h-10 opacity-10" />
+                    <span>{{ $t('diagnosis.docs_empty') }}</span>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -657,33 +683,53 @@ const statusModelText = (card: any): string => {
             v-show="vm.specDrawerTab === 'diag_code'"
           >
             <div class="diag-panel">
-              <div class="diag-section-label">{{ $t('diagnosis.code_path_label') }}</div>
-              <pre v-if="diagDocs.codePath" class="diag-code-path">{{ diagDocs.codePath }}</pre>
-              <div v-else-if="diagDocs.reposLoading" class="diag-state">
-                <Loader2 class="w-4 h-4 diag-spin" />
-                <span>{{ $t('common.loading') }}</span>
-              </div>
-              <div v-else class="diag-state">{{ $t('diagnosis.code_path_empty') }}</div>
-
-              <div class="diag-section-label diag-section-label-gap">{{ $t('diagnosis.repo_list_label') }}</div>
-              <div v-if="diagDocs.reposLoading" class="diag-state">
-                <Loader2 class="w-4 h-4 diag-spin" />
-                <span>{{ $t('common.loading') }}</span>
-              </div>
-              <div v-else-if="diagDocs.repos.length === 0" class="diag-state">{{ $t('diagnosis.repo_list_empty') }}</div>
-              <div v-else class="diag-repo-list">
-                <div v-for="repo in diagDocs.repos" :key="repo.id || repo.repo_name" class="diag-repo-item">
-                  <GitFork class="diag-repo-icon" />
-                  <div class="diag-repo-body">
-                    <div class="diag-repo-name">
-                      {{ repo.repo_name }}
-                      <span v-if="repo.state" class="diag-repo-state">{{ repo.state }}</span>
+              <header class="diag-panel-header">
+                <div class="diag-panel-title-group">
+                  <div class="diag-panel-title-line">
+                    <div class="diag-panel-title-icon amber">
+                      <GitFork :size="18" :stroke-width="2.5" />
                     </div>
-                    <div class="diag-repo-meta">
-                      {{ [repo.branch_name, repo.repo_url].filter(Boolean).join(' · ') }}
+                    <span>{{ $t('diagnosis.code_path_tab') }}</span>
+                  </div>
+                  <p class="diag-panel-subtitle">{{ $t('diagnosis.code_path_label') }}</p>
+                </div>
+              </header>
+
+              <div class="diag-body diag-body-stack">
+                <section class="diag-section">
+                  <h4 class="diag-section-label">{{ $t('diagnosis.code_path_label') }}</h4>
+                  <pre v-if="diagDocs.codePath" class="diag-code-path">{{ diagDocs.codePath }}</pre>
+                  <div v-else-if="diagDocs.reposLoading" class="diag-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else class="diag-state">{{ $t('diagnosis.code_path_empty') }}</div>
+                </section>
+
+                <section class="diag-section">
+                  <h4 class="diag-section-label">{{ $t('diagnosis.repo_list_label') }}</h4>
+                  <div v-if="diagDocs.reposLoading" class="diag-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else-if="diagDocs.repos.length === 0" class="diag-state">{{ $t('diagnosis.repo_list_empty') }}</div>
+                  <div v-else class="diag-repo-list">
+                    <div v-for="repo in diagDocs.repos" :key="repo.id || repo.repo_name" class="diag-repo-item">
+                      <div class="diag-doc-icon-container blue">
+                        <GitFork :size="14" :stroke-width="2.5" />
+                      </div>
+                      <div class="diag-repo-body">
+                        <div class="diag-repo-name">
+                          {{ repo.repo_name }}
+                          <span v-if="repo.state" class="diag-repo-state">{{ repo.state }}</span>
+                        </div>
+                        <div class="diag-repo-meta">
+                          {{ [repo.branch_name, repo.repo_url].filter(Boolean).join(' · ') }}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
+                </section>
               </div>
             </div>
           </div>
@@ -727,7 +773,7 @@ const statusModelText = (card: any): string => {
       :job-id="vm.taskProvisionJobId"
       :task-id="vm.taskProvisionTaskId"
       :workspace-id="String(vm.route.params.wsId || '')"
-      @close="vm.taskProvisionVisible = false"
+      @close="vm.closeTaskProvision"
       @open-session="vm.openTaskSession(vm.taskProvisionTaskId)"
     />
 
@@ -926,14 +972,73 @@ const statusModelText = (card: any): string => {
 
 /* ─── 问题定位：诊断文档 / 代码路径面板（spec 抽屉三段式容器内） ─── */
 .diag-panel {
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 2px;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid rgba(14, 165, 233, 0.1);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
 }
 
-.diag-upload-row {
+.diag-panel-header {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(14, 165, 233, 0.08);
+  background: rgba(255, 255, 255, 0.6);
+  flex-shrink: 0;
+}
+
+.diag-panel-title-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.diag-panel-title-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-title);
+  font-family: var(--font-heading);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.diag-panel-title-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+}
+
+.diag-panel-title-icon.amber {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.diag-panel-subtitle {
+  margin: 2px 0 0 42px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-panel-actions {
+  flex-shrink: 0;
 }
 
 .diag-hidden-input {
@@ -941,28 +1046,8 @@ const statusModelText = (card: any): string => {
 }
 
 .diag-upload-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 6px 12px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 8px;
-  background: #f8fafc;
-  color: #475569;
-  font-size: 0.78rem;
-  font-weight: 600;
   cursor: pointer;
-}
-
-.diag-upload-btn:hover:not(.disabled) {
-  border-color: var(--color-primary-500, #0ea5e9);
-  color: var(--color-primary-600, #0284c7);
-  background: #f0f9ff;
-}
-
-.diag-upload-btn.disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+  font-size: 0.78rem;
 }
 
 .diag-state {
@@ -970,149 +1055,211 @@ const statusModelText = (card: any): string => {
   align-items: center;
   gap: 6px;
   padding: 10px 4px;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   font-size: 0.8rem;
+}
+
+.diag-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.diag-body-stack {
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 18px 20px;
+  gap: 18px;
+}
+
+.diag-doc-list-pane {
+  width: 280px;
+  min-width: 230px;
+  border-right: 1px solid rgba(14, 165, 233, 0.08);
+  overflow-y: auto;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diag-doc-preview-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.diag-preview-state {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
 }
 
 .diag-doc-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .diag-doc-item {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  padding: 7px 8px;
-  border: 1px solid #e8eef5;
-  border-radius: 8px;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
   background: #ffffff;
   text-align: left;
   cursor: pointer;
   width: 100%;
+  transition: all var(--transition-fast);
 }
 
 .diag-doc-item:hover {
-  border-color: #bfdbfe;
-  background: #f0f9ff;
+  border-color: rgba(14, 165, 233, 0.45);
+  background: var(--color-primary-50);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
 }
 
 .diag-doc-item.active {
-  border-color: var(--color-primary-500, #0ea5e9);
-  background: #eff6ff;
+  border-color: var(--color-primary-500);
+  background: var(--color-primary-50);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
 }
 
-.diag-doc-icon {
+.diag-doc-icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
   flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  color: #64748b;
-  margin-top: 1px;
+}
+
+.diag-doc-icon-container.blue {
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+}
+
+.diag-doc-icon-container.amber {
+  background: #fffbeb;
+  color: #d97706;
 }
 
 .diag-doc-body {
   min-width: 0;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .diag-doc-name {
   font-size: 0.8rem;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--color-text-title);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .diag-doc-meta {
-  margin-top: 2px;
   font-size: 0.68rem;
-  color: #94a3b8;
+  color: var(--color-text-muted);
 }
 
 .diag-doc-preview {
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  border: 1px solid #e8eef5;
-  border-radius: 10px;
-  background: #fcfdff;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--radius-lg);
+  background: #ffffff;
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
 .diag-preview-title {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 8px 10px;
-  border-bottom: 1px solid #eef2f7;
-  font-size: 0.76rem;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  font-size: 0.78rem;
   font-weight: 700;
-  color: #334155;
+  color: var(--color-text-title);
+  background: rgba(255, 255, 255, 0.6);
 }
 
 .diag-preview-content {
+  flex: 1;
   margin: 0;
-  padding: 10px 12px;
-  max-height: 46vh;
+  padding: 14px 16px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: inherit;
+  font-family: var(--font-mono);
   font-size: 0.78rem;
-  line-height: 1.6;
-  color: #334155;
+  line-height: 1.65;
+  color: var(--color-text-body);
+}
+
+.diag-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .diag-section-label {
-  font-size: 0.74rem;
+  margin: 0;
+  font-size: 0.72rem;
   font-weight: 700;
-  color: #64748b;
+  color: var(--color-text-muted);
   text-transform: uppercase;
   letter-spacing: 0.02em;
 }
 
-.diag-section-label-gap {
-  margin-top: 6px;
-}
-
 .diag-code-path {
   margin: 0;
-  padding: 8px 10px;
-  border: 1px solid #e8eef5;
-  border-radius: 8px;
-  background: #f8fafc;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--radius-lg);
+  background: #ffffff;
+  font-family: var(--font-mono);
   font-size: 0.75rem;
   line-height: 1.5;
-  color: #334155;
+  color: var(--color-text-body);
   overflow: auto;
   word-break: break-all;
+  box-shadow: var(--shadow-sm);
 }
 
 .diag-repo-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 
 .diag-repo-item {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  padding: 7px 8px;
-  border: 1px solid #e8eef5;
-  border-radius: 8px;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
   background: #ffffff;
-}
-
-.diag-repo-icon {
-  flex-shrink: 0;
-  width: 14px;
-  height: 14px;
-  color: #64748b;
-  margin-top: 1px;
+  box-shadow: var(--shadow-sm);
 }
 
 .diag-repo-body {
@@ -1126,7 +1273,7 @@ const statusModelText = (card: any): string => {
   gap: 6px;
   font-size: 0.8rem;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--color-text-title);
 }
 
 .diag-repo-state {
@@ -1134,14 +1281,14 @@ const statusModelText = (card: any): string => {
   border-radius: 999px;
   font-size: 0.62rem;
   font-weight: 700;
-  color: #475569;
-  background: #f1f5f9;
+  color: var(--color-text-muted);
+  background: var(--color-bg-base);
 }
 
 .diag-repo-meta {
   margin-top: 2px;
   font-size: 0.68rem;
-  color: #94a3b8;
+  color: var(--color-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

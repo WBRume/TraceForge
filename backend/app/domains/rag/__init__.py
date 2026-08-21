@@ -1,0 +1,1 @@
+"""RAG 适配层：Outbox 可靠推送 + 可插拔 Provider。"""

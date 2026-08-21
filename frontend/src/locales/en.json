@@ -796,7 +796,8 @@
     "task_provision_enter_session": "Enter Task Session",
     "spec_upload_failed": "Task is ready, but spec upload failed. Please upload it manually in chat.",
     "spec_lost_warning": "You selected a spec file when creating this task, but it was lost after refresh. Please upload it manually in chat.",
-    "docs_upload_failed": "Task is ready, but some diagnosis documents failed to upload. You can re-upload them in the chat."
+    "docs_upload_failed": "Task is ready, but some diagnosis documents failed to upload. You can re-upload them in the chat.",
+    "task_status_not_ready": "Task resources are ready, but the task status has not yet synced to PENDING. Please retry or refresh the page."
   },
   "skills": {
     "entry": "Skills Configuration",

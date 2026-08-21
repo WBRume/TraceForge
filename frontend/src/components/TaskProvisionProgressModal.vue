@@ -109,6 +109,25 @@ const uploadPendingFiles = async () => {
   }
 }
 
+/** 任务资源 job 已 SUCCESS 后，再确认任务状态真正从 PROVISIONING 走到 PENDING */
+const waitForTaskPending = async (): Promise<boolean> => {
+  const wsId = String(props.workspaceId || '').trim()
+  const taskId = String(props.taskId || '').trim()
+  if (!wsId || !taskId) return false
+  for (let attempt = 0; attempt < 20; attempt++) {
+    try {
+      const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
+      const status = String(res.data?.status || '')
+      if (status === 'PENDING') return true
+      if (['FAILED', 'DONE', 'BASELINED'].includes(status)) return false
+    } catch {
+      // transient network/db lag; keep polling
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, 500))
+  }
+  return false
+}
+
 const fetchJob = async () => {
   const jobId = String(props.jobId || '').trim()
   if (!jobId || polling.value) return
@@ -118,8 +137,13 @@ const fetchJob = async () => {
     job.value = res.data as ProvisionJob
     if (job.value.status === 'SUCCESS') {
       clearTimer()
-      ready.value = true
       await uploadPendingFiles()
+      const taskReady = await waitForTaskPending()
+      if (taskReady) {
+        ready.value = true
+      } else {
+        errorText.value = t('provisioning.task_status_not_ready')
+      }
     } else if (job.value.status === 'FAILED') {
       clearTimer()
       errorText.value = String(job.value.error_message || job.value.message || t('provisioning.failed_fallback'))

@@ -796,7 +796,8 @@
     "task_provision_enter_session": "进入任务会话",
     "spec_upload_failed": "任务已创建，但需求文档上传失败，请在会话中手动上传。",
     "spec_lost_warning": "检测到你在创建时选择了需求文档，但页面刷新后文件已丢失，请进入任务后手动上传。",
-    "docs_upload_failed": "任务已创建，但部分诊断文档上传失败，可进入会话后重新上传。"
+    "docs_upload_failed": "任务已创建，但部分诊断文档上传失败，可进入会话后重新上传。",
+    "task_status_not_ready": "任务资源已准备完成，但任务状态尚未同步为待启动，请稍后重试或刷新页面。"
   },
   "skills": {
     "entry": "技能配置",
