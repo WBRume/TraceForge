@@ -1,0 +1,13 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "result": "fixture result",
+  "session_id": "fixture-session-1",
+  "duration_ms": 123,
+  "total_cost_usd": 0.002,
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 20
+  }
+}

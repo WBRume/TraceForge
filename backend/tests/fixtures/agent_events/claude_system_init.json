@@ -1,0 +1,6 @@
+{
+  "type": "system",
+  "subtype": "init",
+  "session_id": "fixture-session-1",
+  "model": "claude-fixture-model"
+}

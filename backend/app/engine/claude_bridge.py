@@ -675,7 +675,13 @@ class MockCliBridge(CliBridgeBase):
 
 
 def create_cli_bridge(cli_path: Optional[str] = None) -> CliBridgeBase:
-    """根据配置创建 CLI 桥接实例"""
+    """根据配置创建 CLI 桥接实例。
+
+    兼容策略：real 模式返回 ClaudeCodeAdapter（同时实现 CliBridgeBase 与 AgentBackend）；
+    mock 模式继续使用 MockCliBridge，避免旧调用方破坏。
+    """
     if settings.SDD_CLI_MODE == "real":
-        return SubprocessCliBridge(cli_path=cli_path)
+        from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
+
+        return ClaudeCodeAdapter(cli_path=cli_path)
     return MockCliBridge()

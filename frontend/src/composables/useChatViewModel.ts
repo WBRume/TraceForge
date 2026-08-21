@@ -1725,8 +1725,19 @@ export function useChatViewModel() {
       engineRunning.value = false
       applyTaskSessionPayload(payload)
       return true
-    } catch (e) {
+    } catch (e: any) {
       console.error('Temporary interrupt failed', e)
+      const detail = String(e?.response?.data?.detail || '')
+      if (
+        detail.includes('No running Claude CLI session')
+        || detail.includes('No running Claude CLI session or active AI job')
+      ) {
+        // 后端认为已经没有可中断的会话/作业：同步前端运行状态，避免停止按钮一直可点
+        engineRunning.value = false
+        if (currentTask.value?.id) {
+          void loadActiveChatJobs(currentTask.value.id)
+        }
+      }
       ElMessage.error(resolveActionError(e, 'chat.errors.temporary_interrupt_failed', 'chat.errors.no_permission_manage_task_status'))
       return false
     }

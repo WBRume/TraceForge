@@ -115,6 +115,43 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     assert payload["status"] == TaskStatus.INTERRUPTED.value
 
 
+def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.PENDING)
+
+    published = []
+    events = []
+
+    async def _publish_job(job_id, *, final=False):
+        published.append((job_id, final))
+
+    async def _broadcast(event_type, event_task, job_payload):
+        events.append((event_type, event_task.id, job_payload["id"]))
+
+    monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
+    monkeypatch.setattr(task_session_control_service.ai_job_service, "publish_job", _publish_job)
+    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+
+    payload = asyncio.run(
+        task_session_control_service.interrupt_task(
+            db,
+            task=task,
+            actor_user_id="user-1",
+            reason="stop before start",
+        )
+    )
+
+    db.refresh(task)
+    db.refresh(job)
+    assert job.status == AiJobStatus.CANCELLED
+    assert job.message == "stop before start"
+    assert task.status == TaskStatus.CODING
+    assert published == [("job-1", True)]
+    assert events == [("task_interrupted", "task-1", "job-1")]
+    assert payload["job"]["status"] == AiJobStatus.CANCELLED.value
+
+
 def test_task_resume_requires_interrupted_status(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()

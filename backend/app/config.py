@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30  # 30 days for debug
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # ── Agent Backend ──
+    AGENT_BACKEND: str = "claude-code"  # claude-code | opencode | dsh | mock
+    OPENCODE_SERVER_URL: str = "http://127.0.0.1:4097"
+    DSH_CLI_PATH: str = "dsh"
+
     # ── Claude CLI Bridge ──
     SDD_CLI_MODE: str = "real"  # "mock" or "real"
     CLAUDE_CLI_PATH: str = "claude"

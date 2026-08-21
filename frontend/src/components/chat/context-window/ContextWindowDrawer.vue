@@ -79,6 +79,14 @@ const formatNumber = (value?: number | null): string => {
   return new Intl.NumberFormat().format(Number(value))
 }
 
+// Provider token 数据不可用时，即使字段是 0 也不应伪装成真实用量；归因单位数量仍用 formatNumber。
+const formatMetric = (value?: number | null): string => {
+  if (!providerTokens.value.available && (value === 0 || value === null || value === undefined)) {
+    return t('chat.context_window_unavailable')
+  }
+  return formatNumber(value)
+}
+
 const formatPercent = (value?: number | null): string => {
   const numeric = Number(value || 0)
   return `${numeric.toFixed(numeric >= 10 ? 1 : 2)}%`
@@ -187,7 +195,7 @@ const categoryBarStyle = (item: ContextTokenCategorySummary) => ({
 
           <div class="total-token">
             <span>{{ $t('chat.context_window_metric_total') }}</span>
-            <strong>{{ formatNumber(providerTokens.total_tokens) }}</strong>
+            <strong>{{ formatMetric(providerTokens.total_tokens) }}</strong>
           </div>
 
           <div class="distribution-bar" :aria-label="$t('chat.context_window_total_bar')">
@@ -203,7 +211,7 @@ const categoryBarStyle = (item: ContextTokenCategorySummary) => ({
           <div class="metric-grid">
             <div v-for="row in tokenRows" :key="row[0]" class="metric-item">
               <span>{{ row[1] }}</span>
-              <strong>{{ formatNumber(row[2]) }}</strong>
+              <strong>{{ formatMetric(row[2]) }}</strong>
             </div>
             <div class="metric-item">
               <span>{{ $t('chat.context_window_metric_cost') }}</span>
