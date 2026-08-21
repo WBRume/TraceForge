@@ -20,6 +20,7 @@ from app.domains.skill.services import skill_service, skill_runtime_trace_servic
 from app.domains.task.services import context_token_service, task_service
 from app.engine.claude_bridge import create_cli_bridge, CliBridgeBase
 from app.agents import AgentBackend, AgentEvent, AgentRunRequest, AgentRunResult
+from app.agents.registry import get_agent_backend
 from app.engine.claude_event_adapter import (
     extract_claude_compaction_event,
     extract_claude_usage,
@@ -80,7 +81,7 @@ class WorkflowEngine:
         self.ws_id = ws_id
         self.user_id = user_id
 
-        self.cli: CliBridgeBase = create_cli_bridge()
+        self.cli: CliBridgeBase = self._create_engine_backend()
         self.session_id: Optional[str] = None  # CLI session id (可跨对话恢复)
         self.running = False
 
@@ -97,6 +98,27 @@ class WorkflowEngine:
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_skill_index = []
+
+    def _create_engine_backend(self) -> Any:
+        """根据配置创建当前任务引擎使用的 Agent backend。
+
+        默认 AGENT_BACKEND=claude-code，为兼容旧逻辑仍走 create_cli_bridge()；
+        配置为 opencode/dsh 时走统一 AgentBackend 注册表。
+        """
+        backend_name = getattr(settings, "AGENT_BACKEND", "claude-code") or "claude-code"
+        if backend_name == "claude-code":
+            return create_cli_bridge()
+        if backend_name == "opencode":
+            return get_agent_backend(
+                "opencode",
+                server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
+            )
+        if backend_name == "dsh":
+            return get_agent_backend(
+                "dsh",
+                dsh_cli=getattr(settings, "DSH_CLI_PATH", "dsh"),
+            )
+        return get_agent_backend(backend_name)
 
     async def _emit_hook(self, callback: Optional[Callable], *args):
         if not callback:
@@ -855,7 +877,7 @@ class WorkflowEngine:
             if fresh_session:
                 # 强制干净会话启动，确保 CLI 不带 --resume。
                 self.session_id = None
-                self.cli = create_cli_bridge()
+                self.cli = self._create_engine_backend()
             self.running = True
             _active_engines[self.task_id] = self
             self._interrupt_requested = False
@@ -940,8 +962,8 @@ class WorkflowEngine:
 
             logger.info(f"Resuming session {self.session_id} with new prompt")
 
-            # 创建新的 CLI 桥接实例，恢复会话
-            self.cli = create_cli_bridge()
+            # 创建新的 Agent backend 实例，恢复会话
+            self.cli = self._create_engine_backend()
             await self.run(prompt)
 
     async def interrupt(self):

@@ -88,13 +88,14 @@ tests/test_skill_materialization_atomic_replace.py
   - 前端 `ContextWindowDrawer` 在 `provider_tokens.available=false` 时不再把 0 显示成真实用量，而是显示 unavailable。
 - 新增回归测试 `test_context_window_falls_back_to_last_usable_snapshot`。
 
-### 7. OpenCode Spike 与 Adapter 骨架
+### 7. OpenCode Spike 与 Adapter
 
 - 安装 `opencode-ai` `v1.18.19`。
 - `opencode run --format json` 在当前 Windows shell 环境失败，`opencode serve` 可用且暴露完整 SSE/HTTP API，因此采用 **Server 模式**。
 - 新增 `backend/app/agents/adapters/opencode/`：
-  - `event_mapper.py`：`session.next.text/reasoning/tool/step/permission/question` → `AgentEvent`
-  - `opencode_adapter.py`：`AgentBackend` 骨架（Server 模式）
+  - `event_mapper.py`：`session.next.text/reasoning/tool/step/permission/question` → `AgentEvent`，`finish` 归一化到受控词表
+  - `opencode_adapter.py`：`AgentBackend.run()` 已接线 Server HTTP/SSE（创建/复用 session → prompt → SSE 事件 → 最终 message → result/usage）
+  - `interrupt()` / `cancel()` / `respond_to_ask_user()` 已提供 HTTP 调用
   - 注册 `opencode` backend。
 - golden fixture：`backend/tests/fixtures/agent_events/opencode_server_events.json`
 
@@ -114,6 +115,48 @@ tests/test_skill_materialization_atomic_replace.py
 ### 9. 旧调用点迁移准备
 
 - 新增 `docs/agent-adapter-migration-prep.md`，覆盖 `api_mock / skill_analysis / task_cli_state` 的旧事件 → 统一事件映射与迁移步骤。
+
+### 10. 配置适配（实际落地）
+
+当前实际接入配置如下，默认使用 **claude-code**：
+
+```dotenv
+# backend/.env 或 .env.example
+AGENT_BACKEND=claude-code        # claude-code | opencode | dsh | mock
+OPENCODE_SERVER_URL=http://127.0.0.1:4097
+DSH_CLI_PATH=dsh
+```
+
+WorkflowEngine 通过 `_create_engine_backend()` 读取开关：
+
+| `AGENT_BACKEND` | 创建的后端 | 说明 |
+|---|---|---|
+| `claude-code`（默认） | `create_cli_bridge()` → `ClaudeCodeAdapter` / `MockCliBridge` | 兼容旧 `SDD_CLI_MODE=real/mock` |
+| `opencode` | `OpenCodeAdapter(server_url=OPENCODE_SERVER_URL)` | 走 `opencode serve` Server 模式 |
+| `dsh` | `DSHAdapter(dsh_cli=DSH_CLI_PATH)` | 走 `dsh --profile headless` CLI subprocess |
+| `mock` | `MockAdapter` | 直接走统一 Mock |
+
+切换方式：
+
+- 切 OpenCode：
+  ```dotenv
+  AGENT_BACKEND=opencode
+  OPENCODE_SERVER_URL=http://127.0.0.1:4097
+  ```
+  并确保 `opencode serve --port 4097` 已启动。
+- 切回 Claude：
+  ```dotenv
+  AGENT_BACKEND=claude-code
+  ```
+- 切换后需重启后端进程使 `Settings` 重新加载。
+
+代码位置：
+
+- 配置项：`backend/app/config.py`
+- 环境示例：`backend/.env.example`
+- 引擎选择：`backend/app/engine/workflow_engine.py::_create_engine_backend()`
+
+> 备注：契约文档 8.1 中 `AGENT_*` 命名是设计约定；当前实现为兼容既有 `.env` 采用 `AGENT_BACKEND` / `OPENCODE_SERVER_URL` / `DSH_CLI_PATH`，后续可平滑别名到 `AGENT_*`。
 
 ---
 
@@ -136,7 +179,7 @@ Spike 执行：
   - 采集官方 `session.event` 样本
   - 确认 `assistant/chunk` / `message` / `tool/call` / `tool/result` / `turn/end`
   - 实现 `DSHAdapter` + golden fixtures
-- [ ] OpenCode `run()` HTTP 驱动接线（当前为骨架）
+- [x] OpenCode `run()` Server HTTP/SSE 接线（真实验证通过）
 - [x] DSH CLI subprocess `run()` 基础接线（真实 CLI 验证通过）
 - [ ] DSH SDK 模式（仅 Linux/macOS 或拿到 Windows runtime wheel 后再启用）
 - [ ] 契约测试/CI 化（含 OpenCode/DSH 事件映射已入现有测试）
@@ -150,4 +193,4 @@ Spike 执行：
 
 - `create_cli_bridge()` real 模式切换为 `ClaudeCodeAdapter` 后，所有旧调用方都会走统一事件路径；真实 CLI 回归需要一次端到端验证。
 - `ClaudeCodeAdapter.run()` 尚未实现 HITL 长连接模式，当前仅 `turn_based`。
-- OpenCode / DSH 事件 schema 已通过 Spike 确认；OpenCode `run()` 仍需接线到真实 HTTP，DSH 的 SDK 模式在 Windows 上不可用（runtime-bin 无 win wheel）。
+- OpenCode / DSH 事件 schema 已通过 Spike 确认；OpenCode `run()` 已接线到真实 HTTP/SSE；DSH 的 SDK 模式在 Windows 上不可用（runtime-bin 无 win wheel），当前使用 CLI subprocess。

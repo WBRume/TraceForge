@@ -70,6 +70,18 @@ def _extract_usage(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
+def _normalize_finish_reason(finish: str) -> Optional[str]:
+    """把 OpenCode finish 值归一化到契约受控词表。"""
+    return {
+        "stop": "completed",
+        "max_tokens": "max-tokens",
+        "max-tokens": "max-tokens",
+        "cancelled": "aborted",
+        "aborted": "aborted",
+        "error": "error",
+    }.get(finish)
+
+
 def _tool_output_text(data: dict[str, Any]) -> str:
     """从 tool.success/failed 中提取可读的输出文本。"""
     parts: list[str] = []
@@ -198,14 +210,15 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 time=_iso_time(),
             ))
         finish = _text(data.get("finish"))
-        if finish in ("stop", "cancelled", "error"):
-            is_error = finish == "error"
+        normalized_finish = _normalize_finish_reason(finish)
+        if normalized_finish:
+            is_error = normalized_finish == "error"
             events.append(AgentEvent(
                 type="error" if is_error else "result",
                 payload={
                     "success": not is_error,
                     "result": "",
-                    "finish_reason": finish,
+                    "finish_reason": normalized_finish,
                     "session_id": session_id,
                     "usage": usage or {},
                     "cost_usd": data.get("cost"),

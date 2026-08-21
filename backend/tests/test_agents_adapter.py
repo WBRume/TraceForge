@@ -152,7 +152,7 @@ class OpenCodeEventMapperTest(unittest.TestCase):
         })
         self.assertTrue(any(e.type == "result" for e in step_events))
         result = next(e for e in step_events if e.type == "result")
-        self.assertEqual(result.payload["finish_reason"], "stop")
+        self.assertEqual(result.payload["finish_reason"], "completed")
         self.assertEqual(result.payload["usage"]["input_tokens"], 10)
         self.assertTrue(any(e.type == "usage" for e in step_events))
 
@@ -293,6 +293,98 @@ class DSHAdapterRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(e.type == "result" for e in events))
         text_event = next(e for e in events if e.type == "text")
         self.assertEqual(text_event.payload["text"], "hello")
+
+
+class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
+    """用 fake HTTP client 验证 OpenCode server 模式 run() 的流程。"""
+
+    class _FakeResponse:
+        def __init__(self, status_code: int, payload: dict):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        @property
+        def text(self):
+            return str(self._payload)
+
+    class _FakeStream:
+        def __init__(self, lines: list[str]):
+            self.lines = lines
+            self.status_code = 200
+            self.text = ""
+
+        def aiter_lines(self):
+            async def _gen():
+                for line in self.lines:
+                    yield line
+            return _gen()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    class _FakeClient:
+        def __init__(self):
+            self.aclose = AsyncMock(return_value=None)
+
+        async def post(self, url: str, json: dict | None = None, **kwargs):
+            if url.endswith("/api/session"):
+                return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "ses_test"}})
+            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "msg_test"}})
+
+        async def get(self, url: str, params: dict | None = None, **kwargs):
+            if url.endswith("/message"):
+                return OpenCodeAdapterRunTest._FakeResponse(200, {"data": [{
+                    "type": "assistant",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "finish": "stop",
+                    "cost": 0,
+                    "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                }]})
+            return OpenCodeAdapterRunTest._FakeResponse(200, {})
+
+        def stream(self, method: str, url: str, **kwargs):
+            return OpenCodeAdapterRunTest._FakeStream([
+                'data: {"id":"e1","type":"session.next.text.ended","data":{"sessionID":"ses_test","text":"ok"}}',
+                'data: {"id":"e2","type":"session.next.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
+            ])
+
+    async def test_run_creates_session_streams_events_and_returns_result(self):
+        import app.agents.adapters.opencode.opencode_adapter as opencode_mod
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+        events: list[AgentEvent] = []
+        fake_client = self._FakeClient()
+
+        async def sink(event: AgentEvent) -> None:
+            events.append(event)
+
+        adapter = OpenCodeAdapter(server_url="http://127.0.0.1:9999")
+        with patch.object(opencode_mod.OpenCodeAdapter, "_ensure_client", new=AsyncMock(return_value=fake_client)):
+            result = await adapter.run(
+                AgentRunRequest(
+                    run_id="oc-run-1",
+                    prompt="hi",
+                    project_path=r"D:\project\TraceForge",
+                ),
+                sink,
+            )
+            await adapter.close()
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.finish_reason, "completed")
+        self.assertEqual(result.result_text, "ok")
+        self.assertEqual(result.session_id, "ses_test")
+        self.assertIsNotNone(result.usage)
+        types = [e.type for e in events]
+        self.assertIn("session_started", types)
+        self.assertIn("text", types)
+        self.assertEqual(types.count("result"), 1)
 
 
 class RegistryTest(unittest.TestCase):
