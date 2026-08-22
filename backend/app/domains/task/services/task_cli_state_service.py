@@ -25,7 +25,11 @@ from app.core.distributed_lock import (
 )
 from app.core.logging import bind_task_context, get_logger
 from app.database import SessionLocal
-from app.engine.claude_bridge import create_cli_bridge
+from app.agents.selection import (
+    create_legacy_bridge,
+    normalize_backend_name,
+    resolve_workspace_backend,
+)
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.asset.models.asset import SddAssetThread, SddAssetVersion
 from app.domains.task.models.task import SddTask
@@ -263,6 +267,7 @@ def _serialize_bootstrap(record: SddTaskCliBootstrap) -> Dict[str, Any]:
         "message": record.message,
         "baseline_dir": record.baseline_dir,
         "baseline_session_id": record.baseline_session_id,
+        "agent_backend": record.agent_backend,
         "error_message": record.error_message,
         "refresh_mode": str(record.refresh_mode or "FULL"),
         "refresh_context_json": record.refresh_context_json if isinstance(record.refresh_context_json, dict) else None,
@@ -301,6 +306,7 @@ async def _update_bootstrap_state(
     message: Optional[str] = None,
     baseline_dir: Optional[str] = None,
     baseline_session_id: Optional[str] = None,
+    agent_backend: Optional[str] = None,
     error_message: Optional[str] = None,
     spec_asset_id: Optional[str] = None,
     spec_version_id: Optional[str] = None,
@@ -322,6 +328,8 @@ async def _update_bootstrap_state(
             record.baseline_dir = baseline_dir
         if baseline_session_id is not None:
             record.baseline_session_id = baseline_session_id
+        if agent_backend is not None:
+            record.agent_backend = agent_backend
         if error_message is not None:
             record.error_message = error_message
         if spec_asset_id is not None:
@@ -357,6 +365,10 @@ def upsert_bootstrap_for_upload(
     normalized_mode = str(refresh_mode or "FULL").strip().upper() or "FULL"
     if normalized_mode not in {"FULL", "DELTA"}:
         normalized_mode = "FULL"
+    # baseline 粘性 backend：已有 baseline 沿用原 agent（会话上下文不可跨后端迁移）
+    agent_backend = normalize_backend_name(getattr(record, "agent_backend", None)) if record else None
+    if not agent_backend:
+        agent_backend = resolve_workspace_backend(db, workspace_id)
     if record:
         record.workspace_id = workspace_id
         record.spec_asset_id = spec_asset_id
@@ -370,6 +382,7 @@ def upsert_bootstrap_for_upload(
         record.error_message = None
         record.refresh_mode = normalized_mode
         record.refresh_context_json = refresh_context_json if isinstance(refresh_context_json, dict) else None
+        record.agent_backend = agent_backend
     else:
         record = SddTaskCliBootstrap(
             workspace_id=workspace_id,
@@ -384,6 +397,7 @@ def upsert_bootstrap_for_upload(
             error_message=None,
             refresh_mode=normalized_mode,
             refresh_context_json=refresh_context_json if isinstance(refresh_context_json, dict) else None,
+            agent_backend=agent_backend,
         )
         db.add(record)
         db.flush()
@@ -521,6 +535,12 @@ async def _run_bootstrap(task_id: str) -> None:
                             else {}
                         )
                         baseline_session_id = str(record.baseline_session_id or "").strip()
+                        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
+                            db, record.workspace_id
+                        )
+                        # 仅 claude-code 的会话上下文是本地 project store 快照；
+                        # opencode 上下文在 server 侧、dsh 无 resume，均跳过快照逻辑
+                        session_snapshot_backend = agent_backend in ("claude-code", "mock")
                         workspace_id = str(record.workspace_id or "")
                         task_creator_id = str(task.creator_id or "")
                     finally:
@@ -557,10 +577,14 @@ async def _run_bootstrap(task_id: str) -> None:
                                 ),
                             )
 
-                            bridge = create_cli_bridge()
+                            bridge = create_legacy_bridge(agent_backend)
                             ready_seen = False
                             resume_session_id: Optional[str] = None
-                            if refresh_mode == "DELTA" and baseline_session_id:
+                            if (
+                                session_snapshot_backend
+                                and refresh_mode == "DELTA"
+                                and baseline_session_id
+                            ):
                                 source_kind, source_dir = _resolve_session_context_location(
                                     baseline_dir,
                                     baseline_session_id,
@@ -625,33 +649,34 @@ async def _run_bootstrap(task_id: str) -> None:
                             if not final_session_id:
                                 raise RuntimeError("CLI bootstrap completed without session id")
 
-                            source_kind, source_dir = _resolve_session_context_location(
-                                baseline_dir,
-                                final_session_id,
-                            )
-                            if not source_kind or not source_dir:
-                                raise RuntimeError("Baseline CLI context is missing")
-
-                            # Retry: session snapshot may not be immediately flushed to disk
-                            _snapshot_retries = 0
-                            _max_snapshot_retries = 5
-                            while not _session_snapshot_exists(source_dir, final_session_id):
-                                _snapshot_retries += 1
-                                if _snapshot_retries >= _max_snapshot_retries:
-                                    raise RuntimeError("Baseline session snapshot is missing")
-                                next_source_kind, next_source_dir = _resolve_session_context_location(
+                            if session_snapshot_backend:
+                                source_kind, source_dir = _resolve_session_context_location(
                                     baseline_dir,
                                     final_session_id,
                                 )
-                                if next_source_kind and next_source_dir:
-                                    source_kind, source_dir = next_source_kind, next_source_dir
-                                logger.warning(
-                                    "Session snapshot not found (retry {}/{}): {}",
-                                    _snapshot_retries,
-                                    _max_snapshot_retries,
-                                    final_session_id,
-                                )
-                                await asyncio.sleep(0.5)
+                                if not source_kind or not source_dir:
+                                    raise RuntimeError("Baseline CLI context is missing")
+
+                                # Retry: session snapshot may not be immediately flushed to disk
+                                _snapshot_retries = 0
+                                _max_snapshot_retries = 5
+                                while not _session_snapshot_exists(source_dir, final_session_id):
+                                    _snapshot_retries += 1
+                                    if _snapshot_retries >= _max_snapshot_retries:
+                                        raise RuntimeError("Baseline session snapshot is missing")
+                                    next_source_kind, next_source_dir = _resolve_session_context_location(
+                                        baseline_dir,
+                                        final_session_id,
+                                    )
+                                    if next_source_kind and next_source_dir:
+                                        source_kind, source_dir = next_source_kind, next_source_dir
+                                    logger.warning(
+                                        "Session snapshot not found (retry {}/{}): {}",
+                                        _snapshot_retries,
+                                        _max_snapshot_retries,
+                                        final_session_id,
+                                    )
+                                    await asyncio.sleep(0.5)
 
                             await _update_bootstrap_state(
                                 task_id,
@@ -659,6 +684,7 @@ async def _run_bootstrap(task_id: str) -> None:
                                 progress=100,
                                 message="Baseline ready",
                                 baseline_session_id=final_session_id,
+                                agent_backend=agent_backend,
                                 error_message=None,
                             )
                         except Exception as exc:
@@ -800,39 +826,45 @@ def _prepare_thread_workspace_sync(thread_id: str, *, require_ready: bool = True
         if not baseline_session_id:
             raise BootstrapNotReadyError("Baseline CLI session id is missing")
 
-        source_kind, source_dir = _resolve_session_context_location(baseline_dir, baseline_session_id)
-        if not source_kind or not source_dir:
-            raise BootstrapNotReadyError("Baseline CLI context is missing")
-
-        # Retry: session snapshot may not be immediately flushed to disk (sync context)
-        _snapshot_retries = 0
-        _max_snapshot_retries = 5
-        while not _session_snapshot_exists(source_dir, baseline_session_id):
-            _snapshot_retries += 1
-            if _snapshot_retries >= _max_snapshot_retries:
-                raise BootstrapNotReadyError("Baseline session snapshot is missing")
-            next_source_kind, next_source_dir = _resolve_session_context_location(
-                baseline_dir,
-                baseline_session_id,
-            )
-            if next_source_kind and next_source_dir:
-                source_kind, source_dir = next_source_kind, next_source_dir
-            logger.warning(
-                "Session snapshot not found in thread workspace (retry %d/%d): %s",
-                _snapshot_retries, _max_snapshot_retries, baseline_session_id,
-            )
-            time.sleep(0.5)
-
-        _clone_context_to_thread_workspace(
-            source_kind=source_kind,
-            source_dir=source_dir,
-            workspace_dir=workspace_dir,
+        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
+            db, thread.workspace_id
         )
+        # 仅 claude-code 需要把本地 project store 会话快照复制到线程工作区；
+        # opencode 上下文在 server 侧、dsh 无 resume，无需（也无法）复制快照。
+        if agent_backend in ("claude-code", "mock"):
+            source_kind, source_dir = _resolve_session_context_location(baseline_dir, baseline_session_id)
+            if not source_kind or not source_dir:
+                raise BootstrapNotReadyError("Baseline CLI context is missing")
 
-        baseline_local_claude = os.path.join(baseline_dir, ".claude")
-        target_local_claude = os.path.join(workspace_dir, ".claude")
-        if os.path.isdir(baseline_local_claude) and not os.path.isdir(target_local_claude):
-            shutil.copytree(baseline_local_claude, target_local_claude, dirs_exist_ok=False)
+            # Retry: session snapshot may not be immediately flushed to disk (sync context)
+            _snapshot_retries = 0
+            _max_snapshot_retries = 5
+            while not _session_snapshot_exists(source_dir, baseline_session_id):
+                _snapshot_retries += 1
+                if _snapshot_retries >= _max_snapshot_retries:
+                    raise BootstrapNotReadyError("Baseline session snapshot is missing")
+                next_source_kind, next_source_dir = _resolve_session_context_location(
+                    baseline_dir,
+                    baseline_session_id,
+                )
+                if next_source_kind and next_source_dir:
+                    source_kind, source_dir = next_source_kind, next_source_dir
+                logger.warning(
+                    "Session snapshot not found in thread workspace (retry %d/%d): %s",
+                    _snapshot_retries, _max_snapshot_retries, baseline_session_id,
+                )
+                time.sleep(0.5)
+
+            _clone_context_to_thread_workspace(
+                source_kind=source_kind,
+                source_dir=source_dir,
+                workspace_dir=workspace_dir,
+            )
+
+            baseline_local_claude = os.path.join(baseline_dir, ".claude")
+            target_local_claude = os.path.join(workspace_dir, ".claude")
+            if os.path.isdir(baseline_local_claude) and not os.path.isdir(target_local_claude):
+                shutil.copytree(baseline_local_claude, target_local_claude, dirs_exist_ok=False)
 
         _copy_task_skill_context(task_project_path=str(task.project_path or ""), target_dir=workspace_dir)
 
@@ -900,6 +932,31 @@ def get_latest_thread_session_id(db: Session, thread_id: str) -> Optional[str]:
         return None
     sid = str(row[0] or "").strip()
     return sid or None
+
+
+def get_bootstrap_agent_backend(db: Session, task_id: str) -> Optional[str]:
+    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    if not record or record.status != TaskCliBootstrapStatus.READY:
+        return None
+    return normalize_backend_name(record.agent_backend)
+
+
+def get_latest_thread_agent_backend(db: Session, thread_id: str) -> Optional[str]:
+    """线程粘性 backend：最近一次成功回合使用的 agent。"""
+    row = (
+        db.query(SddAiJob.agent_backend)
+        .filter(
+            SddAiJob.thread_id == thread_id,
+            SddAiJob.channel == AiJobChannel.ASSET_THREAD,
+            SddAiJob.status == AiJobStatus.SUCCESS,
+            SddAiJob.agent_backend.isnot(None),
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .first()
+    )
+    if not row:
+        return None
+    return normalize_backend_name(row[0])
 
 
 def get_bootstrap_session_id(db: Session, task_id: str) -> Optional[str]:

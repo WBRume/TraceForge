@@ -92,6 +92,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 from app.domains.asset.services.asset_document_service import parse_document_payload
 from app.domains.workspace_asset.services import workspace_task_detail_service
 from app.domains.ai.services.ai_job_service import run_cli_single_turn
+from app.agents.selection import resolve_workspace_backend
 
 
 class WorkspaceAssetWriteError(Exception):
@@ -1561,8 +1562,9 @@ async def run_requirement_import_preview_job(
                 file_name=file_name,
             )
             job.prompt_text = prompt
-            _update_preview_job_state(db, job, progress=28, message="Running Claude Code CLI requirement preview")
-            ai_result = await run_cli_single_turn(prompt, project_path, max_attempts=1)
+            _update_preview_job_state(db, job, progress=28, message="Running agent CLI requirement preview")
+            backend_name = resolve_workspace_backend(db, job.workspace_id)
+            ai_result = await run_cli_single_turn(prompt, project_path, max_attempts=1, backend_name=backend_name)
             parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
             items = _normalize_ai_preview_items(parsed_json)
             items = _coalesce_simple_import_preview_items(
@@ -1641,7 +1643,8 @@ async def run_requirement_split_preview_job(job_id: str) -> None:
                 file_name=None,
             )
             job.prompt_text = prompt
-            ai_result = await run_cli_single_turn(prompt, project_path, max_attempts=1)
+            backend_name = resolve_workspace_backend(db, job.workspace_id)
+            ai_result = await run_cli_single_turn(prompt, project_path, max_attempts=1, backend_name=backend_name)
             parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
             items = _normalize_ai_preview_items(parsed_json)
             if len(items) <= 1:
@@ -1651,7 +1654,7 @@ async def run_requirement_split_preview_job(job_id: str) -> None:
                 "parent_requirement_id": requirement.id,
                 "ai_preview": True,
                 "ai_job_id": job.id,
-                "splitter": "claude-code-cli",
+                "splitter": backend_name,
                 "session_id": ai_result.get("session_id"),
             }
             for item in items:

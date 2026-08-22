@@ -72,6 +72,7 @@ class WorkflowEngine:
         user_id: str,
         *,
         job_id: Optional[str] = None,
+        backend_name: Optional[str] = None,
         on_result: Optional[Callable[[bool, str, Optional[int], Optional[float], str], Any]] = None,
         on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
         on_session: Optional[Callable[[str, str], Any]] = None,
@@ -81,6 +82,8 @@ class WorkflowEngine:
         self.ws_id = ws_id
         self.user_id = user_id
 
+        # 指定 backend（任务粘性/工作区配置）；为空回退全局 .env
+        self.backend_name = backend_name
         self.cli: CliBridgeBase = self._create_engine_backend()
         self.session_id: Optional[str] = None  # CLI session id (可跨对话恢复)
         self.running = False
@@ -102,10 +105,11 @@ class WorkflowEngine:
     def _create_engine_backend(self) -> Any:
         """根据配置创建当前任务引擎使用的 Agent backend。
 
-        默认 AGENT_BACKEND=claude-code，为兼容旧逻辑仍走 create_cli_bridge()；
-        配置为 opencode/dsh 时走统一 AgentBackend 注册表。
+        backend_name 由调用方传入（任务粘性/工作区配置）；
+        为空时回退全局 .env AGENT_BACKEND（默认 claude-code，
+        为兼容旧逻辑仍走 create_cli_bridge()）。
         """
-        backend_name = getattr(settings, "AGENT_BACKEND", "claude-code") or "claude-code"
+        backend_name = self.backend_name or getattr(settings, "AGENT_BACKEND", "claude-code") or "claude-code"
         if backend_name == "claude-code":
             return create_cli_bridge()
         if backend_name == "opencode":

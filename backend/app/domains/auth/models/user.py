@@ -83,6 +83,8 @@ class Workspace(Base):
         index=True,
     )
     owner_id = Column(String(36), ForeignKey("users.id"), nullable=False)
+    # 工作区级 agent backend 覆盖（claude-code | opencode | dsh）；空则回退全局 .env
+    agent_backend = Column(String(40), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

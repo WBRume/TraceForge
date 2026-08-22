@@ -321,6 +321,7 @@ class WorkspaceResponse(BaseModel):
     git_repo_url: Optional[str] = None
     project_id: Optional[str] = None
     owner_id: str
+    agent_backend: Optional[str] = None
     created_at: datetime
     my_role: Optional[str] = None
     my_is_expert: Optional[bool] = None
@@ -331,6 +332,25 @@ class WorkspaceResponse(BaseModel):
     repositories: List[WorkspaceRepositoryResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+class WorkspaceAgentBackendOption(BaseModel):
+    value: str
+    label: str
+    supports_resume: bool
+    preferred_mode: str
+
+
+class WorkspaceAgentBackendResponse(BaseModel):
+    agent_backend: Optional[str] = None
+    effective_agent_backend: str
+    default_agent_backend: str
+    options: List[WorkspaceAgentBackendOption] = Field(default_factory=list)
+
+
+class WorkspaceAgentBackendUpdate(BaseModel):
+    # None/空字符串表示清除工作区覆盖，回退全局 .env 默认
+    agent_backend: Optional[str] = None
 
 
 class WorkspaceMemberAdd(BaseModel):
