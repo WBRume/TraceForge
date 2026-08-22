@@ -13,6 +13,7 @@ const props = defineProps<{
   placeholder?: string
   disabled?: boolean
   size?: 'sm' | 'md' | 'lg'
+  dropUp?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +65,7 @@ onUnmounted(() => {
     :class="{ 
       'is-open': isOpen, 
       'is-disabled': disabled,
+      'drop-up': dropUp,
       [`size-${size || 'md'}`]: true
     }"
   >
@@ -166,6 +168,13 @@ onUnmounted(() => {
   transform-origin: top;
 }
 
+/* 向上展开（用于位于页面底部的表单，如下方输入区） */
+.drop-up .select-dropdown {
+  top: auto;
+  bottom: calc(100% + 8px);
+  transform-origin: bottom;
+}
+
 .options-list {
   list-style: none;
   margin: 0;
@@ -237,6 +246,11 @@ onUnmounted(() => {
 .dropdown-leave-to {
   opacity: 0;
   transform: translateY(-10px) scale(0.95);
+}
+
+.drop-up .dropdown-enter-from,
+.drop-up .dropdown-leave-to {
+  transform: translateY(10px) scale(0.95);
 }
 
 </style>

@@ -60,6 +60,10 @@ from app.domains.task.services import task_service
 from app.domains.task.services import task_session_control_service
 from app.domains.workspace.services import workspace_service
 from app.domains.websocket.ws.manager import manager
+from app.domains.notification.routers import notification as notification_router
+from app.domains.notification.ws.notification_manager import notification_ws_manager
+from app.domains.task.services import pre_input_service
+from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.rag.services import ingest_worker as rag_ingest_worker
@@ -71,6 +75,7 @@ app = FastAPI(
 )
 
 _rag_ingest_task: asyncio.Task | None = None
+_pre_input_worker_task: asyncio.Task | None = None
 
 # ── CORS ──
 app.add_middleware(
@@ -87,17 +92,21 @@ app.add_middleware(LoggingMiddleware)
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _rag_ingest_task
+    global _rag_ingest_task, _pre_input_worker_task
     if settings.RAG_ENABLED:
         _rag_ingest_task = asyncio.create_task(rag_ingest_worker.run_ingest_worker())
+    _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
 
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
-    global _rag_ingest_task
+    global _rag_ingest_task, _pre_input_worker_task
     if _rag_ingest_task is not None:
         _rag_ingest_task.cancel()
         _rag_ingest_task = None
+    if _pre_input_worker_task is not None:
+        _pre_input_worker_task.cancel()
+        _pre_input_worker_task = None
     try:
         await api_mock_ws_manager.shutdown()
     except Exception:
@@ -123,6 +132,7 @@ app.include_router(api_mock.router, prefix="/api")
 app.include_router(provision.router, prefix="/api")
 app.include_router(queue.router, prefix="/api")
 app.include_router(workspace_asset.router, prefix="/api")
+app.include_router(notification_router.router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
@@ -198,9 +208,33 @@ def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
         return {
             "user_id": user.id,
             "display_name": user.display_name,
+            "avatar_url": user.avatar_url,
+            "avatar_svg": user.avatar_svg,
             "workspace_id": task_obj.workspace_id,
             "is_workspace_expert": bool(member.is_expert),
         }
+    finally:
+        db.close()
+
+
+def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
+    """按用户维度认证（通知通道）：仅校验 JWT，不绑定工作区。"""
+    token = str(websocket.query_params.get("token") or "").strip()
+    if not token:
+        return None
+    try:
+        payload = auth_service.decode_token(token, expected_type="access")
+    except JWTError:
+        return None
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        return None
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+        return {"user_id": user.id, "display_name": user.display_name}
     finally:
         db.close()
 
@@ -216,6 +250,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     user_id = str(ws_context["user_id"])
     user_display_name = str(ws_context.get("display_name") or "")
     user_is_expert = bool(ws_context.get("is_workspace_expert"))
+    user_avatar_url = ws_context.get("avatar_url") or None
+    user_avatar_svg = ws_context.get("avatar_svg") or None
 
     with bind_task_context(
         task_id=task_id,
@@ -415,6 +451,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                                 creator_id=user_id,
                                 creator_display_name=user_display_name,
                                 creator_is_workspace_expert=user_is_expert,
+                                creator_avatar_url=user_avatar_url,
+                                creator_avatar_svg=user_avatar_svg,
                                 created_at=saved_message.created_at.isoformat(),
                             ).model_dump(),
                         ),
@@ -471,11 +509,139 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                         )
                         asyncio.create_task(recovered_engine.run(response))
 
+                elif msg_type and msg_type.startswith("pre_input_"):
+                    # 协作预输入：发起 / 贡献 / 编辑 / 提交 / 取消，逻辑封装在 pre_input_service
+                    payload = data.get("payload", {}) or {}
+                    db = SessionLocal()
+                    try:
+                        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
+                        if not task_obj:
+                            await websocket.send_json({
+                                "type": "pre_input_error",
+                                "payload": {"task_id": task_id, "message": "Task not found"},
+                            })
+                            continue
+
+                        error_payload: dict | None = None
+                        if msg_type == "pre_input_create":
+                            try:
+                                await pre_input_service.create_pre_input(
+                                    db,
+                                    task=task_obj,
+                                    creator_id=user_id,
+                                    main_text=str(payload.get("main_text") or ""),
+                                    mentioned_user_ids=payload.get("mentioned_user_ids") or [],
+                                    edit_permission=str(payload.get("edit_permission") or "NONE"),
+                                    wait_seconds=int(payload.get("wait_seconds") or 180),
+                                )
+                            except pre_input_service.PreInputError as exc:
+                                error_payload = {"action": msg_type, "message": exc.message}
+                        elif msg_type == "pre_input_contribute":
+                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
+                            if not pre_input:
+                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
+                            else:
+                                try:
+                                    await pre_input_service.upsert_contribution(
+                                        db,
+                                        pre_input=pre_input,
+                                        user_id=user_id,
+                                        content=str(payload.get("content") or ""),
+                                    )
+                                except pre_input_service.PreInputError as exc:
+                                    error_payload = {"action": msg_type, "message": exc.message}
+                        elif msg_type == "pre_input_edit":
+                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
+                            if not pre_input:
+                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
+                            else:
+                                try:
+                                    if payload.get("main_text") is not None:
+                                        await pre_input_service.edit_main_text(
+                                            db,
+                                            pre_input=pre_input,
+                                            actor_user_id=user_id,
+                                            actor_is_expert=user_is_expert,
+                                            main_text=str(payload.get("main_text") or ""),
+                                        )
+                                    elif payload.get("target_user_id"):
+                                        await pre_input_service.edit_contribution(
+                                            db,
+                                            pre_input=pre_input,
+                                            actor_user_id=user_id,
+                                            actor_is_expert=user_is_expert,
+                                            target_user_id=str(payload.get("target_user_id")),
+                                            content=str(payload.get("content") or ""),
+                                        )
+                                    else:
+                                        error_payload = {"action": msg_type, "message": "Nothing to edit"}
+                                except pre_input_service.PreInputError as exc:
+                                    error_payload = {"action": msg_type, "message": exc.message}
+                        elif msg_type == "pre_input_submit":
+                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
+                            if not pre_input:
+                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
+                            elif user_id != pre_input.creator_id:
+                                error_payload = {"action": msg_type, "message": "Only the creator can submit"}
+                            else:
+                                try:
+                                    await pre_input_service.submit_pre_input(
+                                        db,
+                                        pre_input=pre_input,
+                                        actor_user_id=user_id,
+                                        reason="manual",
+                                    )
+                                except pre_input_service.PreInputError as exc:
+                                    error_payload = {"action": msg_type, "message": exc.message}
+                        elif msg_type == "pre_input_cancel":
+                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
+                            if not pre_input:
+                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
+                            else:
+                                try:
+                                    await pre_input_service.cancel_pre_input(
+                                        db,
+                                        pre_input=pre_input,
+                                        actor_user_id=user_id,
+                                    )
+                                except pre_input_service.PreInputError as exc:
+                                    error_payload = {"action": msg_type, "message": exc.message}
+                        else:
+                            error_payload = {"action": msg_type, "message": f"Unknown pre input action"}
+
+                        if error_payload:
+                            await websocket.send_json({
+                                "type": "pre_input_error",
+                                "payload": {"task_id": task_id, **error_payload},
+                            })
+                    finally:
+                        db.close()
+
         except WebSocketDisconnect:
             manager.disconnect(websocket, task_id)
         except Exception:
             task_logger.exception("Task websocket endpoint failed")
             manager.disconnect(websocket, task_id)
+
+
+@app.websocket("/ws/notifications")
+async def notification_websocket_endpoint(websocket: WebSocket):
+    """站内信实时通道：按用户维度推送，前端断线重连时以 REST 未读数兜底。"""
+    context = _authenticate_user_ws(websocket)
+    if not context:
+        await websocket.close(code=1008, reason="Unauthorized notification websocket")
+        return
+    user_id = str(context["user_id"])
+    await notification_ws_manager.connect(websocket, user_id)
+    try:
+        while True:
+            # 通道只下行；忽略客户端上行（保活 ping 等）
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        notification_ws_manager.disconnect(websocket, user_id)
+    except Exception:
+        logger.exception("Notification websocket endpoint failed")
+        notification_ws_manager.disconnect(websocket, user_id)
 
 
 @app.websocket("/ws/api-mock/{project_id}")

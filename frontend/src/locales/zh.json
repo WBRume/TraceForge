@@ -625,7 +625,9 @@
       "no_permission_delete_task": "没有删除任务权限",
       "no_permission_export_task": "没有导出任务权限"
     },
-    "superpowers_docs_placeholder": "搜索 Markdown 文件..."
+    "superpowers_docs_placeholder": "搜索 Markdown 文件...",
+    "collab_preinput_label": "协作输入",
+    "collab_preinput_title": "协作预输入 · {count} 人参与"
   },
   "workspaces": {
     "title": "我的工作区",
@@ -3079,5 +3081,48 @@
       "stat_round": "评审轮次",
       "round_short": "第 {round} 轮"
     }
+  },
+  "preInput": {
+    "toggle_title": "发起协作预输入：@成员收集多人输入，到期自动合并提交",
+    "composer_title": "发起协作预输入",
+    "main_text_placeholder": "输入要收集多人意见的任务说明或问题…输入 @ 可提及成员",
+    "mention_no_results": "未找到匹配成员",
+    "edit_permission_label": "编辑权限",
+    "permission_all": "所有人可编辑",
+    "permission_mentioned": "@成员可编辑",
+    "permission_experts": "工作区专家可编辑",
+    "permission_none": "不可编辑",
+    "wait_duration_label": "等待时长",
+    "duration_minutes": "{n} 分钟",
+    "composer_hint": "到期后自动提交；所有@成员完成可提前提交",
+    "start_button": "发起收集",
+    "started_toast": "协作预输入已发起，已通知被@成员",
+    "submitted_toast": "协作预输入已合并提交",
+    "panel_title": "协作预输入收集",
+    "member_status_label": "成员输入状态",
+    "no_mentions_hint": "未@成员：全员完成不会提前提交，到期或发起人手动提交",
+    "my_input_placeholder": "填写我的输入…",
+    "submit_my_input": "提交我的输入",
+    "update_my_input": "更新我的输入",
+    "cancel_collect": "取消收集",
+    "submit_now": "立即提交",
+    "errors": {
+      "ws_unavailable": "连接不可用，请稍后重试",
+      "already_active": "当前会话已有进行中的预输入",
+      "generic": "预输入操作失败，请重试"
+    },
+    "volunteer_hint": "未被@但主动加入的成员",
+    "mention_field_label": "提及成员",
+    "mention_field_placeholder": "选择要通知的成员（可多选）",
+    "mention_search_placeholder": "搜索成员",
+    "my_input_saved": "已提交"
+  },
+  "notification": {
+    "title": "通知",
+    "empty": "暂无通知",
+    "mark_all_read": "全部已读",
+    "just_now": "刚刚",
+    "minutes_ago": "{n} 分钟前",
+    "hours_ago": "{n} 小时前"
   }
 }

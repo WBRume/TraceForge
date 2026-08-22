@@ -104,6 +104,9 @@ const handleItemClick = (item: SidebarItem) => {
     </nav>
 
     <div v-if="footerItems.length > 0 || showToggleButton" class="sidebar-footer">
+      <div v-if="$slots['footer-extra']" class="sidebar-footer-extra">
+        <slot name="footer-extra"></slot>
+      </div>
       <template v-for="item in footerItems" :key="`footer-${item.key}`">
         <router-link
           v-if="item.to"
@@ -263,6 +266,11 @@ button.nav-item {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+
+.sidebar-footer-extra {
+  display: flex;
+  width: 100%;
 }
 
 .toggle-btn {

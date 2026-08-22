@@ -282,6 +282,8 @@ export function useChatViewModel() {
     creator_id: authStore.user?.id || null,
     creator_display_name: authStore.user?.display_name || 'You',
     creator_is_workspace_expert: workspaceCurrentUserIsExpert.value || Boolean(currentWorkspace.value?.my_is_expert),
+    creator_avatar_url: authStore.user?.avatar_url || null,
+    creator_avatar_svg: authStore.user?.avatar_svg || null,
   })
 
   const generateClientMessageId = (): string => {
@@ -366,6 +368,23 @@ export function useChatViewModel() {
 
   const isMessageWorkspaceExpert = (msg: any): boolean => (
     String(msg?.role || '').toLowerCase() === 'user' && Boolean(msg?.creator_is_workspace_expert)
+  )
+
+  // 成员稳定配色：creator_id 哈希到固定色板（首色为项目主色），气泡/头像/作者名用同一颜色区分多用户
+  const MEMBER_COLOR_PALETTE = ['#0284C7', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#b45309']
+  const memberColorFor = (userId: string | null | undefined): string => {
+    const id = String(userId || '').trim()
+    if (!id) return MEMBER_COLOR_PALETTE[0]
+    let hash = 0
+    for (let i = 0; i < id.length; i++) {
+      hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+    }
+    return MEMBER_COLOR_PALETTE[hash % MEMBER_COLOR_PALETTE.length]
+  }
+  const messageAuthorColor = (msg: any): string => (
+    String(msg?.role || '').toLowerCase() === 'user'
+      ? memberColorFor(msg?.creator_id)
+      : '#0284C7'
   )
 
   const formatMessageTime = (isoStr: string): string => {
@@ -1237,6 +1256,7 @@ export function useChatViewModel() {
     messages.value = []
     terminalLogs.value = []
     pinnedCards.value = []
+    activePreInput.value = null
     resetChatJobState()
     resetRuntimeSkillEditorState()
     specBootstrap.value = null
@@ -1257,6 +1277,7 @@ export function useChatViewModel() {
     }
     loadHistory(task.id)
     loadActiveChatJobs(task.id)
+    void loadActivePreInput(task.id)
     if (isDiagnosisTask.value) {
       void loadDiagnosisResult()
     } else {
@@ -1594,6 +1615,8 @@ export function useChatViewModel() {
         creator_id: m.creator_id || null,
         creator_display_name: m.creator_display_name || null,
         creator_is_workspace_expert: Boolean(m.creator_is_workspace_expert),
+        creator_avatar_url: m.creator_avatar_url || null,
+        creator_avatar_svg: m.creator_avatar_svg || null,
         client_message_id: m.client_message_id || null,
         decision_id: m.decision_id || null,
         metadata: m.metadata || null,
@@ -2083,6 +2106,7 @@ export function useChatViewModel() {
       console.log(`WS Connected: task=${taskId}`)
       if (currentTask.value?.id === taskId) {
         void loadActiveChatJobs(taskId)
+        void loadActivePreInput(taskId)
         if (hasTaskSpecification(currentTask.value)) {
           void loadTaskSpecBootstrap(taskId)
         }
@@ -2151,6 +2175,8 @@ export function useChatViewModel() {
           creator_id: payload.creator_id || null,
           creator_display_name: payload.creator_display_name || null,
           creator_is_workspace_expert: Boolean(payload.creator_is_workspace_expert),
+          creator_avatar_url: payload.creator_avatar_url || null,
+          creator_avatar_svg: payload.creator_avatar_svg || null,
           client_message_id: payload.client_message_id || null,
           decision_id: payload.decision_id || null,
           metadata: payload.metadata || null,
@@ -2193,6 +2219,32 @@ export function useChatViewModel() {
         if (status === 'failed' || status === 'conflict') {
           ElMessage.error(payload.message || 'Message was not sent. Please retry.')
         }
+        break
+      }
+
+      case 'pre_input_update': {
+        if (payload?.task_id && String(payload.task_id) !== String(currentTask.value?.id || '')) break
+        if (payload?.status === 'COLLECTING') {
+          activePreInput.value = payload
+        } else if (activePreInput.value?.id === payload?.id) {
+          activePreInput.value = null
+        }
+        break
+      }
+
+      case 'pre_input_submitted': {
+        // 合并后的消息由随后的 chat_message 事件 upsert 进消息列表
+        if (activePreInput.value?.id === payload?.id) {
+          activePreInput.value = null
+        }
+        ElMessage.success(t('preInput.submitted_toast'))
+        break
+      }
+
+      case 'pre_input_error': {
+        ElMessage.error(payload?.message || t('preInput.errors.generic'))
+        const taskId = String(payload?.task_id || currentTask.value?.id || '')
+        if (taskId) void loadActivePreInput(taskId)
         break
       }
   
@@ -2500,6 +2552,177 @@ export function useChatViewModel() {
       chatInput.value = ''
     }
   }
+
+  // ─── 协作预输入（多人草稿收集后合并提交） ───
+  type PreInputEditPermission = 'ALL' | 'MENTIONED' | 'EXPERTS' | 'NONE'
+  type PreInputMember = {
+    user_id: string
+    display_name: string | null
+    avatar_url: string | null
+    avatar_svg: string | null
+    is_expert: boolean
+    done?: boolean
+  }
+  type PreInputContribution = PreInputMember & {
+    content: string
+    updated_at: string | null
+    created_at: string | null
+  }
+  type ActivePreInput = {
+    id: string
+    task_id: string
+    workspace_id: string
+    creator: PreInputMember
+    main_text: string
+    edit_permission: PreInputEditPermission
+    status: 'COLLECTING' | 'SUBMITTED' | 'CANCELLED'
+    wait_seconds: number
+    deadline_at: string | null
+    created_at: string | null
+    mentioned_user_ids: string[]
+    mentionees: PreInputMember[]
+    volunteers: PreInputMember[]
+    contributions: PreInputContribution[]
+    all_mentioned_done: boolean
+  }
+
+  const activePreInput = ref<ActivePreInput | null>(null)
+  const preInputBusy = ref(false)
+
+  const sendPreInputAction = (action: string, payload: Record<string, any> = {}): boolean => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      ElMessage.error(t('preInput.errors.ws_unavailable'))
+      return false
+    }
+    ws.send(JSON.stringify({ type: action, payload }))
+    return true
+  }
+
+  const loadActivePreInput = async (taskId: string) => {
+    if (!taskId) return
+    try {
+      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/pre-input/active`)
+      if (currentTask.value?.id !== taskId) return
+      const pre = res.data?.pre_input || null
+      if (pre && pre.status === 'COLLECTING') {
+        activePreInput.value = pre
+      } else if (activePreInput.value?.task_id === taskId) {
+        activePreInput.value = null
+      }
+    } catch (e) {
+      console.warn('Failed to load active pre input', e)
+    }
+  }
+
+  const startPreInput = (opts: {
+    main_text: string
+    mentioned_user_ids: string[]
+    edit_permission: PreInputEditPermission
+    wait_seconds: number
+  }): boolean => {
+    if (!currentTask.value?.id) return false
+    if (activePreInput.value) {
+      ElMessage.warning(t('preInput.errors.already_active'))
+      return false
+    }
+    if (isChatLocked.value) {
+      ElMessage.warning(t('chat.start_before_chat'))
+      return false
+    }
+    return sendPreInputAction('pre_input_create', opts)
+  }
+
+  const submitPreInputContribution = (content: string): boolean => {
+    const text = content.trim()
+    if (!text) return false
+    if (!activePreInput.value || activePreInput.value.status !== 'COLLECTING') return false
+    return sendPreInputAction('pre_input_contribute', { content: text })
+  }
+
+  const editPreInputMainText = (mainText: string): boolean => {
+    if (!canEditPreInputShared.value) return false
+    return sendPreInputAction('pre_input_edit', { main_text: mainText })
+  }
+
+  const editPreInputContributionOf = (userId: string, content: string): boolean => {
+    if (!canEditPreInputContributionOf(userId)) return false
+    return sendPreInputAction('pre_input_edit', { target_user_id: userId, content })
+  }
+
+  const submitPreInputManually = (): boolean => {
+    if (!isPreInputCreator.value) return false
+    return sendPreInputAction('pre_input_submit', {})
+  }
+
+  const cancelPreInput = (): boolean => {
+    if (!isPreInputCreator.value) return false
+    return sendPreInputAction('pre_input_cancel', {})
+  }
+
+  const searchPreInputMembers = async (keyword: string): Promise<PreInputMember[]> => {
+    try {
+      const res = await api.get(`/workspaces/${route.params.wsId}/members`, {
+        params: { page: 1, page_size: 50, keyword: keyword.trim() || undefined },
+      })
+      // 后端把工作区所有者(OWNER)放在 owner 字段单独返回且不参与 keyword 过滤，
+      // 这里合并进候选列表，并对 owner 做本地关键词匹配
+      const keywordLower = keyword.trim().toLowerCase()
+      const selfId = String(authStore.user?.id || '')
+      const candidates: any[] = []
+      const owner = res.data?.owner
+      if (owner && String(owner.user_id || '') !== selfId) {
+        const ownerName = String(owner.display_name || '').toLowerCase()
+        const ownerEmail = String(owner.email || '').toLowerCase()
+        if (!keywordLower || ownerName.includes(keywordLower) || ownerEmail.includes(keywordLower)) {
+          candidates.push(owner)
+        }
+      }
+      for (const item of (res.data?.items || [])) {
+        if (String(item.user_id || '') !== selfId) candidates.push(item)
+      }
+      return candidates.map((item) => ({
+        user_id: String(item.user_id || ''),
+        display_name: String(item.display_name || item.email || 'Member'),
+        avatar_url: item.avatar_url || null,
+        avatar_svg: item.avatar_svg || null,
+        is_expert: Boolean(item.is_expert),
+      }))
+    } catch (e) {
+      console.warn('Failed to search workspace members', e)
+      return []
+    }
+  }
+
+  const preInputIsCollecting = computed(() => activePreInput.value?.status === 'COLLECTING')
+  const isPreInputCreator = computed(() => {
+    const pi = activePreInput.value
+    return Boolean(pi && String(authStore.user?.id || '') === String(pi.creator?.user_id || ''))
+  })
+  const myPreInputContribution = computed(() => {
+    const pi = activePreInput.value
+    if (!pi) return null
+    const selfId = String(authStore.user?.id || '')
+    return pi.contributions?.find((c) => String(c.user_id) === selfId) || null
+  })
+  const canEditPreInputShared = computed(() => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    if (isPreInputCreator.value) return true
+    const uid = String(authStore.user?.id || '')
+    if (pi.edit_permission === 'ALL') return true
+    if (pi.edit_permission === 'MENTIONED') return (pi.mentioned_user_ids || []).some((m) => String(m) === uid)
+    if (pi.edit_permission === 'EXPERTS') {
+      return workspaceCurrentUserIsExpert.value || Boolean(currentWorkspace.value?.my_is_expert)
+    }
+    return false
+  })
+  const canEditPreInputContributionOf = (userId: string): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    const own = String(userId || '') === String(authStore.user?.id || '')
+    return own || canEditPreInputShared.value
+  }
+
   
   // ─── 执行高阶 MCP 验证 ───
   const sendVerification = async (type: 'ui' | 'api' | 'e2e') => {
@@ -2725,7 +2948,25 @@ export function useChatViewModel() {
     openDecisionModal,
     markHitlCardAnswered,
     messageAuthorLabel,
+    messageAuthorColor,
+    memberColorFor,
     messages,
+    // 协作预输入
+    activePreInput,
+    preInputBusy,
+    preInputIsCollecting,
+    isPreInputCreator,
+    myPreInputContribution,
+    canEditPreInputShared,
+    canEditPreInputContributionOf,
+    startPreInput,
+    submitPreInputContribution,
+    editPreInputMainText,
+    editPreInputContributionOf,
+    submitPreInputManually,
+    cancelPreInput,
+    searchPreInputMembers,
+    loadActivePreInput,
     closeTaskSkillsDrawer,
     openTaskSkillsDrawer,
     isTaskProvisioning,

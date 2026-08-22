@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   ShieldCheck,
   Bot,
-  UserRound,
 } from 'lucide-vue-next'
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
+import UserAvatar from '@/components/user/UserAvatar.vue'
 import { diagnosisPayloadFromMessage } from '@/types/diagnosis'
 import type { ChatDecisionPayload } from '@/composables/useChatDecision'
 
@@ -14,6 +15,8 @@ const props = defineProps<{
   msg: Record<string, any>
   vm: any
 }>()
+
+const { t } = useI18n()
 
 const isPopoverOpen = ref(false)
 
@@ -33,6 +36,34 @@ const diagnosisExtractedFromAi = computed(() => {
   const flag = props.vm?.diagnosisResult?.extracted_from_ai
   return flag === undefined ? true : Boolean(flag)
 })
+
+const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
+const isFromCurrentUser = computed(() => Boolean(props.vm?.isMessageFromCurrentUser?.(props.msg)))
+const memberColor = computed(() => props.vm?.messageAuthorColor?.(props.msg) || '#0EA5E9')
+
+const metadata = computed(() => {
+  const meta = props.msg?.metadata
+  return meta && typeof meta === 'object' ? meta : null
+})
+const collabParticipants = computed(() => {
+  if (msgRole.value !== 'user' || !metadata.value?.pre_input_id) return []
+  const participants = metadata.value.participants
+  return Array.isArray(participants) ? participants : []
+})
+const isCollabPreInput = computed(() => collabParticipants.value.length > 0)
+const collabSegments = computed(() => {
+  if (!isCollabPreInput.value) return []
+  const segments = metadata.value?.segments
+  return (Array.isArray(segments) ? segments : []).filter((s: any) => String(s?.content || '').trim())
+})
+
+// 头像内联在“时间+姓名”元信息行内：他人消息行首、本人/协作消息行尾；assistant 用原小图标
+const showLeadingAvatar = computed(() => (
+  msgRole.value === 'user' && !isFromCurrentUser.value && !isCollabPreInput.value
+))
+const showTrailingAvatar = computed(() => (
+  msgRole.value === 'user' && !isCollabPreInput.value && isFromCurrentUser.value
+) || isCollabPreInput.value)
 
 function handleOpenPopover() {
   isPopoverOpen.value = true
@@ -78,19 +109,48 @@ function openDiagnosisCase(caseId: string) {
         'from-current-user': vm.isMessageFromCurrentUser(msg),
         'from-workspace-expert': vm.isMessageWorkspaceExpert(msg),
         'is-highlighted': vm.highlightedMessageId === msg.id,
+        'is-collab-preinput': isCollabPreInput,
       }
     ]"
+    :style="{ '--member-color': memberColor }"
   >
     <div class="message-stack">
       <div class="message-meta">
+        <UserAvatar
+          v-if="showLeadingAvatar"
+          class="meta-avatar"
+          :display-name="msg.creator_display_name"
+          :user-id="msg.creator_id"
+          :avatar-svg="msg.creator_avatar_svg"
+          :avatar-url="msg.creator_avatar_url"
+          size="xs"
+          :accent-color="memberColor"
+        />
+        <Bot v-else-if="msgRole === 'assistant' || msgRole === 'system'" class="w-3 h-3 message-role-icon" />
         <time class="message-time">{{ vm.formatMessageTime(msg.created_at) }}</time>
-        <span class="message-author">{{ vm.messageAuthorLabel(msg) }}</span>
+        <span
+          v-if="isCollabPreInput"
+          class="collab-preinput-badge"
+          :title="t('chat.collab_preinput_title', { count: collabParticipants.length })"
+        >
+          <span>{{ $t('chat.collab_preinput_label') }}</span>
+          <span class="collab-count">{{ collabParticipants.length }}</span>
+        </span>
+        <span class="message-author" :style="msgRole === 'user' ? { color: memberColor } : undefined">{{ vm.messageAuthorLabel(msg) }}</span>
         <span v-if="vm.isMessageWorkspaceExpert(msg)" class="message-pm-badge">PM</span>
         <ShieldCheck v-if="vm.isMessageWorkspaceExpert(msg)" class="w-3 h-3 message-expert-icon" />
-        <Bot v-else-if="msg.role === 'assistant'" class="w-3 h-3 message-role-icon" />
-        <UserRound v-else class="w-3 h-3 message-role-icon" />
+        <UserAvatar
+          v-if="showTrailingAvatar"
+          class="meta-avatar"
+          :display-name="msg.creator_display_name"
+          :user-id="msg.creator_id"
+          :avatar-svg="msg.creator_avatar_svg"
+          :avatar-url="msg.creator_avatar_url"
+          size="xs"
+          :accent-color="isCollabPreInput ? vm.memberColorFor(msg.creator_id) : memberColor"
+        />
       </div>
-      
+
       <!-- 问题定位结果：AI 会话反填的结构化卡片（对话内展示，替代独立面板） -->
       <DiagnosisResultCard
         v-if="isDiagnosisResult && diagnosisPayload"
@@ -110,9 +170,26 @@ function openDiagnosisCase(caseId: string) {
       />
 
       <div v-else class="message-bubble">
-        <div class="msg-content">{{ msg.content }}</div>
+        <!-- 协作预输入：结构化分段渲染（作者标签 + 内容），不用文本前缀区分用户 -->
+        <template v-if="isCollabPreInput && collabSegments.length > 0">
+          <div
+            v-for="(segment, index) in collabSegments"
+            :key="`${segment.user_id}-${index}`"
+            class="collab-segment"
+          >
+            <div class="collab-segment-author">
+              <span
+                class="collab-segment-name"
+                :style="{ color: vm.memberColorFor(segment.user_id) }"
+              >{{ segment.display_name }}</span>
+              <span v-if="segment.is_expert" class="message-pm-badge">PM</span>
+            </div>
+            <div class="collab-segment-content">{{ segment.content }}</div>
+          </div>
+        </template>
+        <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
-      
+
       <!-- Mark Decision Action (Under the bubble) -->
       <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id" class="message-actions-row">
         <div class="decision-action-wrapper" v-if="vm.canMarkMessageAsDecision(msg)">
@@ -140,7 +217,7 @@ function openDiagnosisCase(caseId: string) {
               <circle cx="12" cy="8.5" r="2.5" fill="#ffffff" fill-opacity="0.95"/>
             </svg>
           </button>
-          
+
           <DecisionMarkPopover
             :show="isPopoverOpen"
             :message="msg"
@@ -177,9 +254,15 @@ function openDiagnosisCase(caseId: string) {
   display: flex;
   max-width: min(78%, 720px);
 }
-.role-user { align-self: flex-end; }
+/* 多人会话：仅本人消息右对齐，其他成员与 assistant 一律左对齐 */
+.role-user.from-current-user {
+  align-self: flex-end;
+}
+.role-user:not(.from-current-user),
 .role-system,
-.role-assistant { align-self: flex-start; }
+.role-assistant {
+  align-self: flex-start;
+}
 
 .message-wrapper.is-highlighted {
   animation: context-reference-pulse 1.3s ease-in-out 2;
@@ -192,10 +275,11 @@ function openDiagnosisCase(caseId: string) {
   min-width: 0;
 }
 
-.role-user .message-stack {
+.role-user.from-current-user .message-stack {
   align-items: flex-end;
 }
 
+.role-user:not(.from-current-user) .message-stack,
 .role-system .message-stack,
 .role-assistant .message-stack {
   align-items: flex-start;
@@ -209,10 +293,22 @@ function openDiagnosisCase(caseId: string) {
   color: #334155;
   font-size: 0.72rem;
   line-height: 1;
+  flex-wrap: wrap;
 }
 
-.role-user .message-meta {
+.role-user.from-current-user .message-meta {
   justify-content: flex-end;
+}
+
+.role-user:not(.from-current-user) .message-meta,
+.role-system .message-meta,
+.role-assistant .message-meta {
+  justify-content: flex-start;
+}
+
+/* 头像内联于元信息行，与时间/姓名水平对齐 */
+.meta-avatar {
+  flex: 0 0 auto;
 }
 
 .message-time {
@@ -228,6 +324,26 @@ function openDiagnosisCase(caseId: string) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.collab-preinput-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--color-primary-100, #E0F2FE);
+  background: var(--color-primary-50, #F0F9FF);
+  color: var(--color-primary-700, #0369A1);
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.collab-count {
+  min-width: 12px;
+  text-align: center;
 }
 
 .message-role-icon,
@@ -265,8 +381,16 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
 
-.role-user .message-bubble {
+.role-user.from-current-user .message-bubble {
   border-top-right-radius: 14px;
+  border-color: var(--member-color, #0EA5E9);
+  background: #ffffff;
+}
+
+.role-user:not(.from-current-user) .message-bubble {
+  border-top-left-radius: 14px;
+  background: #F8FAFC;
+  border-color: #E2E8F0;
 }
 
 .role-system .message-bubble,
@@ -282,8 +406,62 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .from-workspace-expert .message-bubble {
-  border-color: #a7f3d0;
   box-shadow: 0 10px 24px rgba(22, 101, 52, 0.08);
+}
+
+.role-user.from-current-user.from-workspace-expert .message-bubble {
+  border-color: #166534;
+}
+
+/* 协作预输入气泡：一律右对齐、无左侧色条，分段结构化展示，行尾显示发起人头像 */
+.message-wrapper.is-collab-preinput {
+  align-self: flex-end;
+}
+
+.message-wrapper.is-collab-preinput .message-stack {
+  align-items: flex-end;
+}
+
+.message-wrapper.is-collab-preinput .message-meta {
+  justify-content: flex-end;
+}
+
+.message-wrapper.is-collab-preinput .message-actions-row {
+  justify-content: flex-end;
+}
+
+.message-wrapper.is-collab-preinput .message-bubble {
+  background: var(--color-surface-white, #fff);
+  border: 1px solid var(--color-primary-100, #E0F2FE);
+  border-top-right-radius: 14px;
+  min-width: 220px;
+}
+
+.collab-segment + .collab-segment {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #E2E8F0;
+}
+
+.collab-segment-author {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 3px;
+}
+
+.collab-segment-name {
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.collab-segment-content {
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: #1f2937;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .msg-content {
@@ -302,7 +480,8 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .role-assistant .message-actions-row,
-.role-system .message-actions-row {
+.role-system .message-actions-row,
+.role-user:not(.from-current-user) .message-actions-row {
   justify-content: flex-start;
 }
 

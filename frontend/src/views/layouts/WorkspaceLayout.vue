@@ -7,6 +7,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import { LayoutDashboard, MessageSquare, Box, BookMarked, Settings, Network } from 'lucide-vue-next'
 import AppSidebar from '@/components/AppSidebar.vue'
+import NotificationBell from '@/components/notification/NotificationBell.vue'
 import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
 
 const route = useRoute()
@@ -134,7 +135,11 @@ const sidebarFooterItems = computed(() => {
       :nav-items="sidebarNavItems"
       :footer-items="sidebarFooterItems"
       @back="goBack"
-    />
+    >
+      <template #footer-extra>
+        <NotificationBell />
+      </template>
+    </AppSidebar>
 
     <!-- Main Content Area -->
     <main class="main-content">

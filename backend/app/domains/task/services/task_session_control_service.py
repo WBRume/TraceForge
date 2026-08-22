@@ -184,6 +184,7 @@ async def resume_interrupted_task(
     actor_user_id: str,
     prompt: Optional[str] = None,
     confirm_continue: bool = False,
+    metadata_json: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     if task.status != TaskStatus.INTERRUPTED:
         raise TaskSessionControlError("Only interrupted tasks can be resumed", status_code=409)
@@ -240,6 +241,7 @@ async def resume_interrupted_task(
         role=MessageRole.USER,
         content=prompt_text,
         message_type=MessageType.TEXT,
+        metadata_json=dict(metadata_json) if isinstance(metadata_json, dict) else None,
     )
     db.add(resume_message)
     db.commit()
