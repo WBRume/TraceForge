@@ -33,6 +33,8 @@ import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
 import SuperpowersDocsPanel from '@/components/chat/SuperpowersDocsPanel.vue'
 import ChatExecutionInput from '@/components/chat/ChatExecutionInput.vue'
+import PreInputComposer from '@/components/chat/PreInputComposer.vue'
+import PreInputPanel from '@/components/chat/PreInputPanel.vue'
 import ChatCliWorkbench from '@/components/chat/terminal/ChatCliWorkbench.vue'
 import TaskSkillsDrawer from '@/components/chat/TaskSkillsDrawer.vue'
 import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowDrawer.vue'
@@ -47,6 +49,7 @@ import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagno
 const rawVm = useChatViewModel()
 const vm = proxyRefs(rawVm)
 const showApplyPatchDrawer = ref(false)
+const preInputComposerVisible = ref(false)
 
 // 问题定位任务：诊断文档 / 代码路径抽屉数据（复用 spec 抽屉三段式容器）
 const diagDocsModel = useDiagnosisDocs({
@@ -80,6 +83,14 @@ watch(
       void diagDocs.loadDocs()
       void diagDocs.loadCodePath()
     }
+  },
+)
+
+// 切换任务会话时收起预输入发起表单
+watch(
+  () => vm.currentTask?.id,
+  () => {
+    preInputComposerVisible.value = false
   },
 )
 
@@ -487,6 +498,19 @@ const statusModelText = (card: any): string => {
 
       <!-- 问题定位结果已改为会话内 AI 气泡卡片（DiagnosisResultCard），此处不再渲染独立面板 -->
 
+      <!-- 协作预输入：收集窗口进行中时显示在输入框上方 -->
+      <PreInputPanel
+        v-if="vm.activePreInput && vm.preInputIsCollecting"
+        :vm="vm"
+      />
+
+      <!-- 协作预输入：发起表单 -->
+      <PreInputComposer
+        v-if="preInputComposerVisible && !vm.activePreInput"
+        :vm="vm"
+        @close="preInputComposerVisible = false"
+      />
+
       <!-- Input Area -->
       <ChatExecutionInput
         v-model="vm.chatInput"
@@ -497,8 +521,10 @@ const statusModelText = (card: any): string => {
         :placeholder="vm.chatInputPlaceholder"
         :send-title="$t('chat.send_message')"
         :interrupt-title="$t('chat.temporary_interrupt_desc')"
+        :can-start-pre-input="!vm.activePreInput && !preInputComposerVisible"
         @submit="vm.sendChat"
         @interrupt="vm.interruptCurrentRun"
+        @pre-input="preInputComposerVisible = true"
       />
       </template>
       <template v-else>

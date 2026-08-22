@@ -625,7 +625,9 @@
       "no_permission_delete_task": "No permission to delete tasks",
       "no_permission_export_task": "No permission to export tasks"
     },
-    "superpowers_docs_placeholder": "Search Markdown files..."
+    "superpowers_docs_placeholder": "Search Markdown files...",
+    "collab_preinput_label": "Collab input",
+    "collab_preinput_title": "Collaborative pre-input · {count} participants"
   },
   "workspaces": {
     "title": "Your Workspaces",
@@ -3074,5 +3076,48 @@
       "stat_round": "Review Round",
       "round_short": "Round {round}"
     }
+  },
+  "preInput": {
+    "toggle_title": "Start collaborative pre-input: @members to collect inputs, auto-merge and submit on deadline",
+    "composer_title": "Start Collaborative Pre-input",
+    "main_text_placeholder": "Describe the task or question to collect inputs… type @ to mention members",
+    "mention_no_results": "No matching members",
+    "edit_permission_label": "Edit permission",
+    "permission_all": "Anyone can edit",
+    "permission_mentioned": "@mentioned can edit",
+    "permission_experts": "Workspace experts can edit",
+    "permission_none": "Not editable",
+    "wait_duration_label": "Wait duration",
+    "duration_minutes": "{n} min",
+    "composer_hint": "Auto-submit on deadline; early submit once all @mentioned members finish",
+    "start_button": "Start collecting",
+    "started_toast": "Collaborative pre-input started, mentioned members notified",
+    "submitted_toast": "Collaborative pre-input merged and submitted",
+    "panel_title": "Pre-input collecting",
+    "member_status_label": "Member input status",
+    "no_mentions_hint": "No @mentions: submit happens on deadline or manually by the initiator",
+    "my_input_placeholder": "Type my input…",
+    "submit_my_input": "Submit my input",
+    "update_my_input": "Update my input",
+    "cancel_collect": "Cancel collecting",
+    "submit_now": "Submit now",
+    "errors": {
+      "ws_unavailable": "Connection unavailable, please retry later",
+      "already_active": "A pre-input is already collecting in this session",
+      "generic": "Pre-input action failed, please retry"
+    },
+    "volunteer_hint": "Joined voluntarily without being mentioned",
+    "mention_field_label": "Mention members",
+    "mention_field_placeholder": "Select members to notify (multi-select)",
+    "mention_search_placeholder": "Search members",
+    "my_input_saved": "Submitted"
+  },
+  "notification": {
+    "title": "Notifications",
+    "empty": "No notifications",
+    "mark_all_read": "Mark all read",
+    "just_now": "Just now",
+    "minutes_ago": "{n} min ago",
+    "hours_ago": "{n} h ago"
   }
 }

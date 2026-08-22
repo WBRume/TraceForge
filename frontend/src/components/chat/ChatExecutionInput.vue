@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { Loader2, Send, Square } from 'lucide-vue-next'
+import { Loader2, Send, Square, UsersRound } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
   modelValue: string
@@ -10,12 +13,14 @@ const props = defineProps<{
   placeholder: string
   sendTitle: string
   interruptTitle: string
+  canStartPreInput?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'submit'): void
   (e: 'interrupt'): void
+  (e: 'pre-input'): void
 }>()
 
 const onInput = (event: Event) => {
@@ -41,6 +46,15 @@ const onInput = (event: Event) => {
         @input="onInput"
         @keyup.enter="emit('submit')"
       >
+      <button
+        v-if="props.canStartPreInput !== false"
+        class="preinput-btn"
+        :disabled="props.disabled"
+        :title="t('preInput.toggle_title')"
+        @click="emit('pre-input')"
+      >
+        <UsersRound class="w-4 h-4" />
+      </button>
       <button class="send-btn" :disabled="props.disabled || !props.modelValue.trim()" :title="props.sendTitle" @click="emit('submit')">
         <Send class="w-5 h-5" />
       </button>
@@ -153,6 +167,26 @@ const onInput = (event: Event) => {
   border-radius: 50%;
   background: var(--color-primary-500);
   color: white;
+}
+
+.preinput-btn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid #E2E8F0;
+  background: #F8FAFC;
+  color: #64748B;
+  transition: background-color 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.preinput-btn:hover:not(:disabled) {
+  background: var(--color-primary-50, #F0F9FF);
+  border-color: #BAE6FD;
+  color: var(--color-primary-600, #0284C7);
 }
 
 .send-btn:hover:not(:disabled) {

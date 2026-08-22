@@ -916,6 +916,23 @@ def get_task_history(
     return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
 
+@router.get("/{task_id}/pre-input/active")
+def get_active_pre_input(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """预输入收集窗口冷启动/WS 重连恢复兜底。"""
+    verify_workspace_access(ws_id, current_user, db)
+    from app.domains.task.services import pre_input_service
+
+    pre_input = pre_input_service.get_active_pre_input(db, task_id)
+    if not pre_input:
+        return {"pre_input": None}
+    return {"pre_input": pre_input_service.serialize_pre_input(db, pre_input)}
+
+
 @router.delete("/{task_id}/history")
 async def clear_task_history(
     ws_id: str,

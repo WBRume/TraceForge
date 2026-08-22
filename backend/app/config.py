@@ -156,6 +156,12 @@ class Settings(BaseSettings):
     RAG_RETRY_MAX: int = 5
     RAG_RETRY_BACKOFF_BASE_SECONDS: int = 2
 
+    # ── 站内信 / 外部通知 ──
+    # 站内信始终落库；NOTIFICATION_PROVIDERS 为额外启用的外部渠道（逗号分隔，当前仅支持 "logging" 占位）
+    NOTIFICATION_PROVIDERS: str = ""
+    # 预输入超时扫描
+    PRE_INPUT_SCAN_INTERVAL_SECONDS: float = 5.0
+
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
