@@ -28,6 +28,7 @@ from app.domains.api_mock.models.api_mock import ApiMockCollabEventType
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.auth.models.user import User
 from app.engine.workflow_engine import WorkflowEngine, get_engine
+from app.agents.selection import resolve_task_backend
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.domains.ai.routers import agent
 from app.domains.auth.routers import auth
@@ -450,6 +451,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                                     "id": task_obj.id,
                                     "workspace_id": task_obj.workspace_id,
                                     "creator_id": user_id,
+                                    "agent_backend": resolve_task_backend(db, task_obj.id),
                                 }
                         finally:
                             db.close()
@@ -465,6 +467,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                             task_id=task_meta["id"],
                             ws_id=task_meta["workspace_id"],
                             user_id=user_id,
+                            backend_name=task_meta.get("agent_backend"),
                         )
                         asyncio.create_task(recovered_engine.run(response))
 

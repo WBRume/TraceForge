@@ -223,6 +223,25 @@
         "manage_api_mock": "管理 API MOCK",
         "publish_api_mock": "发布 API MOCK"
       }
+    },
+    "agent": {
+      "title": "底层 Agent 引擎",
+      "subtitle": "配置当前工作区使用的底层 Agent；已有任务的会话将继续沿用创建时的引擎。",
+      "overridden": "已覆盖默认",
+      "follow_default": "跟随全局默认",
+      "default_tag": "全局默认",
+      "no_resume_tag": "不支持会话恢复",
+      "loading": "正在加载 Agent 配置…",
+      "desc_claude_code": "Claude Code CLI 子进程模式，支持会话恢复与本地上下文快照复制。",
+      "desc_opencode": "OpenCode Server 模式，会话上下文保存在服务端，支持会话恢复。",
+      "desc_dsh": "DSH CLI headless 单轮模式，不支持会话恢复，每轮独立执行。",
+      "sticky_note": "切换引擎只对新建任务与新的文档基线生效；已在执行中的任务、已建立的基线及评审线程会继续保持原有引擎，以保证上下文连续。",
+      "no_resume_warning": "该引擎不支持会话恢复：多轮对话每轮都会重新读取上下文，可能消耗更多时间与 Token。",
+      "save": "保存配置",
+      "saving": "保存中…",
+      "save_success": "Agent 配置已更新",
+      "save_failed": "Agent 配置更新失败",
+      "load_failed": "Agent 配置加载失败"
     }
   },
   "dashboard": {

@@ -20,6 +20,11 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.database import SessionLocal
 from app.engine.claude_bridge import create_cli_bridge
+from app.agents.selection import (
+    create_legacy_bridge,
+    resolve_task_backend,
+    resolve_workspace_backend,
+)
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.asset.models.asset import (
@@ -275,6 +280,7 @@ async def _update_job_state(
     result_patch: Optional[Dict[str, Any]] = None,
     error_message: Optional[str] = None,
     session_id: Optional[str] = None,
+    agent_backend: Optional[str] = None,
     finalize: bool = False,
 ) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
@@ -302,6 +308,8 @@ async def _update_job_state(
             job.error_message = error_message
         if session_id is not None:
             job.session_id = session_id
+        if agent_backend is not None:
+            job.agent_backend = agent_backend
         if status == AiJobStatus.RUNNING and job.started_at is None:
             job.started_at = datetime.utcnow()
         if finalize or (status in FINAL_STATUSES):
@@ -878,13 +886,15 @@ async def run_cli_single_turn(
     session_id: Optional[str] = None,
     max_attempts: int = 2,
     should_cancel: Optional[Callable[[], bool]] = None,
+    backend_name: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     attempts = max(1, int(max_attempts or 1))
     next_session_id = session_id
     last_error: Optional[Exception] = None
 
     for attempt in range(1, attempts + 1):
-        bridge = create_cli_bridge()
+        # 指定 backend（工作区配置或线程粘性）走统一适配层；否则保持旧全局行为
+        bridge = create_legacy_bridge(backend_name) if backend_name else create_cli_bridge()
         text_parts: List[str] = []
         result_text = ""
         result_is_error = False
@@ -1049,6 +1059,13 @@ async def _execute_asset_thread_job(job_id: str) -> None:
         resume_session_id = task_cli_state_service.get_latest_thread_session_id(db, thread.id)
         if not resume_session_id:
             resume_session_id = task_cli_state_service.get_bootstrap_session_id(db, thread.task_id)
+        # 线程粘性 backend：最近成功回合 > baseline 固化值 > 工作区配置。
+        # baseline 建立后即使工作区切换 agent，线程/baseline 仍沿用原后端保持上下文。
+        thread_backend = (
+            task_cli_state_service.get_latest_thread_agent_backend(db, thread.id)
+            or task_cli_state_service.get_bootstrap_agent_backend(db, thread.task_id)
+            or resolve_workspace_backend(db, thread.workspace_id)
+        )
 
         if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
             context_json = job.context_json if isinstance(job.context_json, dict) else {}
@@ -1120,6 +1137,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 thread_workspace_path,
                 session_id=resume_session_id,
                 should_cancel=lambda: _is_cancel_requested(job_id),
+                backend_name=thread_backend,
             )
             proposal_text = str(result.get("text") or "").strip()
             final_session_id = str(result.get("session_id") or "").strip()
@@ -1162,6 +1180,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     "proposal_excerpt": proposal_text[:1200],
                 },
                 session_id=final_session_id or None,
+                agent_backend=thread_backend,
                 finalize=True,
             )
             return
@@ -1258,6 +1277,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 thread_workspace_path,
                 session_id=resume_session_id,
                 should_cancel=lambda: _is_cancel_requested(job_id),
+                backend_name=thread_backend,
             )
             rewrite_payload = _parse_rewrite_payload(str(result.get("text") or ""))
             rewrite_scope = requested_scope or str(rewrite_payload.get("scope") or "anchor").strip().lower()
@@ -1330,6 +1350,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
                 },
                 session_id=final_session_id or None,
+                agent_backend=thread_backend,
                 finalize=True,
             )
             return
@@ -1395,6 +1416,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             thread_workspace_path,
             session_id=resume_session_id,
             should_cancel=lambda: _is_cancel_requested(job_id),
+            backend_name=thread_backend,
         )
         reply = str(result.get("text") or "").strip()
         final_session_id = str(result.get("session_id") or "").strip()
@@ -1409,7 +1431,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             role=AssetThreadMessageRole.AI,
             content=reply,
             creator_id=None,
-            metadata_json={"provider": "claude-cli", "job_id": job_id},
+            metadata_json={"provider": thread_backend or "claude-cli", "job_id": job_id},
         )
         db.commit()
         db.refresh(ai_message)
@@ -1440,6 +1462,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             message="AI reply completed",
             result_patch={"message_id": ai_message.id},
             session_id=final_session_id or None,
+            agent_backend=thread_backend,
             finalize=True,
         )
     except Exception as exc:
@@ -1766,6 +1789,12 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
         project_path = _resolve_task_project_path(task)
         transcript = _collect_diagnosis_transcript(task.id)
         prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
+        # 任务粘性 backend：与该任务聊天引擎保持同一后端
+        task_backend_db = SessionLocal()
+        try:
+            task_backend = resolve_task_backend(task_backend_db, task.id) if task.id else None
+        finally:
+            task_backend_db.close()
 
         await _update_job_state(job_id, progress=55, message="AI 正在生成结构化定位结果")
         result = await run_cli_single_turn(
@@ -1773,6 +1802,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             project_path,
             session_id=None,
             should_cancel=lambda: _is_cancel_requested(job_id),
+            backend_name=task_backend,
         )
         summary_text = str(result.get("text") or "").strip()
         if not summary_text:
@@ -1809,6 +1839,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
                 "summary_source": "diagnosis_summary",
             },
             session_id=str(result.get("session_id") or "") or None,
+            agent_backend=task_backend,
             finalize=True,
         )
 
@@ -1825,6 +1856,8 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
 
         context = job.context_json if isinstance(job.context_json, dict) else {}
         fresh_session = bool(context.get("fresh_session"))
+        # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
+        task_backend = resolve_task_backend(db, task.id)
         engine = get_engine(task.id)
         if not engine:
             engine = WorkflowEngine(
@@ -1832,6 +1865,7 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
                 ws_id=task.workspace_id,
                 user_id=job.creator_id,
                 job_id=job_id,
+                backend_name=task_backend,
                 on_result=_on_engine_result,
                 on_hitl=_on_engine_hitl,
                 on_session=_on_engine_session,
@@ -2077,6 +2111,8 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
                 "session_id": job.session_id,
             }
 
+            # 任务粘性 backend：与任务聊天保持同一后端
+            task_backend = resolve_task_backend(db, task.id)
             engine = get_engine(task.id)
             if not engine:
                 engine = WorkflowEngine(
@@ -2084,6 +2120,7 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
                     ws_id=task.workspace_id,
                     user_id=job.creator_id,
                     job_id=job_id,
+                    backend_name=task_backend,
                     on_result=_on_engine_result,
                     on_hitl=_on_engine_hitl,
                     on_session=_on_engine_session,

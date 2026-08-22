@@ -283,6 +283,7 @@ def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[s
         "git_repo_url": workspace.git_repo_url,
         "project_id": workspace.project_id,
         "owner_id": workspace.owner_id,
+        "agent_backend": workspace.agent_backend,
         "created_at": workspace.created_at,
         "my_role": member.role.value if hasattr(member.role, "value") else str(member.role),
         "my_is_expert": bool(member.is_expert),

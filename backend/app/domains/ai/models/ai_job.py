@@ -82,6 +82,8 @@ class SddAiJob(Base):
     result_json = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)
+    # 该回合实际使用的 agent backend（线程续会话时沿用，保证上下文连续）
+    agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)
     interrupted_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     interrupted_at = Column(DateTime, nullable=True)

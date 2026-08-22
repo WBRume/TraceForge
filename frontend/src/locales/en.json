@@ -223,6 +223,25 @@
         "manage_api_mock": "Manage API MOCK",
         "publish_api_mock": "Publish API MOCK"
       }
+    },
+    "agent": {
+      "title": "Agent Engine",
+      "subtitle": "Choose the underlying agent for this workspace; existing task sessions keep the engine they started with.",
+      "overridden": "Overridden",
+      "follow_default": "Follow global default",
+      "default_tag": "Global default",
+      "no_resume_tag": "No session resume",
+      "loading": "Loading agent settings…",
+      "desc_claude_code": "Claude Code CLI subprocess mode with session resume and local context snapshot copy.",
+      "desc_opencode": "OpenCode server mode; session context lives on the server, supports resume.",
+      "desc_dsh": "DSH CLI headless single-turn mode, no session resume; each turn runs independently.",
+      "sticky_note": "Switching the engine only affects new tasks and new document baselines. Running tasks, existing baselines and review threads keep their original engine to preserve context.",
+      "no_resume_warning": "This engine does not support session resume: each turn re-reads the context, which may cost more time and tokens.",
+      "save": "Save",
+      "saving": "Saving…",
+      "save_success": "Agent setting updated",
+      "save_failed": "Failed to update agent setting",
+      "load_failed": "Failed to load agent settings"
     }
   },
   "dashboard": {

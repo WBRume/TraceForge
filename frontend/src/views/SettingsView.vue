@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import SettingsAgentSection from '@/components/settings/SettingsAgentSection.vue'
 import SettingsAppearanceSection from '@/components/settings/SettingsAppearanceSection.vue'
 import SettingsGeneralSection from '@/components/settings/SettingsGeneralSection.vue'
 import SettingsLocalDevSection from '@/components/settings/SettingsLocalDevSection.vue'
@@ -31,6 +32,7 @@ const vm = proxyRefs(rawVm)
             <SettingsAppearanceSection v-else-if="vm.activeSection === 'appearance'" key="appearance" :vm="rawVm" />
             <SettingsMembersSection v-else-if="vm.activeSection === 'members'" key="members" :vm="rawVm" />
             <SettingsLocalDevSection v-else-if="vm.activeSection === 'local_dev'" key="local_dev" />
+            <SettingsAgentSection v-else-if="vm.activeSection === 'agent'" key="agent" />
           </transition>
         </main>
       </div>

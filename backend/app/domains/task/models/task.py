@@ -60,6 +60,8 @@ class SddTask(Base):
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)
+    # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
+    agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)
     interrupted_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     interrupted_at = Column(DateTime, nullable=True)
