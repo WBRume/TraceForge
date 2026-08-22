@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from typing import Any, Optional
 
@@ -27,7 +28,7 @@ from app.agents.contract import (
     AgentRunResult,
     TokenUsage,
 )
-from app.agents.errors import AgentError
+from app.agents.errors import AgentError, SessionForkError
 from app.agents.events import AgentEvent
 from app.agents.adapters.opencode.event_mapper import map_opencode_event
 
@@ -38,6 +39,7 @@ class OpenCodeAdapter(AgentBackend):
         supports_resume=True,
         supports_streaming_text=True,
         supports_tool_events=True,
+        supports_fork=True,
         hitl_modes=["turn_based", "long_connection"],
         supports_usage=True,
         skill_layouts=["opencode"],
@@ -345,3 +347,96 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentError(
                 f"OpenCode HITL reply failed: HTTP {result.status_code} {result.text[:300]}"
             )
+
+    # ── 会话 fork（baseline → 评审线程）────────────────────────
+    async def _fork_create(self, client: httpx.AsyncClient, session_id: str) -> str:
+        """调用 fork API，返回新会话 id。v1 路由优先，v2 路由回退。"""
+        responses = (
+            # v1（v1.18.21+ 已发布）: POST /session/{id}/fork, 可选 body {messageID}
+            ("post", f"{self.server_url}/session/{session_id}/fork", None),
+            # v2: POST /api/session/{id}/fork, body boundary=through 表示复制全部历史
+            ("post", f"{self.server_url}/api/session/{session_id}/fork", {
+                "boundary": {"type": "through"},
+            }),
+        )
+        last_error = ""
+        for _method, url, body in responses:
+            response = await client.post(url, json=body)
+            if response.status_code == 200:
+                data = response.json()
+                payload = data.get("data") if isinstance(data, dict) else None
+                if not isinstance(payload, dict):
+                    payload = data if isinstance(data, dict) else {}
+                new_id = str(payload.get("id") or "").strip()
+                if new_id:
+                    return new_id
+                last_error = f"fork response missing session id: {str(data)[:200]}"
+                continue
+            last_error = f"HTTP {response.status_code} {response.text[:200]}"
+        raise SessionForkError(f"OpenCode session fork failed for {session_id}: {last_error}")
+
+    async def _fork_move(
+        self,
+        client: httpx.AsyncClient,
+        session_id: str,
+        target_dir: str,
+    ) -> None:
+        """把 fork 出的会话挪到线程工作目录（决定工具执行 cwd）。"""
+        abs_dir = os.path.abspath(target_dir)
+        moves = (
+            # v1: experimental control-plane
+            ("post", f"{self.server_url}/experimental/control-plane/move-session", {
+                "sessionID": session_id,
+                "destination": {"directory": abs_dir},
+            }),
+            # v2
+            ("post", f"{self.server_url}/api/session/{session_id}/move", {
+                "directory": abs_dir,
+            }),
+        )
+        last_error = ""
+        for _method, url, body in moves:
+            response = await client.post(url, json=body)
+            if response.status_code == 200:
+                return
+            last_error = f"HTTP {response.status_code} {response.text[:200]}"
+        raise SessionForkError(
+            f"OpenCode forked session {session_id} could not be moved to {abs_dir}: {last_error}"
+        )
+
+    async def delete_session(self, session_id: str) -> bool:
+        """尽力删除会话（fork 演练清理用）；不支持时返回 False。"""
+        client = await self._ensure_client()
+        for url in (
+            f"{self.server_url}/session/{session_id}",
+            f"{self.server_url}/api/session/{session_id}",
+        ):
+            try:
+                response = await client.delete(url)
+            except Exception:
+                continue
+            if response.status_code in (200, 204):
+                return True
+        return False
+
+    async def fork_session(
+        self,
+        session_id: str,
+        *,
+        source_dir: str,
+        target_dir: str,
+    ) -> str:
+        """fork baseline 会话：复制完整历史（含工具调用）为独立新会话并挪到线程目录。
+
+        原会话在服务端保持只读；每个评审线程 fork 出自己的会话 id，
+        互不串上下文，且无需重读需求文档。
+        """
+        client = await self._ensure_client()
+        new_id = await self._fork_create(client, session_id)
+        try:
+            await self._fork_move(client, new_id, target_dir)
+        except SessionForkError:
+            # move 失败时清理 fork 产物，避免遗留孤儿会话
+            await self.delete_session(new_id)
+            raise
+        return new_id

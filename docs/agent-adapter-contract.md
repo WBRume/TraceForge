@@ -918,3 +918,51 @@ class ExampleAdapter(AgentBackend):
 3. `finish_reason` 的新值需要先在契约登记，再在平台 Job 状态机中扩展。
 4. `AgentRunResult.return_code` 到 `finish_reason` 的映射需要逐调用方补充迁移用例（阶段 2）。
 5. 心跳/长连接保活事件未列入 v0.2.0，若 OpenCode Server/DSH 接入需要长任务保活，再新增 `heartbeat` 事件。
+---
+
+## 19. 会话 fork（v0.2.1 新增）
+
+需求背景：研发态任务上传需求文档后，baseline 会话先完整读一遍文档（可能几十 MB）；
+评审线程通过「fork baseline 会话」获得带完整文档上下文的独立新会话——
+既避免每个讨论重读文档，又保证不同讨论之间上下文互不污染。
+
+### 19.1 契约扩展
+
+- `AgentCapabilities.supports_fork: bool`（默认 False）
+- `AgentBackend.fork_session(session_id, *, source_dir, target_dir) -> str`（可选实现）：
+  把 `source_dir` 中的既有会话 fork 成 `target_dir` 下的独立新会话，返回新会话 id；
+  原会话必须保持只读。未实现时抛 `SessionForkError`。
+
+### 19.2 各后端实现
+
+| 后端 | 实现方式 | 说明 |
+|---|---|---|
+| claude-code | 文件级：把 `~/.claude/projects/<key>/<sid>.jsonl` 单文件复制到线程目录的 project store，线程 resume 同一 id，写入只落线程副本（找不到单文件时回退整目录复制） | 即原有「复制会话记录」语义的收敛 |
+| opencode | API：`POST /session/{id}/fork`（v1，v2 `/api/session/{id}/fork` 回退）复制全部历史（含工具调用），再 move 到线程目录 | baseline 会话在服务端永远只读 |
+| dsh | 文件级：复制 `session.jsonl(.zstd)` 到新 id/新 cwd 目录并重写头部（zstd 需头部行单独成帧），服务端 prompt 冷启动时按新 id/cwd resume | 布局复刻 `session-persistence-jsonl/format.ts` |
+
+### 19.3 编排（task_cli_state_service）
+
+- baseline READY 后执行 fork 演练（`probe_session_fork`），失败会体现在 baseline message；
+- 评审线程首次使用时 `ensure_thread_session()` fork baseline 并把会话 id 持久化到
+  `sdd_asset_threads.cli_session_id`；线程此后只 resume 自己的会话，
+  **绝不直接 resume baseline 会话**；
+- fork 不可用时线程显式降级为独立新会话（重读文档），并在日志/baseline 状态中可见。
+
+## 20. DSH Web Host server 模式（v0.2.1 新增）
+
+配置 `DSH_SERVER_URL`（`dsh web --no-open --host 127.0.0.1 --port N` 启动）后，
+dsh 后端从 headless CLI 切换为 Web Host server 模式（`DshServerAdapter`）：
+
+- 传输：`POST /api/<method>` 信封 RPC（`client-request` / `server-response`，业务错误 HTTP 200 + `ok=false`）
+  + `WS /api/events.mux` 下行事件流（loopback 免认证）；
+- 能力：跨进程 resume（prompt 隐式冷启动 resume）、多轮、工具事件、token usage、
+  approval/question HITL（`POST /api/respond` 回复）；
+- headless CLI 模式仍可用（无 resume/usage/事件；CLI 不打印 session id，
+  适配层通过扫描持久化目录最新写入兜底发现会话 id 供 fork 使用）。
+
+## 21. 审阅记录（续）
+
+| 版本 | 日期 | 审阅结论 | 主要修订 |
+|---|---|---|---|
+| v0.2.1 | 2026-08-22 | 新增 fork 能力 | `supports_fork` / `fork_session()` / `SessionForkError`；三后端 fork 实现；线程级 `cli_session_id` 编排；DSH Web Host server 模式（`DSH_SERVER_URL`）与文件级 fork（zstd 头部单帧重写） |

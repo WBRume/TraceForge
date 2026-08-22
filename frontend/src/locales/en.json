@@ -241,7 +241,9 @@
       "saving": "Saving…",
       "save_success": "Agent setting updated",
       "save_failed": "Failed to update agent setting",
-      "load_failed": "Failed to load agent settings"
+      "load_failed": "Failed to load agent settings",
+      "no_fork_tag": "No session fork",
+      "no_fork_warning": "This engine cannot fork the baseline session: each review discussion starts an independent session and re-reads the requirement document instead of reusing baseline context."
     }
   },
   "dashboard": {

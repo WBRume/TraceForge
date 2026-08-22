@@ -8,6 +8,7 @@ export type AgentBackendOption = {
   value: string
   label: string
   supports_resume: boolean
+  supports_fork?: boolean
   preferred_mode: string
 }
 
@@ -41,6 +42,9 @@ export function useAgentBackendSettings() {
   const isOverridden = computed(() => Boolean(payload.value?.agent_backend))
   const supportsResume = computed(() => (
     options.value.find((option) => option.value === selected.value)?.supports_resume ?? true
+  ))
+  const supportsFork = computed(() => (
+    options.value.find((option) => option.value === selected.value)?.supports_fork !== false
   ))
 
   const clearMessage = () => {
@@ -94,6 +98,7 @@ export function useAgentBackendSettings() {
     effectiveBackend,
     isOverridden,
     supportsResume,
+    supportsFork,
     loading,
     saving,
     error,

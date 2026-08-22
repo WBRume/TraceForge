@@ -76,6 +76,8 @@ class AgentCapabilities:
     supports_resume: bool = True
     supports_streaming_text: bool = False
     supports_tool_events: bool = True
+    # 是否支持把既有会话 fork 成独立新会话（baseline 复制上下文给评审线程）
+    supports_fork: bool = False
     hitl_modes: list[Literal["turn_based", "long_connection"]] = field(default_factory=list)
     supports_usage: bool = True
     skill_layouts: list[str] = field(default_factory=list)
@@ -120,6 +122,22 @@ class AgentBackend(ABC):
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         """可选：长连接 HITL 模式下回传用户回复。"""
         raise AgentError("HITL response not supported")
+
+    async def fork_session(
+        self,
+        session_id: str,
+        *,
+        source_dir: str,
+        target_dir: str,
+    ) -> str:
+        """可选：把 source_dir 中已存在的会话 fork 成 target_dir 下的独立新会话。
+
+        返回新会话 id；原会话必须保持只读不被污染。
+        baseline → 评审线程的上下文复用依赖该方法。
+        """
+        from app.agents.errors import SessionForkError
+
+        raise SessionForkError(f"{self.name} does not support session fork")
 
     def _validate_request(self, request: AgentRunRequest) -> None:
         if not self.capabilities.supports_resume and request.session_id:

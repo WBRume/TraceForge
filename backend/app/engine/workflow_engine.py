@@ -18,9 +18,8 @@ from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.auth.services import auth_service
 from app.domains.skill.services import skill_service, skill_runtime_trace_service
 from app.domains.task.services import context_token_service, task_service
-from app.engine.claude_bridge import create_cli_bridge, CliBridgeBase
+from app.engine.claude_bridge import CliBridgeBase
 from app.agents import AgentBackend, AgentEvent, AgentRunRequest, AgentRunResult
-from app.agents.registry import get_agent_backend
 from app.engine.claude_event_adapter import (
     extract_claude_compaction_event,
     extract_claude_usage,
@@ -106,23 +105,13 @@ class WorkflowEngine:
         """根据配置创建当前任务引擎使用的 Agent backend。
 
         backend_name 由调用方传入（任务粘性/工作区配置）；
-        为空时回退全局 .env AGENT_BACKEND（默认 claude-code，
-        为兼容旧逻辑仍走 create_cli_bridge()）。
+        为空时回退全局 .env AGENT_BACKEND（默认 claude-code）。
+        统一走 selection 工厂：claude-code 双接口、opencode/dsh 走适配层，
+        dsh 在配置 DSH_SERVER_URL 时自动切 Web Host server 模式。
         """
-        backend_name = self.backend_name or getattr(settings, "AGENT_BACKEND", "claude-code") or "claude-code"
-        if backend_name == "claude-code":
-            return create_cli_bridge()
-        if backend_name == "opencode":
-            return get_agent_backend(
-                "opencode",
-                server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
-            )
-        if backend_name == "dsh":
-            return get_agent_backend(
-                "dsh",
-                dsh_cli=getattr(settings, "DSH_CLI_PATH", "dsh"),
-            )
-        return get_agent_backend(backend_name)
+        from app.agents.selection import create_agent_backend_by_name
+
+        return create_agent_backend_by_name(self.backend_name)
 
     async def _emit_hook(self, callback: Optional[Callable], *args):
         if not callback:

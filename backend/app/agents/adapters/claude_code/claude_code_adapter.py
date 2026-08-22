@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import re
+import shutil
 from typing import Any, Dict, Optional
 
 from app.agents.contract import (
@@ -18,8 +21,33 @@ from app.agents.contract import (
     TokenUsage,
 )
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
-from app.agents.errors import AgentCancelledError, AgentError, AgentTimeoutError
+from app.agents.errors import AgentCancelledError, AgentError, AgentTimeoutError, SessionForkError
 from app.engine.claude_bridge import SubprocessCliBridge
+
+
+def _claude_project_store_dir(project_path: str) -> str:
+    """Claude Code 以 cwd 派生 project key 存放会话 jsonl。"""
+    override = (
+        str(os.environ.get("CLAUDE_HOME") or "").strip()
+        or str(os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    )
+    home = os.path.abspath(override) if override else os.path.join(os.path.expanduser("~"), ".claude")
+    project_abs = os.path.abspath(project_path or "")
+    project_key = re.sub(r"[^A-Za-z0-9]", "-", project_abs)
+    return os.path.join(home, "projects", project_key)
+
+
+def _locate_session_file(store_dir: str, session_id: str) -> Optional[str]:
+    sid = str(session_id or "").strip()
+    if not sid or not os.path.isdir(store_dir):
+        return None
+    direct = os.path.join(store_dir, f"{sid}.jsonl")
+    if os.path.isfile(direct):
+        return direct
+    for root, _, files in os.walk(store_dir):
+        if f"{sid}.jsonl" in files:
+            return os.path.join(root, f"{sid}.jsonl")
+    return None
 
 
 class ClaudeCodeAdapter(AgentBackend):
@@ -28,6 +56,7 @@ class ClaudeCodeAdapter(AgentBackend):
         supports_resume=True,
         supports_streaming_text=False,
         supports_tool_events=True,
+        supports_fork=True,
         hitl_modes=["turn_based"],
         supports_usage=True,
         skill_layouts=["claude-skills"],
@@ -126,6 +155,41 @@ class ClaudeCodeAdapter(AgentBackend):
         self._last_result_payload = {}
 
     # ── 旧 CliBridgeBase 兼容入口 ──────────────────────────────
+    async def fork_session(
+        self,
+        session_id: str,
+        *,
+        source_dir: str,
+        target_dir: str,
+    ) -> str:
+        """文件级 fork：把 baseline 会话 jsonl 复制到线程工作区的 project store。
+
+        Claude 的会话以 cwd 派生 key 存储，复制单个 `{sid}.jsonl` 到目标 store
+        后，线程在自己的目录里 resume 同一 id，写入只落在线程副本上，
+        baseline 保持只读。找不到单文件时回退为整目录复制。
+        """
+        source_store = _claude_project_store_dir(source_dir)
+        target_store = _claude_project_store_dir(target_dir)
+        if os.path.isdir(target_store) and _locate_session_file(target_store, session_id):
+            return session_id
+
+        source_file = _locate_session_file(source_store, session_id)
+        os.makedirs(os.path.dirname(target_store), exist_ok=True)
+        if source_file:
+            os.makedirs(target_store, exist_ok=True)
+            shutil.copy2(source_file, os.path.join(target_store, f"{session_id}.jsonl"))
+            return session_id
+
+        # 回退：兼容旧版布局（快照嵌套/未按单文件存放）时复制整个 project store
+        if os.path.isdir(source_store):
+            if not os.path.isdir(target_store):
+                shutil.copytree(source_store, target_store, dirs_exist_ok=False)
+            return session_id
+
+        raise SessionForkError(
+            f"Claude session snapshot not found for fork: session={session_id}, store={source_store}"
+        )
+
     async def start_session(
         self,
         prompt: str,

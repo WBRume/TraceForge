@@ -26,10 +26,14 @@ from app.core.distributed_lock import (
 from app.core.logging import bind_task_context, get_logger
 from app.database import SessionLocal
 from app.agents.selection import (
+    backend_supports_fork,
     create_legacy_bridge,
+    fork_session_for_backend,
     normalize_backend_name,
+    probe_session_fork,
     resolve_workspace_backend,
 )
+from app.agents.errors import SessionForkError
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.asset.models.asset import SddAssetThread, SddAssetVersion
 from app.domains.task.models.task import SddTask
@@ -238,22 +242,6 @@ def _resolve_session_context_location(
     session_id: str,
 ) -> Tuple[Optional[str], Optional[str]]:
     return _resolve_claude_context_location(project_path)
-
-
-def _clone_context_to_thread_workspace(
-    source_kind: str,
-    source_dir: str,
-    workspace_dir: str,
-) -> str:
-    if source_kind != "project_store":
-        raise RuntimeError(f"Unsupported CLI runtime context source: {source_kind}")
-
-    target_dir = _claude_project_store_dir(workspace_dir)
-    os.makedirs(os.path.dirname(target_dir), exist_ok=True)
-
-    if not os.path.isdir(target_dir):
-        shutil.copytree(source_dir, target_dir, dirs_exist_ok=False)
-    return os.path.abspath(target_dir)
 
 
 def _serialize_bootstrap(record: SddTaskCliBootstrap) -> Dict[str, Any]:
@@ -678,11 +666,22 @@ async def _run_bootstrap(task_id: str) -> None:
                                     )
                                     await asyncio.sleep(0.5)
 
+                            # Fork 演练：提前暴露「baseline 无法复制给评审线程」的情况，
+                            # 避免到发起讨论时才发现上下文无法复用。
+                            fork_probe_ok = await probe_session_fork(
+                                agent_backend, final_session_id, source_dir=baseline_dir
+                            )
+                            ready_message = (
+                                "Baseline ready"
+                                if fork_probe_ok
+                                else "Baseline ready (session fork unavailable; review threads will re-read the document)"
+                            )
+
                             await _update_bootstrap_state(
                                 task_id,
                                 status=TaskCliBootstrapStatus.READY,
                                 progress=100,
-                                message="Baseline ready",
+                                message=ready_message,
                                 baseline_session_id=final_session_id,
                                 agent_backend=agent_backend,
                                 error_message=None,
@@ -816,55 +815,23 @@ def _prepare_thread_workspace_sync(thread_id: str, *, require_ready: bool = True
         if not baseline_dir or not os.path.isdir(baseline_dir):
             raise BootstrapNotReadyError("Specification baseline workspace is missing")
 
+        baseline_session_id = str(record.baseline_session_id or "").strip()
+        if not baseline_session_id:
+            raise BootstrapNotReadyError("Baseline CLI session id is missing")
+
         workspace_dir = _thread_workspace_dir_for(thread.workspace_id, thread.task_id, thread.id)
         if not os.path.isdir(workspace_dir):
             os.makedirs(workspace_dir, exist_ok=True)
 
         skill_service.materialize_task_skills(db, task.id)
 
-        baseline_session_id = str(record.baseline_session_id or "").strip()
-        if not baseline_session_id:
-            raise BootstrapNotReadyError("Baseline CLI session id is missing")
-
-        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
-            db, thread.workspace_id
-        )
-        # 仅 claude-code 需要把本地 project store 会话快照复制到线程工作区；
-        # opencode 上下文在 server 侧、dsh 无 resume，无需（也无法）复制快照。
-        if agent_backend in ("claude-code", "mock"):
-            source_kind, source_dir = _resolve_session_context_location(baseline_dir, baseline_session_id)
-            if not source_kind or not source_dir:
-                raise BootstrapNotReadyError("Baseline CLI context is missing")
-
-            # Retry: session snapshot may not be immediately flushed to disk (sync context)
-            _snapshot_retries = 0
-            _max_snapshot_retries = 5
-            while not _session_snapshot_exists(source_dir, baseline_session_id):
-                _snapshot_retries += 1
-                if _snapshot_retries >= _max_snapshot_retries:
-                    raise BootstrapNotReadyError("Baseline session snapshot is missing")
-                next_source_kind, next_source_dir = _resolve_session_context_location(
-                    baseline_dir,
-                    baseline_session_id,
-                )
-                if next_source_kind and next_source_dir:
-                    source_kind, source_dir = next_source_kind, next_source_dir
-                logger.warning(
-                    "Session snapshot not found in thread workspace (retry %d/%d): %s",
-                    _snapshot_retries, _max_snapshot_retries, baseline_session_id,
-                )
-                time.sleep(0.5)
-
-            _clone_context_to_thread_workspace(
-                source_kind=source_kind,
-                source_dir=source_dir,
-                workspace_dir=workspace_dir,
-            )
-
-            baseline_local_claude = os.path.join(baseline_dir, ".claude")
-            target_local_claude = os.path.join(workspace_dir, ".claude")
-            if os.path.isdir(baseline_local_claude) and not os.path.isdir(target_local_claude):
-                shutil.copytree(baseline_local_claude, target_local_claude, dirs_exist_ok=False)
+        # 会话上下文的复制（claude project store 快照 / opencode fork API /
+        # dsh 日志重写）统一在 ensure_thread_session 的 fork 步骤完成；
+        # 这里只准备工作区本地输入（skills、baseline .claude、spec 文件）。
+        baseline_local_claude = os.path.join(baseline_dir, ".claude")
+        target_local_claude = os.path.join(workspace_dir, ".claude")
+        if os.path.isdir(baseline_local_claude) and not os.path.isdir(target_local_claude):
+            shutil.copytree(baseline_local_claude, target_local_claude, dirs_exist_ok=False)
 
         _copy_task_skill_context(task_project_path=str(task.project_path or ""), target_dir=workspace_dir)
 
@@ -896,14 +863,118 @@ async def ensure_thread_workspace(thread_id: str, *, require_ready: bool = True)
         raise BootstrapNotReadyError("Thread workspace is being prepared by another request. Please retry later.")
 
 
+def thread_workspace_dir(workspace_id: str, task_id: str, thread_id: str) -> str:
+    return os.path.abspath(_thread_workspace_dir_for(workspace_id, task_id, thread_id))
+
+
+def _load_thread_fork_inputs(
+    db: Session,
+    thread_id: str,
+    *,
+    require_ready: bool = True,
+) -> Tuple[SddAssetThread, SddTaskCliBootstrap]:
+    """在校验线程与 baseline 后返回 (thread, bootstrap record)。"""
+    thread = _load_thread_with_task(db, thread_id)
+    if not thread:
+        raise ValueError("Thread not found")
+    record = mark_running_bootstrap_stale_if_needed(db, thread.task_id)
+    if require_ready:
+        _raise_not_ready(record)
+    if not record:
+        raise BootstrapNotReadyError("Specification baseline is not initialized yet")
+    return thread, record
+
+
+async def ensure_thread_session(thread_id: str, *, require_ready: bool = True) -> Optional[str]:
+    """确保线程有自己的 CLI 会话（由 baseline fork 而来），返回会话 id。
+
+    - 首次调用：准备工作区 + fork baseline 会话 → 持久化到 sdd_asset_threads.cli_session_id
+    - fork 不可用（如 mock / 依赖缺失）：返回 None，线程退化为每轮独立会话
+      （显式降级，绝不直接 resume baseline 会话，避免不同讨论互相污染）
+    """
+    lock = _get_thread_workspace_lock(thread_id)
+    try:
+        async with lock_thread_workspace(thread_id):
+            async with lock:
+                workspace_dir = await asyncio.to_thread(
+                    _prepare_thread_workspace_sync,
+                    thread_id,
+                    require_ready=require_ready,
+                )
+                db = SessionLocal()
+                try:
+                    thread, _record = _load_thread_fork_inputs(
+                        db, thread_id, require_ready=require_ready
+                    )
+                    if thread.cli_session_id:
+                        return str(thread.cli_session_id)
+                finally:
+                    db.close()
+            # fork（IO/网络）放在锁外，避免长时间占用线程工作区锁
+    except LockAcquireTimeout:
+        raise BootstrapNotReadyError("Thread workspace is being prepared by another request. Please retry later.")
+
+    db = SessionLocal()
+    try:
+        thread, record = _load_thread_fork_inputs(db, thread_id, require_ready=require_ready)
+        if thread.cli_session_id:
+            return str(thread.cli_session_id)
+
+        # 存量线程回填：此前成功回合的会话即线程自己的会话
+        latest = get_latest_thread_session_id(db, thread.id)
+        if latest:
+            thread.cli_session_id = latest
+            db.commit()
+            return latest
+
+        baseline_session_id = str(record.baseline_session_id or "").strip()
+        baseline_dir = str(record.baseline_dir or "").strip()
+        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
+            db, thread.workspace_id
+        )
+        if not baseline_session_id or not backend_supports_fork(agent_backend):
+            logger.warning(
+                "Thread {} runs without baseline context reuse (backend={}, fork unsupported)",
+                thread_id,
+                agent_backend,
+            )
+            return None
+
+        try:
+            new_session_id = await fork_session_for_backend(
+                agent_backend,
+                baseline_session_id,
+                source_dir=baseline_dir,
+                target_dir=workspace_dir,
+            )
+        except SessionForkError as exc:
+            if agent_backend in ("claude-code", "mock"):
+                # claude 的快照是我们自己的产物，缺失说明状态损坏，应显式失败
+                raise BootstrapNotReadyError(f"Baseline session fork failed: {exc}")
+            logger.warning(
+                "Thread {} fork failed on backend {}: {} (degraded to fresh sessions)",
+                thread_id,
+                agent_backend,
+                exc,
+            )
+            return None
+
+        thread.cli_session_id = new_session_id
+        db.commit()
+        return new_session_id
+    finally:
+        db.close()
+
+
 async def _prepare_thread_workspace_background(thread_id: str) -> None:
     try:
-        await ensure_thread_workspace(thread_id, require_ready=True)
+        # 预热：准备工作区并提前 fork 线程会话
+        await ensure_thread_session(thread_id, require_ready=True)
     except BootstrapNotReadyError:
         # Baseline not ready yet; this is expected for newly uploaded docs.
         return
     except Exception as exc:
-        logger.warning(f"Failed to pre-fork thread workspace {thread_id}: {exc}")
+        logger.warning(f"Failed to pre-fork thread session {thread_id}: {exc}")
 
 
 def schedule_prepare_thread_workspace(thread_id: str) -> None:

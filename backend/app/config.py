@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     AGENT_BACKEND: str = "claude-code"  # claude-code | opencode | dsh | mock
     OPENCODE_SERVER_URL: str = "http://127.0.0.1:4097"
     DSH_CLI_PATH: str = "dsh"
+    # DSH 会话持久化根（空 = 跟随 dsh 默认 ~/.dsh/sessions）；
+    # 显式配置时子进程写入与 fork 读取都指向该目录树
+    DSH_SESSION_ROOT: str = ""
+    # DSH Web Host 服务地址（`dsh web --no-open --port N` 启动）；配置后 dsh 后端
+    # 走 server 模式（支持 resume / 工具事件 / usage / 多轮），否则回退 headless CLI
+    DSH_SERVER_URL: str = ""
 
     # ── Claude CLI Bridge ──
     SDD_CLI_MODE: str = "real"  # "mock" or "real"

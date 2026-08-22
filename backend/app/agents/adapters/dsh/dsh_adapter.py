@@ -15,6 +15,7 @@ import asyncio
 import locale
 import os
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,8 +26,30 @@ from app.agents.contract import (
     AgentRunRequest,
     AgentRunResult,
 )
-from app.agents.errors import AgentError
+from app.agents.errors import AgentError, SessionForkError
 from app.agents.events import AgentEvent
+from app.agents.adapters.dsh import session_files
+
+
+def dsh_sessions_root() -> str:
+    """解析 DSH 会话持久化根目录。
+
+    - CLI/web profile: $DSH_HOME/sessions（DSH_HOME 缺省 ~/.dsh）
+    - jsonrpc runtime: $DSH_SESSION_ROOT
+    显式 settings/env 优先，保证与运行子进程写入的根一致。
+    """
+    from app.config import settings
+
+    explicit = str(getattr(settings, "DSH_SESSION_ROOT", "") or "").strip()
+    if explicit:
+        return os.path.abspath(explicit)
+    env_root = str(os.environ.get("DSH_SESSION_ROOT") or "").strip()
+    if env_root:
+        return os.path.abspath(env_root)
+    dsh_home = str(os.environ.get("DSH_HOME") or "").strip()
+    if dsh_home:
+        return os.path.join(os.path.abspath(dsh_home), "sessions")
+    return os.path.join(os.path.expanduser("~"), ".dsh", "sessions")
 
 
 def _decode_text(raw: bytes) -> str:
@@ -45,6 +68,7 @@ class DSHAdapter(AgentBackend):
         supports_resume=False,  # headless 单轮 CLI 不恢复会话；SDK 模式可支持
         supports_streaming_text=False,  # CLI 只拿最终 stdout；SDK 模式可支持流式
         supports_tool_events=False,  # CLI 默认不暴露工具事件；SDK 模式可支持
+        supports_fork=True,  # 会话持久化为本地 JSONL，可文件级 fork
         hitl_modes=[],
         supports_usage=False,  # CLI 不返回 usage；SDK 模式可支持
         skill_layouts=["dsh"],
@@ -83,6 +107,15 @@ class DSHAdapter(AgentBackend):
         session_id = request.session_id or f"dsh-cli-{request.run_id or 'run'}"
         env = os.environ.copy()
         env.update(request.env or {})
+        # 统一会话持久化根：CLI profile 写 $DSH_HOME/sessions，jsonrpc runtime 写
+        # $DSH_SESSION_ROOT —— 显式配置时两个变量指到同一棵目录树，保证 fork 能读到。
+        from app.config import settings as _settings
+
+        root = dsh_sessions_root()
+        if str(getattr(_settings, "DSH_SESSION_ROOT", "") or "").strip():
+            env.setdefault("DSH_SESSION_ROOT", root)
+            if os.path.basename(root).lower() == "sessions":
+                env.setdefault("DSH_HOME", os.path.dirname(root))
         if request.model:
             env.setdefault("DSH_MODEL", request.model)
         if request.provider_options.get("base_url"):
@@ -152,6 +185,15 @@ class DSHAdapter(AgentBackend):
                     provider="dsh",
                 ))
 
+            # CLI 不打印真实 session id；从持久化目录按最新写入兜底发现，
+            # 使 baseline 会话可被文件级 fork。
+            discovered = session_files.discover_latest_session(
+                dsh_sessions_root(),
+                str(cwd or os.path.abspath(os.getcwd())),
+            )
+            if discovered:
+                session_id = discovered[0]
+
             await on_event(AgentEvent(
                 type="result",
                 payload={
@@ -192,3 +234,21 @@ class DSHAdapter(AgentBackend):
     async def close(self) -> None:
         self._running = False
         self._run_id = None
+
+    async def fork_session(
+        self,
+        session_id: str,
+        *,
+        source_dir: str,
+        target_dir: str,
+    ) -> str:
+        """文件级 fork：复制会话 JSONL 并重写头部 id/cwd 为线程目录下的新会话。"""
+        new_id = f"session-tf-fork-{uuid.uuid4().hex}"
+        root = dsh_sessions_root()
+        session_files.fork_session_log(
+            root,
+            session_id,
+            new_session_id=new_id,
+            target_cwd=str(target_dir or ""),
+        )
+        return new_id
