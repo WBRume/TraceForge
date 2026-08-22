@@ -19,3 +19,7 @@ class AgentConfigurationError(AgentError):
 
 class AgentProtocolError(AgentError):
     """Agent 协议/事件解析错误。"""
+
+
+class SessionForkError(AgentError):
+    """会话 fork 失败（后端不支持或快照不可用）。"""

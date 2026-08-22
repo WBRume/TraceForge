@@ -241,7 +241,9 @@
       "saving": "保存中…",
       "save_success": "Agent 配置已更新",
       "save_failed": "Agent 配置更新失败",
-      "load_failed": "Agent 配置加载失败"
+      "load_failed": "Agent 配置加载失败",
+      "no_fork_tag": "不支持会话复制",
+      "no_fork_warning": "该引擎不支持复制基线会话：每个评审讨论都会独立新开会话并重新读取需求文档，无法复用基线上下文。"
     }
   },
   "dashboard": {

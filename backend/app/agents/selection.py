@@ -11,6 +11,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
@@ -75,7 +78,20 @@ def normalize_backend_name(name: Optional[str]) -> Optional[str]:
 
 
 def list_agent_backends() -> list[Dict[str, Any]]:
-    return [dict(meta) for meta in AGENT_BACKEND_META.values()]
+    options: list[Dict[str, Any]] = []
+    for meta in AGENT_BACKEND_META.values():
+        item = dict(meta)
+        item["supports_fork"] = backend_supports_fork(meta["value"])
+        if meta["value"] == "dsh" and dsh_server_mode_enabled():
+            # server 模式下 dsh 能力完整（resume / usage / 工具事件）
+            item = {
+                **item,
+                "label": "DSH (Web Host)",
+                "supports_resume": True,
+                "preferred_mode": "server",
+            }
+        options.append(item)
+    return options
 
 
 def resolve_workspace_backend(db: Session, workspace_id: Optional[str]) -> str:
@@ -107,6 +123,33 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
     return resolved
 
 
+def dsh_server_mode_enabled() -> bool:
+    return bool(str(getattr(settings, "DSH_SERVER_URL", "") or "").strip())
+
+
+def create_agent_backend_by_name(backend_name: Optional[str] = None):
+    """按名称创建统一 AgentBackend 实例（engine 路径使用）。
+
+    claude-code 返回双接口 ClaudeCodeAdapter；dsh 在配置 DSH_SERVER_URL 时
+    走 Web Host server 模式（支持 resume/事件/usage），否则 headless CLI。
+    """
+    name = normalize_backend_name(backend_name) or default_backend_name()
+    if name in ("claude-code", "mock"):
+        return create_cli_bridge()
+    if name == "opencode":
+        return get_agent_backend(
+            "opencode",
+            server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
+        )
+    if name == "dsh":
+        if dsh_server_mode_enabled():
+            from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+            return DshServerAdapter(server_url=str(settings.DSH_SERVER_URL).strip())
+        return get_agent_backend("dsh", dsh_cli=getattr(settings, "DSH_CLI_PATH", "dsh"))
+    return get_agent_backend(name)
+
+
 def create_legacy_bridge(backend_name: Optional[str] = None):
     """创建满足旧 CliBridgeBase 鸠尾接口的 bridge。
 
@@ -116,17 +159,7 @@ def create_legacy_bridge(backend_name: Optional[str] = None):
     name = normalize_backend_name(backend_name) or default_backend_name()
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
-    from app.agents.registry import get_agent_backend
-
-    if name == "opencode":
-        backend = get_agent_backend(
-            "opencode",
-            server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
-        )
-    elif name == "dsh":
-        backend = get_agent_backend("dsh", dsh_cli=getattr(settings, "DSH_CLI_PATH", "dsh"))
-    else:
-        backend = get_agent_backend(name)
+    backend = create_agent_backend_by_name(name)
     return LegacyBridgeShim(backend, backend_name=name)
 
 
@@ -261,3 +294,114 @@ class LegacyBridgeShim:
 
     def is_running(self) -> bool:
         return bool(self._run_task and not self._run_task.done())
+
+    async def fork_session(
+        self,
+        session_id: str,
+        *,
+        source_dir: str,
+        target_dir: str,
+    ) -> str:
+        return await self.backend.fork_session(session_id, source_dir=source_dir, target_dir=target_dir)
+
+
+def backend_supports_fork(backend_name: Optional[str] = None) -> bool:
+    """backend 是否声明支持会话 fork（用于前端提示与 baseline 演练）。"""
+    try:
+        bridge = create_legacy_bridge(backend_name)
+    except Exception:
+        return False
+    if isinstance(bridge, LegacyBridgeShim):
+        return bool(getattr(bridge.backend.capabilities, "supports_fork", False))
+    return bool(getattr(bridge, "capabilities", None) is not None and getattr(
+        getattr(bridge, "capabilities"), "supports_fork", False
+    ))
+
+
+async def fork_session_for_backend(
+    backend_name: Optional[str],
+    session_id: str,
+    *,
+    source_dir: str,
+    target_dir: str,
+) -> str:
+    """把 source_dir 下的会话 fork 成 target_dir 下的独立新会话，返回新会话 id。"""
+    from app.agents.errors import SessionForkError
+
+    name = normalize_backend_name(backend_name) or default_backend_name()
+    bridge = create_legacy_bridge(name)
+    fork = getattr(bridge, "fork_session", None)
+    if fork is None:
+        raise SessionForkError(f"agent backend {name!r} does not support session fork")
+    return await fork(session_id, source_dir=source_dir, target_dir=target_dir)
+
+
+async def probe_session_fork(
+    backend_name: Optional[str],
+    session_id: str,
+    *,
+    source_dir: str,
+) -> bool:
+    """baseline 完成后的 fork 演练：尽早暴露不可 fork 的情况，产物随即清理。"""
+    from app.agents.errors import SessionForkError
+
+    name = normalize_backend_name(backend_name) or default_backend_name()
+    if not backend_supports_fork(name):
+        return False
+    try:
+        if name in ("claude-code", "mock"):
+            import tempfile
+
+            from app.agents.adapters.claude_code.claude_code_adapter import _claude_project_store_dir
+
+            with tempfile.TemporaryDirectory(prefix="tf-fork-drill-") as drill_dir:
+                await fork_session_for_backend(
+                    name, session_id, source_dir=source_dir, target_dir=drill_dir
+                )
+                drill_store = _claude_project_store_dir(drill_dir)
+                import shutil
+
+                shutil.rmtree(drill_store, ignore_errors=True)
+            return True
+        if name == "opencode":
+            new_id = await fork_session_for_backend(
+                name,
+                session_id,
+                source_dir=source_dir,
+                target_dir=os.path.abspath(os.path.join(source_dir, ".fork-drill")),
+            )
+            from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+            bridge = create_legacy_bridge(name)
+            adapter = bridge.backend if isinstance(bridge, LegacyBridgeShim) else None
+            if isinstance(adapter, OpenCodeAdapter):
+                deleted = await adapter.delete_session(new_id)
+                if not deleted:
+                    logger.warning(
+                        "opencode fork drill left orphan session {} (delete API unavailable)",
+                        new_id,
+                    )
+            return True
+        if name == "dsh":
+            from app.agents.adapters.dsh import session_files
+            from app.agents.adapters.dsh.dsh_adapter import dsh_sessions_root
+
+            root = dsh_sessions_root()
+            _path, suffix = session_files.locate_session_log(root, session_id)
+            new_id = f"session-tf-drill-{uuid.uuid4().hex}"
+            session_files.fork_session_log(
+                root,
+                session_id,
+                new_session_id=new_id,
+                target_cwd=source_dir,
+            )
+            drill_path, _suffix = session_files.locate_session_log(root, new_id)
+            shutil.rmtree(os.path.dirname(drill_path), ignore_errors=True)
+            return True
+        return False
+    except SessionForkError as exc:
+        logger.warning("session fork probe failed for backend {}: {}", name, exc)
+        return False
+    except Exception as exc:
+        logger.warning("session fork probe errored for backend {}: {}", name, exc)
+        return False

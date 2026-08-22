@@ -1052,13 +1052,19 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 "job_kind": job_kind,
             },
         )
-        thread_workspace_path = await task_cli_state_service.ensure_thread_workspace(
+        # 线程专属会话：首次使用时从 baseline fork（各讨论上下文独立），
+        # 之后一直用线程自己的会话；绝不直接 resume baseline 会话。
+        thread_session_id = await task_cli_state_service.ensure_thread_session(
             thread.id,
             require_ready=True,
         )
-        resume_session_id = task_cli_state_service.get_latest_thread_session_id(db, thread.id)
-        if not resume_session_id:
-            resume_session_id = task_cli_state_service.get_bootstrap_session_id(db, thread.task_id)
+        thread_workspace_path = task_cli_state_service.thread_workspace_dir(
+            thread.workspace_id, thread.task_id, thread.id
+        )
+        resume_session_id = (
+            task_cli_state_service.get_latest_thread_session_id(db, thread.id)
+            or thread_session_id
+        )
         # 线程粘性 backend：最近成功回合 > baseline 固化值 > 工作区配置。
         # baseline 建立后即使工作区切换 agent，线程/baseline 仍沿用原后端保持上下文。
         thread_backend = (

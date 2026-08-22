@@ -8,10 +8,6 @@ import { useAgentBackendSettings } from '@/composables/useAgentBackendSettings'
 const { t } = useI18n()
 const vm = useAgentBackendSettings()
 
-const optionLabel = (value: string) => (
-  vm.options.value.find((option) => option.value === value)?.label || value
-)
-
 const dirty = computed(() => {
   const current = vm.payload.value?.agent_backend || vm.defaultBackend.value
   return vm.selected.value !== current
@@ -61,6 +57,9 @@ const dirty = computed(() => {
                 <span v-if="!option.supports_resume" class="no-resume-tag">
                   {{ t('settings.agent.no_resume_tag') }}
                 </span>
+                <span v-if="option.supports_fork === false" class="no-resume-tag">
+                  {{ t('settings.agent.no_fork_tag') }}
+                </span>
               </div>
               <div class="option-desc">{{ t(`settings.agent.desc_${option.value.replace(/-/g, '_')}`) }}</div>
             </div>
@@ -75,6 +74,11 @@ const dirty = computed(() => {
         <div v-if="!vm.supportsResume.value" class="warning-box mt-4">
           <Info class="w-4 h-4 flex-shrink-0" />
           <span>{{ t('settings.agent.no_resume_warning') }}</span>
+        </div>
+
+        <div v-if="!vm.supportsFork.value" class="warning-box mt-4">
+          <Info class="w-4 h-4 flex-shrink-0" />
+          <span>{{ t('settings.agent.no_fork_warning') }}</span>
         </div>
 
         <div v-if="vm.error.value" class="error-text mt-4">{{ vm.error.value }}</div>
