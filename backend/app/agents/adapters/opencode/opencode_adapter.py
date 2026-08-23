@@ -90,8 +90,14 @@ class OpenCodeAdapter(AgentBackend):
         }
         if request.model:
             body["model"] = {"providerID": "opencode", "modelID": request.model}
+        params: dict[str, str] = {}
+        if request.project_path:
+            # 明确告诉 OpenCode 本次 prompt 所在的工作目录，确保每个任务
+            # 都读取自己任务目录下的文件，而不是服务启动时的目录。
+            params["directory"] = request.project_path
         response = await client.post(
             f"{self.server_url}/session/{session_id}/prompt_async",
+            params=params,
             json=body,
         )
         if response.status_code not in (200, 204):
@@ -361,6 +367,7 @@ class OpenCodeAdapter(AgentBackend):
         seen_types: set[str] = set()
         message_roles: dict[str, str] = {}
         message_agents: dict[str, str] = {}
+        known_model: Optional[str] = None
 
         async with client.stream(
             "GET",
@@ -398,6 +405,24 @@ class OpenCodeAdapter(AgentBackend):
                 if self._text(event_payload.get("sessionID")) != session_id:
                     continue
                 raw_type = self._text(raw_event.get("type"))
+                if raw_type == "session.updated":
+                    info = event_payload.get("info") if isinstance(event_payload.get("info"), dict) else {}
+                    model_ref = info.get("model") if isinstance(info.get("model"), dict) else {}
+                    model_name = self._text(
+                        model_ref.get("id") or model_ref.get("modelID") or info.get("modelID")
+                    )
+                    if model_name and model_name != known_model:
+                        known_model = model_name
+                        await on_event(AgentEvent(
+                            type="session_started",
+                            payload={
+                                "provider_session_id": session_id,
+                                "provider": "opencode",
+                                "model": model_name,
+                                "directory": request.project_path,
+                            },
+                            provider="opencode",
+                        ))
                 if raw_type == "message.updated":
                     info = event_payload.get("info") if isinstance(event_payload.get("info"), dict) else {}
                     mid = self._text(info.get("id"))
