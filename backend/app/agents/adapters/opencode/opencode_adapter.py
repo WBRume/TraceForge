@@ -62,6 +62,14 @@ class OpenCodeAdapter(AgentBackend):
     def _session_url(self, session_id: str, path: str = "") -> str:
         return f"{self.server_url}/api/session/{session_id}{path}"
 
+    async def probe(self) -> str:
+        client = await self._ensure_client()
+        try:
+            response = await client.get(self.server_url + "/")
+        except Exception as exc:
+            raise AgentError(f"OpenCode server unreachable: {exc}") from exc
+        return f"OpenCode server is reachable at {self.server_url} (HTTP {response.status_code})"
+
     async def _create_session(self, request: AgentRunRequest) -> str:
         client = await self._ensure_client()
         body: dict[str, Any] = {}

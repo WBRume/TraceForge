@@ -26,7 +26,6 @@ const newTaskDesc = ref('')
 const newTaskPhenomenon = ref('')
 const newTaskPriority = ref('P2')
 const requirementDuration = ref(8)
-const useBrainstorm = ref(false)
 const creatingTask = ref(false)
 const selectedFileName = ref('')
 const pendingSpecFile = ref<File | null>(null)
@@ -108,7 +107,6 @@ const handleCreateTask = async () => {
       payload.phenomenon = newTaskPhenomenon.value
       payload.priority = newTaskPriority.value
     } else {
-      payload.use_brainstorm = useBrainstorm.value
       payload.requirement_duration_hours = Number(requirementDuration.value)
     }
     const res = await api.post(`/workspaces/${props.wsId}/tasks`, payload)
@@ -159,7 +157,6 @@ const resetForm = () => {
   requirementDuration.value = 8
   pendingSpecFile.value = null
   diagnosisFiles.value = []
-  useBrainstorm.value = false
   selectedFileName.value = ''
   showSkillPanel.value = false
   selectedSkillIds.value = []
@@ -369,13 +366,6 @@ onBeforeUnmount(() => {
                 {{ $t('common.select') }}
               </label>
             </div>
-          </div>
-
-          <div class="form-group checkbox-group py-1">
-            <label class="flex items-center gap-2 cursor-pointer text-sm text-slate-700 select-none">
-              <input v-model="useBrainstorm" type="checkbox" class="w-4 h-4 accent-primary-600 rounded" />
-              {{ $t('dashboard.brainstorm_hint') }}
-            </label>
           </div>
 
           <button

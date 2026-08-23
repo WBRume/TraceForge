@@ -2,6 +2,8 @@
 Workspace API routes.
 """
 
+import asyncio
+import time
 from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -20,6 +22,8 @@ from app.domains.asset.schemas.asset import (
     WorkspaceAgentBackendResponse,
     WorkspaceAgentBackendUpdate,
     WorkspaceCreate,
+    WorkspaceAgentBackendTestRequest,
+    WorkspaceAgentBackendTestResponse,
     WorkspaceMemberAdd,
     WorkspaceMemberListResponse,
     WorkspaceMemberResponse,
@@ -194,6 +198,59 @@ def get_workspace_agent_backends(
         default_agent_backend=default_backend_name(),
         options=list_backends(),
     )
+
+
+@router.post("/{ws_id}/agent-backends/test", response_model=WorkspaceAgentBackendTestResponse)
+async def test_workspace_agent_backend(
+    ws_id: str,
+    data: WorkspaceAgentBackendTestRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_workspace_member(db, ws_id, current_user.id)
+    from app.agents.selection import (
+        SELECTABLE_AGENT_BACKENDS,
+        create_agent_backend_by_name,
+        normalize_backend_name,
+    )
+
+    backend_name = normalize_backend_name(data.backend)
+    if not backend_name or backend_name not in SELECTABLE_AGENT_BACKENDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported agent backend: {data.backend!r}; expected one of {list(SELECTABLE_AGENT_BACKENDS)}",
+        )
+
+    backend = None
+    started = time.monotonic()
+    try:
+        backend = create_agent_backend_by_name(backend_name)
+        probe = getattr(backend, "probe", None)
+        if probe is None:
+            message = f"{backend_name} backend created successfully"
+        else:
+            message = await asyncio.wait_for(probe(), timeout=15)
+        return WorkspaceAgentBackendTestResponse(
+            backend=backend_name,
+            success=True,
+            message=message,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except Exception as exc:
+        return WorkspaceAgentBackendTestResponse(
+            backend=backend_name,
+            success=False,
+            message=str(exc),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    finally:
+        if backend is not None:
+            close = getattr(backend, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    logger.exception("Agent backend close failed during test")
 
 
 @router.put("/{ws_id}/agent-backend", response_model=WorkspaceAgentBackendResponse)

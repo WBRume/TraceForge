@@ -11,7 +11,6 @@ class TaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=300)
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None
-    use_brainstorm: Optional[bool] = False
     requirement_duration_hours: float = 0.0
     skill_ids: List[str] = Field(default_factory=list)
     # 任务类型：DEVELOPMENT 研发态（默认） / DIAGNOSIS 问题定位

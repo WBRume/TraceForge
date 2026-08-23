@@ -91,6 +91,11 @@ class DSHAdapter(AgentBackend):
         self._running = False
         self._run_id: Optional[str] = None
 
+    async def probe(self) -> str:
+        if not shutil.which(self.dsh_cli) and not Path(self.dsh_cli).exists():
+            raise AgentError(f"DSH CLI not found: {self.dsh_cli!r}; install DSH or set dsh_cli")
+        return f"DSH CLI is available: {shutil.which(self.dsh_cli) or self.dsh_cli}"
+
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         cli_path = shutil.which(self.dsh_cli) or self.dsh_cli
         if not shutil.which(self.dsh_cli) and not Path(self.dsh_cli).exists():

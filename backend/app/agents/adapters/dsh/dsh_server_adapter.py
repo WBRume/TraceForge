@@ -162,6 +162,10 @@ class DshServerAdapter(AgentBackend):
         value = result.get("value")
         return value if isinstance(value, dict) else {}
 
+    async def probe(self) -> str:
+        await self._rpc("session.list", {})
+        return f"DSH JSON-RPC server is reachable at {self.server_url}"
+
     async def _create_session(self, request: AgentRunRequest) -> str:
         payload = await self._rpc(
             "session.create",
