@@ -78,6 +78,13 @@ class ClaudeCodeAdapter(AgentBackend):
                     self._last_result_payload.setdefault("session_id", sid)
             await on_event(agent_event)
 
+    async def probe(self) -> str:
+        cli_path = self._bridge._cli_path
+        resolved = shutil.which(cli_path) or cli_path
+        if not shutil.which(cli_path) and not os.path.isfile(cli_path):
+            raise AgentError(f"Claude Code CLI not found: {cli_path!r}")
+        return f"Claude Code CLI is available: {resolved}"
+
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         self._validate_request(request)
         self._cancelled = False

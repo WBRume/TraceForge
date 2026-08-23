@@ -95,6 +95,9 @@ class MockAdapter(AgentBackend):
         finally:
             self._running = False
 
+    async def probe(self) -> str:
+        return "Mock backend is available"
+
     async def interrupt(self, run_id: str | None = None) -> None:
         self._running = False
 

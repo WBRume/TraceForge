@@ -45,9 +45,9 @@ AGENT_BACKEND_META: Dict[str, Dict[str, Any]] = {
     },
     "dsh": {
         "value": "dsh",
-        "label": "DSH CLI",
-        "supports_resume": False,
-        "preferred_mode": "subprocess",
+        "label": "DSH (JSON-RPC)",
+        "supports_resume": True,
+        "preferred_mode": "server",
     },
 }
 
@@ -86,7 +86,7 @@ def list_agent_backends() -> list[Dict[str, Any]]:
             # server 模式下 dsh 能力完整（resume / usage / 工具事件）
             item = {
                 **item,
-                "label": "DSH (Web Host)",
+                "label": "DSH (JSON-RPC)",
                 "supports_resume": True,
                 "preferred_mode": "server",
             }

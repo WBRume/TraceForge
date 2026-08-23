@@ -165,8 +165,6 @@ async def create_task(
     )
 
     desc = data.description or ""
-    if data.use_brainstorm:
-        desc += "\n\nUse `/brainstorm` from superpowers to run requirement and architecture brainstorming first."
 
     try:
         task = task_service.create_task_record_for_provision(

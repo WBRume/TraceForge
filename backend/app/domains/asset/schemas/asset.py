@@ -354,6 +354,17 @@ class WorkspaceAgentBackendUpdate(BaseModel):
     agent_backend: Optional[str] = None
 
 
+class WorkspaceAgentBackendTestRequest(BaseModel):
+    backend: str
+
+
+class WorkspaceAgentBackendTestResponse(BaseModel):
+    backend: str
+    success: bool
+    message: str
+    duration_ms: int = 0
+
+
 class WorkspaceMemberAdd(BaseModel):
     user_email: EmailStr
     role: str = Field(default="DEVELOPER", pattern="^(DEVELOPER|VIEWER)$")

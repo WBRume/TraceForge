@@ -123,6 +123,14 @@ class AgentBackend(ABC):
         """可选：长连接 HITL 模式下回传用户回复。"""
         raise AgentError("HITL response not supported")
 
+    async def probe(self) -> str:
+        """轻量连通性探测：确认 Agent 底座可接入。
+
+        adapter 应尽量提供免实际模型调用的连通性检查；
+        默认未实现时由测试端点给出“后端实例创建成功”的降级结果。
+        """
+        raise AgentError(f"{self.name} backend does not implement probe")
+
     async def fork_session(
         self,
         session_id: str,
