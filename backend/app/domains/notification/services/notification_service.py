@@ -1,5 +1,5 @@
 """
-站内信服务：创建、列表、已读、未读数。
+站内信服务：创建、列表、已读、未读数、删除（消息消费）。
 """
 
 from __future__ import annotations
@@ -123,3 +123,37 @@ def mark_all_read(db: Session, user_id: str) -> int:
     if updated:
         db.commit()
     return updated
+
+
+def delete_notification(db: Session, user_id: str, notification_id: str) -> Optional[bool]:
+    """删除单条通知。返回被删通知此前是否未读（调用方据此修正未读数）；通知不存在返回 None。"""
+    row = (
+        db.query(SddUserNotification)
+        .filter(
+            SddUserNotification.id == notification_id,
+            SddUserNotification.recipient_user_id == user_id,
+        )
+        .first()
+    )
+    if not row:
+        return None
+    was_unread = row.read_at is None
+    db.delete(row)
+    db.commit()
+    return was_unread
+
+
+def delete_all_notifications(db: Session, user_id: str) -> tuple[int, int]:
+    """清空用户全部通知。返回 (删除总数, 其中未读条数)。"""
+    rows = (
+        db.query(SddUserNotification)
+        .filter(SddUserNotification.recipient_user_id == user_id)
+        .all()
+    )
+    total = len(rows)
+    unread = sum(1 for row in rows if row.read_at is None)
+    if total:
+        for row in rows:
+            db.delete(row)
+        db.commit()
+    return total, unread

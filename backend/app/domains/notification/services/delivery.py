@@ -12,6 +12,7 @@ from app.core.logging import get_logger
 from app.config import settings
 from app.domains.notification.providers.base import build_configured_providers
 from app.domains.notification.services import notification_service
+from app.domains.notification.types import is_registered
 from app.domains.notification.ws.notification_manager import notification_ws_manager
 
 logger = get_logger(__name__, category="task_execution")
@@ -37,6 +38,9 @@ async def dispatch_notifications(
     payload_json: dict | None = None,
     workspace_id: str | None = None,
 ) -> list[dict]:
+    # 新通知来源需在 notification/types.py 注册；未注册仍投递，但留下告警便于排查遗漏
+    if not is_registered(type):
+        logger.warning(f"Dispatching unregistered notification type '{type}' — register it in app.domains.notification.types")
     created = notification_service.create_notifications(
         db,
         recipient_user_ids,
