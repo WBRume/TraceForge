@@ -536,45 +536,50 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                                 )
                             except pre_input_service.PreInputError as exc:
                                 error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_contribute":
+                        elif msg_type == "pre_input_edit_document":
                             pre_input = pre_input_service.get_active_pre_input(db, task_id)
                             if not pre_input:
                                 error_payload = {"action": msg_type, "message": "No collecting pre input"}
                             else:
                                 try:
-                                    await pre_input_service.upsert_contribution(
+                                    await pre_input_service.edit_pre_input_document(
                                         db,
                                         pre_input=pre_input,
                                         user_id=user_id,
-                                        content=str(payload.get("content") or ""),
+                                        is_expert=user_is_expert,
+                                        new_text=str(payload.get("text") or ""),
                                     )
                                 except pre_input_service.PreInputError as exc:
                                     error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_edit":
+                        elif msg_type == "pre_input_replace_span":
                             pre_input = pre_input_service.get_active_pre_input(db, task_id)
                             if not pre_input:
                                 error_payload = {"action": msg_type, "message": "No collecting pre input"}
                             else:
                                 try:
-                                    if payload.get("main_text") is not None:
-                                        await pre_input_service.edit_main_text(
-                                            db,
-                                            pre_input=pre_input,
-                                            actor_user_id=user_id,
-                                            actor_is_expert=user_is_expert,
-                                            main_text=str(payload.get("main_text") or ""),
-                                        )
-                                    elif payload.get("target_user_id"):
-                                        await pre_input_service.edit_contribution(
-                                            db,
-                                            pre_input=pre_input,
-                                            actor_user_id=user_id,
-                                            actor_is_expert=user_is_expert,
-                                            target_user_id=str(payload.get("target_user_id")),
-                                            content=str(payload.get("content") or ""),
-                                        )
-                                    else:
-                                        error_payload = {"action": msg_type, "message": "Nothing to edit"}
+                                    await pre_input_service.replace_pre_input_span(
+                                        db,
+                                        pre_input=pre_input,
+                                        user_id=user_id,
+                                        is_expert=user_is_expert,
+                                        start=int(payload.get("start") or 0),
+                                        end=int(payload.get("end") or 0),
+                                        anchor_text=str(payload.get("anchor_text") or ""),
+                                        replacement=str(payload.get("replacement") or ""),
+                                    )
+                                except pre_input_service.PreInputError as exc:
+                                    error_payload = {"action": msg_type, "message": exc.message}
+                        elif msg_type == "pre_input_mark_done":
+                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
+                            if not pre_input:
+                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
+                            else:
+                                try:
+                                    await pre_input_service.mark_pre_input_done(
+                                        db,
+                                        pre_input=pre_input,
+                                        user_id=user_id,
+                                    )
                                 except pre_input_service.PreInputError as exc:
                                     error_payload = {"action": msg_type, "message": exc.message}
                         elif msg_type == "pre_input_submit":

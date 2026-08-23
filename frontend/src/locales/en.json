@@ -3078,11 +3078,11 @@
     }
   },
   "preInput": {
-    "toggle_title": "Start collaborative pre-input: @members to collect inputs, auto-merge and submit on deadline",
+    "toggle_title": "Start collaborative pre-input: {'@'}members to collect inputs, auto-merge and submit on deadline",
     "mention_no_results": "No matching members",
     "edit_permission_label": "Edit permission",
     "permission_all": "Anyone can edit",
-    "permission_mentioned": "@mentioned can edit",
+    "permission_mentioned": "{'@'}mentioned can edit",
     "permission_experts": "Workspace experts can edit",
     "permission_none": "Not editable",
     "wait_duration_label": "Wait duration",
@@ -3092,10 +3092,7 @@
     "submitted_toast": "Collaborative pre-input merged and submitted",
     "panel_title": "Pre-input collecting",
     "member_status_label": "Member input status",
-    "no_mentions_hint": "No @mentions: submit happens on deadline or manually by the initiator",
-    "my_input_placeholder": "Type my input…",
-    "submit_my_input": "Submit my input",
-    "update_my_input": "Update my input",
+    "no_mentions_hint": "No {'@'}mentions: submit happens on deadline or manually by the initiator",
     "cancel_collect": "Cancel collecting",
     "submit_now": "Submit now",
     "errors": {
@@ -3106,8 +3103,20 @@
     "volunteer_hint": "Joined voluntarily without being mentioned",
     "mention_field_label": "Mention members",
     "mention_search_placeholder": "Search members",
-    "my_input_saved": "Submitted",
-    "toggle_label": "Collab"
+    "toggle_label": "Collab",
+    "edit_document": "Edit document",
+    "doc_edit_hint": "Anyone can insert new lines; modifying or deleting existing content requires edit permission",
+    "mark_done": "Nothing to add, mark done",
+    "participated": "Participated",
+    "modified_by": "edited by {name}",
+    "edit_no_permission_hint": "You can only insert new text; modifying or deleting existing content is not allowed",
+    "edit_violation": "Your draft modifies or deletes existing text, which requires permission you don't have; restore it before saving",
+    "edit_full_text": "Edit all",
+    "span_select_hint": "Select any text to submit your input; authors are marked by colored underlines, dashed = modified (hover for details)",
+    "span_replace_placeholder": "Type text to replace the selection…",
+    "span_insert_placeholder": "Type new text to insert before the selection…",
+    "span_insert_only_hint": "You don't have modify permission; this will be inserted as new text",
+    "span_submit": "Submit input"
   },
   "notification": {
     "title": "Notifications",

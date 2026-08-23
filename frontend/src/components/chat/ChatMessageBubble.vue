@@ -51,11 +51,39 @@ const collabParticipants = computed(() => {
   return Array.isArray(participants) ? participants : []
 })
 const isCollabPreInput = computed(() => collabParticipants.value.length > 0)
+// 共享文档字符级 segment（原作者 + 修改者）；兼容旧消息的 lines 与旧版 segments
 const collabSegments = computed(() => {
   if (!isCollabPreInput.value) return []
   const segments = metadata.value?.segments
-  return (Array.isArray(segments) ? segments : []).filter((s: any) => String(s?.content || '').trim())
+  if (Array.isArray(segments) && segments.length > 0) {
+    return segments.map((s: any) => ({
+      created_by: String(s?.created_by ?? s?.user_id ?? ''),
+      created_by_name: String(s?.created_by_name ?? s?.display_name ?? ''),
+      updated_by: String(s?.updated_by ?? s?.created_by ?? s?.user_id ?? ''),
+      updated_by_name: String(s?.updated_by_name ?? s?.created_by_name ?? s?.display_name ?? ''),
+      modified: Boolean(s?.modified),
+      text: String(s?.text ?? s?.content ?? ''),
+    }))
+  }
+  const lines = metadata.value?.lines
+  if (Array.isArray(lines) && lines.length > 0) {
+    return lines.map((l: any) => ({
+      created_by: String(l?.created_by ?? l?.user_id ?? ''),
+      created_by_name: String(l?.created_by_name ?? l?.display_name ?? ''),
+      updated_by: String(l?.updated_by ?? l?.user_id ?? ''),
+      updated_by_name: String(l?.updated_by_name ?? l?.display_name ?? ''),
+      modified: Boolean(l?.modified),
+      text: `${String(l?.text ?? '')}\n`,
+    }))
+  }
+  return []
 })
+
+const segmentTitle = (seg: any) => (
+  seg.modified
+    ? `${seg.created_by_name}（${seg.updated_by_name} 修改）`
+    : String(seg.created_by_name || '')
+)
 
 // 头像内联在“时间+姓名”元信息行内：他人消息行首、本人/协作消息行尾；assistant 用原小图标
 const showLeadingAvatar = computed(() => (
@@ -170,23 +198,20 @@ function openDiagnosisCase(caseId: string) {
       />
 
       <div v-else class="message-bubble">
-        <!-- 协作预输入：结构化分段渲染（作者标签 + 内容），不用文本前缀区分用户 -->
-        <template v-if="isCollabPreInput && collabSegments.length > 0">
-          <div
-            v-for="(segment, index) in collabSegments"
-            :key="`${segment.user_id}-${index}`"
-            class="collab-segment"
-          >
-            <div class="collab-segment-author">
-              <span
-                class="collab-segment-name"
-                :style="{ color: vm.memberColorFor(segment.user_id) }"
-              >{{ segment.display_name }}</span>
-              <span v-if="segment.is_expert" class="message-pm-badge">PM</span>
-            </div>
-            <div class="collab-segment-content">{{ segment.content }}</div>
-          </div>
-        </template>
+        <!-- 协作预输入：字符级归属渲染（作者色下划线，悬停可见原作者/修改者） -->
+        <div v-if="isCollabPreInput && collabSegments.length > 0" class="collab-doc">
+          <span
+            v-for="(seg, index) in collabSegments"
+            :key="index"
+            class="collab-seg"
+            :class="{ 'is-modified': seg.modified }"
+            :style="{
+              '--seg-color': vm.memberColorFor(seg.created_by),
+              '--seg-modifier-color': vm.memberColorFor(seg.updated_by),
+            }"
+            :title="segmentTitle(seg)"
+          >{{ seg.text }}</span>
+        </div>
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
 
@@ -437,31 +462,24 @@ function openDiagnosisCase(caseId: string) {
   min-width: 220px;
 }
 
-.collab-segment + .collab-segment {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed #E2E8F0;
-}
-
-.collab-segment-author {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 3px;
-}
-
-.collab-segment-name {
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-
-.collab-segment-content {
+/* 协作文档：字符级归属，作者色下划线 + 被改段虚线 */
+.collab-doc {
   font-size: 0.9rem;
-  line-height: 1.6;
+  line-height: 1.8;
   color: #1f2937;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.collab-seg {
+  border-bottom: 2px solid color-mix(in srgb, var(--seg-color, #0284C7) 45%, transparent);
+  border-radius: 1px;
+}
+
+.collab-seg.is-modified {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--seg-modifier-color, #0284C7);
 }
 
 .msg-content {
