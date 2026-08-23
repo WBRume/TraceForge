@@ -228,6 +228,213 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 time=_iso_time(),
             ))
         # finish=tool-calls 只是步骤结束，等待后续文本/结果步骤
+    elif event_type == "session.next.step.failed":
+        usage = _extract_usage(data)
+        if usage:
+            events.append(AgentEvent(
+                type="usage",
+                payload=usage,
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            ))
+        error = data.get("error")
+        if isinstance(error, dict):
+            error_message = _text(error.get("message") or error.get("name") or error)
+        else:
+            error_message = _text(error)
+        events.append(AgentEvent(
+            type="error",
+            payload={
+                "success": False,
+                "result": error_message or "OpenCode step failed",
+                "finish_reason": "error",
+                "session_id": session_id,
+                "usage": usage or {},
+                "cost_usd": data.get("cost"),
+            },
+            provider=PROVIDER,
+            raw=event,
+            time=_iso_time(),
+        ))
+    elif event_type == "session.error":
+        error = data.get("error")
+        if isinstance(error, dict):
+            error_message = _text(error.get("message") or error.get("name") or error)
+        else:
+            error_message = _text(error)
+        events.append(AgentEvent(
+            type="error",
+            payload={
+                "success": False,
+                "result": error_message or "OpenCode session error",
+                "finish_reason": "error",
+                "session_id": session_id,
+            },
+            provider=PROVIDER,
+            raw=event,
+            time=_iso_time(),
+        ))
+    elif event_type == "message.part.updated":
+        part = data.get("part") if isinstance(data.get("part"), dict) else {}
+        part_type = _text(part.get("type"))
+        if part_type == "text":
+            text = _text(part.get("text"))
+            if text:
+                events.append(AgentEvent(
+                    type="text",
+                    payload={"text": text},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+        elif part_type == "reasoning":
+            text = _text(part.get("text"))
+            if text:
+                events.append(AgentEvent(
+                    type="thinking",
+                    payload={"text": text},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+        elif part_type == "tool":
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            status = _text(state.get("status"))
+            tool_use_id = _text(part.get("callID") or part.get("id"))
+            tool_name = _text(part.get("tool") or part.get("name")) or "unknown"
+            tool_input = state.get("input", {}) if isinstance(state, dict) else {}
+            if status in ("pending", "running", ""):
+                events.append(AgentEvent(
+                    type="tool_use",
+                    payload={
+                        "tool_use_id": tool_use_id,
+                        "tool_name": tool_name,
+                        "tool_input": tool_input,
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+            if status in ("completed", "error"):
+                output = _tool_output_text(state)
+                if status == "error":
+                    error = state.get("error")
+                    if isinstance(error, dict):
+                        error_text = _text(error.get("message") or error.get("name") or error)
+                    else:
+                        error_text = _text(error)
+                    output = f"{output}\n{error_text}".strip()
+                events.append(AgentEvent(
+                    type="tool_result",
+                    payload={
+                        "tool_use_id": tool_use_id,
+                        "output": output,
+                        "is_error": status == "error",
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+        elif part_type == "step-finish":
+            usage = _extract_usage({"tokens": part.get("tokens")}) if isinstance(part.get("tokens"), dict) else None
+            if usage:
+                events.append(AgentEvent(
+                    type="usage",
+                    payload=usage,
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+            reason = _text(part.get("reason"))
+            normalized_finish = _normalize_finish_reason(reason)
+            if normalized_finish:
+                is_error = normalized_finish == "error"
+                events.append(AgentEvent(
+                    type="error" if is_error else "result",
+                    payload={
+                        "success": not is_error,
+                        "result": "",
+                        "finish_reason": normalized_finish,
+                        "session_id": session_id,
+                        "usage": usage or {},
+                        "cost_usd": part.get("cost"),
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+    elif event_type == "message.part.delta":
+        delta = _text(data.get("delta"))
+        field = _text(data.get("field"))
+        if delta:
+            if field in ("reasoning", "thinking"):
+                events.append(AgentEvent(
+                    type="thinking",
+                    payload={"text": delta},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+            else:
+                events.append(AgentEvent(
+                    type="text_delta",
+                    payload={"delta": delta, "text": delta},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+    elif event_type == "session.updated":
+        info = data.get("info") if isinstance(data.get("info"), dict) else {}
+        tokens = info.get("tokens") if isinstance(info.get("tokens"), dict) else None
+        usage = _extract_usage({"tokens": tokens}) if tokens else None
+        if usage:
+            events.append(AgentEvent(
+                type="usage",
+                payload=usage,
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            ))
+    elif event_type == "message.updated":
+        info = data.get("info") if isinstance(data.get("info"), dict) else {}
+        role = _text(info.get("role"))
+        if role == "assistant":
+            finish = _text(info.get("finish"))
+            normalized_finish = _normalize_finish_reason(finish)
+            if normalized_finish:
+                usage = _extract_usage({"tokens": info.get("tokens")}) if isinstance(info.get("tokens"), dict) else None
+                if usage:
+                    events.append(AgentEvent(
+                        type="usage",
+                        payload=usage,
+                        provider=PROVIDER,
+                        raw=event,
+                        time=_iso_time(),
+                    ))
+                is_error = normalized_finish == "error"
+                events.append(AgentEvent(
+                    type="error" if is_error else "result",
+                    payload={
+                        "success": not is_error,
+                        "result": "",
+                        "finish_reason": normalized_finish,
+                        "session_id": session_id,
+                        "usage": usage or {},
+                        "cost_usd": info.get("cost"),
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
+            else:
+                events.append(AgentEvent(
+                    type="log",
+                    payload={"level": "debug", "message": f"[opencode:message.updated] assistant message {info.get('id')}"},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                ))
     elif event_type in ("permission.v2.asked", "permission.asked"):
         events.append(AgentEvent(
             type="ask_user",
