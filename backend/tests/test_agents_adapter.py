@@ -188,6 +188,21 @@ class OpenCodeEventMapperTest(unittest.TestCase):
         self.assertEqual(ask.payload["ask_user_id"], "per-1")
         self.assertTrue(ask.payload["permission_request"])
 
+    def test_maps_step_failed_to_error(self):
+        events = map_opencode_event({
+            "type": "session.next.step.failed",
+            "data": {
+                "sessionID": "ses-1",
+                "error": {"message": "boom"},
+                "cost": 0,
+                "tokens": {"input": 1, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+            },
+        })
+        self.assertTrue(any(e.type == "error" for e in events))
+        error = next(e for e in events if e.type == "error")
+        self.assertEqual(error.payload["finish_reason"], "error")
+        self.assertIn("boom", error.payload["result"])
+
 
 class OpenCodeEventMapperFixtureTest(unittest.TestCase):
     def test_server_events_fixture(self):
@@ -385,6 +400,80 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("session_started", types)
         self.assertIn("text", types)
         self.assertEqual(types.count("result"), 1)
+
+
+class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
+    """验证 SSE 缺失时从最终 message 补齐 thinking/tool/usage。"""
+
+    class _FakeClient:
+        def __init__(self):
+            self.aclose = AsyncMock(return_value=None)
+
+        async def post(self, url: str, json: dict | None = None, **kwargs):
+            if url.endswith("/api/session"):
+                return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "ses_test"}})
+            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "msg_test"}})
+
+        async def get(self, url: str, params: dict | None = None, **kwargs):
+            if url.endswith("/message"):
+                return OpenCodeAdapterRunTest._FakeResponse(200, {"data": [{
+                    "type": "assistant",
+                    "content": [
+                        {"type": "text", "text": "done"},
+                        {"type": "reasoning", "text": "thinking here"},
+                        {"type": "tool", "id": "call-1", "name": "read", "state": {
+                            "status": "completed",
+                            "input": {"path": "a"},
+                            "structured": {"entries": [{"path": "a"}]},
+                            "content": [{"type": "text", "text": "file content"}],
+                        }},
+                    ],
+                    "finish": "stop",
+                    "cost": 0,
+                    "tokens": {"input": 10, "output": 2, "reasoning": 3, "cache": {"read": 0, "write": 0}},
+                }]})
+            return OpenCodeAdapterRunTest._FakeResponse(200, {})
+
+        def stream(self, method: str, url: str, **kwargs):
+            # 只回放终态 step.ended，不提供 reasoning/tool SSE，验证 fallback
+            return OpenCodeAdapterRunTest._FakeStream([
+                'data: {"id":"e2","type":"session.next.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":0,"write":0}}}}',
+            ])
+
+    async def test_run_falls_back_to_final_message_for_missing_events(self):
+        import app.agents.adapters.opencode.opencode_adapter as opencode_mod
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+        events: list[AgentEvent] = []
+        fake_client = self._FakeClient()
+
+        async def sink(event: AgentEvent) -> None:
+            events.append(event)
+
+        adapter = OpenCodeAdapter(server_url="http://127.0.0.1:9999")
+        with patch.object(opencode_mod.OpenCodeAdapter, "_ensure_client", new=AsyncMock(return_value=fake_client)):
+            result = await adapter.run(
+                AgentRunRequest(
+                    run_id="oc-fallback",
+                    prompt="hi",
+                    project_path=r"D:\project\TraceForge",
+                ),
+                sink,
+            )
+            await adapter.close()
+
+        types = [e.type for e in events]
+        self.assertIn("thinking", types)
+        self.assertIn("tool_use", types)
+        self.assertIn("tool_result", types)
+        self.assertIn("usage", types)
+        self.assertEqual(result.result_text, "done")
+        thinking = next(e for e in events if e.type == "thinking")
+        self.assertEqual(thinking.payload["text"], "thinking here")
+        tool_result = next(e for e in events if e.type == "tool_result")
+        self.assertIn("file content", tool_result.payload["output"])
+        usage = next(e for e in events if e.type == "usage")
+        self.assertEqual(usage.payload["input_tokens"], 10)
 
 
 class RegistryTest(unittest.TestCase):
