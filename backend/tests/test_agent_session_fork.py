@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -185,6 +186,117 @@ class DshAdapterForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
         self.assertTrue(os.path.isfile(forked[0]))
 
 
+class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
+    """bridge 层 --fork-session 参数构造与新 session id 捕获。"""
+
+    async def test_start_session_appends_fork_flag_and_captures_new_sid(self):
+        import asyncio as aio
+
+        from app.engine.claude_bridge import SubprocessCliBridge
+
+        ndjson = "\n".join([
+            json.dumps({"type": "system", "subtype": "init", "session_id": "forked-new-1"}),
+            json.dumps({
+                "type": "result", "subtype": "success",
+                "result": "ok", "session_id": "forked-new-1",
+            }),
+        ]).encode("utf-8") + b"\n"
+
+        class FakeStdout:
+            def __init__(self, data: bytes):
+                self._data = data
+
+            async def read(self, _n: int = -1) -> bytes:
+                data, self._data = self._data, b""
+                return data
+
+        class FakeStderr(FakeStdout):
+            async def read(self, _n: int = -1) -> bytes:
+                return b""
+
+        class FakeProcess:
+            pid = 4242
+            returncode = 0
+            stdout = FakeStdout(ndjson)
+            stderr = FakeStderr(b"")
+
+            async def wait(self) -> int:
+                return 0
+
+        captured: dict = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"] = list(args)
+            return FakeProcess()
+
+        bridge = SubprocessCliBridge(cli_path="claude")
+        with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
+             mock.patch.object(bridge, "_open_session_trace", lambda **kw: None), \
+             mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
+            events: list[dict] = []
+
+            async def on_event(event: dict) -> None:
+                events.append(event)
+
+            returned = await bridge.start_session(
+                prompt="hi",
+                project_path=os.getcwd(),
+                event_callback=on_event,
+                session_id="baseline-sid",
+                fork_session=True,
+            )
+            await bridge.wait()
+
+        args = captured["args"]
+        self.assertIn("--resume", args)
+        self.assertEqual(args[args.index("--resume") + 1], "baseline-sid")
+        self.assertIn("--fork-session", args)
+        # 返回的是 resume 传入 id；真实新 id 由 system/init 事件更新
+        self.assertEqual(returned, "baseline-sid")
+        self.assertEqual(bridge.session_id, "forked-new-1")
+        self.assertTrue(any(e.get("type") == "system" and e.get("subtype") == "init" for e in events))
+
+    async def test_start_session_without_fork_omits_flag(self):
+        from app.engine.claude_bridge import SubprocessCliBridge
+
+        class FakeStdout:
+            async def read(self, _n: int = -1) -> bytes:
+                return b""
+
+        class FakeProcess:
+            pid = 1
+            returncode = 0
+            stdout = FakeStdout()
+            stderr = FakeStdout()
+
+            async def wait(self) -> int:
+                return 0
+
+        captured: dict = {}
+
+        async def fake_exec(*args, **kwargs):
+            captured["args"] = list(args)
+            return FakeProcess()
+
+        bridge = SubprocessCliBridge(cli_path="claude")
+        with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
+             mock.patch.object(bridge, "_open_session_trace", lambda **kw: None), \
+             mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
+            async def on_event(event: dict) -> None:
+                return None
+
+            await bridge.start_session(
+                prompt="hi",
+                project_path=os.getcwd(),
+                event_callback=on_event,
+                session_id="sid-x",
+                fork_session=False,
+            )
+            await bridge.wait()
+
+        self.assertNotIn("--fork-session", captured["args"])
+
+
 class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
     async def test_fork_uses_v1_route_then_moves_session(self):
         from httpx import AsyncClient, MockTransport, Response
@@ -215,6 +327,28 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
         move_body = next(body for path, body in calls if "move-session" in path)
         self.assertEqual(move_body["sessionID"], "fork-9")
         self.assertEqual(move_body["destination"]["directory"], os.path.abspath("C:/t"))
+        await adapter._client.aclose()
+
+    async def test_fork_same_source_and_target_skips_move(self):
+        from httpx import AsyncClient, MockTransport, Response
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+        adapter = OpenCodeAdapter(server_url="http://mock:4097")
+        calls: list[str] = []
+
+        def handler(request) -> Response:
+            calls.append(f"{request.method} {request.url.path}")
+            if request.url.path == "/session/base-1/fork":
+                return Response(200, json={"id": "fork-same"})
+            return Response(404, json={})
+
+        adapter._client = AsyncClient(transport=MockTransport(handler))
+        same_dir = os.path.abspath("C:/task")
+        new_id = await adapter.fork_session(
+            "base-1", source_dir=same_dir, target_dir=same_dir
+        )
+        self.assertEqual(new_id, "fork-same")
+        self.assertEqual(calls, ["POST /session/base-1/fork"])
         await adapter._client.aclose()
 
     async def test_fork_falls_back_to_v2_routes(self):
@@ -349,6 +483,13 @@ class SelectionForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
 
         ok = await probe_session_fork("mock", "s", source_dir="C:/nowhere")
         self.assertFalse(ok)
+
+
+def test_selection_creates_opencode_backend():
+    from app.agents.selection import create_agent_backend_by_name
+
+    backend = create_agent_backend_by_name("opencode")
+    assert backend.name == "opencode"
 
 
 if __name__ == "__main__":
