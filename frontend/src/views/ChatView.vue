@@ -33,7 +33,6 @@ import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
 import SuperpowersDocsPanel from '@/components/chat/SuperpowersDocsPanel.vue'
 import ChatExecutionInput from '@/components/chat/ChatExecutionInput.vue'
-import PreInputComposer from '@/components/chat/PreInputComposer.vue'
 import PreInputPanel from '@/components/chat/PreInputPanel.vue'
 import ChatCliWorkbench from '@/components/chat/terminal/ChatCliWorkbench.vue'
 import TaskSkillsDrawer from '@/components/chat/TaskSkillsDrawer.vue'
@@ -49,7 +48,22 @@ import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagno
 const rawVm = useChatViewModel()
 const vm = proxyRefs(rawVm)
 const showApplyPatchDrawer = ref(false)
-const preInputComposerVisible = ref(false)
+const preInputMode = ref(false)
+const chatInputRef = ref<any>(null)
+
+const handleStartPreInput = (payload: {
+  main_text: string
+  mentioned_user_ids: string[]
+  edit_permission: 'ALL' | 'MENTIONED' | 'EXPERTS' | 'NONE'
+  wait_seconds: number
+}) => {
+  const ok = rawVm.startPreInput(payload)
+  if (ok) {
+    preInputMode.value = false
+    vm.chatInput = ''
+    chatInputRef.value?.resetPreInputForm?.()
+  }
+}
 
 // 问题定位任务：诊断文档 / 代码路径抽屉数据（复用 spec 抽屉三段式容器）
 const diagDocsModel = useDiagnosisDocs({
@@ -86,11 +100,11 @@ watch(
   },
 )
 
-// 切换任务会话时收起预输入发起表单
+// 切换任务会话时退出协作预输入模式
 watch(
   () => vm.currentTask?.id,
   () => {
-    preInputComposerVisible.value = false
+    preInputMode.value = false
   },
 )
 
@@ -504,16 +518,11 @@ const statusModelText = (card: any): string => {
         :vm="vm"
       />
 
-      <!-- 协作预输入：发起表单 -->
-      <PreInputComposer
-        v-if="preInputComposerVisible && !vm.activePreInput"
-        :vm="vm"
-        @close="preInputComposerVisible = false"
-      />
-
-      <!-- Input Area -->
+      <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换） -->
       <ChatExecutionInput
+        ref="chatInputRef"
         v-model="vm.chatInput"
+        v-model:pre-input-mode="preInputMode"
         :disabled="vm.isChatLocked || vm.sendingChat"
         :running="vm.engineRunning"
         :can-interrupt="vm.canTemporarilyInterrupt"
@@ -521,10 +530,11 @@ const statusModelText = (card: any): string => {
         :placeholder="vm.chatInputPlaceholder"
         :send-title="$t('chat.send_message')"
         :interrupt-title="$t('chat.temporary_interrupt_desc')"
-        :can-start-pre-input="!vm.activePreInput && !preInputComposerVisible"
+        :can-start-pre-input="!vm.activePreInput"
+        :search-members="vm.searchPreInputMembers"
         @submit="vm.sendChat"
         @interrupt="vm.interruptCurrentRun"
-        @pre-input="preInputComposerVisible = true"
+        @start-pre-input="handleStartPreInput"
       />
       </template>
       <template v-else>
