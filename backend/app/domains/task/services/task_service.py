@@ -8,11 +8,11 @@ from typing import Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import case, func as sqlfunc
+from sqlalchemy import func as sqlfunc
 
 from app.core.logging import bind_task_context, get_logger
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.log import SddExecutionLog, LogType
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, generate_uuid
@@ -53,6 +53,158 @@ def _build_task_project_path(base_path: str, task_id: str, task_name: str) -> st
     return project_path
 
 
+def _workspace_base_repo_dir(workspace_project_path: str, repo_slug: str) -> str:
+    return os.path.join(str(workspace_project_path or "").strip(), repo_slug)
+
+
+def snapshot_workspace_repositories_into_task(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+) -> List:
+    """Snapshot workspace repository bindings into sdd_task_repositories."""
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+    from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
+
+    ws_repos = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == workspace.id)
+        .order_by(SddWorkspaceRepository.created_at.asc())
+        .all()
+    )
+    bindings: List = []
+    for ws_repo in ws_repos:
+        binding = SddTaskRepository(
+            task_id=task.id,
+            repository_id=ws_repo.repository_id,
+            repo_url=ws_repo.repo_url,
+            repo_name=ws_repo.repo_name,
+            repo_slug=ws_repo.repo_slug,
+            branch_name=ws_repo.branch_name,
+            rel_path=ws_repo.repo_slug,
+            state=TaskRepositoryState.PENDING,
+        )
+        db.add(binding)
+        bindings.append(binding)
+    return bindings
+
+
+def build_task_worktree_bindings(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+) -> List:
+    """Map task repository bindings to worktree orchestration bindings."""
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
+    ws_repos = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == workspace.id)
+        .all()
+    )
+    ws_by_id = {row.repository_id: row for row in ws_repos}
+    bindings: List = []
+    for repo in task.repo_bindings:
+        ws_repo = ws_by_id.get(repo.repository_id)
+        base_dir = (
+            ws_repo.base_dir
+            if ws_repo and ws_repo.base_dir
+            else _workspace_base_repo_dir(workspace.project_path or "", repo.repo_slug)
+        )
+        bindings.append(
+            git_worktree_service.RepoWorktreeBinding(
+                repo_url=repo.repo_url,
+                repo_name=repo.repo_name,
+                repo_slug=repo.repo_slug,
+                branch_name=repo.branch_name,
+                base_dir=base_dir,
+            )
+        )
+    return bindings
+
+
+def prepare_task_repositories(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+    task_repos: List,
+) -> None:
+    """Create worktrees for every repository binding and mark them READY."""
+    from app.domains.task.models.task_repository import TaskRepositoryState
+
+    bindings = build_task_worktree_bindings(db, workspace, task)
+    git_worktree_service.create_task_worktrees(
+        base_bindings=bindings,
+        task_root=task.project_path,
+        task_id=task.id,
+    )
+    for repo in task_repos:
+        worktree_dir = os.path.join(str(task.project_path or "").strip(), repo.rel_path)
+        repo.state = TaskRepositoryState.READY
+        repo.base_commit_sha = git_worktree_service.read_repo_head_sha(worktree_dir)
+        repo.error_message = None
+
+
+def cleanup_task_repositories(
+    db: Session,
+    workspace: Workspace,
+    task: SddTask,
+    missing_ok: bool = True,
+) -> None:
+    """Remove worktrees for every repository binding of a task."""
+    bindings = build_task_worktree_bindings(db, workspace, task)
+    if not bindings:
+        return
+    git_worktree_service.remove_task_worktrees(
+        base_bindings=bindings,
+        task_root=task.project_path,
+        task_id=task.id,
+        missing_ok=missing_ok,
+    )
+
+
+def resolve_task_cli_dir(db: Session, task: SddTask) -> str:
+    """Resolve the CLI working directory of a task.
+
+    Always returns the task working directory root (task.project_path), so
+    Claude CLI runs from the task root and can access every repository
+    worktree materialized underneath it (one per repository binding).
+    """
+    # The task root is where all repository worktrees are materialized
+    # (<task_root>/<repo_slug>/...). Running the CLI anywhere deeper (e.g. the
+    # primary repository worktree) would hide the other repositories from the
+    # session, so keep the root for both single- and multi-repository tasks.
+    return str(task.project_path or "").strip() or "."
+
+
+def get_task_repositories(db: Session, task_id: str) -> List:
+    from app.domains.task.models.task_repository import SddTaskRepository
+
+    return (
+        db.query(SddTaskRepository)
+        .filter(SddTaskRepository.task_id == task_id)
+        .order_by(SddTaskRepository.created_at.asc())
+        .all()
+    )
+
+
+def serialize_task_repository(repo) -> dict:
+    return {
+        "id": repo.id,
+        "task_id": repo.task_id,
+        "repository_id": repo.repository_id,
+        "repo_url": repo.repo_url,
+        "repo_name": repo.repo_name,
+        "repo_slug": repo.repo_slug,
+        "branch_name": repo.branch_name,
+        "base_commit_sha": repo.base_commit_sha,
+        "rel_path": repo.rel_path,
+        "state": repo.state.value if hasattr(repo.state, "value") else str(repo.state),
+        "error_message": repo.error_message,
+        "created_at": repo.created_at,
+    }
+
+
 def create_task_record_for_provision(
     db: Session,
     user: User,
@@ -62,6 +214,9 @@ def create_task_record_for_provision(
     spec_doc_path: Optional[str] = None,
     requirement_duration_hours: float = 0.0,
     skill_ids: Optional[List[str]] = None,
+    task_type: str = "DEVELOPMENT",
+    phenomenon: Optional[str] = None,
+    priority: Optional[str] = None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -75,23 +230,43 @@ def create_task_record_for_provision(
     base_path = ws.project_path or os.getcwd()
     task_project_path = _build_task_project_path(base_path, task_id, name)
 
+    task_meta = None
+    if task_type == "DIAGNOSIS":
+        task_meta = {}
+        phenomenon_text = str(phenomenon or "").strip()
+        if phenomenon_text:
+            task_meta["phenomenon"] = phenomenon_text
+        priority_text = str(priority or "").strip().upper()
+        if priority_text in {"P0", "P1", "P2", "P3"}:
+            task_meta["priority"] = priority_text
+        # 诊断任务：现象即初始化描述，避免描述为空（前端不再单独填写描述）
+        if not str(description or "").strip() and phenomenon_text:
+            description = phenomenon_text
+
     task = SddTask(
         id=task_id,
         workspace_id=workspace_id,
         creator_id=user.id,
+        task_type=task_type,
+        task_meta_json=task_meta,
         name=name,
         description=description,
         project_path=task_project_path,
         git_repo_url=ws.git_repo_url,
         spec_doc_path=spec_doc_path,
         requirement_duration_hours=requirement_duration_hours,
-        status=TaskStatus.PENDING,
+        # 创建即进入准备态：git worktree/clone 未完成前禁止启动任务会话
+        status=TaskStatus.PROVISIONING,
         current_phase="PREPARING",
         error_message=None,
     )
 
     try:
         db.add(task)
+        db.flush()
+
+        # Multi-repository workspace: snapshot the workspace repo set onto the task.
+        snapshot_workspace_repositories_into_task(db, ws, task)
         db.flush()
 
         skill_service.bind_task_skills(db, task, selected_skills)
@@ -128,10 +303,14 @@ def prepare_task_resources_for_provision(
         raise ValueError("Workspace not found")
 
     use_git_worktree = git_worktree_service.should_use_git_worktree(ws.project_path, ws.git_repo_url)
+    task_repos = get_task_repositories(db, task.id)
+    use_multi_repo = bool(task_repos)
     workspace_prepared = False
     with bind_task_context(task_id=task.id, workspace_id=workspace_id, user_id=task.creator_id):
         try:
-            if use_git_worktree:
+            if use_multi_repo:
+                prepare_task_repositories(db, ws, task, task_repos)
+            elif use_git_worktree:
                 git_worktree_service.create_task_worktree(
                     repo_path=ws.project_path or "",
                     task_id=task.id,
@@ -156,7 +335,12 @@ def prepare_task_resources_for_provision(
         except Exception:
             db.rollback()
             if workspace_prepared:
-                if use_git_worktree:
+                if use_multi_repo:
+                    try:
+                        cleanup_task_repositories(db, ws, task, missing_ok=True)
+                    except Exception as cleanup_exc:
+                        logger.warning(f"Failed to cleanup task worktrees {task.id}: {cleanup_exc}")
+                elif use_git_worktree:
                     try:
                         git_worktree_service.remove_task_worktree(
                             repo_path=ws.project_path or "",
@@ -595,11 +779,15 @@ def list_tasks(
     status_filter: Optional[str] = None,
     page: int = 1,
     page_size: int = 20,
+    task_type: Optional[str] = None,
 ) -> Tuple[List[SddTask], int]:
     query = db.query(SddTask).options(joinedload(SddTask.creator)).filter(SddTask.workspace_id == workspace_id)
 
     if status_filter:
         query = query.filter(SddTask.status == status_filter)
+
+    if task_type:
+        query = query.filter(SddTask.task_type == task_type)
 
     total = query.count()
     items = (
@@ -645,7 +833,16 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
         else os.path.dirname(os.path.abspath(task.project_path))
     )
     task_remote = str(task.git_repo_url or "").strip()
-    if git_worktree_service.should_use_git_worktree(workspace_project_path, task_remote):
+
+    task_repos = get_task_repositories(db, task.id)
+    if task_repos:
+        if not workspace:
+            # Without a workspace we cannot resolve base dirs; fall back to
+            # removing the whole task root to avoid stale worktrees.
+            shutil.rmtree(task.project_path, ignore_errors=True)
+        else:
+            cleanup_task_repositories(db, workspace, task, missing_ok=True)
+    elif git_worktree_service.should_use_git_worktree(workspace_project_path, task_remote):
         git_worktree_service.remove_task_worktree(
             repo_path=workspace_project_path,
             task_id=task.id,
@@ -657,6 +854,31 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
     db.delete(task)
     db.commit()
     return True
+
+
+def _message_order_index(msg) -> int:
+    meta = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
+    try:
+        return int(meta.get("order_index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def sort_chat_messages(messages: List[ChatMessage]) -> List[ChatMessage]:
+    """按真实落库先后稳定排序：created_at -> 写入序号 -> id 兜底。
+
+    created_at 只有秒级精度，同一轮流式回复的多条消息会落在同一秒；
+    必须用写入时分配的 order_index 兜底，否则按随机 uuid id 排序会
+    导致重新加载历史时气泡顺序被随机打乱（逆序 / 不稳定）。
+    """
+    return sorted(
+        messages,
+        key=lambda msg: (
+            msg.created_at or datetime.min,
+            _message_order_index(msg),
+            msg.id,
+        ),
+    )
 
 
 def export_task_session(db: Session, task_id: str, workspace_id: str) -> Optional[dict]:
@@ -678,7 +900,7 @@ def export_task_session(db: Session, task_id: str, workspace_id: str) -> Optiona
                 "content": msg.content,
                 "message_type": msg.message_type,
                 "created_at": msg.created_at.isoformat()
-            } for msg in task.messages
+            } for msg in sort_chat_messages(list(task.messages or []))
         ],
         "logs": [
             {
@@ -700,6 +922,15 @@ def save_chat_message(
     message_type: str = "text",
     metadata_json: Optional[dict] = None,
 ) -> ChatMessage:
+    # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
+    order_index = (
+        db.query(sqlfunc.count(ChatMessage.id))
+        .filter(ChatMessage.task_id == task_id)
+        .scalar()
+        or 0
+    )
+    merged_metadata = dict(metadata_json or {})
+    merged_metadata["order_index"] = order_index
     msg = ChatMessage(
         task_id=task_id,
         workspace_id=workspace_id,
@@ -707,7 +938,7 @@ def save_chat_message(
         role=role,
         content=content,
         message_type=message_type,
-        metadata_json=metadata_json if isinstance(metadata_json, dict) else None,
+        metadata_json=merged_metadata,
     )
     db.add(msg)
     db.commit()
@@ -725,26 +956,15 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
     if not task:
         return {"messages": [], "logs": [], "page": page, "page_size": page_size, "total": 0, "has_more": False}
 
-    # 使用数据库查询分页，按 created_at 降序（最新在前）
-    from app.domains.task.models.chat import ChatMessage
-
-    total = db.query(ChatMessage).filter(ChatMessage.task_id == task_id).count()
-
-    init_reason_rank = case(
-        (ChatMessage.message_type == MessageType.INIT_REASON.value, 0),
-        else_=1,
-    )
-
-    msg_query = db.query(ChatMessage).filter(
+    messages_all = db.query(ChatMessage).filter(
         ChatMessage.task_id == task_id
-    ).order_by(
-        ChatMessage.created_at.desc(),
-        init_reason_rank.desc(),
-        ChatMessage.id.desc(),
-    ).offset((page - 1) * page_size).limit(page_size).all()
+    ).all()
+    messages_all = sort_chat_messages(messages_all)
+    total = len(messages_all)
 
-    # 反转回正序（前端渲染需要正序）
-    msg_query = list(reversed(msg_query))
+    # 按真实落库顺序分页（created_at + order_index + id），保持正序返回
+    start = (page - 1) * page_size
+    msg_query = messages_all[start:start + page_size]
     creator_ids = sorted({str(msg.creator_id or "") for msg in msg_query if str(msg.creator_id or "").strip()})
     message_ids = [msg.id for msg in msg_query]
     creators_by_id = {
@@ -782,8 +1002,11 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
             "creator_id": msg.creator_id,
             "creator_display_name": creators_by_id[msg.creator_id].display_name if msg.creator_id in creators_by_id else None,
             "creator_is_workspace_expert": msg.creator_id in expert_user_ids,
+            "creator_avatar_url": creators_by_id[msg.creator_id].avatar_url if msg.creator_id in creators_by_id else None,
+            "creator_avatar_svg": creators_by_id[msg.creator_id].avatar_svg if msg.creator_id in creators_by_id else None,
             "client_message_id": metadata.get("client_message_id"),
             "decision_id": decisions_by_message_id.get(msg.id),
+            "metadata": metadata or None,
         })
 
     has_more = (page * page_size) < total

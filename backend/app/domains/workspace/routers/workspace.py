@@ -1,4 +1,4 @@
-﻿"""
+"""
 Workspace API routes.
 """
 
@@ -17,6 +17,8 @@ from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.ai_job import AiJobResponse
 from app.domains.asset.schemas.asset import (
+    WorkspaceAgentBackendResponse,
+    WorkspaceAgentBackendUpdate,
     WorkspaceCreate,
     WorkspaceMemberAdd,
     WorkspaceMemberListResponse,
@@ -71,6 +73,12 @@ async def create_workspace(
                 "description": data.description,
                 "project_path": data.project_path,
                 "git_repo_url": data.git_repo_url,
+                "project_id": data.project_id,
+                "product_ids": list(data.product_ids or []),
+                "repositories": [
+                    {"repository_id": item.repository_id, "branch_name": item.branch_name}
+                    for item in (data.repositories or [])
+                ],
             },
             stage="QUEUED",
             message="Workspace provisioning queued",
@@ -134,6 +142,22 @@ def get_workspaces(
     return workspace_service.list_user_workspace_summaries(db, current_user)
 
 
+@router.get("/agent-backends", response_model=WorkspaceAgentBackendResponse)
+def list_agent_backends(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """可选 agent backend 列表 + 全局默认值（未指定工作区上下文）。"""
+    from app.agents.selection import default_backend_name, list_agent_backends as list_backends
+
+    return WorkspaceAgentBackendResponse(
+        agent_backend=None,
+        effective_agent_backend=default_backend_name(),
+        default_agent_backend=default_backend_name(),
+        options=list_backends(),
+    )
+
+
 @router.get("/{ws_id}", response_model=WorkspaceResponse)
 def get_workspace(
     ws_id: str,
@@ -144,6 +168,79 @@ def get_workspace(
     if not summary:
         raise HTTPException(status_code=404, detail="Workspace not found or no access")
     return summary
+
+
+@router.get("/{ws_id}/agent-backends", response_model=WorkspaceAgentBackendResponse)
+def get_workspace_agent_backends(
+    ws_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_workspace_member(db, ws_id, current_user.id)
+    from app.agents.selection import (
+        default_backend_name,
+        list_agent_backends as list_backends,
+        normalize_backend_name,
+        resolve_workspace_backend,
+    )
+
+    ws = workspace_service.get_workspace(db, ws_id, current_user)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    configured = normalize_backend_name(ws.agent_backend)
+    return WorkspaceAgentBackendResponse(
+        agent_backend=configured,
+        effective_agent_backend=resolve_workspace_backend(db, ws_id),
+        default_agent_backend=default_backend_name(),
+        options=list_backends(),
+    )
+
+
+@router.put("/{ws_id}/agent-backend", response_model=WorkspaceAgentBackendResponse)
+def update_workspace_agent_backend(
+    ws_id: str,
+    data: WorkspaceAgentBackendUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_member_manager(db, ws_id, current_user.id)
+    from app.agents.selection import (
+        default_backend_name,
+        list_agent_backends as list_backends,
+        normalize_backend_name,
+        resolve_workspace_backend,
+        SELECTABLE_AGENT_BACKENDS,
+    )
+
+    ws = workspace_service.get_workspace(db, ws_id, current_user)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    requested = str(data.agent_backend or "").strip() or None
+    if requested is not None and requested not in SELECTABLE_AGENT_BACKENDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported agent backend: {requested!r}; expected one of {list(SELECTABLE_AGENT_BACKENDS)}",
+        )
+    ws.agent_backend = requested
+    db.commit()
+    db.refresh(ws)
+
+    audit_log(
+        action="update_workspace_agent_backend",
+        outcome="success",
+        resource_type="workspace",
+        resource_id=ws_id,
+        user_id=current_user.id,
+        agent_backend=requested or "default",
+    )
+    configured = normalize_backend_name(ws.agent_backend)
+    return WorkspaceAgentBackendResponse(
+        agent_backend=configured,
+        effective_agent_backend=resolve_workspace_backend(db, ws_id),
+        default_agent_backend=default_backend_name(),
+        options=list_backends(),
+    )
 
 
 @router.delete("/{ws_id}")

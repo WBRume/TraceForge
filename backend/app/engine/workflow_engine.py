@@ -18,7 +18,8 @@ from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.auth.services import auth_service
 from app.domains.skill.services import skill_service, skill_runtime_trace_service
 from app.domains.task.services import context_token_service, task_service
-from app.engine.claude_bridge import create_cli_bridge, CliBridgeBase
+from app.engine.claude_bridge import CliBridgeBase
+from app.agents import AgentBackend, AgentEvent, AgentRunRequest, AgentRunResult
 from app.engine.claude_event_adapter import (
     extract_claude_compaction_event,
     extract_claude_usage,
@@ -70,6 +71,7 @@ class WorkflowEngine:
         user_id: str,
         *,
         job_id: Optional[str] = None,
+        backend_name: Optional[str] = None,
         on_result: Optional[Callable[[bool, str, Optional[int], Optional[float], str], Any]] = None,
         on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
         on_session: Optional[Callable[[str, str], Any]] = None,
@@ -79,7 +81,9 @@ class WorkflowEngine:
         self.ws_id = ws_id
         self.user_id = user_id
 
-        self.cli: CliBridgeBase = create_cli_bridge()
+        # 指定 backend（任务粘性/工作区配置）；为空回退全局 .env
+        self.backend_name = backend_name
+        self.cli: CliBridgeBase = self._create_engine_backend()
         self.session_id: Optional[str] = None  # CLI session id (可跨对话恢复)
         self.running = False
 
@@ -96,6 +100,18 @@ class WorkflowEngine:
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_skill_index = []
+
+    def _create_engine_backend(self) -> Any:
+        """根据配置创建当前任务引擎使用的 Agent backend。
+
+        backend_name 由调用方传入（任务粘性/工作区配置）；
+        为空时回退全局 .env AGENT_BACKEND（默认 claude-code）。
+        统一走 selection 工厂：claude-code 双接口、opencode/dsh 走适配层，
+        dsh 在配置 DSH_SERVER_URL 时自动切 Web Host server 模式。
+        """
+        from app.agents.selection import create_agent_backend_by_name
+
+        return create_agent_backend_by_name(self.backend_name)
 
     async def _emit_hook(self, callback: Optional[Callable], *args):
         if not callback:
@@ -376,6 +392,167 @@ class WorkflowEngine:
                 else:
                     logger.debug(f"Unknown CLI event type: {event_type}")
 
+    async def handle_agent_event(self, event: AgentEvent):
+        """处理统一 AgentEvent，供 AgentBackend.run() 路径使用。"""
+        event_type = event.type
+        payload = event.payload
+        with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
+            job_id=self.current_job_id,
+            task_id=self.task_id,
+            session_id=self.session_id,
+            event_type=str(event_type or "unknown"),
+        ):
+            if event_type == "session_started":
+                sid = str(payload.get("provider_session_id") or "")
+                model = str(payload.get("model") or "unknown")
+                if sid:
+                    self.session_id = sid
+                self._update_context_snapshot(model=model, status="RUNNING")
+                await self._emit_hook(self.on_session, sid, self.current_job_id or "")
+                await self._push_status("INIT", f"Agent 会话已启动 (model: {model})", model=model)
+            elif event_type == "text":
+                text = str(payload.get("text") or "")
+                if text:
+                    await self._push_chat("assistant", text)
+                    self._save_log_sync(text, LogType.STDOUT)
+            elif event_type == "thinking":
+                text = str(payload.get("text") or "")
+                if text:
+                    self._thinking_buffer = text
+                    await self._push_thinking(text)
+            elif event_type == "tool_use":
+                tool_name = str(payload.get("tool_name") or "unknown")
+                tool_input = payload.get("tool_input", {})
+                tool_id = str(payload.get("tool_use_id") or "")
+                await self._push_tool_use(tool_name, tool_input, tool_id)
+                self._save_log_sync(f"[Tool] {tool_name}: {str(tool_input)[:500]}", LogType.STDOUT)
+                if tool_name == "AskUserQuestion":
+                    question = str(payload.get("question") or tool_input.get("question") or str(tool_input))
+                    self._hitl_requested_in_turn = True
+                    await self._push_hitl(prompt=question, hitl_type="text")
+            elif event_type == "tool_result":
+                import json
+                tool_use_id = str(payload.get("tool_use_id") or "")
+                output = str(payload.get("output") or "")
+                is_error = bool(payload.get("is_error"))
+                log_payload = {"tool_use_id": tool_use_id, "output": output[:2000]}
+                self._save_log_sync(json.dumps(log_payload), LogType.STDOUT)
+                self._record_context_segment(
+                    "tool_result",
+                    workspace_id=self.ws_id,
+                    task_id=self.task_id,
+                    ai_job_id=self.current_job_id,
+                    session_id=self.session_id,
+                    tool_use_id=tool_use_id,
+                    output=output,
+                    is_error=is_error,
+                )
+                await self._ws_push("tool_result", WSToolResultPayload(
+                    task_id=self.task_id,
+                    tool_use_id=tool_use_id,
+                    output=output[:2000],
+                ).model_dump())
+                skill_runtime_trace_service.enqueue_tool_result_trace(
+                    workspace_id=self.ws_id,
+                    task_id=self.task_id,
+                    ai_job_id=self.current_job_id,
+                    tool_use_id=tool_use_id,
+                    output=output[:2000],
+                    is_error=is_error,
+                )
+            elif event_type == "ask_user":
+                question = str(payload.get("question") or "")
+                options = payload.get("options") or None
+                context = payload.get("context") or None
+                self._hitl_requested_in_turn = True
+                await self._push_hitl(prompt=question, hitl_type="text", options=options, context=str(context) if context is not None else None)
+            elif event_type == "usage":
+                self._update_context_snapshot(usage=payload, raw_usage_json=payload.get("raw_usage"), status="RUNNING")
+            elif event_type == "context_compacted":
+                self._save_log_sync(f"[compaction] {str(payload.get('summary') or payload)}", LogType.STDOUT)
+            elif event_type == "log":
+                message = str(payload.get("message") or "")
+                if message:
+                    self._save_log_sync(message, LogType.STDOUT)
+            elif event_type == "result":
+                await self._handle_agent_result(payload, is_error=False)
+            elif event_type == "error":
+                await self._handle_agent_result(payload, is_error=True)
+
+    async def _handle_agent_result(self, payload: dict, *, is_error: bool):
+        """处理统一 result/error 事件的最终逻辑。"""
+        result_text = str(payload.get("result") or "")
+        duration = payload.get("duration_ms")
+        cost = payload.get("cost_usd")
+        usage = payload.get("usage") or None
+        finish_reason = str(payload.get("finish_reason") or ("error" if is_error else "completed"))
+
+        if self._interrupt_requested:
+            logger.info("Ignoring Agent result after user interrupt")
+            self.last_result_success = None
+            self.last_result_text = result_text
+            return
+
+        normalized_result = result_text.lower()
+        timeout_like = any(
+            marker in normalized_result
+            for marker in (
+                "request timed out",
+                "timed out",
+                "timeout",
+                "etimedout",
+                "请求超时",
+                "连接超时",
+            )
+        )
+        failed = is_error or finish_reason in ("error", "timeout", "aborted") or timeout_like
+
+        if failed:
+            self._update_context_snapshot(
+                usage=usage,
+                raw_usage_json=(usage or {}).get("raw_usage"),
+                status="FAILED",
+                duration_ms=duration,
+                total_cost_usd=cost,
+            )
+            logger.error(f"Agent execution failed: {result_text[:200]}")
+            self._update_task_status(TaskStatus.FAILED, result_text[:500])
+            self._update_task_metrics(cost, duration, "FAILED")
+            await self._push_result(False, result_text, duration, cost)
+            await self._push_status("FAILED", f"执行失败: {result_text[:200]}")
+            self.last_result_success = False
+            self.last_result_text = result_text
+            await self._emit_hook(
+                self.on_result,
+                False,
+                result_text,
+                duration,
+                cost,
+                self.current_job_id or "",
+            )
+        else:
+            waiting_hitl = finish_reason == "awaiting_user" or self._hitl_requested_in_turn
+            self._update_context_snapshot(
+                usage=usage,
+                raw_usage_json=(usage or {}).get("raw_usage"),
+                status="WAITING_HITL" if waiting_hitl else "SUCCESS",
+                duration_ms=duration,
+                total_cost_usd=cost,
+            )
+            logger.info(f"Agent execution succeeded in {duration}ms, cost: {cost}")
+            self._update_task_metrics(cost, duration)
+            await self._push_result(True, result_text[:500], duration, cost)
+            self.last_result_success = not waiting_hitl
+            self.last_result_text = result_text
+            await self._emit_hook(
+                self.on_result,
+                self.last_result_success,
+                result_text,
+                duration,
+                cost,
+                self.current_job_id or "",
+            )
+
     async def _handle_system(self, event: dict):
         """处理 system 事件 (init)"""
         for entry in flatten_claude_event(event):
@@ -627,10 +804,14 @@ class WorkflowEngine:
     # ─────────────── 主执行流程 ───────────────
 
     def _get_project_path(self) -> str:
+        from app.domains.task.services import task_service
+
         db = SessionLocal()
         try:
             task = db.query(SddTask).filter(SddTask.id == self.task_id).first()
-            return task.project_path if task else "."
+            if not task:
+                return "."
+            return task_service.resolve_task_cli_dir(db, task)
         finally:
             db.close()
 
@@ -689,7 +870,7 @@ class WorkflowEngine:
             if fresh_session:
                 # 强制干净会话启动，确保 CLI 不带 --resume。
                 self.session_id = None
-                self.cli = create_cli_bridge()
+                self.cli = self._create_engine_backend()
             self.running = True
             _active_engines[self.task_id] = self
             self._interrupt_requested = False
@@ -707,18 +888,38 @@ class WorkflowEngine:
                 self._refresh_runtime_skill_index()
                 env_overrides = self._build_cli_env_overrides()
 
-                # 启动 CLI（传入 session_id 时会 --resume）
-                self.session_id = await self.cli.start_session(
-                    prompt=prompt,
-                    project_path=project_path,
-                    event_callback=self.handle_event,
-                    session_id=self.session_id,
-                    env_overrides=env_overrides,
-                )
+                # 优先走统一 AgentBackend 路径；否则兼容旧 CliBridgeBase 路径
+                if isinstance(self.cli, AgentBackend):
+                    request = AgentRunRequest(
+                        run_id=f"{self.task_id}-{self.current_job_id or 'turn'}",
+                        prompt=prompt,
+                        project_path=project_path,
+                        session_id=self.session_id,
+                        env=env_overrides,
+                        timeout_seconds=float(getattr(settings, "CLAUDE_CLI_TIMEOUT", 300) or 300),
+                        metadata={
+                            "task_id": self.task_id,
+                            "workspace_id": self.ws_id,
+                            "user_id": self.user_id,
+                            "ai_job_id": self.current_job_id or "",
+                        },
+                    )
+                    result = await self.cli.run(request, self.handle_agent_event)
+                    if result.session_id:
+                        self.session_id = result.session_id
+                else:
+                    # 启动 CLI（传入 session_id 时会 --resume）
+                    self.session_id = await self.cli.start_session(
+                        prompt=prompt,
+                        project_path=project_path,
+                        event_callback=self.handle_event,
+                        session_id=self.session_id,
+                        env_overrides=env_overrides,
+                    )
 
-                # 等待 CLI 进程结束
-                if hasattr(self.cli, "wait"):
-                    await self.cli.wait()
+                    # 等待 CLI 进程结束
+                    if hasattr(self.cli, "wait"):
+                        await self.cli.wait()
 
             except Exception as e:
                 if self._interrupt_requested:
@@ -754,8 +955,8 @@ class WorkflowEngine:
 
             logger.info(f"Resuming session {self.session_id} with new prompt")
 
-            # 创建新的 CLI 桥接实例，恢复会话
-            self.cli = create_cli_bridge()
+            # 创建新的 Agent backend 实例，恢复会话
+            self.cli = self._create_engine_backend()
             await self.run(prompt)
 
     async def interrupt(self):

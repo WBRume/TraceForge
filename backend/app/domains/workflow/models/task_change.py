@@ -106,6 +106,69 @@ class SddTaskChangeProposal(Base):
         back_populates="proposal",
         cascade="all, delete-orphan",
     )
+    repo_patches = relationship(
+        "SddTaskChangeProposalRepo",
+        back_populates="proposal",
+        cascade="all, delete-orphan",
+        order_by="SddTaskChangeProposalRepo.created_at.asc()",
+    )
+
+    @property
+    def repositories(self) -> list:
+        return list(self.repo_patches)
+
+
+class SddTaskChangeProposalRepo(Base):
+    """Per-repository patch details of a multi-repository change proposal."""
+
+    __tablename__ = "sdd_task_change_proposal_repos"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    proposal_id = Column(
+        String(36),
+        ForeignKey("sdd_task_change_proposals.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    repository_id = Column(
+        String(36),
+        ForeignKey("mgmt_repositories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    repo_url = Column(String(1000), nullable=True)
+    repo_name = Column(String(200), nullable=False)
+    repo_slug = Column(String(120), nullable=False)
+    base_branch = Column(String(255), nullable=False)
+    base_commit_sha = Column(String(64), nullable=False)
+    cloud_task_branch = Column(String(255), nullable=False)
+    cloud_head_sha = Column(String(64), nullable=True)
+    changed_files_count = Column(Integer, nullable=False, default=0)
+    insertions = Column(Integer, nullable=False, default=0)
+    deletions = Column(Integer, nullable=False, default=0)
+    patch_asset_id = Column(
+        String(36),
+        ForeignKey("sdd_assets.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    patch_asset_version_id = Column(
+        String(36),
+        ForeignKey("sdd_asset_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    proposal = relationship("SddTaskChangeProposal", back_populates="repo_patches")
+    repository = relationship("SddManagementRepository")
+    patch_asset = relationship("SddAsset", foreign_keys=[patch_asset_id])
+    patch_asset_version = relationship("SddAssetVersion", foreign_keys=[patch_asset_version_id])
+    files = relationship(
+        "SddTaskChangeProposalFile",
+        back_populates="proposal_repo",
+    )
 
 
 class SddTaskChangeProposalFile(Base):
@@ -121,6 +184,18 @@ class SddTaskChangeProposalFile(Base):
     file_path = Column(String(1000), nullable=False)
     old_path = Column(String(1000), nullable=True)
     new_path = Column(String(1000), nullable=True)
+    repository_id = Column(
+        String(36),
+        ForeignKey("mgmt_repositories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    proposal_repo_id = Column(
+        String(36),
+        ForeignKey("sdd_task_change_proposal_repos.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     change_type = Column(
         Enum(ChangeProposalFileType, values_callable=lambda values: [item.value for item in values]),
         nullable=False,
@@ -132,6 +207,8 @@ class SddTaskChangeProposalFile(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     proposal = relationship("SddTaskChangeProposal", back_populates="files")
+    repository = relationship("SddManagementRepository")
+    proposal_repo = relationship("SddTaskChangeProposalRepo", back_populates="files")
 
 
 class SddTaskVerificationRun(Base):
@@ -215,3 +292,8 @@ class SddTaskConflictReport(Base):
     user = relationship("User")
     report_asset = relationship("SddAsset", foreign_keys=[report_asset_id])
     report_asset_version = relationship("SddAssetVersion", foreign_keys=[report_asset_version_id])
+
+
+# Late import registers mgmt_* FK target tables into Base.metadata for
+# create_all / autogenerate completeness.
+from app.domains.management.models import management as _mgmt_models  # noqa: E402,F401

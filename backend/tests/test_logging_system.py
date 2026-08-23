@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -15,6 +16,8 @@ if BACKEND_ROOT not in sys.path:
 
 from app.config import settings  # noqa: E402
 from app.core.logging import (  # noqa: E402
+    _InterceptHandler,
+    _is_safe_extra_value,
     audit_log,
     bind_request_context,
     get_logger,
@@ -141,6 +144,29 @@ class LoggingSystemTest(unittest.TestCase):
         self.assertEqual(extra.get("user_id"), "user-ctx-1")
         self.assertEqual(extra.get("method"), "GET")
         self.assertEqual(extra.get("path"), "/ctx")
+
+    def test_intercept_handler_drops_unpicklable_extra_attributes(self):
+        # uvicorn websocket 日志会把 WebSocketProtocol 放进 LogRecord.__dict__，
+        # enqueue 队列序列化时会因 FastAPI local openapi 函数失败。
+        # 这里模拟一个不可 pickle 的 extra 值，确保不会被带进 loguru extra。
+        self.assertFalse(_is_safe_extra_value(lambda: None))
+
+        handler = _InterceptHandler(category="application")
+        record = logging.LogRecord(
+            name="uvicorn.error",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="WebSocket accepted",
+            args=(),
+            exc_info=None,
+        )
+        record.websocket = lambda: None  # 不可 pickle 的 local object
+        record.task_id = "task-1"
+        try:
+            handler.emit(record)
+        except Exception as exc:  # pragma: no cover - unexpected failure
+            self.fail(f"_InterceptHandler.emit raised with unpicklable extra: {exc}")
 
     def test_logging_middleware_emits_structured_access_log(self):
         app = FastAPI()

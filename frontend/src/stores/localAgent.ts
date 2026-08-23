@@ -7,8 +7,14 @@ import {
   downloadChangeProposalPatch,
   getLatestChangeProposal,
   listChangeProposalFiles,
+  listChangeProposalRepoPatches,
 } from '@/services/agentApi'
-import type { AgentTask, ChangeProposal, ChangeProposalFile } from '@/types/agent'
+import type {
+  AgentTask,
+  ChangeProposal,
+  ChangeProposalFile,
+  ChangeProposalRepoPatch,
+} from '@/types/agent'
 import type { DesktopRepoMapping } from '@/types/sddDesktop'
 import { DEFAULT_SERVER_URL, setApiServerUrl } from '@/utils/api'
 import { getSddDesktop, isElectron } from '@/utils/runtime'
@@ -17,6 +23,7 @@ import { normalizeRemoteUrl, remoteUrlsMatch } from '@/composables/local-agent/l
 type WorkspaceLike = {
   id?: string
   git_repo_url?: string | null
+  repositories?: { id?: string; repo_url?: string; repo_name?: string }[]
 }
 
 type TaskLike = Partial<AgentTask> & {
@@ -24,6 +31,8 @@ type TaskLike = Partial<AgentTask> & {
   workspace_id?: string
   git_repo_url?: string | null
 }
+
+const keyFor = (remote: string) => normalizeRemoteUrl(remote)
 
 export const useLocalAgentStore = defineStore('localAgent', () => {
   const authStore = useAuthStore()
@@ -38,40 +47,83 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
   const proposal = ref<ChangeProposal | null>(null)
   const proposalFiles = ref<ChangeProposalFile[]>([])
   const patchText = ref('')
+  const repoPatches = ref<ChangeProposalRepoPatch[]>([])
   const proposalLoading = ref(false)
   const proposalGenerating = ref(false)
   const patchLoading = ref(false)
 
-  const repoPath = ref('')
-  const repoRemoteUrl = ref('')
-  const repoStatus = ref('')
-  const repoMapping = ref<DesktopRepoMapping | null>(null)
+  // Multi-repository mappings: normalized remote URL -> mapping/status.
+  const repoMappings = ref<Record<string, DesktopRepoMapping>>({})
+  const repoStatusMap = ref<Record<string, string>>({})
+  const activeRemoteUrl = ref('')
+  const pendingLocalPath = ref('')
 
   const workspaceId = computed(() => task.value?.workspace_id || workspace.value?.id || '')
-  const expectedRemoteUrl = computed(() => (
-    proposal.value?.base_repo_url
-    || task.value?.git_repo_url
-    || workspace.value?.git_repo_url
-    || ''
+
+  const workspaceRemotes = computed<string[]>(() => {
+    const ws = workspace.value
+    if (!ws) return []
+    const repos = Array.isArray(ws.repositories) && ws.repositories.length > 0
+      ? ws.repositories.map((item) => String(item.repo_url || '').trim()).filter(Boolean)
+      : (ws.git_repo_url ? [String(ws.git_repo_url).trim()] : [])
+    return repos
+  })
+
+  const expectedRemoteUrls = computed(() => workspaceRemotes.value)
+  const expectedRemoteUrl = computed(() => workspaceRemotes.value[0] || '')
+
+  const repoMapping = computed<DesktopRepoMapping | null>(() => (
+    repoMappings.value[keyFor(activeRemoteUrl.value)] || null
   ))
-  const hasProposal = computed(() => Boolean(proposal.value && patchText.value))
+  const repoPath = computed(() => repoMapping.value?.localPath || '')
+  const repoRemoteUrl = computed(() => repoMapping.value?.remoteUrl || '')
+  const repoStatus = computed(() => repoStatusMap.value[keyFor(activeRemoteUrl.value)] || '')
+
+  const mappingFor = (remote: string): DesktopRepoMapping | null => (
+    repoMappings.value[keyFor(remote)] || null
+  )
+  const statusFor = (remote: string): string => repoStatusMap.value[keyFor(remote)] || ''
+
+  const repoReadyFor = (remote: string): boolean => {
+    const mapping = mappingFor(remote)
+    const status = statusFor(remote)
+    return Boolean(mapping?.localPath && status.startsWith('Clean'))
+  }
+
   const repoReady = computed(() => (
-    Boolean(repoPath.value && repoRemoteUrl.value && expectedRemoteUrl.value)
-    && remoteUrlsMatch(repoRemoteUrl.value, expectedRemoteUrl.value)
-    && repoStatus.value.startsWith('Clean')
+    Boolean(expectedRemoteUrl.value) && repoReadyFor(expectedRemoteUrl.value)
   ))
+
+  const mappedCount = computed(() => (
+    expectedRemoteUrls.value.filter((remote) => Boolean(mappingFor(remote)?.localPath)).length
+  ))
+  const missingRemotes = computed(() => (
+    expectedRemoteUrls.value.filter((remote) => !mappingFor(remote)?.localPath)
+  ))
+
+  const proposalRemotes = computed<string[]>(() => (
+    (proposal.value?.repositories || [])
+      .map((item) => String(item.repo_url || '').trim())
+      .filter(Boolean)
+  ))
+  const applyMissingRemotes = computed(() => (
+    proposalRemotes.value.filter((remote) => !mappingFor(remote)?.localPath)
+  ))
+
+  const hasProposal = computed(() => Boolean(proposal.value && patchText.value))
 
   const resetProposalState = () => {
     proposal.value = null
     proposalFiles.value = []
     patchText.value = ''
+    repoPatches.value = []
   }
 
   const resetRepoState = () => {
-    repoMapping.value = null
-    repoPath.value = ''
-    repoRemoteUrl.value = ''
-    repoStatus.value = ''
+    repoMappings.value = {}
+    repoStatusMap.value = {}
+    activeRemoteUrl.value = ''
+    pendingLocalPath.value = ''
   }
 
   const loadLocalConfig = async () => {
@@ -127,12 +179,32 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
     if (!proposal.value) {
       proposalFiles.value = []
       patchText.value = ''
+      repoPatches.value = []
       return null
     }
     const files = await listChangeProposalFiles(proposal.value.id)
     proposalFiles.value = files.items
     await downloadPatch()
+    await loadRepoPatches()
     return proposal.value
+  }
+
+  const loadRepoPatches = async () => {
+    if (!proposal.value) {
+      repoPatches.value = []
+      return
+    }
+    const repos = Array.isArray(proposal.value.repositories) ? proposal.value.repositories : []
+    if (repos.length === 0) {
+      repoPatches.value = []
+      return
+    }
+    try {
+      const res = await listChangeProposalRepoPatches(proposal.value.id)
+      repoPatches.value = res.items
+    } catch {
+      repoPatches.value = []
+    }
   }
 
   const loadLatestProposal = async (targetTask = task.value): Promise<ChangeProposal | null> => {
@@ -144,6 +216,7 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
       proposal.value = null
       proposalFiles.value = []
       patchText.value = ''
+      repoPatches.value = []
       return null
     } finally {
       proposalLoading.value = false
@@ -185,14 +258,23 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
 
   const loadRepoMapping = async () => {
     resetRepoState()
-    if (!desktop || !workspaceId.value || !expectedRemoteUrl.value) return
-    repoMapping.value = await desktop.config.getRepoMapping({
-      workspaceId: workspaceId.value,
-      remoteUrl: expectedRemoteUrl.value,
-    })
-    repoPath.value = repoMapping.value?.localPath || ''
-    if (repoPath.value) {
-      await validateRepo()
+    if (!desktop || !workspaceId.value) return
+    const remotes = expectedRemoteUrls.value
+    activeRemoteUrl.value = remotes[0] || ''
+    if (remotes.length === 0) return
+    for (const remote of remotes) {
+      try {
+        const mapping = await desktop.config.getRepoMapping({
+          workspaceId: workspaceId.value,
+          remoteUrl: remote,
+        })
+        if (mapping?.localPath) {
+          repoMappings.value[keyFor(remote)] = mapping
+          await validateRemote(remote, mapping.localPath)
+        }
+      } catch {
+        // Per-repository mapping failures are tolerated.
+      }
     }
   }
 
@@ -200,53 +282,89 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
     if (!desktop) return
     const result = await desktop.git.selectDirectory()
     if (result.canceled || !result.path) return
-    repoPath.value = result.path
-    await validateRepo()
+    pendingLocalPath.value = result.path
+    await validateRemote(activeRemoteUrl.value, result.path)
+  }
+
+  const chooseRepoFor = async (remote: string): Promise<string | null> => {
+    if (!desktop) return null
+    const result = await desktop.git.selectDirectory()
+    if (result.canceled || !result.path) return null
+    await validateRemote(remote, result.path)
+    return result.path
   }
 
   const validateRepo = async () => {
-    if (!desktop || !repoPath.value) return
-    const valid = await desktop.git.validateGitRepo(repoPath.value)
+    if (!desktop) return
+    const targetPath = repoPath.value || pendingLocalPath.value
+    if (!targetPath) return
+    await validateRemote(activeRemoteUrl.value, targetPath)
+  }
+
+  const validateRemote = async (remote: string, localPath: string) => {
+    if (!desktop || !localPath) return
+    const key = keyFor(remote)
+    const valid = await desktop.git.validateGitRepo(localPath)
     if (!valid.ok) {
-      repoRemoteUrl.value = ''
-      repoStatus.value = valid.stderr || '所选目录不是 Git 仓库'
+      repoStatusMap.value[key] = valid.stderr || '所选目录不是 Git 仓库'
       return
     }
-    const remote = await desktop.git.getRemoteUrl(repoPath.value)
-    repoRemoteUrl.value = remote.remoteUrl
-    const status = await desktop.git.getStatus(repoPath.value)
-    repoStatus.value = status.isClean
-      ? `Clean · ${normalizeRemoteUrl(remote.remoteUrl)}`
-      : `Dirty · ${status.entries.length} changed files`
+    const remoteInfo = await desktop.git.getRemoteUrl(localPath)
+    const status = await desktop.git.getStatus(localPath)
+    repoStatusMap.value[key] = status.isClean
+      ? 'Clean · ' + normalizeRemoteUrl(remoteInfo.remoteUrl)
+      : 'Dirty · ' + status.entries.length + ' changed files'
   }
 
   const saveRepoMapping = async (lastVerificationCommand?: string | null) => {
-    if (!desktop || !workspaceId.value || !repoPath.value || !expectedRemoteUrl.value) return
-    await validateRepo()
-    if (!remoteUrlsMatch(repoRemoteUrl.value, expectedRemoteUrl.value)) {
-      ElMessage.error('本地仓库 remote.origin.url 与工作区仓库地址不一致')
-      return
+    if (!desktop || !workspaceId.value) return
+    const remote = activeRemoteUrl.value
+    const localPath = pendingLocalPath.value || repoPath.value
+    if (!remote || !localPath) return
+    await saveMappingFor(remote, localPath, lastVerificationCommand)
+  }
+
+  const saveMappingFor = async (
+    remote: string,
+    localPath: string,
+    lastVerificationCommand?: string | null,
+  ): Promise<boolean> => {
+    if (!desktop || !workspaceId.value) return false
+    await validateRemote(remote, localPath)
+    const status = statusFor(remote)
+    const detectedRemote = status.startsWith('Clean · ') ? status.slice('Clean · '.length) : ''
+    if (detectedRemote && !remoteUrlsMatch(detectedRemote, remote)) {
+      ElMessage.error('本地仓库 remote.origin.url 与仓库地址不一致')
+      return false
     }
-    if (!repoStatus.value.startsWith('Clean')) {
+    if (!status.startsWith('Clean')) {
       ElMessage.error('本地仓库存在未提交修改，请清理后再绑定')
-      return
+      return false
     }
-    repoMapping.value = await desktop.config.setRepoMapping({
+    const mapping = await desktop.config.setRepoMapping({
       workspaceId: workspaceId.value,
-      remoteUrl: expectedRemoteUrl.value,
-      localPath: repoPath.value,
-      lastVerificationCommand: lastVerificationCommand ?? repoMapping.value?.lastVerificationCommand ?? null,
+      remoteUrl: remote,
+      localPath,
+      lastVerificationCommand: lastVerificationCommand ?? null,
     })
+    repoMappings.value[keyFor(remote)] = mapping
     ElMessage.success('本地仓库已绑定')
+    return true
   }
 
   const removeRepoMapping = async () => {
-    if (!desktop || !workspaceId.value || !expectedRemoteUrl.value) return
+    if (!desktop || !workspaceId.value || !activeRemoteUrl.value) return
+    await removeMappingFor(activeRemoteUrl.value)
+  }
+
+  const removeMappingFor = async (remote: string): Promise<void> => {
+    if (!desktop || !workspaceId.value) return
     await desktop.config.removeRepoMapping({
       workspaceId: workspaceId.value,
-      remoteUrl: expectedRemoteUrl.value,
+      remoteUrl: remote,
     })
-    resetRepoState()
+    delete repoMappings.value[keyFor(remote)]
+    delete repoStatusMap.value[keyFor(remote)]
     ElMessage.success('本地仓库关联已取消')
   }
 
@@ -261,17 +379,30 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
     proposal,
     proposalFiles,
     patchText,
+    repoPatches,
     proposalLoading,
     proposalGenerating,
     patchLoading,
+    repoMappings,
+    repoStatusMap,
+    activeRemoteUrl,
+    pendingLocalPath,
     repoPath,
     repoRemoteUrl,
     repoStatus,
     repoMapping,
     workspaceId,
     expectedRemoteUrl,
+    expectedRemoteUrls,
+    mappedCount,
+    missingRemotes,
+    proposalRemotes,
+    applyMissingRemotes,
     hasProposal,
     repoReady,
+    repoReadyFor,
+    mappingFor,
+    statusFor,
     loadLocalConfig,
     syncCurrentAuthToConfig,
     setWorkspaceContext,
@@ -279,11 +410,16 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
     loadLatestProposal,
     generateChangeProposal,
     downloadPatch,
+    loadRepoPatches,
     loadRepoMapping,
     chooseRepo,
+    chooseRepoFor,
     validateRepo,
+    validateRemote,
     saveRepoMapping,
+    saveMappingFor,
     removeRepoMapping,
+    removeMappingFor,
   }
 })
 

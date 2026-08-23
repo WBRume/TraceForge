@@ -1,8 +1,9 @@
-﻿"""
+"""
 Workspace service.
 """
 
 import json
+import os
 from typing import Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import or_
@@ -14,6 +15,10 @@ from app.domains.auth.models.user import (
     WorkspaceMember,
     WorkspacePermission,
     WorkspaceRole,
+)
+from app.domains.management.models.management import (
+    SddManagementProject,
+    SddManagementProjectProduct,
 )
 from app.domains.task.services import git_worktree_service
 
@@ -163,7 +168,18 @@ def get_workspace_and_member(db: Session, workspace_id: str, user_id: str) -> Op
     if not member:
         return None
 
-    workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    workspace = (
+        db.query(Workspace)
+        .options(
+            joinedload(Workspace.owner),
+            joinedload(Workspace.project)
+            .joinedload(SddManagementProject.products)
+            .joinedload(SddManagementProjectProduct.product),
+            joinedload(Workspace.repositories),
+        )
+        .filter(Workspace.id == workspace_id)
+        .first()
+    )
     if not workspace:
         return None
 
@@ -197,18 +213,85 @@ def can_delete_workspace(db: Session, workspace_id: str, user_id: str) -> bool:
     return role == WorkspaceRole.OWNER
 
 
+def serialize_workspace_repository(row) -> Dict[str, object]:
+    return {
+        "id": row.id,
+        "workspace_id": row.workspace_id,
+        "repository_id": row.repository_id,
+        "repo_url": row.repo_url,
+        "repo_name": row.repo_name,
+        "repo_slug": row.repo_slug,
+        "branch_name": row.branch_name,
+        "ref_type": row.ref_type,
+        "base_dir": row.base_dir,
+        "state": row.state.value if hasattr(row.state, "value") else str(row.state),
+        "base_commit_sha": row.base_commit_sha,
+        "error_message": row.error_message,
+        "created_at": row.created_at,
+    }
+
+
+def serialize_workspace_owner(owner) -> Optional[Dict[str, object]]:
+    if owner is None:
+        return None
+    return {
+        "id": owner.id,
+        "display_name": owner.display_name,
+        "email": owner.email,
+        "avatar_svg": owner.avatar_svg,
+        "avatar_url": owner.avatar_url,
+    }
+
+
+def serialize_workspace_project(project) -> Optional[Dict[str, object]]:
+    if project is None:
+        return None
+    return {
+        "id": project.id,
+        "name": project.name,
+        "code": project.code,
+    }
+
+
+def serialize_workspace_products(project) -> List[Dict[str, object]]:
+    if project is None:
+        return []
+    products = []
+    for link in project.products or []:
+        product = link.product
+        if product is None:
+            continue
+        products.append(
+            {
+                "id": product.id,
+                "name": product.name,
+                "code": product.code,
+                "version_no": product.version_no,
+            }
+        )
+    return products
+
+
 def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[str, object]:
+    repositories = [serialize_workspace_repository(row) for row in workspace.repositories]
+    project = workspace.project
     return {
         "id": workspace.id,
         "name": workspace.name,
         "description": workspace.description,
         "project_path": workspace.project_path,
         "git_repo_url": workspace.git_repo_url,
+        "project_id": workspace.project_id,
         "owner_id": workspace.owner_id,
+        "agent_backend": workspace.agent_backend,
         "created_at": workspace.created_at,
         "my_role": member.role.value if hasattr(member.role, "value") else str(member.role),
         "my_is_expert": bool(member.is_expert),
         "can_delete_workspace": member.role == WorkspaceRole.OWNER,
+        "project": serialize_workspace_project(project),
+        "products": serialize_workspace_products(project),
+        "owner": serialize_workspace_owner(workspace.owner),
+        "repositories": repositories,
     }
 
 
@@ -224,39 +307,122 @@ def create_workspace(
     description: Optional[str] = None,
     project_path: Optional[str] = None,
     git_repo_url: Optional[str] = None,
+    project_id: Optional[str] = None,
+    product_ids: Optional[List[str]] = None,
+    repositories: Optional[List[Dict[str, str]]] = None,
 ) -> Workspace:
+    from app.domains.management.services import project_service
+    from app.domains.management.services import repository_service as mgmt_repository_service
+    from app.domains.workspace.models.workspace_repository import (
+        SddWorkspaceRepository,
+        WorkspaceRepositoryState,
+    )
+
     normalized_project_path = _normalize_optional(project_path)
     normalized_git_repo_url = _normalize_optional(git_repo_url)
 
-    if normalized_git_repo_url and not normalized_project_path:
-        raise git_worktree_service.GitWorktreeError(
-            "project_path is required when git_repo_url is provided",
-            status_code=400,
-        )
-
-    if git_worktree_service.should_use_git_worktree(normalized_project_path, normalized_git_repo_url):
-        git_worktree_service.clone_workspace_repository(
-            normalized_project_path or "",
-            normalized_git_repo_url or "",
-        )
-    elif normalized_project_path and not normalized_git_repo_url:
-        try:
-            git_worktree_service.init_git_repository(normalized_project_path)
-        except git_worktree_service.GitWorktreeError as exc:
+    if project_id:
+        # Multi-repository layout: the workspace references a management project
+        # and its repository set is materialized by the provision job.
+        project = (
+            db.query(SddManagementProject)
+            .filter(SddManagementProject.id == project_id)
+            .first()
+            )
+        if not project:
+            raise ValueError("Project not found")
+        if not normalized_project_path:
             raise git_worktree_service.GitWorktreeError(
-                f"Failed to initialize git repository in {normalized_project_path}: {exc}",
-                status_code=exc.status_code,
-            ) from exc
+                "project_path is required when project_id is provided",
+                status_code=400,
+            )
 
-    workspace = Workspace(
-        name=name,
-        description=description,
-        project_path=normalized_project_path,
-        git_repo_url=normalized_git_repo_url,
-        owner_id=user.id,
-    )
-    db.add(workspace)
-    db.flush()
+        workspace = Workspace(
+            name=name,
+            description=description,
+            project_path=normalized_project_path,
+            git_repo_url=None,
+            project_id=project.id,
+            owner_id=user.id,
+        )
+        db.add(workspace)
+        db.flush()
+
+        repo_set = project_service.resolve_project_repo_set(
+            db, project, product_ids=product_ids or None
+        )
+        if repositories is not None:
+            selected_ids = {
+                str(item.get("repository_id") or "").strip()
+                for item in repositories
+                if str(item.get("repository_id") or "").strip()
+            }
+            available_ids = {
+                str(item["repository_id"]) for item in repo_set
+            }
+            unknown = selected_ids - available_ids
+            if unknown:
+                raise ValueError(
+                    "Selected repositories are not part of the project repository set: "
+                    + ", ".join(sorted(unknown))
+                )
+            repo_set = [
+                item for item in repo_set
+                if str(item["repository_id"]) in selected_ids
+            ]
+        seen_slugs: set = set()
+        for item in repo_set:
+            slug = mgmt_repository_service.build_repo_slug(item["repository_name"])
+            candidate = slug
+            sequence = 1
+            while candidate in seen_slugs:
+                candidate = f"{slug}-{sequence}"
+                sequence += 1
+            seen_slugs.add(candidate)
+            base_dir = os.path.join(normalized_project_path or "", candidate)
+            db.add(
+                SddWorkspaceRepository(
+                    workspace_id=workspace.id,
+                    repository_id=item["repository_id"],
+                    repo_url=item["git_url"],
+                    repo_name=item["repository_name"],
+                    repo_slug=candidate,
+                    branch_name=str(item.get("branch_name") or item.get("ref_name") or "").strip(),
+                    ref_type=str(item.get("ref_type") or "BRANCH").strip().upper(),
+                    base_dir=base_dir,
+                    state=WorkspaceRepositoryState.PENDING,
+                )
+            )
+    else:
+        if normalized_git_repo_url and not normalized_project_path:
+            raise git_worktree_service.GitWorktreeError(
+                "project_path is required when git_repo_url is provided",
+                status_code=400,
+            )
+
+        if git_worktree_service.should_use_git_worktree(normalized_project_path, normalized_git_repo_url):
+            git_worktree_service.clone_workspace_repository(
+                normalized_project_path or "",
+                normalized_git_repo_url or "",
+            )
+        elif normalized_project_path and not normalized_git_repo_url:
+            try:
+                git_worktree_service.init_git_repository(normalized_project_path)
+            except git_worktree_service.GitWorktreeError as exc:
+                raise git_worktree_service.GitWorktreeError(
+                    f"Failed to initialize git repository in {normalized_project_path}: {exc}",
+                    status_code=exc.status_code,
+                ) from exc
+
+        workspace = Workspace(
+            name=name,
+            description=description,
+            project_path=normalized_project_path,
+            git_repo_url=normalized_git_repo_url,
+            owner_id=user.id,
+        )
+        db.add(workspace)
+        db.flush()
 
     owner_permissions = default_permissions_for_role(WorkspaceRole.OWNER)
     member = WorkspaceMember(
@@ -297,6 +463,13 @@ def list_user_workspace_summaries(db: Session, user: User) -> List[Dict[str, obj
     workspaces = (
         db.query(Workspace)
         .filter(Workspace.id.in_(list(by_workspace.keys())))
+        .options(
+            joinedload(Workspace.owner),
+            joinedload(Workspace.project)
+            .joinedload(SddManagementProject.products)
+            .joinedload(SddManagementProjectProduct.product),
+            joinedload(Workspace.repositories),
+        )
         .order_by(Workspace.created_at.desc())
         .all()
     )

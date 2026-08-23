@@ -5,15 +5,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useLocalAgentStore } from '@/stores/localAgent'
-import { LayoutDashboard, MessageSquare, Box, Settings, Network } from 'lucide-vue-next'
+import { LayoutDashboard, MessageSquare, Box, BookMarked, Settings, Network } from 'lucide-vue-next'
 import AppSidebar from '@/components/AppSidebar.vue'
+import NotificationBell from '@/components/notification/NotificationBell.vue'
 import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const localAgent = useLocalAgentStore()
-const { electronAvailable, repoMapping } = storeToRefs(localAgent)
+const { electronAvailable } = storeToRefs(localAgent)
 const { t } = useI18n()
 
 const loading = ref(true)
@@ -27,8 +28,12 @@ const maybePromptRepoSetup = async () => {
   await localAgent.loadLocalConfig()
   await localAgent.setWorkspaceContext(workspace)
   if (!electronAvailable.value) return
-  if (!String(workspace.git_repo_url || '').trim()) return
-  if (repoMapping.value?.localPath) return
+  const hasRemotes = (
+    String(workspace.git_repo_url || '').trim()
+    || (Array.isArray(workspace.repositories) && workspace.repositories.length > 0)
+  )
+  if (!hasRemotes) return
+  if (localAgent.missingRemotes.length === 0) return
   showRepoSetupDialog.value = true
 }
 
@@ -83,6 +88,13 @@ const sidebarNavItems = computed(() => {
       active: routeName === 'chat' || routeName === 'taskChat' || routeName === 'taskSpec',
     },
     {
+      key: 'cases',
+      label: t('layout.case_center'),
+      icon: BookMarked,
+      to: `/ws/${wsId}/cases`,
+      active: routeName === 'workspaceCases' || routeName === 'workspaceCaseDetail',
+    },
+    {
       key: 'assets',
       label: t('workspace_assets.sidebar_label'),
       icon: Box,
@@ -123,7 +135,11 @@ const sidebarFooterItems = computed(() => {
       :nav-items="sidebarNavItems"
       :footer-items="sidebarFooterItems"
       @back="goBack"
-    />
+    >
+      <template #footer-extra>
+        <NotificationBell />
+      </template>
+    </AppSidebar>
 
     <!-- Main Content Area -->
     <main class="main-content">

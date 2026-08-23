@@ -66,6 +66,19 @@ from app.models.workspace_asset import (
     SddRequirementImportItem,
     SddTaskRequirement,
 )
+from app.models.management import (
+    SddManagementProduct,
+    SddManagementProductVersion,
+    SddManagementProductVersionRepo,
+    SddManagementRepoGroup,
+    SddManagementRepository,
+    SddManagementProject,
+    SddManagementProjectProduct,
+    SddManagementProjectRelease,
+    SddManagementProjectReleaseRepo,
+)
+from app.models.workspace_repository import SddWorkspaceRepository
+from app.models.task_repository import SddTaskRepository
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

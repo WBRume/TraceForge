@@ -161,6 +161,10 @@ button {
 }
 
 .btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
   background-color: var(--color-surface-white);
   color: var(--color-primary-600);
   border: 1px solid var(--color-primary-100);
@@ -173,6 +177,52 @@ button {
 .btn-secondary:hover {
   background-color: var(--color-primary-50);
   border-color: var(--color-primary-100);
+}
+
+/* Disabled buttons: clearly grayed out and non-interactive */
+.btn-primary:disabled,
+.btn-secondary:disabled,
+.btn-ghost:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.btn-primary:disabled:hover {
+  background-color: var(--color-primary-500);
+  text-shadow: none;
+}
+
+.btn-secondary:disabled:hover {
+  background-color: var(--color-surface-white);
+  border-color: var(--color-primary-100);
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background: none;
+  border: 1px solid var(--color-primary-100);
+  color: var(--color-primary-600);
+  font-weight: 500;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.btn-ghost:hover {
+  background-color: var(--color-primary-50);
+  border-color: var(--color-primary-500);
+  color: var(--color-primary-700);
+}
+
+.btn-ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Global Utilities */

@@ -29,6 +29,7 @@ class MessageType(str, PyEnum):
     FILE_UPLOAD = "file_upload"
     ERROR = "error"
     INIT_REASON = "init_reason"    # 初始化原因（用于会话分隔线）
+    DIAGNOSIS_RESULT = "diagnosis_result"  # 问题定位结果卡片（AI 会话反填）
 
 
 class ChatMessage(Base):

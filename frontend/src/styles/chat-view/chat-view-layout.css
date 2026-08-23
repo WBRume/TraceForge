@@ -28,7 +28,7 @@
 
 /* ─── Sidebar ─── */
 .task-sidebar {
-  width: 250px;
+  width: 280px;
   border-radius: 0;
   border: none;
   border-right: 1px solid rgba(0,0,0,0.05);
@@ -58,13 +58,21 @@
 }
 .sidebar-filter-row {
   display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.sidebar-filter-item {
+  display: flex;
   align-items: center;
   gap: 8px;
+  width: 100%;
 }
 .sidebar-filter-label {
   font-size: 0.75rem;
   color: var(--color-text-muted);
   white-space: nowrap;
+  flex-shrink: 0;
 }
 .task-filter-select {
   flex: 1;
@@ -104,11 +112,13 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 2px;
 }
 
 .task-name {
+  flex: 1;
+  min-width: 0;
   font-weight: 500;
   color: var(--color-text-body);
   white-space: nowrap;
@@ -132,20 +142,58 @@
   gap: 10px;
   margin-top: 2px;
   opacity: 0.85;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .task-creator, .task-date {
   font-size: 0.7rem;
   color: var(--color-text-muted);
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .task-creator {
   font-weight: 500;
   color: var(--color-primary-600);
-  max-width: 70px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-shrink: 2;
+  max-width: 40%;
+}
+
+.task-date {
+  flex-shrink: 1;
+}
+
+/* Task type tag: distinguishes development vs diagnosis tasks */
+.task-type-tag {
+  font-size: 0.64rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  letter-spacing: 0.01em;
+}
+.task-type-tag.is-development {
+  color: #0369a1;
+  background: #e0f2fe;
+  border: 1px solid rgba(14, 165, 233, 0.25);
+}
+.task-type-tag.is-diagnosis {
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+.task-item.active .task-type-tag.is-development {
+  background: #dbeafe;
+  border-color: rgba(14, 165, 233, 0.35);
+}
+.task-item.active .task-type-tag.is-diagnosis {
+  background: #fde68a;
+  border-color: rgba(245, 158, 11, 0.45);
 }
 
 .status-dot {

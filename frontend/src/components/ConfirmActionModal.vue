@@ -66,43 +66,45 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div
-    v-if="show"
-    class="modal-overlay"
-    @pointerdown.self="armOverlayClose"
-    @pointerup.self="finishOverlayClose"
-    @pointerleave.self="cancelOverlayClose"
-    @pointercancel.self="cancelOverlayClose"
-  >
-    <div class="modal glass-panel" :class="toneClass">
-      <div class="modal-header" :class="toneClass">
-        <slot name="icon">
-          <AlertTriangle class="w-6 h-6 flex-shrink-0" />
-        </slot>
-        <span class="modal-title">{{ title }}</span>
-      </div>
+  <Teleport to="body">
+    <div
+      v-if="show"
+      class="modal-overlay"
+      @pointerdown.self="armOverlayClose"
+      @pointerup.self="finishOverlayClose"
+      @pointerleave.self="cancelOverlayClose"
+      @pointercancel.self="cancelOverlayClose"
+    >
+      <div class="modal glass-panel" :class="toneClass">
+        <div class="modal-header" :class="toneClass">
+          <slot name="icon">
+            <AlertTriangle class="w-6 h-6 flex-shrink-0" />
+          </slot>
+          <span class="modal-title">{{ title }}</span>
+        </div>
 
-      <p class="modal-message">{{ message }}</p>
-      <div v-if="emphasisValue" class="modal-emphasis" :class="toneClass">
-        <p v-if="emphasisLabel" class="modal-emphasis-label">{{ emphasisLabel }}</p>
-        <p class="modal-emphasis-value">{{ emphasisValue }}</p>
-      </div>
-      <p v-if="description" class="modal-desc">{{ description }}</p>
-      <div v-if="$slots.content" class="modal-content">
-        <slot name="content" />
-      </div>
+        <p class="modal-message">{{ message }}</p>
+        <div v-if="emphasisValue" class="modal-emphasis" :class="toneClass">
+          <p v-if="emphasisLabel" class="modal-emphasis-label">{{ emphasisLabel }}</p>
+          <p class="modal-emphasis-value">{{ emphasisValue }}</p>
+        </div>
+        <p v-if="description" class="modal-desc">{{ description }}</p>
+        <div v-if="$slots.content" class="modal-content">
+          <slot name="content" />
+        </div>
 
-      <div class="modal-actions">
-        <button class="btn-secondary" :disabled="loading" @click="handleCancel">
-          {{ cancelText }}
-        </button>
-        <button class="confirm-btn" :class="toneClass" :disabled="loading" @click="handleConfirm">
-          <Loader2 v-if="loading" class="w-4 h-4 spin" />
-          <span>{{ confirmText }}</span>
-        </button>
+        <div class="modal-actions">
+          <button class="btn-secondary" :disabled="loading" @click="handleCancel">
+            {{ cancelText }}
+          </button>
+          <button class="confirm-btn" :class="toneClass" :disabled="loading" @click="handleConfirm">
+            <Loader2 v-if="loading" class="w-4 h-4 spin" />
+            <span>{{ confirmText }}</span>
+          </button>
+        </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>

@@ -407,8 +407,10 @@ cp .env.example .env
 alembic upgrade head
 
 # 6. 启动 FastAPI 服务
-uvicorn app.main:app --reload
+uvicorn app.main:app
 ```
+
+> **注意**：启动时**不要加 `--reload` 参数**，避免开发服务器自动重载引起的异常。
 
 后端默认运行在 `http://localhost:8000`，可通过 `http://localhost:8000/docs` 访问 API 文档。
 
@@ -495,7 +497,7 @@ npm run test:run     # 单次运行测试
 
 ```bash
 cd backend
-uvicorn app.main:app --reload     # 启动开发服务器
+uvicorn app.main:app              # 启动开发服务器（不要加 --reload）
 alembic upgrade head              # 运行数据库迁移
 alembic revision --autogenerate -m "message"  # 创建迁移
 ```

@@ -14,6 +14,11 @@ class TaskCreate(BaseModel):
     use_brainstorm: Optional[bool] = False
     requirement_duration_hours: float = 0.0
     skill_ids: List[str] = Field(default_factory=list)
+    # 任务类型：DEVELOPMENT 研发态（默认） / DIAGNOSIS 问题定位
+    task_type: Literal["DEVELOPMENT", "DIAGNOSIS"] = "DEVELOPMENT"
+    # 问题定位任务专用：现象与优先级
+    phenomenon: Optional[str] = None
+    priority: Optional[str] = None
 
 
 class TaskUpdate(BaseModel):
@@ -39,6 +44,8 @@ class TaskResponse(BaseModel):
     id: str
     workspace_id: str
     creator_id: str
+    task_type: str = "DEVELOPMENT"
+    task_meta_json: Optional[dict] = None
     name: str
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None

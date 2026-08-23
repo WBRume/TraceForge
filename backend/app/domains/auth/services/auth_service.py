@@ -71,10 +71,14 @@ def register_user(db: Session, email: str, password: str, display_name: str) -> 
     if existing:
         raise ValueError("This email has already been registered")
 
+    # Bootstrap: the very first registered user becomes the platform
+    # administrator so the management domain can be configured.
+    user_count = db.query(User).count()
     user = User(
         email=email,
         hashed_password=hash_password(password),
         display_name=display_name,
+        is_admin=user_count == 0,
     )
     db.add(user)
     db.commit()

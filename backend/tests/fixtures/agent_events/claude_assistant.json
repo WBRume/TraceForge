@@ -1,0 +1,10 @@
+{
+  "type": "assistant",
+  "message": {
+    "content": [
+      {"type": "thinking", "thinking": "fixture thinking"},
+      {"type": "text", "text": "fixture text"},
+      {"type": "tool_use", "id": "fixture-tool-1", "name": "Bash", "input": {"command": "echo fixture"}}
+    ]
+  }
+}

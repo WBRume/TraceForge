@@ -907,6 +907,39 @@ def _serialize_segment(row: SddContextTokenSegment) -> Dict[str, Any]:
     }
 
 
+def _snapshot_has_usable_provider_tokens(snapshot: SddContextTokenSnapshot) -> bool:
+    """判断快照是否带有可展示的 provider token 数据（0 视为无实际用量）。"""
+    return any(
+        getattr(snapshot, field, None) not in (None, 0)
+        for field in PROVIDER_TOKEN_FIELDS
+    )
+
+
+def _find_snapshot_with_usage(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+    exclude_id: Optional[str] = None,
+) -> Optional[SddContextTokenSnapshot]:
+    """在任务快照中找最近一条有真实 provider token 数据的快照。"""
+    rows = (
+        db.query(SddContextTokenSnapshot)
+        .filter(
+            SddContextTokenSnapshot.workspace_id == workspace_id,
+            SddContextTokenSnapshot.task_id == task_id,
+        )
+        .order_by(SddContextTokenSnapshot.created_at.desc(), SddContextTokenSnapshot.id.desc())
+        .all()
+    )
+    for row in rows:
+        if exclude_id and row.id == exclude_id:
+            continue
+        if _snapshot_has_usable_provider_tokens(row):
+            return row
+    return None
+
+
 def get_context_window(
     db: Session,
     *,
@@ -918,6 +951,17 @@ def get_context_window(
     page_size: int = 50,
 ) -> Dict[str, Any]:
     snapshot = find_snapshot(db, workspace_id=workspace_id, task_id=task_id, ai_job_id=ai_job_id)
+    # 当前快照可能来自“刚中断/未产生 usage”的回合，若没有任何真实 token 数据，
+    # 回退到最近一条有 provider token 用量的历史快照，避免界面显示全 unavailable/0。
+    if snapshot is not None and not _snapshot_has_usable_provider_tokens(snapshot):
+        fallback = _find_snapshot_with_usage(
+            db,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            exclude_id=snapshot.id,
+        )
+        if fallback is not None:
+            snapshot = fallback
     safe_page = max(1, int(page or 1))
     safe_page_size = max(1, min(int(page_size or 50), SEGMENT_PAGE_LIMIT))
     selected_category = _coerce_category(category) if category else None

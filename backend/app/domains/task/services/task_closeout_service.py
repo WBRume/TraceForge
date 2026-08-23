@@ -136,8 +136,6 @@ def _complete_evidence_payloads(payload: CompleteTaskCloseoutRequest) -> List[Ev
                 change_reason="Task completion closeout.",
             )
         )
-    if not evidence:
-        raise TaskCloseoutError("Task completion requires at least one commit, PR, local reference, or evidence attachment.", status_code=422)
     return evidence
 
 

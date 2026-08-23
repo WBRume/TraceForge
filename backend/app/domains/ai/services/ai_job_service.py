@@ -20,6 +20,11 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.database import SessionLocal
 from app.engine.claude_bridge import create_cli_bridge
+from app.agents.selection import (
+    create_legacy_bridge,
+    resolve_task_backend,
+    resolve_workspace_backend,
+)
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.asset.models.asset import (
@@ -33,6 +38,7 @@ from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service
 from app.domains.task.services import context_token_service, task_cli_state_service
+from app.domains.task.services import diagnosis_result_service
 from app.domains.task.services.ai_context_service import (
     build_asset_thread_prompt,
     build_resolution_proposal_prompt,
@@ -56,6 +62,7 @@ TASK_QUEUE_PAUSED_STATUSES = {TaskStatus.INTERRUPTED, TaskStatus.FAILED}
 JOB_KIND_THREAD_AI_REPLY = "THREAD_AI_REPLY"
 JOB_KIND_RESOLUTION_PROPOSAL = "RESOLUTION_PROPOSAL"
 JOB_KIND_RESOLUTION_REWRITE = "RESOLUTION_REWRITE"
+JOB_KIND_DIAGNOSIS_SUMMARY = "DIAGNOSIS_SUMMARY"
 
 _QUEUE_LOCKS: Dict[str, asyncio.Lock] = {}
 _QUEUE_RUNNERS: Dict[str, asyncio.Task] = {}
@@ -134,6 +141,23 @@ def _normalize_job_kind(value: Optional[str]) -> str:
 def _job_kind_from_job(job: SddAiJob) -> str:
     context = job.context_json if isinstance(job.context_json, dict) else {}
     return _normalize_job_kind(str(context.get("job_kind") or ""))
+
+
+def _has_diagnosis_summary_job(db, task_id: str) -> bool:
+    """任务是否发起过「一键总结问题案例」任务（含进行中/成功/失败历史）。"""
+    jobs = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        )
+        .all()
+    )
+    for job in jobs:
+        context = job.context_json if isinstance(job.context_json, dict) else {}
+        if str(context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
+            return True
+    return False
 
 
 def serialize_job(job: SddAiJob) -> Dict[str, Any]:
@@ -256,6 +280,7 @@ async def _update_job_state(
     result_patch: Optional[Dict[str, Any]] = None,
     error_message: Optional[str] = None,
     session_id: Optional[str] = None,
+    agent_backend: Optional[str] = None,
     finalize: bool = False,
 ) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
@@ -283,6 +308,8 @@ async def _update_job_state(
             job.error_message = error_message
         if session_id is not None:
             job.session_id = session_id
+        if agent_backend is not None:
+            job.agent_backend = agent_backend
         if status == AiJobStatus.RUNNING and job.started_at is None:
             job.started_at = datetime.utcnow()
         if finalize or (status in FINAL_STATUSES):
@@ -454,6 +481,43 @@ def create_task_chat_job(
         )
     except Exception as exc:
         logger.warning(f"Failed to seed context token snapshot for job {job.id}: {exc}")
+    return job
+
+
+def create_diagnosis_summary_job(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+    creator_id: str,
+) -> SddAiJob:
+    """问题定位任务「一键总结问题案例」：创建后台 AI 总结任务。
+
+    复用 TASK_CHAT 通道（同一任务串行队列），通过 context_json.job_kind 标记
+    JOB_KIND_DIAGNOSIS_SUMMARY。执行时走独立的一次性总结流程，不写入会话气泡，
+    完成后原位刷新「定位结果」卡片并广播到任务房间。
+    """
+    payload_context = {
+        "source": "task_chat",
+        "job_kind": JOB_KIND_DIAGNOSIS_SUMMARY,
+    }
+    job = SddAiJob(
+        workspace_id=workspace_id,
+        task_id=task_id,
+        asset_id=None,
+        thread_id=None,
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=_queue_key_for_task(task_id),
+        status=AiJobStatus.PENDING,
+        progress=0,
+        message="一键总结问题案例已进入队列",
+        prompt_text="[一键总结问题案例]",
+        context_json=payload_context,
+        creator_id=creator_id,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
     return job
 
 
@@ -822,13 +886,15 @@ async def run_cli_single_turn(
     session_id: Optional[str] = None,
     max_attempts: int = 2,
     should_cancel: Optional[Callable[[], bool]] = None,
+    backend_name: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
     attempts = max(1, int(max_attempts or 1))
     next_session_id = session_id
     last_error: Optional[Exception] = None
 
     for attempt in range(1, attempts + 1):
-        bridge = create_cli_bridge()
+        # 指定 backend（工作区配置或线程粘性）走统一适配层；否则保持旧全局行为
+        bridge = create_legacy_bridge(backend_name) if backend_name else create_cli_bridge()
         text_parts: List[str] = []
         result_text = ""
         result_is_error = False
@@ -986,13 +1052,26 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 "job_kind": job_kind,
             },
         )
-        thread_workspace_path = await task_cli_state_service.ensure_thread_workspace(
+        # 线程专属会话：首次使用时从 baseline fork（各讨论上下文独立），
+        # 之后一直用线程自己的会话；绝不直接 resume baseline 会话。
+        thread_session_id = await task_cli_state_service.ensure_thread_session(
             thread.id,
             require_ready=True,
         )
-        resume_session_id = task_cli_state_service.get_latest_thread_session_id(db, thread.id)
-        if not resume_session_id:
-            resume_session_id = task_cli_state_service.get_bootstrap_session_id(db, thread.task_id)
+        thread_workspace_path = task_cli_state_service.thread_workspace_dir(
+            thread.workspace_id, thread.task_id, thread.id
+        )
+        resume_session_id = (
+            task_cli_state_service.get_latest_thread_session_id(db, thread.id)
+            or thread_session_id
+        )
+        # 线程粘性 backend：最近成功回合 > baseline 固化值 > 工作区配置。
+        # baseline 建立后即使工作区切换 agent，线程/baseline 仍沿用原后端保持上下文。
+        thread_backend = (
+            task_cli_state_service.get_latest_thread_agent_backend(db, thread.id)
+            or task_cli_state_service.get_bootstrap_agent_backend(db, thread.task_id)
+            or resolve_workspace_backend(db, thread.workspace_id)
+        )
 
         if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
             context_json = job.context_json if isinstance(job.context_json, dict) else {}
@@ -1064,6 +1143,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 thread_workspace_path,
                 session_id=resume_session_id,
                 should_cancel=lambda: _is_cancel_requested(job_id),
+                backend_name=thread_backend,
             )
             proposal_text = str(result.get("text") or "").strip()
             final_session_id = str(result.get("session_id") or "").strip()
@@ -1106,6 +1186,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     "proposal_excerpt": proposal_text[:1200],
                 },
                 session_id=final_session_id or None,
+                agent_backend=thread_backend,
                 finalize=True,
             )
             return
@@ -1202,6 +1283,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 thread_workspace_path,
                 session_id=resume_session_id,
                 should_cancel=lambda: _is_cancel_requested(job_id),
+                backend_name=thread_backend,
             )
             rewrite_payload = _parse_rewrite_payload(str(result.get("text") or ""))
             rewrite_scope = requested_scope or str(rewrite_payload.get("scope") or "anchor").strip().lower()
@@ -1274,6 +1356,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
                 },
                 session_id=final_session_id or None,
+                agent_backend=thread_backend,
                 finalize=True,
             )
             return
@@ -1293,7 +1376,15 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             if _extract_block_text(item)
         ).strip()
         history_lines = _thread_history_lines(thread)
-        project_path = (task.project_path if task and task.project_path else ".").strip() or "."
+        from app.domains.task.services import task_service as task_service_module
+
+        project_path = (
+            task_service_module.resolve_task_cli_dir(db, task)
+            if task
+            else "."
+        )
+        if not os.path.isdir(project_path):
+            project_path = (task.project_path if task and task.project_path else ".").strip() or "."
         if not os.path.isdir(project_path):
             project_path = "."
         await _update_job_state(job_id, progress=24, message="Preparing AI prompt")
@@ -1331,6 +1422,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             thread_workspace_path,
             session_id=resume_session_id,
             should_cancel=lambda: _is_cancel_requested(job_id),
+            backend_name=thread_backend,
         )
         reply = str(result.get("text") or "").strip()
         final_session_id = str(result.get("session_id") or "").strip()
@@ -1345,7 +1437,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             role=AssetThreadMessageRole.AI,
             content=reply,
             creator_id=None,
-            metadata_json={"provider": "claude-cli", "job_id": job_id},
+            metadata_json={"provider": thread_backend or "claude-cli", "job_id": job_id},
         )
         db.commit()
         db.refresh(ai_message)
@@ -1376,6 +1468,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             message="AI reply completed",
             result_patch={"message_id": ai_message.id},
             session_id=final_session_id or None,
+            agent_backend=thread_backend,
             finalize=True,
         )
     except Exception as exc:
@@ -1502,6 +1595,8 @@ async def _on_engine_result(
         db.close()
 
     if success:
+        # 问题定位卡片只在用户点击「一键总结问题案例」时生成；
+        # 普通 AI 会话结束不再自动反填定位结果卡片。
         await _update_job_state(
             job_id,
             status=AiJobStatus.SUCCESS,
@@ -1556,9 +1651,16 @@ async def _execute_task_chat_job(job_id: str) -> None:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if not job or job.channel != AiJobChannel.TASK_CHAT:
             return
+        # 防止“停止/中断”发生在排队阶段时，任务稍后仍被启动
+        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.CANCELLED}:
+            return
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task:
             raise ValueError("Task not found for AI job")
+        # 问题定位任务「一键总结问题案例」：一次性总结任务，不写会话气泡，走独立执行器
+        job_context = job.context_json if isinstance(job.context_json, dict) else {}
+        if str(job_context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
+            return await _execute_diagnosis_summary_job(job_id)
     finally:
         db.close()
 
@@ -1586,6 +1688,168 @@ async def _execute_task_chat_job(job_id: str) -> None:
         await _run_task_chat_turn(job_id, prompt)
 
 
+def _collect_diagnosis_transcript(task_id: str, max_chars: int = 60000) -> str:
+    """汇总问题定位任务的会话文本（user/assistant/system），供一键总结使用。"""
+    from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+    from app.domains.task.services import task_service as task_service_module
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(ChatMessage)
+            .filter(
+                ChatMessage.task_id == task_id,
+                ChatMessage.message_type.in_([MessageType.TEXT, MessageType.INIT_REASON]),
+            )
+            .all()
+        )
+        rows = task_service_module.sort_chat_messages(rows)
+        parts: List[str] = []
+        for row in rows:
+            role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)
+            if role == "user":
+                label = "用户"
+            elif role == "system":
+                label = "系统"
+            else:
+                label = "AI"
+            content = str(row.content or "").strip()
+            if not content:
+                continue
+            parts.append(f"[{label}] {content}")
+        transcript = "\n\n".join(parts).strip()
+    finally:
+        db.close()
+    if not transcript:
+        return ""
+    limit = max(0, int(max_chars or 60000))
+    if len(transcript) > limit:
+        head = transcript[: limit * 3 // 4]
+        tail = transcript[-limit // 4:]
+        transcript = f"{head}\n\n…（中间内容过长已截断）…\n\n{tail}"
+    return transcript
+
+
+def _resolve_task_project_path(task) -> str:
+    """解析任务 CLI 工作目录（与正常会话引擎一致）。"""
+    project_path = str(getattr(task, "project_path", None) or "").strip() or "."
+    try:
+        os.makedirs(project_path, exist_ok=True)
+    except Exception:
+        pass
+    return project_path
+
+
+async def _publish_diagnosis_summary_card(db: Session, task, result_record) -> None:
+    if result_record is None or not result_record.source_chat_message_id:
+        return
+    from app.domains.task.models.chat import ChatMessage
+
+    message = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.id == result_record.source_chat_message_id)
+        .first()
+    )
+    if not message:
+        return
+    await diagnosis_result_service.publish_diagnosis_result_message(db, task=task, message=message)
+
+
+async def _execute_diagnosis_summary_job(job_id: str) -> None:
+    """问题定位任务「一键总结问题案例」执行器。
+
+    汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并广播。
+    与正常聊天不同：不向会话写入 AI 回复气泡。
+    """
+    db = SessionLocal()
+    task = None
+    creator_id = ""
+    try:
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        if not job:
+            return
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+        if not task or getattr(task, "task_type", None) != "DIAGNOSIS":
+            raise ValueError("Only diagnosis tasks support diagnosis summary")
+        creator_id = str(job.creator_id or "")
+    finally:
+        db.close()
+
+    with bind_task_context(
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        user_id=creator_id,
+    ), bind_ai_context(
+        job_id=job_id,
+        task_id=task.id,
+        session_id=None,
+        event_type="diagnosis_summary",
+    ):
+        await _update_job_state(
+            job_id,
+            status=AiJobStatus.RUNNING,
+            progress=40,
+            message="正在汇总会话并生成定位结果",
+            context_patch={"job_kind": JOB_KIND_DIAGNOSIS_SUMMARY},
+        )
+        project_path = _resolve_task_project_path(task)
+        transcript = _collect_diagnosis_transcript(task.id)
+        prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
+        # 任务粘性 backend：与该任务聊天引擎保持同一后端
+        task_backend_db = SessionLocal()
+        try:
+            task_backend = resolve_task_backend(task_backend_db, task.id) if task.id else None
+        finally:
+            task_backend_db.close()
+
+        await _update_job_state(job_id, progress=55, message="AI 正在生成结构化定位结果")
+        result = await run_cli_single_turn(
+            prompt,
+            project_path,
+            session_id=None,
+            should_cancel=lambda: _is_cancel_requested(job_id),
+            backend_name=task_backend,
+        )
+        summary_text = str(result.get("text") or "").strip()
+        if not summary_text:
+            raise ValueError("Diagnosis summary reply is empty")
+
+        payload = diagnosis_result_service.extract_payload_from_text(summary_text)
+        if payload is None:
+            raise ValueError("Failed to parse structured diagnosis summary")
+
+        db = SessionLocal()
+        try:
+            latest_task = db.query(SddTask).filter(SddTask.id == task.id).first()
+            if not latest_task:
+                raise ValueError("Task disappeared during diagnosis summary")
+            result_record = diagnosis_result_service.upsert_diagnosis_result_from_ai(
+                db,
+                task=latest_task,
+                payload=payload,
+                actor_user_id=creator_id,
+            )
+            await _publish_diagnosis_summary_card(db, latest_task, result_record)
+        finally:
+            db.close()
+
+        await _update_job_state(
+            job_id,
+            status=AiJobStatus.SUCCESS,
+            progress=100,
+            message="定位结果已生成",
+            result_patch={
+                "summary_excerpt": str(
+                    payload.summary or payload.root_cause or summary_text
+                )[:1200],
+                "summary_source": "diagnosis_summary",
+            },
+            session_id=str(result.get("session_id") or "") or None,
+            agent_backend=task_backend,
+            finalize=True,
+        )
+
+
 async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
     db = SessionLocal()
     try:
@@ -1598,6 +1862,8 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
 
         context = job.context_json if isinstance(job.context_json, dict) else {}
         fresh_session = bool(context.get("fresh_session"))
+        # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
+        task_backend = resolve_task_backend(db, task.id)
         engine = get_engine(task.id)
         if not engine:
             engine = WorkflowEngine(
@@ -1605,6 +1871,7 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
                 ws_id=task.workspace_id,
                 user_id=job.creator_id,
                 job_id=job_id,
+                backend_name=task_backend,
                 on_result=_on_engine_result,
                 on_hitl=_on_engine_hitl,
                 on_session=_on_engine_session,
@@ -1622,7 +1889,9 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
             )
             if fresh_session:
                 engine.session_id = None
-            elif job.session_id and not engine.session_id:
+            elif job.session_id:
+                # 恢复上次中断（或继续）的会话：总是以 DB 持久化的 session_id
+                # 为准，保证下次启动使用 --resume 重新进入原会话，而不是新开会话。
                 engine.session_id = job.session_id
     finally:
         db.close()
@@ -1848,6 +2117,8 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
                 "session_id": job.session_id,
             }
 
+            # 任务粘性 backend：与任务聊天保持同一后端
+            task_backend = resolve_task_backend(db, task.id)
             engine = get_engine(task.id)
             if not engine:
                 engine = WorkflowEngine(
@@ -1855,6 +2126,7 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
                     ws_id=task.workspace_id,
                     user_id=job.creator_id,
                     job_id=job_id,
+                    backend_name=task_backend,
                     on_result=_on_engine_result,
                     on_hitl=_on_engine_hitl,
                     on_session=_on_engine_session,
@@ -1870,7 +2142,9 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
                     on_session=_on_engine_session,
                     on_error=_on_engine_error,
                 )
-                if job.session_id and not engine.session_id:
+                if job.session_id:
+                    # 恢复中断/HITL 挂起会话：以 DB 持久化的 session_id 为准，
+                    # 保证下一步用 --resume 回到原会话而非新开会话。
                     engine.session_id = job.session_id
         finally:
             db.close()
