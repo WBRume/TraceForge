@@ -46,6 +46,9 @@ const documentSegments = computed(() => preInput.value?.document_segments || [])
 const doneCount = computed(() => mentionees.value.filter((m: any) => m.done).length)
 
 const memberColor = (userId: string) => props.vm?.memberColorFor?.(userId) || '#0284C7'
+const segTint = (userId: string) => (props.vm?.memberColorRgba
+  ? props.vm.memberColorRgba(userId, 0.1)
+  : 'transparent')
 
 const segmentTitle = (seg: any) => (
   seg.modified
@@ -228,6 +231,7 @@ const cancelCollect = () => {
             :style="{
               '--seg-color': memberColor(seg.created_by),
               '--seg-modifier-color': memberColor(seg.updated_by),
+              '--seg-tint': segTint(seg.created_by),
             }"
             :title="segmentTitle(seg)"
           >{{ seg.text }}</span>
@@ -432,7 +436,7 @@ const cancelCollect = () => {
 }
 
 .doc-seg {
-  border-bottom: 2px solid color-mix(in srgb, var(--seg-color, #0284C7) 45%, transparent);
+  border-bottom: 2px solid var(--seg-color, #0284C7);
   border-radius: 1px;
 }
 
@@ -442,9 +446,11 @@ const cancelCollect = () => {
   border-bottom-color: var(--seg-modifier-color, #0284C7);
 }
 
-/* 新增文字段：淡色底强调 */
+/* 他人新增文字段：成员色淡底强调 */
 .doc-seg.is-new {
-  background: color-mix(in srgb, var(--seg-color, #0284C7) 8%, transparent);
+  background: var(--seg-tint, transparent);
+  border-radius: 3px;
+  padding: 0 1px;
 }
 
 .doc-edit-hint {

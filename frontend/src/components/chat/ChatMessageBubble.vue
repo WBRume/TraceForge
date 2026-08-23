@@ -204,10 +204,11 @@ function openDiagnosisCase(caseId: string) {
             v-for="(seg, index) in collabSegments"
             :key="index"
             class="collab-seg"
-            :class="{ 'is-modified': seg.modified }"
+            :class="{ 'is-modified': seg.modified, 'is-new': seg.created_by !== msg.creator_id && !seg.modified }"
             :style="{
               '--seg-color': vm.memberColorFor(seg.created_by),
               '--seg-modifier-color': vm.memberColorFor(seg.updated_by),
+              '--seg-tint': vm.memberColorRgba ? vm.memberColorRgba(seg.created_by, 0.1) : 'transparent',
             }"
             :title="segmentTitle(seg)"
           >{{ seg.text }}</span>
@@ -462,7 +463,7 @@ function openDiagnosisCase(caseId: string) {
   min-width: 220px;
 }
 
-/* 协作文档：字符级归属，作者色下划线 + 被改段虚线 */
+/* 协作文档：字符级归属，作者色实线下划线 + 被改段虚线（实色，不依赖 color-mix） */
 .collab-doc {
   font-size: 0.9rem;
   line-height: 1.8;
@@ -473,13 +474,20 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .collab-seg {
-  border-bottom: 2px solid color-mix(in srgb, var(--seg-color, #0284C7) 45%, transparent);
+  border-bottom: 2px solid var(--seg-color, #0284C7);
   border-radius: 1px;
 }
 
 .collab-seg.is-modified {
   border-bottom-style: dashed;
   border-bottom-color: var(--seg-modifier-color, #0284C7);
+}
+
+/* 他人新增的文字：成员色淡底强调 */
+.collab-seg.is-new {
+  background: var(--seg-tint, transparent);
+  border-radius: 3px;
+  padding: 0 1px;
 }
 
 .msg-content {
