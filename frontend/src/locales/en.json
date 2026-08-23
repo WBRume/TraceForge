@@ -3122,6 +3122,8 @@
     "title": "Notifications",
     "empty": "No notifications",
     "mark_all_read": "Mark all read",
+    "clear_all": "Clear all",
+    "delete": "Delete",
     "just_now": "Just now",
     "minutes_ago": "{n} min ago",
     "hours_ago": "{n} h ago"

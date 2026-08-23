@@ -83,6 +83,33 @@ export const useNotificationStore = defineStore('appNotification', () => {
     }
   }
 
+  const removeItem = async (id: string) => {
+    const target = items.value.find((item) => item.id === id)
+    if (!target) return
+    const wasUnread = !target.read_at
+    // 乐观移除,失败时以刷新兜底恢复
+    items.value = items.value.filter((item) => item.id !== id)
+    if (wasUnread && unreadCount.value > 0) unreadCount.value -= 1
+    try {
+      await api.delete(`/notifications/${id}`)
+    } catch {
+      void fetchList()
+      void refreshUnreadCount()
+    }
+  }
+
+  const clearAll = async () => {
+    if (items.value.length === 0) return
+    items.value = []
+    unreadCount.value = 0
+    try {
+      await api.delete('/notifications')
+    } catch {
+      void fetchList()
+      void refreshUnreadCount()
+    }
+  }
+
   const handleIncoming = (item: AppNotificationItem) => {
     if (!item?.id) return
     const index = items.value.findIndex((existing) => existing.id === item.id)
@@ -175,6 +202,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
     fetchList,
     markRead,
     markAllRead,
+    removeItem,
+    clearAll,
     start,
     stop,
     reset,
