@@ -331,28 +331,36 @@ defineExpose({ resetPreInputForm })
 
         <div class="toolbar-spacer"></div>
 
-        <button
-          class="send-btn"
-          :class="{ 'is-preinput': isPreInput }"
-          :disabled="!canSend"
-          :title="isPreInput ? $t('preInput.start_button') : props.sendTitle"
-          @click="handleSendClick"
-        >
-          <Send class="w-4 h-4" />
-        </button>
+        <!-- 主按钮：运行中切换为停止（替换发送位置，带过渡动效） -->
+        <Transition name="action-swap" mode="out-in">
+          <button
+            v-if="props.running"
+            key="stop"
+            type="button"
+            class="stop-btn"
+            :class="{ 'is-interrupting': props.interrupting }"
+            :disabled="!props.canInterrupt || props.interrupting"
+            :title="props.interruptTitle"
+            @click="emit('interrupt')"
+          >
+            <Loader2 v-if="props.interrupting" class="w-3.5 h-3.5 spin" />
+            <Square v-else class="w-3 h-3 stop-icon" />
+          </button>
+          <button
+            v-else
+            key="send"
+            type="button"
+            class="send-btn"
+            :class="{ 'is-preinput': isPreInput }"
+            :disabled="!canSend"
+            :title="isPreInput ? $t('preInput.start_button') : props.sendTitle"
+            @click="handleSendClick"
+          >
+            <Send class="w-4 h-4" />
+          </button>
+        </Transition>
       </div>
     </div>
-
-    <button
-      v-if="props.running"
-      class="interrupt-square-btn"
-      :disabled="!props.canInterrupt || props.interrupting"
-      :title="props.interruptTitle"
-      @click="emit('interrupt')"
-    >
-      <Loader2 v-if="props.interrupting" class="w-4 h-4 spin" />
-      <Square v-else class="w-4 h-4" />
-    </button>
   </div>
 </template>
 
@@ -719,30 +727,67 @@ defineExpose({ resetPreInputForm })
   background: var(--color-primary-600, #0284C7);
 }
 
-/* ── 中断按钮 ── */
-.interrupt-square-btn {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 40px;
-  border: none;
-  border-radius: 12px;
-  background: #FEE2E2;
-  color: #991B1B;
+/* ── 停止按钮：运行中替换发送位置，呼吸动效提示可中断 ── */
+.stop-btn {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #fff;
+  color: #B91C1C;
+  border: 1px solid #FECACA;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 4px 12px rgba(153, 27, 27, 0.12);
-  transition: background 0.2s;
+  flex: 0 0 auto;
+  transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
+  animation: stop-breathe 1.8s ease-in-out infinite;
 }
 
-.interrupt-square-btn:hover:not(:disabled) {
-  background: #FECACA;
+.stop-btn:hover:not(:disabled) {
+  background: #FEF2F2;
+  transform: scale(1.06);
 }
 
-.interrupt-square-btn:disabled {
-  opacity: 0.55;
+.stop-btn:disabled {
   cursor: not-allowed;
+  opacity: 0.75;
+  animation: none;
+}
+
+.stop-btn.is-interrupting {
+  color: #DC2626;
+  animation: none;
+}
+
+.stop-icon {
+  fill: currentColor;
+}
+
+@keyframes stop-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(185, 28, 28, 0.28);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(185, 28, 28, 0);
+  }
+}
+
+/* ── 发送 ↔ 停止 切换动效 ── */
+.action-swap-enter-active,
+.action-swap-leave-active {
+  transition: transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.18s ease;
+}
+
+.action-swap-enter-from {
+  transform: scale(0.5) rotate(-90deg);
+  opacity: 0;
+}
+
+.action-swap-leave-to {
+  transform: scale(0.5) rotate(90deg);
+  opacity: 0;
 }
 
 .spin {

@@ -381,6 +381,14 @@ export function useChatViewModel() {
     }
     return MEMBER_COLOR_PALETTE[hash % MEMBER_COLOR_PALETTE.length]
   }
+  // 成员色的半透明变体（避免 CSS color-mix 的兼容性差异）
+  const memberColorRgba = (userId: string | null | undefined, alpha: number): string => {
+    const hex = memberColorFor(userId)
+    const r = parseInt(hex.slice(1, 3), 16)
+    const g = parseInt(hex.slice(3, 5), 16)
+    const b = parseInt(hex.slice(5, 7), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
   const messageAuthorColor = (msg: any): string => (
     String(msg?.role || '').toLowerCase() === 'user'
       ? memberColorFor(msg?.creator_id)
@@ -2964,6 +2972,7 @@ export function useChatViewModel() {
     messageAuthorLabel,
     messageAuthorColor,
     memberColorFor,
+    memberColorRgba,
     messages,
     // 协作预输入
     activePreInput,
