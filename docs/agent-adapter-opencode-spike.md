@@ -60,10 +60,9 @@ opencode acp
   - 长驻连接
   - 多任务复用
   - 权限请求 API 更完整
-- [ ] Skills 如何物化：
-  - `.opencode` 目录？
-  - `opencode.json`？
-  - 全局 config？
+- [x] Skills 如何物化：
+  - 当前采用 `.agents/skills`（Agent Skills 约定），
+  - 备选 `.opencode` 目录 / `opencode.json` / 全局 config 待社区版本确认。
 - [ ] 是否支持 usage/cost/token 统计？
 
 ---

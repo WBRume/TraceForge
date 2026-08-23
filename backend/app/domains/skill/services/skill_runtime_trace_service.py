@@ -1,8 +1,8 @@
 """Runtime Skill evidence trace capture.
 
-Only observable Claude CLI tool_use / tool_result payloads are considered. The
+Only observable Agent CLI tool_use / tool_result payloads are considered. The
 matcher attributes events to a Skill when a path explicitly enters
-.claude/skills/<materialized_dir>/... for the current task.
+<agent-specific skills dir>/<materialized_dir>/... for the current task.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from app.domains.skill.models.skill import (
 )
 from app.domains.task.models.task import SddTask
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.skill.services import task_skill_runtime_service
+from app.domains.skill.services import skill_service, task_skill_runtime_service
 from app.domains.task.services import context_token_service
 from app.domains.skill.services.skill import storage_service
 from app.domains.websocket.ws.manager import manager as ws_manager
@@ -80,6 +80,7 @@ def serialize_runtime_event(event: SddSkillRuntimeEvent) -> Dict[str, Any]:
 def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIndexItem]:
     records = task_skill_runtime_service.get_task_runtime_skill_records(db, task)
     project_path = os.path.abspath(str(task.project_path or "."))
+    rel_root = skill_service.resolve_task_skills_rel_root(db, task)
     items: List[RuntimeSkillIndexItem] = []
     for record in records:
         folder = str(record.materialized_dir or "").strip()
@@ -90,8 +91,8 @@ def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIn
                 skill_id=record.skill_id if record.skill is not None and not record.config_deleted else None,
                 skill_name=record.name,
                 materialized_dir=folder,
-                runtime_root_abs=os.path.abspath(os.path.join(project_path, ".claude", "skills", folder)),
-                runtime_root_rel=storage_service.normalize_path(os.path.join(".claude", "skills", folder)),
+                runtime_root_abs=os.path.abspath(os.path.join(project_path, rel_root, folder)),
+                runtime_root_rel=storage_service.normalize_path(os.path.join(rel_root, folder)),
             )
         )
     return items
@@ -140,7 +141,7 @@ def _path_under_root(candidate: str, item: RuntimeSkillIndexItem) -> Optional[Tu
     if candidate_rel == root_rel:
         return raw, ""
     prefix = root_rel.rstrip("/") + "/"
-    marker = f".claude/skills/{item.materialized_dir}".replace("\\", "/")
+    marker = root_rel.replace("\\", "/")
     marker_lc = marker.lower()
     candidate_lc = candidate_rel.lower()
     if candidate_lc.startswith(prefix.lower()):
@@ -160,7 +161,6 @@ def _command_match(command: str, item: RuntimeSkillIndexItem) -> Optional[Tuple[
     roots = [
         _slash(os.path.normcase(item.runtime_root_abs)).lower(),
         _norm_rel(item.runtime_root_rel).lower(),
-        f".claude/skills/{item.materialized_dir}".lower(),
     ]
     for root in roots:
         idx = lowered.find(root)

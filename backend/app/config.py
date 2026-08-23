@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     MAX_RETRY_COUNT: int = 3
     SKILLS_STORAGE_ROOT: str = "storage/skills"
     SKILL_MAX_TEXT_FILE_SIZE_BYTES: int = 10 * 1024 * 1024
+
+    @property
+    def SKILLS_STORAGE_ROOT_ABS(self) -> str:
+        """Resolve SKILLS_STORAGE_ROOT against the backend root so the skill
+        package path does not change when the process CWD changes."""
+        return _resolve_backend_path(self.SKILLS_STORAGE_ROOT, fallback="storage/skills")
     API_MOCK_TEMP_ROOT: str = "tmp/api_mock_workspace"
     CLI_STATE_ROOT: str = "tmp/cli_state"
     WORKSPACE_ARCHIVE_ROOT: str = "tmp/workspace_archive"
