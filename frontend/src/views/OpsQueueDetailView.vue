@@ -3,8 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ExternalLink, Loader2, ServerCog } from 'lucide-vue-next'
-import AppSidebar from '@/components/AppSidebar.vue'
+import { ExternalLink, Loader2 } from 'lucide-vue-next'
 import { formatApiError } from '@/utils/error'
 import { useProvisioningStore } from '@/stores/provisioning'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -85,20 +84,6 @@ const loadJob = async ({ silent = false }: { silent?: boolean } = {}) => {
   }
 }
 
-const goList = () => {
-  router.push('/ops/queue')
-}
-
-const sidebarNavItems = computed(() => [
-  {
-    key: 'queue-ops-detail',
-    label: t('queue_ops.detail_title'),
-    icon: ServerCog,
-    active: true,
-    noClick: true,
-  },
-])
-
 const runAction = async (action: 'stop' | 'retry') => {
   if (!job.value) return
   const actionKey = `${job.value.source}:${job.value.job_id}:${action}`
@@ -177,19 +162,11 @@ watch(
 
 <template>
   <div class="queue-detail-page">
-    <AppSidebar
-      :title="t('queue_ops.detail_title')"
-      :back-title="t('queue_ops.back_list')"
-      :nav-items="sidebarNavItems"
-      @back="goList"
-    />
-
-    <main class="queue-detail-main">
-      <div class="detail-wrap">
-        <header class="detail-header" v-if="job">
-          <div class="header-left">
-            <h1>{{ queueJobTypeLabel(job, t) }} - {{ shortQueueId(job.job_id) }}</h1>
-          </div>
+    <div class="detail-wrap">
+      <header class="detail-header" v-if="job">
+        <div class="header-left">
+          <h1>{{ queueJobTypeLabel(job, t) }} - {{ shortQueueId(job.job_id) }}</h1>
+        </div>
 
         <div class="header-actions" v-if="job">
           <button
@@ -311,7 +288,6 @@ watch(
         </div>
       </div>
       </div>
-    </main>
   </div>
 </template>
 
@@ -320,17 +296,8 @@ watch(
 
 .queue-detail-page {
   display: flex;
-  height: 100vh;
-  background-color: var(--color-bg-base);
   font-family: 'Open Sans', sans-serif;
   color: #1e3a8a;
-  overflow: hidden;
-}
-
-.queue-detail-main {
-  flex-grow: 1;
-  overflow-y: auto;
-  padding: 2rem 1.5rem;
 }
 
 .detail-wrap {

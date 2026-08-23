@@ -1,4 +1,4 @@
-﻿"""
+"""
 Task API routes.
 """
 
@@ -44,11 +44,19 @@ from app.domains.task.schemas.task import (
     TaskResumeInterruptedRequest,
     TaskStartRequest,
 )
+from app.domains.task.schemas.diagnosis import (
+    DiagnosisResultResponse,
+    DiagnosisResultUpsertRequest,
+)
+from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseResponse
+from app.domains.case_center.models.case import SddCase
+from app.domains.case_center.services import case_service
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
 from app.domains.task.services import git_patch_service, task_cli_state_service, task_service, context_token_service, task_session_control_service
+from app.domains.task.services import diagnosis_result_service
 from app.domains.workflow.services import change_proposal_service, provision_job_service
 from app.domains.workspace.services import workspace_service
 
@@ -82,10 +90,19 @@ def verify_workspace_permission(
 
 
 def _workspace_uses_git_worktree(db: Session, ws_id: str) -> bool:
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
     workspace = db.query(Workspace).filter(Workspace.id == ws_id).first()
     if not workspace:
         return False
-    return bool(str(workspace.project_path or "").strip() and str(workspace.git_repo_url or "").strip())
+    if bool(str(workspace.project_path or "").strip() and str(workspace.git_repo_url or "").strip()):
+        return True
+    repo_count = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == ws_id)
+        .count()
+    )
+    return repo_count > 0
 
 
 def _raise_task_lock_conflict(exc: LockAcquireTimeout, *, message: str = _TASK_INITIALIZING_MSG) -> None:
@@ -126,6 +143,11 @@ def _serialize_asset(asset) -> AssetResponse:
     )
 
 
+def _diagnosis_prompt_suffix(task) -> str:
+    """问题定位任务：把任务性质与工作契约注入 AI 会话 prompt（见 diagnosis_result_service）。"""
+    return diagnosis_result_service.build_diagnosis_prompt_suffix(task)
+
+
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
 async def create_task(
     ws_id: str,
@@ -156,6 +178,9 @@ async def create_task(
             spec_doc_path=data.spec_doc_path,
             requirement_duration_hours=data.requirement_duration_hours,
             skill_ids=data.skill_ids,
+            task_type=data.task_type,
+            phenomenon=data.phenomenon,
+            priority=data.priority,
         )
         job = provision_job_service.create_job(
             db,
@@ -211,13 +236,14 @@ async def create_task(
 def list_tasks(
     ws_id: str,
     status: Optional[str] = None,
+    task_type: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user, db)
-    items, total = task_service.list_tasks(db, ws_id, status, page, page_size)
+    items, total = task_service.list_tasks(db, ws_id, status, page, page_size, task_type=task_type)
     return {
         "items": items,
         "total": total,
@@ -238,6 +264,26 @@ def get_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+
+@router.get("/{task_id}/repositories")
+def get_task_repositories(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    repos = task_service.get_task_repositories(db, task.id)
+    return {
+        "task_id": task.id,
+        "primary_cli_dir": task_service.resolve_task_cli_dir(db, task),
+        "items": [task_service.serialize_task_repository(repo) for repo in repos],
+        "total": len(repos),
+    }
 
 
 @router.post("/{task_id}/change-proposals", response_model=ChangeProposalResponse, status_code=201)
@@ -361,6 +407,8 @@ async def start_task(
             existing_engine = get_engine(task.id)
             if existing_engine and existing_engine.running:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
+            if task.status == TaskStatus.PROVISIONING:
+                raise HTTPException(status_code=409, detail="Task is still being provisioned. Please wait until the workspace is ready.")
             if task.status == TaskStatus.CODING:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
             if task.status == TaskStatus.INTERRUPTED:
@@ -381,6 +429,8 @@ async def start_task(
                     "\n\nPlease read and strictly implement all requirements in the specification file. "
                     f"Absolute path: {abs_path}"
                 )
+
+            prompt += _diagnosis_prompt_suffix(task)
 
             task.status = TaskStatus.CODING
             task.error_message = None
@@ -427,6 +477,11 @@ async def initialize_task(
             if not task:
                 raise HTTPException(status_code=404, detail="Task not found")
             _ensure_task_not_baselined(task)
+            if task.status == TaskStatus.PROVISIONING:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Task is still being provisioned. Please wait until the workspace is ready.",
+                )
 
             cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
                 db,
@@ -463,13 +518,17 @@ async def initialize_task(
             db.commit()
             db.refresh(task)
 
-            prompt = task.description or f"Please start task '{task.name}'."
+            # 会话窗口只展示用户输入部分；规格文件指引/诊断后缀等内置提示词只随作业发给 agent
+            user_display = (task.description or "").strip() or f"Please start task '{task.name}'."
+            prompt = user_display
             if task.spec_doc_path:
                 abs_path = os.path.abspath(task.spec_doc_path)
                 prompt += (
                     "\n\nPlease read and strictly implement all requirements in the specification file. "
                     f"Absolute path: {abs_path}"
                 )
+
+            prompt += _diagnosis_prompt_suffix(task)
 
             init_reason_text = (body.reason or "").strip()
             task_service.save_chat_message(
@@ -487,7 +546,7 @@ async def initialize_task(
                 ws_id,
                 current_user.id,
                 role="user",
-                content=prompt,
+                content=user_display,
             )
 
             job = ai_job_service.create_task_chat_job(
@@ -859,6 +918,23 @@ def get_task_history(
     return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
 
+@router.get("/{task_id}/pre-input/active")
+def get_active_pre_input(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """预输入收集窗口冷启动/WS 重连恢复兜底。"""
+    verify_workspace_access(ws_id, current_user, db)
+    from app.domains.task.services import pre_input_service
+
+    pre_input = pre_input_service.get_active_pre_input(db, task_id)
+    if not pre_input:
+        return {"pre_input": None}
+    return {"pre_input": pre_input_service.serialize_pre_input(db, pre_input)}
+
+
 @router.delete("/{task_id}/history")
 async def clear_task_history(
     ws_id: str,
@@ -1064,3 +1140,269 @@ async def upload_task_spec(
         except Exception as exc:
             logger.exception(f"Failed to upload spec for task {task_id}: {exc}")
             raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ─── 问题定位任务：定位结果与一键转案例 ───
+
+
+def _require_diagnosis_task(db: Session, task_id: str, ws_id: str):
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        raise HTTPException(status_code=403, detail="Only diagnosis tasks support diagnosis results")
+    return task
+
+
+@router.post("/{task_id}/upload-diagnosis-doc", response_model=dict)
+async def upload_task_diagnosis_doc(
+    ws_id: str,
+    task_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：上传需求/日志等辅助文档（供 AI 会话与诊断文档抽屉使用）。"""
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.UPLOAD_TASK_SPEC,
+        "No permission to upload diagnosis documents",
+    )
+
+    with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
+        try:
+            async with lock_task(task_id):
+                task = task_service.get_task(db, task_id, ws_id)
+                if not task:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                _ensure_task_not_baselined(task)
+                if getattr(task, "task_type", None) != "DIAGNOSIS":
+                    raise HTTPException(status_code=403, detail="Only diagnosis tasks support diagnosis documents")
+                content = await file.read()
+                if len(content) > 20 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
+                asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
+                    db,
+                    task,
+                    creator_id=current_user.id,
+                    file_name=file.filename,
+                    file_content=content,
+                    change_note="Uploaded diagnosis document",
+                )
+                db.commit()
+                db.refresh(asset)
+                return {
+                    "status": "success",
+                    "path": cli_path,
+                    "filename": file.filename,
+                    "asset_id": asset.id,
+                    "version_id": version.id,
+                }
+        except LockAcquireTimeout as exc:
+            _raise_task_lock_conflict(exc)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception(f"Failed to upload diagnosis doc for task {task_id}: {exc}")
+            raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/{task_id}/diagnosis-result", response_model=Optional[DiagnosisResultResponse])
+def get_diagnosis_result(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = _require_diagnosis_task(db, task_id, ws_id)
+    result = task.diagnosis_result
+    if not result:
+        # 尚无定位结果（AI 会话收敛后自动反填）：返回 200 + null，避免 404 噪音
+        return None
+    return diagnosis_result_service.serialize_diagnosis_result(result)
+
+
+@router.put("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse)
+def upsert_diagnosis_result(
+    ws_id: str,
+    task_id: str,
+    data: DiagnosisResultUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to update diagnosis results",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+
+    result = diagnosis_result_service.upsert_diagnosis_result_from_user(
+        db,
+        task=task,
+        data=data,
+        actor_user_id=current_user.id,
+    )
+    audit_log(
+        action="diagnosis_result_upsert",
+        outcome="success",
+        resource_type="task_diagnosis_result",
+        resource_id=result.id,
+        user_id=current_user.id,
+        workspace_id=ws_id,
+        task_id=task.id,
+    )
+    return diagnosis_result_service.serialize_diagnosis_result(result)
+
+
+@router.post("/{task_id}/case-draft", response_model=CaseResponse, status_code=201)
+def create_case_draft_from_task(
+    ws_id: str,
+    task_id: str,
+    data: CaseDraftCreateRequest = Body(default=CaseDraftCreateRequest()),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：确认采纳 → 一键转案例（生成案例草稿，可一步提交专家评审）。"""
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.CREATE_TASK,
+        "No permission to create cases",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+    try:
+        case = case_service.create_case_draft_from_task(
+            db,
+            task=task,
+            creator=current_user,
+            workspace_id=ws_id,
+            data=data,
+        )
+    except case_service.CaseError as exc:
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+    member = workspace_service.get_workspace_member(db, ws_id, current_user.id)
+    payload = case_service.serialize_case(case)
+    payload["my_can_manage"] = True
+    payload["my_can_review"] = bool(member.is_expert) if member else False
+    return payload
+
+
+@router.post("/{task_id}/diagnosis-summary", response_model=dict)
+async def trigger_diagnosis_summary(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：一键总结问题案例。
+
+    创建一次性的「诊断总结」后台 AI 任务：汇总问题定位会话过程，按原定位结果
+    JSON 契约生成结构化结果，完成后原位刷新「定位结果」卡片并广播到任务房间。
+    同任务已有进行中的总结任务时直接返回既有任务（幂等）。
+    """
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to summarize diagnosis cases",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+
+    # 案例被采纳（已生成案例草案 / 定位结果已 CONFIRMED）后，禁止再次一键总结
+    existing_case = (
+        db.query(SddCase)
+        .filter(
+            SddCase.workspace_id == ws_id,
+            SddCase.source_task_id == task.id,
+        )
+        .first()
+    )
+    diagnosis_result = getattr(task, "diagnosis_result", None)
+    if existing_case is not None or (diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"):
+        raise HTTPException(
+            status_code=409,
+            detail="Case already adopted, diagnosis summarization is not allowed",
+        )
+
+    active_job = (
+        db.query(ai_job_service.SddAiJob)
+        .filter(
+            ai_job_service.SddAiJob.task_id == task.id,
+            ai_job_service.SddAiJob.channel == ai_job_service.AiJobChannel.TASK_CHAT,
+            ai_job_service.SddAiJob.status.in_(
+                [
+                    ai_job_service.AiJobStatus.PENDING.value,
+                    ai_job_service.AiJobStatus.RUNNING.value,
+                ]
+            ),
+        )
+        .order_by(ai_job_service.SddAiJob.created_at.desc())
+        .first()
+    )
+    if active_job is not None:
+        active_context = (
+            active_job.context_json
+            if isinstance(active_job.context_json, dict)
+            else {}
+        )
+        if str(active_context.get("job_kind") or "").strip().upper() == "DIAGNOSIS_SUMMARY":
+            return {
+                "job_id": active_job.id,
+                "status": ai_job_service.serialize_job(active_job).get("status"),
+                "task_id": task.id,
+            }
+
+    job = ai_job_service.create_diagnosis_summary_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=current_user.id,
+    )
+    audit_log(
+        action="diagnosis_summary_triggered",
+        outcome="success",
+        resource_type="ai_job",
+        resource_id=job.id,
+        user_id=current_user.id,
+        workspace_id=ws_id,
+        task_id=task.id,
+    )
+    await ai_job_service.enqueue_task_chat_job(job.id)
+    return {"job_id": job.id, "status": "PENDING", "task_id": task.id}
+
+
+@router.get("/{task_id}/diagnosis-summary/{job_id}", response_model=dict)
+def get_diagnosis_summary_status(
+    ws_id: str,
+    task_id: str,
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """问题定位任务：查询「一键总结问题案例」后台任务状态（供前端轮询收敛）。"""
+    verify_workspace_access(ws_id, current_user, db)
+    job = (
+        db.query(ai_job_service.SddAiJob)
+        .filter(
+            ai_job_service.SddAiJob.id == job_id,
+            ai_job_service.SddAiJob.task_id == task_id,
+        )
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Diagnosis summary job not found")
+    payload = ai_job_service.serialize_job(job)
+    return {
+        "job_id": job.id,
+        "task_id": task_id,
+        "status": str(payload.get("status") or ""),
+        "message": payload.get("message"),
+    }

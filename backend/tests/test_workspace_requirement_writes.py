@@ -32,7 +32,7 @@ def _use_project_path(db, workspace, task, project_path):
     db.commit()
 
 
-async def _fake_requirement_preview_cli(prompt, project_path, max_attempts=1):
+async def _fake_requirement_preview_cli(prompt, project_path, max_attempts=1, **kwargs):
     return {
         "text": json.dumps(
             {
@@ -62,7 +62,7 @@ async def _fake_requirement_preview_cli(prompt, project_path, max_attempts=1):
     }
 
 
-async def _fake_requirement_split_cli(prompt, project_path, max_attempts=1):
+async def _fake_requirement_split_cli(prompt, project_path, max_attempts=1, **kwargs):
     return {
         "text": json.dumps(
             {

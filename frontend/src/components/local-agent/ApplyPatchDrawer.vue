@@ -6,7 +6,8 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { AlertTriangle, FileText, GitPullRequest, Loader2, RefreshCw, Settings, GitBranch, ArrowUpRight, Zap, Info, Copy } from 'lucide-vue-next'
 import AppSideDrawer from '@/components/AppSideDrawer.vue'
-import { applyProposalPatch, type ApplyPatchProgress } from '@/composables/local-agent/useLocalAgentApplyPatch'
+import { applyProposalPatch, applyProposalRepoPatches, type ApplyPatchProgress } from '@/composables/local-agent/useLocalAgentApplyPatch'
+import { normalizeRemoteUrl } from '@/composables/local-agent/localAgentUtils'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
@@ -29,10 +30,12 @@ const {
   proposal,
   proposalFiles,
   patchText,
+  repoPatches,
   proposalLoading,
   proposalGenerating,
   patchLoading,
   repoMapping,
+  applyMissingRemotes,
 } = storeToRefs(localAgent)
 
 const applyRunning = ref(false)
@@ -61,7 +64,13 @@ const agentTask = computed<AgentTask | null>(() => {
 })
 
 const workspaceId = computed(() => String(props.workspace?.id || agentTask.value?.workspace_id || ''))
-const repoConfigured = computed(() => Boolean(repoMapping.value?.localPath))
+const hasRepoPatches = computed(() => repoPatches.value.length > 0)
+const repoConfigured = computed(() => {
+  if (hasRepoPatches.value) {
+    return applyMissingRemotes.value.length === 0
+  }
+  return Boolean(repoMapping.value?.localPath)
+})
 const canApply = computed(() => (
   electronAvailable.value
   && Boolean(agentTask.value)
@@ -148,16 +157,38 @@ const handleApply = async () => {
   applyRunning.value = true
   applyEvents.value = []
   try {
-    const result = await applyProposalPatch({
-      desktop: localAgent.desktop,
-      task: agentTask.value,
-      proposal: proposal.value,
-      repoPath: repoMapping.value.localPath,
-      patchText: patchText.value,
-      onProgress: (event) => {
-        applyEvents.value.push(event)
-      },
-    })
+    let result: { status: 'applied' | 'conflict' }
+    if (repoPatches.value.length > 0) {
+      const repoPaths: Record<string, string> = {}
+      for (const item of repoPatches.value) {
+        const key = normalizeRemoteUrl(item.repo_url || '')
+        const mapping = localAgent.mappingFor(item.repo_url || '')
+        if (mapping?.localPath) {
+          repoPaths[key] = mapping.localPath
+        }
+      }
+      result = await applyProposalRepoPatches({
+        desktop: localAgent.desktop,
+        task: agentTask.value,
+        proposal: proposal.value,
+        repoPatches: repoPatches.value,
+        repoPaths,
+        onProgress: (event) => {
+          applyEvents.value.push(event)
+        },
+      })
+    } else {
+      result = await applyProposalPatch({
+        desktop: localAgent.desktop,
+        task: agentTask.value,
+        proposal: proposal.value,
+        repoPath: repoMapping.value?.localPath || '',
+        patchText: patchText.value,
+        onProgress: (event) => {
+          applyEvents.value.push(event)
+        },
+      })
+    }
     await localAgent.loadLatestProposal()
     ElMessage[result.status === 'applied' ? 'success' : 'warning'](
       result.status === 'applied' ? t('chat.change_apply_applied_success') : t('chat.change_apply_conflict_uploaded'),
@@ -323,8 +354,8 @@ watch(
           <AlertTriangle :size="20" :stroke-width="2.5" />
         </div>
         <div class="warning-content">
-          <strong>{{ $t('chat.change_apply_repo_missing_title') }}</strong>
-          <p>{{ $t('chat.change_apply_repo_missing_desc') }}</p>
+          <strong>{{ hasRepoPatches ? $t('chat.change_apply_repos_missing_title') : $t('chat.change_apply_repo_missing_title') }}</strong>
+          <p>{{ hasRepoPatches ? $t('chat.change_apply_repos_missing_desc') : $t('chat.change_apply_repo_missing_desc') }}</p>
         </div>
         <button class="btn-primary drawer-action-button" type="button" @click="goToLocalSettings">
           <div class="icon-container-sm white-ghost">
@@ -332,6 +363,23 @@ watch(
           </div>
           {{ $t('chat.change_apply_go_settings') }}
         </button>
+      </div>
+
+      <!-- Repository patch list (multi-repository proposals) -->
+      <div v-if="hasRepoPatches && electronAvailable" class="repo-patch-list glass-panel">
+        <div class="repo-patch-header">
+          <GitBranch :size="12" />
+          <span>{{ $t('chat.change_apply_repo_patches_title', { count: repoPatches.length }) }}</span>
+        </div>
+        <div v-for="item in repoPatches" :key="item.id" class="repo-patch-row">
+          <div class="repo-patch-info">
+            <span class="repo-patch-name">{{ item.repo_name }}</span>
+            <span class="repo-patch-meta">{{ item.base_branch }} · +{{ item.insertions }}/-{{ item.deletions }} · {{ item.changed_files_count }} {{ $t('chat.change_apply_files_label') }}</span>
+          </div>
+          <span class="repo-patch-state" :class="{ missing: !localAgent.mappingFor(item.repo_url || '')?.localPath }">
+            {{ localAgent.mappingFor(item.repo_url || '')?.localPath ? $t('chat.change_apply_repo_row_ready') : $t('chat.change_apply_repo_row_missing') }}
+          </span>
+        </div>
       </div>
 
       <!-- Main Workspace: Split into Sidebar and Content -->
@@ -467,7 +515,7 @@ watch(
         <button class="btn-primary drawer-action-button" type="button" :disabled="!canApply" @click="handleApply">
           <Loader2 v-if="applyRunning" class="w-4 h-4 spin" />
           <GitPullRequest v-else class="w-4 h-4" />
-          {{ applyRunning ? $t('chat.change_apply_running') : $t('chat.change_apply_apply_button') }}
+          {{ applyRunning ? $t('chat.change_apply_running') : (hasRepoPatches ? $t('chat.change_apply_apply_all') : $t('chat.change_apply_apply_button')) }}
         </button>
       </footer>
     </section>
@@ -505,6 +553,68 @@ watch(
 .icon-container-sm.blue { background: rgba(14, 165, 233, 0.1); color: #0ea5e9; }
 .icon-container-sm.amber { background: rgba(245, 158, 11, 0.1); color: #f59e0b; }
 .icon-container-sm.white-ghost { background: rgba(255, 255, 255, 0.2); color: white; }
+
+/* ─── Repository Patch List ─── */
+.repo-patch-list {
+  margin: 0.9rem 1.5rem 0;
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(14, 165, 233, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.repo-patch-header {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 0.5rem;
+}
+
+.repo-patch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.04);
+}
+
+.repo-patch-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.repo-patch-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.repo-patch-meta {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.repo-patch-state {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  color: #15803d;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  white-space: nowrap;
+}
+
+.repo-patch-state.missing {
+  color: #92400e;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
 
 /* ─── Top Bar ─── */
 .drawer-top-bar {

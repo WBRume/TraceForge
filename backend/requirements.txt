@@ -11,7 +11,9 @@ cryptography==44.0.0
 
 # Authentication
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
+bcrypt==5.0.0
+# pydantic EmailStr 依赖
+email-validator==2.3.0
 
 # Configuration
 pydantic-settings==2.7.1
@@ -21,6 +23,8 @@ loguru==0.7.3
 
 # PTY Bridge (Windows)
 wexpect==4.0.0
+# wexpect 依赖 pkg_resources（Python 3.12+ 的 venv 不再自带 setuptools；81.0 起 setuptools 移除了 pkg_resources）
+setuptools==80.10.2
 
 # WebSocket
 websockets==14.1
@@ -28,5 +32,6 @@ websockets==14.1
 # Utilities
 python-dateutil==2.9.0
 python-docx==1.1.2
-PyYAML==6.0.2
+PyYAML==6.0.3
 redis>=5.0.0
+zstandard==0.25.0

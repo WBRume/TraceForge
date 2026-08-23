@@ -48,6 +48,25 @@ class TaskPatchSnapshot:
     files: List[PatchFileChange] = field(default_factory=list)
 
 
+@dataclass
+class RepoPatchSnapshot:
+    """Patch snapshot of one repository inside a multi-repository task."""
+
+    repository_id: Optional[str]
+    repo_url: Optional[str]
+    repo_name: str
+    repo_slug: str
+    base_branch: str
+    base_commit_sha: str
+    cloud_task_branch: str
+    cloud_head_sha: Optional[str]
+    patch_text: str
+    changed_files_count: int
+    insertions: int
+    deletions: int
+    files: List[PatchFileChange] = field(default_factory=list)
+
+
 _EXCLUDED_PATHS = [":(exclude).sdd/**"]
 _DIFF_PATHSPEC = ["--", ".", *_EXCLUDED_PATHS]
 _GIT_TIMEOUT_SECONDS = 180
@@ -259,33 +278,46 @@ def _cleanup_temp_index(env: Dict[str, str]) -> None:
         pass
 
 
-def generate_task_patch_snapshot(
-    task: SddTask,
+def _generate_patch_snapshot_for_repo(
+    repo_path: str,
+    *,
+    base_repo_url: Optional[str] = None,
+    base_branch_hint: Optional[str] = None,
     workspace: Optional[Workspace] = None,
+    task_id: Optional[str] = None,
 ) -> TaskPatchSnapshot:
-    repo_path = _assert_task_repo(task)
-    base_branch = _resolve_base_branch(repo_path, workspace)
-    base_commit_sha = _resolve_base_commit(repo_path, base_branch)
-    cloud_head_sha = _try_git(repo_path, ["rev-parse", "HEAD"])
-    branch = _try_git(repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
-    cloud_task_branch = branch if branch and branch != "HEAD" else git_worktree_service.task_branch_name(task.id)
-    base_repo_url = (
-        str((task.git_repo_url or "")).strip()
-        or str(((workspace.git_repo_url if workspace else "") or "")).strip()
-        or _try_git(repo_path, ["config", "--get", "remote.origin.url"])
+    abs_repo_path = os.path.abspath(repo_path)
+    if not abs_repo_path or not os.path.isdir(abs_repo_path):
+        raise GitPatchError("Task worktree path does not exist", status_code=409)
+    inside = _try_git(abs_repo_path, ["rev-parse", "--is-inside-work-tree"])
+    if str(inside or "").lower() != "true":
+        raise GitPatchError("Task worktree is not a git repository", status_code=409)
+
+    base_branch = (str(base_branch_hint or "").strip()) or _resolve_base_branch(abs_repo_path, workspace)
+    base_commit_sha = _resolve_base_commit(abs_repo_path, base_branch)
+    cloud_head_sha = _try_git(abs_repo_path, ["rev-parse", "HEAD"])
+    branch = _try_git(abs_repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
+    cloud_task_branch = (
+        branch
+        if branch and branch != "HEAD"
+        else git_worktree_service.task_branch_name(str(task_id or "").strip())
+    )
+    resolved_repo_url = (
+        str((base_repo_url or "")).strip()
+        or _try_git(abs_repo_path, ["config", "--get", "remote.origin.url"])
     )
 
-    env = _build_temp_index(repo_path, base_commit_sha)
+    env = _build_temp_index(abs_repo_path, base_commit_sha)
     try:
-        name_status = _run_git(repo_path, ["diff", "--cached", "--name-status", "--find-renames", *_DIFF_PATHSPEC], env=env)
+        name_status = _run_git(abs_repo_path, ["diff", "--cached", "--name-status", "--find-renames", *_DIFF_PATHSPEC], env=env)
         status_entries = _parse_name_status(name_status)
         if not status_entries:
             raise GitPatchError("No changes in task worktree", status_code=409)
 
-        numstat = _run_git(repo_path, ["diff", "--cached", "--numstat", "--find-renames", *_DIFF_PATHSPEC], env=env)
+        numstat = _run_git(abs_repo_path, ["diff", "--cached", "--numstat", "--find-renames", *_DIFF_PATHSPEC], env=env)
         numstat_entries = _parse_numstat(numstat)
         stat_mapping = _stats_by_path(status_entries, numstat_entries)
-        patch_text = _run_git(repo_path, ["diff", "--cached", "--binary", "--find-renames", *_DIFF_PATHSPEC], env=env)
+        patch_text = _run_git(abs_repo_path, ["diff", "--cached", "--binary", "--find-renames", *_DIFF_PATHSPEC], env=env)
         if not patch_text.strip():
             raise GitPatchError("No changes in task worktree", status_code=409)
 
@@ -305,13 +337,13 @@ def generate_task_patch_snapshot(
                     change_type=_change_type(str(entry.get("status") or "M")),
                     insertions=additions,
                     deletions=deletions,
-                    diff_excerpt=_truncate_excerpt(_diff_for_path(repo_path, env, entry)),
+                    diff_excerpt=_truncate_excerpt(_diff_for_path(abs_repo_path, env, entry)),
                     is_binary=is_binary,
                 )
             )
 
         return TaskPatchSnapshot(
-            base_repo_url=base_repo_url or None,
+            base_repo_url=resolved_repo_url or None,
             base_branch=base_branch,
             base_commit_sha=base_commit_sha,
             cloud_task_branch=cloud_task_branch,
@@ -324,3 +356,103 @@ def generate_task_patch_snapshot(
         )
     finally:
         _cleanup_temp_index(env)
+
+
+def generate_task_patch_snapshot(
+    task: SddTask,
+    workspace: Optional[Workspace] = None,
+) -> TaskPatchSnapshot:
+    repo_path = _assert_task_repo(task)
+    base_repo_url = (
+        str((task.git_repo_url or "")).strip()
+        or str(((workspace.git_repo_url if workspace else "") or "")).strip()
+    )
+    return _generate_patch_snapshot_for_repo(
+        repo_path,
+        base_repo_url=base_repo_url,
+        workspace=workspace,
+        task_id=task.id,
+    )
+
+
+def generate_task_repo_patch_snapshots(
+    task: SddTask,
+    workspace: Optional[Workspace] = None,
+    db=None,
+) -> List[RepoPatchSnapshot]:
+    """Generate one patch snapshot per changed repository of a task.
+
+    Repository bindings come from sdd_task_repositories (READY state).
+    Unchanged repositories are skipped; if nothing changed anywhere, raise.
+    Falls back to the legacy single-repository snapshot when the task has no
+    repository bindings.
+    """
+    from app.domains.task.models.task_repository import TaskRepositoryState
+    from app.domains.task.services import task_service
+
+    bindings = []
+    if db is not None:
+        bindings = [
+            binding
+            for binding in task_service.get_task_repositories(db, task.id)
+            if binding.state == TaskRepositoryState.READY
+        ]
+
+    if not bindings:
+        legacy = generate_task_patch_snapshot(task, workspace)
+        return [
+            RepoPatchSnapshot(
+                repository_id=None,
+                repo_url=legacy.base_repo_url,
+                repo_name="repository",
+                repo_slug="repo",
+                base_branch=legacy.base_branch,
+                base_commit_sha=legacy.base_commit_sha,
+                cloud_task_branch=legacy.cloud_task_branch,
+                cloud_head_sha=legacy.cloud_head_sha,
+                patch_text=legacy.patch_text,
+                changed_files_count=legacy.changed_files_count,
+                insertions=legacy.insertions,
+                deletions=legacy.deletions,
+                files=legacy.files,
+            )
+        ]
+
+    task_root = os.path.abspath(str(task.project_path or "").strip())
+    snapshots: List[RepoPatchSnapshot] = []
+    for binding in bindings:
+        repo_path = os.path.join(task_root, str(binding.rel_path or binding.repo_slug).strip())
+        if not os.path.isdir(repo_path):
+            continue
+        try:
+            inner = _generate_patch_snapshot_for_repo(
+                repo_path,
+                base_repo_url=binding.repo_url,
+                base_branch_hint=binding.branch_name,
+                task_id=task.id,
+            )
+        except GitPatchError as exc:
+            if "No changes" in str(exc):
+                continue
+            raise
+        snapshots.append(
+            RepoPatchSnapshot(
+                repository_id=binding.repository_id,
+                repo_url=inner.base_repo_url or binding.repo_url,
+                repo_name=binding.repo_name,
+                repo_slug=binding.repo_slug,
+                base_branch=inner.base_branch,
+                base_commit_sha=inner.base_commit_sha,
+                cloud_task_branch=inner.cloud_task_branch,
+                cloud_head_sha=inner.cloud_head_sha,
+                patch_text=inner.patch_text,
+                changed_files_count=inner.changed_files_count,
+                insertions=inner.insertions,
+                deletions=inner.deletions,
+                files=inner.files,
+            )
+        )
+
+    if not snapshots:
+        raise GitPatchError("No changes in any task repository", status_code=409)
+    return snapshots

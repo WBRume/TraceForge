@@ -149,6 +149,24 @@ def list_change_proposal_files(
     return ChangeProposalFileListResponse(items=files, total=len(files))
 
 
+@router.get("/change-proposals/{proposal_id}/repo-patches")
+def list_change_proposal_repo_patches(
+    proposal_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    proposal = _get_agent_proposal_or_error(db, proposal_id, current_user)
+    repo_patches = change_proposal_service.list_proposal_repo_patches(db, proposal_id=proposal.id)
+    try:
+        items = [
+            change_proposal_service.serialize_repo_patch(db, repo_patch, include_patch_text=True)
+            for repo_patch in repo_patches
+        ]
+    except change_proposal_service.ChangeProposalError as exc:
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+    return {"proposal_id": proposal.id, "items": items, "total": len(items)}
+
+
 @router.get("/change-proposals/{proposal_id}/patch")
 def download_change_proposal_patch(
     proposal_id: str,

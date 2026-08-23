@@ -68,6 +68,8 @@ class SddTaskCliBootstrap(Base):
     message = Column(Text, nullable=True)
     baseline_dir = Column(String(700), nullable=True)
     baseline_session_id = Column(String(120), nullable=True)
+    # baseline 粘性 agent backend：baseline 会话建立后固定，不随后端配置切换
+    agent_backend = Column(String(40), nullable=True)
     error_message = Column(Text, nullable=True)
     refresh_mode = Column(String(16), nullable=False, default="FULL")
     refresh_context_json = Column(JSON, nullable=True)

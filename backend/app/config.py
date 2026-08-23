@@ -54,6 +54,17 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30  # 30 days for debug
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # ── Agent Backend ──
+    AGENT_BACKEND: str = "claude-code"  # claude-code | opencode | dsh | mock
+    OPENCODE_SERVER_URL: str = "http://127.0.0.1:4097"
+    DSH_CLI_PATH: str = "dsh"
+    # DSH 会话持久化根（空 = 跟随 dsh 默认 ~/.dsh/sessions）；
+    # 显式配置时子进程写入与 fork 读取都指向该目录树
+    DSH_SESSION_ROOT: str = ""
+    # DSH Web Host 服务地址（`dsh web --no-open --port N` 启动）；配置后 dsh 后端
+    # 走 server 模式（支持 resume / 工具事件 / usage / 多轮），否则回退 headless CLI
+    DSH_SERVER_URL: str = ""
+
     # ── Claude CLI Bridge ──
     SDD_CLI_MODE: str = "real"  # "mock" or "real"
     CLAUDE_CLI_PATH: str = "claude"
@@ -132,6 +143,24 @@ class Settings(BaseSettings):
     PROVISION_QUEUE_MAX_CONCURRENT: int = 2
     API_MOCK_QUEUE_MAX_CONCURRENT: int = 2
     BOOTSTRAP_QUEUE_MAX_CONCURRENT: int = 2
+
+    # ── RAG 适配层 ──
+    # 当前只实现适配层：httpx / mock；具体平台（WeKnora / LLMWiki 等）后续按选型结果追加
+    RAG_ENABLED: bool = False
+    RAG_PROVIDER: str = "mock"
+    RAG_API_BASE_URL: str = ""
+    RAG_API_KEY: str = ""
+    RAG_API_TIMEOUT_SECONDS: int = 10
+    RAG_INGEST_BATCH_SIZE: int = 20
+    RAG_INGEST_INTERVAL_SECONDS: float = 5.0
+    RAG_RETRY_MAX: int = 5
+    RAG_RETRY_BACKOFF_BASE_SECONDS: int = 2
+
+    # ── 站内信 / 外部通知 ──
+    # 站内信始终落库；NOTIFICATION_PROVIDERS 为额外启用的外部渠道（逗号分隔，当前仅支持 "logging" 占位）
+    NOTIFICATION_PROVIDERS: str = ""
+    # 预输入超时扫描
+    PRE_INPUT_SCAN_INTERVAL_SECONDS: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),

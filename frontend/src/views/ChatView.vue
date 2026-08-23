@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { proxyRefs, ref } from 'vue'
+import { proxyRefs, ref, watch } from 'vue'
 import {
   ChevronLeft,
   ChevronRight,
@@ -23,6 +23,9 @@ import {
   BarChart3,
   FileText,
   GitPullRequest,
+  FolderGit2,
+  GitFork,
+  Upload,
 } from 'lucide-vue-next'
 import NewTaskModal from '@/components/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -30,18 +33,80 @@ import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
 import SuperpowersDocsPanel from '@/components/chat/SuperpowersDocsPanel.vue'
 import ChatExecutionInput from '@/components/chat/ChatExecutionInput.vue'
+import PreInputPanel from '@/components/chat/PreInputPanel.vue'
 import ChatCliWorkbench from '@/components/chat/terminal/ChatCliWorkbench.vue'
 import TaskSkillsDrawer from '@/components/chat/TaskSkillsDrawer.vue'
 import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowDrawer.vue'
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
+import TaskProvisionProgressModal from '@/components/TaskProvisionProgressModal.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
+import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagnosisDocs'
 
 const rawVm = useChatViewModel()
 const vm = proxyRefs(rawVm)
 const showApplyPatchDrawer = ref(false)
+const preInputMode = ref(false)
+const chatInputRef = ref<any>(null)
+
+const handleStartPreInput = (payload: {
+  main_text: string
+  mentioned_user_ids: string[]
+  edit_permission: 'ALL' | 'MENTIONED' | 'EXPERTS' | 'NONE'
+  wait_seconds: number
+}) => {
+  const ok = rawVm.startPreInput(payload)
+  if (ok) {
+    preInputMode.value = false
+    vm.chatInput = ''
+    chatInputRef.value?.resetPreInputForm?.()
+  }
+}
+
+// 问题定位任务：诊断文档 / 代码路径抽屉数据（复用 spec 抽屉三段式容器）
+const diagDocsModel = useDiagnosisDocs({
+  wsId: () => String(rawVm.route.params.wsId || ''),
+  taskId: () => String(rawVm.currentTask?.value?.id || ''),
+})
+const diagDocs = proxyRefs(diagDocsModel)
+
+const handleDiagnosisDocSelect = (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  if (files.length === 0) return
+  for (const file of files) {
+    void diagDocs.uploadDoc(file)
+  }
+  input.value = ''
+}
+
+const diagDocMeta = (doc: DiagnosisDocItem) => {
+  const parts: string[] = []
+  if (doc.source_ext) parts.push(doc.source_ext)
+  if (doc.created_at) parts.push(new Date(doc.created_at).toLocaleString())
+  return parts.join(' · ')
+}
+
+// 打开诊断抽屉时加载文档与代码路径
+watch(
+  () => [rawVm.isDiagnosisTask.value, vm.specDrawerLevel],
+  () => {
+    if (rawVm.isDiagnosisTask.value && vm.specDrawerLevel > 0) {
+      void diagDocs.loadDocs()
+      void diagDocs.loadCodePath()
+    }
+  },
+)
+
+// 切换任务会话时退出协作预输入模式
+watch(
+  () => vm.currentTask?.id,
+  () => {
+    preInputMode.value = false
+  },
+)
 
 const statusMessageText = (message: unknown): string => (
   String(message || '').replace(/\s*\(model:\s*[^)]*\)\s*$/i, '').trim()
@@ -66,18 +131,34 @@ const statusModelText = (card: any): string => {
           </button>
         </div>
         <div class="sidebar-filter-row">
-          <span class="sidebar-filter-label">{{ $t('chat.session_filter_label') }}</span>
-          <BaseSelect
-            v-model="vm.taskStatusFilter"
-            :options="[
-              { label: $t('chat.session_filter_all'), value: 'ALL' },
-              { label: $t('chat.session_filter_success'), value: 'DONE' },
-              { label: $t('chat.session_filter_failed'), value: 'FAILED' },
-            ]"
-            size="sm"
-            class="task-filter-select"
-            @update:modelValue="vm.applyTaskStatusFilter"
-          />
+          <div class="sidebar-filter-item">
+            <span class="sidebar-filter-label">{{ $t('chat.session_filter_label') }}</span>
+            <BaseSelect
+              v-model="vm.taskStatusFilter"
+              :options="[
+                { label: $t('chat.session_filter_all'), value: 'ALL' },
+                { label: $t('chat.session_filter_success'), value: 'DONE' },
+                { label: $t('chat.session_filter_failed'), value: 'FAILED' },
+              ]"
+              size="sm"
+              class="task-filter-select"
+              @update:modelValue="vm.applyTaskStatusFilter"
+            />
+          </div>
+          <div class="sidebar-filter-item">
+            <span class="sidebar-filter-label">{{ $t('chat.session_type_label') }}</span>
+            <BaseSelect
+              v-model="vm.taskTypeFilter"
+              :options="[
+                { label: $t('chat.session_type_all'), value: 'ALL' },
+                { label: $t('task_types.development'), value: 'DEVELOPMENT' },
+                { label: $t('task_types.diagnosis'), value: 'DIAGNOSIS' },
+              ]"
+              size="sm"
+              class="task-filter-select"
+              @update:modelValue="vm.applyTaskTypeFilter"
+            />
+          </div>
         </div>
       </div>
       <div class="task-list" :ref="rawVm.taskListContainer" @scroll="vm.handleTaskListScroll">
@@ -91,6 +172,12 @@ const statusModelText = (card: any): string => {
           <div class="task-item-content">
             <div class="task-name-row">
               <div class="task-name">{{ task.name }}</div>
+              <span
+                class="task-type-tag"
+                :class="task.task_type === 'DIAGNOSIS' ? 'is-diagnosis' : 'is-development'"
+              >
+                {{ task.task_type === 'DIAGNOSIS' ? $t('task_types.diagnosis') : $t('task_types.development') }}
+              </span>
               <div class="task-status">
                 <span class="status-dot" :class="task.status.toLowerCase()"></span>
                 {{ task.status }}
@@ -139,6 +226,7 @@ const statusModelText = (card: any): string => {
             v-if="vm.isStartActionVisible"
             class="btn-primary start-btn"
             :disabled="!vm.canClickStartAction"
+            :title="vm.isTaskProvisioning ? $t('chat.task_provisioning_hint') : ''"
             @click="vm.handleStartClick"
           >
             <Play class="w-4 h-4" /> {{ $t('chat.engine_start') }}
@@ -149,6 +237,17 @@ const statusModelText = (card: any): string => {
           <button class="btn-micro" :disabled="!vm.currentTask" @click="vm.openTaskSkillsDrawer">
             <Wrench class="w-4 h-4" />
             {{ $t('chat.task_skills_button', { count: vm.taskRuntimeSkillCount }) }}
+          </button>
+
+          <button
+            v-if="vm.isDiagnosisTask"
+            class="btn-micro"
+            :class="{ active: vm.isSpecPanelOpen }"
+            :disabled="!vm.currentTask"
+            @click="vm.toggleDiagnosisDocsDrawer"
+          >
+            <FolderGit2 class="w-4 h-4" />
+            {{ $t('diagnosis.docs_drawer_button') }}
           </button>
 
           <button class="icon-btn" :disabled="!vm.canInitializeAction" @click="vm.handleInitialize" :title="$t('chat.initialize')">
@@ -164,7 +263,7 @@ const statusModelText = (card: any): string => {
           <button class="icon-btn" :disabled="!vm.canExportTask" @click="vm.handleExport" title="Export Session">
             <Download class="w-4 h-4" />
           </button>
-          <button class="btn-micro" :disabled="!vm.currentTask" @click="showApplyPatchDrawer = true">
+          <button class="btn-micro" v-if="!vm.hidePatchWorkflows" :disabled="!vm.currentTask" @click="showApplyPatchDrawer = true">
             <GitPullRequest class="w-4 h-4" />
             {{ $t('chat.change_apply_button') }}
           </button>
@@ -380,23 +479,50 @@ const statusModelText = (card: any): string => {
         </div>
       </div>
 
-      <!-- Verification Quick Actions -->
-      <div v-if="!vm.engineRunning && vm.messages.length > 0 && !vm.isChatLocked" class="verification-actions">
-        <span class="verify-label">{{ $t('portal.architecture') }}:</span>
-        <button class="btn-micro" @click="vm.sendVerification('ui')" title="Playwright UI">
-          <TestTube class="w-3" /> UI
-        </button>
-        <button class="btn-micro" @click="vm.sendVerification('api')" title="Postman API">
-          <Database class="w-3" /> API
-        </button>
-        <button class="btn-micro" @click="vm.sendVerification('e2e')" :title="$t('chat.verification_e2e_title')">
-          <Sparkles class="w-3" /> E2E
-        </button>
+      <!-- 快捷操作行：研发态任务显示快捷验证按钮；问题定位任务显示一键总结问题案例（样式与位置保持一致） -->
+      <div
+        v-if="vm.messages.length > 0 && !vm.isChatLocked && (vm.isDiagnosisTask || !vm.engineRunning)"
+        class="verification-actions"
+      >
+        <template v-if="!vm.hidePatchWorkflows">
+          <span class="verify-label">{{ $t('portal.architecture') }}:</span>
+          <button class="btn-micro" @click="vm.sendVerification('ui')" title="Playwright UI">
+            <TestTube class="w-3" /> UI
+          </button>
+          <button class="btn-micro" @click="vm.sendVerification('api')" title="Postman API">
+            <Database class="w-3" /> API
+          </button>
+          <button class="btn-micro" @click="vm.sendVerification('e2e')" :title="$t('chat.verification_e2e_title')">
+            <Sparkles class="w-3" /> E2E
+          </button>
+        </template>
+        <template v-else>
+          <button
+            class="btn-micro"
+            :disabled="vm.engineRunning || vm.diagnosisSummarizing || vm.isDiagnosisAdopted"
+            :title="vm.isDiagnosisAdopted ? $t('diagnosis.case_already_adopted_no_summary') : $t('diagnosis.summarize_case_button')"
+            @click="vm.generateDiagnosisSummary"
+          >
+            <Loader2 v-if="vm.diagnosisSummarizing" class="w-3 h-3 spin" />
+            <Sparkles v-else class="w-3 h-3" />
+            {{ vm.isDiagnosisAdopted ? $t('diagnosis.case_adopted_label') : vm.diagnosisSummarizing ? $t('diagnosis.summarizing') : $t('diagnosis.summarize_case_button') }}
+          </button>
+        </template>
       </div>
 
-      <!-- Input Area -->
+      <!-- 问题定位结果已改为会话内 AI 气泡卡片（DiagnosisResultCard），此处不再渲染独立面板 -->
+
+      <!-- 协作预输入：收集窗口进行中时显示在输入框上方 -->
+      <PreInputPanel
+        v-if="vm.activePreInput && vm.preInputIsCollecting"
+        :vm="vm"
+      />
+
+      <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换） -->
       <ChatExecutionInput
+        ref="chatInputRef"
         v-model="vm.chatInput"
+        v-model:pre-input-mode="preInputMode"
         :disabled="vm.isChatLocked || vm.sendingChat"
         :running="vm.engineRunning"
         :can-interrupt="vm.canTemporarilyInterrupt"
@@ -404,8 +530,11 @@ const statusModelText = (card: any): string => {
         :placeholder="vm.chatInputPlaceholder"
         :send-title="$t('chat.send_message')"
         :interrupt-title="$t('chat.temporary_interrupt_desc')"
+        :can-start-pre-input="!vm.activePreInput"
+        :search-members="vm.searchPreInputMembers"
         @submit="vm.sendChat"
         @interrupt="vm.interruptCurrentRun"
+        @start-pre-input="handleStartPreInput"
       />
       </template>
       <template v-else>
@@ -422,7 +551,7 @@ const statusModelText = (card: any): string => {
     </section>
 
     <aside
-      v-if="vm.isSpecDrawerAvailable"
+      v-if="vm.currentTask && (vm.isSpecDrawerAvailable || vm.isDiagnosisTask)"
       class="spec-sidebar glass-panel"
       :class="{
         'is-open': vm.isSpecPanelOpen,
@@ -456,7 +585,27 @@ const statusModelText = (card: any): string => {
       </div>
 
       <div class="spec-body" v-show="vm.isSpecPanelOpen && vm.currentTask">
-        <div class="spec-tabbar">
+        <!-- 问题定位任务：诊断文档 / 代码路径 -->
+        <div v-if="vm.isDiagnosisTask" class="spec-tabbar">
+          <button
+            class="tab-item"
+            :class="{ active: vm.specDrawerTab === 'diag_docs' }"
+            @click="vm.specDrawerTab = 'diag_docs'"
+          >
+            <FileText :size="14" />
+            <span>{{ $t('diagnosis.docs_tab') }}</span>
+          </button>
+          <button
+            class="tab-item"
+            :class="{ active: vm.specDrawerTab === 'diag_code' }"
+            @click="vm.specDrawerTab = 'diag_code'"
+          >
+            <GitFork :size="14" />
+            <span>{{ $t('diagnosis.code_path_tab') }}</span>
+          </button>
+        </div>
+        <!-- 研发态任务：需求文档 / Superpowers 文档 -->
+        <div v-else class="spec-tabbar">
           <button 
             class="tab-item" 
             :class="{ active: vm.specDrawerTab === 'spec_doc' }"
@@ -478,8 +627,152 @@ const statusModelText = (card: any): string => {
         </div>
         <!-- Legacy tabbar removed as it's now in the side handles -->
         <div class="spec-tab-panels">
+          <!-- 问题定位：诊断文档面板 -->
           <div
-            v-if="vm.currentTaskHasSpec"
+            v-if="vm.isDiagnosisTask"
+            class="spec-tab-panel"
+            v-show="vm.specDrawerTab === 'diag_docs'"
+          >
+            <div class="diag-panel">
+              <header class="diag-panel-header">
+                <div class="diag-panel-title-group">
+                  <div class="diag-panel-title-line">
+                    <div class="diag-panel-title-icon">
+                      <FileText :size="18" :stroke-width="2.5" />
+                    </div>
+                    <span>{{ $t('diagnosis.docs_drawer_title') }}</span>
+                  </div>
+                  <p class="diag-panel-subtitle">{{ $t('diagnosis.docs_upload_hint') }}</p>
+                </div>
+                <div class="diag-panel-actions">
+                  <input
+                    id="diag-panel-file"
+                    type="file"
+                    class="diag-hidden-input"
+                    multiple
+                    accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
+                    @change="handleDiagnosisDocSelect"
+                  />
+                  <label for="diag-panel-file" class="btn-ghost diag-upload-btn" :class="{ disabled: diagDocs.uploading }">
+                    <Loader2 v-if="diagDocs.uploading" class="w-4 h-4 diag-spin" />
+                    <Upload v-else class="w-4 h-4" />
+                    <span>{{ $t('diagnosis.upload_docs') }}</span>
+                  </label>
+                </div>
+              </header>
+
+              <div class="diag-body">
+                <aside class="diag-doc-list-pane">
+                  <div v-if="diagDocs.docsLoading" class="diag-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else-if="diagDocs.docs.length === 0" class="diag-state">{{ $t('diagnosis.docs_empty') }}</div>
+                  <div v-else class="diag-doc-list">
+                    <button
+                      v-for="doc in diagDocs.docs"
+                      :key="doc.id"
+                      type="button"
+                      class="diag-doc-item"
+                      :class="{ active: diagDocs.activeDoc?.id === doc.id }"
+                      @click="diagDocs.selectDoc(doc)"
+                    >
+                      <div class="diag-doc-icon-container blue">
+                        <FileText :size="14" :stroke-width="2.5" />
+                      </div>
+                      <div class="diag-doc-body">
+                        <span class="diag-doc-name">{{ doc.name.split('/').pop() }}</span>
+                        <span class="diag-doc-meta">{{ diagDocMeta(doc) }}</span>
+                      </div>
+                    </button>
+                  </div>
+                </aside>
+
+                <section class="diag-doc-preview-pane">
+                  <div v-if="diagDocs.activeDocLoading" class="diag-state diag-preview-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else-if="diagDocs.activeDoc" class="diag-doc-preview">
+                    <div class="diag-preview-title">
+                      <div class="diag-doc-icon-container blue">
+                        <FileText :size="14" :stroke-width="2.5" />
+                      </div>
+                      <span>{{ diagDocs.activeDoc.name.split('/').pop() }}</span>
+                    </div>
+                    <pre v-if="diagDocs.activeDoc.content_text" class="diag-preview-content">{{ diagDocs.activeDoc.content_text }}</pre>
+                    <div v-else class="diag-state diag-preview-state">{{ $t('diagnosis.docs_preview_empty') }}</div>
+                  </div>
+                  <div v-else class="diag-state diag-preview-state">
+                    <FileText class="w-10 h-10 opacity-10" />
+                    <span>{{ $t('diagnosis.docs_empty') }}</span>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+
+          <!-- 问题定位：代码路径面板 -->
+          <div
+            v-if="vm.isDiagnosisTask"
+            class="spec-tab-panel"
+            v-show="vm.specDrawerTab === 'diag_code'"
+          >
+            <div class="diag-panel">
+              <header class="diag-panel-header">
+                <div class="diag-panel-title-group">
+                  <div class="diag-panel-title-line">
+                    <div class="diag-panel-title-icon amber">
+                      <GitFork :size="18" :stroke-width="2.5" />
+                    </div>
+                    <span>{{ $t('diagnosis.code_path_tab') }}</span>
+                  </div>
+                  <p class="diag-panel-subtitle">{{ $t('diagnosis.code_path_label') }}</p>
+                </div>
+              </header>
+
+              <div class="diag-body diag-body-stack">
+                <section class="diag-section">
+                  <h4 class="diag-section-label">{{ $t('diagnosis.code_path_label') }}</h4>
+                  <pre v-if="diagDocs.codePath" class="diag-code-path">{{ diagDocs.codePath }}</pre>
+                  <div v-else-if="diagDocs.reposLoading" class="diag-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else class="diag-state">{{ $t('diagnosis.code_path_empty') }}</div>
+                </section>
+
+                <section class="diag-section">
+                  <h4 class="diag-section-label">{{ $t('diagnosis.repo_list_label') }}</h4>
+                  <div v-if="diagDocs.reposLoading" class="diag-state">
+                    <Loader2 class="w-4 h-4 diag-spin" />
+                    <span>{{ $t('common.loading') }}</span>
+                  </div>
+                  <div v-else-if="diagDocs.repos.length === 0" class="diag-state">{{ $t('diagnosis.repo_list_empty') }}</div>
+                  <div v-else class="diag-repo-list">
+                    <div v-for="repo in diagDocs.repos" :key="repo.id || repo.repo_name" class="diag-repo-item">
+                      <div class="diag-doc-icon-container blue">
+                        <GitFork :size="14" :stroke-width="2.5" />
+                      </div>
+                      <div class="diag-repo-body">
+                        <div class="diag-repo-name">
+                          {{ repo.repo_name }}
+                          <span v-if="repo.state" class="diag-repo-state">{{ repo.state }}</span>
+                        </div>
+                        <div class="diag-repo-meta">
+                          {{ [repo.branch_name, repo.repo_url].filter(Boolean).join(' · ') }}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+
+          <!-- 研发态：需求文档 -->
+          <div
+            v-if="!vm.isDiagnosisTask && vm.currentTaskHasSpec"
             class="spec-tab-panel"
             v-show="vm.specDrawerTab === 'spec_doc'"
           >
@@ -491,7 +784,9 @@ const statusModelText = (card: any): string => {
               compact
             />
           </div>
+          <!-- 研发态：Superpowers 文档 -->
           <div
+            v-if="!vm.isDiagnosisTask"
             class="spec-tab-panel"
             v-show="vm.specDrawerTab === 'superpowers_docs'"
           >
@@ -509,6 +804,15 @@ const statusModelText = (card: any): string => {
     </aside>
 
     <!-- ─── Modals and Drawers ─── -->
+    <TaskProvisionProgressModal
+      :show="vm.taskProvisionVisible"
+      :job-id="vm.taskProvisionJobId"
+      :task-id="vm.taskProvisionTaskId"
+      :workspace-id="String(vm.route.params.wsId || '')"
+      @close="vm.closeTaskProvision"
+      @open-session="vm.openTaskSession(vm.taskProvisionTaskId)"
+    />
+
     <NewTaskModal 
       :show="vm.showTaskModal" 
       :wsId="(vm.route.params.wsId as string)" 
@@ -700,5 +1004,338 @@ const statusModelText = (card: any): string => {
   0% { filter: drop-shadow(0 0 0 rgba(14, 165, 233, 0)); }
   45% { filter: drop-shadow(0 0 12px rgba(14, 165, 233, 0.45)); }
   100% { filter: drop-shadow(0 0 0 rgba(14, 165, 233, 0)); }
+}
+
+/* ─── 问题定位：诊断文档 / 代码路径面板（spec 抽屉三段式容器内） ─── */
+.diag-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid rgba(14, 165, 233, 0.1);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+
+.diag-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(14, 165, 233, 0.08);
+  background: rgba(255, 255, 255, 0.6);
+  flex-shrink: 0;
+}
+
+.diag-panel-title-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.diag-panel-title-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-title);
+  font-family: var(--font-heading);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.diag-panel-title-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+}
+
+.diag-panel-title-icon.amber {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.diag-panel-subtitle {
+  margin: 2px 0 0 42px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-panel-actions {
+  flex-shrink: 0;
+}
+
+.diag-hidden-input {
+  display: none;
+}
+
+.diag-upload-btn {
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.diag-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.diag-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.diag-body-stack {
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 18px 20px;
+  gap: 18px;
+}
+
+.diag-doc-list-pane {
+  width: 280px;
+  min-width: 230px;
+  border-right: 1px solid rgba(14, 165, 233, 0.08);
+  overflow-y: auto;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.25);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diag-doc-preview-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px 18px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.diag-preview-state {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+}
+
+.diag-doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-doc-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  background: #ffffff;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+  transition: all var(--transition-fast);
+}
+
+.diag-doc-item:hover {
+  border-color: rgba(14, 165, 233, 0.45);
+  background: var(--color-primary-50);
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.diag-doc-item.active {
+  border-color: var(--color-primary-500);
+  background: var(--color-primary-50);
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
+}
+
+.diag-doc-icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.diag-doc-icon-container.blue {
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+}
+
+.diag-doc-icon-container.amber {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.diag-doc-body {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.diag-doc-name {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-title);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-doc-meta {
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+}
+
+.diag-doc-preview {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--radius-lg);
+  background: #ffffff;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.diag-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--color-text-title);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.diag-preview-content {
+  flex: 1;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  line-height: 1.65;
+  color: var(--color-text-body);
+}
+
+.diag-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diag-section-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.diag-code-path {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: var(--radius-lg);
+  background: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-text-body);
+  overflow: auto;
+  word-break: break-all;
+  box-shadow: var(--shadow-sm);
+}
+
+.diag-repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diag-repo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: var(--shadow-sm);
+}
+
+.diag-repo-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.diag-repo-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-title);
+}
+
+.diag-repo-state {
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  background: var(--color-bg-base);
+}
+
+.diag-repo-meta {
+  margin-top: 2px;
+  font-size: 0.68rem;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-spin {
+  animation: diag-spin 1s linear infinite;
+}
+
+@keyframes diag-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

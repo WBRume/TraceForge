@@ -1,20 +1,36 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useAuthStore } from '@/stores/auth'
-import { Plus, Briefcase, Languages, BookCopy, ServerCog } from 'lucide-vue-next'
+import { Plus, Briefcase, Languages, Package, FolderKanban, GitFork, Settings2, ServerCog, LibraryBig } from 'lucide-vue-next'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
+import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflow/WorkspaceCreateWorkflowDialog.vue'
 import api from '@/utils/api'
-import { formatApiError } from '@/utils/error'
 import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
+import UserAvatar from '@/components/user/UserAvatar.vue'
 
-const { locale, t } = useI18n()
+const { locale } = useI18n()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const authStore = useAuthStore()
+
+/**
+ * Summarize an array of items into a compact label list, e.g.
+ * "repo-a, repo-b +2" when there are more than `max` items.
+ */
+const summarize = (items: any[] | undefined, labelOf: (item: any) => string, max = 2) => {
+  const labels = (items || []).map(labelOf).filter((label) => label)
+  if (labels.length === 0) return ''
+  const shown = labels.slice(0, max)
+  const extra = labels.length - shown.length
+  return extra > 0 ? `${shown.join(', ')} +${extra}` : shown.join(', ')
+}
+
+const productLabel = (product: any) =>
+  product?.version_no ? `${product.name} (${product.version_no})` : product?.name
 
 const toggleLanguage = () => {
   const newLang = locale.value === 'zh' ? 'en' : 'zh'
@@ -24,25 +40,13 @@ const toggleLanguage = () => {
 
 const loading = ref(true)
 const showCreateModal = ref(false)
-const newWsName = ref('')
-const newWsDesc = ref('')
-const newWsPath = ref('')
-const newWsGit = ref('')
-const creating = ref(false)
-const createError = ref('')
 const showDeleteConfirm = ref(false)
 const deletingWorkspace = ref(false)
 const wsToDelete = ref<any>(null)
-const createModalOverlayArmed = ref(false)
 
 onMounted(async () => {
-  window.addEventListener('blur', cancelCreateModalOverlayClose)
   await wsStore.fetchWorkspaces()
   loading.value = false
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('blur', cancelCreateModalOverlayClose)
 })
 
 const enterWorkspace = (ws: any) => {
@@ -50,43 +54,11 @@ const enterWorkspace = (ws: any) => {
   router.push(`/ws/${ws.id}/dashboard`)
 }
 
-const openSkillsConfig = () => {
-  router.push('/skills')
-}
-
-const openQueueOps = () => {
-  router.push('/ops/queue')
-}
-
-const handleCreate = async () => {
-  if (!newWsName.value) return
-  creating.value = true
-  createError.value = ''
-  try {
-    const res = await api.post('/workspaces', {
-      name: newWsName.value,
-      description: newWsDesc.value,
-      project_path: newWsPath.value,
-      git_repo_url: newWsGit.value
-    })
-    showCreateModal.value = false
-    const jobId = String(res.data?.job_id || '').trim()
-    if (!jobId) {
-      throw new Error(t('provisioning.invalid_job_id'))
-    }
-    await router.push({
-      path: `/ops/queue/provision/${jobId}`,
-    })
-  } catch (e) {
-    createError.value = formatApiError(
-      e,
-      t('workspaces.errors.create_failed'),
-      t
-    )
-    console.error('Failed to create workspace', e)
-  } finally {
-    creating.value = false
-  }
+const handleWorkspaceCreated = async (jobId: string) => {
+  showCreateModal.value = false
+  await router.push({
+    path: '/ops/queue/provision/' + jobId,
+  })
 }
 
 const logout = () => {
@@ -118,22 +90,6 @@ const confirmDeleteWorkspace = async () => {
     showDeleteConfirm.value = false
     wsToDelete.value = null
   }
-}
-
-const armCreateModalOverlayClose = (event: PointerEvent) => {
-  if (event.button !== 0) return
-  createModalOverlayArmed.value = true
-}
-
-const cancelCreateModalOverlayClose = () => {
-  createModalOverlayArmed.value = false
-}
-
-const finishCreateModalOverlayClose = () => {
-  if (!createModalOverlayArmed.value) return
-  createModalOverlayArmed.value = false
-  createError.value = ''
-  showCreateModal.value = false
 }
 </script>
 
@@ -168,15 +124,21 @@ const finishCreateModalOverlayClose = () => {
         <div class="flex items-center gap-2">
           <button
             class="btn-secondary flex items-center gap-2"
-            @click="openQueueOps"
+            @click="router.push('/management')"
           >
-            <ServerCog class="w-4 h-4" /> {{ $t('queue_ops.entry') }}
+            <Settings2 class="w-4 h-4" /> {{ $t('management.entry_config_center') }}
           </button>
           <button
             class="btn-secondary flex items-center gap-2"
-            @click="openSkillsConfig"
+            @click="router.push('/ops')"
           >
-            <BookCopy class="w-4 h-4" /> {{ $t('skills.entry') }}
+            <ServerCog class="w-4 h-4" /> {{ $t('management.entry_ops_center') }}
+          </button>
+          <button
+            class="btn-secondary flex items-center gap-2"
+            @click="router.push('/knowledge')"
+          >
+            <LibraryBig class="w-4 h-4" /> {{ $t('management.entry_knowledge_center') }}
           </button>
           <button class="btn-primary flex items-center gap-2" @click="showCreateModal = true">
             <Plus class="w-4 h-4" /> {{ $t('workspaces.new_workspace') }}
@@ -212,6 +174,36 @@ const finishCreateModalOverlayClose = () => {
             />
           </div>
           <p class="ws-card-desc">{{ ws.description || $t('workspaces.no_desc') }}</p>
+          <div class="ws-card-meta">
+            <div class="ws-meta-row" :title="ws.project?.name">
+              <FolderKanban class="ws-meta-icon" />
+              <span class="ws-meta-label">{{ $t('workspaces.card_project') }}</span>
+              <span class="ws-meta-value">{{ ws.project?.name || $t('workspaces.not_set') }}</span>
+            </div>
+            <div class="ws-meta-row" :title="summarize(ws.products, productLabel, 10)">
+              <Package class="ws-meta-icon" />
+              <span class="ws-meta-label">{{ $t('workspaces.card_products') }}</span>
+              <span class="ws-meta-value">{{ summarize(ws.products, productLabel) || $t('workspaces.not_set') }}</span>
+            </div>
+            <div class="ws-meta-row" :title="summarize(ws.repositories, (repo) => repo?.repo_name, 10)">
+              <GitFork class="ws-meta-icon" />
+              <span class="ws-meta-label">{{ $t('workspaces.card_repositories') }}</span>
+              <span class="ws-meta-value">{{ summarize(ws.repositories, (repo) => repo?.repo_name) || $t('workspaces.not_set') }}</span>
+            </div>
+            <div class="ws-meta-row" :title="ws.owner?.display_name || ws.owner?.email">
+              <UserAvatar
+                class="ws-meta-icon ws-meta-avatar"
+                :display-name="ws.owner?.display_name"
+                :email="ws.owner?.email"
+                :user-id="ws.owner?.id"
+                :avatar-svg="ws.owner?.avatar_svg"
+                :avatar-url="ws.owner?.avatar_url"
+                size="xs"
+              />
+              <span class="ws-meta-label">{{ $t('workspaces.card_creator') }}</span>
+              <span class="ws-meta-value">{{ ws.owner?.display_name || ws.owner?.email || $t('workspaces.not_set') }}</span>
+            </div>
+          </div>
           <div class="ws-card-footer">
             <span class="text-xs text-muted">{{ $t('workspaces.created_at', { date: new Date(ws.created_at).toLocaleDateString(locale) }) }}</span>
           </div>
@@ -219,44 +211,11 @@ const finishCreateModalOverlayClose = () => {
       </div>
     </main>
 
-    <!-- Modal -->
-    <div
-      v-if="showCreateModal"
-      class="modal-overlay"
-      @pointerdown.self="armCreateModalOverlayClose"
-      @pointerup.self="finishCreateModalOverlayClose"
-      @pointerleave.self="cancelCreateModalOverlayClose"
-      @pointercancel.self="cancelCreateModalOverlayClose"
-    >
-      <div class="modal glass-panel">
-        <h3>{{ $t('workspaces.new_workspace') }}</h3>
-        <form @submit.prevent="handleCreate" class="mt-4 flex flex-col gap-4">
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.name') }}</label>
-            <input v-model="newWsName" type="text" class="input-field" required :placeholder="$t('workspaces.modal.name_placeholder')">
-          </div>
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.desc') }}</label>
-            <textarea v-model="newWsDesc" class="input-field" rows="2" :placeholder="$t('workspaces.modal.desc_placeholder')"></textarea>
-          </div>
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.path') }}</label>
-            <input v-model="newWsPath" type="text" class="input-field" required :placeholder="$t('workspaces.modal.path_placeholder')">
-          </div>
-          <div class="form-group flex flex-col gap-2">
-            <label>{{ $t('workspaces.modal.git') }}</label>
-            <input v-model="newWsGit" type="text" class="input-field" :placeholder="$t('workspaces.modal.git_placeholder')">
-          </div>
-          <p v-if="createError" class="create-error">{{ createError }}</p>
-          <div class="flex justify-end gap-3 mt-4">
-            <button type="button" class="btn-secondary" @click="createError = ''; showCreateModal = false">{{ $t('common.cancel') }}</button>
-            <button type="submit" class="btn-primary" :disabled="creating">
-              {{ creating ? $t('workspaces.modal.creating') : $t('common.confirm') }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <WorkspaceCreateWorkflowDialog
+      :show="showCreateModal"
+      @close="showCreateModal = false"
+      @created="handleWorkspaceCreated"
+    />
 
     <ConfirmActionModal
       :show="showDeleteConfirm"
@@ -414,6 +373,46 @@ const finishCreateModalOverlayClose = () => {
   color: var(--color-text-body);
   flex-grow: 1;
   font-size: 0.95rem;
+}
+
+.ws-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.ws-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  min-width: 0;
+}
+
+.ws-meta-icon {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--color-text-muted);
+}
+
+.ws-meta-avatar {
+  border-radius: 50%;
+}
+
+.ws-meta-label {
+  flex-shrink: 0;
+  width: 3.75rem;
+  color: var(--color-text-muted);
+}
+
+.ws-meta-value {
+  color: var(--color-text-body);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .group:hover .group-hover\:opacity-100 {

@@ -13,6 +13,10 @@ import { useTaskSkillRuntimeTrace } from '@/composables/useTaskSkillRuntimeTrace
 import { useAuthStore } from '@/stores/auth'
 import type { ContextCompactionLocatePayload, ContextTokenCategory } from '@/types/contextWindow'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
+import {
+  normalizeDiagnosisPayload,
+  type DiagnosisResultPayload,
+} from '@/types/diagnosis'
 
 
 export function useChatViewModel() {
@@ -50,7 +54,7 @@ export function useChatViewModel() {
   }
   type SpecDrawerLevel = 0 | 1 | 2 | 3
   type OpenSpecDrawerLevel = 1 | 2 | 3
-  type SpecDrawerTab = 'spec_doc' | 'superpowers_docs'
+  type SpecDrawerTab = 'spec_doc' | 'superpowers_docs' | 'diag_docs' | 'diag_code'
   type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
   type ChatWorkbenchMode = 'platform' | 'cli'
   type RuntimeSkillUsage = {
@@ -241,27 +245,45 @@ export function useChatViewModel() {
     Boolean(workspacePermissions.value?.upload_task_spec || workspacePermissions.value?.manage_task_status)
   ))
   const isTaskPreStart = computed(() => currentTask.value?.status === 'PENDING')
+  const isTaskProvisioning = computed(() => String(currentTask.value?.status || '') === 'PROVISIONING')
   const isTaskInterrupted = computed(() => currentTask.value?.status === 'INTERRUPTED')
-  const isStartActionVisible = computed(() => Boolean(currentTask.value) && isTaskPreStart.value)
+  // 任务创建后处于 PROVISIONING 时也保留启动引擎按钮（禁用态），避免按钮凭空消失；
+  // 只有资源准备完成回到 PENDING 后才允许真正启动。
+  const isStartActionVisible = computed(() => Boolean(currentTask.value) && (isTaskPreStart.value || isTaskProvisioning.value))
   const canClickStartAction = computed(() => (
-    isStartActionVisible.value && canStartTask.value && !startingTask.value
+    isTaskPreStart.value && canStartTask.value && !startingTask.value
   ))
   const canInitializeAction = computed(() => (
     Boolean(currentTask.value) && !isTaskPreStart.value && canManageTaskStatus.value
   ))
   const currentTaskHasSpec = computed(() => hasTaskSpecification(currentTask.value))
   const isSuperpowersDocsAvailable = computed(() => Boolean(currentTask.value) && !isTaskPreStart.value)
-  const showSpecEntryButton = computed(() => currentTaskHasSpec.value || isSuperpowersDocsAvailable.value)
+  // 问题定位任务：不展示需求文档抽屉（spec drawer），改用诊断文档/代码路径抽屉
+  const showSpecEntryButton = computed(() => (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isDiagnosisTask.value)
   const isSpecDrawerAvailable = computed(() => (
-    (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value
+    (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value && !isDiagnosisTask.value
   ))
   const isSpecPanelOpen = computed(() => specDrawerLevel.value > 0)
-  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value)
+  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value || isTaskProvisioning.value)
+
+  // 问题定位任务：诊断文档/代码路径抽屉（复用 spec 抽屉三段式容器）
+  const toggleDiagnosisDocsDrawer = () => {
+    if (!isDiagnosisTask.value || !currentTask.value) return
+    if (isSpecPanelOpen.value) {
+      specDrawerLevel.value = 0
+      return
+    }
+    specDrawerTab.value = 'diag_docs'
+    specDrawerLevel.value = 1
+    lastOpenSpecDrawerLevel.value = 1
+  }
 
   const localUserMessageMeta = () => ({
     creator_id: authStore.user?.id || null,
     creator_display_name: authStore.user?.display_name || 'You',
     creator_is_workspace_expert: workspaceCurrentUserIsExpert.value || Boolean(currentWorkspace.value?.my_is_expert),
+    creator_avatar_url: authStore.user?.avatar_url || null,
+    creator_avatar_svg: authStore.user?.avatar_svg || null,
   })
 
   const generateClientMessageId = (): string => {
@@ -314,10 +336,17 @@ export function useChatViewModel() {
     }
     const index = messages.value.findIndex(existing => messageIdentity(existing) === key)
     if (index >= 0) {
-      messages.value[index] = {
+      const merged = {
         ...messages.value[index],
         ...item,
       }
+      // 定位结果卡片更新时把它移到会话末尾，确保最新结果展示在最后一次返回上
+      if (String(item.message_type || item.type || '') === 'diagnosis_result') {
+        messages.value.splice(index, 1)
+        messages.value.push(merged)
+        return
+      }
+      messages.value[index] = merged
       return
     }
     messages.value.push(item)
@@ -341,6 +370,31 @@ export function useChatViewModel() {
     String(msg?.role || '').toLowerCase() === 'user' && Boolean(msg?.creator_is_workspace_expert)
   )
 
+  // 成员稳定配色：creator_id 哈希到固定色板（首色为项目主色），气泡/头像/作者名用同一颜色区分多用户
+  const MEMBER_COLOR_PALETTE = ['#0284C7', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#b45309']
+  const memberColorFor = (userId: string | null | undefined): string => {
+    const id = String(userId || '').trim()
+    if (!id) return MEMBER_COLOR_PALETTE[0]
+    let hash = 0
+    for (let i = 0; i < id.length; i++) {
+      hash = (hash * 31 + id.charCodeAt(i)) >>> 0
+    }
+    return MEMBER_COLOR_PALETTE[hash % MEMBER_COLOR_PALETTE.length]
+  }
+  // 成员色的半透明变体（避免 CSS color-mix 的兼容性差异）
+  const memberColorRgba = (userId: string | null | undefined, alpha: number): string => {
+    const hex = memberColorFor(userId)
+    const r = parseInt(hex.slice(1, 3), 16)
+    const g = parseInt(hex.slice(3, 5), 16)
+    const b = parseInt(hex.slice(5, 7), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  const messageAuthorColor = (msg: any): string => (
+    String(msg?.role || '').toLowerCase() === 'user'
+      ? memberColorFor(msg?.creator_id)
+      : '#0284C7'
+  )
+
   const formatMessageTime = (isoStr: string): string => {
     if (!isoStr) return ''
     return new Date(isoStr).toLocaleTimeString([], {
@@ -350,6 +404,7 @@ export function useChatViewModel() {
     })
   }
   const chatInputPlaceholder = computed(() => {
+    if (isTaskProvisioning.value) return t('chat.task_provisioning_hint')
     if (isTaskPreStart.value) return t('chat.start_before_chat')
     if (isTerminalStatus.value) return t('chat.terminal_status_hint')
     if (isTaskInterrupted.value) return t('chat.resume_interrupted_placeholder')
@@ -1044,6 +1099,9 @@ export function useChatViewModel() {
       if (statusQuery) {
         params.status = statusQuery
       }
+      if (taskTypeFilter.value !== 'ALL') {
+        params.task_type = taskTypeFilter.value
+      }
 
       const res = await api.get(`/workspaces/${wsId}/tasks`, { params })
       const items = Array.isArray(res.data?.items) ? res.data.items : []
@@ -1130,26 +1188,64 @@ export function useChatViewModel() {
     if (!canCreateTask.value) return
     showTaskModal.value = true
   }
-  
-  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean }) => {
+
+  // 任务创建后：始终进入任务准备进度弹窗（等待 git worktree/clone 完成，防止提前启动会话）
+  const taskProvisionVisible = ref(false)
+  const taskProvisionJobId = ref('')
+  const taskProvisionTaskId = ref('')
+
+  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
     showTaskModal.value = false
     const taskId = typeof payload === 'string' ? payload : payload.taskId
-    const wsId = route.params.wsId
-
-    // 如果创建任务时上传了 spec 文件，跳转到 provisioning 页面等待 job 完成
-    if (typeof payload !== 'string' && payload.expectSpecUpload && payload.jobId) {
-      router.push(`/ops/queue/provision/${payload.jobId}?expectSpec=1`)
-      return
-    }
+    const jobId = typeof payload === 'string' ? '' : String(payload.jobId || '').trim()
 
     preferredSpecTaskId.value = taskId
     preferredSpecAssetId.value = typeof payload === 'string' ? '' : (payload.assetId || '')
     await loadTasks()
-    router.push(`/ws/${wsId}/chat/${taskId}`)
 
-    // 重新获取一下最新的 task 对象
-    const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
-    selectTask(latestTaskRes.data)
+    // 任务创建后即使仍在 PROVISIONING，也先选中新任务，避免准备弹窗期间/关闭后看不到会话与启动按钮
+    const createdTask = tasks.value.find((task: any) => task.id === taskId)
+    if (createdTask && currentTask.value?.id !== taskId) {
+      await selectTask(createdTask)
+    }
+
+    if (jobId) {
+      // 无论是否携带 spec/诊断文档，都先等待运维队列准备完成
+      taskProvisionJobId.value = jobId
+      taskProvisionTaskId.value = taskId
+      taskProvisionVisible.value = true
+      return
+    }
+    openTaskSession(taskId)
+  }
+
+  const closeTaskProvision = () => {
+    const taskId = taskProvisionTaskId.value
+    if (taskId) {
+      void openTaskSession(taskId)
+    } else {
+      taskProvisionVisible.value = false
+    }
+  }
+
+  const openTaskSession = async (taskId: string) => {
+    const wsId = route.params.wsId
+    taskProvisionVisible.value = false
+    router.push(`/ws/${wsId}/chat/${taskId}`)
+    // 重新获取一下最新的 task 对象，并同步到任务列表，避免后续 loadTasks 用旧 PROVISIONING 覆盖当前状态
+    try {
+      const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
+      const latestTask = latestTaskRes.data
+      const taskIndex = tasks.value.findIndex((task: any) => task.id === latestTask?.id)
+      if (taskIndex >= 0) {
+        tasks.value[taskIndex] = { ...tasks.value[taskIndex], ...latestTask }
+      } else if (latestTask?.id) {
+        tasks.value.unshift(latestTask)
+      }
+      await selectTask(latestTask)
+    } catch (e) {
+      console.warn('Failed to refresh task after provisioning', e)
+    }
   }
   
   const selectTask = async (task: any) => {
@@ -1162,12 +1258,13 @@ export function useChatViewModel() {
     contextWindowDrawerLevel.value = 1
     contextWindow.reset()
     clearContextWindowRefreshTimer()
-    specDrawerTab.value = hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs'
+    specDrawerTab.value = isDiagnosisTask.value ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
     currentTask.value = task
     showTaskSkillsDrawer.value = false
     messages.value = []
     terminalLogs.value = []
     pinnedCards.value = []
+    activePreInput.value = null
     resetChatJobState()
     resetRuntimeSkillEditorState()
     specBootstrap.value = null
@@ -1188,6 +1285,13 @@ export function useChatViewModel() {
     }
     loadHistory(task.id)
     loadActiveChatJobs(task.id)
+    void loadActivePreInput(task.id)
+    if (isDiagnosisTask.value) {
+      void loadDiagnosisResult()
+    } else {
+      diagnosisResult.value = null
+      diagnosisCaseLink.value = ''
+    }
     loadTaskRuntimeSkills({ silent: true, hydrateEditor: false })
     if (hasTaskSpecification(task)) {
       loadTaskSpecBootstrap(task.id, task)
@@ -1197,6 +1301,249 @@ export function useChatViewModel() {
       requestSpecDrawerLevel(lastOpenSpecDrawerLevel.value)
     }
     connectWebSocket(task.id)
+  }
+
+  // ─── 问题定位任务（DIAGNOSIS） ───
+  const isDiagnosisTask = computed(() => String(currentTask.value?.task_type || '') === 'DIAGNOSIS')
+  /** 问题定位不需要 git patch/diff 相关业务，隐藏对应入口 */
+  const hidePatchWorkflows = computed(() => isDiagnosisTask.value)
+
+  const diagnosisResult = ref<any>(null)
+  const diagnosisResultLoading = ref(false)
+  const diagnosisResultSaving = ref(false)
+  const diagnosisCaseCreating = ref(false)
+  const diagnosisCaseLink = ref('')
+  // 每个任务/对话窗口独立记录总结中状态，互不覆盖
+  const diagnosisSummarizingTasks = ref<Record<string, boolean>>({})
+  const diagnosisSummarizing = computed(() => Boolean(
+    currentTask.value?.id && diagnosisSummarizingTasks.value[currentTask.value.id],
+  ))
+  const diagnosisSummaryJobId = ref('')
+  const isDiagnosisAdopted = computed(() => Boolean(
+    diagnosisResult.value?.status === 'CONFIRMED' || diagnosisCaseLink.value,
+  ))
+
+  const loadDiagnosisResult = async () => {
+    const taskId = currentTask.value?.id
+    if (!taskId || !isDiagnosisTask.value) {
+      diagnosisResult.value = null
+      diagnosisCaseLink.value = ''
+      return
+    }
+    diagnosisResultLoading.value = true
+    try {
+      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`)
+      // 尚无结果时后端返回 200 + null（AI 会话收敛后自动反填，卡片由会话消息驱动）
+      diagnosisResult.value = res.data || null
+    } catch (e: any) {
+      if (e?.response?.status === 404) {
+        // 兼容旧后端：尚无结果
+        diagnosisResult.value = null
+        return
+      }
+      console.warn('Failed to load diagnosis result', e)
+    } finally {
+      diagnosisResultLoading.value = false
+    }
+    try {
+      const casesRes = await api.get(`/workspaces/${route.params.wsId}/cases`, {
+        params: { source_task_id: taskId, page: 1, page_size: 1 },
+      })
+      const linked = (casesRes.data?.items || [])[0]
+      diagnosisCaseLink.value = linked?.id || ''
+    } catch (e) {
+      diagnosisCaseLink.value = ''
+    }
+  }
+
+  const patchMessageMetadata = (messageId: string, payload: DiagnosisResultPayload) => {
+    const message = messages.value.find(item => String(item.id || '') === String(messageId || ''))
+    if (!message) return
+    const normalized = normalizeDiagnosisPayload(payload)
+    message.metadata = normalized
+    message.content = String(normalized.summary || normalized.root_cause || '')
+  }
+
+  const saveDiagnosisResult = async (payload: DiagnosisResultPayload, messageId?: string) => {
+    const taskId = currentTask.value?.id
+    if (!taskId) return
+    diagnosisResultSaving.value = true
+    try {
+      const res = await api.put(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-result`, payload)
+      diagnosisResult.value = res.data
+      if (messageId) {
+        // 以后端返回的规范化结果回填气泡，确保编辑后的值真正反映到卡片上
+        patchMessageMetadata(messageId, res.data as DiagnosisResultPayload)
+      }
+      ElMessage.success(t('diagnosis.result_saved'))
+    } catch (e) {
+      ElMessage.error(formatApiError(e, t('diagnosis.result_save_failed'), t))
+      console.error('Failed to save diagnosis result', e)
+    } finally {
+      diagnosisResultSaving.value = false
+    }
+  }
+
+  const createDiagnosisCase = async (submitForReview: boolean): Promise<string> => {
+    const taskId = currentTask.value?.id
+    if (!taskId) return ''
+    diagnosisCaseCreating.value = true
+    try {
+      const res = await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/case-draft`, {
+        submit_for_review: Boolean(submitForReview),
+      })
+      const caseId = String(res.data?.id || '')
+      diagnosisCaseLink.value = caseId
+      ElMessage.success(t(submitForReview ? 'diagnosis.case_created_and_submitted' : 'diagnosis.case_created'))
+      router.push(`/ws/${route.params.wsId}/cases?case=${caseId}`)
+      return caseId
+    } catch (e: any) {
+      if (e?.response?.status === 409) {
+        const detail = String(e?.response?.data?.detail || '')
+        const match = detail.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i)
+        const existingId = match ? match[0] : ''
+        if (existingId) {
+          diagnosisCaseLink.value = existingId
+          ElMessage.info(t('diagnosis.case_already_exists'))
+          router.push(`/ws/${route.params.wsId}/cases?case=${existingId}`)
+          return existingId
+        }
+      }
+      ElMessage.error(formatApiError(e, t('diagnosis.case_create_failed'), t))
+      console.error('Failed to create diagnosis case', e)
+      return ''
+    } finally {
+      diagnosisCaseCreating.value = false
+    }
+  }
+
+  const waitForDiagnosisSummary = async (jobId: string, taskId: string): Promise<void> => {
+    // 轮询后端任务状态直至收敛（SUCCESS / FAILED / CANCELLED），最多等待 3 分钟
+    const terminal = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
+    const deadline = Date.now() + 3 * 60 * 1000
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000))
+      try {
+        const res = await api.get(
+          `/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary/${jobId}`,
+        )
+        const status = String(res.data?.status || '')
+        if (terminal.has(status)) {
+          break
+        }
+      } catch (e) {
+        console.warn('Failed to poll diagnosis summary status', e)
+        // 短时抖动不终止轮询，直到超时
+      }
+    }
+    // 延迟一拍再拉取，确保定位结果卡片已由后端写入并广播
+    await new Promise((resolve) => window.setTimeout(resolve, 1500))
+    if (currentTask.value?.id === taskId) {
+      await loadDiagnosisResult()
+    }
+  }
+
+  const generateDiagnosisSummary = async (): Promise<boolean> => {
+    const taskId = currentTask.value?.id
+    if (!taskId || !isDiagnosisTask.value || diagnosisSummarizing.value) return false
+    if (isDiagnosisAdopted.value) {
+      ElMessage.warning(t('diagnosis.case_already_adopted_no_summary'))
+      return false
+    }
+    diagnosisSummarizingTasks.value = {
+      ...diagnosisSummarizingTasks.value,
+      [taskId]: true,
+    }
+    diagnosisSummaryJobId.value = ''
+    try {
+      const res = await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary`)
+      const jobId = String(res.data?.job_id || '')
+      if (!jobId) {
+        throw new Error(t('diagnosis.summary_job_missing'))
+      }
+      diagnosisSummaryJobId.value = jobId
+      ElMessage.success(t('diagnosis.summary_started'))
+      await waitForDiagnosisSummary(jobId, taskId)
+      return true
+    } catch (e) {
+      ElMessage.error(formatApiError(e, t('diagnosis.summary_failed'), t))
+      console.error('Failed to generate diagnosis summary', e)
+      return false
+    } finally {
+      // 只清除当前任务自己的总结状态，避免影响其他对话窗口的独立按钮
+      if (diagnosisSummarizingTasks.value[taskId]) {
+        const next = { ...diagnosisSummarizingTasks.value }
+        delete next[taskId]
+        diagnosisSummarizingTasks.value = next
+        diagnosisSummaryJobId.value = ''
+      }
+    }
+  }
+
+  const exportDiagnosisResult = (payload: DiagnosisResultPayload) => {
+    if (!payload) return
+    const norm = normalizeDiagnosisPayload(payload)
+    const taskName = currentTask.value?.name || ''
+    const lines: string[] = []
+    lines.push(`# 问题定位结果 · ${taskName}`)
+    lines.push('')
+    if (norm.summary) lines.push(`## 结果内容\n\n${norm.summary}\n`)
+    if (norm.root_cause) lines.push(`## 根因结论\n\n${norm.root_cause}\n`)
+    if (norm.evidence_chain) lines.push(`## 证据链\n\n${norm.evidence_chain}\n`)
+    if (norm.fix_suggestion) lines.push(`## 修复方案\n\n${norm.fix_suggestion}\n`)
+    if (norm.fix_code) lines.push(`## 修复代码\n\n\`\`\`\n${norm.fix_code}\n\`\`\`\n`)
+    if (norm.code_context.length) {
+      lines.push('## 相关代码上下文\n')
+      norm.code_context.forEach((item, index) => {
+        const start = item.start_line ?? ''
+        const end = item.end_line ?? ''
+        const loc = start ? (end && end !== start ? `:${start}-${end}` : `:${start}`) : ''
+        lines.push(`${index + 1}. \`${item.file_path || ''}${loc}\``)
+        if (item.note) lines.push(`   - 说明：${item.note}`)
+        if (item.snippet) lines.push(`   \`\`\`\n   ${item.snippet.replace(/\n/g, '\n   ')}\n   \`\`\``)
+      })
+      lines.push('')
+    }
+    if (norm.similar_cases.length) {
+      lines.push('## 相似案例\n')
+      norm.similar_cases.forEach((item) => {
+        lines.push(`- **${item.title || ''}**${item.similarity ? `（相似度：${item.similarity}）` : ''}`)
+        if (item.summary) lines.push(`  - ${item.summary}`)
+        if (item.reference) lines.push(`  - 参考：${item.reference}`)
+      })
+      lines.push('')
+    }
+    if (norm.call_chain.length) {
+      lines.push('## 调用链路\n')
+      norm.call_chain.forEach((node, index) => {
+        const seq = node.seq ?? index + 1
+        const label = [node.module, node.function].filter(Boolean).join('.') || node.file_path || ''
+        lines.push(`${seq}. ${label || '（未命名节点）'}${node.file_path ? ` — \`${node.file_path}\`` : ''}`)
+        if (node.description) lines.push(`   - ${node.description}`)
+      })
+      lines.push('')
+    }
+    lines.push(`## 置信度\n\n${norm.confidence}%`)
+    lines.push('')
+    const markdown = lines.join('\n')
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const safeName = (taskName || 'diagnosis-result').replace(/[\\/:*?"<>|]/g, '_')
+    link.href = url
+    link.download = `${safeName}-定位结果.md`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  // ─── 任务类型过滤（会话列表） ───
+  type TaskTypeFilterValue = 'ALL' | 'DEVELOPMENT' | 'DIAGNOSIS'
+  const taskTypeFilter = ref<TaskTypeFilterValue>('ALL')
+
+  const applyTaskTypeFilter = async () => {
+    await loadTasks({ reset: true, trySelectRouteTask: false })
   }
   
   const openSpecWorkspace = () => {
@@ -1233,7 +1580,7 @@ export function useChatViewModel() {
   }
   
   const requestSpecDrawerLevel = (level: OpenSpecDrawerLevel) => {
-    if (!isSpecDrawerAvailable.value) return
+    if (!currentTask.value) return
     applySpecDrawerLevel(level)
   }
   
@@ -1276,8 +1623,11 @@ export function useChatViewModel() {
         creator_id: m.creator_id || null,
         creator_display_name: m.creator_display_name || null,
         creator_is_workspace_expert: Boolean(m.creator_is_workspace_expert),
+        creator_avatar_url: m.creator_avatar_url || null,
+        creator_avatar_svg: m.creator_avatar_svg || null,
         client_message_id: m.client_message_id || null,
         decision_id: m.decision_id || null,
+        metadata: m.metadata || null,
       }))
   
       if (reset) {
@@ -1430,8 +1780,19 @@ export function useChatViewModel() {
       engineRunning.value = false
       applyTaskSessionPayload(payload)
       return true
-    } catch (e) {
+    } catch (e: any) {
       console.error('Temporary interrupt failed', e)
+      const detail = String(e?.response?.data?.detail || '')
+      if (
+        detail.includes('No running Claude CLI session')
+        || detail.includes('No running Claude CLI session or active AI job')
+      ) {
+        // 后端认为已经没有可中断的会话/作业：同步前端运行状态，避免停止按钮一直可点
+        engineRunning.value = false
+        if (currentTask.value?.id) {
+          void loadActiveChatJobs(currentTask.value.id)
+        }
+      }
       ElMessage.error(resolveActionError(e, 'chat.errors.temporary_interrupt_failed', 'chat.errors.no_permission_manage_task_status'))
       return false
     }
@@ -1753,6 +2114,7 @@ export function useChatViewModel() {
       console.log(`WS Connected: task=${taskId}`)
       if (currentTask.value?.id === taskId) {
         void loadActiveChatJobs(taskId)
+        void loadActivePreInput(taskId)
         if (hasTaskSpecification(currentTask.value)) {
           void loadTaskSpecBootstrap(taskId)
         }
@@ -1811,7 +2173,7 @@ export function useChatViewModel() {
   
     switch (type) {
       case 'chat_message': {
-        // 自然语言对话气泡 (user / assistant text)
+        // 自然语言对话气泡 (user / assistant text) 与定位结果卡片
         upsertChatMessage({
           id: payload.id || Date.now().toString(),
           role: payload.role,
@@ -1821,8 +2183,11 @@ export function useChatViewModel() {
           creator_id: payload.creator_id || null,
           creator_display_name: payload.creator_display_name || null,
           creator_is_workspace_expert: Boolean(payload.creator_is_workspace_expert),
+          creator_avatar_url: payload.creator_avatar_url || null,
+          creator_avatar_svg: payload.creator_avatar_svg || null,
           client_message_id: payload.client_message_id || null,
           decision_id: payload.decision_id || null,
+          metadata: payload.metadata || null,
           delivery_status: 'sent',
         })
         scrollToBottom('chat')
@@ -1844,6 +2209,7 @@ export function useChatViewModel() {
           creator_is_workspace_expert: Boolean(payload.creator_is_workspace_expert),
           client_message_id: clientMessageId || null,
           decision_id: payload.decision_id || null,
+          metadata: payload.metadata || null,
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
@@ -1861,6 +2227,32 @@ export function useChatViewModel() {
         if (status === 'failed' || status === 'conflict') {
           ElMessage.error(payload.message || 'Message was not sent. Please retry.')
         }
+        break
+      }
+
+      case 'pre_input_update': {
+        if (payload?.task_id && String(payload.task_id) !== String(currentTask.value?.id || '')) break
+        if (payload?.status === 'COLLECTING') {
+          activePreInput.value = payload
+        } else if (activePreInput.value?.id === payload?.id) {
+          activePreInput.value = null
+        }
+        break
+      }
+
+      case 'pre_input_submitted': {
+        // 合并后的消息由随后的 chat_message 事件 upsert 进消息列表
+        if (activePreInput.value?.id === payload?.id) {
+          activePreInput.value = null
+        }
+        ElMessage.success(t('preInput.submitted_toast'))
+        break
+      }
+
+      case 'pre_input_error': {
+        ElMessage.error(payload?.message || t('preInput.errors.generic'))
+        const taskId = String(payload?.task_id || currentTask.value?.id || '')
+        if (taskId) void loadActivePreInput(taskId)
         break
       }
   
@@ -2168,6 +2560,191 @@ export function useChatViewModel() {
       chatInput.value = ''
     }
   }
+
+  // ─── 协作预输入（共享文档：多人就地修改/增加提示词，按行追踪归属） ───
+  type PreInputEditPermission = 'ALL' | 'MENTIONED' | 'EXPERTS' | 'NONE'
+  type PreInputMember = {
+    user_id: string
+    display_name: string | null
+    avatar_url: string | null
+    avatar_svg: string | null
+    is_expert: boolean
+    done?: boolean
+  }
+  type PreInputDocumentSegment = {
+    text: string
+    created_by: string
+    created_by_name: string | null
+    updated_by: string
+    updated_by_name: string | null
+    modified: boolean
+  }
+  type ActivePreInput = {
+    id: string
+    task_id: string
+    workspace_id: string
+    creator: PreInputMember
+    main_text: string
+    document_segments: PreInputDocumentSegment[]
+    edit_permission: PreInputEditPermission
+    status: 'COLLECTING' | 'SUBMITTED' | 'CANCELLED'
+    wait_seconds: number
+    deadline_at: string | null
+    created_at: string | null
+    mentioned_user_ids: string[]
+    mentionees: PreInputMember[]
+    volunteers: PreInputMember[]
+    participant_ids: string[]
+    all_participated: boolean
+  }
+
+  const activePreInput = ref<ActivePreInput | null>(null)
+  const preInputBusy = ref(false)
+
+  const sendPreInputAction = (action: string, payload: Record<string, any> = {}): boolean => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      ElMessage.error(t('preInput.errors.ws_unavailable'))
+      return false
+    }
+    ws.send(JSON.stringify({ type: action, payload }))
+    return true
+  }
+
+  const loadActivePreInput = async (taskId: string) => {
+    if (!taskId) return
+    try {
+      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/pre-input/active`)
+      if (currentTask.value?.id !== taskId) return
+      const pre = res.data?.pre_input || null
+      if (pre && pre.status === 'COLLECTING') {
+        activePreInput.value = pre
+      } else if (activePreInput.value?.task_id === taskId) {
+        activePreInput.value = null
+      }
+    } catch (e) {
+      console.warn('Failed to load active pre input', e)
+    }
+  }
+
+  const startPreInput = (opts: {
+    main_text: string
+    mentioned_user_ids: string[]
+    edit_permission: PreInputEditPermission
+    wait_seconds: number
+  }): boolean => {
+    if (!currentTask.value?.id) return false
+    if (activePreInput.value) {
+      ElMessage.warning(t('preInput.errors.already_active'))
+      return false
+    }
+    if (isChatLocked.value) {
+      ElMessage.warning(t('chat.start_before_chat'))
+      return false
+    }
+    return sendPreInputAction('pre_input_create', opts)
+  }
+
+  // 编辑共享文档（全文）：插入新文字人人可为；修改/删除已有文字需编辑权限（服务端字符级 diff 校验）
+  const editPreInputDocument = (text: string): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    if (!text.trim()) return false
+    return sendPreInputAction('pre_input_edit_document', { text })
+  }
+
+  // 框选提交：把选中的一段文字替换为输入（无选中/等价纯插入人人可为，替换所选需编辑权限）
+  const replacePreInputSpan = (
+    start: number,
+    end: number,
+    anchorText: string,
+    replacement: string,
+  ): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    return sendPreInputAction('pre_input_replace_span', {
+      start,
+      end,
+      anchor_text: anchorText,
+      replacement,
+    })
+  }
+
+  // 无补充，标记完成（记为参与）
+  const markPreInputDone = (): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    return sendPreInputAction('pre_input_mark_done', {})
+  }
+
+  const submitPreInputManually = (): boolean => {
+    if (!isPreInputCreator.value) return false
+    return sendPreInputAction('pre_input_submit', {})
+  }
+
+  const cancelPreInput = (): boolean => {
+    if (!isPreInputCreator.value) return false
+    return sendPreInputAction('pre_input_cancel', {})
+  }
+
+  const searchPreInputMembers = async (keyword: string): Promise<PreInputMember[]> => {
+    try {
+      const res = await api.get(`/workspaces/${route.params.wsId}/members`, {
+        params: { page: 1, page_size: 50, keyword: keyword.trim() || undefined },
+      })
+      // 后端把工作区所有者(OWNER)放在 owner 字段单独返回且不参与 keyword 过滤，
+      // 这里合并进候选列表，并对 owner 做本地关键词匹配
+      const keywordLower = keyword.trim().toLowerCase()
+      const selfId = String(authStore.user?.id || '')
+      const candidates: any[] = []
+      const owner = res.data?.owner
+      if (owner && String(owner.user_id || '') !== selfId) {
+        const ownerName = String(owner.display_name || '').toLowerCase()
+        const ownerEmail = String(owner.email || '').toLowerCase()
+        if (!keywordLower || ownerName.includes(keywordLower) || ownerEmail.includes(keywordLower)) {
+          candidates.push(owner)
+        }
+      }
+      for (const item of (res.data?.items || [])) {
+        if (String(item.user_id || '') !== selfId) candidates.push(item)
+      }
+      return candidates.map((item) => ({
+        user_id: String(item.user_id || ''),
+        display_name: String(item.display_name || item.email || 'Member'),
+        avatar_url: item.avatar_url || null,
+        avatar_svg: item.avatar_svg || null,
+        is_expert: Boolean(item.is_expert),
+      }))
+    } catch (e) {
+      console.warn('Failed to search workspace members', e)
+      return []
+    }
+  }
+
+  const preInputIsCollecting = computed(() => activePreInput.value?.status === 'COLLECTING')
+  const isPreInputCreator = computed(() => {
+    const pi = activePreInput.value
+    return Boolean(pi && String(authStore.user?.id || '') === String(pi.creator?.user_id || ''))
+  })
+  const myPreInputParticipation = computed(() => {
+    const pi = activePreInput.value
+    if (!pi) return false
+    const selfId = String(authStore.user?.id || '')
+    return isPreInputCreator.value || (pi.participant_ids || []).some((id) => String(id) === selfId)
+  })
+  // 可修改/删除已有内容（插入新行不受限）
+  const canEditPreInputShared = computed(() => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    if (isPreInputCreator.value) return true
+    const uid = String(authStore.user?.id || '')
+    if (pi.edit_permission === 'ALL') return true
+    if (pi.edit_permission === 'MENTIONED') return (pi.mentioned_user_ids || []).some((m) => String(m) === uid)
+    if (pi.edit_permission === 'EXPERTS') {
+      return workspaceCurrentUserIsExpert.value || Boolean(currentWorkspace.value?.my_is_expert)
+    }
+    return false
+  })
+
   
   // ─── 执行高阶 MCP 验证 ───
   const sendVerification = async (type: 'ui' | 'api' | 'e2e') => {
@@ -2197,6 +2774,10 @@ export function useChatViewModel() {
   const startTask = async (): Promise<boolean> => {
     if (!currentTask.value) return false
     if (!isStartActionVisible.value) return false
+    if (isTaskProvisioning.value) {
+      ElMessage.warning(t('chat.task_provisioning_hint'))
+      return false
+    }
     if (!canStartTask.value) {
       ElMessage.warning(t('chat.errors.no_permission_start_task'))
       return false
@@ -2241,6 +2822,10 @@ export function useChatViewModel() {
   const handleStartClick = () => {
     if (!currentTask.value) return
     if (!isStartActionVisible.value) return
+    if (isTaskProvisioning.value) {
+      ElMessage.warning(t('chat.task_provisioning_hint'))
+      return
+    }
     if (!canStartTask.value) {
       ElMessage.warning(t('chat.errors.no_permission_start_task'))
       return
@@ -2385,9 +2970,52 @@ export function useChatViewModel() {
     openDecisionModal,
     markHitlCardAnswered,
     messageAuthorLabel,
+    messageAuthorColor,
+    memberColorFor,
+    memberColorRgba,
     messages,
+    // 协作预输入
+    activePreInput,
+    preInputBusy,
+    preInputIsCollecting,
+    isPreInputCreator,
+    myPreInputParticipation,
+    canEditPreInputShared,
+    startPreInput,
+    editPreInputDocument,
+    replacePreInputSpan,
+    markPreInputDone,
+    submitPreInputManually,
+    cancelPreInput,
+    searchPreInputMembers,
+    loadActivePreInput,
     closeTaskSkillsDrawer,
     openTaskSkillsDrawer,
+    isTaskProvisioning,
+    taskProvisionVisible,
+    taskProvisionJobId,
+    taskProvisionTaskId,
+    closeTaskProvision,
+    openTaskSession,
+    toggleDiagnosisDocsDrawer,
+    createDiagnosisCase,
+    diagnosisCaseCreating,
+    diagnosisCaseLink,
+    diagnosisResult,
+    diagnosisResultLoading,
+    diagnosisResultSaving,
+    diagnosisSummarizing,
+    diagnosisSummaryJobId,
+    isDiagnosisAdopted,
+    exportDiagnosisResult,
+    generateDiagnosisSummary,
+    hidePatchWorkflows,
+    isDiagnosisTask,
+    loadDiagnosisResult,
+    patchMessageMetadata,
+    saveDiagnosisResult,
+    taskTypeFilter,
+    applyTaskTypeFilter,
     openContextWindowDrawer,
     onTaskCreated,
     openNewTaskModal,

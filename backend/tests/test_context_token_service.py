@@ -15,6 +15,12 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.database import Base  # noqa: E402
+import app.domains.api_mock.models.api_mock  # noqa: F401,E402
+import app.domains.asset.models.asset  # noqa: F401,E402
+import app.domains.dashboard.models.metric  # noqa: F401,E402
+import app.domains.task.models.test_result  # noqa: F401,E402
+import app.domains.workflow.models.task_change  # noqa: F401,E402
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
 from app.engine.claude_event_adapter import extract_claude_compaction_event, extract_claude_usage  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.auth.models.user import User, Workspace
@@ -25,7 +31,11 @@ from app.domains.skill.models.skill import (
     SkillRuntimeEvidenceLevel,
 )
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
-from app.domains.task.models.context_token import ContextTokenCategory, SddContextTokenSegment
+from app.domains.task.models.context_token import (
+    ContextTokenCategory,
+    SddContextTokenSegment,
+    SddContextTokenSnapshot,
+)
 from app.domains.task.models.log import LogType, SddExecutionLog
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import context_compaction_service, context_token_service  # noqa: E402
@@ -233,6 +243,46 @@ class ContextTokenServiceTest(unittest.TestCase):
         self.assertEqual(round(categories["TOOL_RESULT"]["percentage"], 1), 66.7)
         self.assertEqual(payload["segments_total"], 1)
         self.assertEqual(payload["segments"][0]["category"], "TOOL_RESULT")
+
+    def test_context_window_falls_back_to_last_usable_snapshot(self):
+        # 旧快照有真实用量
+        usable = context_token_service.ensure_snapshot(
+            self.db,
+            workspace_id="ws-1",
+            task_id="task-1",
+            ai_job_id="job-old",
+            status="SUCCESS",
+        )
+        context_token_service.update_snapshot_usage(
+            self.db,
+            snapshot=usable,
+            usage={"input_tokens": 100, "output_tokens": 10},
+        )
+
+        # 新快照来自中断/未产生 usage 的回合，只有 0
+        interrupted = context_token_service.ensure_snapshot(
+            self.db,
+            workspace_id="ws-1",
+            task_id="task-1",
+            ai_job_id="job-new",
+            status="RUNNING",
+        )
+        context_token_service.update_snapshot_usage(
+            self.db,
+            snapshot=interrupted,
+            usage={"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0},
+        )
+
+        self.assertFalse(context_token_service._snapshot_has_usable_provider_tokens(interrupted))
+        payload = context_token_service.get_context_window(
+            self.db,
+            workspace_id="ws-1",
+            task_id="task-1",
+            ai_job_id="job-new",
+        )
+        self.assertEqual(payload["snapshot"]["id"], usable.id)
+        self.assertTrue(payload["provider_tokens"]["available"])
+        self.assertEqual(payload["provider_tokens"]["input_tokens"], 100)
 
     def test_context_window_detects_compaction_from_execution_log(self):
         snapshot = context_token_service.ensure_snapshot(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")

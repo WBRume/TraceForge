@@ -62,6 +62,8 @@ class WSChatPayload(BaseModel):
     creator_id: Optional[str] = None
     creator_display_name: Optional[str] = None
     creator_is_workspace_expert: Optional[bool] = None
+    creator_avatar_url: Optional[str] = None
+    creator_avatar_svg: Optional[str] = None
     created_at: Optional[str] = None
 
 

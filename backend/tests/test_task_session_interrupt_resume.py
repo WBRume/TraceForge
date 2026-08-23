@@ -115,6 +115,43 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     assert payload["status"] == TaskStatus.INTERRUPTED.value
 
 
+def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.PENDING)
+
+    published = []
+    events = []
+
+    async def _publish_job(job_id, *, final=False):
+        published.append((job_id, final))
+
+    async def _broadcast(event_type, event_task, job_payload):
+        events.append((event_type, event_task.id, job_payload["id"]))
+
+    monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
+    monkeypatch.setattr(task_session_control_service.ai_job_service, "publish_job", _publish_job)
+    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+
+    payload = asyncio.run(
+        task_session_control_service.interrupt_task(
+            db,
+            task=task,
+            actor_user_id="user-1",
+            reason="stop before start",
+        )
+    )
+
+    db.refresh(task)
+    db.refresh(job)
+    assert job.status == AiJobStatus.CANCELLED
+    assert job.message == "stop before start"
+    assert task.status == TaskStatus.CODING
+    assert published == [("job-1", True)]
+    assert events == [("task_interrupted", "task-1", "job-1")]
+    assert payload["job"]["status"] == AiJobStatus.CANCELLED.value
+
+
 def test_task_resume_requires_interrupted_status(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
@@ -239,3 +276,92 @@ def test_ai_job_queue_pauses_failed_task_pending_jobs(monkeypatch):
         assert check_db.query(SddAiJob).filter(SddAiJob.id == job.id).first().status == AiJobStatus.SUCCESS
     finally:
         check_db.close()
+
+
+async def _noop_update_job_state(job_id, **kwargs):
+    return None
+
+
+async def _noop_finalize(job_id, engine):
+    return None
+
+
+def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
+    """After an interrupt/stop, the next chat turn must keep the persisted
+    session_id on the engine so start_session uses --resume (send_message),
+    instead of starting a completely fresh Claude session."""
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.INTERRUPTED)
+    job.session_id = "session-1"
+    db.commit()
+
+    calls = {"sent": [], "run": []}
+
+    class _FakeEngine:
+        task_id = task.id
+        running = False
+        session_id = "session-stale"  # stale in-memory value that must be overwritten
+
+        def set_job_callbacks(self, **kwargs):
+            return None
+
+        async def send_message(self, prompt, *, job_id=None):
+            calls["sent"].append((task.id, prompt, job_id))
+
+        async def run(self, prompt, *, fresh_session=False):
+            calls["run"].append((task.id, prompt, fresh_session))
+
+    engine = _FakeEngine()
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "get_engine", lambda _task_id: engine)
+    monkeypatch.setattr(ai_job_service, "_update_job_state", _noop_update_job_state)
+    monkeypatch.setattr(ai_job_service, "_finalize_task_chat_job_from_engine", _noop_finalize)
+
+    asyncio.run(ai_job_service._run_task_chat_turn(job.id, "continue from where I stopped"))
+
+    # The persisted session id must win over the (stale) in-memory engine value.
+    assert engine.session_id == "session-1"
+    assert calls["sent"] == [(task.id, "continue from where I stopped", job.id)]
+    assert calls["run"] == []
+
+
+def test_run_task_chat_turn_fresh_session_clears_engine_session(monkeypatch):
+    """A fresh-session job must clear the engine session so run(..., fresh_session=True)
+    starts a brand-new Claude session without --resume."""
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    job.session_id = "session-1"
+    job.context_json = {"fresh_session": True}
+    db.commit()
+
+    calls = {"sent": [], "run": []}
+
+    class _FakeEngine:
+        task_id = task.id
+        running = False
+        session_id = "session-1"
+
+        def set_job_callbacks(self, **kwargs):
+            return None
+
+        async def send_message(self, prompt, *, job_id=None):
+            calls["sent"].append((task.id, prompt, job_id))
+
+        async def run(self, prompt, *, fresh_session=False):
+            calls["run"].append((task.id, prompt, fresh_session))
+
+    engine = _FakeEngine()
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "get_engine", lambda _task_id: engine)
+    monkeypatch.setattr(ai_job_service, "_update_job_state", _noop_update_job_state)
+    monkeypatch.setattr(ai_job_service, "_finalize_task_chat_job_from_engine", _noop_finalize)
+
+    asyncio.run(ai_job_service._run_task_chat_turn(job.id, "start fresh"))
+
+    assert engine.session_id is None
+    assert calls["run"] == [(task.id, "start fresh", True)]
+    assert calls["sent"] == []

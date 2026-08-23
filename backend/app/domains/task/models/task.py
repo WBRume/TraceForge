@@ -13,6 +13,7 @@ from app.domains.auth.models.user import generate_uuid
 
 
 class TaskStatus(str, PyEnum):
+    PROVISIONING = "PROVISIONING"  # 任务资源准备中（git worktree/clone 未完成，禁止启动会话）
     PENDING = "PENDING"
     BRAINSTORMING = "BRAINSTORMING"
     PLANNING = "PLANNING"
@@ -25,6 +26,11 @@ class TaskStatus(str, PyEnum):
     SUSPENDED = "SUSPENDED"  # HITL 挂起
     INTERRUPTED = "INTERRUPTED"  # 用户临时中断，可恢复
     BASELINED = "BASELINED"
+
+
+class TaskType(str, PyEnum):
+    DEVELOPMENT = "DEVELOPMENT"  # 研发态任务（默认，存量数据兼容）
+    DIAGNOSIS = "DIAGNOSIS"      # 问题定位任务
 
 
 class PlanNodeStatus(str, PyEnum):
@@ -42,6 +48,8 @@ class SddTask(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
+    task_type = Column(String(40), nullable=False, default=TaskType.DEVELOPMENT.value, index=True)
+    task_meta_json = Column(JSON, nullable=True)  # 任务类型扩展元数据，如问题定位的 {phenomenon, priority}
     name = Column(String(300), nullable=False)
     description = Column(Text, nullable=True)
     spec_doc_path = Column(String(500), nullable=True)
@@ -52,6 +60,8 @@ class SddTask(Base):
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)
+    # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
+    agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)
     interrupted_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     interrupted_at = Column(DateTime, nullable=True)
@@ -75,6 +85,12 @@ class SddTask(Base):
     test_results = relationship("SddTestResult", back_populates="task", cascade="all, delete-orphan")
     assets = relationship("SddAsset", back_populates="task", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="task", cascade="all, delete-orphan")
+    diagnosis_result = relationship(
+        "SddDiagnosisResult",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
     dashboard_metrics = relationship("SddDashboardMetric", back_populates="task", cascade="all, delete-orphan")
     skill_links = relationship("SddTaskSkill", back_populates="task", cascade="all, delete-orphan")
     api_mock_projects = relationship("SddApiMockProject", back_populates="task", cascade="all, delete-orphan")
@@ -107,6 +123,12 @@ class SddTask(Base):
     )
     change_proposals = relationship("SddTaskChangeProposal", back_populates="task", cascade="all, delete-orphan")
     verification_runs = relationship("SddTaskVerificationRun", back_populates="task", cascade="all, delete-orphan")
+    repo_bindings = relationship(
+        "SddTaskRepository",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        order_by="SddTaskRepository.created_at.asc()",
+    )
     conflict_reports = relationship("SddTaskConflictReport", back_populates="task", cascade="all, delete-orphan")
     cli_bootstrap = relationship(
         "SddTaskCliBootstrap",
@@ -144,3 +166,8 @@ class SddPlanNode(Base):
     task = relationship("SddTask", back_populates="plan_nodes")
     children = relationship("SddPlanNode", back_populates="parent", cascade="all, delete-orphan")
     parent = relationship("SddPlanNode", back_populates="children", remote_side=[id])
+
+
+# Late import registers sdd_task_repositories into Base.metadata for
+# create_all / autogenerate completeness.
+from app.domains.task.models import task_repository as _task_repo_models  # noqa: E402,F401

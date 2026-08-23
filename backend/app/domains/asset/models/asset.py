@@ -31,6 +31,7 @@ class AssetType(str, PyEnum):
     UT_REPORT = "UT_REPORT"
     E2E_REPORT = "E2E_REPORT"
     ERROR_STACK = "ERROR_STACK"
+    DIAGNOSIS_DOC = "DIAGNOSIS_DOC"  # 问题定位任务上传的需求/日志等辅助文档
 
 
 class AssetThreadStatus(str, PyEnum):
@@ -194,6 +195,8 @@ class SddAssetThread(Base):
     )
     close_hint_state = Column(String(32), nullable=False, default="none")
     close_hint_reason = Column(String(64), nullable=True)
+    # 线程专属 CLI 会话 id（由 baseline 会话 fork 而来，各讨论上下文互相独立）
+    cli_session_id = Column(String(120), nullable=True)
     close_hint_version_id = Column(
         String(36),
         ForeignKey("sdd_asset_versions.id", ondelete="SET NULL"),

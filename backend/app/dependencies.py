@@ -46,3 +46,13 @@ def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Management domain write guard: only platform admins may configure."""
+    if not bool(getattr(current_user, "is_admin", False)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only platform administrators can perform this operation",
+        )
+    return current_user

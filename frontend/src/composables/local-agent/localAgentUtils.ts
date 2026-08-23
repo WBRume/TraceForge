@@ -22,6 +22,9 @@ export const remoteUrlsMatch = (left: string | null | undefined, right: string |
 export const createPatchBranchName = (taskId: string, patchSetNo: number): string =>
   `sdd/${taskId}/v${patchSetNo}`
 
+export const createRepoPatchBranchName = (taskId: string, patchSetNo: number, repoSlug: string): string =>
+  `sdd/${taskId}/v${patchSetNo}-${repoSlug}`
+
 export const redactLog = (value: string): string =>
   String(value || '')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')

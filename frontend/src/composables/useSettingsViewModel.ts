@@ -1,7 +1,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bell, Languages, MonitorCog, Palette, Shield, Users } from 'lucide-vue-next'
+import { Bell, Bot, Languages, MonitorCog, Palette, Shield, Users } from 'lucide-vue-next'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
@@ -131,6 +131,12 @@ export function useSettingsViewModel() {
       icon: MonitorCog,
       label: 'settings.local_dev.repo_mapping_title',
       description: 'settings.local_dev.repo_mapping_desc',
+    },
+    {
+      id: 'agent',
+      icon: Bot,
+      label: 'settings.agent.title',
+      description: 'settings.agent.subtitle',
     },
     {
       id: 'notifications',

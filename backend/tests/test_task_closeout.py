@@ -42,6 +42,37 @@ def _build_closeout_app(SessionLocal, user):
     return app
 
 
+def test_complete_closeout_allows_no_evidence():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, _workspace, _task = _seed_workspace(db, workspace_id="ws-closeout-none", task_id="task-closeout-none")
+
+        client = TestClient(_build_closeout_app(SessionLocal, user))
+        response = client.post(
+            "/api/workspaces/ws-closeout-none/tasks/task-closeout-none/closeout/complete",
+            json={
+                "completion_summary": "Implemented locally.",
+                "landing_method": "HUMAN_ADJUSTED",
+            },
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "DONE"
+        assert payload["evidence_ids"] == []
+
+        with _session(SessionLocal) as db:
+            task = db.get(SddTask, "task-closeout-none")
+            evidence = db.query(SddEvidence).filter(SddEvidence.task_id == "task-closeout-none").all()
+            summary = db.query(SddTaskFinalSummary).filter(SddTaskFinalSummary.task_id == "task-closeout-none").one()
+            assert task is not None
+            assert task.status == TaskStatus.DONE
+            assert evidence == []
+            assert summary.final_status.value == "PARTIAL"
+    finally:
+        engine.dispose()
+
+
 def test_complete_closeout_records_evidence_summary_and_done_status():
     engine, SessionLocal = _build_db()
     try:
@@ -49,15 +80,6 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
             user, _workspace, _task = _seed_workspace(db, workspace_id="ws-closeout", task_id="task-closeout")
 
         client = TestClient(_build_closeout_app(SessionLocal, user))
-        missing_evidence = client.post(
-            "/api/workspaces/ws-closeout/tasks/task-closeout/closeout/complete",
-            json={
-                "completion_summary": "Implemented locally.",
-                "landing_method": "HUMAN_ADJUSTED",
-            },
-        )
-        assert missing_evidence.status_code == 422
-
         response = client.post(
             "/api/workspaces/ws-closeout/tasks/task-closeout/closeout/complete",
             json={
@@ -65,7 +87,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
                 "landing_method": "HUMAN_ADJUSTED",
                 "commit_id": "abc1234",
                 "human_delta": {
-                    "status": "CONFIRMED",
+                    "status": "READY",
                     "title": "Manual API adjustment",
                     "summary": "Changed the AI output to use the internal API.",
                     "change_category": "framework_api_misuse",
@@ -92,7 +114,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
             assert task is not None
             assert task.status == TaskStatus.DONE
             assert evidence.source_ref == "abc1234"
-            assert review.status.value == "OPEN"
+            assert review.status.value == "RESOLVED"
             assert review.review_type == "EXPERT_FINAL_REVIEW"
             assert summary.final_status.value == "PARTIAL"
             assert detail_task is not None

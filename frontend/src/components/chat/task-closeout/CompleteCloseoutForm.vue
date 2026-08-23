@@ -18,7 +18,6 @@ const { t } = useI18n()
 const files = shallowRef<File[]>([])
 const errors = reactive({
   summary: false,
-  evidence: false,
 })
 
 const form = reactive({
@@ -43,17 +42,11 @@ function trimmed(value: string): string | null {
 
 function updateFiles(nextFiles: File[]) {
   files.value = nextFiles
-  if (nextFiles.length > 0) errors.evidence = false
-}
-
-function clearEvidenceError() {
-  errors.evidence = false
 }
 
 function submitForm() {
   errors.summary = !trimmed(form.completion_summary)
-  errors.evidence = !trimmed(form.commit_id) && !trimmed(form.pr_url) && !trimmed(form.local_ref) && files.value.length === 0
-  if (errors.summary || errors.evidence) return
+  if (errors.summary) return
   emit('submit', {
     completion_summary: form.completion_summary.trim(),
     landing_method: form.landing_method,
@@ -86,23 +79,23 @@ function submitForm() {
 
     <div class="form-section">
       <div class="field-grid">
-        <div class="form-field" :class="{ invalid: errors.evidence }">
+        <div class="form-field">
           <label>{{ t('chat.closeout.commit_id') }}</label>
-          <input v-model="form.commit_id" :class="{ invalid: errors.evidence }" :disabled="saving" :placeholder="t('chat.closeout.commit_id_placeholder')" @input="clearEvidenceError" />
+          <input v-model="form.commit_id" :disabled="saving" :placeholder="t('chat.closeout.commit_id_placeholder')" />
         </div>
-        <div class="form-field" :class="{ invalid: errors.evidence }">
+        <div class="form-field">
           <label>{{ t('chat.closeout.pr_url') }}</label>
-          <input v-model="form.pr_url" :class="{ invalid: errors.evidence }" :disabled="saving" :placeholder="t('chat.closeout.pr_url_placeholder')" @input="clearEvidenceError" />
+          <input v-model="form.pr_url" :disabled="saving" :placeholder="t('chat.closeout.pr_url_placeholder')" />
         </div>
-        <div class="form-field" :class="{ invalid: errors.evidence }">
+        <div class="form-field">
           <label>{{ t('chat.closeout.local_ref') }}</label>
-          <input v-model="form.local_ref" :class="{ invalid: errors.evidence }" :disabled="saving" :placeholder="t('chat.closeout.local_ref_placeholder')" @input="clearEvidenceError" />
+          <input v-model="form.local_ref" :disabled="saving" :placeholder="t('chat.closeout.local_ref_placeholder')" />
         </div>
       </div>
 
-      <div class="form-field" :class="{ invalid: errors.evidence }">
-        <label class="required">{{ t('chat.closeout.main_evidence') }}</label>
-        <CloseoutEvidenceUploader :files="files" :disabled="saving" :invalid="errors.evidence" @update:files="updateFiles" />
+      <div class="form-field">
+        <label>{{ t('chat.closeout.main_evidence') }}</label>
+        <CloseoutEvidenceUploader :files="files" :disabled="saving" @update:files="updateFiles" />
       </div>
     </div>
 

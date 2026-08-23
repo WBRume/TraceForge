@@ -14,7 +14,6 @@ import {
 } from 'lucide-vue-next'
 import api from '@/utils/api'
 import { useWorkspaceStore } from '@/stores/workspace'
-import AppSidebar from '@/components/AppSidebar.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
@@ -61,16 +60,6 @@ const scopeOptions = computed(() => [
   { key: 'workspace', label: t('skills.list.scope_workspace') },
 ])
 
-const sidebarNavItems = computed(() => [
-  {
-    key: 'skills-manage',
-    label: t('skills.list.sidebar_manage'),
-    icon: Wrench,
-    active: true,
-    noClick: true,
-  },
-])
-
 const workspaceNameMap = computed(() => {
   const entries = wsStore.workspaces.map((ws) => [String(ws.id), String(ws.name || '')] as const)
   return new Map(entries)
@@ -107,10 +96,6 @@ const workspaceFilterOptions = computed(() => {
   })
   return options
 })
-
-const goBack = () => {
-  router.push('/workspaces')
-}
 
 const goCreate = () => {
   router.push({
@@ -258,14 +243,6 @@ onUnmounted(() => {
 
 <template>
   <div class="skills-page">
-    <AppSidebar
-      :title="t('skills.list.title')"
-      :back-title="t('skills.list.back_to_workspaces')"
-      :toggle-title="t('layout.toggle_sidebar')"
-      :nav-items="sidebarNavItems"
-      @back="goBack"
-    />
-
     <main class="skills-main">
       <section class="page-caption glass-panel">
         <h2 class="content-title">{{ $t('skills.list.content_title') }}</h2>
@@ -441,18 +418,17 @@ onUnmounted(() => {
 <style scoped>
 .skills-page {
   display: flex;
-  min-height: 100vh;
-  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-  overflow: hidden;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-height: 0;
 }
 
 .skills-main {
   flex: 1;
-  overflow-y: auto;
-  padding: 1.5rem 2rem;
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+  min-height: 0;
 }
 
 .page-caption {
@@ -857,22 +833,8 @@ onUnmounted(() => {
     overflow: auto;
   }
 
-  :deep(.sidebar) {
-    width: 100%;
-    margin-right: 0;
-    border-radius: 0 0 var(--radius-xl) var(--radius-xl);
-  }
-
-  :deep(.sidebar-header) {
-    padding: var(--space-4);
-  }
-
-  :deep(.sidebar-nav) {
-    padding: var(--space-2);
-  }
-
   .skills-main {
-    padding: 1rem;
+    padding: 0;
   }
 
   .toolbar {

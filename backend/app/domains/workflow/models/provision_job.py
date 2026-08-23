@@ -24,6 +24,7 @@ class ProvisionJobType(str, PyEnum):
     CREATE_WORKSPACE = "CREATE_WORKSPACE"
     CREATE_TASK = "CREATE_TASK"
     IMPORT_SKILL = "IMPORT_SKILL"
+    SYNC_REPO_REFS = "SYNC_REPO_REFS"
 
 
 class ProvisionJobStatus(str, PyEnum):
