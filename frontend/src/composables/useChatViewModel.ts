@@ -2553,7 +2553,7 @@ export function useChatViewModel() {
     }
   }
 
-  // ─── 协作预输入（多人草稿收集后合并提交） ───
+  // ─── 协作预输入（共享文档：多人就地修改/增加提示词，按行追踪归属） ───
   type PreInputEditPermission = 'ALL' | 'MENTIONED' | 'EXPERTS' | 'NONE'
   type PreInputMember = {
     user_id: string
@@ -2563,10 +2563,13 @@ export function useChatViewModel() {
     is_expert: boolean
     done?: boolean
   }
-  type PreInputContribution = PreInputMember & {
-    content: string
-    updated_at: string | null
-    created_at: string | null
+  type PreInputDocumentSegment = {
+    text: string
+    created_by: string
+    created_by_name: string | null
+    updated_by: string
+    updated_by_name: string | null
+    modified: boolean
   }
   type ActivePreInput = {
     id: string
@@ -2574,6 +2577,7 @@ export function useChatViewModel() {
     workspace_id: string
     creator: PreInputMember
     main_text: string
+    document_segments: PreInputDocumentSegment[]
     edit_permission: PreInputEditPermission
     status: 'COLLECTING' | 'SUBMITTED' | 'CANCELLED'
     wait_seconds: number
@@ -2582,8 +2586,8 @@ export function useChatViewModel() {
     mentioned_user_ids: string[]
     mentionees: PreInputMember[]
     volunteers: PreInputMember[]
-    contributions: PreInputContribution[]
-    all_mentioned_done: boolean
+    participant_ids: string[]
+    all_participated: boolean
   }
 
   const activePreInput = ref<ActivePreInput | null>(null)
@@ -2632,21 +2636,36 @@ export function useChatViewModel() {
     return sendPreInputAction('pre_input_create', opts)
   }
 
-  const submitPreInputContribution = (content: string): boolean => {
-    const text = content.trim()
-    if (!text) return false
-    if (!activePreInput.value || activePreInput.value.status !== 'COLLECTING') return false
-    return sendPreInputAction('pre_input_contribute', { content: text })
+  // 编辑共享文档（全文）：插入新文字人人可为；修改/删除已有文字需编辑权限（服务端字符级 diff 校验）
+  const editPreInputDocument = (text: string): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    if (!text.trim()) return false
+    return sendPreInputAction('pre_input_edit_document', { text })
   }
 
-  const editPreInputMainText = (mainText: string): boolean => {
-    if (!canEditPreInputShared.value) return false
-    return sendPreInputAction('pre_input_edit', { main_text: mainText })
+  // 框选提交：把选中的一段文字替换为输入（无选中/等价纯插入人人可为，替换所选需编辑权限）
+  const replacePreInputSpan = (
+    start: number,
+    end: number,
+    anchorText: string,
+    replacement: string,
+  ): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    return sendPreInputAction('pre_input_replace_span', {
+      start,
+      end,
+      anchor_text: anchorText,
+      replacement,
+    })
   }
 
-  const editPreInputContributionOf = (userId: string, content: string): boolean => {
-    if (!canEditPreInputContributionOf(userId)) return false
-    return sendPreInputAction('pre_input_edit', { target_user_id: userId, content })
+  // 无补充，标记完成（记为参与）
+  const markPreInputDone = (): boolean => {
+    const pi = activePreInput.value
+    if (!pi || pi.status !== 'COLLECTING') return false
+    return sendPreInputAction('pre_input_mark_done', {})
   }
 
   const submitPreInputManually = (): boolean => {
@@ -2698,12 +2717,13 @@ export function useChatViewModel() {
     const pi = activePreInput.value
     return Boolean(pi && String(authStore.user?.id || '') === String(pi.creator?.user_id || ''))
   })
-  const myPreInputContribution = computed(() => {
+  const myPreInputParticipation = computed(() => {
     const pi = activePreInput.value
-    if (!pi) return null
+    if (!pi) return false
     const selfId = String(authStore.user?.id || '')
-    return pi.contributions?.find((c) => String(c.user_id) === selfId) || null
+    return isPreInputCreator.value || (pi.participant_ids || []).some((id) => String(id) === selfId)
   })
+  // 可修改/删除已有内容（插入新行不受限）
   const canEditPreInputShared = computed(() => {
     const pi = activePreInput.value
     if (!pi || pi.status !== 'COLLECTING') return false
@@ -2716,12 +2736,6 @@ export function useChatViewModel() {
     }
     return false
   })
-  const canEditPreInputContributionOf = (userId: string): boolean => {
-    const pi = activePreInput.value
-    if (!pi || pi.status !== 'COLLECTING') return false
-    const own = String(userId || '') === String(authStore.user?.id || '')
-    return own || canEditPreInputShared.value
-  }
 
   
   // ─── 执行高阶 MCP 验证 ───
@@ -2956,13 +2970,12 @@ export function useChatViewModel() {
     preInputBusy,
     preInputIsCollecting,
     isPreInputCreator,
-    myPreInputContribution,
+    myPreInputParticipation,
     canEditPreInputShared,
-    canEditPreInputContributionOf,
     startPreInput,
-    submitPreInputContribution,
-    editPreInputMainText,
-    editPreInputContributionOf,
+    editPreInputDocument,
+    replacePreInputSpan,
+    markPreInputDone,
     submitPreInputManually,
     cancelPreInput,
     searchPreInputMembers,

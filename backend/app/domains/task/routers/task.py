@@ -518,7 +518,9 @@ async def initialize_task(
             db.commit()
             db.refresh(task)
 
-            prompt = task.description or f"Please start task '{task.name}'."
+            # 会话窗口只展示用户输入部分；规格文件指引/诊断后缀等内置提示词只随作业发给 agent
+            user_display = (task.description or "").strip() or f"Please start task '{task.name}'."
+            prompt = user_display
             if task.spec_doc_path:
                 abs_path = os.path.abspath(task.spec_doc_path)
                 prompt += (
@@ -544,7 +546,7 @@ async def initialize_task(
                 ws_id,
                 current_user.id,
                 role="user",
-                content=prompt,
+                content=user_display,
             )
 
             job = ai_job_service.create_task_chat_job(

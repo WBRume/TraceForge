@@ -36,6 +36,8 @@ class SddTaskPreInput(Base):
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     main_text = Column(Text, nullable=False)
+    # 共享文档：按行归属 [{text, updated_by, updated_at}]；main_text 始终与其保持同步（纯文本视图）
+    document_json = Column(JSON, nullable=True)
     mentioned_user_ids = Column(JSON, nullable=False, default=list)
     edit_permission = Column(
         Enum(PreInputEditPermission, values_callable=lambda obj: [e.value for e in obj]),

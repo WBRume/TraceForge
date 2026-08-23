@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Circle, Send, X } from 'lucide-vue-next'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 
@@ -9,8 +9,8 @@ const props = defineProps<{
 
 const preInput = computed(() => props.vm?.activePreInput)
 const isCreator = computed(() => Boolean(props.vm?.isPreInputCreator))
-const canEditShared = computed(() => Boolean(props.vm?.canEditPreInputShared))
-const myContribution = computed(() => props.vm?.myPreInputContribution || null)
+const canModifyExisting = computed(() => Boolean(props.vm?.canEditPreInputShared))
+const hasParticipated = computed(() => Boolean(props.vm?.myPreInputParticipation))
 
 // ── 倒计时 ──
 const nowTs = ref(Date.now())
@@ -22,6 +22,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   if (ticker !== null) window.clearInterval(ticker)
+  document.removeEventListener('mouseup', onDocumentMouseUp)
 })
 
 const deadlineTs = computed(() => {
@@ -41,55 +42,149 @@ const isDeadlineReached = computed(() => remainingSeconds.value <= 0)
 
 const mentionees = computed(() => preInput.value?.mentionees || [])
 const volunteers = computed(() => preInput.value?.volunteers || [])
-const contributions = computed(() => preInput.value?.contributions || [])
+const documentSegments = computed(() => preInput.value?.document_segments || [])
 const doneCount = computed(() => mentionees.value.filter((m: any) => m.done).length)
 
 const memberColor = (userId: string) => props.vm?.memberColorFor?.(userId) || '#0284C7'
 
-// ── 主文本编辑 ──
-const mainTextEditing = ref(false)
-const mainTextDraft = ref('')
-const startEditMainText = () => {
-  mainTextDraft.value = preInput.value?.main_text || ''
-  mainTextEditing.value = true
-}
-const saveMainText = () => {
-  const text = mainTextDraft.value.trim()
-  if (!text) return
-  props.vm.editPreInputMainText(text)
-  mainTextEditing.value = false
+const segmentTitle = (seg: any) => (
+  seg.modified
+    ? `${seg.created_by_name}（${seg.updated_by_name} 修改）`
+    : String(seg.created_by_name || '')
+)
+
+// ── 框选提交输入 ──
+const docContainerRef = ref<HTMLElement | null>(null)
+const spanPopover = ref<{
+  visible: boolean
+  start: number
+  end: number
+  anchor: string
+  top: number
+  left: number
+} | null>(null)
+const spanDraft = ref('')
+const spanSubmitting = ref(false)
+
+// 无修改权限且框选了文字 → 只能作为纯插入（插到所选文字之前）
+const spanInsertOnly = computed(() => !canModifyExisting.value && Boolean(spanPopover.value?.anchor))
+
+const openSpanPopover = async (start: number, end: number, anchor: string, rect: DOMRect) => {
+  spanPopover.value = {
+    visible: true,
+    start,
+    end,
+    anchor,
+    top: rect.top,
+    left: rect.left + Math.min(rect.width / 2, 180),
+  }
+  spanDraft.value = canModifyExisting.value ? anchor : ''
+  await nextTick()
 }
 
-// ── 我的输入：常驻输入框 ──
-const myDraft = ref('')
+const closeSpanPopover = () => {
+  spanPopover.value = null
+  spanDraft.value = ''
+}
+
+const onDocumentMouseUp = async () => {
+  if (!preInput.value || preInput.value.status !== 'COLLECTING') return
+  const selection = window.getSelection()
+  const container = docContainerRef.value
+  if (!selection || selection.isCollapsed || !container) {
+    return
+  }
+  const range = selection.getRangeAt(0)
+  if (!container.contains(range.commonAncestorContainer)) return
+
+  const selectedText = range.toString()
+  if (!selectedText.trim()) return
+
+  // 计算选区在全文中的字符偏移
+  const preRange = document.createRange()
+  preRange.selectNodeContents(container)
+  preRange.setEnd(range.startContainer, range.startOffset)
+  const start = preRange.toString().length
+  const end = start + selectedText.length
+
+  const anchor = String(preInput.value.main_text || '').slice(start, end)
+  if (anchor !== selectedText) return // 渲染与文本不一致，忽略
+
+  const rect = range.getBoundingClientRect()
+  await openSpanPopover(start, end, anchor, rect)
+}
+
+const submitSpan = () => {
+  const popover = spanPopover.value
+  if (!popover) return
+  const pi = preInput.value
+  if (!pi) return
+  const replacement = spanDraft.value
+  if (spanInsertOnly.value) {
+    // 无修改权限：纯插入到所选文字之前（不改动原有字符）
+    if (!replacement.trim()) return
+    props.vm.replacePreInputSpan(popover.start, popover.start, '', replacement)
+  } else {
+    if (!replacement.trim()) return
+    props.vm.replacePreInputSpan(popover.start, popover.end, popover.anchor, replacement)
+  }
+  spanSubmitting.value = false
+  closeSpanPopover()
+  window.getSelection()?.removeAllRanges()
+}
+
+onMounted(() => {
+  document.addEventListener('mouseup', onDocumentMouseUp)
+})
+
+// 文档更新时关闭弹层（选区已失效）
+watch(() => preInput.value?.main_text, () => {
+  closeSpanPopover()
+})
+
+// ── 全文编辑（兜底，适合大改） ──
+const docEditing = ref(false)
+const docDraft = ref('')
+const originalText = ref('')
+
+const startEditDocument = () => {
+  originalText.value = String(preInput.value?.main_text || '')
+  docDraft.value = originalText.value
+  docEditing.value = true
+}
+
+// 字符级插行校验：原文字符按顺序全部保留（只允许新增字符）
+const isInsertOnly = (oldText: string, newText: string): boolean => {
+  let i = 0
+  for (const ch of newText) {
+    if (i < oldText.length && ch === oldText[i]) i++
+  }
+  return i === oldText.length
+}
+
+const insertOnlyViolation = computed(() => {
+  if (!docEditing.value || canModifyExisting.value) return false
+  return !isInsertOnly(originalText.value, docDraft.value)
+})
+
+const saveDocument = () => {
+  if (!docDraft.value.trim() || insertOnlyViolation.value) return
+  props.vm.editPreInputDocument(docDraft.value)
+  docEditing.value = false
+}
+
+// 编辑期间文档被他人更新时，若本地未改动则跟随最新内容
 watch(
-  () => myContribution.value?.content,
-  (content, prev) => {
-    // 服务端内容更新时同步草稿（未编辑中的本地草稿跟随）
-    if (myDraft.value === '' || myDraft.value === prev) {
-      myDraft.value = content || ''
+  () => preInput.value?.main_text,
+  (text, prev) => {
+    if (docEditing.value && (docDraft.value === '' || docDraft.value === prev)) {
+      docDraft.value = text || ''
     }
   },
-  { immediate: true },
 )
-const submitMyInput = () => {
-  const text = myDraft.value.trim()
-  if (!text) return
-  props.vm.submitPreInputContribution(text)
-}
 
-// ── 编辑他人输入段 ──
-const editingContributionUserId = ref('')
-const contributionDraft = ref('')
-const startEditContribution = (userId: string, content: string) => {
-  editingContributionUserId.value = userId
-  contributionDraft.value = content
-}
-const saveContribution = (userId: string) => {
-  const text = contributionDraft.value.trim()
-  if (!text) return
-  props.vm.editPreInputContributionOf(userId, text)
-  editingContributionUserId.value = ''
+const markDone = () => {
+  props.vm.markPreInputDone()
 }
 
 const submitNow = () => {
@@ -121,29 +216,44 @@ const cancelCollect = () => {
       </span>
     </div>
 
-    <!-- 主文本 -->
-    <template v-if="!mainTextEditing">
-      <div class="main-text-row">
-        <div class="main-text-content">{{ preInput.main_text }}</div>
-        <button
-          v-if="canEditShared"
-          type="button"
-          class="text-btn"
-          @click="startEditMainText"
-        >
-          {{ $t('common.edit') }}
+    <!-- 共享文档：字符级归属渲染，框选文字直接提交输入 -->
+    <template v-if="!docEditing">
+      <div class="document-block">
+        <div ref="docContainerRef" class="document-text" @mouseup="onDocumentMouseUp">
+          <span
+            v-for="(seg, index) in documentSegments"
+            :key="index"
+            class="doc-seg"
+            :class="{ 'is-modified': seg.modified, 'is-new': seg.created_by !== preInput.creator?.user_id && !seg.modified }"
+            :style="{
+              '--seg-color': memberColor(seg.created_by),
+              '--seg-modifier-color': memberColor(seg.updated_by),
+            }"
+            :title="segmentTitle(seg)"
+          >{{ seg.text }}</span>
+        </div>
+        <button type="button" class="text-btn" @click="startEditDocument">
+          {{ $t('preInput.edit_full_text') }}
         </button>
       </div>
+      <div class="doc-edit-hint">{{ $t('preInput.span_select_hint') }}</div>
     </template>
     <template v-else>
-      <textarea v-model="mainTextDraft" class="panel-textarea" rows="3"></textarea>
+      <textarea v-model="docDraft" class="panel-textarea doc-textarea" rows="6"></textarea>
+      <div v-if="!canModifyExisting" class="doc-edit-hint">{{ $t('preInput.edit_no_permission_hint') }}</div>
+      <div v-if="insertOnlyViolation" class="doc-violation">{{ $t('preInput.edit_violation') }}</div>
       <div class="row-actions">
-        <button type="button" class="btn-mini-primary" @click="saveMainText">{{ $t('common.save') }}</button>
-        <button type="button" class="btn-mini-ghost" @click="mainTextEditing = false">{{ $t('common.cancel') }}</button>
+        <button
+          type="button"
+          class="btn-mini-primary"
+          :disabled="!docDraft.trim() || insertOnlyViolation"
+          @click="saveDocument"
+        >{{ $t('common.save') }}</button>
+        <button type="button" class="btn-mini-ghost" @click="docEditing = false">{{ $t('common.cancel') }}</button>
       </div>
     </template>
 
-    <!-- 成员状态：单行紧凑 chips -->
+    <!-- 成员参与状态：单行紧凑 chips -->
     <div class="members-row" :title="$t('preInput.member_status_label')">
       <span class="members-progress">{{ doneCount }}/{{ mentionees.length }}</span>
       <template v-if="mentionees.length === 0 && volunteers.length === 0">
@@ -186,80 +296,16 @@ const cancelCollect = () => {
       </span>
     </div>
 
-    <!-- 成员输入段：极简列表 -->
-    <div v-if="contributions.length > 0" class="contributions">
-      <div
-        v-for="item in contributions"
-        :key="item.user_id"
-        class="contribution-item"
-        :class="{ 'is-editing': editingContributionUserId === item.user_id }"
-      >
-        <template v-if="editingContributionUserId === item.user_id">
-          <div class="contribution-head">
-            <UserAvatar
-              :display-name="item.display_name"
-              :user-id="item.user_id"
-              :avatar-svg="item.avatar_svg"
-              :avatar-url="item.avatar_url"
-              size="xs"
-              :accent-color="memberColor(item.user_id)"
-            />
-            <span class="contribution-author" :style="{ color: memberColor(item.user_id) }">{{ item.display_name }}</span>
-          </div>
-          <textarea v-model="contributionDraft" class="panel-textarea" rows="2"></textarea>
-          <div class="row-actions">
-            <button type="button" class="btn-mini-primary" @click="saveContribution(item.user_id)">{{ $t('common.save') }}</button>
-            <button type="button" class="btn-mini-ghost" @click="editingContributionUserId = ''">{{ $t('common.cancel') }}</button>
-          </div>
-        </template>
-        <template v-else>
-          <div class="contribution-head">
-            <UserAvatar
-              :display-name="item.display_name"
-              :user-id="item.user_id"
-              :avatar-svg="item.avatar_svg"
-              :avatar-url="item.avatar_url"
-              size="xs"
-              :accent-color="memberColor(item.user_id)"
-            />
-            <span class="contribution-author" :style="{ color: memberColor(item.user_id) }">{{ item.display_name }}</span>
-            <button
-              v-if="vm.canEditPreInputContributionOf(item.user_id)"
-              type="button"
-              class="text-btn"
-              @click="startEditContribution(item.user_id, item.content)"
-            >
-              {{ $t('common.edit') }}
-            </button>
-          </div>
-          <div class="contribution-content">{{ item.content }}</div>
-        </template>
-      </div>
-    </div>
-
-    <!-- 底部：我的输入（常驻输入框）+ 发起人操作 -->
+    <!-- 底部：参与操作 + 发起人操作 -->
     <div class="panel-footer">
-      <div class="my-input-area">
-        <textarea
-          v-model="myDraft"
-          class="panel-textarea"
-          rows="2"
-          :placeholder="$t('preInput.my_input_placeholder')"
-        ></textarea>
-        <div class="row-actions">
-          <button
-            type="button"
-            class="btn-mini-primary"
-            :disabled="!myDraft.trim()"
-            @click="submitMyInput"
-          >
-            {{ myContribution ? $t('preInput.update_my_input') : $t('preInput.submit_my_input') }}
-          </button>
-          <span v-if="myContribution" class="my-input-saved-hint">
-            <Check class="w-2 h-2" />
-            {{ $t('preInput.my_input_saved') }}
-          </span>
-        </div>
+      <div class="self-actions">
+        <span v-if="hasParticipated" class="participated-hint">
+          <Check class="w-2 h-2" />
+          {{ $t('preInput.participated') }}
+        </span>
+        <button v-else type="button" class="btn-mini-ghost" @click="markDone">
+          {{ $t('preInput.mark_done') }}
+        </button>
       </div>
 
       <div v-if="isCreator" class="creator-actions">
@@ -273,6 +319,33 @@ const cancelCollect = () => {
         </button>
       </div>
     </div>
+
+    <!-- 框选输入弹层：跟随选区浮层 -->
+    <Teleport to="body">
+      <div
+        v-if="spanPopover?.visible"
+        class="span-popover"
+        :style="{ top: `${spanPopover.top}px`, left: `${spanPopover.left}px` }"
+      >
+        <div class="span-popover-anchor">{{ spanPopover.anchor }}</div>
+        <textarea
+          v-model="spanDraft"
+          class="span-input"
+          rows="2"
+          :placeholder="spanInsertOnly
+            ? $t('preInput.span_insert_placeholder')
+            : $t('preInput.span_replace_placeholder')"
+          @keydown.enter.exact.prevent="submitSpan"
+        ></textarea>
+        <div v-if="spanInsertOnly" class="span-hint">{{ $t('preInput.span_insert_only_hint') }}</div>
+        <div class="span-actions">
+          <button type="button" class="btn-mini-primary" :disabled="!spanDraft.trim()" @click="submitSpan">
+            {{ $t('preInput.span_submit') }}
+          </button>
+          <button type="button" class="btn-mini-ghost" @click="closeSpanPopover">{{ $t('common.cancel') }}</button>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -288,6 +361,7 @@ const cancelCollect = () => {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
+  position: relative;
 }
 
 .panel-header {
@@ -334,20 +408,49 @@ const cancelCollect = () => {
   color: var(--color-text-muted);
 }
 
-.main-text-row {
+/* ── 共享文档：字符级归属渲染 ── */
+.document-block {
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
 }
 
-.main-text-content {
+.document-text {
   flex: 1;
   min-width: 0;
-  font-size: 0.8125rem;
-  line-height: 1.6;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.82rem;
+  line-height: 1.9;
   color: var(--color-text-body);
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
+  user-select: text;
+}
+
+.doc-seg {
+  border-bottom: 2px solid color-mix(in srgb, var(--seg-color, #0284C7) 45%, transparent);
+  border-radius: 1px;
+}
+
+/* 被他人修改过的段：虚线下划线（悬停可见修改者） */
+.doc-seg.is-modified {
+  border-bottom-style: dashed;
+  border-bottom-color: var(--seg-modifier-color, #0284C7);
+}
+
+/* 新增文字段：淡色底强调 */
+.doc-seg.is-new {
+  background: color-mix(in srgb, var(--seg-color, #0284C7) 8%, transparent);
+}
+
+.doc-edit-hint {
+  font-size: 0.68rem;
+  color: #94A3B8;
+  margin-top: -2px;
 }
 
 .text-btn {
@@ -360,12 +463,56 @@ const cancelCollect = () => {
   font-size: 0.72rem;
   font-weight: 500;
   flex: 0 0 auto;
+  white-space: nowrap;
   transition: color var(--transition-fast);
 }
 
 .text-btn:hover {
   color: var(--color-primary-700);
   text-decoration: underline;
+}
+
+.panel-textarea {
+  width: 100%;
+  border: 1px solid #E2E8F0;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-white);
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  font-family: var(--font-body);
+  line-height: 1.55;
+  color: var(--color-text-body);
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  box-sizing: border-box;
+}
+
+.panel-textarea:focus {
+  border-color: var(--color-primary-500);
+  box-shadow: 0 0 0 3px var(--color-primary-100);
+}
+
+.doc-textarea {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.78rem;
+}
+
+.doc-violation {
+  font-size: 0.7rem;
+  color: #BE123C;
+  background: #FFF1F2;
+  border: 1px solid #FECDD3;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  margin-top: 6px;
+}
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 6px;
 }
 
 .members-row {
@@ -424,82 +571,6 @@ const cancelCollect = () => {
   color: #CBD5E1;
 }
 
-.contributions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.contribution-item {
-  padding: var(--space-2) var(--space-3);
-  background: #F8FAFC;
-  border-radius: var(--radius-md);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.contribution-item.is-editing {
-  background: var(--color-surface-white);
-  border: 1px solid var(--color-primary-100);
-}
-
-.contribution-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.contribution-author {
-  font-size: 0.72rem;
-  font-weight: 600;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.contribution-content {
-  font-size: 0.78rem;
-  line-height: 1.55;
-  color: var(--color-text-body);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.panel-textarea {
-  width: 100%;
-  border: 1px solid #E2E8F0;
-  border-radius: var(--radius-md);
-  background: var(--color-surface-white);
-  padding: 8px 10px;
-  font-size: 0.8rem;
-  font-family: var(--font-body);
-  line-height: 1.55;
-  color: var(--color-text-body);
-  resize: vertical;
-  outline: none;
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
-  box-sizing: border-box;
-}
-
-.panel-textarea:focus {
-  border-color: var(--color-primary-500);
-  box-shadow: 0 0 0 3px var(--color-primary-100);
-}
-
-.panel-textarea::placeholder {
-  color: #94A3B8;
-}
-
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: 6px;
-}
-
 .btn-mini-primary {
   display: inline-flex;
   align-items: center;
@@ -543,17 +614,18 @@ const cancelCollect = () => {
   background: #F8FAFC;
 }
 
-.my-input-saved-hint {
+.participated-hint {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-size: 0.7rem;
+  gap: 4px;
+  font-size: 0.72rem;
   color: var(--color-accent-emerald, #10B981);
+  font-weight: 600;
 }
 
 .panel-footer {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
@@ -561,13 +633,76 @@ const cancelCollect = () => {
   padding-top: var(--space-3);
 }
 
-.my-input-area {
-  flex: 1;
-  min-width: 220px;
+.self-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .creator-actions {
   display: flex;
   gap: var(--space-2);
+}
+</style>
+
+<!-- 框选弹层挂在 body 下（Teleport），样式需非 scoped -->
+<style>
+.span-popover {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 10px));
+  width: 300px;
+  background: var(--color-surface-white, #fff);
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.16);
+  z-index: 3000;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.span-popover-anchor {
+  font-size: 0.7rem;
+  color: var(--color-text-muted, #64748B);
+  background: #F1F5F9;
+  border-radius: 6px;
+  padding: 4px 8px;
+  max-height: 52px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.span-input {
+  width: 100%;
+  border: 1px solid #E2E8F0;
+  border-radius: 8px;
+  padding: 7px 9px;
+  font-size: 0.78rem;
+  font-family: var(--font-body);
+  line-height: 1.5;
+  color: var(--color-text-body);
+  resize: vertical;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+.span-input:focus {
+  border-color: var(--color-primary-500, #0EA5E9);
+  box-shadow: 0 0 0 3px var(--color-primary-100, #E0F2FE);
+}
+
+.span-hint {
+  font-size: 0.68rem;
+  color: #B45309;
+}
+
+.span-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 </style>
