@@ -92,7 +92,7 @@ const router = useRouter()
           </div>
           <div class="node-box bridge">
             <Terminal class="w-4 h-4" />
-            <span>PTY 桥接 / Claude Bridge</span>
+            <span>PTY 桥接 / Agent Bridge</span>
           </div>
           <div class="node-box asset-svc">
             <Database class="w-4 h-4" />
@@ -125,7 +125,7 @@ const router = useRouter()
             <span>EXECUTION ENGINE</span>
           </div>
           <div class="node-box highlight">
-            claudecode CLI + superpowers
+            Agent CLI + Superpowers
           </div>
         </div>
       </div>

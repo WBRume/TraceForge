@@ -360,7 +360,7 @@ export function useChatViewModel() {
 
   const messageAuthorLabel = (msg: any): string => {
     const role = String(msg?.role || '').toLowerCase()
-    if (role === 'assistant') return 'Claude'
+    if (role === 'assistant') return t('chat.ai_assistant_name')
     if (role === 'system') return 'System'
     if (isMessageFromCurrentUser(msg)) return 'You'
     return String(msg?.creator_display_name || '').trim() || 'Member'
