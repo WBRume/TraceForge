@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ShieldCheck,
   Bot,
+  Copy,
+  Check,
 } from 'lucide-vue-next'
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
@@ -96,6 +98,61 @@ const showTrailingAvatar = computed(() => (
 function handleOpenPopover() {
   isPopoverOpen.value = true
 }
+
+// 气泡复制：AI / 人工消息均可一键复制会话内容
+const canCopyMessage = computed(() => {
+  if (isDiagnosisResult.value) return false
+  if (msgRole.value !== 'user' && msgRole.value !== 'assistant') return false
+  return Boolean(String(props.msg?.content || '').trim())
+})
+
+const copyState = ref<'idle' | 'done' | 'failed'>('idle')
+let copyResetTimer: number | undefined
+
+const copyTitle = computed(() => {
+  if (copyState.value === 'done') return t('chat.copied')
+  if (copyState.value === 'failed') return t('chat.copy_failed')
+  return t('chat.copy')
+})
+
+async function writeClipboardText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 剪贴板 API 不可用时退回旧式复制
+  }
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+async function handleCopyMessage() {
+  if (!canCopyMessage.value || copyState.value === 'done') return
+  const ok = await writeClipboardText(String(props.msg?.content || ''))
+  copyState.value = ok ? 'done' : 'failed'
+  window.clearTimeout(copyResetTimer)
+  copyResetTimer = window.setTimeout(() => {
+    copyState.value = 'idle'
+  }, 1600)
+}
+
+onBeforeUnmount(() => {
+  window.clearTimeout(copyResetTimer)
+})
 
 function handleClosePopover() {
   isPopoverOpen.value = false
@@ -216,8 +273,8 @@ function openDiagnosisCase(caseId: string) {
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
 
-      <!-- Mark Decision Action (Under the bubble) -->
-      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id" class="message-actions-row">
+      <!-- Bubble Actions (Under the bubble): Mark Decision / Copy -->
+      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage" class="message-actions-row">
         <div class="decision-action-wrapper" v-if="vm.canMarkMessageAsDecision(msg)">
           <button
             type="button"
@@ -270,6 +327,18 @@ function openDiagnosisCase(caseId: string) {
             </svg>
           <span>{{ $t('chat.decision.marked') }}</span>
         </span>
+
+        <button
+          v-if="canCopyMessage"
+          type="button"
+          class="message-copy-btn"
+          :class="{ 'is-done': copyState === 'done', 'is-failed': copyState === 'failed' }"
+          :title="copyTitle"
+          @click.stop="handleCopyMessage"
+        >
+          <Check v-if="copyState === 'done'" class="copy-icon" />
+          <Copy v-else class="copy-icon" />
+        </button>
       </div>
     </div>
   </div>
@@ -517,7 +586,8 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .message-decision-btn,
-.message-decision-badge {
+.message-decision-badge,
+.message-copy-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -528,7 +598,8 @@ function openDiagnosisCase(caseId: string) {
   transition: all 0.15s ease;
 }
 
-.message-decision-btn {
+.message-decision-btn,
+.message-copy-btn {
   width: 22px;
   height: 22px;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -542,8 +613,37 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .message-wrapper:hover .message-decision-btn,
-.message-decision-btn.is-active {
+.message-decision-btn.is-active,
+.message-wrapper:hover .message-copy-btn,
+.message-copy-btn.is-done,
+.message-copy-btn.is-failed {
   opacity: 1;
+}
+
+.message-wrapper:hover .message-copy-btn {
+  color: #64748b;
+  border-color: rgba(203, 213, 225, 0.6);
+  background: rgba(241, 245, 249, 0.85);
+}
+
+.message-copy-btn:hover,
+.message-copy-btn.is-done {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%) !important;
+  border-color: rgba(134, 239, 172, 0.6) !important;
+  color: #16a34a !important;
+  transform: scale(1.08) translateY(-1px);
+  box-shadow: 0 4px 10px -2px rgba(22, 163, 74, 0.15), 0 2px 4px -2px rgba(22, 163, 74, 0.1) !important;
+}
+
+.message-copy-btn.is-failed {
+  background: rgba(254, 242, 242, 0.92) !important;
+  border-color: rgba(252, 165, 165, 0.6) !important;
+  color: #dc2626 !important;
+}
+
+.copy-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .message-wrapper:hover .message-decision-btn {

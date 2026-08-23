@@ -265,7 +265,7 @@ watch(activeTab, async (newTab) => {
               </div>
               <div class="stack-item">
                 <div class="stack-label">底层执行引擎</div>
-                <div class="stack-value">Claude Code CLI + Skills Runtime</div>
+                <div class="stack-value">Agent CLI + Skills Runtime</div>
               </div>
               <div class="stack-item">
                 <div class="stack-label">数据与持久态</div>
