@@ -887,6 +887,7 @@ async def run_cli_single_turn(
     max_attempts: int = 2,
     should_cancel: Optional[Callable[[], bool]] = None,
     backend_name: Optional[str] = None,
+    fork_session: bool = False,
 ) -> Dict[str, Optional[str]]:
     attempts = max(1, int(max_attempts or 1))
     next_session_id = session_id
@@ -927,6 +928,7 @@ async def run_cli_single_turn(
             project_path=project_path,
             event_callback=on_event,
             session_id=next_session_id,
+            fork_session=fork_session and attempt == 1,
         )
         monitor_task: Optional[asyncio.Task] = None
         if should_cancel:
@@ -1054,24 +1056,23 @@ async def _execute_asset_thread_job(job_id: str) -> None:
         )
         # 线程专属会话：首次使用时从 baseline fork（各讨论上下文独立），
         # 之后一直用线程自己的会话；绝不直接 resume baseline 会话。
-        thread_session_id = await task_cli_state_service.ensure_thread_session(
+        # 线程在任务目录执行，可直接读取 git 出的仓库内容做评审答疑。
+        session_plan = await task_cli_state_service.ensure_thread_session(
             thread.id,
             require_ready=True,
         )
-        thread_workspace_path = task_cli_state_service.thread_workspace_dir(
-            thread.workspace_id, thread.task_id, thread.id
-        )
-        resume_session_id = (
-            task_cli_state_service.get_latest_thread_session_id(db, thread.id)
-            or thread_session_id
-        )
-        # 线程粘性 backend：最近成功回合 > baseline 固化值 > 工作区配置。
-        # baseline 建立后即使工作区切换 agent，线程/baseline 仍沿用原后端保持上下文。
-        thread_backend = (
-            task_cli_state_service.get_latest_thread_agent_backend(db, thread.id)
-            or task_cli_state_service.get_bootstrap_agent_backend(db, thread.task_id)
-            or resolve_workspace_backend(db, thread.workspace_id)
-        )
+        thread_backend = session_plan.backend
+        # claude: 首轮 --resume baseline --fork-session 生成线程新会话；
+        # 其余后端 / 后续轮次：直接 resume 线程自有会话
+        resume_session_id = session_plan.session_id
+        fork_first_turn = session_plan.fork_first_turn
+        if not fork_first_turn:
+            resume_session_id = (
+                task_cli_state_service.get_latest_thread_session_id(db, thread.id)
+                or resume_session_id
+            )
+        # 线程执行目录 = 任务目录（含 git worktree），评审答疑可直接读仓库内容
+        thread_cwd = str(task.project_path or "").strip() or "."
 
         if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
             context_json = job.context_json if isinstance(job.context_json, dict) else {}
@@ -1130,7 +1131,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 progress=46,
                 message="Generating resolution proposal",
                 context_patch={
-                    "thread_workspace": thread_workspace_path,
+                    "thread_workspace": thread_cwd,
                     "discussion_lines": discussion_lines[-12:],
                     "anchor_text": anchor_meta["anchor_text"],
                     "block_text": anchor_meta["block_text"],
@@ -1140,11 +1141,16 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             )
             result = await run_cli_single_turn(
                 prompt,
-                thread_workspace_path,
+                thread_cwd,
                 session_id=resume_session_id,
                 should_cancel=lambda: _is_cancel_requested(job_id),
                 backend_name=thread_backend,
+                fork_session=fork_first_turn,
             )
+            if fork_first_turn:
+                task_cli_state_service.record_thread_session_id(
+                    thread.id, str(result.get("session_id") or "")
+                )
             proposal_text = str(result.get("text") or "").strip()
             final_session_id = str(result.get("session_id") or "").strip()
             if not proposal_text:
@@ -1269,7 +1275,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 message="Rewriting document from proposal",
                 context_patch={
                     "proposal_id": proposal.id,
-                    "thread_workspace": thread_workspace_path,
+                    "thread_workspace": thread_cwd,
                     "rewrite_scope": requested_scope,
                     "selection_mode": selection_mode,
                     "anchor_text": anchor_meta["anchor_text"],
@@ -1280,11 +1286,16 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             )
             result = await run_cli_single_turn(
                 prompt,
-                thread_workspace_path,
+                thread_cwd,
                 session_id=resume_session_id,
                 should_cancel=lambda: _is_cancel_requested(job_id),
                 backend_name=thread_backend,
+                fork_session=fork_first_turn,
             )
+            if fork_first_turn:
+                task_cli_state_service.record_thread_session_id(
+                    thread.id, str(result.get("session_id") or "")
+                )
             rewrite_payload = _parse_rewrite_payload(str(result.get("text") or ""))
             rewrite_scope = requested_scope or str(rewrite_payload.get("scope") or "anchor").strip().lower()
             rewritten_text = str(rewrite_payload.get("anchor_text") or "").strip()
@@ -1387,6 +1398,8 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             project_path = (task.project_path if task and task.project_path else ".").strip() or "."
         if not os.path.isdir(project_path):
             project_path = "."
+        # 线程统一在任务目录执行（与 prompt 中的 project_path 一致）
+        thread_cwd = project_path
         await _update_job_state(job_id, progress=24, message="Preparing AI prompt")
 
         prompt = build_asset_thread_prompt(
@@ -1413,17 +1426,22 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 "neighbor_text": neighbor_text,
                 "history_lines": history_lines[-10:],
                 "project_path": project_path,
-                "thread_workspace": thread_workspace_path,
+                "thread_workspace": thread_cwd,
             },
         )
 
         result = await run_cli_single_turn(
             prompt,
-            thread_workspace_path,
+            thread_cwd,
             session_id=resume_session_id,
             should_cancel=lambda: _is_cancel_requested(job_id),
             backend_name=thread_backend,
+            fork_session=fork_first_turn,
         )
+        if fork_first_turn:
+            task_cli_state_service.record_thread_session_id(
+                thread.id, str(result.get("session_id") or "")
+            )
         reply = str(result.get("text") or "").strip()
         final_session_id = str(result.get("session_id") or "").strip()
 

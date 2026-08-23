@@ -133,6 +133,8 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None):
     claude-code 返回双接口 ClaudeCodeAdapter；dsh 在配置 DSH_SERVER_URL 时
     走 Web Host server 模式（支持 resume/事件/usage），否则 headless CLI。
     """
+    from app.agents.registry import get_agent_backend
+
     name = normalize_backend_name(backend_name) or default_backend_name()
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
@@ -217,8 +219,16 @@ class LegacyBridgeShim:
         event_callback: Callable[[Dict[str, Any]], Any],
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
+        fork_session: bool = False,
     ) -> str:
         from app.agents.contract import AgentRunRequest
+        from app.agents.errors import AgentError
+
+        if fork_session and self.backend_name != "claude-code":
+            # 原生 --fork-session 是 claude 专属；其他后端在编排层已 eager fork
+            raise AgentError(
+                f"agent backend {self.backend_name!r} does not support fork-on-resume"
+            )
 
         resume_id = session_id
         if resume_id and not getattr(self.backend.capabilities, "supports_resume", True):
@@ -364,11 +374,12 @@ async def probe_session_fork(
                 shutil.rmtree(drill_store, ignore_errors=True)
             return True
         if name == "opencode":
+            drill_dir = os.path.abspath(os.path.join(source_dir, ".fork-drill"))
             new_id = await fork_session_for_backend(
                 name,
                 session_id,
                 source_dir=source_dir,
-                target_dir=os.path.abspath(os.path.join(source_dir, ".fork-drill")),
+                target_dir=drill_dir,
             )
             from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
@@ -381,6 +392,7 @@ async def probe_session_fork(
                         "opencode fork drill left orphan session {} (delete API unavailable)",
                         new_id,
                     )
+            shutil.rmtree(drill_dir, ignore_errors=True)
             return True
         if name == "dsh":
             from app.agents.adapters.dsh import session_files

@@ -75,3 +75,35 @@ def test_claude_project_store_uses_config_dir_override(tmp_path, monkeypatch):
     assert Path(service._claude_project_store_dir(str(project_path))).parent == (
         claude_config / "projects"
     )
+
+
+def test_resolve_bootstrap_spec_path_returns_original_doc_without_staging(tmp_path):
+    spec = tmp_path / "uploads" / "需求.docx"
+    spec.parent.mkdir(parents=True)
+    spec.write_bytes(b"spec-bytes")
+
+    resolved = service._resolve_bootstrap_spec_path(
+        task_spec_doc_path=str(spec),
+        version_original_path="",
+    )
+
+    assert resolved == os.path.abspath(str(spec))
+    # 纯路径解析：不再在任务目录创建 .sdd 副本或复制 skills
+    assert not (tmp_path / ".sdd").exists()
+    assert not (tmp_path / ".claude" / "skills").exists()
+
+
+def test_resolve_bootstrap_spec_path_prefers_version_original(tmp_path):
+    task_spec = tmp_path / "uploads" / "需求.docx"
+    task_spec.parent.mkdir(parents=True)
+    task_spec.write_bytes(b"task-spec")
+    version_original = tmp_path / "versions" / "需求-v2.docx"
+    version_original.parent.mkdir(parents=True)
+    version_original.write_bytes(b"version-spec")
+
+    resolved = service._resolve_bootstrap_spec_path(
+        task_spec_doc_path=str(task_spec),
+        version_original_path=str(version_original),
+    )
+
+    assert resolved == os.path.abspath(str(version_original))

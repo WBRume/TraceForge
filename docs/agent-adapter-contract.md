@@ -937,15 +937,18 @@ class ExampleAdapter(AgentBackend):
 
 | 后端 | 实现方式 | 说明 |
 |---|---|---|
-| claude-code | 文件级：把 `~/.claude/projects/<key>/<sid>.jsonl` 单文件复制到线程目录的 project store，线程 resume 同一 id，写入只落线程副本（找不到单文件时回退整目录复制） | 即原有「复制会话记录」语义的收敛 |
-| opencode | API：`POST /session/{id}/fork`（v1，v2 `/api/session/{id}/fork` 回退）复制全部历史（含工具调用），再 move 到线程目录 | baseline 会话在服务端永远只读 |
-| dsh | 文件级：复制 `session.jsonl(.zstd)` 到新 id/新 cwd 目录并重写头部（zstd 需头部行单独成帧），服务端 prompt 冷启动时按新 id/cwd resume | 布局复刻 `session-persistence-jsonl/format.ts` |
+| claude-code | 原生 fork：baseline 快照一次性 stage 到任务目录 store（硬链接优先，跨卷回退复制；幂等），每线程首轮 `--resume <baseline_sid> --fork-session` 在任务目录生成专属新会话 id，原快照永不被续写。注意：claude 会话查找按 cwd 的 project store 隔离，跨目录 `--resume` 会报 No conversation found，因此 staging 不可省略 | 线程 cwd = 任务目录（task.project_path） |
+| opencode | API：`POST /session/{id}/fork`（v1，v2 `/api/session/{id}/fork` 回退）复制全部历史（含工具调用），再 move 到任务目录 | baseline 会话在服务端永远只读 |
+| dsh | 文件级：复制 `session.jsonl(.zstd)` 到新 id、任务目录 cwd 下并重写头部（zstd 需头部行单独成帧），web host prompt 冷启动时按新 id/cwd resume | 布局复刻 `session-persistence-jsonl/format.ts` |
 
 ### 19.3 编排（task_cli_state_service）
 
 - baseline READY 后执行 fork 演练（`probe_session_fork`），失败会体现在 baseline message；
-- 评审线程首次使用时 `ensure_thread_session()` fork baseline 并把会话 id 持久化到
-  `sdd_asset_threads.cli_session_id`；线程此后只 resume 自己的会话，
+- 评审线程在**任务目录**（`task.project_path`，含全部 git worktree）中执行，
+  评审答疑可直接读取仓库内容；
+- 线程首次使用时 `ensure_thread_session()` 返回 ThreadSessionPlan：
+  claude-code → 首轮 `--fork-session` 惰性 fork；opencode/dsh → eager fork 到任务目录；
+  会话 id 持久化到 `sdd_asset_threads.cli_session_id`，此后只 resume 自己的会话，
   **绝不直接 resume baseline 会话**；
 - fork 不可用时线程显式降级为独立新会话（重读文档），并在日志/baseline 状态中可见。
 

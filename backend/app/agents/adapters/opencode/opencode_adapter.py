@@ -434,7 +434,10 @@ class OpenCodeAdapter(AgentBackend):
         client = await self._ensure_client()
         new_id = await self._fork_create(client, session_id)
         try:
-            await self._fork_move(client, new_id, target_dir)
+            # baseline 已直接在任务目录执行时，fork 出的新会话目录与源一致，
+            # 无需再 move；仅当源/目标目录不同才迁移。
+            if os.path.abspath(source_dir or "") != os.path.abspath(target_dir or ""):
+                await self._fork_move(client, new_id, target_dir)
         except SessionForkError:
             # move 失败时清理 fork 产物，避免遗留孤儿会话
             await self.delete_session(new_id)

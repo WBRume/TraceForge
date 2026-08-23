@@ -246,6 +246,7 @@ class SubprocessCliBridge(CliBridgeBase):
         event_callback: Callable[[dict], Any],
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
+        fork_session: bool = False,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -264,6 +265,9 @@ class SubprocessCliBridge(CliBridgeBase):
         # 恢复已有会话
         if session_id:
             args.extend(["--resume", session_id])
+            if fork_session:
+                # 原生 fork：在当前目录生成新会话 id 继承全部历史，原会话不被续写
+                args.append("--fork-session")
             self._session_id = session_id
         else:
             # 新会话：生成 session_id

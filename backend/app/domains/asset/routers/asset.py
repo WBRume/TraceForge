@@ -638,7 +638,7 @@ async def create_asset_thread_ai_job(
             workspace_id=ws_id,
             task_id=thread.task_id,
         )
-        await task_cli_state_service.ensure_thread_workspace(
+        await task_cli_state_service.ensure_thread_session(
             thread.id,
             require_ready=True,
         )
@@ -759,7 +759,7 @@ async def create_thread_resolution_proposal(
             workspace_id=ws_id,
             task_id=thread.task_id,
         )
-        await task_cli_state_service.ensure_thread_workspace(
+        await task_cli_state_service.ensure_thread_session(
             thread.id,
             require_ready=True,
         )
@@ -909,7 +909,7 @@ async def rewrite_thread_resolution_proposal(
             workspace_id=ws_id,
             task_id=thread.task_id,
         )
-        await task_cli_state_service.ensure_thread_workspace(
+        await task_cli_state_service.ensure_thread_session(
             thread.id,
             require_ready=True,
         )

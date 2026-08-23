@@ -162,33 +162,33 @@ class ClaudeCodeAdapter(AgentBackend):
         source_dir: str,
         target_dir: str,
     ) -> str:
-        """文件级 fork：把 baseline 会话 jsonl 复制到线程工作区的 project store。
+        """把 baseline 会话 stage 到目标目录的 project store，返回原会话 id。
 
-        Claude 的会话以 cwd 派生 key 存储，复制单个 `{sid}.jsonl` 到目标 store
-        后，线程在自己的目录里 resume 同一 id，写入只落在线程副本上，
-        baseline 保持只读。找不到单文件时回退为整目录复制。
+        claude 的会话查找按 cwd 的 project store 隔离（跨目录 --resume 会报
+        "No conversation found"），因此在目标目录 fork 前必须让 baseline 快照
+        在目标 store 可见。这里做一次性 staging（硬链接优先，失败回退复制，
+        幂等），之后每个线程在目标目录用 `--resume <sid> --fork-session`
+        生成各自的新会话 id，原快照文件不会被任何线程续写。
         """
         source_store = _claude_project_store_dir(source_dir)
         target_store = _claude_project_store_dir(target_dir)
-        if os.path.isdir(target_store) and _locate_session_file(target_store, session_id):
+        target_file = os.path.join(target_store, f"{session_id}.jsonl")
+        if os.path.isfile(target_file):
             return session_id
 
         source_file = _locate_session_file(source_store, session_id)
-        os.makedirs(os.path.dirname(target_store), exist_ok=True)
-        if source_file:
-            os.makedirs(target_store, exist_ok=True)
-            shutil.copy2(source_file, os.path.join(target_store, f"{session_id}.jsonl"))
-            return session_id
+        if source_file is None:
+            raise SessionForkError(
+                f"Claude session snapshot not found for fork: session={session_id}, store={source_store}"
+            )
 
-        # 回退：兼容旧版布局（快照嵌套/未按单文件存放）时复制整个 project store
-        if os.path.isdir(source_store):
-            if not os.path.isdir(target_store):
-                shutil.copytree(source_store, target_store, dirs_exist_ok=False)
-            return session_id
-
-        raise SessionForkError(
-            f"Claude session snapshot not found for fork: session={session_id}, store={source_store}"
-        )
+        os.makedirs(target_store, exist_ok=True)
+        try:
+            os.link(source_file, target_file)
+        except OSError:
+            # 跨卷/文件系统不支持硬链接时回退为复制（单文件，一次性）
+            shutil.copy2(source_file, target_file)
+        return session_id
 
     async def start_session(
         self,
@@ -197,6 +197,7 @@ class ClaudeCodeAdapter(AgentBackend):
         event_callback,
         session_id: str | None = None,
         env_overrides: dict[str, str] | None = None,
+        fork_session: bool = False,
     ) -> str:
         return await self._bridge.start_session(
             prompt=prompt,
@@ -204,6 +205,7 @@ class ClaudeCodeAdapter(AgentBackend):
             event_callback=event_callback,
             session_id=session_id,
             env_overrides=env_overrides,
+            fork_session=fork_session,
         )
 
     async def wait(self) -> None:

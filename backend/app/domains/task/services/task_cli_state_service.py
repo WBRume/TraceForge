@@ -92,14 +92,6 @@ def _baseline_dir_for(workspace_id: str, task_id: str) -> str:
     return os.path.join(_task_state_root(workspace_id, task_id), "base")
 
 
-def _thread_workspace_dir_for(workspace_id: str, task_id: str, thread_id: str) -> str:
-    return os.path.join(
-        _task_state_root(workspace_id, task_id),
-        "thr",
-        f"h_{_short_hash(thread_id, length=14)}",
-    )
-
-
 def _assert_path_under_cli_root(path: str) -> None:
     target = os.path.abspath(path)
     root = _cli_state_root()
@@ -142,49 +134,6 @@ def _safe_rmtree(path: str) -> None:
 
     if last_error:
         raise last_error
-
-
-def _ensure_empty_dir(path: str) -> None:
-    if os.path.exists(path):
-        _safe_rmtree(path)
-    os.makedirs(path, exist_ok=True)
-
-
-def _link_or_copy_file(source_path: str, target_path: str) -> str:
-    os.makedirs(os.path.dirname(target_path), exist_ok=True)
-    if os.path.lexists(target_path):
-        try:
-            os.remove(target_path)
-        except Exception:
-            pass
-
-    if os.name == "nt":
-        try:
-            os.link(source_path, target_path)
-            return target_path
-        except Exception as exc:
-            logger.warning(f"Hard link failed, fallback to copy: {exc}")
-            shutil.copy2(source_path, target_path)
-            return target_path
-
-    try:
-        os.symlink(source_path, target_path)
-        return target_path
-    except Exception as exc:
-        logger.warning(f"Symlink failed, fallback to copy: {exc}")
-        shutil.copy2(source_path, target_path)
-        return target_path
-
-
-def _copy_task_skill_context(task_project_path: str, target_dir: str) -> None:
-    src_skills_dir = os.path.join(task_project_path, ".claude", "skills")
-    if not os.path.isdir(src_skills_dir):
-        return
-    dst_skills_dir = os.path.join(target_dir, ".claude", "skills")
-    if os.path.exists(dst_skills_dir):
-        shutil.rmtree(dst_skills_dir, ignore_errors=True)
-    os.makedirs(os.path.dirname(dst_skills_dir), exist_ok=True)
-    shutil.copytree(src_skills_dir, dst_skills_dir, dirs_exist_ok=False)
 
 
 def _refresh_task_skill_context(task_id: str) -> None:
@@ -349,7 +298,14 @@ def upsert_bootstrap_for_upload(
     refresh_context_json: Optional[Dict[str, Any]] = None,
 ) -> SddTaskCliBootstrap:
     record = db.query(SddTaskCliBootstrap).filter(SddTaskCliBootstrap.task_id == task_id).first()
-    baseline_dir = _baseline_dir_for(workspace_id, task_id)
+    # baseline 直接在任务目录执行（spec/仓库内容都在那里），会话上下文天然落在
+    # 任务目录的 agent store，评审线程 fork 无需跨目录搬运。
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    baseline_dir = (
+        str(task.project_path or "").strip()
+        if task is not None and str(task.project_path or "").strip()
+        else _baseline_dir_for(workspace_id, task_id)
+    )
     normalized_mode = str(refresh_mode or "FULL").strip().upper() or "FULL"
     if normalized_mode not in {"FULL", "DELTA"}:
         normalized_mode = "FULL"
@@ -445,28 +401,16 @@ def _resolve_spec_source_path(task_spec_doc_path: str, version_original_path: st
     return ""
 
 
-def _prepare_baseline_workspace_sync(
+def _resolve_bootstrap_spec_path(
     *,
-    task_project_path: str,
     task_spec_doc_path: str,
     version_original_path: str,
-    baseline_dir: str,
-    preserve_context: bool = False,
 ) -> str:
-    if preserve_context:
-        os.makedirs(baseline_dir, exist_ok=True)
-    else:
-        _ensure_empty_dir(baseline_dir)
-        _copy_task_skill_context(task_project_path, baseline_dir)
-
+    """解析 baseline 要读的 spec 绝对路径（上传文档就在任务目录/uploads 中）。"""
     spec_source_path = _resolve_spec_source_path(task_spec_doc_path, version_original_path)
     if not spec_source_path:
         raise FileNotFoundError("Specification file path not found for bootstrap")
-
-    ext = os.path.splitext(spec_source_path)[1] or ".docx"
-    linked_path = os.path.join(baseline_dir, ".sdd", "spec", f"baseline_spec{ext}")
-    _link_or_copy_file(spec_source_path, linked_path)
-    return os.path.abspath(linked_path)
+    return spec_source_path
 
 
 def _get_bootstrap_lock(task_id: str) -> asyncio.Lock:
@@ -510,7 +454,6 @@ async def _run_bootstrap(task_id: str) -> None:
                                 .filter(SddAssetVersion.id == record.spec_version_id)
                                 .first()
                             )
-                        task_project_path = str(task.project_path or "").strip()
                         task_spec_doc_path = str(task.spec_doc_path or "").strip()
                         version_original_path = str((version.original_path if version else "") or "").strip()
                         baseline_dir = record.baseline_dir or _baseline_dir_for(record.workspace_id, record.task_id)
@@ -541,17 +484,14 @@ async def _run_bootstrap(task_id: str) -> None:
                                 task_id,
                                 status=TaskCliBootstrapStatus.RUNNING,
                                 progress=8,
-                                message="Preparing baseline workspace",
+                                message="Preparing baseline in task directory",
                                 baseline_dir=baseline_dir,
                                 error_message=None,
                             )
-                            linked_spec_path = await asyncio.to_thread(
-                                _prepare_baseline_workspace_sync,
-                                task_project_path=task_project_path,
+                            spec_path = await asyncio.to_thread(
+                                _resolve_bootstrap_spec_path,
                                 task_spec_doc_path=task_spec_doc_path,
                                 version_original_path=version_original_path,
-                                baseline_dir=baseline_dir,
-                                preserve_context=(refresh_mode == "DELTA"),
                             )
 
                             await _update_bootstrap_state(
@@ -611,7 +551,7 @@ async def _run_bootstrap(task_id: str) -> None:
 
                             await bridge.start_session(
                                 prompt=_build_bootstrap_prompt(
-                                    os.path.abspath(linked_spec_path),
+                                    os.path.abspath(spec_path),
                                     mode=refresh_mode,
                                     refresh_context=refresh_context,
                                 ),
@@ -795,76 +735,27 @@ def _load_thread_with_task(db: Session, thread_id: str) -> Optional[SddAssetThre
     )
 
 
-def _prepare_thread_workspace_sync(thread_id: str, *, require_ready: bool = True) -> str:
-    db = SessionLocal()
-    try:
-        thread = _load_thread_with_task(db, thread_id)
-        if not thread:
-            raise ValueError("Thread not found")
-        task = thread.task
-        if not task:
-            raise ValueError("Task not found for thread")
+class ThreadSessionPlan:
+    """评审线程的会话获取计划。
 
-        record = mark_running_bootstrap_stale_if_needed(db, task.id)
-        if require_ready:
-            _raise_not_ready(record)
-        if not record:
-            raise BootstrapNotReadyError("Specification baseline is not initialized yet")
+    - session_id 非空且 fork_first_turn=False：直接 resume 线程自有会话
+    - fork_first_turn=True（claude-code）：首轮在任务目录以
+      `--resume <baseline_session_id> --fork-session` 生成线程专属新会话
+    - session_id 为空：后端不支持 baseline 复用，线程每轮独立新会话
+    """
 
-        baseline_dir = str(record.baseline_dir or "").strip()
-        if not baseline_dir or not os.path.isdir(baseline_dir):
-            raise BootstrapNotReadyError("Specification baseline workspace is missing")
-
-        baseline_session_id = str(record.baseline_session_id or "").strip()
-        if not baseline_session_id:
-            raise BootstrapNotReadyError("Baseline CLI session id is missing")
-
-        workspace_dir = _thread_workspace_dir_for(thread.workspace_id, thread.task_id, thread.id)
-        if not os.path.isdir(workspace_dir):
-            os.makedirs(workspace_dir, exist_ok=True)
-
-        skill_service.materialize_task_skills(db, task.id)
-
-        # 会话上下文的复制（claude project store 快照 / opencode fork API /
-        # dsh 日志重写）统一在 ensure_thread_session 的 fork 步骤完成；
-        # 这里只准备工作区本地输入（skills、baseline .claude、spec 文件）。
-        baseline_local_claude = os.path.join(baseline_dir, ".claude")
-        target_local_claude = os.path.join(workspace_dir, ".claude")
-        if os.path.isdir(baseline_local_claude) and not os.path.isdir(target_local_claude):
-            shutil.copytree(baseline_local_claude, target_local_claude, dirs_exist_ok=False)
-
-        _copy_task_skill_context(task_project_path=str(task.project_path or ""), target_dir=workspace_dir)
-
-        spec_source = _resolve_spec_source_path(
-            str(task.spec_doc_path or "").strip(),
-            str((thread.version.original_path if thread.version else "") or "").strip(),
-        )
-        if spec_source and os.path.isfile(spec_source):
-            ext = os.path.splitext(spec_source)[1] or ".docx"
-            target_spec = os.path.join(workspace_dir, ".sdd", "spec", f"thread_spec{ext}")
-            _link_or_copy_file(spec_source, target_spec)
-
-        return os.path.abspath(workspace_dir)
-    finally:
-        db.close()
-
-
-async def ensure_thread_workspace(thread_id: str, *, require_ready: bool = True) -> str:
-    lock = _get_thread_workspace_lock(thread_id)
-    try:
-        async with lock_thread_workspace(thread_id):
-            async with lock:
-                return await asyncio.to_thread(
-                    _prepare_thread_workspace_sync,
-                    thread_id,
-                    require_ready=require_ready,
-                )
-    except LockAcquireTimeout:
-        raise BootstrapNotReadyError("Thread workspace is being prepared by another request. Please retry later.")
-
-
-def thread_workspace_dir(workspace_id: str, task_id: str, thread_id: str) -> str:
-    return os.path.abspath(_thread_workspace_dir_for(workspace_id, task_id, thread_id))
+    def __init__(
+        self,
+        *,
+        backend: str,
+        session_id: Optional[str] = None,
+        fork_first_turn: bool = False,
+        baseline_session_id: Optional[str] = None,
+    ) -> None:
+        self.backend = backend
+        self.session_id = session_id
+        self.fork_first_turn = fork_first_turn
+        self.baseline_session_id = baseline_session_id
 
 
 def _load_thread_fork_inputs(
@@ -885,90 +776,137 @@ def _load_thread_fork_inputs(
     return thread, record
 
 
-async def ensure_thread_session(thread_id: str, *, require_ready: bool = True) -> Optional[str]:
-    """确保线程有自己的 CLI 会话（由 baseline fork 而来），返回会话 id。
+def record_thread_session_id(thread_id: str, session_id: Optional[str]) -> None:
+    """线程首轮 fork 完成后落库线程专属会话 id（幂等，已有值不覆盖）。"""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    db = SessionLocal()
+    try:
+        thread = db.query(SddAssetThread).filter(SddAssetThread.id == thread_id).first()
+        if thread and not str(thread.cli_session_id or "").strip():
+            thread.cli_session_id = sid
+            db.commit()
+    finally:
+        db.close()
 
-    - 首次调用：准备工作区 + fork baseline 会话 → 持久化到 sdd_asset_threads.cli_session_id
-    - fork 不可用（如 mock / 依赖缺失）：返回 None，线程退化为每轮独立会话
-      （显式降级，绝不直接 resume baseline 会话，避免不同讨论互相污染）
+
+async def ensure_thread_session(
+    thread_id: str,
+    *,
+    require_ready: bool = True,
+) -> ThreadSessionPlan:
+    """确保评审线程有自己的 CLI 会话（由 baseline fork 而来）。
+
+    线程在任务目录（task.project_path，含 git worktree）中执行，
+    这样评审答疑可以直接读取仓库内容；会话上下文通过 fork 从 baseline
+    继承，各线程独立互不污染：
+    - claude-code：baseline 快照一次性 stage 到任务目录 store（硬链接优先），
+      每线程首轮 `--fork-session` 生成新会话 id
+    - opencode/dsh：eager fork 到任务目录，得到线程专属会话 id
+    - 不支持 fork 的后端：显式降级为每轮独立新会话
     """
     lock = _get_thread_workspace_lock(thread_id)
     try:
         async with lock_thread_workspace(thread_id):
             async with lock:
-                workspace_dir = await asyncio.to_thread(
-                    _prepare_thread_workspace_sync,
-                    thread_id,
-                    require_ready=require_ready,
-                )
                 db = SessionLocal()
                 try:
-                    thread, _record = _load_thread_fork_inputs(
+                    thread, record = _load_thread_fork_inputs(
                         db, thread_id, require_ready=require_ready
                     )
-                    if thread.cli_session_id:
-                        return str(thread.cli_session_id)
+                    existing = str(thread.cli_session_id or "").strip()
+                    if existing:
+                        return ThreadSessionPlan(
+                            backend=normalize_backend_name(record.agent_backend)
+                            or resolve_workspace_backend(db, thread.workspace_id),
+                            session_id=existing,
+                        )
+
+                    # 存量线程回填：此前成功回合的会话即线程自己的会话
+                    latest = get_latest_thread_session_id(db, thread.id)
+                    if latest:
+                        thread.cli_session_id = latest
+                        db.commit()
+                        return ThreadSessionPlan(
+                            backend=normalize_backend_name(record.agent_backend)
+                            or resolve_workspace_backend(db, thread.workspace_id),
+                            session_id=latest,
+                        )
+
+                    baseline_session_id = str(record.baseline_session_id or "").strip()
+                    baseline_dir = str(record.baseline_dir or "").strip()
+                    agent_backend = normalize_backend_name(record.agent_backend) or (
+                        resolve_workspace_backend(db, thread.workspace_id)
+                    )
+                    # 线程在任务目录执行，fork 目标即任务目录
+                    task_dir = str(thread.task.project_path or "").strip() if thread.task else ""
+                    plan = ThreadSessionPlan(
+                        backend=agent_backend,
+                        session_id=None,
+                        baseline_session_id=baseline_session_id or None,
+                    )
                 finally:
                     db.close()
-            # fork（IO/网络）放在锁外，避免长时间占用线程工作区锁
+
+                if not task_dir or not baseline_dir or not baseline_session_id or not backend_supports_fork(agent_backend):
+                    logger.warning(
+                        "Thread {} runs without baseline context reuse (backend={}, fork={})",
+                        thread_id,
+                        agent_backend,
+                        backend_supports_fork(agent_backend),
+                    )
+                    return plan
+
+                if agent_backend in ("claude-code", "mock"):
+                    # 一次性 staging（幂等）：真实 fork 在首轮由 --fork-session 完成
+                    try:
+                        await fork_session_for_backend(
+                            agent_backend,
+                            baseline_session_id,
+                            source_dir=baseline_dir,
+                            target_dir=task_dir,
+                        )
+                    except SessionForkError as exc:
+                        # claude 快照是我们自己的产物，缺失说明状态损坏，应显式失败
+                        raise BootstrapNotReadyError(f"Baseline session fork failed: {exc}")
+                    plan.session_id = baseline_session_id
+                    plan.fork_first_turn = True
+                    return plan
+
+                try:
+                    new_session_id = await fork_session_for_backend(
+                        agent_backend,
+                        baseline_session_id,
+                        source_dir=baseline_dir,
+                        target_dir=task_dir,
+                    )
+                except SessionForkError as exc:
+                    logger.warning(
+                        "Thread {} fork failed on backend {}: {} (degraded to fresh sessions)",
+                        thread_id,
+                        agent_backend,
+                        exc,
+                    )
+                    return plan
+
+                db = SessionLocal()
+                try:
+                    thread = db.query(SddAssetThread).filter(SddAssetThread.id == thread_id).first()
+                    if thread and not str(thread.cli_session_id or "").strip():
+                        thread.cli_session_id = new_session_id
+                        db.commit()
+                finally:
+                    db.close()
+                plan.session_id = new_session_id
+                return plan
     except LockAcquireTimeout:
-        raise BootstrapNotReadyError("Thread workspace is being prepared by another request. Please retry later.")
-
-    db = SessionLocal()
-    try:
-        thread, record = _load_thread_fork_inputs(db, thread_id, require_ready=require_ready)
-        if thread.cli_session_id:
-            return str(thread.cli_session_id)
-
-        # 存量线程回填：此前成功回合的会话即线程自己的会话
-        latest = get_latest_thread_session_id(db, thread.id)
-        if latest:
-            thread.cli_session_id = latest
-            db.commit()
-            return latest
-
-        baseline_session_id = str(record.baseline_session_id or "").strip()
-        baseline_dir = str(record.baseline_dir or "").strip()
-        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
-            db, thread.workspace_id
-        )
-        if not baseline_session_id or not backend_supports_fork(agent_backend):
-            logger.warning(
-                "Thread {} runs without baseline context reuse (backend={}, fork unsupported)",
-                thread_id,
-                agent_backend,
-            )
-            return None
-
-        try:
-            new_session_id = await fork_session_for_backend(
-                agent_backend,
-                baseline_session_id,
-                source_dir=baseline_dir,
-                target_dir=workspace_dir,
-            )
-        except SessionForkError as exc:
-            if agent_backend in ("claude-code", "mock"):
-                # claude 的快照是我们自己的产物，缺失说明状态损坏，应显式失败
-                raise BootstrapNotReadyError(f"Baseline session fork failed: {exc}")
-            logger.warning(
-                "Thread {} fork failed on backend {}: {} (degraded to fresh sessions)",
-                thread_id,
-                agent_backend,
-                exc,
-            )
-            return None
-
-        thread.cli_session_id = new_session_id
-        db.commit()
-        return new_session_id
-    finally:
-        db.close()
+        raise BootstrapNotReadyError("Thread session is being prepared by another request. Please retry later.")
 
 
 async def _prepare_thread_workspace_background(thread_id: str) -> None:
     try:
-        # 预热：准备工作区并提前 fork 线程会话
+        # 预热：提前完成 baseline staging / eager fork
         await ensure_thread_session(thread_id, require_ready=True)
     except BootstrapNotReadyError:
         # Baseline not ready yet; this is expected for newly uploaded docs.
@@ -1010,32 +948,6 @@ def get_bootstrap_agent_backend(db: Session, task_id: str) -> Optional[str]:
     if not record or record.status != TaskCliBootstrapStatus.READY:
         return None
     return normalize_backend_name(record.agent_backend)
-
-
-def get_latest_thread_agent_backend(db: Session, thread_id: str) -> Optional[str]:
-    """线程粘性 backend：最近一次成功回合使用的 agent。"""
-    row = (
-        db.query(SddAiJob.agent_backend)
-        .filter(
-            SddAiJob.thread_id == thread_id,
-            SddAiJob.channel == AiJobChannel.ASSET_THREAD,
-            SddAiJob.status == AiJobStatus.SUCCESS,
-            SddAiJob.agent_backend.isnot(None),
-        )
-        .order_by(SddAiJob.created_at.desc())
-        .first()
-    )
-    if not row:
-        return None
-    return normalize_backend_name(row[0])
-
-
-def get_bootstrap_session_id(db: Session, task_id: str) -> Optional[str]:
-    record = mark_running_bootstrap_stale_if_needed(db, task_id)
-    if not record or record.status != TaskCliBootstrapStatus.READY:
-        return None
-    sid = str(record.baseline_session_id or "").strip()
-    return sid or None
 
 
 async def cleanup_task_cli_state(workspace_id: str, task_id: str) -> None:
