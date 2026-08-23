@@ -3079,8 +3079,6 @@
   },
   "preInput": {
     "toggle_title": "Start collaborative pre-input: @members to collect inputs, auto-merge and submit on deadline",
-    "composer_title": "Start Collaborative Pre-input",
-    "main_text_placeholder": "Describe the task or question to collect inputs… type @ to mention members",
     "mention_no_results": "No matching members",
     "edit_permission_label": "Edit permission",
     "permission_all": "Anyone can edit",
@@ -3089,7 +3087,6 @@
     "permission_none": "Not editable",
     "wait_duration_label": "Wait duration",
     "duration_minutes": "{n} min",
-    "composer_hint": "Auto-submit on deadline; early submit once all @mentioned members finish",
     "start_button": "Start collecting",
     "started_toast": "Collaborative pre-input started, mentioned members notified",
     "submitted_toast": "Collaborative pre-input merged and submitted",
@@ -3108,9 +3105,9 @@
     },
     "volunteer_hint": "Joined voluntarily without being mentioned",
     "mention_field_label": "Mention members",
-    "mention_field_placeholder": "Select members to notify (multi-select)",
     "mention_search_placeholder": "Search members",
-    "my_input_saved": "Submitted"
+    "my_input_saved": "Submitted",
+    "toggle_label": "Collab"
   },
   "notification": {
     "title": "Notifications",
