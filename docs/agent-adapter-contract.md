@@ -714,8 +714,8 @@ def get_agent_backend(name: str | None = None) -> AgentBackend:
 | provider | 建议物化位置 |
 |---|---|
 | claude-code | `<project>/.claude/skills/<name>` |
-| opencode | 按 opencode config / agents 约定物化 |
-| dsh | 由 DSH 的 skill 配置 / `cordis.yml` 决定 |
+| opencode | `<project>/.agents/skills/<name>`（当前 opencode Agent Skills 约定） |
+| dsh | `<project>/.agents/skills/<name>`（与 opencode 共用 Agent Skills 布局） |
 
 Skills 物化与清理规则：
 

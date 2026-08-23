@@ -16,6 +16,7 @@ IGNORED_DIR_NAMES = {
     ".pytest_cache",
     ".mypy_cache",
     ".claude",
+    ".agents",
     ".sdd",
 }
 IGNORED_FILE_SUFFIXES = {

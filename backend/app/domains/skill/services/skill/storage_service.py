@@ -34,7 +34,14 @@ _SKILL_PACKAGE_REL_PATH_MAX_CHARS = 500
 
 
 def _skills_root() -> str:
-    root_value = str(settings.SKILLS_STORAGE_ROOT or "").strip()
+    # Prefer the backend-root-absolute form so skill packages stay at the same
+    # location regardless of the process CWD. Fall back to the raw value for
+    # tests/mocks that only set SKILLS_STORAGE_ROOT.
+    root_value = str(
+        getattr(settings, "SKILLS_STORAGE_ROOT_ABS", None)
+        or settings.SKILLS_STORAGE_ROOT
+        or ""
+    ).strip()
     if not root_value:
         raise SkillStorageError("SKILLS_STORAGE_ROOT is not configured")
     root = os.path.abspath(root_value)
