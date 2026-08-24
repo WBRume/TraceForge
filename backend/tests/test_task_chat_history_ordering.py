@@ -84,6 +84,45 @@ def test_task_history_keeps_streamed_bubbles_in_insertion_order(db_session):
     assert contents == ["stream-chunk-0", "stream-chunk-1", "stream-chunk-2"]
     assert len(history["messages"]) == 3
 
+def test_task_history_pagination_returns_latest_page_first(db_session):
+    db = db_session
+    task = _seed_task(db)
+
+    total = 120
+    for index in range(total):
+        task_service.save_chat_message(
+            db,
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            role="assistant",
+            content=f"msg-{index}",
+            message_type="text",
+        )
+
+    # 同一秒写入，确保分页依据 order_index 而不是 created_at 秒级精度
+    same_time = datetime.utcnow()
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
+        {"created_at": same_time}
+    )
+    db.commit()
+
+    page1 = task_service.get_task_history(db, task.id, task.workspace_id, page=1, page_size=50)
+    assert len(page1["messages"]) == 50
+    assert page1["has_more"] is True
+    assert [m["content"] for m in page1["messages"]] == [f"msg-{i}" for i in range(70, 120)]
+
+    page2 = task_service.get_task_history(db, task.id, task.workspace_id, page=2, page_size=50)
+    assert len(page2["messages"]) == 50
+    assert page2["has_more"] is True
+    assert [m["content"] for m in page2["messages"]] == [f"msg-{i}" for i in range(20, 70)]
+
+    page3 = task_service.get_task_history(db, task.id, task.workspace_id, page=3, page_size=50)
+    assert len(page3["messages"]) == 20
+    assert page3["has_more"] is False
+    assert [m["content"] for m in page3["messages"]] == [f"msg-{i}" for i in range(20)]
+
+
 def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):
     db = db_session
     task = _seed_task(db)
