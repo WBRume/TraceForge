@@ -962,9 +962,17 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
     messages_all = sort_chat_messages(messages_all)
     total = len(messages_all)
 
-    # 按真实落库顺序分页（created_at + order_index + id），保持正序返回
-    start = (page - 1) * page_size
-    msg_query = messages_all[start:start + page_size]
+    # 第 1 页返回“最新一页”，块内仍按真实落库顺序正序；
+    # 后续页向前翻，方便前端“向上加载更早消息”直接 prepend。
+    page = max(1, int(page or 1))
+    page_size = max(1, int(page_size or 50))
+    end = total - (page - 1) * page_size
+    start = 0
+    if end > 0:
+        start = max(0, end - page_size)
+        msg_query = messages_all[start:end]
+    else:
+        msg_query = []
     creator_ids = sorted({str(msg.creator_id or "") for msg in msg_query if str(msg.creator_id or "").strip()})
     message_ids = [msg.id for msg in msg_query]
     creators_by_id = {
@@ -1009,7 +1017,7 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
             "metadata": metadata or None,
         })
 
-    has_more = (page * page_size) < total
+    has_more = start > 0
 
     # logs 保持全量返回（日志量通常不大，且只用于终端面板）
     logs = [
