@@ -4,8 +4,10 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
+  Download,
   AlertCircle,
   GitFork,
+  GitBranch,
   Target,
   Wrench,
   Loader2,
@@ -25,12 +27,14 @@ import {
 import { useCaseCenter } from '@/composables/useCaseCenter'
 import CaseReportSection from './CaseReportSection.vue'
 import CaseReviewTimeline from './CaseReviewTimeline.vue'
+import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import CaseFormDialog from './CaseFormDialog.vue'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const vm = proxyRefs(useCaseCenter())
+const { exportCaseMarkdown } = useMarkdownExport()
 
 const wsId = computed(() => String(route.params.wsId || ''))
 const caseId = computed(() => String(route.params.caseId || ''))
@@ -54,6 +58,11 @@ const goBackToList = () => {
     return
   }
   router.push({ name: 'workspaceCases', params: { wsId: wsId.value } })
+}
+const handleExportRagMarkdown = () => {
+  const caseDetail = vm.currentCase
+  if (!caseDetail) return
+  exportCaseMarkdown(caseDetail)
 }
 
 const openSourceSession = () => {
@@ -85,6 +94,20 @@ const priorityPillTone = (priority: string) => (
 const categoryPillTone = (category: string) => (
   ({ PUBLIC: 'green', PRODUCT: 'blue', SITE: 'amber' } as Record<string, string>)[category] || 'gray'
 )
+const callChainItems = computed(() => {
+  const detail = vm.currentCase?.diagnosis_detail
+  const chain = Array.isArray(detail?.call_chain) ? detail.call_chain : []
+  return chain.map((node: any, index: number) => {
+    const seq = node.seq ?? index + 1
+    const label = [node.module, node.function]
+      .filter((value: unknown) => value != null && String(value).trim() !== '')
+      .join('.') || String(node.file_path || '未命名节点')
+    const parts = [`${seq}. ${label}`]
+    if (node.file_path) parts.push(String(node.file_path))
+    if (node.description) parts.push(String(node.description))
+    return parts.join(' - ')
+  })
+})
 </script>
 
 <template>
@@ -139,6 +162,9 @@ const categoryPillTone = (category: string) => (
         </div>
 
         <div class="case-report-actions">
+            <button class="btn-secondary" type="button" @click="handleExportRagMarkdown">
+              <Download :size="16" /> {{ t('case_center.export_markdown') }}
+            </button>
           <template v-if="vm.currentCase.source_task_id">
             <button class="btn-secondary" type="button" :disabled="vm.actionLoading" @click="openSourceSession">
               <MessagesSquare :size="16" /> {{ t('case_center.report.open_session') }}
@@ -204,12 +230,18 @@ const categoryPillTone = (category: string) => (
           <CaseReportSection index="02" :title="t('case_center.report.analysis_title')" :icon="GitFork">
             <p class="section-text">{{ vm.currentCase.analysis_process || t('case_center.not_set') }}</p>
           </CaseReportSection>
+          <CaseReportSection index="03" :title="t('case_center.field.call_chain')" :icon="GitBranch">
+            <ol v-if="callChainItems.length" class="call-chain-list">
+              <li v-for="item in callChainItems" :key="item">{{ item }}</li>
+            </ol>
+            <p v-else class="section-text">{{ t('case_center.not_set') }}</p>
+          </CaseReportSection>
 
-          <CaseReportSection index="03" :title="t('case_center.field.root_cause')" :icon="Target" tone="amber">
+          <CaseReportSection index="04" :title="t('case_center.field.root_cause')" :icon="Target" tone="amber">
             <p class="section-text strong">{{ vm.currentCase.root_cause || t('case_center.not_set') }}</p>
           </CaseReportSection>
 
-          <CaseReportSection index="04" :title="t('case_center.field.solution')" :icon="Wrench" tone="emerald">
+          <CaseReportSection index="05" :title="t('case_center.field.solution')" :icon="Wrench" tone="emerald">
             <p class="section-text strong">{{ vm.currentCase.solution || t('case_center.not_set') }}</p>
           </CaseReportSection>
         </div>
@@ -819,6 +851,17 @@ const categoryPillTone = (category: string) => (
   overflow: auto;
   max-height: 220px;
   white-space: pre-wrap;
+  word-break: break-all;
+}
+.call-chain-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: #334155;
   word-break: break-all;
 }
 .repo-chip {

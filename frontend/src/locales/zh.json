@@ -2977,6 +2977,7 @@
   "case_center": {
     "title": "案例知识中心",
     "subtitle": "结构化沉淀问题定位与处理经验，专家评审入库，团队可检索复用",
+    "export_markdown": "导出 Markdown",
     "search": "检索",
     "search_placeholder": "按标题 / 问题描述 / 根因 / 方案 / 代码上下文关键词检索",
     "create_button": "新建案例",
@@ -3025,6 +3026,7 @@
       "workspace": "工作区",
       "code_context": "代码上下文",
       "analysis_process": "分析过程",
+      "call_chain": "调用链路",
       "root_cause": "根因",
       "solution": "方案",
       "category": "分类",

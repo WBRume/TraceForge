@@ -1938,6 +1938,9 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
 
 async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngine) -> None:
     # Fallback for missing callback updates.
+    is_timeout_interrupted = bool(getattr(engine, "last_result_interrupted", False)) or _looks_like_timeout_text(
+        engine.last_result_text or ""
+    )
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -1957,6 +1960,41 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             db.commit()
             db.refresh(job)
             payload = serialize_job(job)
+        elif is_timeout_interrupted:
+            now = datetime.utcnow()
+            task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+            session_id = str(
+                engine.session_id or job.session_id or (getattr(task, "session_id", None) or "")
+            ).strip() or None
+            reason = (engine.last_result_text or "AI 会话超时")[:500]
+            job.status = AiJobStatus.INTERRUPTED
+            job.progress = 100
+            job.message = "AI 会话超时，可继续发送消息恢复"
+            job.error_message = None
+            job.session_id = session_id
+            job.interrupt_reason = reason
+            job.interrupted_by_id = None
+            job.interrupted_at = now
+            job.finished_at = now
+            job.context_json = _merge_json(
+                job.context_json,
+                {
+                    "timeout_interrupted": True,
+                    "timeout_message": engine.last_result_text or "",
+                },
+            )
+            if task:
+                task.status = TaskStatus.INTERRUPTED
+                task.session_id = session_id
+                task.error_message = None
+                task.interrupt_reason = reason
+                task.interrupted_by_id = None
+                task.interrupted_at = now
+            db.commit()
+            db.refresh(job)
+            if task:
+                db.refresh(task)
+            payload = serialize_job(job)
         else:
             job.status = AiJobStatus.FAILED
             job.progress = 100
@@ -1968,7 +2006,9 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             payload = serialize_job(job)
     finally:
         db.close()
-    await _broadcast_job_payload(payload, final=True)
+    await _broadcast_job_payload(payload, final=not is_timeout_interrupted)
+    if is_timeout_interrupted:
+        return
     queue_key = str(payload.get("queue_key") or "")
     if queue_key:
         schedule_queue(queue_key)

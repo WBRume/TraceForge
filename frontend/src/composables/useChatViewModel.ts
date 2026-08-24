@@ -17,6 +17,7 @@ import {
   normalizeDiagnosisPayload,
   type DiagnosisResultPayload,
 } from '@/types/diagnosis'
+import { useMarkdownExport } from '@/composables/useMarkdownExport'
 
 
 export function useChatViewModel() {
@@ -25,6 +26,7 @@ export function useChatViewModel() {
   const route = useRoute()
   const router = useRouter()
   const authStore = useAuthStore()
+  const { exportDiagnosisMarkdown, exportCaseMarkdown } = useMarkdownExport()
   const taskSessionControls = useTaskSessionControls({
     getWorkspaceId: () => String(route.params.wsId || ''),
   })
@@ -1480,62 +1482,34 @@ export function useChatViewModel() {
     }
   }
 
-  const exportDiagnosisResult = (payload: DiagnosisResultPayload) => {
+  const exportDiagnosisResult = async (payload: DiagnosisResultPayload) => {
     if (!payload) return
+    const taskId = String(currentTask.value?.id || '')
+    const wsId = String(route.params.wsId || '')
+
+    // 若该任务已生成案例，则与会话/案例详情导出一致：优先导出案例内容。
+    if (diagnosisCaseLink.value) {
+      try {
+        const res = await api.get(`/workspaces/${wsId}/cases/${diagnosisCaseLink.value}`)
+        if (res.data) {
+          exportCaseMarkdown(res.data)
+          return
+        }
+      } catch (e) {
+        console.warn('Failed to load linked case for export', e)
+      }
+    }
+
     const norm = normalizeDiagnosisPayload(payload)
     const taskName = currentTask.value?.name || ''
-    const lines: string[] = []
-    lines.push(`# 问题定位结果 · ${taskName}`)
-    lines.push('')
-    if (norm.summary) lines.push(`## 结果内容\n\n${norm.summary}\n`)
-    if (norm.root_cause) lines.push(`## 根因结论\n\n${norm.root_cause}\n`)
-    if (norm.evidence_chain) lines.push(`## 证据链\n\n${norm.evidence_chain}\n`)
-    if (norm.fix_suggestion) lines.push(`## 修复方案\n\n${norm.fix_suggestion}\n`)
-    if (norm.fix_code) lines.push(`## 修复代码\n\n\`\`\`\n${norm.fix_code}\n\`\`\`\n`)
-    if (norm.code_context.length) {
-      lines.push('## 相关代码上下文\n')
-      norm.code_context.forEach((item, index) => {
-        const start = item.start_line ?? ''
-        const end = item.end_line ?? ''
-        const loc = start ? (end && end !== start ? `:${start}-${end}` : `:${start}`) : ''
-        lines.push(`${index + 1}. \`${item.file_path || ''}${loc}\``)
-        if (item.note) lines.push(`   - 说明：${item.note}`)
-        if (item.snippet) lines.push(`   \`\`\`\n   ${item.snippet.replace(/\n/g, '\n   ')}\n   \`\`\``)
-      })
-      lines.push('')
-    }
-    if (norm.similar_cases.length) {
-      lines.push('## 相似案例\n')
-      norm.similar_cases.forEach((item) => {
-        lines.push(`- **${item.title || ''}**${item.similarity ? `（相似度：${item.similarity}）` : ''}`)
-        if (item.summary) lines.push(`  - ${item.summary}`)
-        if (item.reference) lines.push(`  - 参考：${item.reference}`)
-      })
-      lines.push('')
-    }
-    if (norm.call_chain.length) {
-      lines.push('## 调用链路\n')
-      norm.call_chain.forEach((node, index) => {
-        const seq = node.seq ?? index + 1
-        const label = [node.module, node.function].filter(Boolean).join('.') || node.file_path || ''
-        lines.push(`${seq}. ${label || '（未命名节点）'}${node.file_path ? ` — \`${node.file_path}\`` : ''}`)
-        if (node.description) lines.push(`   - ${node.description}`)
-      })
-      lines.push('')
-    }
-    lines.push(`## 置信度\n\n${norm.confidence}%`)
-    lines.push('')
-    const markdown = lines.join('\n')
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    const safeName = (taskName || 'diagnosis-result').replace(/[\\/:*?"<>|]/g, '_')
-    link.href = url
-    link.download = `${safeName}-定位结果.md`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    exportDiagnosisMarkdown(norm, taskName, {
+      taskId,
+      problemDescription: String(currentTask.value?.description || ''),
+      productName: String(currentWorkspace.value?.products?.[0]?.name || ''),
+      productVersion: String(currentWorkspace.value?.products?.[0]?.version_no || ''),
+      projectName: String(currentWorkspace.value?.project?.name || ''),
+      repositories: Array.isArray(currentWorkspace.value?.repositories) ? currentWorkspace.value.repositories : undefined,
+    })
   }
 
   // ─── 任务类型过滤（会话列表） ───
@@ -2405,6 +2379,9 @@ export function useChatViewModel() {
   
       case 'status': {
         // 阶段状�?�?置顶卡片
+        const nextTaskStatus = (payload.status === 'INIT' || payload.status === 'RUNNING')
+          ? 'CODING'
+          : payload.status
         engineRunning.value = payload.status === 'INIT' || payload.status === 'RUNNING'
         pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status')
         pinnedCards.value.push({
@@ -2416,9 +2393,9 @@ export function useChatViewModel() {
           created_at: new Date().toISOString(),
         })
         if (currentTask.value) {
-          currentTask.value.status = 'CODING'
+          currentTask.value.status = nextTaskStatus
           const targetTask = tasks.value.find((task) => task.id === currentTask.value.id)
-          if (targetTask) targetTask.status = 'CODING'
+          if (targetTask) targetTask.status = nextTaskStatus
         }
         break
       }
