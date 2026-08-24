@@ -19,7 +19,13 @@ from app.domains.auth.services import auth_service
 from app.domains.skill.services import skill_service, skill_runtime_trace_service
 from app.domains.task.services import context_token_service, task_service
 from app.engine.claude_bridge import CliBridgeBase
-from app.agents import AgentBackend, AgentEvent, AgentRunRequest, AgentRunResult
+from app.agents import (
+    AgentBackend,
+    AgentEvent,
+    AgentRunRequest,
+    AgentRunResult,
+    AgentTimeoutError,
+)
 from app.engine.claude_event_adapter import (
     extract_claude_compaction_event,
     extract_claude_usage,
@@ -97,6 +103,7 @@ class WorkflowEngine:
         self.on_error = on_error
         self.last_result_success: Optional[bool] = None
         self.last_result_text: str = ""
+        self.last_result_interrupted = False
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_skill_index = []
@@ -507,7 +514,23 @@ class WorkflowEngine:
         )
         failed = is_error or finish_reason in ("error", "timeout", "aborted") or timeout_like
 
-        if failed:
+        timeout_interrupted = finish_reason == "timeout" or timeout_like
+        if timeout_interrupted:
+            self.last_result_interrupted = True
+            self._update_context_snapshot(
+                usage=usage,
+                raw_usage_json=(usage or {}).get("raw_usage"),
+                status="INTERRUPTED",
+                duration_ms=duration,
+                total_cost_usd=cost,
+            )
+            logger.warning(f"Agent execution timed out, session is resumable: {result_text[:200]}")
+            self._update_task_status(TaskStatus.INTERRUPTED, result_text[:500])
+            self._update_task_metrics(cost, duration, "INTERRUPTED")
+            await self._push_status("INTERRUPTED", f"执行超时，可继续发送消息恢复: {result_text[:200]}")
+            self.last_result_success = None
+            self.last_result_text = result_text
+        elif failed:
             self._update_context_snapshot(
                 usage=usage,
                 raw_usage_json=(usage or {}).get("raw_usage"),
@@ -714,7 +737,22 @@ class WorkflowEngine:
             )
         )
 
-        if is_error or subtype == "error" or timeout_like:
+        if timeout_like:
+            self.last_result_interrupted = True
+            self._update_context_snapshot(
+                usage=usage,
+                raw_usage_json=usage.get("raw_usage") if usage else None,
+                status="INTERRUPTED",
+                duration_ms=duration,
+                total_cost_usd=cost,
+            )
+            logger.warning(f"CLI execution timed out, session is resumable: {result_text[:200]}")
+            self._update_task_status(TaskStatus.INTERRUPTED, result_text[:500])
+            self._update_task_metrics(cost, duration, "INTERRUPTED")
+            await self._push_status("INTERRUPTED", f"执行超时，可继续发送消息恢复: {result_text[:200]}")
+            self.last_result_success = None
+            self.last_result_text = result_text
+        elif is_error or subtype == "error":
             self._update_context_snapshot(
                 usage=usage,
                 raw_usage_json=usage.get("raw_usage") if usage else None,
@@ -876,6 +914,7 @@ class WorkflowEngine:
             self._interrupt_requested = False
             self.last_result_success = None
             self.last_result_text = ""
+            self.last_result_interrupted = False
             self._hitl_requested_in_turn = False
 
             logger.info(f"WorkflowEngine run: task={self.task_id}, prompt={prompt[:80]}")
@@ -921,18 +960,37 @@ class WorkflowEngine:
                     if hasattr(self.cli, "wait"):
                         await self.cli.wait()
 
+            except AgentTimeoutError as e:
+                logger.warning(f"WorkflowEngine timed out (resumable): {e}")
+                self.last_result_interrupted = True
+                self.last_result_success = None
+                self.last_result_text = str(e)
+                self._update_task_status(TaskStatus.INTERRUPTED, str(e))
+                self._update_context_snapshot(status="INTERRUPTED")
+                await self._push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
             except Exception as e:
+                error_text = str(e)
+                timeout_markers = ("timed out", "timeout", "etimedout", "请求超时", "连接超时")
+                is_timeout = any(marker in error_text.lower() for marker in timeout_markers)
                 if self._interrupt_requested:
                     logger.info(f"WorkflowEngine stopped after user interrupt: {e}")
                     self.last_result_success = None
-                    self.last_result_text = str(e)
+                    self.last_result_text = error_text
+                elif is_timeout:
+                    logger.warning(f"WorkflowEngine timed out (resumable): {e}")
+                    self.last_result_interrupted = True
+                    self.last_result_success = None
+                    self.last_result_text = error_text
+                    self._update_task_status(TaskStatus.INTERRUPTED, error_text)
+                    self._update_context_snapshot(status="INTERRUPTED")
+                    await self._push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
                 else:
                     logger.exception(f"WorkflowEngine error: {e}")
-                    self._update_task_status(TaskStatus.FAILED, str(e))
+                    self._update_task_status(TaskStatus.FAILED, error_text)
                     await self._push_status("FAILED", f"引擎异常: {e}")
                     self.last_result_success = False
-                    self.last_result_text = str(e)
-                    await self._emit_hook(self.on_error, str(e), self.current_job_id or "")
+                    self.last_result_text = error_text
+                    await self._emit_hook(self.on_error, error_text, self.current_job_id or "")
             finally:
                 self.running = False
                 # 不从注册表移除，便于后续 --resume

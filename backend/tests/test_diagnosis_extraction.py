@@ -58,6 +58,9 @@ def test_prompt_suffix_declares_diagnosis_contract():
             assert '"confidence"' not in suffix
             assert '"call_chain"' not in suffix
             assert "每轮回复结束时" not in suffix
+            assert "JSON" not in suffix
+            assert "fix_suggestion" not in suffix
+            assert "fix_code" not in suffix
     finally:
         engine.dispose()
 

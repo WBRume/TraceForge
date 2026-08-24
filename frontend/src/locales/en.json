@@ -2972,6 +2972,7 @@
   "case_center": {
     "title": "Case Knowledge Center",
     "subtitle": "Structured accumulation of diagnosis and handling experience; expert-reviewed and searchable by the team",
+    "export_markdown": "Export Markdown",
     "search": "Search",
     "search_placeholder": "Search by title / problem description / root cause / solution / code context keywords",
     "create_button": "New Case",
@@ -3020,6 +3021,7 @@
       "workspace": "Workspace",
       "code_context": "Code Context",
       "analysis_process": "Analysis Process",
+      "call_chain": "Call Chain",
       "root_cause": "Root Cause",
       "solution": "Solution",
       "category": "Category",

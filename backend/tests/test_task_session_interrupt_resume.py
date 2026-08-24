@@ -327,6 +327,49 @@ def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
     assert calls["run"] == []
 
 
+def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    db.commit()
+    db.close()
+
+    engine = SimpleNamespace(
+        last_result_success=None,
+        last_result_text="Claude Code session timed out after 300.0s",
+        last_result_interrupted=True,
+        session_id="session-1",
+    )
+    broadcasted = []
+    scheduled = []
+
+    async def _broadcast(payload, *, final):
+        broadcasted.append((payload["id"], final))
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _broadcast)
+    monkeypatch.setattr(ai_job_service, "schedule_queue", lambda queue_key: scheduled.append(queue_key))
+
+    asyncio.run(ai_job_service._finalize_task_chat_job_from_engine(job.id, engine))
+
+    check_db = SessionLocal()
+    try:
+        check_task = check_db.query(SddTask).filter(SddTask.id == task.id).first()
+        check_job = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).first()
+        assert check_task.status == TaskStatus.INTERRUPTED
+        assert check_task.session_id == "session-1"
+        assert check_task.interrupt_reason and "timed out" in check_task.interrupt_reason
+        assert check_job.status == AiJobStatus.INTERRUPTED
+        assert check_job.session_id == "session-1"
+        assert check_job.interrupt_reason and "timed out" in check_job.interrupt_reason
+        assert check_job.context_json.get("timeout_interrupted") is True
+    finally:
+        check_db.close()
+
+    assert broadcasted == [("job-1", False)]
+    assert scheduled == []
+
+
 def test_run_task_chat_turn_fresh_session_clears_engine_session(monkeypatch):
     """A fresh-session job must clear the engine session so run(..., fresh_session=True)
     starts a brand-new Claude session without --resume."""

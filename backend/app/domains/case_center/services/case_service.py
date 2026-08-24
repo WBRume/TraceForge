@@ -660,12 +660,10 @@ def create_case_draft_from_task(
     if diagnosis_result is not None:
         diagnosis_result.status = "CONFIRMED"
         # 定位结果 → 案例结构化字段映射：
-        # 证据链+调用链路 → 分析过程；根因结论 → 根因；修复建议+修复代码 → 方案；
+        # 证据链+置信度 → 分析过程；调用链路 → diagnosis_detail_json；
+        # 根因结论 → 根因；修复建议+修复代码 → 方案；
         # 相关代码上下文 → 代码上下文；结构化明细 → diagnosis_detail_json。
         analysis_parts = [part for part in [diagnosis_result.evidence_chain] if part]
-        chain_text = _format_call_chain(diagnosis_result.call_chain_json)
-        if chain_text:
-            analysis_parts.append(chain_text)
         confidence = diagnosis_result.confidence if diagnosis_result.confidence is not None else 0
         analysis_parts.append(f"置信度: {confidence}%")
         case.analysis_process = "\n\n".join(analysis_parts) or None

@@ -227,7 +227,7 @@ def test_case_lifecycle_full_flow():
         assert case["problem_description"] and "接口偶发超时" in case["problem_description"]
         assert case["root_cause"] == "空指针异常"
         assert case["solution"] == "判空处理\n\n修复代码:\nif (obj != null) { obj.run(); }"
-        assert case["analysis_process"] and "调用链路:" in case["analysis_process"]
+        assert case["analysis_process"] and "堆栈证据" in case["analysis_process"] and "调用链路:" not in case["analysis_process"]
         assert case["code_context"] and "相关代码上下文:" in case["code_context"]
         assert case["diagnosis_detail"]["similar_cases"][0]["reference"] == "case-9"
         assert case["diagnosis_detail"]["call_chain"][0]["function"] == "handle"
