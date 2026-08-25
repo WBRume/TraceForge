@@ -89,6 +89,7 @@ class TaskInterruptRequest(BaseModel):
 class TaskResumeInterruptedRequest(BaseModel):
     prompt: Optional[str] = None
     confirm_continue: bool = False
+    client_message_id: Optional[str] = None
 
 
 class InitializeRequest(BaseModel):

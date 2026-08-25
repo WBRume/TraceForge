@@ -36,7 +36,11 @@ class AgentRunRequest:
     provider_options: dict[str, Any] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
     skills: list[SkillRef] = field(default_factory=list)
-    timeout_seconds: float = 300.0
+    # Backward-compatible hard runtime ceiling.  Liveness is governed primarily
+    # by startup/idle activity timeouts so a productive long turn is not killed.
+    timeout_seconds: float = 7200.0
+    startup_timeout_seconds: float = 60.0
+    idle_timeout_seconds: float = 600.0
     permission_mode: str = "default"
     metadata: dict[str, Any] = field(default_factory=dict)
 

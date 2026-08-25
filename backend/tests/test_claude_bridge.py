@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, MagicMock
 
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -33,6 +34,20 @@ class ClaudeBridgeCliResolutionTest(unittest.TestCase):
 
         self.assertEqual(args, [target])
         self.assertFalse(args[0].lower().endswith(".cmd"))
+
+
+@unittest.skipUnless(os.name == "nt", "Windows process-tree cancellation")
+class ClaudeBridgeProcessTreeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_force_stop_kills_tree_before_waiting_for_root_exit(self):
+        bridge = SubprocessCliBridge(cli_path="claude")
+        bridge.process = MagicMock(pid=12345, returncode=None)
+        bridge._taskkill_tree = AsyncMock(return_value=None)
+        bridge._wait_for_exit = AsyncMock(return_value=True)
+
+        await bridge._force_stop_process(reason="timeout")
+
+        bridge._taskkill_tree.assert_awaited_once()
+        bridge.process.terminate.assert_not_called()
 
 
 if __name__ == "__main__":

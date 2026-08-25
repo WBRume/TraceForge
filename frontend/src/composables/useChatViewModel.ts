@@ -2474,6 +2474,7 @@ export function useChatViewModel() {
       try {
         const payload = await taskSessionControls.resumeInterruptedTask(currentTask.value.id, {
           prompt: normalized,
+          clientMessageId,
         })
         upsertChatMessage({
           id: `local-${clientMessageId}`,

@@ -37,12 +37,14 @@ describe('useTaskSessionControls', () => {
       controls.resumeInterruptedTask('task-1', {
         prompt: ' continue here ',
         confirmContinue: false,
+        clientMessageId: 'client-1',
       }),
     ).resolves.toMatchObject({ status: 'CODING' })
 
     expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/tasks/task-1/resume-interrupted', {
       prompt: 'continue here',
       confirm_continue: false,
+      client_message_id: 'client-1',
     })
     expect(controls.resumingInterruptedTask.value).toBe(false)
   })

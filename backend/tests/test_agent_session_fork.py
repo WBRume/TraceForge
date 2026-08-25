@@ -450,6 +450,26 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.type, "tool_use")
         self.assertEqual(tool.payload["tool"], "read_file")
 
+        text_delta = map_dsh_event({
+            "type": "assistant/chunk",
+            "data": {"chunk": {"type": "text-delta", "index": 1, "text": "hello"}},
+        })
+        self.assertEqual(text_delta.type, "text_delta")
+        self.assertEqual(text_delta.payload["text"], "hello")
+
+        thinking = map_dsh_event({
+            "type": "assistant/chunk",
+            "data": {"chunk": {"type": "reasoning-delta", "index": 0, "text": "checking"}},
+        })
+        self.assertEqual(thinking.type, "thinking")
+        self.assertEqual(thinking.payload["text"], "checking")
+
+        control = map_dsh_event({
+            "type": "assistant/chunk",
+            "data": {"chunk": {"type": "block-start", "index": 1, "blockType": "text"}},
+        })
+        self.assertIsNone(control)
+
     def test_server_mode_capabilities(self):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
@@ -459,6 +479,87 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(caps.supports_usage)
         self.assertTrue(caps.supports_fork)
         self.assertEqual(caps.preferred_mode, "server")
+
+    async def test_read_only_event_stream_auto_rejects_dsh_approval(self):
+        import app.agents.adapters.dsh.dsh_server_adapter as dsh_mod
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        frames = [
+            json.dumps({
+                "type": "server-request",
+                "rpcId": "rpc-approval",
+                "method": "approval/requested",
+                "payload": {
+                    "sessionId": "session-1",
+                    "approvalId": "approval-1",
+                    "toolName": "write_file",
+                    "reason": "writes a file",
+                },
+            }),
+            json.dumps({
+                "type": "server-request",
+                "rpcId": "rpc-turn",
+                "method": "session/event",
+                "payload": {
+                    "sessionId": "session-1",
+                    "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}},
+                },
+            }),
+        ]
+
+        class _FakeWs:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def __aiter__(self):
+                async def _items():
+                    for frame in frames:
+                        yield frame
+                return _items()
+
+        adapter = DshServerAdapter(server_url="http://mock:3080")
+        adapter._respond = mock.AsyncMock(return_value=None)
+        with mock.patch.object(dsh_mod.websockets, "connect", return_value=_FakeWs()):
+            result = await adapter._consume_events(
+                "session-1",
+                mock.AsyncMock(return_value=None),
+                read_only=True,
+            )
+
+        self.assertEqual(result["finish_reason"], "completed")
+        adapter._respond.assert_awaited_once_with(
+            "rpc-approval",
+            {
+                "sessionId": "session-1",
+                "approvalId": "approval-1",
+                "outcome": "rejected",
+            },
+        )
+
+    async def test_dsh_approval_response_uses_host_wire_contract(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter(server_url="http://mock:3080")
+        adapter._pending_asks["rpc-1"] = {
+            "kind": "approval/requested",
+            "session_id": "session-1",
+            "approval_id": "approval-1",
+        }
+        adapter._respond = mock.AsyncMock(return_value=None)
+
+        await adapter.respond_to_ask_user("rpc-1", "reject")
+
+        adapter._respond.assert_awaited_once_with(
+            "rpc-1",
+            {
+                "sessionId": "session-1",
+                "approvalId": "approval-1",
+                "outcome": "rejected",
+            },
+        )
 
 
 class SelectionForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):

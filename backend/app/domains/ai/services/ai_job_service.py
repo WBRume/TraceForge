@@ -21,7 +21,9 @@ from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.database import SessionLocal
 from app.engine.claude_bridge import create_cli_bridge
 from app.agents.selection import (
+    backend_supports_fork,
     create_legacy_bridge,
+    fork_session_for_backend,
     resolve_task_backend,
     resolve_workspace_backend,
 )
@@ -68,7 +70,12 @@ _QUEUE_LOCKS: Dict[str, asyncio.Lock] = {}
 _QUEUE_RUNNERS: Dict[str, asyncio.Task] = {}
 _JOB_CANCEL_EVENTS: Dict[str, asyncio.Event] = {}
 
-_RUNNING_STALE_MINUTES = 10
+# A productive turn can legitimately run longer than ten minutes now.  Stale
+# cleanup must never race the hard runtime watchdog and mark a live job failed.
+_RUNNING_STALE_MINUTES = max(
+    10,
+    int(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200) // 60 + 5,
+)
 
 _TIMEOUT_TEXT_MARKERS = (
     "request timed out",
@@ -87,6 +94,12 @@ def _queue_key_for_task(task_id: str) -> str:
 
 def _queue_key_for_thread(thread_id: str) -> str:
     return f"ASSET_THREAD:{thread_id}"
+
+
+def _queue_key_for_diagnosis_summary(task_id: str) -> str:
+    # Deliberately separate from TASK_CHAT.  A diagnosis chat can be
+    # INTERRUPTED while its read-only summary still needs to run.
+    return f"DIAGNOSIS_SUMMARY:{task_id}"
 
 
 def _get_queue_lock(queue_key: str) -> asyncio.Lock:
@@ -491,15 +504,30 @@ def create_diagnosis_summary_job(
     task_id: str,
     creator_id: str,
 ) -> SddAiJob:
-    """问题定位任务「一键总结问题案例」：创建后台 AI 总结任务。
-
-    复用 TASK_CHAT 通道（同一任务串行队列），通过 context_json.job_kind 标记
-    JOB_KIND_DIAGNOSIS_SUMMARY。执行时走独立的一次性总结流程，不写入会话气泡，
-    完成后原位刷新「定位结果」卡片并广播到任务房间。
-    """
+    """创建独立队列中的只读诊断总结任务。"""
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    source_session_id = str(getattr(task, "session_id", None) or "").strip()
+    source_job_id: Optional[str] = None
+    if not source_session_id:
+        source_job = (
+            db.query(SddAiJob)
+            .filter(
+                SddAiJob.task_id == task_id,
+                SddAiJob.channel == AiJobChannel.TASK_CHAT,
+                SddAiJob.session_id.isnot(None),
+            )
+            .order_by(SddAiJob.created_at.desc())
+            .first()
+        )
+        if source_job:
+            source_session_id = str(source_job.session_id or "").strip()
+            source_job_id = source_job.id
     payload_context = {
         "source": "task_chat",
         "job_kind": JOB_KIND_DIAGNOSIS_SUMMARY,
+        "source_session_id": source_session_id or None,
+        "source_job_id": source_job_id,
+        "summary_session_mode": "fork_read_only" if source_session_id else "transcript_fallback",
     }
     job = SddAiJob(
         workspace_id=workspace_id,
@@ -507,13 +535,14 @@ def create_diagnosis_summary_job(
         asset_id=None,
         thread_id=None,
         channel=AiJobChannel.TASK_CHAT,
-        queue_key=_queue_key_for_task(task_id),
+        queue_key=_queue_key_for_diagnosis_summary(task_id),
         status=AiJobStatus.PENDING,
         progress=0,
         message="一键总结问题案例已进入队列",
         prompt_text="[一键总结问题案例]",
         context_json=payload_context,
         creator_id=creator_id,
+        session_id=source_session_id or None,
     )
     db.add(job)
     db.commit()
@@ -530,6 +559,33 @@ def schedule_queue(queue_key: str) -> None:
     if running and not running.done():
         return
     _QUEUE_RUNNERS[queue_key] = loop.create_task(_run_queue(queue_key))
+
+
+async def recover_pending_queues() -> int:
+    """Schedule durable PENDING jobs after an API process restart."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(SddAiJob.queue_key)
+            .filter(SddAiJob.status == AiJobStatus.PENDING)
+            .distinct()
+            .all()
+        )
+        managed_prefixes = (
+            f"{AiJobChannel.TASK_CHAT.value}:",
+            f"{AiJobChannel.ASSET_THREAD.value}:",
+            "DIAGNOSIS_SUMMARY:",
+        )
+        queue_keys = [
+            str(row[0] or "").strip()
+            for row in rows
+            if str(row[0] or "").strip().startswith(managed_prefixes)
+        ]
+    finally:
+        db.close()
+    for queue_key in queue_keys:
+        schedule_queue(queue_key)
+    return len(queue_keys)
 
 
 def _task_id_from_queue_key(queue_key: str) -> Optional[str]:
@@ -888,6 +944,7 @@ async def run_cli_single_turn(
     should_cancel: Optional[Callable[[], bool]] = None,
     backend_name: Optional[str] = None,
     fork_session: bool = False,
+    permission_mode: str = "default",
 ) -> Dict[str, Optional[str]]:
     attempts = max(1, int(max_attempts or 1))
     next_session_id = session_id
@@ -929,6 +986,7 @@ async def run_cli_single_turn(
             event_callback=on_event,
             session_id=next_session_id,
             fork_session=fork_session and attempt == 1,
+            permission_mode=permission_mode,
         )
         monitor_task: Optional[asyncio.Task] = None
         if should_cancel:
@@ -944,7 +1002,7 @@ async def run_cli_single_turn(
             monitor_task = asyncio.create_task(_cancel_monitor())
 
         # 文档讨论是异步作业，允许更长执行时长，避免误超时。
-        wait_seconds = max(600, int(settings.CLAUDE_CLI_TIMEOUT or 300))
+        wait_seconds = max(600, int(settings.AGENT_MAX_RUNTIME_SECONDS or 7200))
         try:
             if hasattr(bridge, "wait"):
                 await asyncio.wait_for(bridge.wait(), timeout=wait_seconds)
@@ -1782,6 +1840,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
     db = SessionLocal()
     task = None
     creator_id = ""
+    source_session_id = ""
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if not job:
@@ -1790,6 +1849,10 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
         if not task or getattr(task, "task_type", None) != "DIAGNOSIS":
             raise ValueError("Only diagnosis tasks support diagnosis summary")
         creator_id = str(job.creator_id or "")
+        job_context = job.context_json if isinstance(job.context_json, dict) else {}
+        source_session_id = str(
+            job_context.get("source_session_id") or job.session_id or task.session_id or ""
+        ).strip()
     finally:
         db.close()
 
@@ -1821,12 +1884,56 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             task_backend_db.close()
 
         await _update_job_state(job_id, progress=55, message="AI 正在生成结构化定位结果")
+        can_fork = bool(source_session_id and backend_supports_fork(task_backend))
+        summary_mode = "fork_read_only" if can_fork else "transcript_fallback"
+        await _update_job_state(
+            job_id,
+            context_patch={"summary_session_mode": summary_mode},
+        )
+        summary_session_id: Optional[str] = None
+        native_fork_on_resume = False
+        if can_fork:
+            try:
+                summary_session_id = await fork_session_for_backend(
+                    task_backend,
+                    source_session_id,
+                    source_dir=project_path,
+                    target_dir=project_path,
+                )
+                # Claude's adapter stages the snapshot and the CLI performs the
+                # actual child-session creation with --fork-session.  Server
+                # adapters already return the newly-created child id.
+                native_fork_on_resume = str(task_backend or "") == "claude-code"
+            except Exception as exc:
+                # Fork preserves provider-side context.  The persisted
+                # transcript is the deterministic fallback for stale snapshots.
+                logger.warning(
+                    "Diagnosis summary fork failed; using transcript fallback: task={}, backend={}, error={}",
+                    task.id,
+                    task_backend,
+                    exc,
+                )
+                can_fork = False
+                summary_mode = "transcript_fallback"
+                await _update_job_state(
+                    job_id,
+                    progress=55,
+                    message="原会话快照不可用，正在使用持久化会话记录生成总结",
+                    context_patch={
+                        "summary_session_mode": summary_mode,
+                        "fork_error": str(exc)[:800],
+                    },
+                )
+
         result = await run_cli_single_turn(
             prompt,
             project_path,
-            session_id=None,
+            session_id=summary_session_id if can_fork else None,
+            max_attempts=1,
             should_cancel=lambda: _is_cancel_requested(job_id),
             backend_name=task_backend,
+            fork_session=native_fork_on_resume,
+            permission_mode="read-only",
         )
         summary_text = str(result.get("text") or "").strip()
         if not summary_text:

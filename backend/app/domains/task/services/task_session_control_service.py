@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -185,7 +184,25 @@ async def resume_interrupted_task(
     prompt: Optional[str] = None,
     confirm_continue: bool = False,
     metadata_json: Optional[Dict[str, Any]] = None,
+    client_message_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    idempotency_key = str(client_message_id or "").strip()
+    if idempotency_key:
+        existing_jobs = (
+            db.query(SddAiJob)
+            .filter(
+                SddAiJob.task_id == task.id,
+                SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            )
+            .order_by(SddAiJob.created_at.desc())
+            .limit(30)
+            .all()
+        )
+        for existing in existing_jobs:
+            context = existing.context_json if isinstance(existing.context_json, dict) else {}
+            if context.get("client_message_id") == idempotency_key:
+                return _task_payload(task, ai_job_service.serialize_job(existing))
+
     if task.status != TaskStatus.INTERRUPTED:
         raise TaskSessionControlError("Only interrupted tasks can be resumed", status_code=409)
 
@@ -212,28 +229,13 @@ async def resume_interrupted_task(
     task.status = TaskStatus.CODING
     task.session_id = session_id
     task.error_message = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
 
-    job.status = AiJobStatus.RUNNING
-    job.progress = 45
-    job.message = "Resuming interrupted AI session"
-    job.prompt_text = prompt_text
-    job.creator_id = actor_user_id
-    job.error_message = None
-    job.session_id = session_id
-    job.finished_at = None
-    job.context_json = _merge_json(
-        job.context_json,
-        {
-            "resume_interrupted": True,
-            "resumed_at": now.isoformat() + "Z",
-            "resumed_by_id": actor_user_id,
-            "interrupted_prompt_text": previous_prompt,
-        },
-    )
-    db.commit()
-    db.refresh(task)
-    db.refresh(job)
-
+    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
+    if idempotency_key:
+        message_metadata["client_message_id"] = idempotency_key
     resume_message = ChatMessage(
         task_id=task.id,
         workspace_id=task.workspace_id,
@@ -241,14 +243,58 @@ async def resume_interrupted_task(
         role=MessageRole.USER,
         content=prompt_text,
         message_type=MessageType.TEXT,
-        metadata_json=dict(metadata_json) if isinstance(metadata_json, dict) else None,
+        metadata_json=message_metadata or None,
     )
     db.add(resume_message)
+    db.flush()
+
+    resume_job = SddAiJob(
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=f"{AiJobChannel.TASK_CHAT.value}:{task.id}",
+        status=AiJobStatus.PENDING,
+        progress=0,
+        message="Resume attempt queued",
+        prompt_text=prompt_text,
+        creator_id=actor_user_id,
+        session_id=session_id,
+        agent_backend=job.agent_backend,
+        context_json={
+            "source": "task_resume",
+            "resume_interrupted": True,
+            "resumed_from_job_id": job.id,
+            "resumed_at": now.isoformat() + "Z",
+            "resumed_by_id": actor_user_id,
+            "interrupted_prompt_text": previous_prompt,
+            "chat_message_id": resume_message.id,
+            "client_message_id": idempotency_key or None,
+        },
+    )
+    db.add(resume_job)
+    db.flush()
+
+    # The interrupted attempt remains immutable history.  Making it terminal
+    # removes the queue blocker; the new attempt is claimed as RUNNING only by
+    # the normal queue worker, so scheduling failures cannot strand it RUNNING.
+    job.status = AiJobStatus.CANCELLED
+    job.progress = 100
+    job.message = "Interrupted attempt superseded by resume"
+    job.finished_at = now
+    job.context_json = _merge_json(
+        job.context_json,
+        {
+            "superseded_by_resume_job_id": resume_job.id,
+            "superseded_at": now.isoformat() + "Z",
+        },
+    )
     db.commit()
-    db.refresh(resume_message)
+    db.refresh(task)
     db.refresh(job)
+    db.refresh(resume_message)
+    db.refresh(resume_job)
     try:
-        snapshot = context_token_service.ensure_snapshot_for_job(db, job, status="RUNNING")
+        snapshot = context_token_service.ensure_snapshot_for_job(db, resume_job, status="PENDING")
         context_token_service.record_task_prompt(
             db,
             snapshot=snapshot,
@@ -258,8 +304,8 @@ async def resume_interrupted_task(
     except Exception:
         pass
 
-    await ai_job_service.publish_job(job.id, final=False)
-    job_payload = ai_job_service.serialize_job(job)
+    await ai_job_service.publish_job(job.id, final=True)
+    job_payload = ai_job_service.serialize_job(resume_job)
     await _broadcast_task_event("task_resumed", task, job_payload)
-    asyncio.create_task(ai_job_service.run_task_chat_job_now(job.id))
+    await ai_job_service.enqueue_task_chat_job(resume_job.id)
     return _task_payload(task, job_payload)

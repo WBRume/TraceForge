@@ -34,6 +34,8 @@ class CliBridgeBase(ABC):
         event_callback: Callable[[dict], Any],
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
+        fork_session: bool = False,
+        permission_mode: str = "default",
     ) -> str:
         """
         启动 CLI 会话。
@@ -247,6 +249,7 @@ class SubprocessCliBridge(CliBridgeBase):
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
         fork_session: bool = False,
+        permission_mode: str = "default",
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -255,10 +258,15 @@ class SubprocessCliBridge(CliBridgeBase):
         # prompt 中的 "|" 等字符会被当作 shell 运算符；这里直接解析到真实入口。
         args = self._resolve_cli_base_args()
 
+        cli_permission_mode = (
+            "plan"
+            if str(permission_mode or "").strip().lower() in {"read-only", "readonly", "plan"}
+            else "bypassPermissions"
+        )
         args.extend([
             "-p",
             "--output-format", "stream-json",
-            "--permission-mode", "bypassPermissions",
+            "--permission-mode", cli_permission_mode,
             "--verbose",
         ])
 
@@ -514,9 +522,19 @@ class SubprocessCliBridge(CliBridgeBase):
             self._trace_write(f"taskkill_tree_failed: {exc}")
 
     async def _force_stop_process(self, *, reason: str) -> None:
-        if not self.process or self.process.returncode is not None:
+        if not self.process:
             return
         try:
+            # On Windows, killing only the npm/cmd wrapper can leave the actual
+            # agent process alive.  taskkill must run while the root PID still
+            # owns its descendants, so make the tree operation the first force
+            # step instead of returning as soon as the wrapper exits.
+            if os.name == "nt":
+                await self._taskkill_tree()
+                await self._wait_for_exit(2.0)
+                return
+            if self.process.returncode is not None:
+                return
             self.process.terminate()
             self._trace_write(f"{reason}_terminate_sent")
             if await self._wait_for_exit(2.0):
@@ -559,7 +577,11 @@ class SubprocessCliBridge(CliBridgeBase):
             try:
                 signal_name = self._send_interrupt_signal()
                 self._trace_write(f"interrupt_signal_sent: {signal_name}")
-                if not await self._wait_for_exit(3.0):
+                if os.name == "nt":
+                    # CTRL_BREAK can make the wrapper exit before its child.
+                    # Kill the tree while the root PID still owns descendants.
+                    await self._force_stop_process(reason="interrupt")
+                elif not await self._wait_for_exit(3.0):
                     await self._force_stop_process(reason="interrupt")
             except Exception as exc:
                 self._trace_write(f"interrupt_signal_failed: {exc}")
@@ -603,6 +625,8 @@ class MockCliBridge(CliBridgeBase):
         event_callback: Callable[[dict], Any],
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
+        fork_session: bool = False,
+        permission_mode: str = "default",
     ) -> str:
         self._running = True
         self._event_cb = event_callback

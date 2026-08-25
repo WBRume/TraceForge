@@ -21,6 +21,7 @@ from app.agents.contract import (
     TokenUsage,
 )
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
+from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import AgentCancelledError, AgentError, AgentTimeoutError, SessionForkError
 from app.engine.claude_bridge import SubprocessCliBridge
 
@@ -95,8 +96,18 @@ class ClaudeCodeAdapter(AgentBackend):
         program._workspace_id = str(request.metadata.get("workspace_id") or request.env.get("WORKSPACE_ID") or "")
         program._job_id = str(request.metadata.get("ai_job_id") or request.env.get("AI_JOB_ID") or "")
 
+        watchdog = AgentActivityWatchdog(
+            startup_timeout_seconds=request.startup_timeout_seconds,
+            idle_timeout_seconds=request.idle_timeout_seconds,
+            hard_timeout_seconds=request.timeout_seconds,
+        )
+
+        async def _tracked_event(agent_event) -> None:
+            watchdog.mark(agent_event.type)
+            await on_event(agent_event)
+
         async def _raw_callback(event: dict[str, Any]) -> None:
-            await self._handle_raw_event(event, on_event)
+            await self._handle_raw_event(event, _tracked_event)
 
         try:
             await program.start_session(
@@ -105,12 +116,14 @@ class ClaudeCodeAdapter(AgentBackend):
                 event_callback=_raw_callback,
                 session_id=request.session_id,
                 env_overrides=request.env or None,
+                fork_session=bool(request.provider_options.get("fork_session")),
+                permission_mode=request.permission_mode,
             )
             try:
-                await asyncio.wait_for(program.wait(), timeout=max(1.0, request.timeout_seconds))
-            except asyncio.TimeoutError as exc:
+                await watchdog.wait(program.wait())
+            except AgentTimeoutError:
                 await program.cancel()
-                raise AgentTimeoutError(f"Claude Code session timed out after {request.timeout_seconds}s") from exc
+                raise
         except AgentError:
             raise
         except Exception as exc:
@@ -205,6 +218,7 @@ class ClaudeCodeAdapter(AgentBackend):
         session_id: str | None = None,
         env_overrides: dict[str, str] | None = None,
         fork_session: bool = False,
+        permission_mode: str = "default",
     ) -> str:
         return await self._bridge.start_session(
             prompt=prompt,
@@ -213,6 +227,7 @@ class ClaudeCodeAdapter(AgentBackend):
             session_id=session_id,
             env_overrides=env_overrides,
             fork_session=fork_session,
+            permission_mode=permission_mode,
         )
 
     async def wait(self) -> None:

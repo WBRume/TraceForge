@@ -96,6 +96,9 @@ async def _on_startup() -> None:
     if settings.RAG_ENABLED:
         _rag_ingest_task = asyncio.create_task(rag_ingest_worker.run_ingest_worker())
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
+    recovered_queue_count = await ai_job_service.recover_pending_queues()
+    if recovered_queue_count:
+        logger.info("Recovered {} pending AI job queues", recovered_queue_count)
 
 
 @app.on_event("shutdown")
@@ -357,17 +360,20 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
 
                         try:
                             if task_obj.status == TaskStatus.INTERRUPTED:
-                                await task_session_control_service.resume_interrupted_task(
+                                resume_payload = await task_session_control_service.resume_interrupted_task(
                                     db,
                                     task=task_obj,
                                     actor_user_id=user_id,
                                     prompt=user_content,
                                     confirm_continue=False,
+                                    client_message_id=client_message_id,
                                 )
+                                resume_job = resume_payload.get("job") or {}
+                                resume_context = resume_job.get("context_json") or {}
                                 await chat_message_idempotency_service.mark_message_done(
                                     claim,
-                                    chat_message_id="",
-                                    ai_job_id=None,
+                                    chat_message_id=str(resume_context.get("chat_message_id") or ""),
+                                    ai_job_id=str(resume_job.get("id") or "") or None,
                                 )
                                 await _send_chat_ack(
                                     websocket,
@@ -379,6 +385,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                                         user_id=user_id,
                                         display_name=user_display_name,
                                         is_workspace_expert=user_is_expert,
+                                        chat_message_id=str(resume_context.get("chat_message_id") or "") or None,
+                                        ai_job_id=str(resume_job.get("id") or "") or None,
                                     ),
                                 )
                                 continue
