@@ -11,6 +11,7 @@ interface UseTaskSessionControlsOptions {
 interface ResumeInterruptedOptions {
   prompt?: string
   confirmContinue?: boolean
+  clientMessageId?: string
 }
 
 export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
@@ -40,6 +41,7 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
       const res = await api.post(taskUrl(taskId, 'resume-interrupted'), {
         prompt: String(resumeOptions.prompt || '').trim() || undefined,
         confirm_continue: Boolean(resumeOptions.confirmContinue),
+        client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
       })
       return res.data
     } finally {

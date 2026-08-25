@@ -935,7 +935,15 @@ class WorkflowEngine:
                         project_path=project_path,
                         session_id=self.session_id,
                         env=env_overrides,
-                        timeout_seconds=float(getattr(settings, "CLAUDE_CLI_TIMEOUT", 300) or 300),
+                        timeout_seconds=float(
+                            getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
+                        ),
+                        startup_timeout_seconds=float(
+                            getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
+                        ),
+                        idle_timeout_seconds=float(
+                            getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+                        ),
                         metadata={
                             "task_id": self.task_id,
                             "workspace_id": self.ws_id,

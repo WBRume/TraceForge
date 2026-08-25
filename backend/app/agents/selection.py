@@ -220,17 +220,27 @@ class LegacyBridgeShim:
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
         fork_session: bool = False,
+        permission_mode: str = "default",
     ) -> str:
         from app.agents.contract import AgentRunRequest
         from app.agents.errors import AgentError
 
-        if fork_session and self.backend_name != "claude-code":
-            # 原生 --fork-session 是 claude 专属；其他后端在编排层已 eager fork
-            raise AgentError(
-                f"agent backend {self.backend_name!r} does not support fork-on-resume"
-            )
-
         resume_id = session_id
+        if fork_session:
+            if not resume_id:
+                raise AgentError("fork-on-resume requires an existing session id")
+            if not getattr(self.backend.capabilities, "supports_fork", False):
+                raise AgentError(
+                    f"agent backend {self.backend_name!r} does not support session fork"
+                )
+            # Server backends fork eagerly and then resume the child.  Claude's
+            # native --fork-session path is handled by ClaudeCodeAdapter itself
+            # and therefore never reaches this shim.
+            resume_id = await self.backend.fork_session(
+                resume_id,
+                source_dir=project_path,
+                target_dir=project_path,
+            )
         if resume_id and not getattr(self.backend.capabilities, "supports_resume", True):
             # 例：DSH headless 不支持 resume；降级为新会话而非报错
             logger.warning(
@@ -246,9 +256,14 @@ class LegacyBridgeShim:
             project_path=project_path,
             session_id=resume_id,
             env=dict(env_overrides or {}),
-            # 外层调用方通过 asyncio.wait_for(bridge.wait()) 控制超时；
-            # 内层给足上限避免双重超时误杀。
-            timeout_seconds=float(getattr(settings, "CLAUDE_CLI_TIMEOUT", 3600) or 3600) + 600.0,
+            timeout_seconds=float(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200),
+            startup_timeout_seconds=float(
+                getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
+            ),
+            idle_timeout_seconds=float(
+                getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+            ),
+            permission_mode=permission_mode,
         )
 
         async def _on_event(agent_event) -> None:
@@ -271,12 +286,8 @@ class LegacyBridgeShim:
         if self._run_task is not None:
             try:
                 await self._run_task
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # 失败细节已经通过事件流下发，这里保持与旧 bridge 一致的静默语义；
-                # 外层根据 result 事件中的 is_error 判定失败。
-                pass
+            finally:
+                await self.backend.close()
 
     @property
     def session_id(self) -> Optional[str]:
@@ -301,6 +312,9 @@ class LegacyBridgeShim:
             await self.backend.interrupt()
         except Exception:
             logger.warning("agent backend {} interrupt failed", self.backend_name)
+
+    async def close(self) -> None:
+        await self.backend.close()
 
     def is_running(self) -> bool:
         return bool(self._run_task and not self._run_task.done())
@@ -343,7 +357,14 @@ async def fork_session_for_backend(
     fork = getattr(bridge, "fork_session", None)
     if fork is None:
         raise SessionForkError(f"agent backend {name!r} does not support session fork")
-    return await fork(session_id, source_dir=source_dir, target_dir=target_dir)
+    try:
+        return await fork(session_id, source_dir=source_dir, target_dir=target_dir)
+    finally:
+        close = getattr(bridge, "close", None)
+        if close is not None:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
 
 
 async def probe_session_fork(

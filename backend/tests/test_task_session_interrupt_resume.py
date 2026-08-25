@@ -171,7 +171,7 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
     assert exc.value.status_code == 409
 
 
-def test_task_resume_reuses_original_session_and_job(monkeypatch):
+def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
     task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.INTERRUPTED)
@@ -180,7 +180,7 @@ def test_task_resume_reuses_original_session_and_job(monkeypatch):
 
     published = []
     events = []
-    scheduled = []
+    enqueued = []
 
     async def _publish_job(job_id, *, final=False):
         published.append((job_id, final))
@@ -188,15 +188,14 @@ def test_task_resume_reuses_original_session_and_job(monkeypatch):
     async def _broadcast(event_type, event_task, job_payload):
         events.append((event_type, event_task.id, job_payload["id"]))
 
-    def _create_task(coro):
-        scheduled.append(coro)
-        coro.close()
-        return SimpleNamespace(done=lambda: True)
+    async def _enqueue(job_id):
+        enqueued.append(job_id)
+        return None
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
     monkeypatch.setattr(task_session_control_service.ai_job_service, "publish_job", _publish_job)
+    monkeypatch.setattr(task_session_control_service.ai_job_service, "enqueue_task_chat_job", _enqueue)
     monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
-    monkeypatch.setattr(task_session_control_service.asyncio, "create_task", _create_task)
 
     payload = asyncio.run(
         task_session_control_service.resume_interrupted_task(
@@ -204,21 +203,103 @@ def test_task_resume_reuses_original_session_and_job(monkeypatch):
             task=task,
             actor_user_id="user-1",
             prompt="use this correction",
+            client_message_id="client-resume-1",
         )
     )
 
     db.refresh(task)
     db.refresh(job)
+    resume_job = db.query(SddAiJob).filter(SddAiJob.id != job.id).one()
     assert task.status == TaskStatus.CODING
     assert task.session_id == "session-1"
-    assert job.status == AiJobStatus.RUNNING
-    assert job.session_id == "session-1"
-    assert job.prompt_text == "use this correction"
+    assert job.status == AiJobStatus.CANCELLED
+    assert resume_job.status == AiJobStatus.PENDING
+    assert resume_job.session_id == "session-1"
+    assert resume_job.prompt_text == "use this correction"
+    assert resume_job.context_json["resumed_from_job_id"] == job.id
+    assert resume_job.context_json["client_message_id"] == "client-resume-1"
     assert db.query(ChatMessage).filter(ChatMessage.task_id == task.id).count() == 1
-    assert published == [("job-1", False)]
-    assert events == [("task_resumed", "task-1", "job-1")]
-    assert len(scheduled) == 1
+    assert published == [("job-1", True)]
+    assert events == [("task_resumed", "task-1", resume_job.id)]
+    assert enqueued == [resume_job.id]
     assert payload["status"] == TaskStatus.CODING.value
+
+    # Retrying the same HTTP request is idempotent even though the task is now CODING.
+    duplicate = asyncio.run(
+        task_session_control_service.resume_interrupted_task(
+            db,
+            task=task,
+            actor_user_id="user-1",
+            prompt="use this correction",
+            client_message_id="client-resume-1",
+        )
+    )
+    assert duplicate["job"]["id"] == resume_job.id
+    assert db.query(SddAiJob).count() == 2
+
+
+def test_execute_job_failure_converges_running_resume_attempt_to_failed(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    job.context_json = {"resume_interrupted": True, "resumed_from_job_id": "old-job"}
+    db.commit()
+    db.close()
+
+    async def _raise(_job_id):
+        raise RuntimeError("simulated resume executor failure")
+
+    async def _ignore_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "_execute_task_chat_job", _raise)
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _ignore_broadcast)
+
+    asyncio.run(ai_job_service._execute_job(job.id))
+
+    check_db = SessionLocal()
+    try:
+        failed = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
+        assert failed.status == AiJobStatus.FAILED
+        assert "simulated resume executor failure" in failed.error_message
+    finally:
+        check_db.close()
+
+
+def test_startup_recovery_only_schedules_queues_owned_by_ai_job_service(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    managed = SddAiJob(
+        id="managed-pending",
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=f"TASK_CHAT:{task.id}",
+        status=AiJobStatus.PENDING,
+        creator_id="user-1",
+    )
+    foreign = SddAiJob(
+        id="requirement-pending",
+        workspace_id=task.workspace_id,
+        channel=AiJobChannel.ASSET_THREAD,
+        queue_key=f"REQUIREMENT_PREVIEW:{task.workspace_id}",
+        status=AiJobStatus.PENDING,
+        creator_id="user-1",
+    )
+    db.add_all([managed, foreign])
+    db.commit()
+    db.close()
+
+    scheduled = []
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "schedule_queue", scheduled.append)
+
+    count = asyncio.run(ai_job_service.recover_pending_queues())
+
+    assert count == 1
+    assert scheduled == [f"TASK_CHAT:{task.id}"]
 
 
 def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):

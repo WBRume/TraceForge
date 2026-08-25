@@ -68,7 +68,10 @@ class Settings(BaseSettings):
     # ── Claude CLI Bridge ──
     SDD_CLI_MODE: str = "real"  # "mock" or "real"
     CLAUDE_CLI_PATH: str = "claude"
-    CLAUDE_CLI_TIMEOUT: int = 300  # seconds
+    CLAUDE_CLI_TIMEOUT: int = 300  # legacy compatibility only
+    AGENT_STARTUP_TIMEOUT_SECONDS: int = 60
+    AGENT_IDLE_TIMEOUT_SECONDS: int = 600
+    AGENT_MAX_RUNTIME_SECONDS: int = 7200
     PLATFORM_API_BASE_URL: str = "http://localhost:8000"
 
     # ── Workflow ──

@@ -28,7 +28,8 @@ from app.agents.contract import (
     AgentRunResult,
     TokenUsage,
 )
-from app.agents.errors import AgentError, SessionForkError
+from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
 from app.agents.adapters.opencode.event_mapper import map_opencode_event
 
@@ -98,6 +99,9 @@ class OpenCodeAdapter(AgentBackend):
         }
         if request.model:
             body["model"] = {"providerID": "opencode", "modelID": request.model}
+        if str(request.permission_mode or "").strip().lower() in {"read-only", "readonly", "plan"}:
+            # OpenCode's built-in plan agent disables write-oriented execution.
+            body["agent"] = "plan"
         params: dict[str, str] = {}
         if request.project_path:
             # 明确告诉 OpenCode 本次 prompt 所在的工作目录，确保每个任务
@@ -481,6 +485,15 @@ class OpenCodeAdapter(AgentBackend):
         self._run_id = request.run_id
         self._interrupted = False
         started_at = time.monotonic()
+        watchdog = AgentActivityWatchdog(
+            startup_timeout_seconds=request.startup_timeout_seconds,
+            idle_timeout_seconds=request.idle_timeout_seconds,
+            hard_timeout_seconds=request.timeout_seconds,
+        )
+
+        async def _tracked_event(event: AgentEvent) -> None:
+            watchdog.mark(event.type)
+            await on_event(event)
         session_id = request.session_id or ""
         try:
             if request.session_id:
@@ -489,7 +502,7 @@ class OpenCodeAdapter(AgentBackend):
                 session_id = await self._create_session(request)
             self._session_id = session_id
 
-            await on_event(AgentEvent(
+            await _tracked_event(AgentEvent(
                 type="session_started",
                 payload={
                     "provider_session_id": session_id,
@@ -500,43 +513,33 @@ class OpenCodeAdapter(AgentBackend):
                 provider="opencode",
             ))
 
-            timeout = request.timeout_seconds or 300.0
+            consume_task = asyncio.create_task(
+                self._consume_sse(session_id, request, _tracked_event)
+            )
             try:
-                consumed, seen_types = await asyncio.wait_for(
-                    self._consume_sse(session_id, request, on_event),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
+                consumed, seen_types = await watchdog.wait(consume_task)
+            except AgentTimeoutError:
                 await self.interrupt(session_id=session_id)
+                consume_task.cancel()
+                await asyncio.gather(consume_task, return_exceptions=True)
                 final = await self._fetch_final_message(session_id)
                 await self._emit_missing_final_events(
-                    final, set(), on_event,
+                    final, set(), _tracked_event,
                 )
-                return AgentRunResult(
-                    run_id=request.run_id,
-                    session_id=session_id,
-                    success=False,
-                    finish_reason="timeout",
-                    result_text=final.get("text", ""),
-                    usage=self._to_token_usage(final.get("tokens")),
-                    cost_usd=final.get("cost"),
-                    duration_ms=int((time.monotonic() - started_at) * 1000),
-                    return_code=None,
-                    raw_trace=f"timeout after {timeout:.0f}s",
-                )
+                raise
 
             finish_reason = consumed.get("finish_reason")
             success = bool(consumed.get("success"))
             final = await self._fetch_final_message(session_id)
             await self._emit_missing_final_events(
-                final, seen_types, on_event,
+                final, seen_types, _tracked_event,
             )
             if not finish_reason:
                 finish_reason = self._normalize_finish_reason(final.get("finish")) or ("completed" if success else "error")
             if self._interrupted:
                 finish_reason = "interrupted"
 
-            await on_event(AgentEvent(
+            await _tracked_event(AgentEvent(
                 type="result",
                 payload={
                     "success": success,

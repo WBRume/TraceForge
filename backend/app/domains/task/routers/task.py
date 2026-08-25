@@ -799,6 +799,7 @@ async def resume_interrupted_task(
                 actor_user_id=current_user.id,
                 prompt=body.prompt,
                 confirm_continue=body.confirm_continue,
+                client_message_id=body.client_message_id,
             )
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)

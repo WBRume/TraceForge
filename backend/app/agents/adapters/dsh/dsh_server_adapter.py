@@ -32,7 +32,8 @@ from app.agents.contract import (
     AgentRunResult,
     TokenUsage,
 )
-from app.agents.errors import AgentError, SessionForkError
+from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
 
 
@@ -72,7 +73,43 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
             )
         return None
     if etype in ("assistant/chunk",):
-        chunk = str(data.get("text") or data.get("chunk") or "")
+        raw_chunk = data.get("chunk")
+        if isinstance(raw_chunk, dict):
+            chunk_type = str(raw_chunk.get("type") or "").strip().lower()
+            chunk_text = str(raw_chunk.get("text") or "")
+            if chunk_type == "reasoning-delta" and chunk_text:
+                return AgentEvent(
+                    type="thinking",
+                    payload={"text": chunk_text, "provider": "dsh"},
+                    provider="dsh",
+                    raw=raw_event,
+                )
+            if chunk_type == "text-delta" and chunk_text:
+                return AgentEvent(
+                    type="text_delta",
+                    payload={"text": chunk_text, "provider": "dsh"},
+                    provider="dsh",
+                    raw=raw_event,
+                )
+            if chunk_type == "usage":
+                usage_raw = raw_chunk.get("usage") if isinstance(raw_chunk.get("usage"), dict) else {}
+                return AgentEvent(
+                    type="usage",
+                    payload={
+                        "input_tokens": usage_raw.get("inputTokens"),
+                        "output_tokens": usage_raw.get("outputTokens"),
+                        "cache_read_tokens": usage_raw.get("cacheReadTokens"),
+                        "cache_creation_tokens": usage_raw.get("cacheWriteTokens"),
+                        "raw_usage": usage_raw,
+                        "provider": "dsh",
+                    },
+                    provider="dsh",
+                    raw=raw_event,
+                )
+            # block-start/block-end/finish are control frames.  Complete text
+            # and termination are delivered by assistant/message + turn/end.
+            return None
+        chunk = str(data.get("text") or raw_chunk or "")
         if not chunk:
             return None
         return AgentEvent(
@@ -82,22 +119,34 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
             raw=raw_event,
         )
     if etype == "tool/call":
+        tool_name = str(data.get("name") or data.get("tool") or "")
+        tool_input = data.get("arguments") or data.get("input") or {}
+        tool_use_id = str(data.get("callId") or data.get("id") or "")
         return AgentEvent(
             type="tool_use",
             payload={
-                "tool": str(data.get("name") or data.get("tool") or ""),
-                "input": data.get("arguments") or data.get("input") or {},
+                "tool": tool_name,
+                "input": tool_input,
+                "tool_name": tool_name,
+                "tool_input": tool_input,
+                "tool_use_id": tool_use_id,
                 "provider": "dsh",
             },
             provider="dsh",
             raw=raw_event,
         )
     if etype == "tool/result":
+        tool_name = str(data.get("name") or data.get("tool") or "")
+        tool_use_id = str(data.get("callId") or data.get("toolUseId") or data.get("id") or "")
+        output = data.get("result") or data.get("output") or data.get("content") or ""
         return AgentEvent(
             type="tool_result",
             payload={
-                "tool": str(data.get("name") or data.get("tool") or ""),
-                "output": data.get("result") or data.get("output") or {},
+                "tool": tool_name,
+                "tool_name": tool_name,
+                "tool_use_id": tool_use_id,
+                "output": output,
+                "is_error": bool(data.get("isError") or data.get("is_error")),
                 "provider": "dsh",
             },
             provider="dsh",
@@ -124,7 +173,7 @@ class DshServerAdapter(AgentBackend):
         self._client: Optional[httpx.AsyncClient] = None
         self._running = False
         self._session_id: Optional[str] = None
-        self._pending_asks: dict[str, str] = {}
+        self._pending_asks: dict[str, dict[str, Any]] = {}
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -183,6 +232,8 @@ class DshServerAdapter(AgentBackend):
         self,
         session_id: str,
         on_event: AgentEventSink,
+        *,
+        read_only: bool = False,
     ) -> dict[str, Any]:
         """消费 events.mux 下行流直到该会话 turn/end，返回收尾信息。
 
@@ -235,15 +286,50 @@ class DshServerAdapter(AgentBackend):
                         }.get(kind, kind)
                         return _finalize()
                 elif method in ("approval/requested", "question/requested"):
-                    self._pending_asks[rpc_id] = method
-                    prompt = str(payload.get("prompt") or payload.get("message") or payload.get("title") or "DSH request")
+                    if method == "approval/requested":
+                        approval_id = str(payload.get("approvalId") or "")
+                        if read_only:
+                            await self._respond(
+                                rpc_id,
+                                {
+                                    "sessionId": session_id,
+                                    "approvalId": approval_id,
+                                    "outcome": "rejected",
+                                },
+                            )
+                            continue
+                        self._pending_asks[rpc_id] = {
+                            "kind": method,
+                            "session_id": session_id,
+                            "approval_id": approval_id,
+                        }
+                        prompt = str(
+                            payload.get("reason")
+                            or f"Allow DSH tool {payload.get('toolName') or 'unknown'}?"
+                        )
+                        options = ["allowed-once", "rejected"]
+                    else:
+                        questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
+                        self._pending_asks[rpc_id] = {
+                            "kind": method,
+                            "session_id": session_id,
+                            "questions": questions,
+                        }
+                        first = questions[0] if questions and isinstance(questions[0], dict) else {}
+                        prompt = str(first.get("question") or first.get("prompt") or "DSH question")
+                        options = [
+                            str(item.get("label") or "")
+                            for item in (first.get("options") or [])
+                            if isinstance(item, dict) and str(item.get("label") or "")
+                        ]
                     await on_event(AgentEvent(
                         type="ask_user",
                         payload={
                             "ask_user_id": rpc_id,
                             "prompt": prompt,
+                            "question": prompt,
                             "kind": "approval" if method.startswith("approval") else "question",
-                            "options": payload.get("options") or [],
+                            "options": options,
                         },
                         provider="dsh",
                     ))
@@ -258,13 +344,22 @@ class DshServerAdapter(AgentBackend):
         self._running = True
         self._pending_asks.clear()
         started_at = time.monotonic()
+        watchdog = AgentActivityWatchdog(
+            startup_timeout_seconds=request.startup_timeout_seconds,
+            idle_timeout_seconds=request.idle_timeout_seconds,
+            hard_timeout_seconds=request.timeout_seconds,
+        )
+
+        async def _tracked_event(event: AgentEvent) -> None:
+            watchdog.mark(event.type)
+            await on_event(event)
         session_id = str(request.session_id or "").strip()
         try:
             if not session_id:
                 session_id = await self._create_session(request)
             self._session_id = session_id
 
-            await on_event(AgentEvent(
+            await _tracked_event(AgentEvent(
                 type="session_started",
                 payload={
                     "provider_session_id": session_id,
@@ -276,11 +371,23 @@ class DshServerAdapter(AgentBackend):
             ))
 
             # 先开事件流再发 prompt，避免错过早期事件；prompt 失败时立刻终止等待
-            consume_task = asyncio.create_task(self._consume_events(session_id, on_event))
+            is_read_only = str(request.permission_mode or "").strip().lower() in {
+                "read-only", "readonly", "plan",
+            }
+            consume_task = asyncio.create_task(
+                self._consume_events(session_id, _tracked_event, read_only=is_read_only)
+            )
+            prompt_text = request.prompt
+            if is_read_only:
+                prompt_text = (
+                    "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
+                    "禁止执行会改变项目或外部系统状态的命令。\n\n"
+                    + prompt_text
+                )
             prompt_task = asyncio.create_task(self._rpc("session.prompt", {
                 "sessionId": session_id,
                 "mode": "queue",
-                "content": [{"type": "text", "text": request.prompt}],
+                "content": [{"type": "text", "text": prompt_text}],
             }))
 
             def _abort_on_prompt_failure(task: asyncio.Task) -> None:
@@ -289,15 +396,13 @@ class DshServerAdapter(AgentBackend):
 
             prompt_task.add_done_callback(_abort_on_prompt_failure)
             try:
-                consumed = await asyncio.wait_for(
-                    consume_task, timeout=request.timeout_seconds or 300.0
-                )
-            except asyncio.TimeoutError as exc:
+                consumed = await watchdog.wait(consume_task)
+            except AgentTimeoutError:
                 prompt_task.cancel()
+                consume_task.cancel()
                 await self.cancel(session_id=session_id)
-                raise AgentError(
-                    f"DSH server turn timed out after {request.timeout_seconds}s"
-                ) from exc
+                await asyncio.gather(prompt_task, consume_task, return_exceptions=True)
+                raise
             except asyncio.CancelledError as exc:
                 prompt_task.cancel()
                 # consume 被 prompt 失败回调取消：抛出 prompt 的真实错误
@@ -311,7 +416,7 @@ class DshServerAdapter(AgentBackend):
             finish_reason = consumed.get("finish_reason") or "completed"
             final_text = str(consumed.get("text") or "")
             success = finish_reason not in ("error", "aborted")
-            await on_event(AgentEvent(
+            await _tracked_event(AgentEvent(
                 type="result",
                 payload={
                     "success": success,
@@ -367,18 +472,49 @@ class DshServerAdapter(AgentBackend):
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         if not ask_user_id or ask_user_id not in self._pending_asks:
             raise AgentError("DSH HITL reply requires a pending approval/question rpcId")
-        client = await self._ensure_client()
-        kind = self._pending_asks.pop(ask_user_id)
+        pending = self._pending_asks.pop(ask_user_id)
+        kind = str(pending.get("kind") or "")
         if kind.startswith("approval"):
-            outcome = "deny" if str(response).lower() in ("deny", "reject", "no", "拒绝") else "approve"
+            outcome = (
+                "rejected"
+                if str(response).lower() in ("deny", "reject", "rejected", "no", "拒绝")
+                else "allowed-once"
+            )
+            value = {
+                "sessionId": pending.get("session_id") or self._session_id,
+                "approvalId": pending.get("approval_id"),
+                "outcome": outcome,
+            }
         else:
-            outcome = str(response)
+            answer_text = str(response)
+            answers = []
+            for question in pending.get("questions") or []:
+                if not isinstance(question, dict):
+                    continue
+                labels = {
+                    str(item.get("label") or "")
+                    for item in (question.get("options") or [])
+                    if isinstance(item, dict)
+                }
+                answers.append({
+                    "id": str(question.get("id") or ""),
+                    "selected": [answer_text] if answer_text in labels else [],
+                    **({} if answer_text in labels else {"custom": answer_text}),
+                })
+            value = {
+                "sessionId": pending.get("session_id") or self._session_id,
+                "answer": {"answers": answers},
+            }
+        await self._respond(ask_user_id, value)
+
+    async def _respond(self, rpc_id: str, value: dict[str, Any]) -> None:
+        client = await self._ensure_client()
         reply = await client.post(
             f"{self.server_url}/api/respond",
             json={
                 "type": "client-response",
-                "rpcId": ask_user_id,
-                "result": {"ok": True, "value": {"outcome": outcome}},
+                "rpcId": rpc_id,
+                "result": {"ok": True, "value": value},
             },
         )
         if reply.status_code != 200:
@@ -398,10 +534,13 @@ class DshServerAdapter(AgentBackend):
         from app.agents.adapters.dsh.dsh_adapter import dsh_sessions_root
 
         new_id = f"session-tf-fork-{uuid.uuid4().hex}"
-        session_files.fork_session_log(
-            dsh_sessions_root(),
-            session_id,
-            new_session_id=new_id,
-            target_cwd=str(target_dir or ""),
-        )
+        try:
+            session_files.fork_session_log(
+                dsh_sessions_root(),
+                session_id,
+                new_session_id=new_id,
+                target_cwd=str(target_dir or ""),
+            )
+        except Exception as exc:
+            raise SessionForkError(f"DSH session fork failed for {session_id}: {exc}") from exc
         return new_id
