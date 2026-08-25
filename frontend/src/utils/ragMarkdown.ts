@@ -318,6 +318,51 @@ export function buildDiagnosisRagMarkdown(
   })
 }
 
+function detailString(detail: Record<string, unknown>, key: string): string | undefined {
+  const value = detail[key]
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function detailNumber(detail: Record<string, unknown>, key: string): number | undefined {
+  if (detail[key] === undefined || detail[key] === null) return undefined
+  const value = Number(detail[key])
+  return Number.isFinite(value) ? value : undefined
+}
+
+function caseAnalysisProcess(detail: Record<string, unknown>, fallback: string): string {
+  const evidence = detailString(detail, 'evidence_chain')
+  const confidence = detailNumber(detail, 'confidence')
+  if (!evidence) return fallback
+
+  const confidenceText = confidence === undefined ? '' : `置信度：${confidence}%`
+  const fallbackText = fallback || ''
+  const isDefaultStyle = !fallbackText || (
+    fallbackText.includes(evidence)
+    && /置信度\s*[:：]\s*\d+%/.test(fallbackText)
+  )
+  if (!isDefaultStyle) return fallbackText
+  return [evidence, confidenceText].filter(Boolean).join('\n\n')
+}
+
+function caseSolution(detail: Record<string, unknown>, fallback: string): string {
+  const fixCode = detailString(detail, 'fix_code')
+  const suggestion = detailString(detail, 'fix_suggestion')
+  if (!fixCode && !suggestion) return fallback
+
+  // 保留案例可编辑文本中的说明部分；已转换生成的“修复代码:”旧文本统一替换为带围栏的 Markdown 代码块。
+  const fallbackSuggestion = fallback.replace(/\n*修复代码:[\s\S]*$/, '').trim()
+  const baseSuggestion = fallbackSuggestion || suggestion || ''
+  const codeBlock = fixCode ? `修复代码：\n\`\`\`\n${fixCode}\n\`\`\`` : ''
+  return [baseSuggestion, codeBlock].filter(Boolean).join('\n\n')
+}
+
+function caseCodeContext(detail: Record<string, unknown>, fallback: string): string {
+  if (Array.isArray(detail.code_context) && detail.code_context.length > 0) {
+    return formatCodeContext(detail.code_context)
+  }
+  return fallback
+}
+
 /**
  * 从案例详情（`serialize_case` 返回结构）生成 RAG Markdown。
  * 先归一化为 RagExportSource，与问题定位结果导出共用同一套 Markdown 结构。
@@ -345,12 +390,13 @@ export function buildCaseRagMarkdown(caseDetail: RagCaseDetail): string {
     projectName: caseDetail.project_name || '',
     repositories: caseDetail.repositories || undefined,
     problemDescription: caseDetail.problem_description || '',
-    resultContent: typeof detail.summary === 'string' ? detail.summary : '',
-    analysisProcess: caseDetail.analysis_process || '',
-    rootCause: caseDetail.root_cause || '',
-    solution: caseDetail.solution || '',
-    codeContext: caseDetail.code_context || '',
+    resultContent: detailString(detail, 'summary') || '',
+    analysisProcess: caseAnalysisProcess(detail, caseDetail.analysis_process || ''),
+    rootCause: caseDetail.root_cause || detailString(detail, 'root_cause') || '',
+    solution: caseSolution(detail, caseDetail.solution || ''),
+    codeContext: caseCodeContext(detail, caseDetail.code_context || ''),
     similarCases: detail.similar_cases,
     callChain: detail.call_chain,
+    confidence: detailNumber(detail, 'confidence'),
   })
 }
