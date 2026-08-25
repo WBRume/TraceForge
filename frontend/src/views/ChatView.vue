@@ -518,8 +518,10 @@ const statusModelText = (card: any): string => {
         :vm="vm"
       />
 
-      <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换） -->
+      <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
+           收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
       <ChatExecutionInput
+        v-if="!vm.preInputIsCollecting"
         ref="chatInputRef"
         v-model="vm.chatInput"
         v-model:pre-input-mode="preInputMode"
