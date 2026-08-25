@@ -17,10 +17,23 @@ function declarations(source: string, selector: string): string {
 
 describe('ChatView diagnosis summary layout containment', () => {
   it('allows the main chat column and its fixed rows to shrink inside the viewport', () => {
-    expect(declarations(layoutCss, '.chat-main')).toContain('min-width: 0')
-    expect(declarations(layoutCss, '.chat-header')).toContain('min-width: 0')
+    const mainRule = declarations(layoutCss, '.chat-main')
+    expect(mainRule).toContain('min-width: 0')
+    expect(mainRule).toContain('container-name: chat-main')
+    expect(mainRule).toContain('container-type: inline-size')
+
+    const headerRule = declarations(layoutCss, '.chat-header')
+    expect(headerRule).toContain('min-width: 0')
+    expect(headerRule).toContain('flex-direction: column')
+    expect(headerRule).toContain('align-items: stretch')
     expect(declarations(layoutCss, '.header-left')).toContain('min-width: 0')
-    expect(declarations(layoutCss, '.header-actions')).toContain('overflow-x: auto')
+
+    const actionsRule = declarations(layoutCss, '.header-actions')
+    expect(actionsRule).toContain('overflow-x: auto')
+    expect(actionsRule).toContain('width: 100%')
+    expect(declarations(layoutCss, '.header-actions > *')).toContain('flex: 0 0 auto')
+    expect(declarations(layoutCss, '.header-actions button')).toContain('white-space: nowrap')
+    expect(layoutCss).toContain('@container chat-main (max-width: 900px)')
     expect(declarations(pinnedHistoryCss, '.chat-history')).toContain('min-width: 0')
     expect(declarations(chatExecutionInputSource, '.chat-execution-row')).toContain('min-width: 0')
   })
