@@ -35,7 +35,7 @@ GITHUB_OFFICIAL_SOURCE_TYPE = "GITHUB_OFFICIAL"
 TASK_SKILLS_MANIFEST = ".sdd-runtime-skills.json"
 
 # Agent backend -> task-local skill materialization directory.
-# Keep in sync with AgentCapabilities.skill_layouts and docs/agent-adapter-contract.md.
+# Keep in sync with AgentCapabilities.skill_layouts
 SKILL_LAYOUT_ROOTS: Dict[str, str] = {
     "claude-code": ".claude/skills",
     "mock": ".claude/skills",
