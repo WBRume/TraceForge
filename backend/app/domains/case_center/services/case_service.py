@@ -76,7 +76,22 @@ def serialize_case(case: SddCase) -> dict:
             }
         )
     snapshot = case.conversation_snapshot_json
-    diagnosis_detail = case.diagnosis_detail_json
+    had_diagnosis_detail = isinstance(case.diagnosis_detail_json, dict)
+    diagnosis_detail = case.diagnosis_detail_json if had_diagnosis_detail else {}
+
+    # 历史案例可能未在 diagnosis_detail_json 中沉淀 summary/evidence_chain 等 RAG 导出字段；
+    # 在线从关联定位结果补齐，保证会话内导出与案例详情导出内容一致。
+    source_diagnosis = getattr(case.source_task, "diagnosis_result", None) if case.source_task else None
+    if source_diagnosis is not None:
+        diagnosis_detail = dict(diagnosis_detail)
+        diagnosis_detail.setdefault("summary", source_diagnosis.summary)
+        diagnosis_detail.setdefault("root_cause", source_diagnosis.root_cause)
+        diagnosis_detail.setdefault("evidence_chain", source_diagnosis.evidence_chain)
+        diagnosis_detail.setdefault("fix_suggestion", source_diagnosis.fix_suggestion)
+        diagnosis_detail.setdefault("fix_code", source_diagnosis.fix_code)
+        diagnosis_detail.setdefault("confidence", int(source_diagnosis.confidence or 0))
+    if not diagnosis_detail and not had_diagnosis_detail:
+        diagnosis_detail = None
 
     workspace = case.workspace
     project = workspace.project if workspace else None
@@ -682,6 +697,13 @@ def create_case_draft_from_task(
         case.code_context = "\n\n".join(context_parts) or None
 
         case.diagnosis_detail_json = {
+            # 保留定位结果的完整 RAG 导出字段，使会话内导出与案例详情导出内容一致。
+            "summary": diagnosis_result.summary,
+            "root_cause": diagnosis_result.root_cause,
+            "evidence_chain": diagnosis_result.evidence_chain,
+            "fix_suggestion": diagnosis_result.fix_suggestion,
+            "fix_code": diagnosis_result.fix_code,
+            "confidence": int(diagnosis_result.confidence or 0),
             "similar_cases": (
                 diagnosis_result.similar_cases_json
                 if isinstance(diagnosis_result.similar_cases_json, list)
@@ -697,7 +719,6 @@ def create_case_draft_from_task(
                 if isinstance(diagnosis_result.code_context_json, list)
                 else []
             ),
-            "fix_code": diagnosis_result.fix_code,
         }
 
     db.commit()
