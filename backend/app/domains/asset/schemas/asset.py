@@ -5,7 +5,7 @@ Shared API schemas (assets, dashboard, workspaces).
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 class AssetResponse(BaseModel):
@@ -275,6 +275,12 @@ class WorkspaceCreate(BaseModel):
     project_id: Optional[str] = None
     product_ids: Optional[List[str]] = None
     repositories: Optional[List[WorkspaceRepositoryCreate]] = None
+
+    @model_validator(mode="after")
+    def _validate_single_product_selection(self):
+        if self.product_ids and len(self.product_ids) > 1:
+            raise ValueError("workspace can only select one product")
+        return self
 
 
 class WorkspaceRepositoryResponse(BaseModel):

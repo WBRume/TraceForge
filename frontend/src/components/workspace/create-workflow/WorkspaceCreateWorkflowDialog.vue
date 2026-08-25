@@ -47,7 +47,7 @@ const basicInfo = ref<WorkspaceBasicInfo>({
   project_path: '',
 })
 const selectedProjectId = ref<string | null>(null)
-const selectedProductIds = ref<string[]>([])
+const selectedProductId = ref<string | null>(null)
 
 const stepLabels = computed(() => STEPS.map((step) => step.label()))
 
@@ -56,7 +56,7 @@ const basicValid = computed(() => {
 })
 
 const productsValid = computed(() => {
-  return projectProducts.value.length === 0 || selectedProductIds.value.length > 0
+  return projectProducts.value.length === 0 || Boolean(selectedProductId.value)
 })
 
 const reposValid = computed(() => {
@@ -84,7 +84,7 @@ const loadProjects = async () => {
 
 const loadProjectProducts = async () => {
   projectProducts.value = []
-  selectedProductIds.value = []
+  selectedProductId.value = null
   if (!selectedProjectId.value) return
   productsLoading.value = true
   try {
@@ -103,7 +103,10 @@ const loadRepoSet = async () => {
   if (!selectedProjectId.value) return
   reposLoading.value = true
   try {
-    const res = await getProjectRepoSet(selectedProjectId.value, selectedProductIds.value)
+    const res = await getProjectRepoSet(
+      selectedProjectId.value,
+      selectedProductId.value ? [selectedProductId.value] : [],
+    )
     repos.value = res.repositories
     selectedRepoIds.value = res.repositories.map((item) => item.repository_id)
   } catch (error) {
@@ -145,7 +148,7 @@ const resetState = () => {
   projectProducts.value = []
   repos.value = []
   selectedRepoIds.value = []
-  selectedProductIds.value = []
+  selectedProductId.value = null
   basicInfo.value = { name: '', description: '', project_path: '' }
   selectedProjectId.value = null
 }
@@ -165,7 +168,7 @@ const submit = async () => {
     }
     if (selectedProjectId.value) {
       payload.project_id = selectedProjectId.value
-      payload.product_ids = selectedProductIds.value
+      payload.product_ids = selectedProductId.value ? [selectedProductId.value] : []
       const selectedRepos = repos.value.filter((item) =>
         selectedRepoIds.value.includes(item.repository_id)
       )
@@ -240,7 +243,7 @@ watch(
         />
         <ProductSelectStep
           v-else-if="currentStep === 2"
-          v-model="selectedProductIds"
+          v-model="selectedProductId"
           :products="projectProducts"
           :loading="productsLoading"
         />

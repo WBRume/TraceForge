@@ -2697,6 +2697,7 @@
       "product_version_label": "产品版本",
       "product_pick_title": "勾选产品",
       "product_pick_hint": "勾选要加入项目的产品，将一并记录对应产品版本",
+      "custom_baseline_conflict": "已有该产品对应的定制/基线产品，不可同时绑定",
       "no_available_products": "暂无可添加的产品",
       "delivery_title": "交付进度",
       "transition_product_confirm": "确认将产品「{product}」从「{from}」推进到「{to}」？",
@@ -2859,7 +2860,7 @@
   "workspace_create": {
     "step_products": "选择产品",
     "products_title": "勾选产品",
-    "products_hint": "勾选本次工作区需要的产品，仓库集合由所选产品的仓库绑定（tag/分支）生成",
+    "products_hint": "选择本次工作区需要的一个产品，仓库集合由该产品的仓库绑定（tag/分支）生成",
     "no_products_hint": "所选项目尚未包含产品",
     "repos_readonly_hint": "以下仓库将按所选产品的 tag/分支 绑定检出",
     "repos_select_hint": "请分别勾选要在工作区初始化的基线仓库与定制仓库（可多选）",
