@@ -103,6 +103,18 @@ const formatDuration = (value?: number | null): string => {
   return `${(value / 1000).toFixed(1)}s`
 }
 
+const AGENT_BACKEND_LABELS: Record<string, string> = {
+  'claude-code': 'Claude Code CLI',
+  opencode: 'OpenCode (Server)',
+  dsh: 'DSH (JSON-RPC)',
+  mock: 'Mock CLI',
+}
+
+const agentLabel = (value?: string | null): string => {
+  if (!value) return t('chat.context_window_unavailable')
+  return AGENT_BACKEND_LABELS[value] || value
+}
+
 const segmentRefLabel = (segment: ContextTokenSegment): string => {
   const refs = [
     segment.source_ref_id,
@@ -191,6 +203,11 @@ const categoryBarStyle = (item: ContextTokenCategorySummary) => ({
             <span class="status-pill" :class="{ unavailable: !providerTokens.available }">
               {{ providerTokens.available ? $t('chat.context_window_available') : $t('chat.context_window_unavailable') }}
             </span>
+          </div>
+
+          <div class="agent-line">
+            <span>{{ $t('chat.context_window_metric_agent') }}</span>
+            <strong>{{ agentLabel(data.snapshot.agent_backend) }}</strong>
           </div>
 
           <div class="total-token">
@@ -433,6 +450,22 @@ const categoryBarStyle = (item: ContextTokenCategorySummary) => ({
   border-color: rgba(148, 163, 184, 0.45);
   color: #64748b;
   background: #f8fafc;
+}
+
+.agent-line {
+  margin-top: 12px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.agent-line strong {
+  color: #0f172a;
+  font-size: 14px;
+  overflow-wrap: anywhere;
 }
 
 .total-token {

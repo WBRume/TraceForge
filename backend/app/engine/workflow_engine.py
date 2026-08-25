@@ -1,7 +1,7 @@
 """
 工作流引擎
 调度 Claude CLI 桥接，解析事件流，通过 WebSocket 推送前端
-仅负责调度，具体 SDD 流程由 claudecode CLI + superpowers 内置接管
+仅负责调度，具体 SDD 流程由 agent backend 接管
 """
 
 import asyncio
@@ -70,7 +70,7 @@ class WorkflowEngine:
     """
     工作流引擎：
     - 每个任务对应一个引擎实例
-    - 引擎调度 CLI 桥接，所有 SDD 流程由 superpowers 接管
+    - 引擎调度 agent backend，所有 SDD 流程由 agent backend 接管
     - 解析 CLI 事件流，分类推送到前端 WebSocket
     """
 

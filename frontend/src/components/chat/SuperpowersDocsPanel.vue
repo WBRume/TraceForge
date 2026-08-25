@@ -66,6 +66,7 @@ const loadingIndex = ref(false)
 const loadingDoc = ref(false)
 const saving = ref(false)
 const loadError = ref('')
+const rootRelativePath = ref('')
 const plans = ref<SuperpowersDocEntry[]>([])
 const specs = ref<SuperpowersDocEntry[]>([])
 const selectedSection = ref<SuperpowersDocSection | ''>('')
@@ -305,6 +306,7 @@ const loadIndex = async () => {
   try {
     const res = await api.get(`/workspaces/${props.wsId}/tasks/${props.taskId}/superpowers-docs`)
     const payload = res.data as SuperpowersDocsIndexResponse
+    rootRelativePath.value = payload.root_relative_path || 'docs/superpowers'
     plans.value = normalizeEntries(payload.plans, 'plans')
     specs.value = normalizeEntries(payload.specs, 'specs')
     syncDirectoryExpansionDefaults('plans', plans.value)
@@ -391,6 +393,7 @@ watch(
   async () => {
     selectedSection.value = ''
     selectedPath.value = ''
+    rootRelativePath.value = ''
     clearEditor()
     await loadIndex()
   },
@@ -408,7 +411,7 @@ watch(
           </div>
           <span>{{ $t('chat.superpowers_docs_title') }}</span>
         </div>
-        <p class="panel-subtitle">{{ $t('chat.superpowers_docs_source_path', { path: 'docs/superpowers' }) }}</p>
+        <p class="panel-subtitle">{{ $t('chat.superpowers_docs_source_path', { path: rootRelativePath || 'docs/superpowers' }) }}</p>
       </div>
       <div class="panel-actions">
         <button class="btn-base btn-ghost" :disabled="loadingIndex || loadingDoc" @click="loadIndex">
@@ -589,6 +592,8 @@ watch(
   font-size: 0.75rem;
   font-weight: 500;
   opacity: 0.8;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .panel-actions {
