@@ -23,6 +23,15 @@ def _text(value: Any) -> str:
     return text or ""
 
 
+def _problem_description(case: SddCase) -> str:
+    """问题描述仅使用创建问题定位任务时填写的问题现象；无现象的旧数据回退到案例描述。"""
+    if case.source_task is not None:
+        meta = case.source_task.task_meta_json
+        if isinstance(meta, dict) and str(meta.get("phenomenon") or "").strip():
+            return _text(str(meta.get("phenomenon")))
+    return _text(case.problem_description)
+
+
 def _json_text(value: Any, *, fallback: str = "") -> str:
     if value is None:
         return fallback
@@ -166,7 +175,7 @@ def _build_content(case: SddCase, diagnosis_result: Any = None) -> str:
     detail = _diagnosis_detail(diagnosis_result, case)
 
     sections: List[tuple[str, str]] = [
-        ("问题描述", _text(case.problem_description)),
+        ("问题描述", _problem_description(case)),
         ("产品/版本/局点", " / ".join(
             part for part in [
                 _text(case.product_name),
@@ -196,7 +205,7 @@ def _build_chunks(case: SddCase, diagnosis_result: Any = None) -> List[RagChunk]
     chunks: List[RagChunk] = []
     root_cause = _text(getattr(diagnosis_result, "root_cause", None) or case.root_cause)
     sections: List[tuple[str, str]] = [
-        ("问题描述", _text(case.problem_description)),
+        ("问题描述", _problem_description(case)),
         ("分析过程", _text(case.analysis_process) if diagnosis_result is None else _diagnosis_analysis_text(diagnosis_result)),
         ("根因", root_cause),
         ("解决方案", _text(case.solution) if diagnosis_result is None else _diagnosis_solution_text(diagnosis_result)),

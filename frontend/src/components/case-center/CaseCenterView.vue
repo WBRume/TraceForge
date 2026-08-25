@@ -192,6 +192,7 @@ watch(activeWorkspaceId, () => {
               <CaseCategoryTag :category="item.category" />
               <CasePriorityTag :priority="item.priority" />
               <CaseStatusPill :status="item.status" />
+              <span class="cc-row-source">{{ t('case_center.field.product_version') }}: {{ item.product_version || '-' }}</span>
               <span v-if="item.workspace_name" class="cc-row-source">{{ item.workspace_name }}</span>
               <span v-if="item.source_task_name" class="cc-row-source">{{ item.source_task_name }}</span>
               <span class="cc-row-creator">{{ item.creator_name || '-' }}</span>

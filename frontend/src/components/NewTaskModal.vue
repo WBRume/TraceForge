@@ -93,6 +93,10 @@ const loadSkills = async () => {
 
 const handleCreateTask = async () => {
   if (!newTaskName.value) return
+  if (isDiagnosisTask.value && !newTaskPhenomenon.value.trim()) {
+    ElMessage.error(t('diagnosis.phenomenon_required'))
+    return
+  }
   creatingTask.value = true
   try {
     const payload: Record<string, unknown> = {
@@ -275,11 +279,12 @@ onBeforeUnmount(() => {
 
         <template v-if="isDiagnosisTask">
           <div class="form-group">
-            <label>{{ $t('diagnosis.phenomenon') }}</label>
+            <label>{{ $t('diagnosis.phenomenon') }} <span class="required">*</span></label>
             <textarea
               v-model="newTaskPhenomenon"
               class="input-field"
               rows="3"
+              required
               :placeholder="$t('diagnosis.phenomenon_placeholder')"
             />
           </div>
@@ -635,6 +640,10 @@ onBeforeUnmount(() => {
   font-size: 0.875rem;
   font-weight: 500;
   color: #475569;
+}
+
+.required {
+  color: #dc2626;
 }
 
 .input-field {

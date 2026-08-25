@@ -81,6 +81,12 @@ def serialize_case(case: SddCase) -> dict:
 
     # 历史案例可能未在 diagnosis_detail_json 中沉淀 summary/evidence_chain 等 RAG 导出字段；
     # 在线从关联定位结果补齐，保证会话内导出与案例详情导出内容一致。
+    source_task_phenomenon = None
+    if case.source_task is not None:
+        source_task_meta = case.source_task.task_meta_json
+        if isinstance(source_task_meta, dict) and str(source_task_meta.get("phenomenon") or "").strip():
+            source_task_phenomenon = _clean(str(source_task_meta.get("phenomenon") or ""))
+
     source_diagnosis = getattr(case.source_task, "diagnosis_result", None) if case.source_task else None
     if source_diagnosis is not None:
         diagnosis_detail = dict(diagnosis_detail)
@@ -160,6 +166,7 @@ def serialize_case(case: SddCase) -> dict:
         "updated_at": case.updated_at,
         "creator_name": case.creator.display_name if case.creator else None,
         "source_task_name": case.source_task.name if case.source_task else None,
+        "source_task_phenomenon": source_task_phenomenon,
         "review_records": records,
     }
 
@@ -292,13 +299,14 @@ def create_case(
     creator: User,
     data: CaseCreateRequest,
 ) -> SddCase:
+    prefill_product, prefill_version = _workspace_product_prefill(db, workspace_id)
     case = SddCase(
         workspace_id=workspace_id,
         creator_id=creator.id,
         title=_clean(data.title) or "未命名案例",
         problem_description=data.problem_description,
-        product_name=_clean(data.product_name),
-        product_version=_clean(data.product_version),
+        product_name=_clean(data.product_name) or prefill_product,
+        product_version=_clean(data.product_version) or prefill_version,
         site_name=_clean(data.site_name),
         code_context=data.code_context,
         analysis_process=data.analysis_process,
@@ -605,7 +613,7 @@ def _workspace_product_prefill(db: Session, workspace_id: str) -> Tuple[Optional
     if not workspace or not workspace.project:
         return None, None
     products = workspace_service.serialize_workspace_products(workspace.project)
-    if len(products) == 1:
+    if products:
         return products[0].get("name"), products[0].get("version_no")
     return None, None
 
@@ -635,8 +643,8 @@ def create_case_draft_from_task(
 
     task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
     phenomenon = _clean(str(task_meta.get("phenomenon") or ""))
-    description_parts = [part for part in [task.description, phenomenon] if part]
-    problem_description = "\n\n".join(description_parts) or None
+    # 问题描述仅使用创建问题定位任务时填写的问题现象；无现象的旧数据回退到任务描述。
+    problem_description = phenomenon or _clean(str(task.description or "")) or None
 
     prefill_product, prefill_version = _workspace_product_prefill(db, workspace_id)
     product_name = _clean(data.product_name) or prefill_product

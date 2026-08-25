@@ -2,7 +2,7 @@
 任务相关 Pydantic Schemas
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any, Optional, List, Literal
 from datetime import datetime
 
@@ -18,6 +18,12 @@ class TaskCreate(BaseModel):
     # 问题定位任务专用：现象与优先级
     phenomenon: Optional[str] = None
     priority: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_diagnosis_phenomenon(self):
+        if self.task_type == "DIAGNOSIS" and not (self.phenomenon or "").strip():
+            raise ValueError("phenomenon is required for DIAGNOSIS task")
+        return self
 
 
 class TaskUpdate(BaseModel):

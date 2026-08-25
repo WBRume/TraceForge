@@ -232,10 +232,11 @@ def create_task_record_for_provision(
 
     task_meta = None
     if task_type == "DIAGNOSIS":
-        task_meta = {}
         phenomenon_text = str(phenomenon or "").strip()
-        if phenomenon_text:
-            task_meta["phenomenon"] = phenomenon_text
+        if not phenomenon_text:
+            raise ValueError("phenomenon is required for DIAGNOSIS task")
+        task_meta = {}
+        task_meta["phenomenon"] = phenomenon_text
         priority_text = str(priority or "").strip().upper()
         if priority_text in {"P0", "P1", "P2", "P3"}:
             task_meta["priority"] = priority_text

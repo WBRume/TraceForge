@@ -40,7 +40,7 @@ export function useMarkdownExport() {
   const exportCaseMarkdown = (caseDetail: RagCaseDetail) => {
     const markdown = buildCaseRagMarkdown(caseDetail)
     const safeName = safeFileName(String(caseDetail.title || caseDetail.id || 'case'))
-    downloadMarkdownFile(markdown, `${safeName}-RAG.md`)
+    downloadMarkdownFile(markdown, `${safeName}-问题案例.md`)
   }
 
   return {
