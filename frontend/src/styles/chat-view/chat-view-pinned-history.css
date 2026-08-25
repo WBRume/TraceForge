@@ -234,6 +234,8 @@
 /* ─── Chat History ─── */
 .chat-history {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-6);
   display: flex;

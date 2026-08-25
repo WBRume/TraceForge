@@ -60,6 +60,7 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     })
 
     expect(wrapper.find('.diagnosis-card').exists()).toBe(true)
+    expect(wrapper.classes()).toContain('is-diagnosis-result')
     expect(wrapper.text()).toContain('diagnosis.panel_title')
     expect(wrapper.text()).toContain('连接池配置过小')
     expect(wrapper.find('.message-bubble').exists()).toBe(false)
