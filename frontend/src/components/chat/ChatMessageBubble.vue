@@ -195,6 +195,7 @@ function openDiagnosisCase(caseId: string) {
         'from-workspace-expert': vm.isMessageWorkspaceExpert(msg),
         'is-highlighted': vm.highlightedMessageId === msg.id,
         'is-collab-preinput': isCollabPreInput,
+        'is-diagnosis-result': isDiagnosisResult,
       }
     ]"
     :style="{ '--member-color': memberColor }"
@@ -347,7 +348,17 @@ function openDiagnosisCase(caseId: string) {
 <style scoped>
 .message-wrapper {
   display: flex;
+  min-width: 0;
   max-width: min(78%, 720px);
+}
+
+.message-wrapper.is-diagnosis-result {
+  width: min(78%, 720px);
+  max-width: 100%;
+}
+
+.message-wrapper.is-diagnosis-result .message-stack {
+  width: 100%;
 }
 /* 多人会话：仅本人消息右对齐，其他成员与 assistant 一律左对齐 */
 .role-user.from-current-user {

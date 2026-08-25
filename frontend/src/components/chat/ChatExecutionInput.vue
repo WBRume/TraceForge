@@ -367,6 +367,7 @@ defineExpose({ resetPreInputForm })
 <style scoped>
 .chat-execution-row {
   margin: var(--space-4) var(--space-6);
+  min-width: 0;
   display: flex;
   align-items: flex-end;
   gap: 10px;

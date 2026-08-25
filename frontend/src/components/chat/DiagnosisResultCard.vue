@@ -404,7 +404,10 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 <style scoped>
 /* 背景淡黄；其余元素独立配色（靛蓝强调 / 石板文字 / 深色代码块） */
 .diagnosis-card {
-  width: min(100%, 640px);
+  width: 100%;
+  max-width: 640px;
+  min-width: 0;
+  box-sizing: border-box;
   border: 1px solid rgba(245, 158, 11, 0.35);
   border-radius: var(--radius-lg, 12px);
   background: #fffbeb;
@@ -590,9 +593,16 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 }
 
 .dc-item-note {
+  min-width: 0;
   font-size: 0.7rem;
   font-weight: 500;
   color: #64748b;
+  overflow-wrap: anywhere;
+}
+
+.dc-item-title > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .dc-item-text { font-size: 0.78rem; color: #334155; }
@@ -619,12 +629,16 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 }
 
 .dc-code {
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 10px 12px;
   white-space: pre;
 }
 
 .dc-code-block {
   position: relative;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .dc-code-block .dc-btn-icon {

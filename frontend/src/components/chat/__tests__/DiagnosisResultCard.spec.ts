@@ -57,6 +57,21 @@ describe('DiagnosisResultCard', () => {
     expect(wrapper.text()).toContain('85%')
   })
 
+  it('keeps unbroken paths and generated code in bounded content containers', () => {
+    const longPath = `D:/project/${'nested-path-'.repeat(80)}popup.html`
+    const longCode = `const generatedValue = '${'x'.repeat(2000)}'`
+    const wrapper = mountCard({
+      payload: payload({
+        fix_code: longCode,
+        call_chain: [{ seq: 1, file_path: longPath, description: '长路径回归' }],
+      }),
+    })
+
+    expect(wrapper.find('.diagnosis-card').exists()).toBe(true)
+    expect(wrapper.find('.dc-code').text()).toBe(longCode)
+    expect(wrapper.findAll('.dc-item-note').some(item => item.text() === longPath)).toBe(true)
+  })
+
   it('switches to edit mode, saves the edited payload and exits edit mode', async () => {
     const wrapper = mountCard()
 
