@@ -311,6 +311,8 @@ def create_workspace(
     product_ids: Optional[List[str]] = None,
     repositories: Optional[List[Dict[str, str]]] = None,
 ) -> Workspace:
+    if product_ids and len(product_ids) > 1:
+        raise ValueError("workspace can only select one product")
     from app.domains.management.services import project_service
     from app.domains.management.services import repository_service as mgmt_repository_service
     from app.domains.workspace.models.workspace_repository import (

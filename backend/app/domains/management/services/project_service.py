@@ -340,6 +340,52 @@ def transition_lifecycle(
 
 # ── Project products (with per-product delivery progress) ─────────────────
 
+def _assert_no_custom_baseline_conflict(
+    db: Session,
+    project: SddManagementProject,
+    product: SddManagementProduct,
+) -> None:
+    """禁止同时绑定定制产品与其基线产品。
+
+    项目可以绑定多个定制产品，但不能同时绑定这些定制产品对应的基线产品。
+    """
+    if product.baseline_product_id:
+        baseline_exists = (
+            db.query(SddManagementProjectProduct)
+            .filter(
+                SddManagementProjectProduct.project_id == project.id,
+                SddManagementProjectProduct.product_id == product.baseline_product_id,
+            )
+            .first()
+        )
+        if baseline_exists is not None:
+            raise ProjectServiceError(
+                f"Cannot bind custom product '{product.name}' because its baseline "
+                f"product is already bound in this project",
+                status_code=409,
+            )
+
+    baseline_conflict = (
+        db.query(SddManagementProjectProduct)
+        .join(
+            SddManagementProduct,
+            SddManagementProjectProduct.product_id == SddManagementProduct.id,
+        )
+        .filter(
+            SddManagementProjectProduct.project_id == project.id,
+            SddManagementProduct.baseline_product_id == product.id,
+        )
+        .first()
+    )
+    if baseline_conflict is not None:
+        custom = baseline_conflict.product
+        raise ProjectServiceError(
+            f"Cannot bind baseline product '{product.name}' because custom product "
+            f"'{custom.name if custom else baseline_conflict.product_id}' is already bound in this project",
+            status_code=409,
+        )
+
+
 def add_project_product(
     db: Session,
     project: SddManagementProject,
@@ -361,6 +407,7 @@ def add_project_product(
     )
     if existing:
         raise ProjectServiceError("This product is already in the project", status_code=409)
+    _assert_no_custom_baseline_conflict(db, project, product)
     # Resolve the bound version: explicit selection, otherwise the latest one.
     version = None
     if product_version_id:

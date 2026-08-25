@@ -89,6 +89,26 @@ def test_create_workspace_returns_accepted_payload(monkeypatch):
     assert payload["stage"] == "QUEUED"
 
 
+def test_create_workspace_rejects_multiple_products(monkeypatch):
+    app = FastAPI()
+    app.include_router(workspace_router.router, prefix="/api")
+    app.dependency_overrides[workspace_router.get_db] = _override_db
+    app.dependency_overrides[workspace_router.get_current_user] = _override_user
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/workspaces",
+        json={
+            "name": "Multi Product Workspace",
+            "project_path": "G:/tmp/ws-multi-product",
+            "project_id": "project-1",
+            "product_ids": ["product-1", "product-2"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "only select one product" in resp.text
+
+
 def test_import_skill_from_github_returns_accepted_payload(monkeypatch):
     app = FastAPI()
     app.include_router(skill_router.router, prefix="/api")

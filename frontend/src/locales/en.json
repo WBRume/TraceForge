@@ -2692,6 +2692,7 @@
       "product_version_label": "Product Version",
       "product_pick_title": "Select Products",
       "product_pick_hint": "Check the products to add to the project; their product versions will be recorded",
+      "custom_baseline_conflict": "The matching custom/baseline product is already bound and cannot be added together",
       "no_available_products": "No products available to add",
       "delivery_title": "Delivery Progress",
       "transition_product_confirm": "Move product \"{product}\" from \"{from}\" to \"{to}\"?",
@@ -2854,7 +2855,7 @@
   "workspace_create": {
     "step_products": "Select Products",
     "products_title": "Select Products",
-    "products_hint": "Check the products for this workspace; the repository set is generated from their tag/branch bindings",
+    "products_hint": "Select one product for this workspace; the repository set is generated from its tag/branch bindings",
     "no_products_hint": "The selected project has no products yet",
     "repos_readonly_hint": "Repositories below will be checked out at the selected products tag/branch bindings",
     "repos_select_hint": "Check the baseline and custom repositories to initialize in this workspace (multi-select)",
