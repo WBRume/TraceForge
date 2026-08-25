@@ -2898,6 +2898,7 @@
     "panel_title": "定位结果",
     "phenomenon": "现象",
     "phenomenon_placeholder": "描述问题现象，例如：接口在高峰期偶发超时，错误码 504",
+    "phenomenon_required": "请填写问题现象",
     "priority": "优先级",
     "result_content": "结果内容",
     "summary": "结论概述",

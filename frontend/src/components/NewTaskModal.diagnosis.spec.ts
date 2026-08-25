@@ -65,6 +65,7 @@ describe('NewTaskModal diagnosis mode', () => {
     const textareas = wrapper.findAll('textarea')
     expect(textareas).toHaveLength(1)
     expect(textareas[0].attributes('placeholder')).toContain('diagnosis.phenomenon_placeholder')
+    expect(textareas[0].attributes('required')).toBeDefined()
     expect(wrapper.find('textarea[placeholder="dashboard.desc_placeholder"]').exists()).toBe(false)
   })
 
@@ -124,5 +125,17 @@ describe('NewTaskModal diagnosis mode', () => {
     const createdEvent = wrapper.emitted('created')
     expect(createdEvent).toHaveLength(1)
     expect((createdEvent![0][0] as Record<string, unknown>).expectDiagnosisDocs).toBe(true)
+  })
+
+  it('does not create diagnosis task without phenomenon', async () => {
+    const wrapper = await mountModal()
+    await diagnosisTypeCard(wrapper).trigger('click')
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="dashboard.task_name_placeholder"]').setValue('定位超时问题')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.post).not.toHaveBeenCalled()
   })
 })

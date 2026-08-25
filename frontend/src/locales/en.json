@@ -2893,6 +2893,7 @@
     "panel_title": "Diagnosis Result",
     "phenomenon": "Symptom",
     "phenomenon_placeholder": "Describe the symptom, e.g. the API times out intermittently during peak hours with error 504",
+    "phenomenon_required": "Please enter the problem symptom",
     "priority": "Priority",
     "result_content": "Result",
     "summary": "Summary",

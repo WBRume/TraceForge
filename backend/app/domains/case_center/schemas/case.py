@@ -99,6 +99,7 @@ class CaseResponse(BaseModel):
     updated_at: Optional[datetime] = None
     creator_name: Optional[str] = None
     source_task_name: Optional[str] = None
+    source_task_phenomenon: Optional[str] = None
     my_can_manage: bool = False
     my_can_review: bool = False
     review_records: List[CaseReviewRecordResponse] = Field(default_factory=list)

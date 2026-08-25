@@ -225,7 +225,8 @@ def test_case_lifecycle_full_flow():
         assert case["category"] == "PRODUCT"
         assert case["priority"] == "P1"
         assert case["site_name"] == "华东局点"
-        assert case["problem_description"] and "接口偶发超时" in case["problem_description"]
+        assert case["problem_description"] == "接口偶发超时"
+        assert case["source_task_phenomenon"] == "接口偶发超时"
         assert case["root_cause"] == "空指针异常"
         assert case["solution"] == "判空处理\n\n修复代码:\nif (obj != null) { obj.run(); }"
         assert case["analysis_process"] and "堆栈证据" in case["analysis_process"] and "调用链路:" not in case["analysis_process"]

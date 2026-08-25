@@ -36,6 +36,7 @@ export interface RagRepository {
 export interface RagCaseDetail {
   id?: string
   source_task_id?: string | null
+  source_task_phenomenon?: string | null
   title?: string | null
   problem_description?: string | null
   product_name?: string | null
@@ -211,9 +212,10 @@ function productVersionProjectRepoText(input: {
   projectName?: unknown
   repositories?: unknown
 }): string {
+  const versionText = input.productVersion ? String(input.productVersion) : '未填写'
   const lines = [
     input.productName ? `产品：${input.productName}` : '',
-    input.productVersion ? `版本：${input.productVersion}` : '',
+    `版本：${versionText}`,
     input.siteName ? `局点：${input.siteName}` : '',
     input.projectName ? `项目：${input.projectName}` : '',
   ].filter(Boolean)
@@ -389,7 +391,7 @@ export function buildCaseRagMarkdown(caseDetail: RagCaseDetail): string {
     siteName: caseDetail.site_name || '',
     projectName: caseDetail.project_name || '',
     repositories: caseDetail.repositories || undefined,
-    problemDescription: caseDetail.problem_description || '',
+    problemDescription: caseDetail.source_task_phenomenon || caseDetail.problem_description || '',
     resultContent: detailString(detail, 'summary') || '',
     analysisProcess: caseAnalysisProcess(detail, caseDetail.analysis_process || ''),
     rootCause: caseDetail.root_cause || detailString(detail, 'root_cause') || '',

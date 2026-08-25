@@ -8,6 +8,7 @@ CLI 工作区 .sdd/diagnosis 文件落盘、研发任务拒绝、创建任务时
 import os
 import sys
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -150,5 +151,45 @@ def test_create_diagnosis_task_uses_phenomenon_as_description():
                 phenomenon="页面白屏",
             )
             assert task2.description == "自定义描述"
+    finally:
+        engine.dispose()
+
+
+def test_create_diagnosis_task_requires_phenomenon_via_service():
+    from app.domains.task.services.task_service import create_task_record_for_provision
+
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, _ = _seed_workspace(db, workspace_id="ws-diag-required", task_id="task-diag-required")
+            with pytest.raises(ValueError, match="phenomenon is required"):
+                create_task_record_for_provision(
+                    db,
+                    user,
+                    workspace.id,
+                    name="Diag without phenomenon",
+                    task_type="DIAGNOSIS",
+                )
+    finally:
+        engine.dispose()
+
+
+def test_create_diagnosis_task_requires_phenomenon_via_api():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, _ = _seed_workspace(db, workspace_id="ws-diag-api-required", task_id="task-diag-api-required")
+            ws_id = workspace.id
+        client = TestClient(_build_app(SessionLocal, user))
+
+        resp = client.post(
+            f"/api/workspaces/{ws_id}/tasks",
+            json={
+                "name": "Diag without phenomenon",
+                "task_type": "DIAGNOSIS",
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        assert "phenomenon is required" in resp.text
     finally:
         engine.dispose()

@@ -1502,9 +1502,10 @@ export function useChatViewModel() {
 
     const norm = normalizeDiagnosisPayload(payload)
     const taskName = currentTask.value?.name || ''
+    const diagnosisMeta = currentTask.value?.task_meta_json || {}
     exportDiagnosisMarkdown(norm, taskName, {
       taskId,
-      problemDescription: String(currentTask.value?.description || ''),
+      problemDescription: String(diagnosisMeta.phenomenon || currentTask.value?.description || ''),
       productName: String(currentWorkspace.value?.products?.[0]?.name || ''),
       productVersion: String(currentWorkspace.value?.products?.[0]?.version_no || ''),
       projectName: String(currentWorkspace.value?.project?.name || ''),

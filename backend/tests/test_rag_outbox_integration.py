@@ -20,7 +20,7 @@ if TEST_ROOT not in sys.path:
 
 from app.domains.rag import models as rag_models  # noqa: E402,F401
 from app.domains.rag.schemas import RagOutboxStatus  # noqa: E402
-from app.domains.rag.services import outbox_service  # noqa: E402
+from app.domains.rag.services import document_builder, outbox_service  # noqa: E402
 from app.domains.case_center.models.case import (  # noqa: E402
     CasePriority,
     CaseStatus,
@@ -156,6 +156,24 @@ def test_diagnosis_result_update_before_approval_does_not_enqueue():
 
             count = db.query(rag_models.SddRagOutbox).count()
             assert count == 0
+    finally:
+        engine.dispose()
+
+
+def test_build_case_document_problem_description_uses_task_phenomenon():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_diagnosis_task(db, workspace_id="ws-rag-phenomenon", task_id="task-rag-phenomenon")
+            task.task_meta_json = {"phenomenon": "接口偶发超时", "priority": "P1"}
+            case = _seed_approved_case(db, task)
+            case.problem_description = "旧背景\n\n接口偶发超时"
+            db.commit()
+            db.refresh(case)
+
+            doc = document_builder.build_case_document(case)
+            assert "接口偶发超时" in doc.content
+            assert "旧背景" not in doc.content
     finally:
         engine.dispose()
 

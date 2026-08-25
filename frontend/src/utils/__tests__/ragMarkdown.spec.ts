@@ -74,8 +74,9 @@ describe('ragMarkdown', () => {
     const markdown = buildCaseRagMarkdown({
       id: 'case-1',
       source_task_id: 'task-1',
+      source_task_phenomenon: '生产环境接口偶发超时',
       title: '接口偶发超时定位',
-      problem_description: '生产环境接口偶发超时',
+      problem_description: '旧的问题背景\n\n生产环境接口偶发超时',
       product_name: 'Billing',
       product_version: '1.2.0',
       site_name: '华东局点',
@@ -114,6 +115,8 @@ describe('ragMarkdown', () => {
     expect(markdown).toContain('status: "published"')
     expect(markdown).toContain('# 接口偶发超时定位')
     expect(markdown).toContain('## 问题描述')
+    expect(markdown).toContain('生产环境接口偶发超时')
+    expect(markdown).not.toContain('旧的问题背景')
     expect(markdown).toContain('## 产品/版本/项目/仓库')
     expect(markdown).toContain('产品：Billing')
     expect(markdown.indexOf('## 产品/版本/项目/仓库')).toBeLessThan(markdown.indexOf('## 问题描述'))
@@ -146,6 +149,13 @@ describe('ragMarkdown', () => {
     expect(markdown).not.toContain('review_round')
     expect(markdown).not.toContain('reviewer_id')
     expect(markdown).not.toContain('approved_at')
+  })
+
+  it('keeps version placeholder in exported product section when version is absent', () => {
+    const markdown = buildDiagnosisRagMarkdown(diagnosisPayload, '无版本信息定位', {})
+
+    expect(markdown).toContain('## 产品/版本/项目/仓库')
+    expect(markdown).toContain('版本：未填写')
   })
 
   it('skips empty sections automatically', () => {
