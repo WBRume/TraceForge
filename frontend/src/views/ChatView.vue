@@ -217,7 +217,7 @@ const statusModelText = (card: any): string => {
       <!-- Header -->
       <header class="chat-header glass-panel">
         <div class="header-left">
-          <h2>{{ vm.currentTask.name }}</h2>
+          <h2 :title="vm.currentTask.name">{{ vm.currentTask.name }}</h2>
           <span class="badge" :class="vm.currentTask.status.toLowerCase()">{{ vm.currentTask.status }}</span>
           <Loader2 v-if="vm.engineRunning" class="w-4 h-4 spin text-primary" />
         </div>

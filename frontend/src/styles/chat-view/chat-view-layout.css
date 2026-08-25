@@ -244,6 +244,8 @@
   display: flex;
   flex-direction: column;
   position: relative;
+  container-name: chat-main;
+  container-type: inline-size;
 }
 .chat-main.empty-state {
   justify-content: center;
@@ -281,11 +283,15 @@
 }
 .header-left h2 {
   margin: 0;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 1.125rem;
+}
+.header-left > :not(h2) {
+  flex: 0 0 auto;
 }
 
 .badge {
@@ -309,6 +315,12 @@
   flex: 0 1 auto;
   min-width: 0;
   overflow-x: auto;
+}
+.header-actions > * {
+  flex: 0 0 auto;
+}
+.header-actions button {
+  white-space: nowrap;
 }
 .mode-toggle {
   display: inline-flex;
@@ -395,6 +407,33 @@
   gap: 6px;
   padding: 6px 16px;
   font-size: 0.875rem;
+}
+
+@container chat-main (max-width: 900px) {
+  .chat-header {
+    height: auto;
+    min-height: 60px;
+    padding-top: var(--space-2);
+    padding-bottom: var(--space-2);
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+
+  .header-left {
+    width: 100%;
+    flex: 0 0 auto;
+    min-height: 28px;
+  }
+
+  .header-actions {
+    width: 100%;
+    flex: 0 0 auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+  }
 }
 
 .prestart-doc-tip {
