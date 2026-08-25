@@ -8,7 +8,7 @@ from typing import Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func as sqlfunc
+from sqlalchemy import func as sqlfunc, or_
 
 from app.core.logging import bind_task_context, get_logger
 from app.domains.task.models.task import SddTask, TaskStatus
@@ -30,6 +30,16 @@ SUPERPOWERS_DOC_ROOT_CANDIDATES = (
     (),
 )
 SUPERPOWERS_DOC_EXTENSIONS = {".md", ".markdown"}
+TERMINAL_LOG_HISTORY_LIMIT = 500
+
+
+def _terminal_execution_log_filter():
+    """Select replayable terminal records while excluding provider debug noise."""
+    return or_(
+        SddExecutionLog.log_type != LogType.STDOUT,
+        SddExecutionLog.content.like('{"tool_name":%'),
+        SddExecutionLog.content.like('{"tool_use_id":%'),
+    )
 
 
 def _build_task_project_path(base_path: str, task_id: str, task_name: str) -> str:
@@ -946,15 +956,29 @@ def save_chat_message(
     return msg
 
 
-def get_task_history(db: Session, task_id: str, workspace_id: str,
-                     page: int = 1, page_size: int = 50) -> dict:
+def get_task_history(
+    db: Session,
+    task_id: str,
+    workspace_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    log_limit: int = TERMINAL_LOG_HISTORY_LIMIT,
+) -> dict:
     task = db.query(SddTask).filter(
         SddTask.id == task_id,
         SddTask.workspace_id == workspace_id
     ).first()
 
     if not task:
-        return {"messages": [], "logs": [], "page": page, "page_size": page_size, "total": 0, "has_more": False}
+        return {
+            "messages": [],
+            "logs": [],
+            "page": page,
+            "page_size": page_size,
+            "total": 0,
+            "has_more": False,
+            "logs_has_more": False,
+        }
 
     messages_all = db.query(ChatMessage).filter(
         ChatMessage.task_id == task_id
@@ -1019,14 +1043,33 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
 
     has_more = start > 0
 
-    # logs 保持全量返回（日志量通常不大，且只用于终端面板）
+    # 终端历史只返回可回放的结构化事件。provider debug、assistant 文本副本等
+    # 已在文件日志/聊天消息中有权威来源，不应放大 CLI 历史响应。
+    log_limit = max(1, int(log_limit or TERMINAL_LOG_HISTORY_LIMIT))
+    log_rows_desc = (
+        db.query(SddExecutionLog)
+        .filter(
+            SddExecutionLog.task_id == task_id,
+            SddExecutionLog.workspace_id == workspace_id,
+            _terminal_execution_log_filter(),
+        )
+        .order_by(
+            SddExecutionLog.event_order.desc(),
+            SddExecutionLog.created_at.desc(),
+            SddExecutionLog.id.desc(),
+        )
+        .limit(log_limit + 1)
+        .all()
+    )
+    logs_has_more = len(log_rows_desc) > log_limit
+    log_rows = list(reversed(log_rows_desc[:log_limit]))
     logs = [
         {
             "id": log.id,
             "type": log.log_type.value if hasattr(log.log_type, 'value') else log.log_type,
             "content": log.content,
             "created_at": log.created_at.isoformat()
-        } for log in sorted(task.execution_logs, key=lambda x: x.created_at)
+        } for log in log_rows
     ]
 
     return {
@@ -1035,7 +1078,8 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
         "page": page,
         "page_size": page_size,
         "total": total,
-        "has_more": has_more
+        "has_more": has_more,
+        "logs_has_more": logs_has_more,
     }
 
 
