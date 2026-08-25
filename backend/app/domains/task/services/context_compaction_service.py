@@ -524,7 +524,11 @@ def _scan_execution_logs(
     events = []
     rows = (
         db.query(SddExecutionLog)
-        .filter(SddExecutionLog.workspace_id == workspace_id, SddExecutionLog.task_id == task_id)
+        .filter(
+            SddExecutionLog.workspace_id == workspace_id,
+            SddExecutionLog.task_id == task_id,
+            SddExecutionLog.content.ilike("%compact%"),
+        )
         .order_by(SddExecutionLog.created_at.asc(), SddExecutionLog.id.asc())
         .limit(MAX_LOG_SCAN_ROWS)
         .all()

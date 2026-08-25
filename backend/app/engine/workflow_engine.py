@@ -5,7 +5,8 @@
 """
 
 import asyncio
-from typing import Optional, Dict, Any, Callable, Awaitable
+import time
+from typing import Optional, Dict, Any, Callable, Awaitable, List, Tuple
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -46,6 +47,9 @@ from app.domains.ai.schemas.websocket import (
 )
 
 logger = get_logger(__name__, category="task_execution")
+
+EXECUTION_LOG_CONTENT_LIMIT = 4000
+EXECUTION_LOG_FLUSH_INTERVAL_SECONDS = 0.5
 
 
 # ── 全局引擎注册表：task_id -> WorkflowEngine ──
@@ -107,6 +111,10 @@ class WorkflowEngine:
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_skill_index = []
+        self._execution_log_buffer: List[Tuple[str, LogType, int]] = []
+        self._execution_log_flush_task: Optional[asyncio.Task] = None
+        self._draining_execution_logs = False
+        self._execution_log_order = time.time_ns()
 
     def _create_engine_backend(self) -> Any:
         """根据配置创建当前任务引擎使用的 Agent backend。
@@ -152,22 +160,82 @@ class WorkflowEngine:
 
     # ─────────────── DB 持久化 ───────────────
 
-    def _save_log_sync(self, content: str, log_type: LogType = LogType.STDOUT):
+    def _persist_execution_logs_sync(self, entries: List[Tuple[str, LogType, int]]) -> None:
+        """Persist one execution-log batch in a single transaction."""
+        if not entries:
+            return
+
         db = SessionLocal()
         try:
-            log = SddExecutionLog(
-                task_id=self.task_id,
-                workspace_id=self.ws_id,
-                creator_id=self.user_id,
-                log_type=log_type,
-                content=content[:4000],  # 截断超长内容
-            )
-            db.add(log)
+            db.add_all([
+                SddExecutionLog(
+                    task_id=self.task_id,
+                    workspace_id=self.ws_id,
+                    creator_id=self.user_id,
+                    log_type=log_type,
+                    content=content[:EXECUTION_LOG_CONTENT_LIMIT],
+                    event_order=event_order,
+                )
+                for content, log_type, event_order in entries
+            ])
             db.commit()
         except Exception as e:
-            logger.exception(f"Save log failed: {e}")
+            db.rollback()
+            logger.exception(f"Save execution log batch failed: {e}")
         finally:
             db.close()
+
+    def _queue_execution_log(self, content: str, log_type: LogType = LogType.STDOUT) -> None:
+        """Queue a business-relevant terminal event for short-window batching."""
+        if not content:
+            return
+
+        self._execution_log_order = max(time.time_ns(), self._execution_log_order + 1)
+        self._execution_log_buffer.append((content, log_type, self._execution_log_order))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            batch, self._execution_log_buffer = self._execution_log_buffer, []
+            self._persist_execution_logs_sync(batch)
+            return
+
+        if self._draining_execution_logs:
+            return
+        if self._execution_log_flush_task is None or self._execution_log_flush_task.done():
+            self._execution_log_flush_task = loop.create_task(self._flush_execution_logs_after_delay())
+
+    async def _flush_execution_logs_after_delay(self) -> None:
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(EXECUTION_LOG_FLUSH_INTERVAL_SECONDS)
+            await self._flush_execution_logs()
+        finally:
+            if self._execution_log_flush_task is current_task:
+                self._execution_log_flush_task = None
+            if self._execution_log_buffer and not self._draining_execution_logs:
+                self._execution_log_flush_task = asyncio.create_task(self._flush_execution_logs_after_delay())
+
+    async def _flush_execution_logs(self) -> None:
+        if not self._execution_log_buffer:
+            return
+        batch, self._execution_log_buffer = self._execution_log_buffer, []
+        await asyncio.to_thread(self._persist_execution_logs_sync, batch)
+
+    async def _drain_execution_logs(self) -> None:
+        """Flush buffered terminal events before an engine run returns."""
+        self._draining_execution_logs = True
+        try:
+            scheduled = self._execution_log_flush_task
+            if scheduled is not None and scheduled is not asyncio.current_task():
+                try:
+                    await scheduled
+                except asyncio.CancelledError:
+                    pass
+            self._execution_log_flush_task = None
+            while self._execution_log_buffer:
+                await self._flush_execution_logs()
+        finally:
+            self._draining_execution_logs = False
 
     def _update_task_status(self, status: TaskStatus, error_msg: Optional[str] = None):
         db = SessionLocal()
@@ -305,7 +373,7 @@ class WorkflowEngine:
             "tool_input": tool_input,
             "tool_use_id": tool_use_id
         }
-        self._save_log_sync(json.dumps(payload), LogType.STDOUT) # 统一存为 STDOUT 但带结构
+        self._queue_execution_log(json.dumps(payload, ensure_ascii=False), LogType.STDOUT)
         self._record_context_segment(
             "tool_input",
             workspace_id=self.ws_id,
@@ -395,7 +463,7 @@ class WorkflowEngine:
                     for entry in flatten_claude_event(event):
                         line = format_claude_event_log_line(entry)
                         if line:
-                            self._save_log_sync(line, LogType.STDOUT)
+                            self._queue_execution_log(line, LogType.STDOUT)
                 else:
                     logger.debug(f"Unknown CLI event type: {event_type}")
 
@@ -421,7 +489,6 @@ class WorkflowEngine:
                 text = str(payload.get("text") or "")
                 if text:
                     await self._push_chat("assistant", text)
-                    self._save_log_sync(text, LogType.STDOUT)
             elif event_type == "thinking":
                 text = str(payload.get("text") or "")
                 if text:
@@ -432,7 +499,6 @@ class WorkflowEngine:
                 tool_input = payload.get("tool_input", {})
                 tool_id = str(payload.get("tool_use_id") or "")
                 await self._push_tool_use(tool_name, tool_input, tool_id)
-                self._save_log_sync(f"[Tool] {tool_name}: {str(tool_input)[:500]}", LogType.STDOUT)
                 if tool_name == "AskUserQuestion":
                     question = str(payload.get("question") or tool_input.get("question") or str(tool_input))
                     self._hitl_requested_in_turn = True
@@ -442,8 +508,8 @@ class WorkflowEngine:
                 tool_use_id = str(payload.get("tool_use_id") or "")
                 output = str(payload.get("output") or "")
                 is_error = bool(payload.get("is_error"))
-                log_payload = {"tool_use_id": tool_use_id, "output": output[:2000]}
-                self._save_log_sync(json.dumps(log_payload), LogType.STDOUT)
+                log_payload = {"tool_use_id": tool_use_id, "output": output[:2000], "is_error": is_error}
+                self._queue_execution_log(json.dumps(log_payload, ensure_ascii=False), LogType.STDOUT)
                 self._record_context_segment(
                     "tool_result",
                     workspace_id=self.ws_id,
@@ -476,11 +542,14 @@ class WorkflowEngine:
             elif event_type == "usage":
                 self._update_context_snapshot(usage=payload, raw_usage_json=payload.get("raw_usage"), status="RUNNING")
             elif event_type == "context_compacted":
-                self._save_log_sync(f"[compaction] {str(payload.get('summary') or payload)}", LogType.STDOUT)
+                self._queue_execution_log(
+                    f"[compaction] {str(payload.get('summary') or payload)}",
+                    LogType.STDOUT,
+                )
             elif event_type == "log":
                 message = str(payload.get("message") or "")
                 if message:
-                    self._save_log_sync(message, LogType.STDOUT)
+                    logger.debug(f"Agent provider event: {message[:500]}")
             elif event_type == "result":
                 await self._handle_agent_result(payload, is_error=False)
             elif event_type == "error":
@@ -578,11 +647,6 @@ class WorkflowEngine:
 
     async def _handle_system(self, event: dict):
         """处理 system 事件 (init)"""
-        for entry in flatten_claude_event(event):
-            line = format_claude_event_log_line(entry)
-            if line:
-                self._save_log_sync(line, LogType.STDOUT)
-
         subtype = event.get("subtype")
         if subtype == "init":
             model = event.get("model", "unknown")
@@ -633,7 +697,6 @@ class WorkflowEngine:
                 if text:
                     self._text_buffer = text
                     await self._push_chat("assistant", text)
-                    self._save_log_sync(text, LogType.STDOUT)
 
             elif block_type == "tool_use":
                 tool_name = block.get("name", "unknown")
@@ -642,10 +705,6 @@ class WorkflowEngine:
 
                 # 推送工具调用到终端/日志面板（不进入对话气泡）
                 await self._push_tool_use(tool_name, tool_input, tool_id)
-                self._save_log_sync(
-                    f"[Tool] {tool_name}: {str(tool_input)[:500]}",
-                    LogType.STDOUT,
-                )
 
                 # 检测 HITL：AskUserQuestion 工具
                 if tool_name == "AskUserQuestion":
@@ -671,9 +730,10 @@ class WorkflowEngine:
                 import json
                 log_payload = {
                     "tool_use_id": tool_use_id,
-                    "output": str(output)[:2000]
+                    "output": str(output)[:2000],
+                    "is_error": bool(block.get("is_error", False)),
                 }
-                self._save_log_sync(json.dumps(log_payload), LogType.STDOUT)
+                self._queue_execution_log(json.dumps(log_payload, ensure_ascii=False), LogType.STDOUT)
                 self._record_context_segment(
                     "tool_result",
                     workspace_id=self.ws_id,
@@ -703,15 +763,10 @@ class WorkflowEngine:
                 for entry in flatten_claude_event(block):
                     line = format_claude_event_log_line(entry)
                     if line:
-                        self._save_log_sync(line, LogType.STDOUT)
+                        self._queue_execution_log(line, LogType.STDOUT)
 
     async def _handle_result(self, event: dict):
         """处理 result 事件 (success / error)"""
-        for entry in flatten_claude_event(event):
-            line = format_claude_event_log_line(entry)
-            if line:
-                self._save_log_sync(line, LogType.STDOUT)
-
         is_error = event.get("is_error", False)
         result_text = event.get("result", "")
         duration = event.get("duration_ms")
@@ -1000,6 +1055,7 @@ class WorkflowEngine:
                     self.last_result_text = error_text
                     await self._emit_hook(self.on_error, error_text, self.current_job_id or "")
             finally:
+                await self._drain_execution_logs()
                 self.running = False
                 # 不从注册表移除，便于后续 --resume
 
