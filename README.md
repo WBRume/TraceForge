@@ -450,6 +450,8 @@ npm run dev:electron
 | SKILLS_STORAGE_ROOT | Skills 存储根目录 | storage/skills |
 | API_MOCK_TEMP_ROOT | API Mock 临时目录 | tmp/api_mock_workspace |
 | CLI_STATE_ROOT | CLI 状态目录 | tmp/cli_state |
+| TASK_PLAN_DOC_ROOTS | 计划/规格 Markdown 扫描根目录（相对 task.project_path，逗号分隔；`.` 表示项目根） | docs/superpowers,superpowers/docs/superpowers,. |
+| TASK_RULE_DOC_SCAN_PATHS | 任务执行注入上下文的项目规则/文档路径（逗号分隔；目录会递归扫描 .md/.markdown） | CLAUDE.md,.claude/CLAUDE.md,docs/superpowers,superpowers/docs/superpowers |
 | LOG_LEVEL | 日志级别 | INFO |
 | LOG_DIR | 日志目录 | ./logs |
 | REDIS_ENABLED | 是否启用 Redis | false（可选） |

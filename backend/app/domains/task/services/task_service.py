@@ -20,16 +20,15 @@ from app.domains.asset.services import asset_discussion_service, asset_document_
 from app.domains.skill.services import skill_service
 from app.domains.task.services import git_worktree_service
 from app.domains.skill.services.skill import storage_service as skill_storage_service
+from app.domains.task.services.task_doc_scan import (
+    TASK_DOC_EXTENSIONS,
+    plan_doc_root_label,
+    plan_doc_root_parts,
+)
 
 logger = get_logger(__name__, category="task_execution")
 
 SUPERPOWERS_DOC_SECTIONS = {"plans", "specs"}
-SUPERPOWERS_DOC_ROOT_CANDIDATES = (
-    ("docs", "superpowers"),
-    ("superpowers", "docs", "superpowers"),
-    (),
-)
-SUPERPOWERS_DOC_EXTENSIONS = {".md", ".markdown"}
 TERMINAL_LOG_HISTORY_LIMIT = 500
 
 
@@ -588,7 +587,7 @@ def _normalize_superpowers_doc_section_path(*, name: Optional[str] = None, path:
         if "\x00" in segment:
             raise ValueError("Document path is invalid")
 
-    if Path(segments[-1]).suffix.lower() not in SUPERPOWERS_DOC_EXTENSIONS:
+    if Path(segments[-1]).suffix.lower() not in TASK_DOC_EXTENSIONS:
         raise ValueError("Only markdown files (.md/.markdown) are supported")
     return "/".join(segments)
 
@@ -604,7 +603,7 @@ def _superpowers_docs_root_candidates(task: SddTask) -> List[Path]:
     project_root = _task_project_root(task)
     seen: set[str] = set()
     roots: List[Path] = []
-    for rel_parts in SUPERPOWERS_DOC_ROOT_CANDIDATES:
+    for rel_parts in plan_doc_root_parts():
         root = (project_root.joinpath(*rel_parts)).resolve()
         key = str(root).lower()
         if key in seen:
@@ -662,9 +661,9 @@ def _resolve_superpowers_doc_path(
             return existing_section_candidate, normalized_section_path
         if fallback_candidate is not None:
             return fallback_candidate, normalized_section_path
-        raise ValueError("Cannot resolve target path for superpowers document")
+        raise ValueError("Cannot resolve target path for plan document")
 
-    raise FileNotFoundError(f"Superpowers document not found: {normalized_section}/{normalized_section_path}")
+    raise FileNotFoundError(f"Plan document not found: {normalized_section}/{normalized_section_path}")
 
 
 def _serialize_superpowers_doc_entry(
@@ -699,7 +698,7 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
         for child in sorted(section_dir.rglob("*"), key=lambda item: item.as_posix().lower()):
             if not child.is_file():
                 continue
-            if child.suffix.lower() not in SUPERPOWERS_DOC_EXTENSIONS:
+            if child.suffix.lower() not in TASK_DOC_EXTENSIONS:
                 continue
             resolved_child = child.resolve()
             if not _is_path_within(project_root, resolved_child):
@@ -723,7 +722,7 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
 def list_superpowers_docs(task: SddTask) -> dict:
     return {
         "task_id": task.id,
-        "root_relative_path": "docs/superpowers",
+        "root_relative_path": plan_doc_root_label(),
         "plans": _list_superpowers_docs_in_section(task, "plans"),
         "specs": _list_superpowers_docs_in_section(task, "specs"),
     }

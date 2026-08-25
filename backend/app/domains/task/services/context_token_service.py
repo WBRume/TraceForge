@@ -28,6 +28,7 @@ from app.domains.task.models.context_token import (
 from app.domains.skill.models.skill import SddSkillRuntimeEvent, SkillRuntimeEventType
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import context_compaction_service
+from app.domains.task.services.task_doc_scan import iter_task_rule_docs
 
 
 logger = get_logger(__name__, category="task_execution")
@@ -49,12 +50,6 @@ PROVIDER_TOKEN_FIELDS = (
     "tool_io_tokens",
     "total_tokens",
 )
-
-SUPERPOWERS_DOC_ROOT_CANDIDATES = (
-    ("docs", "superpowers"),
-    ("superpowers", "docs", "superpowers"),
-)
-SUPERPOWERS_EXTENSIONS = {".md", ".markdown"}
 
 
 def _enum_value(value: Any) -> str:
@@ -558,24 +553,7 @@ def record_spec_docs_from_task(db: Session, *, snapshot: SddContextTokenSnapshot
 
 
 def _iter_superpowers_docs(task: SddTask) -> Iterable[Path]:
-    project_path = Path(str(task.project_path or ".")).resolve()
-    candidates = [project_path / "CLAUDE.md", project_path / ".claude" / "CLAUDE.md"]
-    for root_parts in SUPERPOWERS_DOC_ROOT_CANDIDATES:
-        root = project_path.joinpath(*root_parts)
-        if root.exists() and root.is_dir():
-            for path in root.rglob("*"):
-                if path.is_file() and path.suffix.lower() in SUPERPOWERS_EXTENSIONS:
-                    candidates.append(path)
-    seen: set[str] = set()
-    for path in candidates:
-        try:
-            resolved = str(path.resolve())
-        except OSError:
-            continue
-        if resolved in seen or not path.exists() or not path.is_file():
-            continue
-        seen.add(resolved)
-        yield path
+    return iter_task_rule_docs(Path(str(task.project_path or ".")).resolve())
 
 
 def record_superpowers_rules_from_task(db: Session, *, snapshot: SddContextTokenSnapshot, task: SddTask) -> None:
@@ -867,6 +845,11 @@ def _provider_tokens_payload(snapshot: Optional[SddContextTokenSnapshot]) -> Dic
 def _serialize_snapshot(snapshot: Optional[SddContextTokenSnapshot]) -> Optional[Dict[str, Any]]:
     if snapshot is None:
         return None
+    agent_backend = None
+    if snapshot.ai_job is not None:
+        agent_backend = snapshot.ai_job.agent_backend
+    if not agent_backend and snapshot.task is not None:
+        agent_backend = snapshot.task.agent_backend
     return {
         "id": snapshot.id,
         "workspace_id": snapshot.workspace_id,
@@ -874,6 +857,7 @@ def _serialize_snapshot(snapshot: Optional[SddContextTokenSnapshot]) -> Optional
         "ai_job_id": snapshot.ai_job_id,
         "session_id": snapshot.session_id,
         "model": snapshot.model,
+        "agent_backend": agent_backend,
         "status": snapshot.status,
         "total_cost_usd": snapshot.total_cost_usd,
         "duration_ms": snapshot.duration_ms,

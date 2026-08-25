@@ -1064,7 +1064,7 @@ def save_task_superpowers_doc_content(
         current_user,
         db,
         WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to edit superpowers documents",
+        "No permission to edit plan documents",
     )
 
     task = task_service.get_task(db, task_id, ws_id)

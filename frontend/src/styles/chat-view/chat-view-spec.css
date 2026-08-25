@@ -17,7 +17,7 @@
   overflow: visible; /* Changed to visible to allow side handles to hang out */
   box-shadow: -8px 0 24px rgba(15, 23, 42, 0.1);
   transition: width 0.28s ease, opacity 0.28s ease, transform 0.28s ease;
-  z-index: 18;
+  z-index: 40;
 }
 
 .spec-sidebar.is-open {
@@ -53,7 +53,7 @@
   flex-direction: column;
   padding: 12px 0;
   box-shadow: -8px 2px 24px rgba(15, 23, 42, 0.05);
-  z-index: 20;
+  z-index: 41;
 }
 
 
