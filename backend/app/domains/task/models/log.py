@@ -5,7 +5,7 @@
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, func
+    BigInteger, Column, DateTime, Enum, ForeignKey, Index, String, Text, func
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -35,6 +35,15 @@ class LogType(str, PyEnum):
 
 class SddExecutionLog(Base):
     __tablename__ = "sdd_execution_logs"
+    __table_args__ = (
+        Index(
+            "ix_sdd_execution_logs_task_replay_order",
+            "task_id",
+            "event_order",
+            "created_at",
+            "id",
+        ),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -44,6 +53,7 @@ class SddExecutionLog(Base):
     phase = Column(Enum(Phase), nullable=True)
     log_type = Column(Enum(LogType), nullable=False, default=LogType.STDOUT)
     content = Column(Text, nullable=False)
+    event_order = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     # Relationships
