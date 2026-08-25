@@ -191,6 +191,7 @@ def test_case_lifecycle_full_flow():
                     task_id=task.id,
                     workspace_id=workspace.id,
                     created_by_id=user.id,
+                    summary="空指针导致接口偶发超时",
                     root_cause="空指针异常",
                     evidence_chain="堆栈证据",
                     fix_suggestion="判空处理",
@@ -229,9 +230,13 @@ def test_case_lifecycle_full_flow():
         assert case["solution"] == "判空处理\n\n修复代码:\nif (obj != null) { obj.run(); }"
         assert case["analysis_process"] and "堆栈证据" in case["analysis_process"] and "调用链路:" not in case["analysis_process"]
         assert case["code_context"] and "相关代码上下文:" in case["code_context"]
+        assert case["diagnosis_detail"]["summary"] == "空指针导致接口偶发超时"
+        assert case["diagnosis_detail"]["evidence_chain"] == "堆栈证据"
+        assert case["diagnosis_detail"]["fix_suggestion"] == "判空处理"
+        assert case["diagnosis_detail"]["fix_code"] == "if (obj != null) { obj.run(); }"
+        assert case["diagnosis_detail"]["confidence"] == 90
         assert case["diagnosis_detail"]["similar_cases"][0]["reference"] == "case-9"
         assert case["diagnosis_detail"]["call_chain"][0]["function"] == "handle"
-        assert case["diagnosis_detail"]["fix_code"] == "if (obj != null) { obj.run(); }"
         assert case["review_records"] == []
 
         # 重复转案例 → 409
@@ -276,6 +281,53 @@ def test_case_lifecycle_full_flow():
         assert resp.status_code == 409  # 非评审中状态不可裁决
         resp = client.post(f"/api/workspaces/{ws_id}/cases/{case_id}/resubmit")
         assert resp.status_code == 409  # APPROVED 不可重提
+    finally:
+        engine.dispose()
+
+
+def test_serialize_case_backfills_diagnosis_detail_from_source_task():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_diagnosis_task(db, workspace_id="ws-legacy", task_id="task-legacy")
+            from app.domains.case_center.models.case import SddCase
+            from app.domains.task.models.diagnosis import SddDiagnosisResult
+
+            db.add(
+                SddDiagnosisResult(
+                    task_id=task.id,
+                    workspace_id=workspace.id,
+                    created_by_id=user.id,
+                    summary="旧案例未沉淀的 summary",
+                    root_cause="旧根因",
+                    evidence_chain="旧证据链",
+                    fix_suggestion="旧修复建议",
+                    fix_code="old-fix-code",
+                    confidence=77,
+                )
+            )
+            case = SddCase(
+                workspace_id=workspace.id,
+                creator_id=user.id,
+                source_task_id=task.id,
+                title="旧案例",
+                problem_description="旧问题",
+                category="TEMPORARY",
+                priority="P2",
+            )
+            db.add(case)
+            db.commit()
+            ws_id, case_id = workspace.id, case.id
+
+        client = TestClient(_build_app(SessionLocal, user))
+        resp = client.get(f"/api/workspaces/{ws_id}/cases/{case_id}")
+        assert resp.status_code == 200, resp.text
+        detail = resp.json()["diagnosis_detail"]
+        assert detail["summary"] == "旧案例未沉淀的 summary"
+        assert detail["evidence_chain"] == "旧证据链"
+        assert detail["fix_suggestion"] == "旧修复建议"
+        assert detail["fix_code"] == "old-fix-code"
+        assert detail["confidence"] == 77
     finally:
         engine.dispose()
 

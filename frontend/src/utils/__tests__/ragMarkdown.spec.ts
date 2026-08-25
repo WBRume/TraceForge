@@ -83,18 +83,22 @@ describe('ragMarkdown', () => {
       repositories: [
         { repo_name: 'billing-service', repo_url: 'https://git.example.com/billing-service', branch_name: 'master' },
       ],
-      code_context: 'src/pool.py',
-      analysis_process: '压测复现并查看日志',
+      code_context: '工作区关联仓库: billing-service\n\n相关代码上下文:\nsrc/pool.py',
+      analysis_process: '压测复现并查看日志\n\n置信度: 85%',
       root_cause: '连接池耗尽',
       solution: '扩容连接池并增加熔断',
       category: 'PUBLIC',
       priority: 'P1',
       status: 'APPROVED',
       diagnosis_detail: {
+        summary: '连接池在高峰期被耗尽',
+        evidence_chain: '压测复现并查看日志',
+        fix_suggestion: '扩容连接池并增加熔断',
+        fix_code: 'pool.maxActive = 200',
+        confidence: 85,
         similar_cases: [{ title: '连接池耗尽排查' }],
         call_chain: [{ module: 'Gateway', function: 'handleRequest' }],
-        code_context: [{ file_path: 'src/pool.py' }],
-        fix_code: 'pool.maxActive = 200',
+        code_context: [{ file_path: 'src/pool.py', start_line: 12, end_line: 34, note: '连接池配置' }],
       },
     })
 
@@ -118,14 +122,20 @@ describe('ragMarkdown', () => {
     expect(markdown).toContain('项目：Billing 项目')
     expect(markdown).toContain('仓库：')
     expect(markdown).toContain('billing-service (master) - https://git.example.com/billing-service')
+    expect(markdown).toContain('## 结果内容')
+    expect(markdown).toContain('连接池在高峰期被耗尽')
     expect(markdown).toContain('## 分析过程')
     expect(markdown).toContain('压测复现并查看日志')
+    expect(markdown).toContain('置信度：85%')
     expect(markdown).toContain('## 根因')
     expect(markdown).toContain('连接池耗尽')
     expect(markdown).toContain('## 解决方案')
     expect(markdown).toContain('扩容连接池并增加熔断')
+    expect(markdown).toContain('```\npool.maxActive = 200\n```')
     expect(markdown).toContain('## 代码上下文')
-    expect(markdown).toContain('src/pool.py')
+    expect(markdown).toContain('1. src/pool.py:12-34')
+    expect(markdown).toContain('说明：连接池配置')
+    expect(markdown).not.toContain('工作区关联仓库')
     expect(markdown).toContain('## 相似案例')
     expect(markdown).toContain('连接池耗尽排查')
     expect(markdown).toContain('## 调用链路')
