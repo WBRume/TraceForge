@@ -54,3 +54,6 @@ Thumbs.db
 *.log
 .agents/
 /.zcode/
+
+# Docs
+/docs/
