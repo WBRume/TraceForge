@@ -188,10 +188,6 @@ def _build_content(case: SddCase, diagnosis_result: Any = None) -> str:
         ("解决方案", solution),
         ("代码上下文", code_context),
         ("诊断明细", _json_text(detail)),
-        ("对话快照摘要", _json_text(
-            case.conversation_snapshot_json,
-            fallback=_text(case.conversation_snapshot_json),
-        )),
         ("评审意见", _review_summary(case)),
     ]
     parts = []
