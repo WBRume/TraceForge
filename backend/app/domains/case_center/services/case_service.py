@@ -25,7 +25,6 @@ from app.domains.case_center.schemas.case import (
     CaseUpdateRequest,
 )
 from app.domains.task.models.task import SddTask, TaskType
-from app.domains.task.services import task_service
 from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
 from app.domains.workspace.services import workspace_service
 from app.domains.rag.services import outbox_service as rag_outbox_service
@@ -75,7 +74,6 @@ def serialize_case(case: SddCase) -> dict:
                 "created_at": record.created_at,
             }
         )
-    snapshot = case.conversation_snapshot_json
     had_diagnosis_detail = isinstance(case.diagnosis_detail_json, dict)
     diagnosis_detail = case.diagnosis_detail_json if had_diagnosis_detail else {}
 
@@ -157,7 +155,6 @@ def serialize_case(case: SddCase) -> dict:
         "priority": case.priority,
         "status": case.status,
         "review_round": case.review_round,
-        "conversation_snapshot": snapshot if isinstance(snapshot, list) else None,
         "diagnosis_detail": diagnosis_detail if isinstance(diagnosis_detail, dict) else None,
         "submitted_at": case.submitted_at,
         "reviewed_at": case.reviewed_at,
@@ -569,30 +566,6 @@ def _format_code_context_items(items) -> Optional[str]:
     return "相关代码上下文:\n" + "\n".join(lines) if lines else None
 
 
-def capture_conversation_snapshot(db: Session, task: SddTask) -> Optional[list]:
-    """从任务会话历史生成对话回放快照（精简字段）。"""
-    history = task_service.get_task_history(
-        db,
-        task.id,
-        task.workspace_id,
-        page=1,
-        page_size=2000,
-    )
-    messages = history.get("messages") or []
-    snapshot = []
-    for msg in messages:
-        snapshot.append(
-            {
-                "role": msg.get("role"),
-                "content": msg.get("content"),
-                "message_type": msg.get("type") or msg.get("message_type"),
-                "created_at": msg.get("created_at"),
-                "creator_display_name": msg.get("creator_display_name"),
-            }
-        )
-    return snapshot or None
-
-
 def _workspace_product_prefill(db: Session, workspace_id: str) -> Tuple[Optional[str], Optional[str]]:
     from app.domains.auth.models.user import Workspace
     from app.domains.management.models.management import (
@@ -626,7 +599,7 @@ def create_case_draft_from_task(
     workspace_id: str,
     data: CaseDraftCreateRequest,
 ) -> SddCase:
-    """问题定位任务「确认采纳 → 一键转案例」：生成案例草稿并携带对话快照。"""
+    """问题定位任务「确认采纳 → 一键转案例」：生成案例草稿。"""
     if task.task_type != TaskType.DIAGNOSIS.value:
         raise CaseError("Only diagnosis tasks can be converted to cases", status_code=403)
 
@@ -650,8 +623,6 @@ def create_case_draft_from_task(
     product_name = _clean(data.product_name) or prefill_product
     product_version = _clean(data.product_version) or prefill_version
 
-    snapshot = capture_conversation_snapshot(db, task)
-
     repo_slugs = get_workspace_repo_slugs(db, workspace_id)
     code_context = None
     if repo_slugs:
@@ -674,7 +645,6 @@ def create_case_draft_from_task(
         priority=data.priority,
         status=CaseStatus.DRAFT.value,
         review_round=1,
-        conversation_snapshot_json=snapshot,
     )
     db.add(case)
     db.flush()
