@@ -37,6 +37,10 @@ class QueueJobItem(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     target_path: Optional[str] = None
+    case_id: Optional[str] = None
+    doc_key: Optional[str] = None
+    version: Optional[int] = None
+    retry_count: Optional[int] = None
     actions: QueueJobActions
 
 

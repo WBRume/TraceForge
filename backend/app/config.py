@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     DB_USER: str = "root"
     DB_PASSWORD: str = Field(..., min_length=1)
     DB_NAME: str = "sdd_platform"
+    # SQLAlchemy echo（打印每条 SQL 及参数）：默认关闭，避免 DEBUG 启动时日志刷屏；排查 SQL 时置 true
+    SQL_ECHO: bool = False
 
     @property
     def DATABASE_URL(self) -> str:

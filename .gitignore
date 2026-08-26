@@ -57,3 +57,8 @@ Thumbs.db
 
 # Docs
 /docs/
+
+# database backups / scratch dumps (not source)
+/backups/
+backend/_backup_*.json
+codebuddy-sdk-doc.txt

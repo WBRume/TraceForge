@@ -36,6 +36,7 @@ type WorkspaceOption = {
 
 const props = defineProps<{
   workspaces: WorkspaceOption[]
+  fixedSource?: 'all' | QueueSource
 }>()
 
 const { locale, t } = useI18n()
@@ -50,7 +51,7 @@ const queuePageSize = ref(10)
 const queueLoading = ref(false)
 const queueError = ref('')
 const queueView = ref<QueueView>('mine')
-const queueSource = ref<'all' | QueueSource>('all')
+const queueSource = ref<'all' | QueueSource>(props.fixedSource || 'all')
 const queueStatus = ref<'all' | QueueStatus>('all')
 const queueWorkspaceId = ref('')
 const queueActioningKey = ref('')
@@ -284,7 +285,7 @@ watch(
           <BaseSelect v-model="queueWorkspaceId" :options="workspaceFilterOptions" size="sm" />
         </label>
 
-        <label class="queue-filter-item">
+        <label v-if="!props.fixedSource" class="queue-filter-item">
           <span>{{ $t('workspaces.queue.filter_source') }}</span>
           <BaseSelect v-model="queueSource" :options="queueSourceOptions" size="sm" />
         </label>

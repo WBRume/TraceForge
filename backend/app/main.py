@@ -66,7 +66,7 @@ from app.domains.task.services import pre_input_service
 from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
-from app.domains.rag.services import ingest_worker as rag_ingest_worker
+from app.domains.rag.routers import outbox as rag_outbox_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -74,7 +74,6 @@ app = FastAPI(
     description="规范驱动开发基础平台 API"
 )
 
-_rag_ingest_task: asyncio.Task | None = None
 _pre_input_worker_task: asyncio.Task | None = None
 
 # ── CORS ──
@@ -92,9 +91,7 @@ app.add_middleware(LoggingMiddleware)
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _rag_ingest_task, _pre_input_worker_task
-    if settings.RAG_ENABLED:
-        _rag_ingest_task = asyncio.create_task(rag_ingest_worker.run_ingest_worker())
+    global _pre_input_worker_task
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
     recovered_queue_count = await ai_job_service.recover_pending_queues()
     if recovered_queue_count:
@@ -103,10 +100,7 @@ async def _on_startup() -> None:
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
-    global _rag_ingest_task, _pre_input_worker_task
-    if _rag_ingest_task is not None:
-        _rag_ingest_task.cancel()
-        _rag_ingest_task = None
+    global _pre_input_worker_task
     if _pre_input_worker_task is not None:
         _pre_input_worker_task.cancel()
         _pre_input_worker_task = None
@@ -141,6 +135,7 @@ app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(repositories_router, prefix="/api")
 app.include_router(repo_groups_router, prefix="/api")
+app.include_router(rag_outbox_router.router, prefix="/api")
 app.include_router(api_mock.gateway_router)
 
 # ── 静态文件挂载 ──

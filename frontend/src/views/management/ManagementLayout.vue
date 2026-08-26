@@ -67,6 +67,13 @@ const opsNavItems = computed(() => [
     to: '/ops/skills',
     active: ['skillsHome', 'skillsCreate', 'skillsEdit', 'skillsEditAnalysis', 'skillsEditAnalysisRisk'].includes(routeName.value),
   },
+  {
+    key: 'rag-queue',
+    label: t('rag_queue.entry'),
+    icon: BookMarked,
+    to: '/ops/rag-queue',
+    active: routeName.value === 'ragQueueList',
+  },
 ])
 
 const knowledgeNavItems = computed(() => [

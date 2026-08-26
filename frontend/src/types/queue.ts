@@ -23,6 +23,10 @@ export type QueueJobItem = {
   created_at: string
   updated_at?: string | null
   target_path?: string | null
+  case_id?: string | null
+  doc_key?: string | null
+  version?: number | null
+  retry_count?: number | null
   actions: QueueJobActions
 }
 

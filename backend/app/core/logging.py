@@ -261,6 +261,13 @@ def _configure_stdlib_logging() -> None:
     uvicorn_access.propagate = False
     uvicorn_access.disabled = True
 
+    # SQLAlchemy 引擎日志只保留 WARNING+：
+    # echo 默认关闭；即便开发者显式开启 SQL_ECHO，也不再经 root 拦截器把每条 SQL
+    # 重复打印成 application 分类（启动日志双写/刷屏的另一根因）。
+    for logger_name in ("sqlalchemy.engine", "sqlalchemy.pool"):
+        std_logger = logging.getLogger(logger_name)
+        std_logger.setLevel(logging.WARNING)
+
 
 def _ensure_log_paths() -> Dict[str, str]:
     log_root = os.path.abspath(str(settings.LOG_DIR or "").strip() or "logs")
