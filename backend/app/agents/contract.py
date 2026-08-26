@@ -1,6 +1,5 @@
 """Agent 适配层统一契约（v0.2.0）。
 
-对应文档：docs/agent-adapter-contract.md
 """
 
 from __future__ import annotations

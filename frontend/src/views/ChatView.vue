@@ -606,7 +606,7 @@ const statusModelText = (card: any): string => {
             <span>{{ $t('diagnosis.code_path_tab') }}</span>
           </button>
         </div>
-        <!-- 研发态任务：需求文档 / Superpowers 文档 -->
+        <!-- 研发态任务：需求文档 / 计划文档 -->
         <div v-else class="spec-tabbar">
           <button 
             class="tab-item" 
@@ -786,7 +786,7 @@ const statusModelText = (card: any): string => {
               compact
             />
           </div>
-          <!-- 研发态：Superpowers 文档 -->
+          <!-- 研发态：计划文档 -->
           <div
             v-if="!vm.isDiagnosisTask"
             class="spec-tab-panel"
