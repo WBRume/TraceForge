@@ -24,7 +24,7 @@ from app.domains.task.models.task_cli_bootstrap import (
     SddTaskCliBootstrap,
     TaskCliBootstrapStatus,
 )
-from app.domains.auth.models.user import WorkspaceMember, WorkspacePermission
+from app.domains.auth.models.user import User, WorkspaceMember, WorkspacePermission
 from app.domains.ai.schemas.queue import QueueJobActions, QueueJobItem
 from app.domains.api_mock.services import api_mock_service
 from app.domains.skill.services import skill_analysis_service
@@ -61,6 +61,12 @@ def _to_queue_status(raw_status: str) -> str:
     if normalized in {"STALE"}:
         return "FAILED"
     return "PENDING"
+
+
+def _is_admin(db: Session, user_id: str) -> bool:
+    normalized_user_id = str(user_id or "").strip()
+    user = db.query(User).filter(User.id == normalized_user_id).first()
+    return bool(user and user.is_admin)
 
 
 def _workspace_member_ids(db: Session, user_id: str) -> set[str]:
@@ -1101,5 +1107,4 @@ def retry_queue_job(
             "new_job_id": new_job.id,
             "message": "Skill analysis retry queued",
         }
-
     raise ValueError("Unsupported queue source")
