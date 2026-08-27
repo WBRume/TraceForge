@@ -150,10 +150,10 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
     elif event_type == "session.next.reasoning.delta":
         delta = _text(data.get("delta"))
         if delta:
-            # 统一事件目前没有 thinking_delta；骨架先按 thinking 上行。
+            # 统一事件目前没有 thinking_delta；用 delta 标记让引擎累积上行。
             events.append(AgentEvent(
                 type="thinking",
-                payload={"text": delta},
+                payload={"text": delta, "delta": delta},
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
@@ -371,7 +371,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             if field in ("reasoning", "thinking"):
                 events.append(AgentEvent(
                     type="thinking",
-                    payload={"text": delta},
+                    payload={"text": delta, "delta": delta},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),

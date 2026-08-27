@@ -493,8 +493,11 @@ class WorkflowEngine:
             elif event_type == "thinking":
                 text = str(payload.get("text") or "")
                 if text:
-                    self._thinking_buffer = text
-                    await self._push_thinking(text)
+                    if payload.get("delta") is not None:
+                        self._thinking_buffer += text
+                    else:
+                        self._thinking_buffer = text
+                    await self._push_thinking(self._thinking_buffer)
             elif event_type == "tool_use":
                 tool_name = str(payload.get("tool_name") or "unknown")
                 tool_input = payload.get("tool_input", {})
@@ -972,6 +975,7 @@ class WorkflowEngine:
             self.last_result_text = ""
             self.last_result_interrupted = False
             self._hitl_requested_in_turn = False
+            self._thinking_buffer = ""
 
             logger.info(f"WorkflowEngine run: task={self.task_id}, prompt={prompt[:80]}")
 

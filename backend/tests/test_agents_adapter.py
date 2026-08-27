@@ -476,6 +476,55 @@ class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage.payload["input_tokens"], 10)
 
 
+class OpenCodeAdapterInterruptAbortTest(unittest.IsolatedAsyncioTestCase):
+    """OpenCode Server 没有 /interrupt，interrupt/cancel 必须走 /abort。"""
+
+    class _FakeClient:
+        def __init__(self):
+            self.posted: list[str] = []
+
+        async def post(self, url: str, **kwargs):
+            if not url.endswith("/abort"):
+                raise AssertionError(f"interrupt/cancel must use /abort, got: {url}")
+            self.posted.append(url)
+            return OpenCodeAdapterRunTest._FakeResponse(200, {})
+
+    async def _make_adapter(self, client):
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+        adapter = OpenCodeAdapter("http://127.0.0.1:9999")
+        adapter._client = client
+        adapter._session_id = "ses_test"
+        return adapter
+
+    async def test_interrupt_uses_abort_endpoint_not_interrupt(self):
+        client = self._FakeClient()
+        adapter = await self._make_adapter(client)
+
+        await adapter.interrupt()
+
+        self.assertEqual(client.posted, ["http://127.0.0.1:9999/session/ses_test/abort"])
+        self.assertTrue(adapter._interrupted)
+
+    async def test_interrupt_explicit_session_uses_abort_endpoint(self):
+        client = self._FakeClient()
+        adapter = await self._make_adapter(client)
+
+        await adapter.interrupt(session_id="other-ses")
+
+        self.assertEqual(client.posted, ["http://127.0.0.1:9999/session/other-ses/abort"])
+        self.assertTrue(adapter._interrupted)
+
+    async def test_cancel_uses_abort_endpoint(self):
+        client = self._FakeClient()
+        adapter = await self._make_adapter(client)
+
+        await adapter.cancel()
+
+        self.assertEqual(client.posted, ["http://127.0.0.1:9999/session/ses_test/abort"])
+        self.assertFalse(adapter.is_running())
+
+
 class RegistryTest(unittest.TestCase):
     def test_create_mock_backend(self):
         backend = create_agent_backend("mock")

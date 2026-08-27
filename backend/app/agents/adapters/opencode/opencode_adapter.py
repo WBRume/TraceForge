@@ -572,26 +572,32 @@ class OpenCodeAdapter(AgentBackend):
             self._running = False
             self._run_id = None
 
-    async def interrupt(self, run_id: str | None = None, *, session_id: str | None = None) -> None:
-        sid = session_id or self._session_id
-        if not sid or self._client is None:
+    async def _abort_session(self, sid: str) -> None:
+        """中止 OpenCode 当前正在运行的回合。
+
+        OpenCode Server 没有 /interrupt 接口，只有 v1 /abort：
+        POST /session/{id}/abort（已实测 4097 端口返回 true）。
+        """
+        if self._client is None:
             return
         try:
-            await self._client.post(self._session_url(sid, "/interrupt"))
+            response = await self._client.post(f"{self.server_url}/session/{sid}/abort")
         except Exception:
-            pass
+            return
+        if response.status_code in (200, 202, 204):
+            return
+
+    async def interrupt(self, run_id: str | None = None, *, session_id: str | None = None) -> None:
+        sid = session_id or self._session_id
+        if not sid:
+            return
+        await self._abort_session(sid)
         self._interrupted = True
 
     async def cancel(self, run_id: str | None = None) -> None:
         sid = self._session_id
-        if sid and self._client is not None:
-            try:
-                await self._client.post(self._session_url(sid, "/abort"))
-            except Exception:
-                try:
-                    await self._client.post(f"{self.server_url}/session/{sid}/abort")
-                except Exception:
-                    pass
+        if sid:
+            await self._abort_session(sid)
         self._interrupted = True
         self._running = False
 
