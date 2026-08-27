@@ -15,7 +15,8 @@ if BACKEND_ROOT not in sys.path:
 
 from app.agents.adapters.claude_code import claude_code_adapter
 from app.agents.adapters.dsh import session_files
-from app.agents.adapters.dsh.dsh_adapter import DSHAdapter, dsh_sessions_root
+from app.agents.adapters.dsh.dsh_adapter import dsh_sessions_root
+from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 from app.agents.errors import SessionForkError
 
 
@@ -161,7 +162,7 @@ class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
         self.assertEqual(found[0], "session-old")
 
 
-class DshAdapterForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
+class DshServerForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
     async def test_fork_session_returns_new_id_under_target_cwd(self):
         baseline_dir = os.path.join(self._home.name, "baseline")
         thread_dir = os.path.join(self._home.name, "thread")
@@ -177,7 +178,7 @@ class DshAdapterForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
                 "cwd": os.path.abspath(baseline_dir), "delegationDepth": 0,
             }) + "\n")
 
-        adapter = DSHAdapter()
+        adapter = DshServerAdapter("http://mock:3080")
         new_id = await adapter.fork_session(
             "session-base", source_dir=baseline_dir, target_dir=thread_dir
         )
