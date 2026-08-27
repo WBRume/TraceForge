@@ -1,25 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { useWorkspaceStore } from '@/stores/workspace'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { formatApiError } from '@/utils/error'
 import {
-  downloadRagQueueCase,
+  confirmRagQueueDownload,
   downloadRagQueueZip,
-  fetchRagQueue,
-  fetchRagQueueCases,
   fetchRagQueues,
   type RagQueueListParams,
 } from '@/composables/rag/ragOutboxOps'
 import type {
-  RagQueueCaseItem,
   RagQueueStatus,
   RagSyncQueueItem,
 } from '@/types/rag'
 
 const { locale, t } = useI18n()
+const router = useRouter()
 const wsStore = useWorkspaceStore()
 
 const queues = ref<RagSyncQueueItem[]>([])
@@ -31,14 +30,6 @@ const loadError = ref('')
 const selectedWorkspaceId = ref('')
 const selectedStatus = ref<'all' | RagQueueStatus>('all')
 const downloadingQueueId = ref('')
-
-const drawerVisible = ref(false)
-const detailQueue = ref<RagSyncQueueItem | null>(null)
-const detailCases = ref<RagQueueCaseItem[]>([])
-const detailTotal = ref(0)
-const detailLoading = ref(false)
-const detailError = ref('')
-const downloadingCaseId = ref('')
 
 let pollTimer: number | null = null
 
@@ -73,14 +64,6 @@ const queueStatusText = (status: string): string => {
   const keyMap: Record<string, string> = {
     RUNNING: 'rag_queue.status_running',
     CONSUMED: 'rag_queue.status_consumed',
-  }
-  return keyMap[status] ? t(keyMap[status]) : status
-}
-
-const caseStatusText = (status: string): string => {
-  const keyMap: Record<string, string> = {
-    QUEUED: 'rag_queue.case_status_queued',
-    EXPORTED: 'rag_queue.case_status_exported',
   }
   return keyMap[status] ? t(keyMap[status]) : status
 }
@@ -129,63 +112,33 @@ const goQueuePage = (nextPage: number) => {
 const downloadQueue = async (queue: RagSyncQueueItem) => {
   if (downloadingQueueId.value) return
   downloadingQueueId.value = queue.id
+  let savedLocally = false
   try {
-    await downloadRagQueueZip(queue.id, queue.name)
+    const save = await downloadRagQueueZip(queue.id, queue.name)
+    if (save.canceled) {
+      ElMessage.info(t('rag_queue.save_canceled'))
+      return
+    }
+    savedLocally = true
+    // 文件已保存到本地后才标记状态，避免「点击下载但文件尚未保存」时状态已被修改
+    await confirmRagQueueDownload(queue.id)
     ElMessage.success(
       queue.status === 'CONSUMED'
         ? t('rag_queue.download_again_success')
         : t('rag_queue.download_success'),
     )
     await loadQueues({ silent: true })
-    if (drawerVisible.value && detailQueue.value?.id === queue.id) {
-      detailQueue.value = await fetchRagQueue(queue.id)
-      await loadDetailCases()
-    }
   } catch {
-    ElMessage.error(t('rag_queue.download_failed'))
+    ElMessage.error(
+      savedLocally ? t('rag_queue.mark_queue_failed') : t('rag_queue.download_failed'),
+    )
   } finally {
     downloadingQueueId.value = ''
   }
 }
 
-const loadDetailCases = async () => {
-  if (!detailQueue.value) return
-  detailLoading.value = true
-  detailError.value = ''
-  try {
-    const data = await fetchRagQueueCases(detailQueue.value.id, { page: 1, page_size: 200 })
-    detailCases.value = data.items ?? []
-    detailTotal.value = Number(data.total ?? 0)
-  } catch (err) {
-    detailCases.value = []
-    detailError.value = formatApiError(err, t('rag_queue.load_failed'), t)
-  } finally {
-    detailLoading.value = false
-  }
-}
-
-const openDetail = async (queue: RagSyncQueueItem) => {
-  detailQueue.value = queue
-  detailCases.value = []
-  drawerVisible.value = true
-  await loadDetailCases()
-}
-
-const downloadCase = async (row: RagQueueCaseItem) => {
-  if (!detailQueue.value || downloadingCaseId.value) return
-  downloadingCaseId.value = row.id
-  const safeTitle = (row.title || row.doc_key || 'case').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 120)
-  try {
-    await downloadRagQueueCase(detailQueue.value.id, row.id, `${safeTitle || 'case'}.md`)
-    ElMessage.success(t('rag_queue.download_case_success'))
-    await loadDetailCases()
-    detailQueue.value = await fetchRagQueue(detailQueue.value.id)
-    await loadQueues({ silent: true })
-  } catch {
-    ElMessage.error(t('rag_queue.download_case_failed'))
-  } finally {
-    downloadingCaseId.value = ''
-  }
+const goDetail = (queue: RagSyncQueueItem) => {
+  router.push(`/ops/rag-queue/${encodeURIComponent(queue.id)}`)
 }
 
 onMounted(async () => {
@@ -291,7 +244,7 @@ onBeforeUnmount(() => {
               <td>{{ formatDate(queue.consumed_at) }}</td>
               <td>
                 <div class="queue-actions">
-                  <button type="button" class="btn-queue" @click="openDetail(queue)">
+                  <button type="button" class="btn-queue" @click="goDetail(queue)">
                     {{ t('rag_queue.detail') }}
                   </button>
                   <button
@@ -342,82 +295,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </div>
-
-    <el-drawer v-model="drawerVisible" :title="detailQueue?.name || ''" size="60%">
-      <div v-if="detailQueue" class="queue-detail-header">
-        <span
-          class="queue-status"
-          :class="`status-${String(detailQueue.status || '').toLowerCase()}`"
-        >
-          {{ queueStatusText(detailQueue.status) }}
-        </span>
-        <span class="queue-detail-counts">
-          {{
-            detailQueue.workspace_id
-              ? workspaceNameMap[detailQueue.workspace_id] || detailQueue.workspace_id
-              : t('rag_queue.workspace_unassigned')
-          }}
-          ·
-          {{ t('rag_queue.col_case_count') }}: {{ detailQueue.case_count ?? 0 }} ·
-          {{ t('rag_queue.col_exported_count') }}: {{ detailQueue.exported_count ?? 0 }}
-        </span>
-        <span v-if="detailQueue.status === 'CONSUMED'" class="queue-detail-hint">
-          {{ t('rag_queue.consume_hint') }}
-        </span>
-      </div>
-
-      <p v-if="detailError" class="create-error">{{ detailError }}</p>
-
-      <div v-if="detailLoading" class="loading-state">{{ t('rag_queue.loading') }}</div>
-      <div v-else-if="detailCases.length === 0" class="empty-state queue-empty">
-        <h3>{{ t('rag_queue.cases_empty') }}</h3>
-      </div>
-
-      <div v-else class="queue-table-wrap">
-        <table class="queue-table">
-          <thead>
-            <tr>
-              <th>{{ t('rag_queue.col_case_title') }}</th>
-              <th>{{ t('rag_queue.col_workspace') }}</th>
-              <th>{{ t('rag_queue.col_version') }}</th>
-              <th>{{ t('rag_queue.col_case_status') }}</th>
-              <th>{{ t('rag_queue.col_exported_at') }}</th>
-              <th>{{ t('rag_queue.col_actions') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="row in detailCases" :key="row.id">
-              <td>
-                <span class="queue-cell-primary">{{ row.title || row.doc_key }}</span>
-              </td>
-              <td>{{ workspaceNameMap[row.workspace_id || ''] || '-' }}</td>
-              <td>{{ row.version ?? '-' }}</td>
-              <td>
-                <span
-                  class="queue-status"
-                  :class="`status-${String(row.status || '').toLowerCase()}`"
-                >
-                  {{ caseStatusText(row.status) }}
-                </span>
-              </td>
-              <td>{{ formatDate(row.exported_at) }}</td>
-              <td>
-                <div class="queue-actions">
-                  <button
-                    type="button"
-                    class="btn-queue"
-                    :disabled="!!downloadingCaseId"
-                    @click="downloadCase(row)"
-                  >
-                    {{ t('rag_queue.download_case') }}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </el-drawer>
   </div>
 </template>
 
@@ -657,25 +534,5 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-md);
   padding: 10px 12px;
   font-size: 0.875rem;
-}
-
-/* drawer internals */
-.queue-detail-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  flex-wrap: wrap;
-  margin-bottom: 1.25rem;
-}
-
-.queue-detail-counts {
-  color: #475569;
-  font-size: 0.875rem;
-  font-weight: 500;
-}
-
-.queue-detail-hint {
-  color: #947a00;
-  font-size: 0.8125rem;
 }
 </style>

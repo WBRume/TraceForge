@@ -115,6 +115,11 @@ const router = createRouter({
           component: () => import('../views/RagQueueView.vue'),
         },
         {
+          path: 'rag-queue/:queueId',
+          name: 'ragQueueDetail',
+          component: () => import('../views/RagQueueDetailView.vue'),
+        },
+        {
           path: 'queue/:source/:jobId',
           name: 'opsQueueDetail',
           component: () => import('../views/OpsQueueDetailView.vue'),

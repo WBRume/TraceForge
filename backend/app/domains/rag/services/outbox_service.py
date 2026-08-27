@@ -5,10 +5,11 @@ RAG Outbox 服务：案例同步队列（批次）管理 + 人工导出下载。
 1. 队列按工作区隔离：审批通过的案例 -> 追加到该工作区当前 RUNNING 队列；
    该工作区没有 RUNNING 队列时自动新建一个。
 2. 操作人员点击运行中的队列 -> 打包下载其中包含的案例 MD（ZIP）；
-   下载后由用户自行导入 RAG。
-3. 队列被整体打包下载成功后 -> 标记 CONSUMED（已消费完毕，终态）；
-   终态后仍可幂等重新打包下载（重试设计），但不再接收新案例、不会回到 RUNNING。
-4. 案例首次成功下载后 -> 标记 EXPORTED（已导出锁定，可重下）；
+   下载后由用户自行导入 RAG。GET 导出接口只负责打包/取字节，**不改变任何状态**。
+3. 文件在本地保存成功后，前端调用确认接口（export/complete）：
+   首次确认时队列 -> 标记 CONSUMED（已消费完毕，终态）；
+   终态后再次确认幂等，不改变状态（重试设计），但不再接收新案例、不会回到 RUNNING。
+4. 单案例首次保存成功后确认 -> 标记 EXPORTED（已导出锁定，可重下）；
    队列内单案例也支持单独再次下载。
 
 自动 RAG 摄入（INDEXING/INDEXED/FAILED）已停用。
@@ -365,8 +366,8 @@ def export_queue_zip(
 ) -> bytes:
     """打包下载整个队列的案例 MD（队列按工作区隔离，调用方已做权限校验）。
 
-    首次成功打包后队列进入 CONSUMED 终态，队列内全部案例标记 EXPORTED；
-    终态后再次下载走幂等重新打包，不改变状态（重试设计）。
+    只负责生成 ZIP 字节，**不改变任何状态**；
+    状态由确认接口在“文件已成功保存到本地”后调用 mark_queue_exported 完成。
     """
     rows = (
         db.query(SddRagOutbox)
@@ -374,20 +375,36 @@ def export_queue_zip(
         .order_by(SddRagOutbox.created_at.asc())
         .all()
     )
+    return build_zip_bytes(rows)
 
-    content = build_zip_bytes(rows)
 
-    if queue.status == RagQueueStatus.RUNNING.value:
-        now = _utcnow()
-        queue.status = RagQueueStatus.CONSUMED.value
-        queue.consumed_at = now
-        for row in rows:
-            row.status = RagOutboxStatus.EXPORTED.value
-            row.exported_at = now
-        db.add(queue)
-        db.add_all(rows)
-        db.commit()
-    return content
+def mark_queue_exported(
+    db: Session,
+    queue: SddRagSyncQueue,
+) -> SddRagSyncQueue:
+    """确认队列已成功保存到本地：首次确认时锁定 CONSUMED 终态并标记全部案例 EXPORTED。
+
+    幂等：终态后再次确认不改变状态（重试设计）。
+    """
+    if queue.status != RagQueueStatus.RUNNING.value:
+        return queue
+    now = _utcnow()
+    queue.status = RagQueueStatus.CONSUMED.value
+    queue.consumed_at = now
+    rows = (
+        db.query(SddRagOutbox)
+        .filter(SddRagOutbox.queue_id == queue.id)
+        .order_by(SddRagOutbox.created_at.asc())
+        .all()
+    )
+    for row in rows:
+        row.status = RagOutboxStatus.EXPORTED.value
+        row.exported_at = now
+    db.add(queue)
+    db.add_all(rows)
+    db.commit()
+    db.refresh(queue)
+    return queue
 
 
 def build_single_case_markdown(

@@ -4,15 +4,19 @@ RAG 案例同步队列路由：批次管理 + 人工导出下载（队列按工�
 - GET    /rag/queues                分页列出同步队列（按工作区/状态筛选）
 - GET    /rag/queues/{queue_id}     队列详情（含案例数 / 已导出数）
 - GET    /rag/queues/{queue_id}/cases      分页列出队列内案例
-- GET    /rag/queues/{queue_id}/export.zip 打包下载整个队列（首次成功即锁定终态）
-- GET    /rag/queues/{queue_id}/cases/{case_id}/export.md  单案例下载（可重下）
+- GET    /rag/queues/{queue_id}/export.zip 打包下载整个队列（只取字节，不改变状态）
+- POST   /rag/queues/{queue_id}/export/complete 确认队列已保存到本地 -> 首次确认锁定终态
+- GET    /rag/queues/{queue_id}/cases/{case_id}/export.md  单案例下载（只取字节，不改变状态）
+- POST   /rag/queues/{queue_id}/cases/{case_id}/export/complete 确认单案例已保存 -> 标记已导出
 
 说明：下载成功后由操作人员自行导入 RAG；自动 RAG 摄入已停用。
+状态变更由“保存成功后”的确认接口触发，避免「点击下载但文件尚未保存到本地」时状态已被修改。
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
@@ -30,6 +34,21 @@ from app.domains.rag.schemas import (
 from app.domains.rag.services import outbox_service
 
 router = APIRouter(prefix="/rag/queues", tags=["RAG 案例同步队列"])
+
+
+def _content_disposition(filename: str, fallback: str) -> str:
+    """生成下载响应头 Content-Disposition。
+
+    HTTP 头只允许 latin-1 编码，案例标题/队列名可能包含中文等非 ASCII 字符；
+    此时按 RFC 5987 用 ``filename*=UTF-8''<percent-encoded>`` 传输，
+    并保留 ASCII 兜底 ``filename="<fallback>"`` 供不支持 filename* 的旧客户端使用。
+    """
+    try:
+        filename.encode("latin-1")
+    except UnicodeEncodeError:
+        encoded = quote(filename, safe="")
+        return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
+    return f'attachment; filename="{filename}"'
 
 
 def _accessible_workspace_ids(db: Session, user: User) -> Optional[List[str]]:
@@ -199,8 +218,9 @@ def export_rag_queue_zip(
 ):
     """打包下载整个同步队列（队列按工作区隔离，权限已在 _require_queue 校验）。
 
-    首次成功打包后队列锁定为 CONSUMED（已消费完毕，终态）；
-    终态后再次下载幂等重新打包，不改变状态（可重试）。
+    只负责打包并返回 ZIP 字节，**不改变任何状态**；
+    文件保存到本地成功后由前端调用 POST /{queue_id}/export/complete 触发标记
+    （首次确认进入 CONSUMED 终态；终态后再次确认/下载幂等，不改变状态）。
     """
     queue = _require_queue(db, current_user, queue_id)
     try:
@@ -211,8 +231,28 @@ def export_rag_queue_zip(
         content=content,
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="{queue.name}.zip"',
+            "Content-Disposition": _content_disposition(f"{queue.name}.zip", "rag-queue.zip"),
         },
+    )
+
+
+@router.post("/{queue_id}/export/complete", response_model=RagQueueItem)
+def confirm_rag_queue_export(
+    queue_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """确认队列文件已成功保存到本地：首次确认时锁定为 CONSUMED 终态并标记全部案例已导出。
+
+    幂等：终态后再次确认不改变状态（重试设计），可安全重复调用。
+    """
+    queue = _require_queue(db, current_user, queue_id)
+    queue = outbox_service.mark_queue_exported(db, queue)
+    case_count, exported_count = outbox_service._queue_counts(db, queue.id)
+    return _queue_item_from_row(
+        queue,
+        case_count=case_count,
+        exported_count=exported_count,
     )
 
 
@@ -223,7 +263,11 @@ def export_rag_queue_case_markdown(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """下载队列内的单个案例 MD；下载成功后该案例锁定标记为已导出（可重下）。"""
+    """下载队列内的单个案例 MD（只取字节，**不改变状态**）。
+
+    文件保存到本地成功后由前端调用
+    POST /{queue_id}/cases/{case_id}/export/complete 触发标记（可重下）。
+    """
     queue = _require_queue(db, current_user, queue_id)
     workspace_ids = _accessible_workspace_ids(db, current_user)
     row = (
@@ -246,7 +290,6 @@ def export_rag_queue_case_markdown(
 
     try:
         content = outbox_service.build_single_case_markdown(db, row)
-        outbox_service.mark_case_exported(db, row)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     filename = f"{outbox_service._safe_filename(row.title or row.doc_key, 'case')}.md"
@@ -254,6 +297,42 @@ def export_rag_queue_case_markdown(
         content=content,
         media_type="text/markdown; charset=utf-8",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": _content_disposition(filename, "case.md"),
         },
     )
+
+
+@router.post(
+    "/{queue_id}/cases/{case_id}/export/complete",
+    response_model=RagQueueCaseItem,
+)
+def confirm_rag_queue_case_export(
+    queue_id: str,
+    case_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """确认单案例文件已成功保存到本地：标记该案例为已导出（幂等，可重下）。"""
+    queue = _require_queue(db, current_user, queue_id)
+    workspace_ids = _accessible_workspace_ids(db, current_user)
+    row = (
+        db.query(SddRagOutbox)
+        .filter(
+            SddRagOutbox.id == str(case_id or "").strip(),
+            SddRagOutbox.queue_id == queue.id,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Case document not found in queue")
+    if workspace_ids is not None and (
+        not row.workspace_id or row.workspace_id not in workspace_ids
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="No permission to export this case document",
+        )
+
+    outbox_service.mark_case_exported(db, row)
+    db.refresh(row)
+    return _case_item_from_row(row)

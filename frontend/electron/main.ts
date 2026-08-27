@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerConfigIpc } from './ipc/config'
+import { registerDownloadIpc } from './ipc/download'
 import { registerGitIpc } from './ipc/git'
 import { registerPatchIpc } from './ipc/patch'
 import { registerProcessIpc } from './ipc/process'
@@ -44,6 +45,7 @@ const createWindow = async () => {
 
 const registerIpc = () => {
   registerConfigIpc()
+  registerDownloadIpc()
   registerGitIpc()
   registerPatchIpc()
   registerProcessIpc()
