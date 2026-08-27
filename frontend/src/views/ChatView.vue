@@ -345,6 +345,7 @@ const statusModelText = (card: any): string => {
           >
           <div class="header-title flex items-center gap-2">
             <Brain class="w-4 h-4" />
+            <Loader2 v-if="vm.engineRunning" class="w-3 h-3 spin text-primary" />
             <span>{{ $t('chat.thinking') }}</span>
           </div>
             <ChevronDown class="w-4 h-4 toggle-icon transition-transform" :class="{'rotate-180': vm.thinkingExpanded}" />

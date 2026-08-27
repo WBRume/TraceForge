@@ -80,7 +80,7 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
             if chunk_type == "reasoning-delta" and chunk_text:
                 return AgentEvent(
                     type="thinking",
-                    payload={"text": chunk_text, "provider": "dsh"},
+                    payload={"text": chunk_text, "delta": chunk_text, "provider": "dsh"},
                     provider="dsh",
                     raw=raw_event,
                 )
@@ -275,6 +275,22 @@ class DshServerAdapter(AgentBackend):
                             delta_parts.append(str(unified.payload["text"]))
                         await on_event(unified)
                     etype = str(event.get("type") or "")
+                    if etype == "assistant/message":
+                        # 若 DSH 只在完整 assistant/message 中给出 reasoning（未逐字
+                        # 推 reasoning-delta），这里补发一次完整 thinking。
+                        raw_data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                        raw_msg = raw_data.get("message") if isinstance(raw_data.get("message"), dict) else raw_data
+                        blocks = raw_msg.get("content") if isinstance(raw_msg.get("content"), list) else []
+                        for block in blocks:
+                            if not isinstance(block, dict) or block.get("type") != "reasoning":
+                                continue
+                            reasoning = str(block.get("text") or block.get("content") or "").strip()
+                            if reasoning:
+                                await on_event(AgentEvent(
+                                    type="thinking",
+                                    payload={"text": reasoning, "provider": "dsh"},
+                                    provider="dsh",
+                                ))
                     if etype == "turn/end":
                         reason = event.get("data", {}).get("reason", {})
                         kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
@@ -284,7 +300,25 @@ class DshServerAdapter(AgentBackend):
                             "error": "error",
                             "max-tokens": "max-tokens",
                         }.get(kind, kind)
-                        return _finalize()
+                        finalize_result = _finalize()
+                        # 若流式过程中只收到 text-delta 而缺失完整 assistant/message，
+                        # 把累积文本作为完整 text 事件补发，确保前端收到落库的 assistant 消息。
+                        body = str(finalize_result.get("text") or "")
+                        if body and not text_parts:
+                            await on_event(AgentEvent(
+                                type="text",
+                                payload={"text": body, "provider": "dsh"},
+                                provider="dsh",
+                            ))
+                        # DSH 模型/provider 出错时没有正文，把具体错误写到 result，
+                        # 避免前端只看到空白的“Agent execution failed”。
+                        if kind == "error" and not body:
+                            error_info = reason.get("error") if isinstance(reason, dict) else None
+                            if isinstance(error_info, dict):
+                                finalize_result["text"] = str(error_info.get("message") or "DSH stream error")
+                            else:
+                                finalize_result["text"] = "DSH stream error"
+                        return finalize_result
                 elif method in ("approval/requested", "question/requested"):
                     if method == "approval/requested":
                         approval_id = str(payload.get("approvalId") or "")

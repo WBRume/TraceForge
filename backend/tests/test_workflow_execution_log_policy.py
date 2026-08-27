@@ -40,6 +40,32 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
         engine._push_chat.assert_awaited_once_with("assistant", "assistant reply")
         engine._queue_execution_log.assert_not_called()
 
+    async def test_thinking_delta_accumulates_and_full_thinking_replaces(self):
+        engine = self._engine()
+
+        await engine.handle_agent_event(AgentEvent(
+            type="thinking",
+            payload={"text": "check", "delta": "check"},
+            provider="dsh",
+        ))
+        await engine.handle_agent_event(AgentEvent(
+            type="thinking",
+            payload={"text": "ing", "delta": "ing"},
+            provider="dsh",
+        ))
+        await engine.handle_agent_event(AgentEvent(
+            type="thinking",
+            payload={"text": "FINAL"},
+            provider="dsh",
+        ))
+
+        self.assertEqual(engine._thinking_buffer, "FINAL")
+        self.assertEqual(engine._ws_push.await_count, 3)
+        thinking_payloads = [call.args[1] for call in engine._ws_push.await_args_list]
+        self.assertEqual(thinking_payloads[0].get("content"), "check")
+        self.assertEqual(thinking_payloads[1].get("content"), "checking")
+        self.assertEqual(thinking_payloads[2].get("content"), "FINAL")
+
     async def test_tool_events_are_persisted_once_each(self):
         engine = self._engine()
 
