@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.agents.run_logging import run_agent_backend_with_logging
 from app.config import settings
 from app.core.logging import get_logger
 from app.engine.claude_bridge import create_cli_bridge
@@ -256,6 +257,12 @@ class LegacyBridgeShim:
             project_path=project_path,
             session_id=resume_id,
             env=dict(env_overrides or {}),
+            metadata={
+                "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
+                "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
+                "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
+                "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
+            },
             timeout_seconds=float(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200),
             startup_timeout_seconds=float(
                 getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
@@ -275,7 +282,7 @@ class LegacyBridgeShim:
                 await result
 
         async def _run() -> None:
-            result = await self.backend.run(request, _on_event)
+            result = await run_agent_backend_with_logging(self.backend, request, _on_event)
             if result and result.session_id:
                 self._session_id = result.session_id
 

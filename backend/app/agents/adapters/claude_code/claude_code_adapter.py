@@ -23,6 +23,7 @@ from app.agents.contract import (
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
 from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import AgentCancelledError, AgentError, AgentTimeoutError, SessionForkError
+from app.config import settings
 from app.engine.claude_bridge import SubprocessCliBridge
 
 
@@ -68,13 +69,19 @@ class ClaudeCodeAdapter(AgentBackend):
         self._bridge = SubprocessCliBridge(cli_path=cli_path)
         self._last_result_payload: Dict[str, Any] = {}
         self._cancelled = False
+        self._legacy_run_task: Optional[asyncio.Task] = None
+        self._legacy_session_id: Optional[str] = None
 
     async def _handle_raw_event(self, event: dict[str, Any], on_event: AgentEventSink) -> None:
         for agent_event in map_claude_event(event):
             if agent_event.type == "result" or agent_event.type == "error":
                 self._last_result_payload = dict(agent_event.payload)
             if agent_event.type == "session_started":
-                sid = agent_event.payload.get("provider_session_id")
+                sid = str(agent_event.payload.get("provider_session_id") or "").strip()
+                if not sid:
+                    sid = str(self._bridge.session_id or "").strip()
+                    if sid:
+                        agent_event.payload["provider_session_id"] = sid
                 if sid:
                     self._last_result_payload.setdefault("session_id", sid)
             await on_event(agent_event)
@@ -92,9 +99,6 @@ class ClaudeCodeAdapter(AgentBackend):
         self._last_result_payload = {}
 
         program = self._bridge
-        program._task_id = str(request.metadata.get("task_id") or request.env.get("TASK_ID") or "")
-        program._workspace_id = str(request.metadata.get("workspace_id") or request.env.get("WORKSPACE_ID") or "")
-        program._job_id = str(request.metadata.get("ai_job_id") or request.env.get("AI_JOB_ID") or "")
 
         watchdog = AgentActivityWatchdog(
             startup_timeout_seconds=request.startup_timeout_seconds,
@@ -154,7 +158,7 @@ class ClaudeCodeAdapter(AgentBackend):
             cost_usd=payload.get("cost_usd"),
             duration_ms=payload.get("duration_ms"),
             return_code=getattr(program.process, "returncode", None),
-            raw_trace=getattr(program, "_session_trace_path", None),
+            raw_trace=None,
         )
 
     async def interrupt(self, run_id: str | None = None) -> None:
@@ -166,12 +170,13 @@ class ClaudeCodeAdapter(AgentBackend):
         await self._bridge.cancel()
 
     def is_running(self, run_id: str | None = None) -> bool:
+        if self._legacy_run_task is not None and not self._legacy_run_task.done():
+            return True
         return self._bridge.is_running()
 
     async def close(self) -> None:
         if self._bridge.is_running():
             await self._bridge.cancel()
-        self._bridge._session_trace_path = None
         self._last_result_payload = {}
 
     # ── 旧 CliBridgeBase 兼容入口 ──────────────────────────────
@@ -220,22 +225,74 @@ class ClaudeCodeAdapter(AgentBackend):
         fork_session: bool = False,
         permission_mode: str = "default",
     ) -> str:
-        return await self._bridge.start_session(
+        """旧 CliBridgeBase 入口：统一走 AgentBackend.run() + 底层日志/trace。"""
+        from app.agents.run_logging import run_agent_backend_with_logging
+        from app.agents.selection import agent_event_to_legacy_payload
+
+        if fork_session and not session_id:
+            raise AgentError("Claude fork-on-resume requires an existing session id")
+
+        request = AgentRunRequest(
+            run_id=f"claude-legacy-{id(self)}",
             prompt=prompt,
             project_path=project_path,
-            event_callback=event_callback,
             session_id=session_id,
-            env_overrides=env_overrides,
-            fork_session=fork_session,
+            env=dict(env_overrides or {}),
+            metadata={
+                "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
+                "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
+                "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
+                "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
+            },
+            timeout_seconds=float(
+                getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
+            ),
+            startup_timeout_seconds=float(
+                getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
+            ),
+            idle_timeout_seconds=float(
+                getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+            ),
             permission_mode=permission_mode,
         )
+        if fork_session:
+            # ClaudeCodeAdapter.fork_session 只做快照 staging，返回原 session id；
+            # run() 内部通过 provider_options 再传 --fork-session 生成子会话。
+            await self.fork_session(
+                session_id,
+                source_dir=project_path,
+                target_dir=project_path,
+            )
+            request.provider_options["fork_session"] = True
+
+        async def _on_event(agent_event) -> None:
+            legacy = agent_event_to_legacy_payload(agent_event)
+            if legacy is None:
+                return
+            result = event_callback(legacy)
+            if asyncio.iscoroutine(result):
+                await result
+
+        async def _run() -> None:
+            result = await run_agent_backend_with_logging(self, request, _on_event)
+            if result and result.session_id:
+                self._legacy_session_id = result.session_id
+
+        self._legacy_run_task = asyncio.create_task(_run())
+        return request.session_id or ""
 
     async def wait(self) -> None:
-        await self._bridge.wait()
+        if self._legacy_run_task is not None:
+            try:
+                await self._legacy_run_task
+            finally:
+                self._legacy_run_task = None
+        else:
+            await self._bridge.wait()
 
     @property
     def session_id(self) -> str | None:
-        return self._bridge.session_id
+        return self._legacy_session_id or self._bridge.session_id
 
     @property
     def process(self):

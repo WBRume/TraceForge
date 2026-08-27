@@ -27,6 +27,7 @@ from app.agents import (
     AgentRunResult,
     AgentTimeoutError,
 )
+from app.agents.run_logging import run_agent_backend_with_logging
 from app.engine.claude_event_adapter import (
     extract_claude_compaction_event,
     extract_claude_usage,
@@ -1006,7 +1007,11 @@ class WorkflowEngine:
                             "ai_job_id": self.current_job_id or "",
                         },
                     )
-                    result = await self.cli.run(request, self.handle_agent_event)
+                    result = await run_agent_backend_with_logging(
+                        self.cli,
+                        request,
+                        self.handle_agent_event,
+                    )
                     if result.session_id:
                         self.session_id = result.session_id
                 else:
