@@ -122,6 +122,31 @@ def test_upload_diagnosis_doc_requires_diagnosis_task(tmp_path):
         engine.dispose()
 
 
+def test_upload_diagnosis_doc_zip_archive(tmp_path):
+    """问题定位任务：压缩包（.zip）等二进制辅助文档同样允许上传并原样落盘。"""
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_diagnosis_task(db, project_path=str(tmp_path))
+            ws_id, task_id = workspace.id, task.id
+        client = TestClient(_build_app(SessionLocal, user))
+
+        zip_bytes = b"PK\x03\x04" + b"fake-zip-archive-bytes"
+        resp = client.post(
+            f"/api/workspaces/{ws_id}/tasks/{task_id}/upload-diagnosis-doc",
+            files={"file": ("crash-logs.zip", zip_bytes, "application/zip")},
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        assert payload["status"] == "success"
+        cli_path = payload["path"]
+        assert cli_path.endswith(os.path.join(".sdd", "diagnosis", "crash-logs.zip"))
+        with open(cli_path, "rb") as f:
+            assert f.read() == zip_bytes
+    finally:
+        engine.dispose()
+
+
 def test_create_diagnosis_task_uses_phenomenon_as_description():
     from app.domains.task.services.task_service import create_task_record_for_provision
 

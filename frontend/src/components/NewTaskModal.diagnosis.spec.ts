@@ -138,4 +138,25 @@ describe('NewTaskModal diagnosis mode', () => {
 
     expect(apiMock.post).not.toHaveBeenCalled()
   })
+
+  it('does not restrict diagnosis doc upload file types', async () => {
+    const wrapper = await mountModal()
+    await diagnosisTypeCard(wrapper).trigger('click')
+    await flushPromises()
+
+    const diagInput = wrapper.find('input[type="file"][multiple]')
+    expect(diagInput.exists()).toBe(true)
+    // 问题定位诊断文档：不限类型（日志/CSV/压缩包等），accept 限制已移除
+    expect(diagInput.attributes('accept')).toBeUndefined()
+  })
+
+  it('keeps the development spec upload type restriction unchanged', async () => {
+    const wrapper = await mountModal()
+    await flushPromises()
+
+    const specInput = wrapper.find('#spec-upload-ws-1')
+    expect(specInput.exists()).toBe(true)
+    // 需求开发侧：spec 上传白名单保持不变，不受诊断上传放开影响
+    expect(specInput.attributes('accept')).toBe('.pdf,.doc,.docx,.md,.txt')
+  })
 })

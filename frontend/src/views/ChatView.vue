@@ -647,12 +647,12 @@ const statusModelText = (card: any): string => {
                   <p class="diag-panel-subtitle">{{ $t('diagnosis.docs_upload_hint') }}</p>
                 </div>
                 <div class="diag-panel-actions">
+                  <!-- 问题定位诊断文档：类型不限（日志/CSV/压缩包等），后端 upload-diagnosis-doc 无扩展名限制 -->
                   <input
                     id="diag-panel-file"
                     type="file"
                     class="diag-hidden-input"
                     multiple
-                    accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
                     @change="handleDiagnosisDocSelect"
                   />
                   <label for="diag-panel-file" class="btn-ghost diag-upload-btn" :class="{ disabled: diagDocs.uploading }">
