@@ -9,6 +9,14 @@ const apiMock = vi.hoisted(() => ({
   post: vi.fn(),
 }))
 
+const routerMock = vi.hoisted(() => ({
+  push: vi.fn(),
+}))
+
+vi.mock('vue-router', () => ({
+  useRouter: () => routerMock,
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key, locale: { value: 'zh' } }),
 }))
@@ -88,11 +96,13 @@ const mockQueuesList = (queues: any[] = sampleQueues) => {
     if (path.includes('/export.zip') || path.includes('/export.md')) {
       return Promise.resolve({ data: {} })
     }
-    if (path.includes('/cases')) {
-      return Promise.resolve({ data: { items: [], total: 0, page: 1, page_size: 200 } })
-    }
     return Promise.resolve({ data: { items: queues, total: queues.length, page: 1, page_size: 20 } })
   })
+  apiMock.post.mockImplementation(() =>
+    Promise.resolve({
+      data: { id: 'q1', status: 'CONSUMED', case_count: 3, exported_count: 3 },
+    }),
+  )
 }
 
 const mountView = async () => {
@@ -111,6 +121,7 @@ describe('RagQueueView (案例同步队列·批次形态)', () => {
     setActivePinia(createPinia())
     apiMock.get.mockReset()
     apiMock.post.mockReset()
+    routerMock.push.mockReset()
   })
 
   it('渲染标题、副标题与工具栏（工作区/状态筛选/刷新）', async () => {
@@ -139,7 +150,19 @@ describe('RagQueueView (案例同步队列·批次形态)', () => {
     expect(wrapper.text()).toContain('rag_queue.detail')
   })
 
-  it('点击「下载队列」调用队列打包下载接口（首次下载后锁定为终态）', async () => {
+  it('点击「查看案例」下钻到队列详情路由（不再使用抽屉）', async () => {
+    mockQueuesList()
+    const wrapper = await mountView()
+
+    const detailBtn = wrapper.findAll('button').find((b) => b.text().includes('rag_queue.detail'))
+    expect(detailBtn).toBeDefined()
+    await detailBtn!.trigger('click')
+    await flushPromises()
+
+    expect(routerMock.push).toHaveBeenCalledWith('/ops/rag-queue/q1')
+  })
+
+  it('点击「下载队列」：拉取 ZIP -> 本地保存 -> 保存成功后才调用标记接口', async () => {
     mockQueuesList()
     const wrapper = await mountView()
 
@@ -152,5 +175,11 @@ describe('RagQueueView (案例同步队列·批次形态)', () => {
       String(call[0]).includes('/rag/queues/q1/export.zip'),
     )
     expect(exportCall).toBeDefined()
+
+    // 保存成功（jsdom 走 <a download> 降级路径）后才调用确认标记接口
+    const completeCall = apiMock.post.mock.calls.find((call) =>
+      String(call[0]).includes('/rag/queues/q1/export/complete'),
+    )
+    expect(completeCall).toBeDefined()
   })
 })

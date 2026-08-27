@@ -70,8 +70,24 @@ export type DesktopCommandExitEvent = {
   finishedAt: string
 }
 
+export type DesktopSaveResult = {
+  saved: boolean
+  canceled: boolean
+  savedPath: string | null
+  error?: string
+}
+
+export type DesktopSaveRequest = {
+  suggestedName: string
+  data: ArrayBuffer | Uint8Array
+  mimeType?: string
+}
+
 export type SddDesktopApi = {
   platform: string
+  download: {
+    save: (payload: DesktopSaveRequest) => Promise<DesktopSaveResult>
+  }
   git: {
     selectDirectory: () => Promise<DesktopDirectorySelection>
     validateGitRepo: (repoPath: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>

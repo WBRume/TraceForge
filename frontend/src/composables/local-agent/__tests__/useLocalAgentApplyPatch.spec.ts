@@ -53,6 +53,7 @@ const createDesktop = (overrides: Partial<SddDesktopApi['git']> = {}): SddDeskto
   process: {} as SddDesktopApi['process'],
   config: {} as SddDesktopApi['config'],
   system: {} as SddDesktopApi['system'],
+  download: { save: vi.fn() },
 })
 
 describe('applyProposalPatch', () => {

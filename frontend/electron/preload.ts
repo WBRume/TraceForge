@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const desktopApi = {
   platform: process.platform,
+  download: {
+    save: (payload: { suggestedName: string; data: ArrayBuffer | Uint8Array; mimeType?: string }) =>
+      ipcRenderer.invoke('sdd:download:save', payload),
+  },
   git: {
     selectDirectory: () => ipcRenderer.invoke('sdd:git:select-directory'),
     validateGitRepo: (repoPath: string) => ipcRenderer.invoke('sdd:git:validate-repo', { repoPath }),

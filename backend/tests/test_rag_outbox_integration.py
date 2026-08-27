@@ -4,8 +4,8 @@
 覆盖：
 - 审批通过后入队 -> 追加到当前 RUNNING 队列（无则自动新建）
 - 内容未变化重复 enqueue 不新建队列
-- 队列打包下载成功 -> CONSUMED 终态 + 案例 EXPORTED，再次打包幂等
-- 单案例下载 -> 案例 EXPORTED 但队列仍 RUNNING
+- 打包下载本身不改变状态；保存成功后确认 -> CONSUMED 终态 + 案例 EXPORTED，再次确认幂等
+- 单案例下载本身不改变状态；保存成功后确认 -> 案例 EXPORTED 但队列仍 RUNNING
 - 队列终态后新审批案例 -> 自动创建新 RUNNING 队列
 - 审批后定位结果更新 -> 新版本移入当前 RUNNING 队列
 - 审批前定位结果更新不入队
@@ -126,7 +126,7 @@ def test_approve_case_enqueues_into_workspace_running_queue():
         engine.dispose()
 
 
-def test_queue_export_marks_consumed_and_re_export_is_idempotent():
+def test_queue_export_does_not_mark_until_confirmed():
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
@@ -135,8 +135,18 @@ def test_queue_export_marks_consumed_and_re_export_is_idempotent():
             row = outbox_service.enqueue_case_published(db, case)
             queue = _queues(db)[0]
 
+            # 打包下载本身不改变状态（“点击下载时不应标记”）
             content = outbox_service.export_queue_zip(db, queue)
             assert content.startswith(b"PK")
+            db.refresh(queue)
+            db.refresh(row)
+            assert queue.status == RagQueueStatus.RUNNING.value
+            assert queue.consumed_at is None
+            assert row.status == RagOutboxStatus.QUEUED.value
+            assert row.exported_at is None
+
+            # 保存成功后确认 -> 首次确认锁定 CONSUMED 终态 + 全部案例 EXPORTED
+            outbox_service.mark_queue_exported(db, queue)
             db.refresh(queue)
             db.refresh(row)
             assert queue.status == RagQueueStatus.CONSUMED.value
@@ -144,11 +154,14 @@ def test_queue_export_marks_consumed_and_re_export_is_idempotent():
             assert row.status == RagOutboxStatus.EXPORTED.value
             assert row.exported_at is not None
 
-            # 终态后再次下载：幂等重新打包，状态不变（重试设计）
+            # 终态后再次下载 + 再次确认：幂等，状态不变（重试设计）
             content2 = outbox_service.export_queue_zip(db, queue)
             assert content2.startswith(b"PK")
+            outbox_service.mark_queue_exported(db, queue)
             db.refresh(queue)
+            db.refresh(row)
             assert queue.status == RagQueueStatus.CONSUMED.value
+            assert row.status == RagOutboxStatus.EXPORTED.value
 
             with zipfile.ZipFile(io.BytesIO(content2)) as zf:
                 names = zf.namelist()
@@ -160,7 +173,7 @@ def test_queue_export_marks_consumed_and_re_export_is_idempotent():
         engine.dispose()
 
 
-def test_single_case_export_marks_exported_without_consuming_queue():
+def test_single_case_export_does_not_mark_until_confirmed():
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
@@ -169,10 +182,16 @@ def test_single_case_export_marks_exported_without_consuming_queue():
             row = outbox_service.enqueue_case_published(db, case)
             queue = _queues(db)[0]
 
+            # 单案例下载本身不改变状态
             content = outbox_service.build_single_case_markdown(db, row)
             assert content.startswith("---")
-            outbox_service.mark_case_exported(db, row)
+            db.refresh(queue)
+            db.refresh(row)
+            assert queue.status == RagQueueStatus.RUNNING.value
+            assert row.status == RagOutboxStatus.QUEUED.value
 
+            # 保存成功后确认 -> 标记 EXPORTED，但队列仍 RUNNING
+            outbox_service.mark_case_exported(db, row)
             db.refresh(queue)
             db.refresh(row)
             assert queue.status == RagQueueStatus.RUNNING.value
@@ -191,6 +210,7 @@ def test_queue_consumed_then_new_approval_creates_new_running_queue():
             outbox_service.enqueue_case_published(db, case)
             first_queue = _queues(db)[0]
             outbox_service.export_queue_zip(db, first_queue)
+            outbox_service.mark_queue_exported(db, first_queue)
             db.refresh(first_queue)
             assert first_queue.status == RagQueueStatus.CONSUMED.value
 
@@ -340,6 +360,7 @@ def test_queues_are_isolated_by_workspace():
 
             # 各自独立消费：消费 A 不影响 B
             outbox_service.export_queue_zip(db, queue_a)
+            outbox_service.mark_queue_exported(db, queue_a)
             db.refresh(queue_a)
             db.refresh(queue_b)
             db.refresh(row_a)
@@ -505,3 +526,30 @@ def test_ops_queue_sources_no_longer_include_rag():
         "bootstrap",
         "skill_analysis",
     }
+
+
+def test_content_disposition_ascii_filename_keeps_plain_header():
+    from app.domains.rag.routers.outbox import _content_disposition
+
+    header = _content_disposition("RAG-228f39dc-001.zip", "rag-queue.zip")
+    assert header == 'attachment; filename="RAG-228f39dc-001.zip"'
+    # Starlette 会用 latin-1 编码响应头，纯 ASCII 名必须可直接编码
+    header.encode("latin-1")
+
+
+def test_content_disposition_non_ascii_filename_uses_rfc5987_filename_star():
+    from urllib.parse import unquote
+
+    from app.domains.rag.routers.outbox import _content_disposition
+
+    filename = "案例一：接口偶发超时.md"
+    header = _content_disposition(filename, "case.md")
+
+    # 整体头仍须 latin-1 可编码（修复 500 UnicodeEncodeError 的核心断言）
+    header.encode("latin-1")
+
+    assert header.startswith('attachment; filename="case.md"; filename*=UTF-8\'\'')
+    encoded = header.split("UTF-8''", 1)[1]
+    assert "%" in encoded
+    # percent 解码后可还原原始中文文件名
+    assert unquote(encoded) == filename

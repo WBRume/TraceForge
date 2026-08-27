@@ -72,7 +72,7 @@ const opsNavItems = computed(() => [
     label: t('rag_queue.entry'),
     icon: BookMarked,
     to: '/ops/rag-queue',
-    active: routeName.value === 'ragQueueList',
+    active: routeName.value === 'ragQueueList' || routeName.value === 'ragQueueDetail',
   },
 ])
 
