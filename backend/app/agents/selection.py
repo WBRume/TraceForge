@@ -18,6 +18,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.agents.run_logging import run_agent_backend_with_logging
 from app.config import settings
 from app.core.logging import get_logger
 from app.engine.claude_bridge import create_cli_bridge
@@ -45,7 +46,7 @@ AGENT_BACKEND_META: Dict[str, Dict[str, Any]] = {
     },
     "dsh": {
         "value": "dsh",
-        "label": "DSH (JSON-RPC)",
+        "label": "DSH (Web Host)",
         "supports_resume": True,
         "preferred_mode": "server",
     },
@@ -82,14 +83,6 @@ def list_agent_backends() -> list[Dict[str, Any]]:
     for meta in AGENT_BACKEND_META.values():
         item = dict(meta)
         item["supports_fork"] = backend_supports_fork(meta["value"])
-        if meta["value"] == "dsh" and dsh_server_mode_enabled():
-            # server 模式下 dsh 能力完整（resume / usage / 工具事件）
-            item = {
-                **item,
-                "label": "DSH (JSON-RPC)",
-                "supports_resume": True,
-                "preferred_mode": "server",
-            }
         options.append(item)
     return options
 
@@ -123,15 +116,11 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
     return resolved
 
 
-def dsh_server_mode_enabled() -> bool:
-    return bool(str(getattr(settings, "DSH_SERVER_URL", "") or "").strip())
-
-
 def create_agent_backend_by_name(backend_name: Optional[str] = None):
     """按名称创建统一 AgentBackend 实例（engine 路径使用）。
 
-    claude-code 返回双接口 ClaudeCodeAdapter；dsh 在配置 DSH_SERVER_URL 时
-    走 Web Host server 模式（支持 resume/事件/usage），否则 headless CLI。
+    claude-code 返回双接口 ClaudeCodeAdapter；dsh 固定走 Web Host server 模式
+    （支持 resume/事件/usage/流式），不会再回退 headless CLI。
     """
     from app.agents.registry import get_agent_backend
 
@@ -144,11 +133,7 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None):
             server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
         )
     if name == "dsh":
-        if dsh_server_mode_enabled():
-            from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
-
-            return DshServerAdapter(server_url=str(settings.DSH_SERVER_URL).strip())
-        return get_agent_backend("dsh", dsh_cli=getattr(settings, "DSH_CLI_PATH", "dsh"))
+        return get_agent_backend("dsh", server_url=str(settings.DSH_SERVER_URL).strip())
     return get_agent_backend(name)
 
 
@@ -242,7 +227,7 @@ class LegacyBridgeShim:
                 target_dir=project_path,
             )
         if resume_id and not getattr(self.backend.capabilities, "supports_resume", True):
-            # 例：DSH headless 不支持 resume；降级为新会话而非报错
+            # 后端不支持 resume 时降级为新会话而非报错
             logger.warning(
                 "agent backend {} does not support resume; starting fresh session (dropped session_id={})",
                 self.backend_name,
@@ -256,6 +241,12 @@ class LegacyBridgeShim:
             project_path=project_path,
             session_id=resume_id,
             env=dict(env_overrides or {}),
+            metadata={
+                "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
+                "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
+                "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
+                "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
+            },
             timeout_seconds=float(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200),
             startup_timeout_seconds=float(
                 getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
@@ -275,7 +266,7 @@ class LegacyBridgeShim:
                 await result
 
         async def _run() -> None:
-            result = await self.backend.run(request, _on_event)
+            result = await run_agent_backend_with_logging(self.backend, request, _on_event)
             if result and result.session_id:
                 self._session_id = result.session_id
 

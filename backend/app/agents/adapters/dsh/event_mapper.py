@@ -141,7 +141,7 @@ def map_dsh_event(event: dict[str, Any]) -> List[AgentEvent]:
             if text:
                 events.append(AgentEvent(
                     type="thinking",
-                    payload={"text": text},
+                    payload={"text": text, "delta": text},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),

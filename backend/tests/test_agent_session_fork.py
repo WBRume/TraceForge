@@ -15,7 +15,8 @@ if BACKEND_ROOT not in sys.path:
 
 from app.agents.adapters.claude_code import claude_code_adapter
 from app.agents.adapters.dsh import session_files
-from app.agents.adapters.dsh.dsh_adapter import DSHAdapter, dsh_sessions_root
+from app.agents.adapters.dsh.dsh_adapter import dsh_sessions_root
+from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 from app.agents.errors import SessionForkError
 
 
@@ -161,7 +162,7 @@ class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
         self.assertEqual(found[0], "session-old")
 
 
-class DshAdapterForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
+class DshServerForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
     async def test_fork_session_returns_new_id_under_target_cwd(self):
         baseline_dir = os.path.join(self._home.name, "baseline")
         thread_dir = os.path.join(self._home.name, "thread")
@@ -177,7 +178,7 @@ class DshAdapterForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
                 "cwd": os.path.abspath(baseline_dir), "delegationDepth": 0,
             }) + "\n")
 
-        adapter = DSHAdapter()
+        adapter = DshServerAdapter("http://mock:3080")
         new_id = await adapter.fork_session(
             "session-base", source_dir=baseline_dir, target_dir=thread_dir
         )
@@ -231,7 +232,6 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
 
         bridge = SubprocessCliBridge(cli_path="claude")
         with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
-             mock.patch.object(bridge, "_open_session_trace", lambda **kw: None), \
              mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
             events: list[dict] = []
 
@@ -280,7 +280,6 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
 
         bridge = SubprocessCliBridge(cli_path="claude")
         with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
-             mock.patch.object(bridge, "_open_session_trace", lambda **kw: None), \
              mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
             async def on_event(event: dict) -> None:
                 return None
@@ -426,6 +425,19 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
             await adapter._rpc("session.cancel", {"sessionId": "x"})
         await adapter._client.aclose()
 
+    async def test_resolve_session_model_reads_current_model(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter(server_url="http://mock:3080")
+        adapter._rpc = mock.AsyncMock(return_value={
+            "current": {"provider": "deepseek-official", "model": "deepseek-v4-flash"},
+        })
+
+        model = await adapter._resolve_session_model("session-1")
+
+        adapter._rpc.assert_awaited_once_with("session.models", {"sessionId": "session-1"})
+        self.assertEqual(model, "deepseek-official/deepseek-v4-flash")
+
     def test_event_mapper_extracts_text_and_usage(self):
         from app.agents.adapters.dsh.dsh_server_adapter import map_dsh_event
 
@@ -538,6 +550,77 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
                 "outcome": "rejected",
             },
         )
+
+    async def test_delta_only_stream_emits_final_text_fallback(self):
+        import app.agents.adapters.dsh.dsh_server_adapter as dsh_mod
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        frames = [
+            json.dumps({
+                "type": "server-request",
+                "rpcId": "rpc-delta-1",
+                "method": "session/event",
+                "payload": {
+                    "sessionId": "session-1",
+                    "event": {
+                        "type": "assistant/chunk",
+                        "data": {"chunk": {"type": "text-delta", "text": "Hel"}},
+                    },
+                },
+            }),
+            json.dumps({
+                "type": "server-request",
+                "rpcId": "rpc-delta-2",
+                "method": "session/event",
+                "payload": {
+                    "sessionId": "session-1",
+                    "event": {
+                        "type": "assistant/chunk",
+                        "data": {"chunk": {"type": "text-delta", "text": "lo"}},
+                    },
+                },
+            }),
+            json.dumps({
+                "type": "server-request",
+                "rpcId": "rpc-turn",
+                "method": "session/event",
+                "payload": {
+                    "sessionId": "session-1",
+                    "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}},
+                },
+            }),
+        ]
+
+        class _FakeWs:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+            def __aiter__(self):
+                async def _items():
+                    for frame in frames:
+                        yield frame
+                return _items()
+
+        adapter = DshServerAdapter(server_url="http://mock:3080")
+        seen: list[str] = []
+
+        async def _on_event(event):
+            seen.append(event.type)
+            if event.type == "text":
+                self.assertEqual(event.payload["text"], "Hello")
+
+        with mock.patch.object(dsh_mod.websockets, "connect", return_value=_FakeWs()):
+            result = await adapter._consume_events(
+                "session-1",
+                _on_event,
+            )
+
+        self.assertEqual(result["text"], "Hello")
+        self.assertEqual(seen.count("text_delta"), 2)
+        self.assertEqual(seen.count("text"), 1)
 
     async def test_dsh_approval_response_uses_host_wire_contract(self):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter

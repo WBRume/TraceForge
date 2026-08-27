@@ -8,7 +8,8 @@
 - `GET(ws) /api/events.mux`：全会话事件下行流（assistant chunk / tool call / usage）
 - 冷会话在 prompt 时自动 `ctx.agents.resume`，天然支持跨进程多轮续会话
 
-与 headless CLI 模式相比：支持 resume、工具事件、token usage 与多轮。
+Web Host server 模式是 dsh 在 TraceForge 中的唯一接入方式（headless CLI 已移除），
+支持 resume、工具事件、token usage、流式文本与多轮。
 会话 fork 复用文件级实现（session_files），因为原生 session.fork 继承源会话
 cwd，而评审线程需要落在自己的工作目录。
 """
@@ -80,7 +81,7 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
             if chunk_type == "reasoning-delta" and chunk_text:
                 return AgentEvent(
                     type="thinking",
-                    payload={"text": chunk_text, "provider": "dsh"},
+                    payload={"text": chunk_text, "delta": chunk_text, "provider": "dsh"},
                     provider="dsh",
                     raw=raw_event,
                 )
@@ -168,7 +169,7 @@ class DshServerAdapter(AgentBackend):
         preferred_mode="server",
     )
 
-    def __init__(self, server_url: str = "http://127.0.0.1:3097") -> None:
+    def __init__(self, server_url: str = "http://127.0.0.1:3080") -> None:
         self.server_url = server_url.rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
         self._running = False
@@ -225,6 +226,27 @@ class DshServerAdapter(AgentBackend):
             raise AgentError("DSH session.create returned no sessionId")
         return session_id
 
+    async def _resolve_session_model(
+        self,
+        session_id: str,
+        fallback: Optional[str] = None,
+    ) -> Optional[str]:
+        """从 web host 查询会话当前模型，避免启动状态显示 unknown。"""
+        if fallback:
+            return fallback
+        try:
+            value = await self._rpc("session.models", {"sessionId": session_id})
+            current = value.get("current") if isinstance(value, dict) else None
+            if not isinstance(current, dict):
+                return fallback
+            provider = str(current.get("provider") or "").strip()
+            model = str(current.get("model") or "").strip()
+            if not model:
+                return fallback
+            return f"{provider}/{model}" if provider else model
+        except Exception:
+            return fallback
+
     def _ws_url(self) -> str:
         return f"{self.server_url.replace('http://', 'ws://', 1)}/api/events.mux"
 
@@ -275,6 +297,22 @@ class DshServerAdapter(AgentBackend):
                             delta_parts.append(str(unified.payload["text"]))
                         await on_event(unified)
                     etype = str(event.get("type") or "")
+                    if etype == "assistant/message":
+                        # 若 DSH 只在完整 assistant/message 中给出 reasoning（未逐字
+                        # 推 reasoning-delta），这里补发一次完整 thinking。
+                        raw_data = event.get("data") if isinstance(event.get("data"), dict) else {}
+                        raw_msg = raw_data.get("message") if isinstance(raw_data.get("message"), dict) else raw_data
+                        blocks = raw_msg.get("content") if isinstance(raw_msg.get("content"), list) else []
+                        for block in blocks:
+                            if not isinstance(block, dict) or block.get("type") != "reasoning":
+                                continue
+                            reasoning = str(block.get("text") or block.get("content") or "").strip()
+                            if reasoning:
+                                await on_event(AgentEvent(
+                                    type="thinking",
+                                    payload={"text": reasoning, "provider": "dsh"},
+                                    provider="dsh",
+                                ))
                     if etype == "turn/end":
                         reason = event.get("data", {}).get("reason", {})
                         kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
@@ -284,7 +322,25 @@ class DshServerAdapter(AgentBackend):
                             "error": "error",
                             "max-tokens": "max-tokens",
                         }.get(kind, kind)
-                        return _finalize()
+                        finalize_result = _finalize()
+                        # 若流式过程中只收到 text-delta 而缺失完整 assistant/message，
+                        # 把累积文本作为完整 text 事件补发，确保前端收到落库的 assistant 消息。
+                        body = str(finalize_result.get("text") or "")
+                        if body and not text_parts:
+                            await on_event(AgentEvent(
+                                type="text",
+                                payload={"text": body, "provider": "dsh"},
+                                provider="dsh",
+                            ))
+                        # DSH 模型/provider 出错时没有正文，把具体错误写到 result，
+                        # 避免前端只看到空白的“Agent execution failed”。
+                        if kind == "error" and not body:
+                            error_info = reason.get("error") if isinstance(reason, dict) else None
+                            if isinstance(error_info, dict):
+                                finalize_result["text"] = str(error_info.get("message") or "DSH stream error")
+                            else:
+                                finalize_result["text"] = "DSH stream error"
+                        return finalize_result
                 elif method in ("approval/requested", "question/requested"):
                     if method == "approval/requested":
                         approval_id = str(payload.get("approvalId") or "")
@@ -358,13 +414,14 @@ class DshServerAdapter(AgentBackend):
             if not session_id:
                 session_id = await self._create_session(request)
             self._session_id = session_id
+            model = await self._resolve_session_model(session_id, request.model)
 
             await _tracked_event(AgentEvent(
                 type="session_started",
                 payload={
                     "provider_session_id": session_id,
                     "provider": "dsh",
-                    "model": request.model,
+                    "model": model,
                     "directory": request.project_path,
                 },
                 provider="dsh",
