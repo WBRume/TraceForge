@@ -293,6 +293,8 @@
     "start_confirm_message": "启动后需求文档将切换为只读模式，不能继续修改。",
     "start_confirm_description": "请先在独立需求文档页面完成浏览与编辑。确认启动后，将进入会话协作并改为抽屉浏览。",
     "thinking": "AI 思考中...",
+    "agent_session_started": "Agent 会话已启动",
+    "ai_job_running": "AI 作业进行中",
     "terminal": "任务列表",
     "ai_assistant_name": "AI 助手",
     "copy": "复制内容",
