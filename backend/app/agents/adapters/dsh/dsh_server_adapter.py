@@ -8,7 +8,8 @@
 - `GET(ws) /api/events.mux`：全会话事件下行流（assistant chunk / tool call / usage）
 - 冷会话在 prompt 时自动 `ctx.agents.resume`，天然支持跨进程多轮续会话
 
-与 headless CLI 模式相比：支持 resume、工具事件、token usage 与多轮。
+Web Host server 模式是 dsh 在 TraceForge 中的唯一接入方式（headless CLI 已移除），
+支持 resume、工具事件、token usage、流式文本与多轮。
 会话 fork 复用文件级实现（session_files），因为原生 session.fork 继承源会话
 cwd，而评审线程需要落在自己的工作目录。
 """
@@ -168,7 +169,7 @@ class DshServerAdapter(AgentBackend):
         preferred_mode="server",
     )
 
-    def __init__(self, server_url: str = "http://127.0.0.1:3097") -> None:
+    def __init__(self, server_url: str = "http://127.0.0.1:3080") -> None:
         self.server_url = server_url.rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
         self._running = False

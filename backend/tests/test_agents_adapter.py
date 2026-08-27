@@ -273,43 +273,6 @@ class DSHEventMapperFixtureTest(unittest.TestCase):
         self.assertIn("result", mapped_types)
 
 
-class DSHAdapterRunTest(unittest.IsolatedAsyncioTestCase):
-    async def test_run_uses_headless_cli_and_emits_events(self):
-        import app.agents.adapters.dsh.dsh_adapter as dsh_mod
-        from app.agents.adapters.dsh.dsh_adapter import DSHAdapter
-
-        events: list[AgentEvent] = []
-        proc = MagicMock()
-        proc.stdout.readline = AsyncMock(side_effect=[b"hello\n", b""])
-        proc.stderr.read = AsyncMock(return_value=b"")
-        proc.wait = AsyncMock(return_value=0)
-
-        async def sink(event: AgentEvent) -> None:
-            events.append(event)
-
-        adapter = DSHAdapter(dsh_cli="fake-dsh")
-        with patch.object(dsh_mod.shutil, "which", return_value=r"D:\fake\dsh.cmd"), \
-                patch.object(dsh_mod.asyncio, "create_subprocess_exec", new=AsyncMock(return_value=proc)) as create:
-            result = await adapter.run(
-                AgentRunRequest(
-                    run_id="dsh-run-1",
-                    prompt="say hi",
-                    project_path=r"D:\work\tool\deepseek-harness",
-                ),
-                sink,
-            )
-
-        create.assert_awaited_once()
-        self.assertTrue(result.success)
-        self.assertEqual(result.finish_reason, "completed")
-        self.assertEqual(result.result_text, "hello")
-        self.assertTrue(any(e.type == "session_started" for e in events))
-        self.assertTrue(any(e.type == "text" for e in events))
-        self.assertTrue(any(e.type == "result" for e in events))
-        text_event = next(e for e in events if e.type == "text")
-        self.assertEqual(text_event.payload["text"], "hello")
-
-
 class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
     """用 fake HTTP client 验证 OpenCode server 模式 run() 的流程。"""
 
@@ -536,7 +499,7 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(opencode.name, "opencode")
         self.assertEqual(dsh.name, "dsh")
         self.assertEqual(opencode.capabilities.preferred_mode, "server")
-        self.assertEqual(dsh.capabilities.preferred_mode, "subprocess")
+        self.assertEqual(dsh.capabilities.preferred_mode, "server")
 
 
 if __name__ == "__main__":
