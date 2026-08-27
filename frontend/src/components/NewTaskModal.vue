@@ -297,12 +297,12 @@ onBeforeUnmount(() => {
               <div class="file-name text-slate-600">
                 {{ $t('diagnosis.docs_upload_placeholder') }}
               </div>
+              <!-- 问题定位诊断文档：类型不限（日志/CSV/压缩包等），后端 upload-diagnosis-doc 无扩展名限制 -->
               <input
                 :id="`diag-docs-upload-${props.wsId}`"
                 type="file"
                 class="hidden-input"
                 multiple
-                accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
                 @change="handleDiagnosisFiles"
               />
               <label :for="`diag-docs-upload-${props.wsId}`" class="btn-primary file-choose-btn">

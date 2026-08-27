@@ -44,6 +44,10 @@ def test_prompt_suffix_declares_diagnosis_contract():
             assert "[问题定位任务]" in suffix
             assert "现象: 接口偶发超时" in suffix
             assert "优先级: P1" in suffix
+            # 辅助文档目录指引：告知 agent 上传的日志/文档可能在 .sdd/diagnosis/ 下
+            assert ".sdd/diagnosis" in suffix
+            assert "辅助文档" in suffix
+            assert "日志" in suffix
             # 任务性质与定位优先约束
             assert "问题定位任务" in suffix and "不是一次性全量修复" in suffix
             assert "禁止一次性全量修复" in suffix
