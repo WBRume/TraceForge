@@ -293,6 +293,8 @@
     "start_confirm_message": "After the engine starts, the requirement document becomes read-only.",
     "start_confirm_description": "Please finish browsing and editing in the standalone document workspace first. After confirmation, chat will use a drawer view.",
     "thinking": "AI Thinking...",
+    "agent_session_started": "Agent session started",
+    "ai_job_running": "AI job running",
     "terminal": "Task List",
     "ai_assistant_name": "AI Assistant",
     "copy": "Copy message",

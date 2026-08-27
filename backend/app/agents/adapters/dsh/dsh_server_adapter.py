@@ -226,6 +226,27 @@ class DshServerAdapter(AgentBackend):
             raise AgentError("DSH session.create returned no sessionId")
         return session_id
 
+    async def _resolve_session_model(
+        self,
+        session_id: str,
+        fallback: Optional[str] = None,
+    ) -> Optional[str]:
+        """从 web host 查询会话当前模型，避免启动状态显示 unknown。"""
+        if fallback:
+            return fallback
+        try:
+            value = await self._rpc("session.models", {"sessionId": session_id})
+            current = value.get("current") if isinstance(value, dict) else None
+            if not isinstance(current, dict):
+                return fallback
+            provider = str(current.get("provider") or "").strip()
+            model = str(current.get("model") or "").strip()
+            if not model:
+                return fallback
+            return f"{provider}/{model}" if provider else model
+        except Exception:
+            return fallback
+
     def _ws_url(self) -> str:
         return f"{self.server_url.replace('http://', 'ws://', 1)}/api/events.mux"
 
@@ -393,13 +414,14 @@ class DshServerAdapter(AgentBackend):
             if not session_id:
                 session_id = await self._create_session(request)
             self._session_id = session_id
+            model = await self._resolve_session_model(session_id, request.model)
 
             await _tracked_event(AgentEvent(
                 type="session_started",
                 payload={
                     "provider_session_id": session_id,
                     "provider": "dsh",
-                    "model": request.model,
+                    "model": model,
                     "directory": request.project_path,
                 },
                 provider="dsh",

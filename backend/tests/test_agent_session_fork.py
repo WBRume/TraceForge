@@ -425,6 +425,19 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
             await adapter._rpc("session.cancel", {"sessionId": "x"})
         await adapter._client.aclose()
 
+    async def test_resolve_session_model_reads_current_model(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter(server_url="http://mock:3080")
+        adapter._rpc = mock.AsyncMock(return_value={
+            "current": {"provider": "deepseek-official", "model": "deepseek-v4-flash"},
+        })
+
+        model = await adapter._resolve_session_model("session-1")
+
+        adapter._rpc.assert_awaited_once_with("session.models", {"sessionId": "session-1"})
+        self.assertEqual(model, "deepseek-official/deepseek-v4-flash")
+
     def test_event_mapper_extracts_text_and_usage(self):
         from app.agents.adapters.dsh.dsh_server_adapter import map_dsh_event
 

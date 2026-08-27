@@ -18,6 +18,7 @@ import {
   type DiagnosisResultPayload,
 } from '@/types/diagnosis'
 import { useMarkdownExport } from '@/composables/useMarkdownExport'
+import { useTaskRuntimePanels, type TaskRuntimeStatusCard } from '@/composables/useTaskRuntimePanels'
 
 
 export function useChatViewModel() {
@@ -40,6 +41,9 @@ export function useChatViewModel() {
     message?: string | null
     error_message?: string | null
     context_json?: Record<string, any> | null
+    session_id?: string | null
+    started_at?: string | null
+    created_at?: string | null
   }
   type SpecBootstrapStatus = 'PENDING' | 'RUNNING' | 'READY' | 'FAILED' | 'STALE'
   type TaskSpecBootstrap = {
@@ -134,6 +138,7 @@ export function useChatViewModel() {
   const thinkingContent = ref('')
   const showThinking = ref(false)
   const thinkingExpanded = ref(false)
+  const taskRuntimePanels = useTaskRuntimePanels()
   const resetThinkingPanel = () => {
     thinkingContent.value = ''
     showThinking.value = false
@@ -216,6 +221,7 @@ export function useChatViewModel() {
   let ws: WebSocket | null = null
   let wsReconnectTimer: number | null = null
   let wsManualClose = false
+  let activeChatJobsRequestSeq = 0
   
   const hasTaskSpecDoc = (task: any): boolean => {
     return Boolean(String(task?.spec_doc_path || '').trim())
@@ -519,6 +525,31 @@ export function useChatViewModel() {
   const isJobExecuting = (status?: ChatAiJobStatus) => (
     status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL'
   )
+
+  const persistCurrentRuntimePanels = () => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return
+    const hasExecutingJob = Object.values(activeChatJobs.value).some(job => isJobExecuting(job.status))
+    if (!engineRunning.value && !hasExecutingJob) {
+      taskRuntimePanels.clear(taskId)
+      return
+    }
+    taskRuntimePanels.save(taskId, {
+      statusCards: pinnedCards.value.filter(card => card.type === 'status') as TaskRuntimeStatusCard[],
+      thinkingContent: thinkingContent.value,
+      showThinking: showThinking.value,
+      thinkingExpanded: thinkingExpanded.value,
+    })
+  }
+
+  const restoreRuntimePanels = (taskId: string) => {
+    const snapshot = taskRuntimePanels.restore(taskId)
+    pinnedCards.value = snapshot?.statusCards || []
+    thinkingContent.value = snapshot?.thinkingContent || ''
+    showThinking.value = Boolean(snapshot?.showThinking && snapshot.thinkingContent)
+    thinkingExpanded.value = snapshot?.thinkingExpanded || false
+    engineRunning.value = Boolean(snapshot)
+  }
   
   const syncEngineRunningFromJobs = () => {
     const hasActiveJob = Object.values(activeChatJobs.value).some(job => isJobExecuting(job.status))
@@ -630,17 +661,39 @@ export function useChatViewModel() {
   }
   
   const loadActiveChatJobs = async (taskId: string) => {
+    const requestSeq = ++activeChatJobsRequestSeq
     try {
       const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/ai-jobs`, {
         params: { active_only: true },
       })
       const items = (res.data?.items || []) as ChatAiJob[]
+      if (
+        requestSeq !== activeChatJobsRequestSeq
+        || String(currentTask.value?.id || '') !== String(taskId)
+      ) return
       activeChatJobs.value = {}
       for (const job of items) {
         upsertChatJob(job)
       }
-      if (!items.length) {
+      const executingJobs = items.filter(job => isJobExecuting(job.status))
+      if (!executingJobs.length) {
         engineRunning.value = false
+        pinnedCards.value = pinnedCards.value.filter(card => card.type !== 'status')
+        resetThinkingPanel()
+        taskRuntimePanels.clear(taskId)
+        return
+      }
+      if (!pinnedCards.value.some(card => card.type === 'status')) {
+        const job = executingJobs.find(item => Boolean(item.session_id)) || executingJobs[0]
+        const isSessionStarted = Boolean(job.session_id) && !job.context_json?.job_kind
+        pinnedCards.value.push({
+          id: `job-status-${job.id}`,
+          type: 'status',
+          status: isSessionStarted ? 'INIT' : 'RUNNING',
+          message: isSessionStarted ? t('chat.agent_session_started') : (job.message || t('chat.ai_job_running')),
+          model: String(job.context_json?.model || '').trim() || null,
+          created_at: job.started_at || job.created_at || new Date().toISOString(),
+        })
       }
     } catch (e) {
       console.warn('Failed to load active AI jobs', e)
@@ -1252,6 +1305,7 @@ export function useChatViewModel() {
   
   const selectTask = async (task: any) => {
     if (!task) return
+    persistCurrentRuntimePanels()
     if (task.id !== preferredSpecTaskId.value) {
       preferredSpecAssetId.value = ''
     }
@@ -1260,7 +1314,7 @@ export function useChatViewModel() {
     contextWindowDrawerLevel.value = 1
     contextWindow.reset()
     clearContextWindowRefreshTimer()
-    specDrawerTab.value = isDiagnosisTask.value ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
+    specDrawerTab.value = task.task_type === 'DIAGNOSIS' ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
     currentTask.value = task
     showTaskSkillsDrawer.value = false
     messages.value = []
@@ -1272,6 +1326,7 @@ export function useChatViewModel() {
     specBootstrap.value = null
     specBootstrapLoading.value = false
     resetThinkingPanel()
+    restoreRuntimePanels(String(task.id))
     resultsSummary.value = { 
       visible: (task.total_cost_usd || 0) > 0 || (task.total_duration_ms || 0) > 0, 
       totalDurationMs: task.total_duration_ms || 0, 
@@ -1279,7 +1334,6 @@ export function useChatViewModel() {
       history: [], 
       expanded: false 
     }
-    engineRunning.value = false
   
     const chatPath = `/ws/${route.params.wsId}/chat/${task.id}`
     if (route.path !== chatPath || String(route.params.taskId || '') !== String(task.id)) {

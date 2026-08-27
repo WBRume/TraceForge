@@ -40,6 +40,7 @@ import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowD
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
+import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 import TaskProvisionProgressModal from '@/components/TaskProvisionProgressModal.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
@@ -162,40 +163,15 @@ const statusModelText = (card: any): string => {
         </div>
       </div>
       <div class="task-list" :ref="rawVm.taskListContainer" @scroll="vm.handleTaskListScroll">
-        <div
+        <ChatTaskListItem
           v-for="task in vm.tasks"
           :key="task.id"
-          class="task-item group"
-          :class="{ active: vm.currentTask?.id === task.id }"
-          @click="vm.selectTask(task)"
-        >
-          <div class="task-item-content">
-            <div class="task-name-row">
-              <div class="task-name">{{ task.name }}</div>
-              <span
-                class="task-type-tag"
-                :class="task.task_type === 'DIAGNOSIS' ? 'is-diagnosis' : 'is-development'"
-              >
-                {{ task.task_type === 'DIAGNOSIS' ? $t('task_types.diagnosis') : $t('task_types.development') }}
-              </span>
-              <div class="task-status">
-                <span class="status-dot" :class="task.status.toLowerCase()"></span>
-                {{ task.status }}
-              </div>
-            </div>
-            <div class="task-meta" v-if="task.creator_name || task.created_at">
-              <span v-if="task.creator_name" class="task-creator">{{ task.creator_name }}</span>
-              <span v-if="task.created_at" class="task-date">{{ vm.formatTime(task.created_at) }}</span>
-            </div>
-          </div>
-          <DeleteActionButton
-            mode="icon"
-            class="delete-btn"
-            :title="$t('common.delete')"
-            :disabled="!vm.canDeleteTask"
-            @click.stop="vm.handleDeleteTask(task)"
-          />
-        </div>
+          :task="task"
+          :active="vm.currentTask?.id === task.id"
+          :can-delete="vm.canDeleteTask"
+          @select="vm.selectTask"
+          @delete="vm.handleDeleteTask"
+        />
         <div v-if="vm.taskListLoading && vm.tasks.length === 0" class="empty-hint">
           {{ $t('common.loading') }}
         </div>
