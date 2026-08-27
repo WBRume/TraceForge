@@ -33,7 +33,6 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
   const page = ref(1)
   const loading = ref(false)
   const keyword = ref('')
-  const category = ref<CaseFilterValue>('ALL')
   const status = ref<CaseFilterValue>('ALL')
   const priority = ref<CaseFilterValue>('ALL')
   const hasMore = computed(() => items.value.length < total.value)
@@ -41,7 +40,6 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
   const buildParams = (pageNo: number, pageSize: number) => {
     const params: Record<string, string | number> = { page: pageNo, page_size: pageSize }
     if (keyword.value.trim()) params.keyword = keyword.value.trim()
-    if (category.value !== 'ALL') params.category = category.value
     if (status.value !== 'ALL') params.status = status.value
     if (priority.value !== 'ALL') params.priority = priority.value
     return params
@@ -75,7 +73,6 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
 
   const resetFilters = () => {
     keyword.value = ''
-    category.value = 'ALL'
     status.value = 'ALL'
     priority.value = 'ALL'
   }
@@ -164,7 +161,7 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
     analysis_process: '',
     root_cause: '',
     solution: '',
-    category: 'TEMPORARY',
+    category: 'PUBLIC',
     priority: 'P2',
   })
 
@@ -180,7 +177,7 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
       analysis_process: '',
       root_cause: '',
       solution: '',
-      category: 'TEMPORARY',
+      category: 'PUBLIC',
       priority: 'P2',
     }
     formVisible.value = true
@@ -200,7 +197,7 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
       analysis_process: c.analysis_process || '',
       root_cause: c.root_cause || '',
       solution: c.solution || '',
-      category: c.category || 'TEMPORARY',
+      category: c.category || 'PUBLIC',
       priority: c.priority || 'P2',
     }
     formVisible.value = true
@@ -325,7 +322,6 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
     loading,
     hasMore,
     keyword,
-    category,
     status,
     priority,
     loadCases,

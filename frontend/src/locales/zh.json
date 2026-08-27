@@ -3045,7 +3045,6 @@
     "search_placeholder": "按标题 / 问题描述 / 根因 / 方案 / 代码上下文关键词检索",
     "create_button": "新建案例",
     "workspace_required": "请先选择工作区再执行该操作",
-    "filter_all": "全部",
     "status_all": "全部状态",
     "priority_all": "全部优先级",
     "category": {

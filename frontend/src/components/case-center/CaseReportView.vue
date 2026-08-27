@@ -146,7 +146,7 @@ const callChainItems = computed(() => {
               {{ vm.currentCase.priority || '-' }}
             </span>
             <span class="mgmt-status-pill" :class="categoryPillTone(vm.currentCase.category)">
-              {{ t(`case_center.category.${vm.currentCase.category || 'TEMPORARY'}`) }}
+              {{ t(`case_center.category.${vm.currentCase.category || 'PUBLIC'}`) }}
             </span>
           </h2>
           <p class="mgmt-subtitle">
@@ -329,10 +329,25 @@ const callChainItems = computed(() => {
         :placeholder="t('case_center.review_comment_placeholder')"
       />
       <template #footer>
-        <el-button @click="vm.reviewDialogVisible = false">{{ t('common.cancel') }}</el-button>
-        <el-button :type="vm.reviewConclusion === 'approve' ? 'success' : 'danger'" @click="vm.confirmReview()">
-          {{ vm.reviewConclusion === 'approve' ? t('case_center.action.approve') : t('case_center.action.reject') }}
-        </el-button>
+        <button class="btn-secondary" type="button" @click="vm.reviewDialogVisible = false">{{ t('common.cancel') }}</button>
+        <button
+          v-if="vm.reviewConclusion === 'approve'"
+          class="btn-primary"
+          type="button"
+          :disabled="vm.actionLoading"
+          @click="vm.confirmReview()"
+        >
+          <CheckCircle2 :size="16" /> {{ t('case_center.action.approve') }}
+        </button>
+        <button
+          v-else
+          class="btn-secondary case-btn-danger"
+          type="button"
+          :disabled="vm.actionLoading"
+          @click="vm.confirmReview()"
+        >
+          <XCircle :size="16" /> {{ t('case_center.action.reject') }}
+        </button>
       </template>
     </el-dialog>
   </div>
@@ -422,25 +437,6 @@ const callChainItems = computed(() => {
 .case-btn-danger:hover {
   background: #fef2f2;
   border-color: #fca5a5;
-}
-.case-report-actions .btn-primary,
-.case-report-actions .btn-secondary,
-.case-report-actions .case-btn-danger {
-  height: 36px;
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
-  line-height: 1.25;
-  box-sizing: border-box;
-}
-
-.case-report-actions .btn-primary {
-  box-shadow: none;
-}
-
-.case-report-actions .btn-primary:hover {
-  transform: none;
-  box-shadow: none;
-  text-shadow: none;
 }
 
 .report-state {

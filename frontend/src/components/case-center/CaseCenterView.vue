@@ -46,24 +46,24 @@ const workspaceFilter = computed({
 
 const searchInput = ref('')
 
-const categoryTabs = [
-  { label: 'ALL', value: 'ALL' },
-  { label: 'PUBLIC', value: 'PUBLIC' },
-  { label: 'PRODUCT', value: 'PRODUCT' },
-  { label: 'SITE', value: 'SITE' },
-  { label: 'TEMPORARY', value: 'TEMPORARY' },
-]
-
 const statusOptions = ['ALL', 'DRAFT', 'PENDING_REVIEW', 'IN_REVIEW', 'APPROVED', 'REJECTED']
 const priorityOptions = ['ALL', 'P0', 'P1', 'P2', 'P3']
 
+const statusSelectOptions = computed(() =>
+  statusOptions.map((s) => ({
+    label: s === 'ALL' ? t('case_center.status_all') : t(`case_center.status.${s}`),
+    value: s,
+  })),
+)
+const prioritySelectOptions = computed(() =>
+  priorityOptions.map((p) => ({
+    label: p === 'ALL' ? t('case_center.priority_all') : p,
+    value: p,
+  })),
+)
+
 const runSearch = () => {
   vm.keyword = searchInput.value
-  vm.applyFilters()
-}
-
-const selectCategory = (value: string) => {
-  vm.category = value
   vm.applyFilters()
 }
 
@@ -124,7 +124,7 @@ watch(activeWorkspaceId, () => {
       </div>
       <div class="cc-actions">
         <div class="search-box">
-          <Search class="w-4 h-4 search-icon" />
+          <Search :size="16" class="search-icon" />
           <input
             v-model="searchInput"
             type="text"
@@ -132,42 +132,26 @@ watch(activeWorkspaceId, () => {
             :placeholder="t('case_center.search_placeholder')"
             @keyup.enter="runSearch"
           />
-          <button class="btn-primary search-btn" @click="runSearch">{{ t('case_center.search') }}</button>
+          <button class="btn-primary" @click="runSearch">{{ t('case_center.search') }}</button>
         </div>
         <button class="btn-primary flex items-center gap-2" @click="vm.openCreateForm()">
-          <Plus class="w-4 h-4" /> {{ t('case_center.create_button') }}
+          <Plus :size="16" /> {{ t('case_center.create_button') }}
         </button>
       </div>
     </div>
 
     <div class="cc-filter-bar">
-      <div class="category-tabs">
-        <button
-          v-for="tab in categoryTabs"
-          :key="tab.value"
-          class="category-tab"
-          :class="{ active: vm.category === tab.value }"
-          @click="selectCategory(tab.value)"
-        >
-          {{ tab.value === 'ALL' ? t('case_center.filter_all') : t(`case_center.category.${tab.value}`) }}
-        </button>
-      </div>
       <div class="filter-selects">
         <BaseSelect
           v-if="workspaceOptions.length > 0"
           v-model="workspaceFilter"
           :options="workspaceOptions"
-          size="sm"
           class="workspace-filter-select"
         />
-        <el-select v-model="vm.status" size="small" class="filter-select" @change="vm.applyFilters()">
-          <el-option v-for="s in statusOptions" :key="s" :label="s === 'ALL' ? t('case_center.status_all') : t(`case_center.status.${s}`)" :value="s" />
-        </el-select>
-        <el-select v-model="vm.priority" size="small" class="filter-select" @change="vm.applyFilters()">
-          <el-option v-for="p in priorityOptions" :key="p" :label="p === 'ALL' ? t('case_center.priority_all') : p" :value="p" />
-        </el-select>
+        <BaseSelect v-model="vm.status" :options="statusSelectOptions" class="filter-select" @update:model-value="vm.applyFilters()" />
+        <BaseSelect v-model="vm.priority" :options="prioritySelectOptions" class="filter-select" @update:model-value="vm.applyFilters()" />
         <button class="icon-btn refresh-btn" :title="t('common.refresh')" @click="vm.applyFilters()">
-          <RefreshCw class="w-4 h-4" />
+          <RefreshCw :size="16" />
         </button>
       </div>
     </div>
@@ -206,7 +190,7 @@ watch(activeWorkspaceId, () => {
 
         <div v-if="vm.hasMore" class="cc-load-more">
           <button class="btn-secondary" :disabled="vm.loading" @click="vm.loadMore()">
-            <Loader2 v-if="vm.loading" class="w-4 h-4 spin" />
+            <Loader2 v-if="vm.loading" :size="16" class="spin" />
             {{ t('common.load_more') }}
           </button>
         </div>
@@ -290,7 +274,7 @@ watch(activeWorkspaceId, () => {
   gap: 8px;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  padding: 4px 4px 4px 12px;
+  padding: 3px 3px 3px 12px;
   background: #ffffff;
 }
 
@@ -308,11 +292,6 @@ watch(activeWorkspaceId, () => {
   font-family: inherit;
 }
 
-.search-btn {
-  padding: 6px 14px;
-  font-size: 0.8rem;
-}
-
 .cc-filter-bar {
   display: flex;
   align-items: center;
@@ -323,35 +302,6 @@ watch(activeWorkspaceId, () => {
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-}
-
-.category-tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.category-tab {
-  border: none;
-  background: transparent;
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: #64748b;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.category-tab:hover {
-  color: var(--color-primary-600);
-  background: var(--color-primary-50);
-}
-
-.category-tab.active {
-  color: var(--color-primary-600);
-  background: var(--color-primary-100);
 }
 
 .filter-selects {
@@ -369,12 +319,14 @@ watch(activeWorkspaceId, () => {
 }
 
 .refresh-btn {
+  width: 42px;
+  height: 42px;
+  padding: 0;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #ffffff;
   color: #64748b;
   cursor: pointer;
-  padding: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;

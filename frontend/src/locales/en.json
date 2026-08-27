@@ -3040,7 +3040,6 @@
     "search_placeholder": "Search by title / problem description / root cause / solution / code context keywords",
     "create_button": "New Case",
     "workspace_required": "Please select a workspace first to perform this action",
-    "filter_all": "All",
     "status_all": "All Statuses",
     "priority_all": "All Priorities",
     "category": {
