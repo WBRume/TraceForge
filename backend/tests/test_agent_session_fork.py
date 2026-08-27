@@ -231,7 +231,6 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
 
         bridge = SubprocessCliBridge(cli_path="claude")
         with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
-             mock.patch.object(bridge, "_open_session_trace", lambda **kw: None), \
              mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
             events: list[dict] = []
 
@@ -280,7 +279,6 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
 
         bridge = SubprocessCliBridge(cli_path="claude")
         with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
-             mock.patch.object(bridge, "_open_session_trace", lambda **kw: None), \
              mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
             async def on_event(event: dict) -> None:
                 return None
