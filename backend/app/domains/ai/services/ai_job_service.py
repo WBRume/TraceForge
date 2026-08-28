@@ -404,12 +404,27 @@ def _cleanup_stale_running_jobs(
         heartbeat = job.updated_at or job.started_at or job.created_at
         if heartbeat and heartbeat >= cutoff:
             continue
-        job.status = AiJobStatus.FAILED
-        job.progress = 100
-        job.message = "Job interrupted unexpectedly"
-        job.error_message = "AI job was interrupted unexpectedly (restart/crash). Please retry."
-        job.finished_at = datetime.utcnow()
-        _clear_cancel_event(job.id)
+        job_context = job.context_json if isinstance(job.context_json, dict) else {}
+        if (
+            job.channel == AiJobChannel.TASK_CHAT
+            and job.task_id
+            and str(job_context.get("job_kind") or "").strip().upper() != JOB_KIND_DIAGNOSIS_SUMMARY
+        ):
+            task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+            _apply_task_chat_job_interrupted(
+                db,
+                job,
+                task,
+                "AI job was interrupted unexpectedly (restart/crash). Please retry.",
+                message="Job interrupted unexpectedly",
+            )
+        else:
+            job.status = AiJobStatus.FAILED
+            job.progress = 100
+            job.message = "Job interrupted unexpectedly"
+            job.error_message = "AI job was interrupted unexpectedly (restart/crash). Please retry."
+            job.finished_at = datetime.utcnow()
+            _clear_cancel_event(job.id)
         dirty = True
     if dirty:
         db.commit()
@@ -1648,6 +1663,97 @@ async def _on_engine_hitl(
     )
 
 
+def _apply_task_chat_job_interrupted(
+    db: Session,
+    job: SddAiJob,
+    task: Optional[SddTask],
+    reason: str,
+    *,
+    message: Optional[str] = None,
+    session_id: Optional[str] = None,
+    context_patch: Optional[Dict[str, Any]] = None,
+    result_patch: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """把 TASK_CHAT 作业和所属任务标记为可恢复的 INTERRUPTED。
+
+    自动失败（底层 API 报错、超时、欠费、网络抖动等）不应进入终态 FAILED；
+    FAILED 只允许用户通过失败复盘/关闭流程显式标记。
+    """
+    now = datetime.utcnow()
+    resolved_session_id = str(
+        session_id or job.session_id or (getattr(task, "session_id", None) or "")
+    ).strip() or None
+    reason_text = str(reason or "AI 执行异常")[:500]
+    job.status = AiJobStatus.INTERRUPTED
+    job.progress = 100
+    job.message = message or "AI 执行异常，可继续发送消息恢复"
+    job.error_message = None
+    job.session_id = resolved_session_id
+    job.interrupt_reason = reason_text
+    job.interrupted_by_id = None
+    job.interrupted_at = now
+    job.finished_at = now
+    patch = {"interrupted": True, "interrupted_at": now.isoformat() + "Z"}
+    if context_patch:
+        patch.update(context_patch)
+    job.context_json = _merge_json(job.context_json, patch)
+    if result_patch:
+        job.result_json = _merge_json(job.result_json, result_patch)
+    if task and task.status not in {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.BASELINED}:
+        # 用户已显式关闭/失败的任务不能被引擎回调降级回 INTERRUPTED。
+        task.status = TaskStatus.INTERRUPTED
+        task.session_id = resolved_session_id
+        task.error_message = None
+        task.interrupt_reason = reason_text
+        task.interrupted_by_id = None
+        task.interrupted_at = now
+    _clear_cancel_event(job.id)
+    db.commit()
+    db.refresh(job)
+    if task:
+        db.refresh(task)
+    return serialize_job(job)
+
+
+async def _mark_task_chat_job_interrupted(
+    job_id: str,
+    reason: str,
+    *,
+    message: Optional[str] = None,
+    session_id: Optional[str] = None,
+    context_patch: Optional[Dict[str, Any]] = None,
+    result_patch: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not job_id:
+        return None
+    db = SessionLocal()
+    try:
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        if (
+            not job
+            or job.channel != AiJobChannel.TASK_CHAT
+            or job.status in FINAL_STATUSES
+            or job.status == AiJobStatus.INTERRUPTED
+        ):
+            return None
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+        payload = _apply_task_chat_job_interrupted(
+            db,
+            job,
+            task,
+            reason,
+            message=message,
+            session_id=session_id,
+            context_patch=context_patch,
+            result_patch=result_patch,
+        )
+    finally:
+        db.close()
+    if payload:
+        await _broadcast_job_payload(payload, final=False)
+    return payload
+
+
 async def _on_engine_result(
     success: bool,
     result: str,
@@ -1687,37 +1793,24 @@ async def _on_engine_result(
         )
         return
 
-    await _update_job_state(
+    await _mark_task_chat_job_interrupted(
         job_id,
-        status=AiJobStatus.FAILED,
-        progress=100,
-        message="AI execution failed",
-        error_message=str(result or "Unknown failure"),
+        str(result or "AI execution failed"),
+        message="AI 执行异常，可继续发送消息恢复",
         result_patch={
             "duration_ms": duration_ms,
             "cost_usd": cost_usd,
         },
-        finalize=True,
     )
 
 
 async def _on_engine_error(error_text: str, job_id: str) -> None:
     if not job_id:
         return
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob.status).filter(SddAiJob.id == job_id).first()
-        if not job or job[0] == AiJobStatus.INTERRUPTED:
-            return
-    finally:
-        db.close()
-    await _update_job_state(
+    await _mark_task_chat_job_interrupted(
         job_id,
-        status=AiJobStatus.FAILED,
-        progress=100,
-        message="AI execution failed",
-        error_message=error_text,
-        finalize=True,
+        str(error_text or "AI execution failed"),
+        message="AI 执行异常，可继续发送消息恢复",
     )
 
 
@@ -2067,54 +2160,38 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             db.commit()
             db.refresh(job)
             payload = serialize_job(job)
-        elif is_timeout_interrupted:
-            now = datetime.utcnow()
+        else:
             task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
             session_id = str(
                 engine.session_id or job.session_id or (getattr(task, "session_id", None) or "")
             ).strip() or None
-            reason = (engine.last_result_text or "AI 会话超时")[:500]
-            job.status = AiJobStatus.INTERRUPTED
-            job.progress = 100
-            job.message = "AI 会话超时，可继续发送消息恢复"
-            job.error_message = None
-            job.session_id = session_id
-            job.interrupt_reason = reason
-            job.interrupted_by_id = None
-            job.interrupted_at = now
-            job.finished_at = now
-            job.context_json = _merge_json(
-                job.context_json,
-                {
+            if is_timeout_interrupted:
+                message = "AI 会话超时，可继续发送消息恢复"
+                context_patch = {
                     "timeout_interrupted": True,
                     "timeout_message": engine.last_result_text or "",
-                },
+                }
+                reason = engine.last_result_text or "AI 会话超时"
+            else:
+                message = "AI 执行异常，可继续发送消息恢复"
+                context_patch = {
+                    "interrupted_reason": engine.last_result_text or "AI 执行异常",
+                }
+                reason = engine.last_result_text or "AI 执行异常"
+            payload = _apply_task_chat_job_interrupted(
+                db,
+                job,
+                task,
+                reason,
+                message=message,
+                session_id=session_id,
+                context_patch=context_patch,
             )
-            if task:
-                task.status = TaskStatus.INTERRUPTED
-                task.session_id = session_id
-                task.error_message = None
-                task.interrupt_reason = reason
-                task.interrupted_by_id = None
-                task.interrupted_at = now
-            db.commit()
-            db.refresh(job)
-            if task:
-                db.refresh(task)
-            payload = serialize_job(job)
-        else:
-            job.status = AiJobStatus.FAILED
-            job.progress = 100
-            job.message = "AI execution failed"
-            job.error_message = (engine.last_result_text or "Unknown error")[:1600]
-            job.finished_at = datetime.utcnow()
-            db.commit()
-            db.refresh(job)
-            payload = serialize_job(job)
     finally:
         db.close()
-    await _broadcast_job_payload(payload, final=not is_timeout_interrupted)
-    if is_timeout_interrupted:
+    is_success = str(payload.get("status") or "") == AiJobStatus.SUCCESS.value
+    await _broadcast_job_payload(payload, final=is_success)
+    if not is_success:
         return
     queue_key = str(payload.get("queue_key") or "")
     if queue_key:
@@ -2147,16 +2224,26 @@ async def _execute_job(job_id: str) -> None:
                 latest = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
                 if not latest or latest.status in FINAL_STATUSES or latest.status == AiJobStatus.INTERRUPTED:
                     return
+                job_channel = latest.channel
+                job_context = latest.context_json if isinstance(latest.context_json, dict) else {}
+                job_kind = str(job_context.get("job_kind") or "").strip().upper()
             finally:
                 db.close()
-            await _update_job_state(
-                job_id,
-                status=AiJobStatus.FAILED,
-                progress=100,
-                message="AI execution failed",
-                error_message=str(exc),
-                finalize=True,
-            )
+            if job_channel == AiJobChannel.TASK_CHAT and job_kind != JOB_KIND_DIAGNOSIS_SUMMARY:
+                await _mark_task_chat_job_interrupted(
+                    job_id,
+                    str(exc),
+                    message="AI 执行异常，可继续发送消息恢复",
+                )
+            else:
+                await _update_job_state(
+                    job_id,
+                    status=AiJobStatus.FAILED,
+                    progress=100,
+                    message="AI execution failed",
+                    error_message=str(exc),
+                    finalize=True,
+                )
 
 
 async def _enqueue_job(job_id: str, expected_channel: Optional[AiJobChannel] = None) -> Optional[Dict[str, Any]]:
@@ -2339,13 +2426,10 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
             await _finalize_task_chat_job_from_engine(job_id, engine)
     except Exception as exc:
         logger.exception(f"Failed to resume HITL AI job {job_id}: {exc}")
-        await _update_job_state(
+        await _mark_task_chat_job_interrupted(
             job_id,
-            status=AiJobStatus.FAILED,
-            progress=100,
+            str(exc),
             message="Failed to resume job after HITL",
-            error_message=str(exc),
-            finalize=True,
         )
 
 

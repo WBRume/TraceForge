@@ -2550,9 +2550,11 @@ export function useChatViewModel() {
           timestamp: new Date().toLocaleTimeString()
         })
   
-        // 更新任务状�?
+        // 更新任务状态（自动执行异常保留为 INTERRUPTED 以便继续会话；
+        // FAILED 只能由用户通过失败复盘显式标记。）
         if (currentTask.value) {
-          currentTask.value.status = payload.success ? 'IDLE' : 'FAILED'
+          const terminalStatus = ['DONE', 'FAILED', 'BASELINED'].includes(currentTask.value.status)
+          currentTask.value.status = terminalStatus ? currentTask.value.status : (payload.success ? 'IDLE' : 'INTERRUPTED')
           const targetTask = tasks.value.find((task) => task.id === currentTask.value.id)
           if (targetTask) targetTask.status = currentTask.value.status
         }
