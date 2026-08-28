@@ -5,7 +5,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { formatApiError } from '@/utils/error'
 import { formatTime, formatToolInput, formatElapsedDuration } from '@/utils/chatFormatters'
-import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask } from '@/utils/diagnosisSummary'
+import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask, resolveDiagnosisSummaryStartedMs } from '@/utils/diagnosisSummary'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
@@ -1383,13 +1383,17 @@ export function useChatViewModel() {
     isDiagnosisSummaryActiveForTask(activeChatJobs.value, currentTask.value?.id),
   )
   const diagnosisSummaryJobId = ref('')
-  // 长耗时提示：总结开始时记录时间戳，每秒 tick 刷新「已等待」文案
-  const diagnosisSummaryStartedAt = ref(0)
+  // 长耗时提示：计时基准 = 后端 job 的 created_at（started_at 兜底）——发起时刻，
+  // 跨 session 不变；切换会话/重新挂载后时间依然准确，不再用组件本地挂载时刻。
+  // 每秒 tick 只刷新「当前时刻」，时长 = 当前时刻 − job 发起时刻。
   const diagnosisSummaryNowTick = ref(0)
   let diagnosisSummaryElapsedTimer: number | null = null
+  // 发起时刻来自后端 job.created_at（started_at 兜底），跨 session 不变
+  const diagnosisSummaryJobStartedMs = computed(() =>
+    resolveDiagnosisSummaryStartedMs(activeChatJobs.value, currentTask.value?.id),
+  )
   watch(diagnosisSummarizing, (active) => {
     if (active) {
-      diagnosisSummaryStartedAt.value = Date.now()
       diagnosisSummaryNowTick.value = Date.now()
       if (diagnosisSummaryElapsedTimer === null) {
         diagnosisSummaryElapsedTimer = window.setInterval(() => {
@@ -1402,8 +1406,9 @@ export function useChatViewModel() {
     }
   })
   const diagnosisSummarizingElapsed = computed(() => {
-    if (!diagnosisSummaryStartedAt.value || !diagnosisSummarizing.value) return 0
-    return Math.max(0, Math.floor((diagnosisSummaryNowTick.value - diagnosisSummaryStartedAt.value) / 1000))
+    const startedMs = diagnosisSummaryJobStartedMs.value
+    if (!startedMs || !diagnosisSummarizing.value) return 0
+    return Math.max(0, Math.floor((diagnosisSummaryNowTick.value - startedMs) / 1000))
   })
   const diagnosisSummarizingLabel = computed(() => {
     if (!diagnosisSummarizing.value) return t('diagnosis.summarize_case_button')
