@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import subprocess
+import codecs
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Any, Dict
 
@@ -215,13 +216,16 @@ class SubprocessCliBridge(CliBridgeBase):
     async def _read_loop(self):
         """逐块读取 stdout 并解析 NDJSON 事件流"""
         buffer = ""
+        # 增量 UTF-8 解码器：跨块保留未完成的多字节序列，
+        # 避免 4096 字节块边界把一个中文字符切碎后被 errors="replace" 替换成 U+FFFD 乱码。
+        utf8_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         try:
             while True:
                 chunk = await self.process.stdout.read(4096)
                 if not chunk:
                     break
-                
-                text = chunk.decode("utf-8", errors="replace")
+
+                text = utf8_decoder.decode(chunk)
                 buffer += text
                 
                 # 处理缓冲区内完整的所有行
