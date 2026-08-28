@@ -482,7 +482,7 @@ const statusModelText = (card: any): string => {
           >
             <Loader2 v-if="vm.diagnosisSummarizing" class="w-3 h-3 spin" />
             <Sparkles v-else class="w-3 h-3" />
-            {{ vm.isDiagnosisAdopted ? $t('diagnosis.case_adopted_label') : vm.diagnosisSummarizing ? $t('diagnosis.summarizing') : $t('diagnosis.summarize_case_button') }}
+            {{ vm.isDiagnosisAdopted ? $t('diagnosis.case_adopted_label') : vm.diagnosisSummarizingLabel }}
           </button>
         </template>
       </div>

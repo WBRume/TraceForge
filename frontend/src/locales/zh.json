@@ -3031,6 +3031,7 @@
     "case_create_failed": "生成案例失败",
     "summarize_case_button": "一键总结问题案例",
     "summarizing": "总结中…",
+    "summarizing_elapsed": "总结中 · 已等待 {elapsed}",
     "case_already_adopted_no_summary": "案例已被采纳，无法再次一键总结",
     "case_adopted_label": "已采纳",
     "summary_started": "已开始生成定位结果，请稍候",

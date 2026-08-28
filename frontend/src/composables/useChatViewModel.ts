@@ -1,10 +1,11 @@
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { formatApiError } from '@/utils/error'
-import { formatTime, formatToolInput } from '@/utils/chatFormatters'
+import { formatTime, formatToolInput, formatElapsedDuration } from '@/utils/chatFormatters'
+import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask } from '@/utils/diagnosisSummary'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
@@ -1369,12 +1370,42 @@ export function useChatViewModel() {
   const diagnosisResultSaving = ref(false)
   const diagnosisCaseCreating = ref(false)
   const diagnosisCaseLink = ref('')
-  // 每个任务/对话窗口独立记录总结中状态，互不覆盖
-  const diagnosisSummarizingTasks = ref<Record<string, boolean>>({})
-  const diagnosisSummarizing = computed(() => Boolean(
-    currentTask.value?.id && diagnosisSummarizingTasks.value[currentTask.value.id],
-  ))
+  // 「一键总结/重新生成」的 loading 状态以后端真实 job 状态为唯一事实源：
+  // 识别 TASK_CHAT 中 job_kind=DIAGNOSIS_SUMMARY 且仍在 PENDING/RUNNING 的任务，
+  // 与停止按钮一样跟随 activeChatJobs（由 WebSocket chat_job_update/done/failed 与 loadActiveChatJobs 实时驱动），
+  // 不再使用本地 3 分钟倒计时，避免“动效已消失但模型还在生成”的错位。
+  const diagnosisSummarizing = computed<boolean>(() =>
+    isDiagnosisSummaryActiveForTask(activeChatJobs.value, currentTask.value?.id),
+  )
   const diagnosisSummaryJobId = ref('')
+  // 长耗时提示：总结开始时记录时间戳，每秒 tick 刷新「已等待」文案
+  const diagnosisSummaryStartedAt = ref(0)
+  const diagnosisSummaryNowTick = ref(0)
+  let diagnosisSummaryElapsedTimer: number | null = null
+  watch(diagnosisSummarizing, (active) => {
+    if (active) {
+      diagnosisSummaryStartedAt.value = Date.now()
+      diagnosisSummaryNowTick.value = Date.now()
+      if (diagnosisSummaryElapsedTimer === null) {
+        diagnosisSummaryElapsedTimer = window.setInterval(() => {
+          diagnosisSummaryNowTick.value = Date.now()
+        }, 1000)
+      }
+    } else if (diagnosisSummaryElapsedTimer !== null) {
+      window.clearInterval(diagnosisSummaryElapsedTimer)
+      diagnosisSummaryElapsedTimer = null
+    }
+  })
+  const diagnosisSummarizingElapsed = computed(() => {
+    if (!diagnosisSummaryStartedAt.value || !diagnosisSummarizing.value) return 0
+    return Math.max(0, Math.floor((diagnosisSummaryNowTick.value - diagnosisSummaryStartedAt.value) / 1000))
+  })
+  const diagnosisSummarizingLabel = computed(() => {
+    if (!diagnosisSummarizing.value) return t('diagnosis.summarize_case_button')
+    const total = diagnosisSummarizingElapsed.value
+    if (total < 5) return t('diagnosis.summarizing')
+    return t('diagnosis.summarizing_elapsed', { elapsed: formatElapsedDuration(total) })
+  })
   const isDiagnosisAdopted = computed(() => Boolean(
     diagnosisResult.value?.status === 'CONFIRMED' || diagnosisCaseLink.value,
   ))
@@ -1409,6 +1440,17 @@ export function useChatViewModel() {
       diagnosisCaseLink.value = linked?.id || ''
     } catch (e) {
       diagnosisCaseLink.value = ''
+    }
+  }
+
+  /** 诊断总结 job 到达终态时，立即刷新定位结果卡片与案例链接（WebSocket 即时收敛路径）。 */
+  const refreshDiagnosisSummaryResult = (job: ChatAiJob) => {
+    if (!isDiagnosisSummaryJob(job)) return
+    const taskId = String(job.task_id || '')
+    const currentId = String(currentTask.value?.id || '')
+    if (!taskId || taskId !== currentId) return
+    if (job.status === 'SUCCESS' || job.status === 'FAILED' || job.status === 'CANCELLED') {
+      void loadDiagnosisResult()
     }
   }
 
@@ -1473,30 +1515,62 @@ export function useChatViewModel() {
     }
   }
 
-  const waitForDiagnosisSummary = async (jobId: string, taskId: string): Promise<void> => {
-    // 轮询后端任务状态直至收敛（SUCCESS / FAILED / CANCELLED），最多等待 3 分钟
+  const waitForDiagnosisSummary = async (jobId: string, taskId: string): Promise<string> => {
+    // 轮询后端任务状态直至收敛（SUCCESS / FAILED / CANCELLED）。
+    // 不再设 3 分钟硬上限：模型生成多久，加载动效就保持多久。
+    // WebSocket chat_job_done/failed 会先行收敛（终态被 upsertChatJob 移出 activeChatJobs），
+    // 这里作为无 WebSocket / 断线场景的兜底，负责把终态同步回本地状态。
     const terminal = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
-    const deadline = Date.now() + 3 * 60 * 1000
-    while (Date.now() < deadline) {
+    let terminalStatus = ''
+    let missingCount = 0
+    while (!terminalStatus) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000))
       try {
         const res = await api.get(
           `/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary/${jobId}`,
         )
+        missingCount = 0
         const status = String(res.data?.status || '')
         if (terminal.has(status)) {
+          terminalStatus = status
           break
         }
-      } catch (e) {
-        console.warn('Failed to poll diagnosis summary status', e)
-        // 短时抖动不终止轮询，直到超时
+      } catch (e: any) {
+        if (e?.response?.status === 404) {
+          // job 记录已不存在（如任务被清理）：给几次重试后按失败收敛，避免无限轮询
+          missingCount += 1
+          if (missingCount >= 3) {
+            console.warn('Diagnosis summary job disappeared', { jobId, taskId })
+            break
+          }
+        } else {
+          console.warn('Failed to poll diagnosis summary status', e)
+          // 短时抖动不终止轮询，继续等待终态
+        }
       }
+    }
+    // 无论经哪条路径收敛，都把当前总结 job 同步进 activeChatJobs：
+    // 终态会被 upsertChatJob 移出列表 → diagnosisSummarizing 自动关闭。
+    // 若该 job 已被 WebSocket 终态消息移出，说明已收敛过，跳过重复提示。
+    const alreadySynced = !activeChatJobs.value[jobId]
+    upsertChatJob({
+      id: jobId,
+      task_id: taskId,
+      status: (terminalStatus || 'FAILED') as ChatAiJobStatus,
+      progress: terminalStatus ? 100 : 0,
+      message: terminalStatus ? null : t('diagnosis.summary_failed'),
+      context_json: { job_kind: 'DIAGNOSIS_SUMMARY' },
+      created_at: new Date().toISOString(),
+    })
+    if (!terminalStatus && !alreadySynced) {
+      ElMessage.error(t('diagnosis.summary_failed'))
     }
     // 延迟一拍再拉取，确保定位结果卡片已由后端写入并广播
     await new Promise((resolve) => window.setTimeout(resolve, 1500))
     if (currentTask.value?.id === taskId) {
       await loadDiagnosisResult()
     }
+    return terminalStatus
   }
 
   const generateDiagnosisSummary = async (): Promise<boolean> => {
@@ -1506,10 +1580,6 @@ export function useChatViewModel() {
       ElMessage.warning(t('diagnosis.case_already_adopted_no_summary'))
       return false
     }
-    diagnosisSummarizingTasks.value = {
-      ...diagnosisSummarizingTasks.value,
-      [taskId]: true,
-    }
     diagnosisSummaryJobId.value = ''
     try {
       const res = await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary`)
@@ -1518,6 +1588,17 @@ export function useChatViewModel() {
         throw new Error(t('diagnosis.summary_job_missing'))
       }
       diagnosisSummaryJobId.value = jobId
+      // 立即播种 PENDING 状态，避免 WebSocket 事件未到达前出现动效空窗；
+      // 后续由 chat_job_update / 轮询驱动真实状态。
+      upsertChatJob({
+        id: jobId,
+        task_id: taskId,
+        status: 'PENDING',
+        progress: 0,
+        message: t('diagnosis.summary_started'),
+        context_json: { job_kind: 'DIAGNOSIS_SUMMARY' },
+        created_at: new Date().toISOString(),
+      } as ChatAiJob)
       ElMessage.success(t('diagnosis.summary_started'))
       await waitForDiagnosisSummary(jobId, taskId)
       return true
@@ -1525,15 +1606,9 @@ export function useChatViewModel() {
       ElMessage.error(formatApiError(e, t('diagnosis.summary_failed'), t))
       console.error('Failed to generate diagnosis summary', e)
       return false
-    } finally {
-      // 只清除当前任务自己的总结状态，避免影响其他对话窗口的独立按钮
-      if (diagnosisSummarizingTasks.value[taskId]) {
-        const next = { ...diagnosisSummarizingTasks.value }
-        delete next[taskId]
-        diagnosisSummarizingTasks.value = next
-        diagnosisSummaryJobId.value = ''
-      }
     }
+    // 不再需要 finally 手工清标志：diagnosisSummarizing 完全由 activeChatJobs 派生，
+    // 终态（SUCCESS/FAILED/CANCELLED）被 upsertChatJob 移出后即自动关闭。
   }
 
   const exportDiagnosisResult = async (payload: DiagnosisResultPayload) => {
@@ -2392,6 +2467,7 @@ export function useChatViewModel() {
         const job = payload?.job as ChatAiJob | undefined
         if (job?.id) {
           upsertChatJob(job)
+          refreshDiagnosisSummaryResult(job)
         }
         break
       }
@@ -2404,6 +2480,7 @@ export function useChatViewModel() {
           if (job.status === 'FAILED') {
             ElMessage.error(job.error_message || t('chat.ai_job_failed_default'))
           }
+          refreshDiagnosisSummaryResult(job)
         }
         scheduleContextWindowRefresh()
         break
@@ -2883,6 +2960,10 @@ export function useChatViewModel() {
     clearRuntimeUsageRefreshTimer()
     clearContextWindowRefreshTimer()
     clearReferenceHighlight()
+    if (diagnosisSummaryElapsedTimer !== null) {
+      window.clearInterval(diagnosisSummaryElapsedTimer)
+      diagnosisSummaryElapsedTimer = null
+    }
     if (ws) ws.close()
   })
 
@@ -3038,6 +3119,8 @@ export function useChatViewModel() {
     diagnosisResultLoading,
     diagnosisResultSaving,
     diagnosisSummarizing,
+    diagnosisSummarizingElapsed,
+    diagnosisSummarizingLabel,
     diagnosisSummaryJobId,
     isDiagnosisAdopted,
     exportDiagnosisResult,
