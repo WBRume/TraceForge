@@ -3026,6 +3026,7 @@
     "case_create_failed": "Failed to create case",
     "summarize_case_button": "Summarize Issue Case",
     "summarizing": "Summarizing…",
+    "summarizing_elapsed": "Summarizing · waited {elapsed}",
     "case_already_adopted_no_summary": "Case has been adopted; summarization is not allowed",
     "case_adopted_label": "Adopted",
     "summary_started": "Started generating the diagnosis result, please wait",
