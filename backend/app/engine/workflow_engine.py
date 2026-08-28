@@ -607,15 +607,15 @@ class WorkflowEngine:
             self._update_context_snapshot(
                 usage=usage,
                 raw_usage_json=(usage or {}).get("raw_usage"),
-                status="FAILED",
+                status="INTERRUPTED",
                 duration_ms=duration,
                 total_cost_usd=cost,
             )
-            logger.error(f"Agent execution failed: {result_text[:200]}")
-            self._update_task_status(TaskStatus.FAILED, result_text[:500])
-            self._update_task_metrics(cost, duration, "FAILED")
+            logger.error(f"Agent execution failed, session is resumable: {result_text[:200]}")
+            self._update_task_status(TaskStatus.INTERRUPTED, result_text[:500])
+            self._update_task_metrics(cost, duration, "INTERRUPTED")
             await self._push_result(False, result_text, duration, cost)
-            await self._push_status("FAILED", f"执行失败: {result_text[:200]}")
+            await self._push_status("INTERRUPTED", f"执行异常，可继续发送消息恢复: {result_text[:200]}")
             self.last_result_success = False
             self.last_result_text = result_text
             await self._emit_hook(
@@ -815,15 +815,15 @@ class WorkflowEngine:
             self._update_context_snapshot(
                 usage=usage,
                 raw_usage_json=usage.get("raw_usage") if usage else None,
-                status="FAILED",
+                status="INTERRUPTED",
                 duration_ms=duration,
                 total_cost_usd=cost,
             )
-            logger.error(f"CLI execution failed: {result_text[:200]}")
-            self._update_task_status(TaskStatus.FAILED, result_text[:500])
-            self._update_task_metrics(cost, duration, "FAILED")
+            logger.error(f"CLI execution failed, session is resumable: {result_text[:200]}")
+            self._update_task_status(TaskStatus.INTERRUPTED, result_text[:500])
+            self._update_task_metrics(cost, duration, "INTERRUPTED")
             await self._push_result(False, result_text, duration, cost)
-            await self._push_status("FAILED", f"执行失败: {result_text[:200]}")
+            await self._push_status("INTERRUPTED", f"执行异常，可继续发送消息恢复: {result_text[:200]}")
             self.last_result_success = False
             self.last_result_text = result_text
             await self._emit_hook(
@@ -1057,9 +1057,9 @@ class WorkflowEngine:
                     self._update_context_snapshot(status="INTERRUPTED")
                     await self._push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
                 else:
-                    logger.exception(f"WorkflowEngine error: {e}")
-                    self._update_task_status(TaskStatus.FAILED, error_text)
-                    await self._push_status("FAILED", f"引擎异常: {e}")
+                    logger.exception(f"WorkflowEngine error, session is resumable: {e}")
+                    self._update_task_status(TaskStatus.INTERRUPTED, error_text)
+                    await self._push_status("INTERRUPTED", f"引擎异常，可继续发送消息恢复: {e}")
                     self.last_result_success = False
                     self.last_result_text = error_text
                     await self._emit_hook(self.on_error, error_text, self.current_job_id or "")

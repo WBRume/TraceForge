@@ -238,7 +238,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     assert db.query(SddAiJob).count() == 2
 
 
-def test_execute_job_failure_converges_running_resume_attempt_to_failed(monkeypatch):
+def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
     task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
@@ -260,9 +260,11 @@ def test_execute_job_failure_converges_running_resume_attempt_to_failed(monkeypa
 
     check_db = SessionLocal()
     try:
-        failed = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
-        assert failed.status == AiJobStatus.FAILED
-        assert "simulated resume executor failure" in failed.error_message
+        interrupted = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
+        check_task = check_db.query(SddTask).filter(SddTask.id == task.id).one()
+        assert interrupted.status == AiJobStatus.INTERRUPTED
+        assert "simulated resume executor failure" in interrupted.interrupt_reason
+        assert check_task.status == TaskStatus.INTERRUPTED
     finally:
         check_db.close()
 
@@ -444,6 +446,50 @@ def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
         assert check_job.session_id == "session-1"
         assert check_job.interrupt_reason and "timed out" in check_job.interrupt_reason
         assert check_job.context_json.get("timeout_interrupted") is True
+    finally:
+        check_db.close()
+
+    assert broadcasted == [("job-1", False)]
+    assert scheduled == []
+
+
+def test_finalize_auto_failure_marks_task_and_job_interrupted(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    db.commit()
+    db.close()
+
+    engine = SimpleNamespace(
+        last_result_success=False,
+        last_result_text="API quota exceeded",
+        last_result_interrupted=False,
+        session_id="session-1",
+    )
+    broadcasted = []
+    scheduled = []
+
+    async def _broadcast(payload, *, final):
+        broadcasted.append((payload["id"], final))
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _broadcast)
+    monkeypatch.setattr(ai_job_service, "schedule_queue", lambda queue_key: scheduled.append(queue_key))
+
+    asyncio.run(ai_job_service._finalize_task_chat_job_from_engine(job.id, engine))
+
+    check_db = SessionLocal()
+    try:
+        check_task = check_db.query(SddTask).filter(SddTask.id == task.id).first()
+        check_job = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).first()
+        assert check_task.status == TaskStatus.INTERRUPTED
+        assert check_task.session_id == "session-1"
+        assert check_task.interrupt_reason and "API quota exceeded" in check_task.interrupt_reason
+        assert check_job.status == AiJobStatus.INTERRUPTED
+        assert check_job.session_id == "session-1"
+        assert check_job.interrupt_reason and "API quota exceeded" in check_job.interrupt_reason
+        assert check_job.context_json.get("interrupted") is True
+        assert check_job.context_json.get("timeout_interrupted") is None
     finally:
         check_db.close()
 
