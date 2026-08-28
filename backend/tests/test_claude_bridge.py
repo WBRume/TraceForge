@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -48,6 +49,87 @@ class ClaudeBridgeProcessTreeTest(unittest.IsolatedAsyncioTestCase):
 
         bridge._taskkill_tree.assert_awaited_once()
         bridge.process.terminate.assert_not_called()
+
+
+class _ChunkedStdout:
+    """按固定大小输出字节块，模拟流式 stdout.read(4096) 的块边界。"""
+
+    def __init__(self, payload: bytes, chunk_size: int):
+        self._chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+
+    async def read(self, _n: int) -> bytes:
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+
+class ClaudeBridgeUtf8StreamDecodeTest(unittest.IsolatedAsyncioTestCase):
+    """回归：流式块边界切断多字节 UTF-8 字符时不得产生 U+FFFD 乱码。
+
+    复现场景：CLI 以 stream-json 输出 NDJSON，包含中文的 JSON 行被 read(4096)
+    的块边界切碎。修复前逐块 decode("utf-8", errors="replace") 会把切碎的
+    字节替换成 \\ufffd（如「回顾校验」→「回校验」）；修复后用增量解码器
+    跨块保留未完成序列。
+    """
+
+    def _ndjson(self, *payloads):
+        return b"".join(
+            (json.dumps(p, ensure_ascii=False) + "\n").encode("utf-8") for p in payloads
+        )
+
+    async def _run_read_loop(self, payload: bytes, chunk_size: int):
+        received = []
+        bridge = SubprocessCliBridge(cli_path="claude")
+        bridge._event_cb = received.append
+        bridge.process = MagicMock()
+        bridge.process.stdout = _ChunkedStdout(payload, chunk_size)
+        await bridge._read_loop()
+        return received
+
+    async def test_no_replacement_chars_when_chinese_split_across_chunks(self):
+        payload = self._ndjson(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [{"type": "text", "text": "提交前对 popup.html 做格式回顾校验"}],
+                },
+            },
+            {"type": "result", "subtype": "success", "result": "完成"},
+        )
+        # 4 字节块：必然把若干 3 字节中文字符切断，等价于 4096 边界命中多字节字符
+        received = await self._run_read_loop(payload, chunk_size=4)
+
+        joined = ""
+        for event in received:
+            if event.get("type") == "assistant":
+                for block in event.get("message", {}).get("content", []):
+                    joined += str(block.get("text") or "")
+            elif event.get("type") == "result":
+                joined += str(event.get("result") or "")
+
+        self.assertNotIn("\ufffd", joined)
+        self.assertIn("提交前对 popup.html 做格式回顾校验", joined)
+        self.assertIn("完成", joined)
+
+    async def test_ascii_only_stream_unchanged(self):
+        payload = self._ndjson(
+            {"type": "result", "subtype": "success", "result": "ok"},
+        )
+        received = await self._run_read_loop(payload, chunk_size=2)
+        self.assertEqual(received, [{"type": "result", "subtype": "success", "result": "ok"}])
+
+    async def test_emoji_split_across_chunks_still_decodes(self):
+        # emoji 是 4 字节 UTF-8，用 7 字节块必然切断部分 emoji
+        payload = self._ndjson(
+            {"type": "assistant", "message": {"content": [{"type": "text", "text": "成功 🎉 完成"}]}},
+        )
+        received = await self._run_read_loop(payload, chunk_size=7)
+        joined = ""
+        for event in received:
+            for block in event.get("message", {}).get("content", []):
+                joined += str(block.get("text") or "")
+        self.assertNotIn("\ufffd", joined)
+        self.assertIn("成功 🎉 完成", joined)
 
 
 if __name__ == "__main__":
