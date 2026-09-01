@@ -68,7 +68,7 @@ const indentStyle = computed(() => ({
 
 <template>
   <div class="group-node" :style="indentStyle">
-    <label class="group-row" :class="{ unassigned: node.id === null }">
+    <label class="group-row">
       <input
         type="checkbox"
         :checked="groupChecked(node) === true"
@@ -76,9 +76,7 @@ const indentStyle = computed(() => ({
         @change="toggleGroup(node)"
       />
       <Folder class="w-4 h-4" />
-      <span class="group-name">
-        {{ node.id === null ? $t('management.repo_group.unassigned') : node.name }}
-      </span>
+      <span class="group-name">{{ node.name }}</span>
     </label>
     <div class="group-repos">
       <label
@@ -128,10 +126,6 @@ const indentStyle = computed(() => ({
   font-size: 0.86rem;
   color: #334155;
   cursor: pointer;
-}
-
-.group-row.unassigned {
-  color: #64748b;
 }
 
 .group-repos {

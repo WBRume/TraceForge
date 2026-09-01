@@ -94,7 +94,6 @@ const filteredTree = computed<RepoGroupTreeNode[]>(() => {
     }
   }
   return tree.value
-    .filter((node) => !kw || node.id !== null)
     .map(filterNode)
     .filter((node): node is RepoGroupTreeNode => node !== null)
 })
@@ -128,7 +127,7 @@ const filteredTree = computed<RepoGroupTreeNode[]>(() => {
         <div v-else class="group-picker-tree">
           <RepoGroupPickerNode
             v-for="node in filteredTree"
-            :key="node.id ?? 'unassigned'"
+            :key="node.id ?? node.name"
             :node="node"
             :depth="0"
             :exclude-ids="excludeIds ?? []"
