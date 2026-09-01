@@ -32,7 +32,8 @@ from app.engine.workflow_engine import WorkflowEngine, get_engine
 from app.agents.selection import resolve_task_backend
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.domains.ai.routers import agent
-from app.domains.auth.routers import auth
+from app.domains.auth.routers import auth, oauth
+from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
 from app.domains.workspace.routers import workspace
 from app.domains.task.routers import task
 from app.domains.dashboard.routers import dashboard
@@ -90,6 +91,9 @@ app.add_middleware(
 
 app.add_middleware(LoggingMiddleware)
 
+# ── OAuth 统一业务异常输出：{"detail": ..., "code": "OAUTH_XXX", **extra}（§4.5）──
+app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
+
 
 @app.on_event("startup")
 async def _on_startup() -> None:
@@ -117,6 +121,7 @@ async def _on_shutdown() -> None:
 
 # ── 路由挂载 ──
 app.include_router(auth.router, prefix="/api")
+app.include_router(oauth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(task_closeout.router, prefix="/api")

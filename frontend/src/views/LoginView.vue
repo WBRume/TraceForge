@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
+import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
 
 const router = useRouter()
 const { t } = useI18n()
@@ -131,6 +132,9 @@ onMounted(() => {
           {{ loading ? 'Processing...' : (isLoginMode ? 'Sign In' : 'Sign Up') }}
         </button>
       </form>
+
+      <!-- 三方登录按钮区：providers 为空时自动隐藏；已登录访问时按钮语义切为「绑定」（E-14） -->
+      <OAuthProviderButtons @authorize-error="(msg: string) => (errorMessage = msg)" />
 
       <div class="auth-footer">
         <p>

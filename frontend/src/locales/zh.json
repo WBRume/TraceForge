@@ -96,6 +96,33 @@
     "language_desc": "选择您偏好使用的界面显示语言。",
     "theme": "外观偏好",
     "theme_desc": "自定义界面主题色与显示模式。",
+    "connected_accounts": {
+      "title": "已连接账号",
+      "subtitle": "管理已绑定到 TraceForge 账号的第三方账号。",
+      "bound_title": "已关联账号",
+      "bound_empty": "尚未关联任何第三方账号。",
+      "bound_at": "关联于 {date}",
+      "link_title": "关联其他账号",
+      "link_desc": "关联一个第三方账号，登录更快捷。",
+      "link_with": "关联 {provider}",
+      "linked_tag": "已关联",
+      "no_providers": "尚未启用任何登录方式。",
+      "unbind": "解绑",
+      "unbind_confirm_title": "解绑 {provider}？",
+      "unbind_confirm_message": "这将断开你的 {provider} 账号关联，之后可再次关联。",
+      "unbind_success": "{provider} 账号已解绑",
+      "unbind_failed": "解绑 {provider} 失败：{message}",
+      "loading": "正在加载关联账号...",
+      "load_failed": "加载关联账号失败",
+      "retry": "重试",
+      "link_error": "发起关联失败：{message}",
+      "link_success": "{provider} 关联成功",
+      "already_bound": "该 {provider} 账号已关联",
+      "admin_bind_title": "确认管理员绑定",
+      "admin_bind_desc": "请再次输入账号密码以确认关联该第三方账号。",
+      "admin_bind_password": "账号密码",
+      "admin_bind_submit": "确认并关联"
+    },
     "local_dev": {
       "multi_repo_title": "工作区仓库绑定（{count} 个）",
       "repo_bound": "已绑定",
@@ -2629,6 +2656,75 @@
         "email": "邮箱",
         "password": "密码",
         "display_name": "显示名称"
+      }
+    },
+    "oauth": {
+      "divider": "或使用以下方式",
+      "login_with": "使用 {provider} 登录",
+      "bind_with": "绑定 {provider}",
+      "callback": {
+        "title": "正在完成登录",
+        "resolving": "正在处理，请稍候..."
+      },
+      "messages": {
+        "already_bound": "该 {provider} 账号已绑定当前 TraceForge 账号",
+        "bind_success": "{provider} 账号绑定成功"
+      },
+      "actions": {
+        "relogin": "返回重新登录",
+        "back_workspaces": "返回工作区"
+      },
+      "errors": {
+        "access_denied": "已取消授权，你可以重新选择登录方式",
+        "session_invalid": "登录状态已失效，请重新发起登录",
+        "provider_unavailable": "三方服务暂时不可用，请稍后重试或使用邮箱登录",
+        "provider_disabled": "该登录方式暂未启用",
+        "ticket_invalid": "登录凭据无效，请重新发起",
+        "ticket_expired": "操作已超时，请重新发起",
+        "ticket_locked": "尝试次数过多，请 15 分钟后重试",
+        "password_invalid": "邮箱或密码错误",
+        "email_taken": "该邮箱已注册，请直接登录后在设置页绑定，或更换邮箱",
+        "identity_conflict": "该三方账号已绑定到其他 TraceForge 账号",
+        "no_password": "当前账号未设置密码，请先设置密码后再操作",
+        "email_not_allowed": "该邮箱域名不在允许注册的范围内",
+        "provider_not_found": "登录方式不存在",
+        "default": "登录流程出现异常，请重试或使用邮箱登录"
+      },
+      "bind_confirm": {
+        "title": "确认绑定",
+        "description": "邮箱 {email} 已注册。输入该账号的密码验证身份后，即可将 {provider} 绑定到此账号并登录。",
+        "email_label": "账号邮箱",
+        "password_label": "账号密码",
+        "password_placeholder": "请输入账号密码",
+        "password_required": "请输入密码",
+        "submit": "验证并绑定",
+        "submitting": "验证中...",
+        "cancel": "取消",
+        "attempts_left": "还可尝试 {n} 次。",
+        "admin_title": "管理员身份确认",
+        "admin_desc": "检测到管理员账号加绑三方身份，为保障安全需要再次输入账号密码进行二次确认。"
+      },
+      "register": {
+        "title": "完善注册信息",
+        "subtitle": "使用 {provider} 快捷注册，只需补全以下信息",
+        "tip": "设置密码后，你既可以继续使用 {provider} 快捷登录，也可以用邮箱 + 密码登录；密码同时是账号找回（联系管理员重置）的唯一凭证。",
+        "email_label": "登录邮箱",
+        "email_placeholder": "name@company.com",
+        "email_hint": "三方平台的邮箱仅作预填，请以你实际使用的邮箱为准",
+        "email_unverified": "该邮箱未在 {provider} 完成验证，请确认后再提交",
+        "email_required": "请输入邮箱",
+        "password_label": "设置密码",
+        "password_required": "请设置密码",
+        "confirm_password_label": "确认密码",
+        "display_name_label": "昵称",
+        "display_name_placeholder": "如何称呼你？",
+        "password_mismatch": "两次输入的密码不一致",
+        "submit": "完成注册",
+        "submitting": "注册中...",
+        "leave_title": "放弃注册？",
+        "leave_confirm": "注册尚未完成，离开后已填写的信息将丢失，且不会创建任何账号。",
+        "leave_stay": "继续注册",
+        "leave_go": "放弃并离开"
       }
     }
   },

@@ -10,12 +10,14 @@ type RepoMapping = {
   updatedAt: string
 }
 
-type DesktopConfig = {
+export type DesktopConfig = {
   serverUrl: string
   token: string | null
   onboardingCompleted: boolean
   repoMappings: Record<string, RepoMapping>
 }
+
+export type RepoMappingEntry = RepoMapping
 
 const DEFAULT_CONFIG: DesktopConfig = {
   serverUrl: 'http://localhost:8000',
@@ -57,7 +59,7 @@ const normalizeConfig = (raw: Partial<DesktopConfig> | null | undefined): Deskto
   repoMappings: raw?.repoMappings && typeof raw.repoMappings === 'object' ? raw.repoMappings : {},
 })
 
-const readConfig = async (): Promise<DesktopConfig> => {
+export const readConfig = async (): Promise<DesktopConfig> => {
   try {
     const raw = await readFile(configPath(), 'utf8')
     return normalizeConfig(JSON.parse(raw) as Partial<DesktopConfig>)
