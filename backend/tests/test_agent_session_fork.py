@@ -404,6 +404,8 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         def handler(request) -> Response:
             body = json.loads(request.content or b"{}")
             seen.append(body)
+            if body.get("method") == "session/list":
+                return Response(404, text="not found")
             if body.get("method") == "session.list":
                 return Response(200, json={
                     "type": "server-response", "rpcId": body.get("rpcId"),
@@ -417,7 +419,7 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         adapter._client = AsyncClient(transport=MockTransport(handler))
         value = await adapter._rpc("session.list", {})
         self.assertEqual(value, {"items": []})
-        envelope = seen[0]
+        envelope = seen[-1]
         self.assertEqual(envelope["type"], "client-request")
         self.assertEqual(envelope["method"], "session.list")
         self.assertIn("rpcId", envelope)
@@ -429,6 +431,7 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
         adapter = DshServerAdapter(server_url="http://mock:3080")
+        adapter._gateway_protocol = True
         adapter._rpc = mock.AsyncMock(return_value={
             "current": {"provider": "deepseek-official", "model": "deepseek-v4-flash"},
         })
@@ -437,6 +440,26 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         adapter._rpc.assert_awaited_once_with("session.models", {"sessionId": "session-1"})
         self.assertEqual(model, "deepseek-official/deepseek-v4-flash")
+
+    async def test_model_lookup_probes_gateway_protocol_when_session_models_is_optional(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter(server_url="http://mock:3080")
+        calls: list[str] = []
+
+        async def _rpc(method, payload):
+            calls.append(method)
+            if method == "session.list":
+                adapter._gateway_protocol = True
+                return {"items": []}
+            return {}
+
+        adapter._rpc = _rpc
+        model = await adapter._resolve_session_model("session-1")
+
+        self.assertIsNone(model)
+        self.assertEqual(calls, ["session.list", "session.models"])
+        self.assertTrue(adapter._gateway_protocol)
 
     def test_event_mapper_extracts_text_and_usage(self):
         from app.agents.adapters.dsh.dsh_server_adapter import map_dsh_event

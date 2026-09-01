@@ -61,6 +61,8 @@ class TaskResponse(BaseModel):
     current_phase: Optional[str] = None
     error_message: Optional[str] = None
     session_id: Optional[str] = None
+    session_generation: int = 0
+    session_revision: int = 0
     interrupt_reason: Optional[str] = None
     interrupted_by_id: Optional[str] = None
     interrupted_at: Optional[datetime] = None
@@ -96,6 +98,10 @@ class TaskResumeInterruptedRequest(BaseModel):
     prompt: Optional[str] = None
     confirm_continue: bool = False
     client_message_id: Optional[str] = None
+
+
+class TaskUndoMessageRequest(BaseModel):
+    operation_id: str = Field(..., min_length=8, max_length=80)
 
 
 class InitializeRequest(BaseModel):

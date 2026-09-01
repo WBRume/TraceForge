@@ -14,6 +14,7 @@ from app.core.logging import bind_task_context, get_logger
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.log import SddExecutionLog, LogType
+from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, generate_uuid
 from app.domains.asset.services import asset_discussion_service, asset_document_service
@@ -931,6 +932,8 @@ def save_chat_message(
     content: str,
     message_type: str = "text",
     metadata_json: Optional[dict] = None,
+    session_turn_id: Optional[str] = None,
+    session_generation: Optional[int] = None,
 ) -> ChatMessage:
     # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
     order_index = (
@@ -949,6 +952,8 @@ def save_chat_message(
         content=content,
         message_type=message_type,
         metadata_json=merged_metadata,
+        session_turn_id=session_turn_id,
+        session_generation=session_generation,
     )
     db.add(msg)
     db.commit()
@@ -1021,6 +1026,14 @@ def get_task_history(
             SddDecision.source_chat_message_id.in_(message_ids),
         ).all()
     } if message_ids else {}
+    turn_ids = {str(msg.session_turn_id) for msg in msg_query if msg.session_turn_id}
+    active_turn_ids = {
+        str(turn_id)
+        for (turn_id,) in db.query(TaskSessionTurn.id).filter(
+            TaskSessionTurn.id.in_(turn_ids),
+            TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
+        ).all()
+    } if turn_ids else set()
 
     messages = []
     for msg in msg_query:
@@ -1039,6 +1052,15 @@ def get_task_history(
             "client_message_id": metadata.get("client_message_id"),
             "decision_id": decisions_by_message_id.get(msg.id),
             "metadata": metadata or None,
+            "session_turn_id": msg.session_turn_id,
+            "session_generation": msg.session_generation,
+            "can_undo": bool(
+                getattr(msg.role, "value", msg.role) == "user"
+                and msg.session_turn_id
+                and str(msg.session_turn_id) in active_turn_ids
+                and msg.session_generation == getattr(task, "session_generation", None)
+                and msg.id not in decisions_by_message_id
+            ),
         })
 
     has_more = start > 0

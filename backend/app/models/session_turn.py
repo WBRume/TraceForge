@@ -1,5 +1,4 @@
-# Re-export stubs for Alembic model discovery
-from app.models.session_turn import (  # noqa: F401
+from app.domains.task.models.session_turn import (  # noqa: F401
     TaskSessionTurn,
     TaskSessionTurnStatus,
     TaskSessionOperation,

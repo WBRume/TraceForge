@@ -40,7 +40,7 @@ class HitlManager:
         """
         触发前端 HITL 并挂起当前协程，直到收到恢复信号
         """
-        logger.info(f"Task {task_id} suspended for HITL: {prompt}")
+        logger.info(f"Task {task_id} suspended for HITL: prompt_length={len(prompt)}")
         
         # 准备挂起事件
         if task_id not in self.suspend_events:

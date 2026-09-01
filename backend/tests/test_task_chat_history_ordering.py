@@ -86,6 +86,7 @@ def test_task_history_keeps_streamed_bubbles_in_insertion_order(db_session):
     assert contents == ["stream-chunk-0", "stream-chunk-1", "stream-chunk-2"]
     assert len(history["messages"]) == 3
 
+
 def test_task_history_pagination_returns_latest_page_first(db_session):
     db = db_session
     task = _seed_task(db)

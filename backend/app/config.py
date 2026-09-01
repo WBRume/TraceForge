@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     # DSH Web Host 服务地址（`dsh web --no-open --port N` 启动）。
     # dsh 仅支持 Web Host server 模式，不再存在 headless CLI 回退。
     DSH_SERVER_URL: str = "http://127.0.0.1:3080"
+    # dsh web authenticates every API request with its launch-token exchange.
+    # These values are used only by the adapter's private HTTP client and are
+    # never copied into task/session metadata.
+    DSH_BROWSER_TOKEN: str = ""
+    DSH_BROWSER_COOKIE: str = ""
 
     # ── Claude CLI Bridge ──
     SDD_CLI_MODE: str = "real"  # "mock" or "real"
@@ -94,6 +99,11 @@ class Settings(BaseSettings):
     API_MOCK_TEMP_ROOT: str = "tmp/api_mock_workspace"
     CLI_STATE_ROOT: str = "tmp/cli_state"
     WORKSPACE_ARCHIVE_ROOT: str = "tmp/workspace_archive"
+    # Undo checkpoints live outside task worktrees and are removed after a
+    # successful operation.  Keeping this configurable also makes live tests
+    # able to assert that no secret-bearing temporary file remains.
+    TASK_SESSION_SNAPSHOT_ROOT: str = "tmp/task_session_snapshots"
+    TASK_SESSION_REVERT_WAIT_SECONDS: float = 30.0
     CLI_BOOTSTRAP_TIMEOUT: int = 1800  # seconds
     CLI_CLEANUP_RETRY_COUNT: int = 5
     CLI_CLEANUP_RETRY_INTERVAL_MS: int = 600
@@ -207,6 +217,10 @@ class Settings(BaseSettings):
         self.WORKSPACE_ARCHIVE_ROOT = _resolve_backend_path(
             self.WORKSPACE_ARCHIVE_ROOT,
             fallback="tmp/workspace_archive",
+        )
+        self.TASK_SESSION_SNAPSHOT_ROOT = _resolve_backend_path(
+            self.TASK_SESSION_SNAPSHOT_ROOT,
+            fallback="tmp/task_session_snapshots",
         )
         return self
 

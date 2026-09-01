@@ -14,9 +14,14 @@ interface ResumeInterruptedOptions {
   clientMessageId?: string
 }
 
+interface UndoMessageOptions {
+  operationId: string
+}
+
 export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
   const interruptingTask = shallowRef(false)
   const resumingInterruptedTask = shallowRef(false)
+  const undoingTaskMessage = shallowRef(false)
 
   const taskUrl = (taskId: string, action: string) => {
     const wsId = options.getWorkspaceId()
@@ -49,10 +54,25 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
     }
   }
 
+  const undoTaskMessage = async (taskId: string, messageId: string, undoOptions: UndoMessageOptions) => {
+    undoingTaskMessage.value = true
+    try {
+      const res = await api.post(
+        `${taskUrl(taskId, `messages/${encodeURIComponent(messageId)}/undo`)}`,
+        { operation_id: undoOptions.operationId },
+      )
+      return res.data
+    } finally {
+      undoingTaskMessage.value = false
+    }
+  }
+
   return {
     interruptingTask,
     resumeInterruptedTask,
     resumingInterruptedTask,
+    undoingTaskMessage,
     interruptTask,
+    undoTaskMessage,
   }
 }

@@ -218,7 +218,12 @@ const resetPreInputForm = () => {
   waitSeconds.value = 180
 }
 
-defineExpose({ resetPreInputForm })
+const focusInput = async () => {
+  await nextTick()
+  textareaRef.value?.focus()
+}
+
+defineExpose({ resetPreInputForm, focusInput })
 </script>
 
 <template>

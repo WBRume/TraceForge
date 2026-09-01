@@ -225,7 +225,6 @@ async def resume_interrupted_task(
         raise TaskSessionControlError("Interrupted task has no Claude session id to resume", status_code=409)
 
     now = datetime.utcnow()
-    previous_prompt = str(job.prompt_text or "")
     task.status = TaskStatus.CODING
     task.session_id = session_id
     task.error_message = None
@@ -233,46 +232,26 @@ async def resume_interrupted_task(
     task.interrupted_by_id = None
     task.interrupted_at = None
 
-    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
-    if idempotency_key:
-        message_metadata["client_message_id"] = idempotency_key
-    resume_message = ChatMessage(
-        task_id=task.id,
-        workspace_id=task.workspace_id,
-        creator_id=actor_user_id,
-        role=MessageRole.USER,
-        content=prompt_text,
-        message_type=MessageType.TEXT,
-        metadata_json=message_metadata or None,
-    )
-    db.add(resume_message)
-    db.flush()
+    from app.domains.task.services import task_session_service
 
-    resume_job = SddAiJob(
-        workspace_id=task.workspace_id,
-        task_id=task.id,
-        channel=AiJobChannel.TASK_CHAT,
-        queue_key=f"{AiJobChannel.TASK_CHAT.value}:{task.id}",
-        status=AiJobStatus.PENDING,
-        progress=0,
-        message="Resume attempt queued",
-        prompt_text=prompt_text,
-        creator_id=actor_user_id,
-        session_id=session_id,
-        agent_backend=job.agent_backend,
+    message_metadata = dict(metadata_json) if isinstance(metadata_json, dict) else {}
+    resume_turn, resume_message, resume_job, _checkpoint = await task_session_service.create_task_chat_turn(
+        db,
+        task=task,
+        actor_user_id=actor_user_id,
+        content=prompt_text,
         context_json={
             "source": "task_resume",
             "resume_interrupted": True,
             "resumed_from_job_id": job.id,
             "resumed_at": now.isoformat() + "Z",
             "resumed_by_id": actor_user_id,
-            "interrupted_prompt_text": previous_prompt,
-            "chat_message_id": resume_message.id,
             "client_message_id": idempotency_key or None,
+            **message_metadata,
         },
+        session_id=session_id,
+        client_message_id=idempotency_key,
     )
-    db.add(resume_job)
-    db.flush()
 
     # The interrupted attempt remains immutable history.  Making it terminal
     # removes the queue blocker; the new attempt is claimed as RUNNING only by

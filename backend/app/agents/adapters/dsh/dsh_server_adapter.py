@@ -1,7 +1,8 @@
 """DSH Web Host Agent backend（Server 模式）。
 
 以 `dsh web --no-open --host 127.0.0.1 --port N` 启动的 DSH Web Host 暴露了
-完整的 HTTP + WebSocket API（loopback 免认证），TraceForge 直接驱动：
+完整的 HTTP + WebSocket API。TraceForge 通过可选的 launch token/cookie 建立
+同一浏览器认证会话后直接驱动：
 
 - `POST /api/<method>`：JSON 信封 RPC（session.list / session.create / session.prompt /
   session.history / session.fork / session.cancel）
@@ -18,9 +19,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 import websockets
@@ -36,6 +39,7 @@ from app.agents.contract import (
 from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
+from app.config import settings
 
 
 def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
@@ -175,42 +179,91 @@ class DshServerAdapter(AgentBackend):
         self._running = False
         self._session_id: Optional[str] = None
         self._pending_asks: dict[str, dict[str, Any]] = {}
+        self._gateway_protocol: Optional[bool] = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None))
+            headers: dict[str, str] = {}
+            cookie = str(os.environ.get("DSH_BROWSER_COOKIE") or settings.DSH_BROWSER_COOKIE or "").strip()
+            if cookie:
+                headers["Cookie"] = cookie
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, read=None),
+                headers=headers,
+                follow_redirects=True,
+                trust_env=False,
+            )
+            token = str(os.environ.get("DSH_BROWSER_TOKEN") or settings.DSH_BROWSER_TOKEN or "").strip()
+            if token and not cookie:
+                response = await self._client.get(
+                    f"{self.server_url}/?token={quote(token, safe='')}"
+                )
+                if response.status_code >= 400:
+                    await self._client.aclose()
+                    self._client = None
+                    raise AgentError(
+                        f"DSH browser token exchange failed: HTTP {response.status_code}"
+                    )
         return self._client
 
     async def _rpc(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """调用 web host 的 /api/<method> 信封 RPC。
+        """调用 DSH Web Host RPC，兼容新旧路由及信封格式。
 
-        业务错误也是 HTTP 200（result.ok=false），这里统一转成 AgentError。
+        新版 gateway 使用 ``/api/session/list`` 这类斜线路由，并把业务
+        参数包装在 ``payload.args.request``（list 是 ``_request``）中；
+        较早的 web host 使用 ``/api/session.list``，参数直接放在 payload。
         """
         client = await self._ensure_client()
-        response = await client.post(
-            f"{self.server_url}/api/{method}",
-            json={
-                "type": "client-request",
-                "rpcId": f"tf-{uuid.uuid4().hex[:12]}",
-                "method": method,
-                "payload": payload,
-            },
-        )
-        if response.status_code != 200:
-            raise AgentError(
-                f"DSH server RPC {method} failed: HTTP {response.status_code} {response.text[:300]}"
+        attempts: list[tuple[str, str, dict[str, Any], bool]] = []
+        if self._gateway_protocol is not False:
+            gateway_method = method.replace(".", "/")
+            parameter_name = "_request" if method == "session.list" else "request"
+            attempts.append((
+                f"{self.server_url}/api/{gateway_method}",
+                gateway_method,
+                {"args": {parameter_name: payload}},
+                True,
+            ))
+        if self._gateway_protocol is not True:
+            attempts.append((
+                f"{self.server_url}/api/{method}",
+                method,
+                payload,
+                False,
+            ))
+
+        last_response: Optional[httpx.Response] = None
+        for url, wire_method, wire_payload, is_gateway in attempts:
+            response = await client.post(
+                url,
+                json={
+                    "type": "client-request",
+                    "rpcId": f"tf-{uuid.uuid4().hex[:12]}",
+                    "method": wire_method,
+                    "payload": wire_payload,
+                },
             )
-        envelope = response.json()
-        result = envelope.get("result") if isinstance(envelope, dict) else None
-        if not isinstance(result, dict):
-            raise AgentError(f"DSH server RPC {method} returned malformed envelope: {str(envelope)[:200]}")
-        if not result.get("ok"):
-            error = result.get("error") or {}
-            raise AgentError(
-                f"DSH server RPC {method} failed: {error.get('code', 'unknown')} {error.get('message', '')}"
-            )
-        value = result.get("value")
-        return value if isinstance(value, dict) else {}
+            last_response = response
+            if response.status_code == 404 and len(attempts) > 1:
+                continue
+            if response.status_code != 200:
+                raise AgentError(
+                    f"DSH server RPC {method} failed: HTTP {response.status_code}"
+                )
+            envelope = response.json()
+            result = envelope.get("result") if isinstance(envelope, dict) else None
+            if not isinstance(result, dict):
+                raise AgentError(f"DSH server RPC {method} returned malformed envelope")
+            if not result.get("ok"):
+                error = result.get("error") or {}
+                raise AgentError(
+                    f"DSH server RPC {method} failed: {error.get('code', 'unknown')} {error.get('message', '')}"
+                )
+            self._gateway_protocol = is_gateway
+            value = result.get("value")
+            return value if isinstance(value, dict) else {}
+        status = last_response.status_code if last_response is not None else "unknown"
+        raise AgentError(f"DSH server RPC {method} failed: HTTP {status}")
 
     async def probe(self) -> str:
         await self._rpc("session.list", {})
@@ -234,6 +287,19 @@ class DshServerAdapter(AgentBackend):
         """从 web host 查询会话当前模型，避免启动状态显示 unknown。"""
         if fallback:
             return fallback
+        # ``session.models`` is optional on the current gateway and returns
+        # HTTP 404 even though the gateway itself is healthy.  A fresh adapter
+        # must therefore discover the wire protocol from the stable
+        # ``session.list`` route before attempting this best-effort lookup;
+        # otherwise ``_gateway_protocol`` stays ``None`` and the event stream
+        # is incorrectly downgraded to the legacy events.mux endpoint.
+        if self._gateway_protocol is None:
+            try:
+                await self._rpc("session.list", {})
+            except AgentError:
+                # Keep model lookup best-effort.  A server that cannot answer
+                # the probe will still be handled by the existing RPC errors.
+                pass
         try:
             value = await self._rpc("session.models", {"sessionId": session_id})
             current = value.get("current") if isinstance(value, dict) else None
@@ -248,7 +314,15 @@ class DshServerAdapter(AgentBackend):
             return fallback
 
     def _ws_url(self) -> str:
-        return f"{self.server_url.replace('http://', 'ws://', 1)}/api/events.mux"
+        path = "remote.mux" if self._gateway_protocol is True else "events.mux"
+        return f"{self.server_url.replace('http://', 'ws://', 1)}/api/{path}"
+
+    def _ws_headers(self) -> dict[str, str]:
+        if self._client is None:
+            return {}
+        cookies = self._client.cookies
+        values = [f"{key}={value}" for key, value in cookies.items()]
+        return {"Cookie": "; ".join(values)} if values else {}
 
     async def _consume_events(
         self,
@@ -262,6 +336,9 @@ class DshServerAdapter(AgentBackend):
         下行帧信封：{type:"server-request", rpcId, method:<frame.type>, payload:<frame>}；
         会话事件帧 method=session/event，payload 含 sessionId 与原生 SessionEvent。
         """
+        if self._gateway_protocol is True:
+            return await self._consume_gateway_events(session_id, on_event)
+
         outcome: dict[str, Any] = {"finish_reason": None, "text": "", "usage_raw": None}
         text_parts: list[str] = []
         delta_parts: list[str] = []
@@ -273,7 +350,11 @@ class DshServerAdapter(AgentBackend):
                 body = "".join(delta_parts).strip()
             outcome["text"] = body
             return outcome
-        async with websockets.connect(self._ws_url(), max_size=64 * 1024 * 1024) as ws:
+        async with websockets.connect(
+            self._ws_url(),
+            additional_headers=self._ws_headers(),
+            max_size=64 * 1024 * 1024,
+        ) as ws:
             async for raw in ws:
                 try:
                     frame = json.loads(raw)
@@ -395,6 +476,104 @@ class DshServerAdapter(AgentBackend):
                     return _finalize()
         return _finalize()
 
+    async def _consume_gateway_events(
+        self,
+        session_id: str,
+        on_event: AgentEventSink,
+    ) -> dict[str, Any]:
+        """Consume the current DSH gateway ``session/follow`` stream.
+
+        The current Web Host no longer exposes the legacy ``events.mux`` RPC
+        stream.  Its gateway multiplexes logical streams over ``remote.mux``;
+        the session follow stream starts with a snapshot and then emits event
+        records.  The snapshot is deliberately ignored here because the prompt
+        admission runs concurrently and only post-open events belong to this
+        turn.
+        """
+        outcome: dict[str, Any] = {"finish_reason": None, "text": "", "usage_raw": None}
+        text_parts: list[str] = []
+        delta_parts: list[str] = []
+        stream_id = f"tf-{uuid.uuid4().hex}"
+
+        def _finalize() -> dict[str, Any]:
+            body = "\n".join(part for part in text_parts if part).strip()
+            if not body:
+                body = "".join(delta_parts).strip()
+            outcome["text"] = body
+            return outcome
+
+        async with websockets.connect(
+            self._ws_url(),
+            additional_headers=self._ws_headers(),
+            max_size=64 * 1024 * 1024,
+        ) as ws:
+            await ws.send(json.dumps({
+                "type": "open",
+                "streamId": stream_id,
+                "endpoint": "session/follow",
+                "payload": {
+                    "args": {
+                        "request": {
+                            "address": {"kind": "session", "sessionId": session_id},
+                            "maxMessages": 50,
+                        },
+                    },
+                },
+            }))
+            async for raw in ws:
+                try:
+                    frame = json.loads(raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(frame, dict) or frame.get("streamId") != stream_id:
+                    continue
+                frame_type = str(frame.get("type") or "")
+                if frame_type == "error":
+                    error = frame.get("error") if isinstance(frame.get("error"), dict) else {}
+                    raise AgentError(
+                        f"DSH session follow failed: {error.get('code', 'unknown')} {error.get('message', '')}"
+                    )
+                if frame_type == "end":
+                    return _finalize()
+                if frame_type != "item":
+                    continue
+                value = frame.get("value") if isinstance(frame.get("value"), dict) else {}
+                if value.get("type") == "snapshot":
+                    continue
+                event = value.get("event") if value.get("type") == "event" else value
+                if not isinstance(event, dict):
+                    continue
+                unified = map_dsh_event(event)
+                if unified:
+                    if unified.type == "text" and unified.payload.get("text"):
+                        text_parts.append(str(unified.payload["text"]))
+                    elif unified.type == "text_delta" and unified.payload.get("text"):
+                        delta_parts.append(str(unified.payload["text"]))
+                    await on_event(unified)
+                etype = str(event.get("type") or "")
+                if etype == "turn/end":
+                    reason = event.get("data", {}).get("reason", {})
+                    kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
+                    outcome["finish_reason"] = {
+                        "completed": "completed",
+                        "aborted": "aborted",
+                        "error": "error",
+                        "max-tokens": "max-tokens",
+                    }.get(kind, kind)
+                    result = _finalize()
+                    body = str(result.get("text") or "")
+                    if body and not text_parts:
+                        await on_event(AgentEvent(
+                            type="text",
+                            payload={"text": body, "provider": "dsh"},
+                            provider="dsh",
+                        ))
+                    if kind == "error" and not body:
+                        error_info = reason.get("error") if isinstance(reason, dict) else None
+                        result["text"] = str(error_info.get("message") or "DSH stream error") if isinstance(error_info, dict) else "DSH stream error"
+                    return result
+        return _finalize()
+
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
         self._running = True
@@ -442,6 +621,7 @@ class DshServerAdapter(AgentBackend):
                     + prompt_text
                 )
             prompt_task = asyncio.create_task(self._rpc("session.prompt", {
+                "requestId": f"tf-{uuid.uuid4().hex}",
                 "sessionId": session_id,
                 "mode": "queue",
                 "content": [{"type": "text", "text": prompt_text}],
@@ -515,6 +695,24 @@ class DshServerAdapter(AgentBackend):
             except AgentError:
                 pass
         self._running = False
+
+    async def unload_session(self, session_id: str | None = None) -> None:
+        """Dispose the DSH Web Host's in-memory Agent for a cold disk restore.
+
+        ``session.cancel`` only stops the current turn.  The Web Host keeps the
+        Agent and its folded context alive, so restoring ``session.jsonl`` on
+        disk alone would still let the next prompt see reverted content.
+        """
+        sid = session_id or self._session_id
+        if not sid:
+            return
+        try:
+            await self._rpc("session.unload", {"sessionId": sid})
+        except AgentError as exc:
+            raise AgentError(f"DSH session unload failed: {exc}") from exc
+        self._running = False
+        if self._session_id == sid:
+            self._session_id = None
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

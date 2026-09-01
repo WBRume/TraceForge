@@ -5,7 +5,7 @@
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, JSON, func
+    Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, func
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -43,7 +43,15 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     message_type = Column(Enum(MessageType, values_callable=lambda obj: [e.value for e in obj]), nullable=False, default=MessageType.TEXT)
     metadata_json = Column(JSON, nullable=True)
+    session_turn_id = Column(
+        String(36),
+        ForeignKey("sdd_task_session_turns.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    session_generation = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     # Relationships
     task = relationship("SddTask", back_populates="messages")
+    session_turn = relationship("TaskSessionTurn", foreign_keys=[session_turn_id])

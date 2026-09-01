@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from app.core.distributed_lock import lock_task
 from app.core.logging import get_logger
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service
@@ -31,6 +32,7 @@ from app.domains.task.models.pre_input import (
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import task_service
 from app.domains.task.services import task_session_control_service
+from app.domains.task.services import task_session_service
 from app.domains.websocket.ws.manager import manager as task_ws_manager
 
 logger = get_logger(__name__, category="task_execution")
@@ -732,46 +734,30 @@ async def submit_pre_input(
 
     try:
         if task_status == TaskStatus.INTERRUPTED:
-            await task_session_control_service.resume_interrupted_task(
-                db,
-                task=task,
-                actor_user_id=str(actor_user_id),
-                prompt=merged_text,
-                confirm_continue=False,
-                metadata_json=metadata,
-            )
-            saved_message = (
-                db.query(ChatMessage)
-                .filter(
-                    ChatMessage.task_id == task.id,
-                    ChatMessage.content == merged_text,
-                    ChatMessage.creator_id == str(actor_user_id),
+            async with lock_task(task.id):
+                resume_payload = await task_session_control_service.resume_interrupted_task(
+                    db,
+                    task=task,
+                    actor_user_id=str(actor_user_id),
+                    prompt=merged_text,
+                    confirm_continue=False,
+                    metadata_json=metadata,
                 )
-                .order_by(ChatMessage.created_at.desc())
-                .first()
-            )
-            message_id = saved_message.id if saved_message else None
-            job_id = None
+            resume_job = resume_payload.get("job") or {}
+            resume_context = resume_job.get("context_json") or {}
+            message_id = str(resume_context.get("chat_message_id") or "") or None
+            job_id = str(resume_job.get("id") or "") or None
         else:
-            saved_message = task_service.save_chat_message(
-                db,
-                task.id,
-                task.workspace_id,
-                str(actor_user_id),
-                role="user",
-                content=merged_text,
-                metadata_json=metadata,
-            )
+            async with lock_task(task.id):
+                _turn, saved_message, job, _checkpoint = await task_session_service.create_task_chat_turn(
+                    db,
+                    task=task,
+                    actor_user_id=str(actor_user_id),
+                    content=merged_text,
+                    context_json=metadata,
+                    client_message_id=None,
+                )
             message_id = saved_message.id
-            job = ai_job_service.create_task_chat_job(
-                db,
-                workspace_id=task.workspace_id,
-                task_id=task.id,
-                creator_id=str(actor_user_id),
-                prompt_text=merged_text,
-                context_json={"pre_input_id": pre_input.id},
-                chat_message_id=message_id,
-            )
             job_id = job.id
     except PreInputError:
         raise
@@ -798,6 +784,12 @@ async def submit_pre_input(
         db.commit()
         db.refresh(pre_input)
 
+    saved_message = (
+        db.query(ChatMessage).filter(ChatMessage.id == message_id).first()
+        if message_id
+        else None
+    )
+
     # 广播合并后的聊天消息 + 预输入终态
     creator_info = _load_member_info(db, pre_input.workspace_id, [pre_input.creator_id]).get(pre_input.creator_id, {})
     if message_id:
@@ -818,6 +810,8 @@ async def submit_pre_input(
                     creator_avatar_url=creator_info.get("avatar_url"),
                     creator_avatar_svg=creator_info.get("avatar_svg"),
                     created_at=(pre_input.submitted_at or datetime.utcnow()).isoformat(),
+                    session_turn_id=getattr(saved_message, "session_turn_id", None),
+                    session_generation=getattr(saved_message, "session_generation", None),
                 ).model_dump(),
             ),
         )
@@ -840,7 +834,7 @@ async def submit_pre_input(
             notify_targets,
             type="pre_input_submitted",
             title=f"「{task.name}」协作预输入已提交执行",
-            body=merged_text[:120],
+            body=f"协作预输入已提交（长度 {len(merged_text)}）",
             payload_json={
                 "task_id": task.id,
                 "task_name": task.name,

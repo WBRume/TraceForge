@@ -70,6 +70,9 @@ class AgentRunResult:
     duration_ms: int | None = None
     return_code: int | None = None
     raw_trace: str | None = None
+    # Provider-specific identifiers/checkpoint facts.  Values must be
+    # metadata only; prompt/result text belongs to the normal job/message rows.
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

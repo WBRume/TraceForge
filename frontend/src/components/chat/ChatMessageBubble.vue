@@ -6,6 +6,8 @@ import {
   Bot,
   Copy,
   Check,
+  Undo2,
+  Loader2,
 } from 'lucide-vue-next'
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
@@ -105,6 +107,14 @@ const canCopyMessage = computed(() => {
   if (msgRole.value !== 'user' && msgRole.value !== 'assistant') return false
   return Boolean(String(props.msg?.content || '').trim())
 })
+
+const canUndoMessage = computed(() => Boolean(props.vm?.canUndoMessage?.(props.msg)))
+const isUndoingMessage = computed(() => String(props.vm?.undoingMessageId || '') === String(props.msg?.id || ''))
+
+async function handleUndoMessage() {
+  if (!canUndoMessage.value || isUndoingMessage.value) return
+  await props.vm.undoMessage(props.msg)
+}
 
 const copyState = ref<'idle' | 'done' | 'failed'>('idle')
 let copyResetTimer: number | undefined
@@ -274,8 +284,8 @@ function openDiagnosisCase(caseId: string) {
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
 
-      <!-- Bubble Actions (Under the bubble): Mark Decision / Copy -->
-      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage" class="message-actions-row">
+      <!-- Bubble Actions (Under the bubble): Mark Decision / Undo / Copy -->
+      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage || canUndoMessage" class="message-actions-row">
         <div class="decision-action-wrapper" v-if="vm.canMarkMessageAsDecision(msg)">
           <button
             type="button"
@@ -328,6 +338,18 @@ function openDiagnosisCase(caseId: string) {
             </svg>
           <span>{{ $t('chat.decision.marked') }}</span>
         </span>
+
+        <button
+          v-if="canUndoMessage"
+          type="button"
+          class="message-undo-btn"
+          :disabled="Boolean(vm.isUndoing)"
+          :title="$t('chat.undo.message')"
+          @click.stop="handleUndoMessage"
+        >
+          <Loader2 v-if="isUndoingMessage" class="undo-icon undo-spin" />
+          <Undo2 v-else class="undo-icon" />
+        </button>
 
         <button
           v-if="canCopyMessage"
@@ -598,7 +620,8 @@ function openDiagnosisCase(caseId: string) {
 
 .message-decision-btn,
 .message-decision-badge,
-.message-copy-btn {
+.message-copy-btn,
+.message-undo-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -610,7 +633,8 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .message-decision-btn,
-.message-copy-btn {
+.message-copy-btn,
+.message-undo-btn {
   width: 22px;
   height: 22px;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -626,6 +650,7 @@ function openDiagnosisCase(caseId: string) {
 .message-wrapper:hover .message-decision-btn,
 .message-decision-btn.is-active,
 .message-wrapper:hover .message-copy-btn,
+.message-wrapper:hover .message-undo-btn,
 .message-copy-btn.is-done,
 .message-copy-btn.is-failed {
   opacity: 1;
@@ -635,6 +660,17 @@ function openDiagnosisCase(caseId: string) {
   color: #64748b;
   border-color: rgba(203, 213, 225, 0.6);
   background: rgba(241, 245, 249, 0.85);
+}
+
+.message-wrapper:hover .message-undo-btn {
+  color: #7c3aed;
+  border-color: rgba(196, 181, 253, 0.7);
+  background: rgba(245, 243, 255, 0.92);
+}
+
+.message-undo-btn:disabled {
+  cursor: wait;
+  opacity: 0.8;
 }
 
 .message-copy-btn:hover,
@@ -655,6 +691,19 @@ function openDiagnosisCase(caseId: string) {
 .copy-icon {
   width: 12px;
   height: 12px;
+}
+
+.undo-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.undo-spin {
+  animation: undo-spin 0.9s linear infinite;
+}
+
+@keyframes undo-spin {
+  to { transform: rotate(360deg); }
 }
 
 .message-wrapper:hover .message-decision-btn {

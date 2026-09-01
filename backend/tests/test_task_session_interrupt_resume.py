@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -24,14 +25,16 @@ from app.domains.task.models.task import SddTask
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus  # noqa: E402
 from app.domains.task.models.chat import ChatMessage  # noqa: E402
 from app.domains.task.models.task import TaskStatus  # noqa: E402
+from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus  # noqa: E402
 from app.domains.ai.services import ai_job_service
 from app.domains.task.services import task_session_control_service
+from app.domains.task.services import task_session_service
 
 
-def _build_session():
+def _build_session(*, expire_on_commit=False):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)
+    return sessionmaker(bind=engine, expire_on_commit=expire_on_commit)
 
 
 def _seed_task(db, *, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING):
@@ -115,6 +118,119 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     assert payload["status"] == TaskStatus.INTERRUPTED.value
 
 
+def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_failure(monkeypatch):
+    """A deleted target ORM row must not convert a durable undo into FAILED."""
+    # The production session expires ORM instances after commit.  Keep that
+    # behavior here so a deleted target reproduces SQLAlchemy's ObjectDeletedError.
+    SessionLocal = _build_session(expire_on_commit=True)
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    task.session_generation = 1
+    task.session_revision = 1
+    task.session_id = "session-1"
+    message = ChatMessage(
+        id="message-1",
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        creator_id="user-1",
+        role="user",
+        content="remember the old marker",
+        message_type="text",
+        session_generation=1,
+    )
+    turn = TaskSessionTurn(
+        id="turn-1",
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        user_message_id=message.id,
+        ai_job_id=job.id,
+        session_generation=1,
+        turn_index=1,
+        session_revision=1,
+        provider="claude-code",
+        provider_session_id="session-1",
+        checkpoint_path="G:/tmp/traceforge-undo-checkpoint",
+        status=TaskSessionTurnStatus.ACTIVE,
+    )
+    message.session_turn_id = turn.id
+    job.session_turn_id = turn.id
+    job.session_generation = 1
+    job.session_revision = 1
+    db.add_all([message, turn])
+    db.commit()
+
+    @asynccontextmanager
+    async def _fake_task_lock(*_args, **_kwargs):
+        yield
+
+    async def _fake_lock_provider():
+        return SimpleNamespace(backend_name="redis")
+
+    async def _raise_broadcast(*_args, **_kwargs):
+        raise RuntimeError("websocket disconnected")
+
+    monkeypatch.setattr(task_session_service, "get_lock_provider", _fake_lock_provider)
+    monkeypatch.setattr(task_session_service, "lock_task", _fake_task_lock)
+    monkeypatch.setattr(task_session_service, "_stop_engine_and_wait", lambda _task_id: _noop_async())
+    monkeypatch.setattr(task_session_service.skill_runtime_trace_service, "wait_for_pending_writes", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "backup_current_provider", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "restore_provider", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "restore_worktree", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.manager, "send_message_to_room", _raise_broadcast)
+
+    payload = asyncio.run(
+        task_session_service.undo_task_message(
+            db,
+            task=task,
+            message_id=message.id,
+            actor_user_id="user-1",
+            operation_id="undo-operation-1",
+        )
+    )
+
+    assert payload["target_message_id"] == "message-1"
+    assert payload["status"] == TaskSessionTurnStatus.REVERTED.value
+    check_db = SessionLocal()
+    try:
+        assert check_db.query(ChatMessage).filter(ChatMessage.id == "message-1").first() is None
+        stored_job = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
+        assert stored_job.prompt_text is None
+        assert stored_job.result_json == {"redacted": True, "reason": "session_undo"}
+        assert check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn.id).one().status == TaskSessionTurnStatus.REVERTED
+        assert check_db.query(SddTask).filter(SddTask.id == task.id).one().status == TaskStatus.CODING
+    finally:
+        check_db.close()
+
+
+async def _noop_async():
+    return None
+
+
+def test_undo_stop_engine_does_not_swallow_stop_failure(monkeypatch):
+    closed = []
+
+    class _FakeCli:
+        def is_running(self):
+            return False
+
+        async def close(self):
+            closed.append(True)
+
+    class _FakeEngine:
+        running = False
+        cli = _FakeCli()
+
+        async def stop(self):
+            raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(task_session_service, "get_engine", lambda _task_id: _FakeEngine())
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        asyncio.run(task_session_service._stop_engine_and_wait("task-1"))
+    assert closed == [True]
+
+
 def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
@@ -192,10 +308,18 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
         enqueued.append(job_id)
         return None
 
+    async def _checkpoint(*_args, **_kwargs):
+        return {"root": "G:/tmp/fake-session-checkpoint", "worktree": {}, "provider": {}}
+
+    async def _cleanup(_path):
+        return None
+
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
     monkeypatch.setattr(task_session_control_service.ai_job_service, "publish_job", _publish_job)
     monkeypatch.setattr(task_session_control_service.ai_job_service, "enqueue_task_chat_job", _enqueue)
     monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", _checkpoint)
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", _cleanup)
 
     payload = asyncio.run(
         task_session_control_service.resume_interrupted_task(

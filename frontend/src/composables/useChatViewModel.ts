@@ -33,7 +33,7 @@ export function useChatViewModel() {
     getWorkspaceId: () => String(route.params.wsId || ''),
   })
   
-  type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'SUCCESS' | 'FAILED' | 'CANCELLED'
+  type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REVERTED'
   type ChatAiJob = {
     id: string
     task_id?: string | null
@@ -98,6 +98,8 @@ export function useChatViewModel() {
   const currentTask = ref<any>(null)
   const chatInput = ref('')
   const sendingChat = ref(false)
+  const undoingMessageId = ref('')
+  const isUndoing = computed(() => Boolean(undoingMessageId.value))
   const currentWorkspace = ref<any>(null)
   const workspacePermissions = ref<any>(null)
   const workspaceCurrentUserIsExpert = ref(false)
@@ -273,7 +275,7 @@ export function useChatViewModel() {
     (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value && !isDiagnosisTask.value
   ))
   const isSpecPanelOpen = computed(() => specDrawerLevel.value > 0)
-  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value || isTaskProvisioning.value)
+  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value || isTaskProvisioning.value || isUndoing.value)
 
   // 问题定位任务：诊断文档/代码路径抽屉（复用 spec 抽屉三段式容器）
   const toggleDiagnosisDocsDrawer = () => {
@@ -646,6 +648,9 @@ export function useChatViewModel() {
     }
     if (payload?.session_id !== undefined) {
       currentTask.value.session_id = payload.session_id
+    }
+    if (payload?.session_generation !== undefined) {
+      currentTask.value.session_generation = Number(payload.session_generation || 0)
     }
     if (payload?.interrupt_reason !== undefined) {
       currentTask.value.interrupt_reason = payload.interrupt_reason
@@ -1732,6 +1737,9 @@ export function useChatViewModel() {
         client_message_id: m.client_message_id || null,
         decision_id: m.decision_id || null,
         metadata: m.metadata || null,
+        session_turn_id: m.session_turn_id || null,
+        session_generation: m.session_generation ?? null,
+        can_undo: Boolean(m.can_undo),
       }))
   
       if (reset) {
@@ -1937,6 +1945,61 @@ export function useChatViewModel() {
     if (msg?.message_type === 'init_reason') return false
     if (String(msg?.role || '').toLowerCase() !== 'user') return false
     return Boolean(String(msg?.content || '').trim())
+  }
+
+  const canUndoMessage = (msg: any): boolean => {
+    const id = String(msg?.id || '').trim()
+    if (!id || id.startsWith('local-')) return false
+    if (!currentTask.value?.id || !canManageTaskStatus.value || isUndoing.value || sendingChat.value) return false
+    if (String(msg?.role || '').toLowerCase() !== 'user') return false
+    if (msg?.decision_id || msg?.message_type === 'init_reason') return false
+    if (!msg?.session_turn_id || !String(msg?.content || '')) return false
+    const currentGeneration = Number(currentTask.value?.session_generation || 0)
+    if (!currentGeneration || Number(msg?.session_generation || 0) !== currentGeneration) return false
+    return msg?.can_undo !== false
+  }
+
+  const undoMessage = async (msg: any): Promise<boolean> => {
+    if (!canUndoMessage(msg) || !currentTask.value?.id) return false
+    const messageId = String(msg.id)
+    undoingMessageId.value = messageId
+    try {
+      const payload = await taskSessionControls.undoTaskMessage(
+        currentTask.value.id,
+        messageId,
+        { operationId: generateClientMessageId() },
+      )
+      const removedIds = new Set(
+        (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
+      )
+      removedIds.add(messageId)
+      messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
+      terminalLogs.value = []
+      resetChatJobState()
+      pinnedCards.value = []
+      thinkingContent.value = ''
+      showThinking.value = false
+      engineRunning.value = false
+      if (currentTask.value) {
+        currentTask.value.status = 'CODING'
+        currentTask.value.session_generation = Number(payload?.session_generation || currentTask.value.session_generation || 0)
+      }
+      chatInput.value = String(payload?.restored_content ?? msg.content ?? '')
+      await nextTick()
+      document.querySelector<HTMLTextAreaElement>('.card-textarea')?.focus()
+      if (currentTask.value?.id) {
+        await loadHistory(currentTask.value.id, true)
+      }
+      ElMessage.success(t('chat.undo.success'))
+      scheduleContextWindowRefresh()
+      return true
+    } catch (e: any) {
+      console.error('Undo task message failed', e)
+      ElMessage.error(resolveActionError(e, 'chat.undo.failed', 'chat.undo.failed'))
+      return false
+    } finally {
+      undoingMessageId.value = ''
+    }
   }
 
   const openDecisionModal = (msg: any) => {
@@ -2278,6 +2341,13 @@ export function useChatViewModel() {
     switch (type) {
       case 'chat_message': {
         // 自然语言对话气泡 (user / assistant text) 与定位结果卡片
+        if (
+          currentTask.value?.id
+          && String(payload?.task_id || currentTask.value.id) === String(currentTask.value.id)
+          && payload?.session_generation !== undefined
+        ) {
+          currentTask.value.session_generation = Number(payload.session_generation || 0)
+        }
         upsertChatMessage({
           id: payload.id || Date.now().toString(),
           role: payload.role,
@@ -2292,6 +2362,8 @@ export function useChatViewModel() {
           client_message_id: payload.client_message_id || null,
           decision_id: payload.decision_id || null,
           metadata: payload.metadata || null,
+          session_turn_id: payload.session_turn_id || null,
+          session_generation: payload.session_generation ?? null,
           delivery_status: 'sent',
         })
         scrollToBottom('chat')
@@ -2302,6 +2374,13 @@ export function useChatViewModel() {
       case 'chat_message_ack': {
         const status = String(payload.status || '').toLowerCase()
         const clientMessageId = String(payload.client_message_id || '').trim()
+        if (
+          currentTask.value?.id
+          && String(payload?.task_id || currentTask.value.id) === String(currentTask.value.id)
+          && payload?.session_generation !== undefined
+        ) {
+          currentTask.value.session_generation = Number(payload.session_generation || 0)
+        }
         const messagePatch = {
           id: payload.id || payload.chat_message_id || (clientMessageId ? `local-${clientMessageId}` : Date.now().toString()),
           role: payload.role || 'user',
@@ -2314,6 +2393,8 @@ export function useChatViewModel() {
           client_message_id: clientMessageId || null,
           decision_id: payload.decision_id || null,
           metadata: payload.metadata || null,
+          session_turn_id: payload.session_turn_id || null,
+          session_generation: payload.session_generation ?? null,
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
@@ -2494,6 +2575,29 @@ export function useChatViewModel() {
         break
       }
 
+      case 'task_session_reverted': {
+        if (String(payload?.task_id || '') !== String(currentTask.value?.id || '')) break
+        const removedIds = new Set(
+          (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
+        )
+        messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
+        terminalLogs.value = []
+        pinnedCards.value = []
+        resetThinkingPanel()
+        engineRunning.value = false
+        if (payload?.session_generation !== undefined) {
+          currentTask.value.session_generation = Number(payload.session_generation || 0)
+        }
+        if (payload?.task_status) {
+          currentTask.value.status = String(payload.task_status)
+          const targetTask = tasks.value.find((task) => task.id === currentTask.value?.id)
+          if (targetTask) targetTask.status = String(payload.task_status)
+        }
+        // Only the initiating client puts restored text into its composer.
+        scheduleContextWindowRefresh()
+        break
+      }
+
       case 'task_resumed': {
         applyTaskSessionPayload(payload)
         engineRunning.value = true
@@ -2567,7 +2671,7 @@ export function useChatViewModel() {
   
   // ─── HITL 回复 ───
   const submitHitl = (cardId: string, response: string) => {
-    if (!response) return
+    if (!response || isUndoing.value) return
     const card = pinnedCards.value.find(c => c.id === cardId)
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       if (currentTask.value?.id) connectWebSocket(currentTask.value.id)
@@ -2598,7 +2702,7 @@ export function useChatViewModel() {
       ElMessage.warning(t('chat.start_before_chat'))
       return false
     }
-    if (sendingChat.value) return false
+    if (sendingChat.value || isUndoing.value) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
     const displayContent = String(options.displayContent || normalized).trim()
@@ -2714,6 +2818,7 @@ export function useChatViewModel() {
   const preInputBusy = ref(false)
 
   const sendPreInputAction = (action: string, payload: Record<string, any> = {}): boolean => {
+    if (isUndoing.value) return false
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       ElMessage.error(t('preInput.errors.ws_unavailable'))
       return false
@@ -2885,6 +2990,7 @@ export function useChatViewModel() {
   // ─── 启动引擎 ───
   const startTask = async (): Promise<boolean> => {
     if (!currentTask.value) return false
+    if (isUndoing.value) return false
     if (!isStartActionVisible.value) return false
     if (isTaskProvisioning.value) {
       ElMessage.warning(t('chat.task_provisioning_hint'))
@@ -3083,6 +3189,10 @@ export function useChatViewModel() {
     loadWorkspace,
     locateContextWindowReference,
     canMarkMessageAsDecision,
+    canUndoMessage,
+    undoMessage,
+    undoingMessageId,
+    isUndoing,
     openDecisionModal,
     markHitlCardAnswered,
     messageAuthorLabel,

@@ -65,6 +65,8 @@ class WSChatPayload(BaseModel):
     creator_avatar_url: Optional[str] = None
     creator_avatar_svg: Optional[str] = None
     created_at: Optional[str] = None
+    session_turn_id: Optional[str] = None
+    session_generation: Optional[int] = None
 
 
 # ── AI 思考过程 ──
