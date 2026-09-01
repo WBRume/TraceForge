@@ -54,14 +54,29 @@ class OpenCodeAdapter(AgentBackend):
         self._run_id: Optional[str] = None
         self._session_id: Optional[str] = None
         self._interrupted = False
+        self._message_ids: set[str] = set()
+        self._user_message_id: Optional[str] = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=None))
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, read=None),
+                trust_env=False,
+            )
         return self._client
 
     def _session_url(self, session_id: str, path: str = "") -> str:
         return f"{self.server_url}/api/session/{session_id}{path}"
+
+    @staticmethod
+    def _is_json_response(response: httpx.Response) -> bool:
+        headers = getattr(response, "headers", None)
+        if headers is None:
+            # Keep lightweight test doubles and older adapter transports
+            # compatible; real httpx responses always expose headers.
+            return response.status_code == 200
+        content_type = str(headers.get("content-type") or "").lower()
+        return response.status_code == 204 or "json" in content_type
 
     async def probe(self) -> str:
         client = await self._ensure_client()
@@ -119,41 +134,163 @@ class OpenCodeAdapter(AgentBackend):
 
     async def _fetch_final_message(self, session_id: str) -> dict[str, Any]:
         client = await self._ensure_client()
-        # 优先使用 v1 /session/{id}/message：实测 v2 /api/session/{id}/message
-        # 对 prompt_async 创建的会话可能返回空 data，导致最终文本/内容丢失。
-        response = await client.get(
-            f"{self.server_url}/session/{session_id}/message",
-        )
-        if response.status_code == 200:
-            parsed = self._parse_v1_messages(response.json())
-            if parsed:
-                return parsed
+        # prompt_async 的完成事件可能先于 provider message 的最终文本落盘。
+        # 有限轮询避免把这种正常的持久化时序误报成空回复；每次只保留
+        # provider 返回的结构，不把 prompt/result 写入日志。
+        last_message: dict[str, Any] = {}
+        for attempt in range(10):
+            # 优先使用 v1 /session/{id}/message：实测 v2 /api/session/{id}/message
+            # 对 prompt_async 创建的会话可能返回空 data。
+            response = await client.get(
+                f"{self.server_url}/session/{session_id}/message",
+            )
+            if response.status_code == 200 and self._is_json_response(response):
+                try:
+                    payload = response.json()
+                except ValueError:
+                    payload = None
+                parsed = self._parse_v1_messages(payload)
+                if parsed:
+                    last_message = parsed
+                    if str(parsed.get("text") or "").strip():
+                        return parsed
 
-        # 回退 v2（旧版本/未来版本可能使用 v2 结构）
-        response = await client.get(
-            self._session_url(session_id, "/message"),
-            params={"limit": 20},
-        )
-        if response.status_code != 200:
-            return {}
-        messages = response.json().get("data") or []
-        for message in reversed(messages):
-            if not isinstance(message, dict) or message.get("type") != "assistant":
+            # 回退 v2（旧版本/未来版本可能使用 v2 结构）。
+            response = await client.get(
+                self._session_url(session_id, "/message"),
+                params={"limit": 20},
+            )
+            if response.status_code == 200 and self._is_json_response(response):
+                try:
+                    messages_payload = response.json()
+                except ValueError:
+                    messages_payload = {}
+                messages = messages_payload.get("data") or [] if isinstance(messages_payload, dict) else []
+                for message in reversed(messages):
+                    if not isinstance(message, dict) or message.get("type") != "assistant":
+                        continue
+                    content = message.get("content") or []
+                    text = "".join(
+                        str(block.get("text") or "")
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ).strip()
+                    last_message = {
+                        "id": message.get("id"),
+                        "text": text,
+                        "finish": message.get("finish"),
+                        "cost": message.get("cost"),
+                        "tokens": message.get("tokens") or {},
+                        "content": content,
+                    }
+                    if text:
+                        return last_message
+                    break
+            if attempt < 9:
+                await asyncio.sleep(0.2)
+        return last_message
+
+    async def revert_message(self, session_id: str, message_id: str, part_id: str | None = None) -> bool:
+        """Revert provider context at a provider message boundary."""
+        client = await self._ensure_client()
+        body: dict[str, Any] = {"messageID": str(message_id)}
+        if part_id:
+            body["partID"] = str(part_id)
+        deadline = time.monotonic() + 30.0
+        while True:
+            session_busy = False
+            for url in (
+                f"{self.server_url}/api/session/{session_id}/revert",
+                f"{self.server_url}/session/{session_id}/revert",
+            ):
+                try:
+                    response = await client.post(url, json=body)
+                except Exception:
+                    continue
+                if response.status_code in (202, 204):
+                    return True
+                if response.status_code == 404:
+                    continue
+                if response.status_code == 409 and "busy" in response.text.lower():
+                    session_busy = True
+                    continue
+                if response.status_code == 200:
+                    if self._is_json_response(response):
+                        return True
+                    continue
+                if response.status_code != 405:
+                    raise AgentError(f"OpenCode revert failed: HTTP {response.status_code} {response.text[:300]}")
+            if session_busy and time.monotonic() < deadline:
+                await asyncio.sleep(0.2)
                 continue
-            content = message.get("content") or []
-            text = "".join(
-                str(block.get("text") or "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ).strip()
-            return {
-                "text": text,
-                "finish": message.get("finish"),
-                "cost": message.get("cost"),
-                "tokens": message.get("tokens") or {},
-                "content": content,
-            }
-        return {}
+            break
+        return False
+
+    async def delete_message(self, session_id: str, message_id: str) -> bool:
+        """Permanently remove a provider message after revert."""
+        client = await self._ensure_client()
+        saw_not_found = False
+        for url in (
+            f"{self.server_url}/api/session/{session_id}/message/{message_id}",
+            f"{self.server_url}/session/{session_id}/message/{message_id}",
+        ):
+            try:
+                response = await client.delete(url)
+            except Exception:
+                continue
+            if response.status_code in (202, 204):
+                return True
+            if response.status_code == 404:
+                saw_not_found = True
+                continue
+            if response.status_code == 200:
+                if self._is_json_response(response):
+                    return True
+                continue
+            if response.status_code != 405:
+                raise AgentError(f"OpenCode delete message failed: HTTP {response.status_code} {response.text[:300]}")
+        return saw_not_found
+
+    async def list_messages(self, session_id: str) -> list[dict[str, Any]]:
+        client = await self._ensure_client()
+        for url in (
+            f"{self.server_url}/api/session/{session_id}/message",
+            f"{self.server_url}/session/{session_id}/message",
+        ):
+            try:
+                response = await client.get(url, params={"limit": 200})
+            except Exception:
+                continue
+            if response.status_code != 200 or not self._is_json_response(response):
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            data = payload.get("data") if isinstance(payload, dict) else payload
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+        raise AgentError("OpenCode message listing failed")
+
+    async def wait_until_idle(self, session_id: str, timeout_seconds: float = 30.0) -> None:
+        """Wait for OpenCode's server-side session worker to release its lock."""
+        client = await self._ensure_client()
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds or 30.0))
+        while time.monotonic() < deadline:
+            try:
+                response = await client.get(f"{self.server_url}/session/status")
+                if response.status_code == 200 and self._is_json_response(response):
+                    payload = response.json()
+                    status = payload.get(str(session_id)) if isinstance(payload, dict) else None
+                    if not isinstance(status, dict):
+                        return
+                    status_type = self._text(status.get("type") or status.get("status")).lower()
+                    if status_type not in {"busy", "running", "retry", "pending"}:
+                        return
+            except (httpx.HTTPError, ValueError):
+                pass
+            await asyncio.sleep(0.1)
+        raise AgentError("OpenCode session did not become idle before undo")
 
     @staticmethod
     def _parse_v1_messages(data: Any) -> Optional[dict[str, Any]]:
@@ -191,6 +328,7 @@ class OpenCodeAdapter(AgentBackend):
                         "state": state,
                     })
             return {
+                "id": info.get("id"),
                 "text": "\n".join(text_parts).strip(),
                 "finish": info.get("finish"),
                 "cost": info.get("cost"),
@@ -442,6 +580,9 @@ class OpenCodeAdapter(AgentBackend):
                     agent = self._text(info.get("agent"))
                     if mid and role:
                         message_roles[mid] = role
+                        self._message_ids.add(mid)
+                        if role == "user":
+                            self._user_message_id = mid
                     if mid and agent:
                         message_agents[mid] = agent
                     # 标题/摘要等内部消息不是真正的用户回复，忽略其终态，
@@ -484,6 +625,8 @@ class OpenCodeAdapter(AgentBackend):
         self._running = True
         self._run_id = request.run_id
         self._interrupted = False
+        self._message_ids = set()
+        self._user_message_id = None
         started_at = time.monotonic()
         watchdog = AgentActivityWatchdog(
             startup_timeout_seconds=request.startup_timeout_seconds,
@@ -563,6 +706,11 @@ class OpenCodeAdapter(AgentBackend):
                 duration_ms=int((time.monotonic() - started_at) * 1000),
                 return_code=None,
                 raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
+                metadata={
+                    "provider_message_ids": sorted(self._message_ids),
+                    "provider_user_message_id": self._user_message_id,
+                    "provider_assistant_message_id": final.get("id"),
+                },
             )
         except Exception as exc:
             if isinstance(exc, AgentError):

@@ -300,6 +300,11 @@
     "copy": "Copy message",
     "copied": "Copied",
     "copy_failed": "Copy failed",
+    "undo": {
+      "message": "Undo and edit",
+      "success": "Turn reverted. The original message is ready to edit.",
+      "failed": "Undo failed. Current history was not changed."
+    },
     "decision": {
       "mark": "Mark as Decision",
       "mark_short": "Decision",

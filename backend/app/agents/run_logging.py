@@ -134,7 +134,7 @@ class _AgentSessionTrace:
         if self._request.permission_mode:
             self._write(f"permission_mode: {self._request.permission_mode}")
         self._write("----- USER PROMPT BEGIN -----")
-        self._write(self._request.prompt)
+        self._write(f"prompt_length: {len(str(self._request.prompt or ''))}")
         self._write("----- USER PROMPT END -----")
 
     def _flush_pending(self) -> None:
@@ -172,16 +172,16 @@ class _AgentSessionTrace:
         elif event.type in ("text", "text_delta"):
             text = _safe_text(payload.get("text"), 1000)
             if text:
-                line += f" {text}"
+                line += f" text_length={len(text)}"
         elif event.type == "thinking":
             text = _safe_text(payload.get("text"), 500)
             if text:
-                line += f" {text}"
+                line += f" text_length={len(text)}"
         elif event.type == "tool_use":
             line += f" tool={_safe_text(payload.get('tool_name') or payload.get('tool'), 200)}"
             tool_input = payload.get("tool_input")
             if tool_input is not None:
-                line += f" input={_safe_text(tool_input, 500)}"
+                line += f" input_present=true input_length={len(str(tool_input))}"
         elif event.type == "tool_result":
             line += (
                 f" tool={_safe_text(payload.get('tool_name') or payload.get('tool'), 200)}"
@@ -190,17 +190,18 @@ class _AgentSessionTrace:
         elif event.type == "usage":
             line += f" usage={_safe_text(_usage_payload(payload), 500)}"
         elif event.type == "ask_user":
-            line += f" question={_safe_text(payload.get('question') or payload.get('prompt'), 300)}"
+            question = _safe_text(payload.get("question") or payload.get("prompt"), 300)
+            line += f" question_present={bool(question)} question_length={len(question)}"
         elif event.type == "result":
             line += (
                 f" success={bool(payload.get('success', True))}"
                 f" finish_reason={_safe_text(payload.get('finish_reason'), 100)}"
             )
             result_text = _safe_text(payload.get("result"), 500)
-            if result_text:
-                line += f" result={result_text}"
+            line += f" result_length={len(result_text)}"
         elif event.type == "error":
-            line += f" error={_safe_text(payload.get('result') or payload.get('message'), 500)}"
+            error_text = _safe_text(payload.get("result") or payload.get("message"), 500)
+            line += f" error_length={len(error_text)}"
         else:
             line += f" {_safe_text(str(payload), 500)}"
         self._write(line)
@@ -289,7 +290,7 @@ async def run_agent_backend_with_logging(
 
         logger.bind(
             **base_extra,
-            prompt=_safe_text(request.prompt, _PROMPT_LIMIT),
+            prompt_length=len(str(request.prompt or "")),
         ).info("agent run start")
 
         async def _logged_event(event: AgentEvent) -> None:
@@ -307,11 +308,11 @@ async def run_agent_backend_with_logging(
             elif event.type in ("text", "text_delta"):
                 text = _safe_text(payload.get("text"))
                 if text:
-                    logger.bind(**extra).debug(f"agent text: {text}")
+                    logger.bind(**extra, text_length=len(text)).debug("agent text")
             elif event.type == "thinking":
                 text = _safe_text(payload.get("text"), 500)
                 if text:
-                    logger.bind(**extra).debug(f"agent thinking: {text}")
+                    logger.bind(**extra, text_length=len(text)).debug("agent thinking")
             elif event.type == "tool_use":
                 logger.bind(
                     **extra,
@@ -331,19 +332,19 @@ async def run_agent_backend_with_logging(
                 logger.bind(
                     **extra,
                     ask_user_id=_safe_text(payload.get("ask_user_id") or "", 200),
-                    question=_safe_text(payload.get("question") or payload.get("prompt") or "", 300),
+                    question_length=len(_safe_text(payload.get("question") or payload.get("prompt") or "", 300)),
                 ).info("agent ask user")
             elif event.type == "result":
                 logger.bind(
                     **extra,
                     success=bool(payload.get("success", True)),
                     finish_reason=_safe_text(payload.get("finish_reason") or "", 100),
-                    result=_safe_text(payload.get("result"), _RESULT_LIMIT),
+                    result_length=len(_safe_text(payload.get("result"), _RESULT_LIMIT)),
                 ).info("agent result")
             elif event.type == "error":
                 logger.bind(
                     **extra,
-                    error=_safe_text(payload.get("result") or payload.get("message"), _ERROR_LIMIT),
+                    error_length=len(_safe_text(payload.get("result") or payload.get("message"), _ERROR_LIMIT)),
                 ).error("agent error")
             else:
                 logger.bind(**extra).debug(f"agent event: {event.type}")
@@ -363,7 +364,7 @@ async def run_agent_backend_with_logging(
                 ),
                 "cost_usd": result.cost_usd,
                 "usage": _usage_payload(result.usage),
-                "result": _safe_text(result.result_text, _RESULT_LIMIT),
+                "result_length": len(_safe_text(result.result_text, _RESULT_LIMIT)),
             }
             if result.success:
                 logger.bind(**result_extra).info("agent run success")

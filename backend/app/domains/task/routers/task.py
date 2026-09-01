@@ -43,6 +43,7 @@ from app.domains.task.schemas.task import (
     TaskInterruptRequest,
     TaskResumeInterruptedRequest,
     TaskStartRequest,
+    TaskUndoMessageRequest,
 )
 from app.domains.task.schemas.diagnosis import (
     DiagnosisResultResponse,
@@ -55,7 +56,14 @@ from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
-from app.domains.task.services import git_patch_service, task_cli_state_service, task_service, context_token_service, task_session_control_service
+from app.domains.task.services import (
+    git_patch_service,
+    task_cli_state_service,
+    task_service,
+    context_token_service,
+    task_session_control_service,
+    task_session_service,
+)
 from app.domains.task.services import diagnosis_result_service
 from app.domains.workflow.services import change_proposal_service, provision_job_service
 from app.domains.workspace.services import workspace_service
@@ -507,6 +515,7 @@ async def initialize_task(
                     raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
 
             task.retry_count += 1
+            task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
             task.status = TaskStatus.CODING
             task.error_message = None
             task.session_id = None
@@ -538,27 +547,18 @@ async def initialize_task(
                 content=init_reason_text,
                 message_type="init_reason",
             )
-            prompt_message = task_service.save_chat_message(
+            _turn, _prompt_message, job, _checkpoint = await task_session_service.create_task_chat_turn(
                 db,
-                task_id,
-                ws_id,
-                current_user.id,
-                role="user",
+                task=task,
+                actor_user_id=current_user.id,
                 content=user_display,
-            )
-
-            job = ai_job_service.create_task_chat_job(
-                db,
-                workspace_id=ws_id,
-                task_id=task.id,
-                creator_id=current_user.id,
                 prompt_text=prompt,
                 context_json={
                     "source": "task_initialize",
                     "fresh_session": True,
                     "initialize_reason": init_reason_text,
                 },
-                chat_message_id=prompt_message.id,
+                fresh_session=True,
             )
             await ai_job_service.enqueue_task_chat_job(job.id)
 
@@ -916,6 +916,42 @@ def get_task_history(
     verify_workspace_access(ws_id, current_user, db)
     return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
+
+@router.post("/{task_id}/messages/{message_id}/undo")
+async def undo_task_message(
+    ws_id: str,
+    task_id: str,
+    message_id: str,
+    body: TaskUndoMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to undo task messages",
+    )
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    try:
+        return await task_session_service.undo_task_message(
+            db,
+            task=task,
+            message_id=message_id,
+            actor_user_id=current_user.id,
+            operation_id=body.operation_id,
+        )
+    except task_session_service.TaskSessionUndoError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except LockAcquireTimeout as exc:
+        _raise_task_lock_conflict(exc)
 
 @router.get("/{task_id}/pre-input/active")
 def get_active_pre_input(

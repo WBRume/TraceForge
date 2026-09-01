@@ -34,6 +34,7 @@ class AiJobStatus(str, PyEnum):
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    REVERTED = "REVERTED"
 
 
 class SddAiJob(Base):
@@ -84,6 +85,14 @@ class SddAiJob(Base):
     session_id = Column(String(120), nullable=True)
     # 该回合实际使用的 agent backend（线程续会话时沿用，保证上下文连续）
     agent_backend = Column(String(40), nullable=True)
+    session_turn_id = Column(
+        String(36),
+        ForeignKey("sdd_task_session_turns.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    session_generation = Column(Integer, nullable=True, index=True)
+    session_revision = Column(Integer, nullable=True, index=True)
     interrupt_reason = Column(Text, nullable=True)
     interrupted_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)
     interrupted_at = Column(DateTime, nullable=True)
@@ -99,5 +108,6 @@ class SddAiJob(Base):
     thread = relationship("SddAssetThread", back_populates="ai_jobs")
     creator = relationship("User", back_populates="ai_jobs", foreign_keys=[creator_id])
     interrupted_by = relationship("User", foreign_keys=[interrupted_by_id])
+    session_turn = relationship("TaskSessionTurn", foreign_keys=[session_turn_id])
     outputs = relationship("SddAiOutput", back_populates="ai_job", cascade="all, delete-orphan")
     evidence_items = relationship("SddEvidence", back_populates="ai_job")

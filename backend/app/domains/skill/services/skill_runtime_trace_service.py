@@ -51,6 +51,14 @@ _writer_queue: Optional[asyncio.Queue[Dict[str, Any]]] = None
 _writer_task: Optional[asyncio.Task[None]] = None
 
 
+async def wait_for_pending_writes(timeout: float = 30.0) -> None:
+    """Wait until queued runtime trace writes have reached the database."""
+    queue = _writer_queue
+    if queue is None:
+        return
+    await asyncio.wait_for(queue.join(), timeout=max(0.1, float(timeout)))
+
+
 def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value or "")
 

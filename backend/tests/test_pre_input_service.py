@@ -95,10 +95,33 @@ def _replace_span(db, pre_input, user_id, is_expert, start, end, anchor, replace
 
 
 @pytest.fixture(autouse=True)
-def _noop_enqueue(monkeypatch):
+def _noop_enqueue(monkeypatch, tmp_path):
     async def _noop(job_id):
         return None
+
+    checkpoint_index = 0
+
+    async def _fake_checkpoint(*_args, **_kwargs):
+        nonlocal checkpoint_index
+        checkpoint_index += 1
+        root = tmp_path / f"checkpoint-{checkpoint_index}"
+        root.mkdir()
+        return {"root": str(root), "worktree": {}, "provider": {}}
+
+    async def _fake_cleanup(_path):
+        return None
+
     monkeypatch.setattr(pre_input_service.ai_job_service, "enqueue_task_chat_job", _noop)
+    monkeypatch.setattr(
+        pre_input_service.task_session_service.task_session_snapshot_service,
+        "create_checkpoint",
+        _fake_checkpoint,
+    )
+    monkeypatch.setattr(
+        pre_input_service.task_session_service.task_session_snapshot_service,
+        "cleanup_checkpoint",
+        _fake_cleanup,
+    )
 
 
 def test_create_initializes_document_with_creator_attribution(db_session):

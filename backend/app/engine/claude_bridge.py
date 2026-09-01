@@ -403,7 +403,7 @@ class MockCliBridge(CliBridgeBase):
         self._event_cb = event_callback
         self._session_id = session_id or str(uuid.uuid4())
 
-        logger.info(f"[Mock CLI] Session {self._session_id} | prompt: {prompt[:80]}")
+        logger.info(f"[Mock CLI] Session {self._session_id} | prompt_length: {len(prompt)}")
 
         # 模拟事件序列
         asyncio.create_task(self._simulate(prompt))

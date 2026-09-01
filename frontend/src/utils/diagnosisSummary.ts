@@ -3,14 +3,10 @@
  * 数据来源：TASK_CHAT 频道的 AI job（status + context_json.job_kind）。
  */
 
-export type DiagnosisSummaryJobStatus =
-  | 'PENDING'
-  | 'RUNNING'
-  | 'WAITING_HITL'
-  | 'INTERRUPTED'
-  | 'SUCCESS'
-  | 'FAILED'
-  | 'CANCELLED'
+// Keep this boundary open to the unified AI-job status vocabulary.  The
+// diagnosis helper only cares about PENDING/RUNNING; task-chat jobs can also
+// legitimately arrive here with statuses such as REVERTED.
+export type DiagnosisSummaryJobStatus = string
 
 export interface DiagnosisSummaryJobLite {
   task_id?: string | null

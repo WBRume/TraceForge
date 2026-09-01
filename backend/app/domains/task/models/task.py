@@ -60,6 +60,9 @@ class SddTask(Base):
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)
+    # generation 隔离初始化前历史；revision 用来拒绝迟到 provider 事件。
+    session_generation = Column(Integer, nullable=False, default=0, server_default="0", index=True)
+    session_revision = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
     agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)
@@ -95,6 +98,8 @@ class SddTask(Base):
     skill_links = relationship("SddTaskSkill", back_populates="task", cascade="all, delete-orphan")
     api_mock_projects = relationship("SddApiMockProject", back_populates="task", cascade="all, delete-orphan")
     ai_jobs = relationship("SddAiJob", back_populates="task", cascade="all, delete-orphan")
+    session_turns = relationship("TaskSessionTurn", back_populates="task", cascade="all, delete-orphan")
+    session_operations = relationship("TaskSessionOperation", back_populates="task", cascade="all, delete-orphan")
     requirement_links = relationship("SddTaskRequirement", back_populates="task", cascade="all, delete-orphan")
     ai_outputs = relationship("SddAiOutput", back_populates="task", cascade="all, delete-orphan")
     human_reviews = relationship("SddHumanReview", back_populates="task", cascade="all, delete-orphan")

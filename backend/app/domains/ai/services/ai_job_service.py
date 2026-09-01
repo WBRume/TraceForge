@@ -58,7 +58,7 @@ ACTIVE_STATUSES = {
     AiJobStatus.WAITING_HITL,
     AiJobStatus.INTERRUPTED,
 }
-FINAL_STATUSES = {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}
+FINAL_STATUSES = {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED, AiJobStatus.REVERTED}
 BLOCKING_STATUSES = {AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}
 TASK_QUEUE_PAUSED_STATUSES = {TaskStatus.INTERRUPTED, TaskStatus.FAILED}
 JOB_KIND_THREAD_AI_REPLY = "THREAD_AI_REPLY"
@@ -190,6 +190,9 @@ def serialize_job(job: SddAiJob) -> Dict[str, Any]:
         "result_json": job.result_json if isinstance(job.result_json, dict) else {},
         "error_message": job.error_message,
         "session_id": job.session_id,
+        "session_turn_id": job.session_turn_id,
+        "session_generation": job.session_generation,
+        "session_revision": job.session_revision,
         "interrupt_reason": job.interrupt_reason,
         "interrupted_by_id": job.interrupted_by_id,
         "interrupted_at": job.interrupted_at.isoformat() if job.interrupted_at else None,
@@ -301,6 +304,12 @@ async def _update_job_state(
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if not job:
             return None
+        if job.channel == AiJobChannel.TASK_CHAT and job.task_id and job.session_revision is not None:
+            task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+            if not task or int(task.session_revision or -1) != int(job.session_revision):
+                # An undo or a newer session generation has fenced this worker.
+                # Do not let a late callback resurrect the old job state.
+                return serialize_job(job)
         current_status = job.status
         requested_status = status
         if current_status in FINAL_STATUSES:
@@ -478,6 +487,9 @@ def create_task_chat_job(
     context_json: Optional[Dict[str, Any]] = None,
     session_id: Optional[str] = None,
     chat_message_id: Optional[str] = None,
+    session_turn_id: Optional[str] = None,
+    session_generation: Optional[int] = None,
+    session_revision: Optional[int] = None,
 ) -> SddAiJob:
     payload_context = {"source": "task_chat"}
     if isinstance(context_json, dict):
@@ -496,6 +508,9 @@ def create_task_chat_job(
         session_id=(str(session_id or "").strip() or None),
         creator_id=creator_id,
         context_json=payload_context,
+        session_turn_id=session_turn_id,
+        session_generation=session_generation,
+        session_revision=session_revision,
     )
     db.add(job)
     db.commit()
@@ -1629,9 +1644,14 @@ async def _on_engine_session(session_id: str, job_id: str) -> None:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if job and job.task_id:
             task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if task:
+            if task and (
+                job.session_revision is None
+                or int(task.session_revision or -1) == int(job.session_revision)
+            ):
                 task.session_id = session_id
                 db.commit()
+            elif task:
+                return
     finally:
         db.close()
     await _update_job_state(job_id, session_id=session_id)
@@ -1733,7 +1753,7 @@ async def _mark_task_chat_job_interrupted(
             not job
             or job.channel != AiJobChannel.TASK_CHAT
             or job.status in FINAL_STATUSES
-            or job.status == AiJobStatus.INTERRUPTED
+            or job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}
         ):
             return None
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
@@ -1768,7 +1788,7 @@ async def _on_engine_result(
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if not job or job.status in FINAL_STATUSES:
             return
-        if job.status == AiJobStatus.INTERRUPTED:
+        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}:
             return
         if job.status == AiJobStatus.WAITING_HITL and not success:
             db.commit()
@@ -1821,7 +1841,7 @@ async def _execute_task_chat_job(job_id: str) -> None:
         if not job or job.channel != AiJobChannel.TASK_CHAT:
             return
         # 防止“停止/中断”发生在排队阶段时，任务稍后仍被启动
-        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.CANCELLED}:
+        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.CANCELLED, AiJobStatus.REVERTED}:
             return
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task:
@@ -2111,6 +2131,8 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
                 # 恢复上次中断（或继续）的会话：总是以 DB 持久化的 session_id
                 # 为准，保证下次启动使用 --resume 重新进入原会话，而不是新开会话。
                 engine.session_id = job.session_id
+        engine.session_turn_id = getattr(job, "session_turn_id", None)
+        engine.session_revision = getattr(job, "session_revision", None)
     finally:
         db.close()
 
@@ -2150,6 +2172,13 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             or job.status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}
         ):
             return
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+        if (
+            task
+            and job.session_revision is not None
+            and int(task.session_revision or -1) != int(job.session_revision)
+        ):
+            return
         if engine.last_result_success is True:
             job.status = AiJobStatus.SUCCESS
             job.progress = 100
@@ -2161,7 +2190,6 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             db.refresh(job)
             payload = serialize_job(job)
         else:
-            task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
             session_id = str(
                 engine.session_id or job.session_id or (getattr(task, "session_id", None) or "")
             ).strip() or None

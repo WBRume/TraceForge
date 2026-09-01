@@ -300,6 +300,11 @@
     "copy": "复制内容",
     "copied": "已复制",
     "copy_failed": "复制失败",
+    "undo": {
+      "message": "撤销并重新编辑",
+      "success": "已撤销后续会话，原消息已放回输入框",
+      "failed": "撤销失败，当前历史未改变"
+    },
     "decision": {
       "mark": "标记为关键决策",
       "mark_short": "标记决策",

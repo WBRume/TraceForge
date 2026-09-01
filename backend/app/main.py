@@ -11,6 +11,7 @@ from jose import JWTError
 
 from app.config import settings
 from app.core.redis_client import close_redis_client
+from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import (
     bind_log_context,
     bind_task_context,
@@ -58,6 +59,7 @@ from app.domains.auth.services import auth_service
 from app.domains.ai.services import chat_message_idempotency_service
 from app.domains.task.services import task_service
 from app.domains.task.services import task_session_control_service
+from app.domains.task.services import task_session_service
 from app.domains.workspace.services import workspace_service
 from app.domains.websocket.ws.manager import manager
 from app.domains.notification.routers import notification as notification_router
@@ -154,6 +156,8 @@ def _serialize_chat_ack(
     display_name: str | None = None,
     is_workspace_expert: bool = False,
     created_at: str | None = None,
+    session_turn_id: str | None = None,
+    session_generation: int | None = None,
     message: str | None = None,
 ) -> dict:
     return {
@@ -170,6 +174,8 @@ def _serialize_chat_ack(
         "creator_display_name": display_name,
         "creator_is_workspace_expert": bool(is_workspace_expert),
         "created_at": created_at,
+        "session_turn_id": session_turn_id,
+        "session_generation": session_generation,
         "message": message,
     }
 
@@ -274,7 +280,9 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                     if not user_content.strip():
                         continue
 
-                    task_logger.info(f"User chat for task {task_id}: {user_content[:80]}")
+                    # Do not put prompt text in persisted/file logs; undo is
+                    # required to forget sensitive user content.
+                    task_logger.info(f"User chat for task {task_id}: message_length={len(user_content)}")
 
                     task_meta = None
                     job_id = None
@@ -355,14 +363,15 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
 
                         try:
                             if task_obj.status == TaskStatus.INTERRUPTED:
-                                resume_payload = await task_session_control_service.resume_interrupted_task(
-                                    db,
-                                    task=task_obj,
-                                    actor_user_id=user_id,
-                                    prompt=user_content,
-                                    confirm_continue=False,
-                                    client_message_id=client_message_id,
-                                )
+                                async with lock_task(task_id):
+                                    resume_payload = await task_session_control_service.resume_interrupted_task(
+                                        db,
+                                        task=task_obj,
+                                        actor_user_id=user_id,
+                                        prompt=user_content,
+                                        confirm_continue=False,
+                                        client_message_id=client_message_id,
+                                    )
                                 resume_job = resume_payload.get("job") or {}
                                 resume_context = resume_job.get("context_json") or {}
                                 await chat_message_idempotency_service.mark_message_done(
@@ -382,34 +391,53 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                                         is_workspace_expert=user_is_expert,
                                         chat_message_id=str(resume_context.get("chat_message_id") or "") or None,
                                         ai_job_id=str(resume_job.get("id") or "") or None,
+                                        session_turn_id=resume_job.get("session_turn_id"),
+                                        session_generation=resume_job.get("session_generation"),
                                     ),
                                 )
                                 continue
 
-                            saved_message = task_service.save_chat_message(
-                                db,
-                                task_id,
-                                task_meta["workspace_id"],
-                                user_id,
-                                role="user",
-                                content=user_content,
-                                metadata_json={"client_message_id": client_message_id},
-                            )
-                            job = ai_job_service.create_task_chat_job(
-                                db,
-                                workspace_id=task_meta["workspace_id"],
-                                task_id=task_meta["id"],
-                                creator_id=user_id,
-                                prompt_text=user_content,
-                                context_json={"client_message_id": client_message_id},
-                                chat_message_id=saved_message.id,
-                            )
+                            async with lock_task(task_id):
+                                _turn, saved_message, job, _checkpoint = await task_session_service.create_task_chat_turn(
+                                    db,
+                                    task=task_obj,
+                                    actor_user_id=user_id,
+                                    content=user_content,
+                                    context_json={"client_message_id": client_message_id},
+                                    client_message_id=client_message_id,
+                                )
                             job_id = job.id
                             await chat_message_idempotency_service.mark_message_done(
                                 claim,
                                 chat_message_id=saved_message.id,
                                 ai_job_id=job_id,
                             )
+                        except (task_session_service.TaskSessionUndoError, LockAcquireTimeout) as exc:
+                            if claim:
+                                try:
+                                    await chat_message_idempotency_service.mark_message_failed(claim)
+                                except Exception:
+                                    task_logger.warning(
+                                        f"Failed to clear chat idempotency claim for task {task_id}"
+                                    )
+                            await _send_chat_ack(
+                                websocket,
+                                _serialize_chat_ack(
+                                    task_id=task_id,
+                                    status="failed",
+                                    client_message_id=client_message_id,
+                                    content=user_content,
+                                    user_id=user_id,
+                                    display_name=user_display_name,
+                                    is_workspace_expert=user_is_expert,
+                                    message=(
+                                        "Task is busy; please retry."
+                                        if isinstance(exc, LockAcquireTimeout)
+                                        else str(exc)
+                                    ),
+                                ),
+                            )
+                            continue
                         except Exception:
                             if claim:
                                 try:
@@ -438,6 +466,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                             display_name=user_display_name,
                             is_workspace_expert=user_is_expert,
                             created_at=saved_message.created_at.isoformat(),
+                            session_turn_id=saved_message.session_turn_id,
+                            session_generation=saved_message.session_generation,
                         ),
                     )
                     await manager.send_message_to_room(
@@ -457,6 +487,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                                 creator_avatar_url=user_avatar_url,
                                 creator_avatar_svg=user_avatar_svg,
                                 created_at=saved_message.created_at.isoformat(),
+                                session_turn_id=saved_message.session_turn_id,
+                                session_generation=saved_message.session_generation,
                             ).model_dump(),
                         ),
                     )
@@ -470,7 +502,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
                     if not response.strip():
                         continue
 
-                    task_logger.info(f"HITL response for task {task_id}: {response[:80]}")
+                    task_logger.info(f"HITL response for task {task_id}: message_length={len(response)}")
                     resumed = await ai_job_service.resume_waiting_hitl_job(
                         task_id=task_id,
                         response=response.strip(),

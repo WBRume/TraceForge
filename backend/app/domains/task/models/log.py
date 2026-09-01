@@ -54,6 +54,12 @@ class SddExecutionLog(Base):
     log_type = Column(Enum(LogType), nullable=False, default=LogType.STDOUT)
     content = Column(Text, nullable=False)
     event_order = Column(BigInteger, nullable=True)
+    session_turn_id = Column(
+        String(36),
+        ForeignKey("sdd_task_session_turns.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
     # Relationships

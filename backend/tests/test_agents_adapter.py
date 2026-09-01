@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -18,6 +20,7 @@ from app.agents.adapters.claude_code.event_mapper import map_claude_event
 from app.agents.adapters.dsh.event_mapper import map_dsh_event
 from app.agents.adapters.mock.mock_adapter import MockAdapter
 from app.agents.adapters.opencode.event_mapper import map_opencode_event
+from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.registry import create_agent_backend
 
 
@@ -202,6 +205,43 @@ class OpenCodeEventMapperTest(unittest.TestCase):
         error = next(e for e in events if e.type == "error")
         self.assertEqual(error.payload["finish_reason"], "error")
         self.assertIn("boom", error.payload["result"])
+
+
+class OpenCodeUndoApiTest(unittest.IsolatedAsyncioTestCase):
+    async def test_undo_uses_provider_message_ids_and_verifies_listing(self):
+        calls: list[tuple[str, str, dict | None]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append((request.method, str(request.url), request.content and json.loads(request.content)))
+            path = request.url.path
+            if path.endswith("/api/session/s1/revert"):
+                return httpx.Response(404)
+            if path.endswith("/session/s1/revert"):
+                return httpx.Response(204)
+            if path.endswith("/api/session/s1/message/m-user"):
+                return httpx.Response(405)
+            if path.endswith("/session/s1/message/m-user"):
+                return httpx.Response(204)
+            if path.endswith("/api/session/s1/message"):
+                return httpx.Response(404)
+            if path.endswith("/session/s1/message"):
+                return httpx.Response(200, json={"data": [{"info": {"id": "m-before"}}]})
+            return httpx.Response(500)
+
+        adapter = OpenCodeAdapter("http://provider")
+        adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            self.assertTrue(await adapter.revert_message("s1", "m-user"))
+            self.assertTrue(await adapter.delete_message("s1", "m-user"))
+            messages = await adapter.list_messages("s1")
+        finally:
+            await adapter.close()
+
+        self.assertEqual(messages[0]["info"]["id"], "m-before")
+        self.assertEqual(calls[0][0:2], ("POST", "http://provider/api/session/s1/revert"))
+        self.assertEqual(calls[1][0:2], ("POST", "http://provider/session/s1/revert"))
+        self.assertEqual(calls[1][2], {"messageID": "m-user"})
+        self.assertEqual(calls[3][0:2], ("DELETE", "http://provider/session/s1/message/m-user"))
 
 
 class OpenCodeEventMapperFixtureTest(unittest.TestCase):
