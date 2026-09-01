@@ -24,7 +24,24 @@ const router = createRouter({
     },
     {
       path: '/login',
-      redirect: '/'
+      name: 'login',
+      component: () => import('../views/LoginView.vue')
+    },
+    // OAuth 三方登录流程页（免鉴权；后端 302 落地页，T04）
+    {
+      path: '/oauth/callback',
+      name: 'oauthCallback',
+      component: () => import('../views/OAuthCallbackView.vue')
+    },
+    {
+      path: '/oauth/register',
+      name: 'oauthRegister',
+      component: () => import('../views/OAuthRegisterView.vue')
+    },
+    {
+      path: '/oauth/bind-confirm',
+      name: 'oauthBindConfirm',
+      component: () => import('../views/OAuthBindConfirmView.vue')
     },
     {
       path: '/workspaces',

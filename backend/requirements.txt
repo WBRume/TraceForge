@@ -35,3 +35,6 @@ python-docx==1.1.2
 PyYAML==6.0.3
 redis>=5.0.0
 zstandard==0.25.0
+
+# OAuth (三方登录) — 已在环境可用但未声明，必须补上并锁版本
+httpx==0.28.1

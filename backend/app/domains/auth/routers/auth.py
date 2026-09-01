@@ -24,6 +24,9 @@ logger = get_logger(__name__)
 @router.post("/register", response_model=UserResponse)
 def register(user_data: UserRegister, db: Session = Depends(get_db)):
     try:
+        # OAuth 增量（拍板 #4 / E-12）：接入域名白名单（留空 = 不限制）；
+        # email 归一化在 register_user 内部完成
+        auth_service.assert_email_allowed(user_data.email)
         user = auth_service.register_user(
             db=db,
             email=user_data.email,
@@ -72,7 +75,11 @@ def get_me(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return auth_service.ensure_user_avatar_svg(db, current_user)
+    user = auth_service.ensure_user_avatar_svg(db, current_user)
+    response = UserResponse.model_validate(user)
+    # OAuth 增量（接口 11）：已绑定 provider 名列表，如 ["github"]
+    response.bound_providers = sorted({i.provider for i in user.oauth_identities})
+    return response
 
 
 @router.put("/me/avatar", response_model=UserResponse)

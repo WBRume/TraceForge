@@ -11,7 +11,9 @@ import bcrypt
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.domains.auth.errors import RegisterEmailNotAllowedError
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.auth.schemas.auth import TokenResponse
 from app.domains.task.services import avatar_service
 
 # SERVER_BOOT_ID = str(uuid.uuid4())
@@ -65,8 +67,50 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
     return payload
 
 
+def normalize_email(email: Optional[str]) -> str:
+    """E-12 邮箱归一化：trim + 转小写；不做 ``+tag`` 剥离（E-12：语义因邮箱系统而异）。
+
+    所有 email 判定前必须先归一化（K-13），MySQL 默认 collation 大小写不敏感，
+    应用层显式归一化以保证行为一致。
+    """
+    return (email or "").strip().lower()
+
+
+def assert_email_allowed(email: str) -> None:
+    """注册域名白名单开关（拍板 #4）。
+
+    - ``REGISTER_EMAIL_DOMAIN_WHITELIST`` 留空 = 不限制（现网默认，NFR-C1：行为完全不变）。
+    - 配置后按逗号分隔的域名后缀匹配（``corp.com`` 可匹配 ``a@corp.com`` 与 ``a@sub.corp.com``）。
+    - 未通过 → 403 ``REGISTER_EMAIL_NOT_ALLOWED``。
+    """
+    raw = (settings.REGISTER_EMAIL_DOMAIN_WHITELIST or "").strip()
+    if not raw:
+        return
+    whitelist = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    if not whitelist:
+        return
+    domain = normalize_email(email).rsplit("@", 1)[-1]
+    for entry in whitelist:
+        if domain == entry or domain.endswith("." + entry):
+            return
+    raise RegisterEmailNotAllowedError()
+
+
+def issue_token_pair(user: "User | str") -> TokenResponse:
+    """签发 access + refresh token 对（OAuth 三条终态路径共用）。"""
+    user_id = user.id if isinstance(user, User) else str(user)
+    return TokenResponse(
+        access_token=create_access_token(user_id),
+        refresh_token=create_refresh_token(user_id),
+    )
+
+
 def register_user(db: Session, email: str, password: str, display_name: str) -> User:
     """Register a new user only. Workspace creation is manual."""
+    # OAuth 增量（E-12 / 拍板 #4）：注册前归一化 + 白名单校验（留空 = 不限制）
+    email = normalize_email(email)
+    assert_email_allowed(email)
+
     existing = db.query(User).filter(User.email == email).first()
     if existing:
         raise ValueError("This email has already been registered")
