@@ -1950,7 +1950,7 @@ export function useChatViewModel() {
   const canUndoMessage = (msg: any): boolean => {
     const id = String(msg?.id || '').trim()
     if (!id || id.startsWith('local-')) return false
-    if (!currentTask.value?.id || !canManageTaskStatus.value || isUndoing.value || sendingChat.value) return false
+    if (!currentTask.value?.id || !canManageTaskStatus.value || sendingChat.value) return false
     if (String(msg?.role || '').toLowerCase() !== 'user') return false
     if (msg?.decision_id || msg?.message_type === 'init_reason') return false
     if (!msg?.session_turn_id || !String(msg?.content || '')) return false

@@ -189,7 +189,12 @@ const statusModelText = (card: any): string => {
     </aside>
 
     <!-- Center: Chat + Pinned Cards -->
-    <section class="chat-main" v-if="vm.currentTask">
+    <section
+      class="chat-main"
+      :class="{ 'is-session-busy': vm.isUndoing }"
+      :aria-busy="vm.isUndoing"
+      v-if="vm.currentTask"
+    >
       <!-- Header -->
       <header class="chat-header glass-panel">
         <div class="header-left">
@@ -285,6 +290,17 @@ const statusModelText = (card: any): string => {
           />
         </div>
       </header>
+
+      <div
+        v-if="vm.isUndoing"
+        class="session-operation-banner"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <Loader2 class="w-3.5 h-3.5 session-operation-spinner" />
+        <span>{{ $t('chat.undo.in_progress') }}</span>
+      </div>
 
       <div v-if="vm.isTaskPreStart && vm.currentTaskHasSpec" class="prestart-doc-tip glass-panel">
         <p>{{ $t('chat.spec_prestart_hint') }}</p>

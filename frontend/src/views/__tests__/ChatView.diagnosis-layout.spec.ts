@@ -50,4 +50,17 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(declarations(diagnosisResultCardSource, '.dc-code')).toContain('max-width: 100%')
     expect(declarations(diagnosisResultCardSource, '.dc-item-note')).toContain('overflow-wrap: anywhere')
   })
+
+  it('uses the shared message action style and a frosted session-operation overlay', () => {
+    expect(chatMessageBubbleSource).toContain('class="message-action-btn message-undo-btn"')
+    expect(chatMessageBubbleSource).not.toContain("'is-active': isUndoingMessage")
+    expect(chatMessageBubbleSource).toContain('.message-undo-btn:hover:not(:disabled)')
+    expect(chatMessageBubbleSource).toContain('#fef3c7')
+
+    const glassRule = declarations(layoutCss, '.chat-main.is-session-busy::after')
+    expect(glassRule).toContain('backdrop-filter: blur(6px) saturate(0.88)')
+    expect(glassRule).toContain('pointer-events: auto')
+    expect(layoutCss).toContain('.chat-main.is-session-busy .chat-header')
+    expect(layoutCss).toContain('.session-operation-banner')
+  })
 })
