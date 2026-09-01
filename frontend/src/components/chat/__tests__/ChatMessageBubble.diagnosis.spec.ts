@@ -80,6 +80,33 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     expect(wrapper.text()).toContain('你好')
   })
 
+  it('keeps the undo action visible and shows progress while the request is running', () => {
+    const wrapper = mountBubble(
+      {
+        id: 'msg-undo-1',
+        role: 'user',
+        content: '请撤回这条消息',
+        message_type: 'text',
+        session_turn_id: 'turn-1',
+        session_generation: 1,
+        created_at: '2026-08-07T10:00:00Z',
+      },
+      {
+        canUndoMessage: () => true,
+        isUndoing: true,
+        undoingMessageId: 'msg-undo-1',
+      },
+    )
+
+    const undoButton = wrapper.find('.message-undo-btn')
+    expect(undoButton.exists()).toBe(true)
+    expect(undoButton.classes()).toContain('message-action-btn')
+    expect(undoButton.classes()).toContain('is-loading')
+    expect(undoButton.attributes('disabled')).toBeDefined()
+    expect(undoButton.attributes('aria-busy')).toBe('true')
+    expect(undoButton.find('.undo-spin').exists()).toBe(true)
+  })
+
   it('falls back to message content when metadata is missing', () => {
     const wrapper = mountBubble({
       id: 'msg-diag-2',

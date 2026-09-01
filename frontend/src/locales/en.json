@@ -302,6 +302,7 @@
     "copy_failed": "Copy failed",
     "undo": {
       "message": "Undo and edit",
+      "in_progress": "Reverting the session, please wait…",
       "success": "Turn reverted. The original message is ready to edit.",
       "failed": "Undo failed. Current history was not changed."
     },

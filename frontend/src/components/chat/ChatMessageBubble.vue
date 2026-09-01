@@ -110,6 +110,7 @@ const canCopyMessage = computed(() => {
 
 const canUndoMessage = computed(() => Boolean(props.vm?.canUndoMessage?.(props.msg)))
 const isUndoingMessage = computed(() => String(props.vm?.undoingMessageId || '') === String(props.msg?.id || ''))
+const showUndoAction = computed(() => canUndoMessage.value || isUndoingMessage.value)
 
 async function handleUndoMessage() {
   if (!canUndoMessage.value || isUndoingMessage.value) return
@@ -285,11 +286,11 @@ function openDiagnosisCase(caseId: string) {
       </div>
 
       <!-- Bubble Actions (Under the bubble): Mark Decision / Undo / Copy -->
-      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage || canUndoMessage" class="message-actions-row">
+      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage || showUndoAction" class="message-actions-row">
         <div class="decision-action-wrapper" v-if="vm.canMarkMessageAsDecision(msg)">
           <button
             type="button"
-            class="message-decision-btn"
+            class="message-action-btn message-decision-btn"
             :class="{ 'is-active': isPopoverOpen }"
             :title="$t('chat.decision.mark')"
             @click.stop="handleOpenPopover"
@@ -340,10 +341,13 @@ function openDiagnosisCase(caseId: string) {
         </span>
 
         <button
-          v-if="canUndoMessage"
+          v-if="showUndoAction"
           type="button"
-          class="message-undo-btn"
+          class="message-action-btn message-undo-btn"
           :disabled="Boolean(vm.isUndoing)"
+          :class="{ 'is-loading': isUndoingMessage }"
+          :aria-busy="isUndoingMessage"
+          :aria-label="isUndoingMessage ? $t('chat.undo.in_progress') : $t('chat.undo.message')"
           :title="$t('chat.undo.message')"
           @click.stop="handleUndoMessage"
         >
@@ -354,7 +358,7 @@ function openDiagnosisCase(caseId: string) {
         <button
           v-if="canCopyMessage"
           type="button"
-          class="message-copy-btn"
+          class="message-action-btn message-copy-btn"
           :class="{ 'is-done': copyState === 'done', 'is-failed': copyState === 'failed' }"
           :title="copyTitle"
           @click.stop="handleCopyMessage"
@@ -618,10 +622,9 @@ function openDiagnosisCase(caseId: string) {
   display: inline-flex;
 }
 
-.message-decision-btn,
+.message-action-btn,
 .message-decision-badge,
-.message-copy-btn,
-.message-undo-btn {
+.message-decision-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -632,9 +635,7 @@ function openDiagnosisCase(caseId: string) {
   transition: all 0.15s ease;
 }
 
-.message-decision-btn,
-.message-copy-btn,
-.message-undo-btn {
+.message-action-btn {
   width: 22px;
   height: 22px;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -647,30 +648,32 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
-.message-wrapper:hover .message-decision-btn,
-.message-decision-btn.is-active,
-.message-wrapper:hover .message-copy-btn,
-.message-wrapper:hover .message-undo-btn,
-.message-copy-btn.is-done,
-.message-copy-btn.is-failed {
+.message-wrapper:hover .message-action-btn,
+.message-action-btn.is-active,
+.message-action-btn.is-done,
+.message-action-btn.is-failed,
+.message-action-btn.is-loading {
   opacity: 1;
 }
 
-.message-wrapper:hover .message-copy-btn {
+.message-action-btn:hover:not(:disabled),
+.message-wrapper:hover .message-action-btn {
   color: #64748b;
   border-color: rgba(203, 213, 225, 0.6);
   background: rgba(241, 245, 249, 0.85);
 }
 
-.message-wrapper:hover .message-undo-btn {
-  color: #7c3aed;
-  border-color: rgba(196, 181, 253, 0.7);
-  background: rgba(245, 243, 255, 0.92);
-}
-
-.message-undo-btn:disabled {
+.message-action-btn:disabled {
   cursor: wait;
   opacity: 0.8;
+}
+
+.message-undo-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%) !important;
+  border-color: rgba(251, 191, 36, 0.68) !important;
+  color: #d97706 !important;
+  transform: scale(1.08) translateY(-1px);
+  box-shadow: 0 4px 10px -2px rgba(245, 158, 11, 0.18), 0 2px 4px -2px rgba(245, 158, 11, 0.12) !important;
 }
 
 .message-copy-btn:hover,

@@ -105,8 +105,8 @@ class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
         }
         with open(log_path, "w", encoding="utf-8", newline="") as f:
             f.write(json.dumps(header) + "\n")
-            f.write(json.dumps({"type": "user/message", "seq": 1}) + "\n")
-            f.write(json.dumps({"type": "turn/end", "seq": 2, "data": {"reason": {"kind": "completed"}}}) + "\n")
+            f.write(json.dumps({"type": "user/message", "seq": 0}) + "\n")
+            f.write(json.dumps({"type": "turn/end", "seq": 1, "data": {"reason": {"kind": "completed"}}}) + "\n")
         return log_path
 
     def test_path_encoding_matches_dsh_layout(self):
@@ -142,6 +142,29 @@ class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
         self.assertEqual(header["cwd"], os.path.abspath(thread_dir))
         # 事件行原样保留
         self.assertEqual(json.loads(lines[2])["type"], "turn/end")
+
+    def test_fork_contiguous_prefix_drops_stale_tail_after_external_restore(self):
+        baseline_dir = os.path.join(self._home.name, "baseline")
+        thread_dir = os.path.join(self._home.name, "thread")
+        os.makedirs(baseline_dir, exist_ok=True)
+        log_path = self._write_baseline_log(baseline_dir, "session-corrupt")
+        with open(log_path, "a", encoding="utf-8", newline="") as f:
+            f.write(json.dumps({"type": "agent/inbox/spliced", "seq": 9}) + "\n")
+
+        session_files.fork_session_log(
+            dsh_sessions_root(),
+            "session-corrupt",
+            new_session_id="session-clean-prefix",
+            target_cwd=thread_dir,
+            contiguous_prefix=True,
+        )
+
+        forked = session_files.session_log_path(
+            dsh_sessions_root(), thread_dir, "session-clean-prefix", ".jsonl"
+        )
+        with open(forked, "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f.read().splitlines()]
+        self.assertEqual([line.get("seq") for line in lines[1:]], [0, 1])
 
     def test_locate_rejects_duplicate_ids_across_projects(self):
         dir_a = os.path.join(self._home.name, "a")

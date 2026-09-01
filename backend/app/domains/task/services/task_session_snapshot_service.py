@@ -585,6 +585,7 @@ def _fork_dsh_session_sync(session_id: str, target_cwd: str) -> Optional[str]:
             sid,
             new_session_id=new_id,
             target_cwd=str(target_cwd or ""),
+            contiguous_prefix=True,
         )
         target_path, _target_suffix = session_files.locate_session_log(_dsh_root(), new_id)
         source_dir = os.path.dirname(source_path)
@@ -593,7 +594,10 @@ def _fork_dsh_session_sync(session_id: str, target_cwd: str) -> Optional[str]:
         # copy the remaining session sidecars as well so attachments and other
         # provider metadata survive the identity switch.
         for entry in os.listdir(source_dir):
-            if entry == os.path.basename(source_path):
+            # Never copy an alternate physical session log into the target
+            # directory.  A stale .jsonl alongside .jsonl.zstd would be
+            # selected first by locate_session_log and reintroduce corruption.
+            if entry in {"session.jsonl", "session.jsonl.zstd"}:
                 continue
             source_entry = os.path.join(source_dir, entry)
             target_entry = os.path.join(target_dir, entry)

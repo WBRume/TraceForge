@@ -184,7 +184,7 @@ class TaskSessionSnapshotTest(unittest.TestCase):
                     "session.jsonl",
                     json.dumps({"type": "session", "id": original_id, "cwd": cwd})
                     + "\n"
-                    + json.dumps({"type": "user/message", "text": "prefix-only"})
+                    + json.dumps({"type": "user/message", "seq": 0, "text": "prefix-only"})
                     + "\n",
                 )
                 self._write(os.path.dirname(source), "attachment.sidecar", "sidecar-bytes")
