@@ -27,6 +27,7 @@ from app.domains.management.services import (  # noqa: E402
 )
 from app.domains.management.models.management import (  # noqa: E402
     ProjectLifecycleStatus,
+    SddManagementRepository,
 )
 
 # Register every mapped model for create_all completeness.
@@ -73,12 +74,14 @@ def _seed_user(db) -> User:
 
 
 def _seed_repository(db, name="billing-core", git_url="https://git.example.com/billing-core.git", repo_type="OOTB"):
+    group = repo_group_service.create_group(db, name=f"Seed 组 {name}")
     return repository_service.create_repository(
         db,
         name=name,
         git_url=git_url,
         repo_type=repo_type,
         default_branch="main",
+        group_id=group.id,
         creator_id="user-1",
     )
 
@@ -612,12 +615,43 @@ class TestRepoGroupService:
         with pytest.raises(repo_group_service.RepoGroupServiceError):
             repo_group_service.update_group(db, parent, parent_id=child.id)
 
-    def test_unassigned_repositories_exposed(self, db_session):
+    def test_unassigned_repositories_not_exposed(self, db_session):
         db = db_session
-        _seed_repository(db)
+        # Simulate legacy ungrouped data (no longer creatable through the service).
+        repo = SddManagementRepository(
+            name="legacy-ungrouped",
+            git_url="https://git.example.com/legacy-ungrouped.git",
+            repo_type="OOTB",
+            default_branch="main",
+        )
+        db.add(repo)
+        db.commit()
         tree = repo_group_service.build_repo_group_tree(db)
-        assert tree[-1]["name"] == "Unassigned"
-        assert tree[-1]["repositories"][0]["name"] == "billing-core"
+        assert all(node.get("id") is not None for node in tree)
+        assert not any(node["name"] == "Unassigned" for node in tree)
+
+    def test_create_repository_requires_group(self, db_session):
+        db = db_session
+        with pytest.raises(repository_service.RepositoryServiceError) as exc_info:
+            repository_service.create_repository(
+                db,
+                name="no-group-repo",
+                git_url="https://git.example.com/no-group.git",
+                repo_type="OOTB",
+                creator_id="user-1",
+            )
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(repository_service.RepositoryServiceError) as exc_info:
+            repository_service.create_repository(
+                db,
+                name="missing-group-repo",
+                git_url="https://git.example.com/missing-group.git",
+                repo_type="OOTB",
+                group_id="missing-group-id",
+                creator_id="user-1",
+            )
+        assert exc_info.value.status_code == 400
 
 
 class TestProjectService:

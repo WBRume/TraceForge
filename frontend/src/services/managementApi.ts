@@ -182,7 +182,6 @@ export const listRepositories = async (params: {
   repo_type?: RepositoryType | ''
   group_id?: string | null
   repository_id?: string | null
-  unassigned_only?: boolean
   page?: number
   page_size?: number
 } = {}): Promise<Paginated<Repository>> => {
@@ -236,7 +235,7 @@ export const validateRepositoryRef = async (repositoryId: string, payload: {
   return res.data
 }
 
-export const moveRepositoryToGroup = async (repositoryId: string, groupId: string | null): Promise<Repository> => {
+export const moveRepositoryToGroup = async (repositoryId: string, groupId: string): Promise<Repository> => {
   const res = await api.post('/management/repo-groups/repositories/' + repositoryId + '/move', { group_id: groupId })
   return res.data as Repository
 }

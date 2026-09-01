@@ -57,7 +57,7 @@ const emit = defineEmits<{
               </span>
             </td>
             <td>{{ repo.default_branch || '-' }}</td>
-            <td>{{ repo.group_name || $t('management.repository.no_group') }}</td>
+            <td>{{ repo.group_name || '-' }}</td>
             <td>
               <div v-if="canManage" class="row-actions">
                 <IconActionButton

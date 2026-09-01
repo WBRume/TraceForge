@@ -2921,16 +2921,14 @@
       "name": "Group Name",
       "parent": "Parent Group",
       "root": "Root",
-      "unassigned": "Unassigned Repositories",
       "readonly_hint": "Repo groups are maintained by administrators (read-only for you)",
       "move_repo_hint": "Choose the group for this repository",
-      "add_requires_group": "A repository is the smallest unit; select a repository group first",
       "parent_locked_hint": "The parent group is bound to the currently selected group and cannot be changed",
       "search_placeholder": "Search repo groups"
     },
     "repository": {
       "group": "Repo Group",
-      "no_group": "Unassigned",
+      "group_required_hint": "Select a repo group (every repository must belong to a group)",
       "title": "Repositories",
       "subtitle": "Repository registration, org tree and git branch/tag sync",
       "search_placeholder": "Search repository name / Git URL",

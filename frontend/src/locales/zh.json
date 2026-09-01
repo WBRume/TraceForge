@@ -2926,16 +2926,14 @@
       "name": "组名称",
       "parent": "上级组",
       "root": "根分组",
-      "unassigned": "未分组仓库",
       "readonly_hint": "仓库组由管理员维护，当前为只读",
       "move_repo_hint": "选择仓库归属组",
-      "add_requires_group": "仓库是最小管理单元，请先选中仓库组",
       "parent_locked_hint": "上级组已绑定为当前选中的仓库组，不可修改",
       "search_placeholder": "搜索仓库组"
     },
     "repository": {
       "group": "所属仓库组",
-      "no_group": "未分组",
+      "group_required_hint": "请选择仓库组（仓库必须归属某个分组）",
       "title": "仓库管理",
       "subtitle": "仓库登记、组织树与 Git 分支 / Tag 同步",
       "search_placeholder": "搜索仓库名称 / Git 地址",

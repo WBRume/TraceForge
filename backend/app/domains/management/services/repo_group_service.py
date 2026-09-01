@@ -141,20 +141,7 @@ def build_repo_group_tree(db: Session) -> List[Dict[str, object]]:
         if group.parent_id and group.parent_id in payloads_by_id:
             payloads_by_id[group.parent_id]["children"].append(payloads_by_id[group.id])
 
-    tree = roots
-    if repos_by_group.get(""):
-        tree = [
-            *tree,
-            {
-                "id": None,
-                "parent_id": None,
-                "name": "Unassigned",
-                "order_index": 9999,
-                "repositories": repos_by_group[""],
-                "children": [],
-            },
-        ]
-    return tree
+    return roots
 
 
 __all__ = [
