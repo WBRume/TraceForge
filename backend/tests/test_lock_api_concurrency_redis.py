@@ -144,7 +144,11 @@ def test_commit_skill_endpoint_returns_409_when_lock_is_busy(monkeypatch: pytest
     _skip_unless_redis_lock_mode()
 
     app = _build_skill_test_app()
-    fake_skill = SimpleNamespace(id="skill-stress-1", name="stress-skill")
+    fake_skill = SimpleNamespace(
+        id="skill-stress-1",
+        name="stress-skill",
+        creator_id="user-1",
+    )
     commit_call_count = {"value": 0}
 
     def _commit_skill_package(db, current_user, skill, change_note=None):
@@ -215,8 +219,19 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
         spec_doc_path=None,
         requirement_duration_hours=0.0,
         skill_ids=None,
+        task_type="DEVELOPMENT",
+        phenomenon=None,
+        priority=None,
     ):
-        _ = (db, current_user, spec_doc_path, skill_ids)
+        _ = (
+            db,
+            current_user,
+            spec_doc_path,
+            skill_ids,
+            task_type,
+            phenomenon,
+            priority,
+        )
         # Simulate heavier synchronous record creation path.
         time.sleep(0.03)
         task_no = next(id_counter)
