@@ -66,6 +66,13 @@ class User(Base):
         foreign_keys="SddAiJob.creator_id",
         back_populates="creator",
     )
+    # 三方登录身份绑定（OAuth 增量）：仅 ORM 层关系，users 表零 DDL 改动（K-2）。
+    # 级联策略 delete-orphan 与 DB 层 FK ON DELETE CASCADE 对应。
+    oauth_identities = relationship(
+        "OAuthIdentity",
+        cascade="all, delete-orphan",
+        back_populates="user",
+    )
 
 
 class Workspace(Base):

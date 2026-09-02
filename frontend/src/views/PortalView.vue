@@ -8,6 +8,7 @@ import api, { getApiServerUrl } from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { getSddDesktop } from '@/utils/runtime'
 import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
+import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
 
 const { locale, t } = useI18n()
 const router = useRouter()
@@ -365,6 +366,9 @@ onBeforeUnmount(() => {
             {{ authLoading ? $t('common.loading') : (isLoginMode ? $t('common.login') : $t('common.register')) }}
           </button>
         </form>
+
+        <!-- 三方登录按钮区（三方优先，双入口并存）：弹窗场景为纯登录语义，已登录用户不会看到弹窗 -->
+        <OAuthProviderButtons mode="login" @authorize-error="(msg: string) => (authError = msg)" />
 
         <div class="auth-modal-footer">
           <p>

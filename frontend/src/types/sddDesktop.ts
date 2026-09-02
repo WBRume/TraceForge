@@ -83,6 +83,22 @@ export type DesktopSaveRequest = {
   mimeType?: string
 }
 
+export type DesktopOAuthStartPayload = {
+  provider: string
+  intent: OAuthIntent
+  clientType: OAuthClientType
+}
+
+export type DesktopOAuthStartResult = {
+  ticket?: string
+  status?: string
+  error?: string
+}
+
+export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => void
+
+import type { OAuthClientType, OAuthIntent } from './oauth'
+
 export type SddDesktopApi = {
   platform: string
   download: {
@@ -116,6 +132,10 @@ export type SddDesktopApi = {
   system: {
     openExternal: (url: string) => Promise<{ ok: boolean }>
     openPath: (path: string) => Promise<{ ok: boolean }>
+  }
+  oauth?: {
+    start: (payload: DesktopOAuthStartPayload) => Promise<DesktopOAuthStartResult>
+    onTicket: (listener: DesktopOAuthTicketListener) => () => void
   }
 }
 

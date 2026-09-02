@@ -3,9 +3,16 @@ import {
   isDiagnosisSummaryActive,
   isDiagnosisSummaryActiveForTask,
   isDiagnosisSummaryJob,
+  resolveDiagnosisSummaryStartedMs,
+  type DiagnosisSummaryJobLite,
+  type DiagnosisSummaryJobStatus,
 } from '@/utils/diagnosisSummary'
 
-const summaryJob = (status: string, taskId = 'task-1', jobKind = 'DIAGNOSIS_SUMMARY') => ({
+const summaryJob = (
+  status: DiagnosisSummaryJobStatus,
+  taskId = 'task-1',
+  jobKind = 'DIAGNOSIS_SUMMARY',
+): DiagnosisSummaryJobLite => ({
   id: 'job-1',
   task_id: taskId,
   status,
@@ -53,5 +60,34 @@ describe('isDiagnosisSummaryActiveForTask', () => {
     expect(isDiagnosisSummaryActiveForTask([], 'task-1')).toBe(false)
     expect(isDiagnosisSummaryActiveForTask([], null)).toBe(false)
     expect(isDiagnosisSummaryActiveForTask([], undefined)).toBe(false)
+  })
+})
+
+describe('resolveDiagnosisSummaryStartedMs', () => {
+  const created = '2026-08-28T06:00:00.000Z'
+  const started = '2026-08-28T06:01:00.000Z'
+
+  it('prefers created_at over started_at (发起时刻跨 session 恒定)', () => {
+    const job = { ...summaryJob('RUNNING'), created_at: created, started_at: started }
+    expect(resolveDiagnosisSummaryStartedMs([job], 'task-1')).toBe(Date.parse(created))
+  })
+
+  it('falls back to started_at when created_at is missing', () => {
+    const job = { ...summaryJob('RUNNING'), started_at: started }
+    expect(resolveDiagnosisSummaryStartedMs([job], 'task-1')).toBe(Date.parse(started))
+  })
+
+  it('returns 0 when no timestamp, not active, or not the target task', () => {
+    expect(resolveDiagnosisSummaryStartedMs([summaryJob('RUNNING')], 'task-1')).toBe(0)
+    expect(resolveDiagnosisSummaryStartedMs([{ ...summaryJob('SUCCESS'), created_at: created }], 'task-1')).toBe(0)
+    expect(
+      resolveDiagnosisSummaryStartedMs([{ ...summaryJob('RUNNING', 'other'), created_at: created }], 'task-1'),
+    ).toBe(0)
+    expect(resolveDiagnosisSummaryStartedMs([], 'task-1')).toBe(0)
+  })
+
+  it('supports Record input', () => {
+    const record = { 'job-1': { ...summaryJob('PENDING'), created_at: created } }
+    expect(resolveDiagnosisSummaryStartedMs(record, 'task-1')).toBe(Date.parse(created))
   })
 })
