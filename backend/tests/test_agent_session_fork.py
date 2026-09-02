@@ -450,21 +450,7 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
             await adapter._rpc("session.cancel", {"sessionId": "x"})
         await adapter._client.aclose()
 
-    async def test_resolve_session_model_reads_current_model(self):
-        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
-
-        adapter = DshServerAdapter(server_url="http://mock:3080")
-        adapter._gateway_protocol = True
-        adapter._rpc = mock.AsyncMock(return_value={
-            "current": {"provider": "deepseek-official", "model": "deepseek-v4-flash"},
-        })
-
-        model = await adapter._resolve_session_model("session-1")
-
-        adapter._rpc.assert_awaited_once_with("session.models", {"sessionId": "session-1"})
-        self.assertEqual(model, "deepseek-official/deepseek-v4-flash")
-
-    async def test_model_lookup_probes_gateway_protocol_when_session_models_is_optional(self):
+    async def test_event_protocol_probe_does_not_query_model_state(self):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
         adapter = DshServerAdapter(server_url="http://mock:3080")
@@ -472,16 +458,15 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
 
         async def _rpc(method, payload):
             calls.append(method)
-            if method == "session.list":
-                adapter._gateway_protocol = True
-                return {"items": []}
-            return {}
+            adapter._gateway_protocol = True
+            return {"items": []}
 
         adapter._rpc = _rpc
-        model = await adapter._resolve_session_model("session-1")
+        await adapter._ensure_event_protocol()
 
-        self.assertIsNone(model)
-        self.assertEqual(calls, ["session.list", "session.models"])
+        self.assertEqual(calls, ["session.list"])
+        self.assertNotIn("session.models", calls)
+        self.assertNotIn("session.modelCatalog", calls)
         self.assertTrue(adapter._gateway_protocol)
 
     def test_event_mapper_extracts_text_and_usage(self):
@@ -496,6 +481,11 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
                     {"type": "text", "text": "BASELINE_READY"},
                     {"type": "reasoning", "text": "thinking..."},
                 ],
+                "source": {
+                    "kind": "model",
+                    "provider": "deepseek-official",
+                    "model": "deepseek-v4-flash",
+                },
                 "usage": {"inputTokens": 10, "outputTokens": 5, "cacheReadTokens": 2},
             },
         })
@@ -503,6 +493,22 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.type, "text")
         self.assertEqual(event.payload["text"], "BASELINE_READY")
         self.assertEqual(event.payload["usage"]["input_tokens"], 10)
+        self.assertEqual(event.payload["model"], "deepseek-official/deepseek-v4-flash")
+
+        request_model = map_dsh_event({
+            "type": "request/header",
+            "data": {
+                "header": {
+                    "config": {
+                        "provider": "deepseek-official",
+                        "model": "deepseek-v4-flash",
+                    },
+                },
+            },
+        })
+        self.assertIsNotNone(request_model)
+        self.assertEqual(request_model.type, "model")
+        self.assertEqual(request_model.payload["model"], "deepseek-official/deepseek-v4-flash")
 
         tool = map_dsh_event({"type": "tool/call", "data": {"name": "read_file", "arguments": {"path": "a.md"}}})
         self.assertEqual(tool.type, "tool_use")
