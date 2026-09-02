@@ -2,7 +2,6 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  ShieldCheck,
   Bot,
   Copy,
   Check,
@@ -238,8 +237,9 @@ function openDiagnosisCase(caseId: string) {
           <span class="collab-count">{{ collabParticipants.length }}</span>
         </span>
         <span class="message-author" :style="msgRole === 'user' ? { color: memberColor } : undefined">{{ vm.messageAuthorLabel(msg) }}</span>
-        <span v-if="vm.isMessageWorkspaceExpert(msg)" class="message-pm-badge">PM</span>
-        <ShieldCheck v-if="vm.isMessageWorkspaceExpert(msg)" class="w-3 h-3 message-expert-icon" />
+        <span v-if="vm.isMessageWorkspaceExpert(msg)" class="message-expert-badge">
+          {{ $t('settings.members.expert_badge') }}
+        </span>
         <UserAvatar
           v-if="showTrailingAvatar"
           class="meta-avatar"
@@ -483,17 +483,12 @@ function openDiagnosisCase(caseId: string) {
   text-align: center;
 }
 
-.message-role-icon,
-.message-expert-icon {
+.message-role-icon {
   flex: 0 0 auto;
   color: #475569;
 }
 
-.message-expert-icon {
-  color: #166534;
-}
-
-.message-pm-badge {
+.message-expert-badge {
   display: inline-flex;
   align-items: center;
   height: 18px;

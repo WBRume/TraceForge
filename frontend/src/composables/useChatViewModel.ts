@@ -20,6 +20,7 @@ import {
 } from '@/types/diagnosis'
 import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import { useTaskRuntimePanels, type TaskRuntimeStatusCard } from '@/composables/useTaskRuntimePanels'
+import { useChatWorkbenchScroll, type ChatWorkbenchMode } from '@/composables/useChatWorkbenchScroll'
 
 
 export function useChatViewModel() {
@@ -63,7 +64,6 @@ export function useChatViewModel() {
   type OpenSpecDrawerLevel = 1 | 2 | 3
   type SpecDrawerTab = 'spec_doc' | 'superpowers_docs' | 'diag_docs' | 'diag_code'
   type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
-  type ChatWorkbenchMode = 'platform' | 'cli'
   type RuntimeSkillUsage = {
     is_used: boolean
     used_count: number
@@ -119,6 +119,17 @@ export function useChatViewModel() {
   const highlightedMessageId = ref('')
   const highlightedTerminalLogId = ref('')
   const chatWorkbenchMode = ref<ChatWorkbenchMode>('platform')
+  const workbenchScroll = useChatWorkbenchScroll({
+    activeMode: chatWorkbenchMode,
+    getTaskId: () => String(currentTask.value?.id || ''),
+  })
+  const {
+    chatContainer,
+    terminalContainer,
+    restoreScrollPosition: restoreWorkbenchScrollPosition,
+    scrollToBottom,
+    setTerminalContainer,
+  } = workbenchScroll
   const specDrawerLevel = ref<SpecDrawerLevel>(0)
   const lastOpenSpecDrawerLevel = ref<OpenSpecDrawerLevel>(1)
   const specDrawerTab = ref<SpecDrawerTab>('spec_doc')
@@ -457,9 +468,9 @@ export function useChatViewModel() {
     && runtimeActiveFileContent.value !== runtimeActiveFileOriginalContent.value
   ))
 
-  const setChatWorkbenchMode = (mode: ChatWorkbenchMode) => {
-    chatWorkbenchMode.value = mode
+  const setChatWorkbenchMode = async (mode: ChatWorkbenchMode) => {
     localStorage.setItem(CHAT_WORKBENCH_MODE_KEY, mode)
+    await workbenchScroll.switchMode(mode)
   }
 
   const restoreChatWorkbenchMode = () => {
@@ -825,7 +836,7 @@ export function useChatViewModel() {
     const messageId = String(payload.chat_message_id || '').trim()
     const logId = String(payload.log_id || '').trim()
     if (messageId) {
-      chatWorkbenchMode.value = 'platform'
+      await setChatWorkbenchMode('platform')
       contextWindowDrawerOpen.value = false
       highlightedMessageId.value = messageId
       await scrollToElementByAttr('data-message-id', messageId)
@@ -833,7 +844,7 @@ export function useChatViewModel() {
       return
     }
     if (logId) {
-      chatWorkbenchMode.value = 'cli'
+      await setChatWorkbenchMode('cli')
       contextWindowDrawerOpen.value = false
       highlightedTerminalLogId.value = logId
       await scrollToElementByAttr('data-log-id', logId)
@@ -841,9 +852,8 @@ export function useChatViewModel() {
       return
     }
     if (payload.ai_job_id) {
-      chatWorkbenchMode.value = 'cli'
+      await setChatWorkbenchMode('cli')
       contextWindowDrawerOpen.value = false
-      await nextTick()
       scrollToBottom('terminal')
     }
   }
@@ -1312,6 +1322,7 @@ export function useChatViewModel() {
   const selectTask = async (task: any) => {
     if (!task) return
     persistCurrentRuntimePanels()
+    workbenchScroll.rememberScrollPosition()
     if (task.id !== preferredSpecTaskId.value) {
       preferredSpecAssetId.value = ''
     }
@@ -1792,9 +1803,8 @@ export function useChatViewModel() {
         if (route.query.messageId) {
           await highlightMessageFromRouteQuery()
         } else {
-          scrollToBottom('chat')
+          await restoreWorkbenchScrollPosition(chatWorkbenchMode.value, taskId)
         }
-        scrollToBottom('terminal')
       } else {
         // 向上加载更早消息：prepend 到列表前�?
         messages.value = dedupeMessages([...mapped, ...messages.value])
@@ -2310,18 +2320,6 @@ export function useChatViewModel() {
     }
   }
   
-  const terminalContainer = ref<HTMLElement | null>(null)
-  const chatContainer = ref<HTMLElement | null>(null)
-  
-  const scrollToBottom = async (target: 'chat' | 'terminal') => {
-    await nextTick()
-    if (target === 'chat' && chatContainer.value) {
-      chatContainer.value.scrollTop = chatContainer.value.scrollHeight
-    } else if (target === 'terminal' && terminalContainer.value) {
-      terminalContainer.value.scrollTop = terminalContainer.value.scrollHeight
-    }
-  }
-
   const highlightMessageFromRouteQuery = async () => {
     const messageId = String(route.query.messageId || '').trim()
     if (!messageId) return false
@@ -3310,6 +3308,7 @@ export function useChatViewModel() {
     runtimeTraceLoading,
     taskStatusFilter,
     terminalContainer,
+    setTerminalContainer,
     terminalLogs,
     thinkingContent,
     thinkingExpanded,

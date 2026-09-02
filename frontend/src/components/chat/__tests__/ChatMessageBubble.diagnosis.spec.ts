@@ -43,7 +43,9 @@ const mountBubble = (msg: Record<string, any>, vm: Record<string, unknown> = {})
   mount(ChatMessageBubble, {
     props: { msg, vm: makeVm(vm) },
     global: {
-      mocks: { $t: (key: string) => key },
+      mocks: {
+        $t: (key: string) => key === 'settings.members.expert_badge' ? '专家' : key,
+      },
       stubs: { 'el-slider': true },
     },
   })
@@ -78,6 +80,25 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     expect(wrapper.find('.diagnosis-card').exists()).toBe(false)
     expect(wrapper.find('.message-bubble').exists()).toBe(true)
     expect(wrapper.text()).toContain('你好')
+  })
+
+  it('labels workspace experts without rendering a separate expert icon', () => {
+    const wrapper = mountBubble(
+      {
+        id: 'msg-expert-1',
+        role: 'user',
+        content: '当前暗号是什么',
+        message_type: 'text',
+        created_at: '2026-08-07T10:00:00Z',
+      },
+      {
+        isMessageWorkspaceExpert: () => true,
+        messageAuthorLabel: () => 'You',
+      },
+    )
+
+    expect(wrapper.find('.message-expert-badge').text()).toBe('专家')
+    expect(wrapper.find('.message-expert-icon').exists()).toBe(false)
   })
 
   it('keeps the undo action visible and shows progress while the request is running', () => {
