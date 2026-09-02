@@ -58,6 +58,7 @@ export interface ChatTerminalBridge {
   interruptTaskNow: () => Promise<boolean>
   completeTaskNow: () => Promise<boolean>
   clearTaskHistory: () => Promise<ClearHistoryResult | null>
+  setTerminalContainer: (container: HTMLElement | null) => void
   t: (key: string, values?: Record<string, unknown>) => string
 }
 
