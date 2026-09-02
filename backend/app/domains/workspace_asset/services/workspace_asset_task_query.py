@@ -1,10 +1,12 @@
 from datetime import datetime
 from typing import Any, Iterable, List, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.domains.task.models.task import SddTask
+from app.domains.task.models.task import SddTask, SddTaskFollower
+from app.domains.task.models.chat import ChatMessage, MessageRole
+from app.domains.task.models.pre_input import SddTaskPreInput
 from app.domains.workspace_asset.models.workspace_asset import (
     EvidenceStatus,
     HumanReviewStatus,
@@ -46,6 +48,8 @@ def list_tasks(
     requirement_q: Optional[str] = None,
     status: Optional[str] = None,
     current_phase: Optional[str] = None,
+    relation: Optional[str] = None,
+    current_user_id: Optional[str] = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
     page: int = 1,
@@ -103,6 +107,49 @@ def list_tasks(
         query = query.filter(SddTask.status == status)
     if current_phase:
         query = query.filter(SddTask.current_phase == current_phase)
+
+    normalized_relations = {
+        value.strip().lower()
+        for value in str(relation or "").split(",")
+        if value.strip()
+    }
+    normalized_relations.discard("all")
+    actor_id = str(current_user_id or "").strip()
+    if normalized_relations and actor_id:
+        relation_filters = []
+        if "created_by_me" in normalized_relations:
+            relation_filters.append(SddTask.creator_id == actor_id)
+        if "messaged_by_me" in normalized_relations:
+            relation_filters.append(
+                exists().where(
+                    ChatMessage.task_id == SddTask.id,
+                    ChatMessage.workspace_id == workspace_id,
+                    ChatMessage.creator_id == actor_id,
+                    ChatMessage.role == MessageRole.USER,
+                )
+            )
+        if "followed_by_me" in normalized_relations:
+            relation_filters.append(
+                exists().where(
+                    SddTaskFollower.task_id == SddTask.id,
+                    SddTaskFollower.workspace_id == workspace_id,
+                    SddTaskFollower.user_id == actor_id,
+                )
+            )
+        if "mentioned_me" in normalized_relations:
+            mentioned_task_ids = {
+                str(task_id)
+                for task_id, mentioned_user_ids in db.query(
+                    SddTaskPreInput.task_id,
+                    SddTaskPreInput.mentioned_user_ids,
+                ).filter(
+                    SddTaskPreInput.workspace_id == workspace_id,
+                ).all()
+                if actor_id in {str(value) for value in (mentioned_user_ids or [])}
+            }
+            relation_filters.append(SddTask.id.in_(mentioned_task_ids))
+        if relation_filters:
+            query = query.filter(or_(*relation_filters))
 
     # Note: query.all() is still fine for in-memory sort if total task rows < 10000, 
     # but grouping/counting for stats is better done via subqueries to be efficient.
@@ -187,9 +234,20 @@ def list_tasks(
         clarification_pending_count=clarification_pending_count,
     )
 
+    following_ids = set()
+    if current_user_id and page_items:
+        following_ids = {
+            str(task_id)
+            for (task_id,) in db.query(SddTaskFollower.task_id).filter(
+                SddTaskFollower.workspace_id == workspace_id,
+                SddTaskFollower.user_id == str(current_user_id),
+                SddTaskFollower.task_id.in_([item.id for item in page_items]),
+            ).all()
+        }
+
     return WorkspaceAssetsTasksResponse(
         workspace_id=workspace_id,
-        items=[_task_summary(db, item) for item in page_items],
+        items=[_task_summary(db, item, is_following=item.id in following_ids) for item in page_items],
         total=total,
         page=page_value,
         page_size=page_size_value,

@@ -8,11 +8,12 @@ from typing import Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func as sqlfunc, or_
+from sqlalchemy import func as sqlfunc, or_, exists
 
 from app.core.logging import bind_task_context, get_logger
-from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
+from app.domains.task.models.chat import ChatMessage, MessageRole
+from app.domains.task.models.pre_input import SddTaskPreInput
 from app.domains.task.models.log import SddExecutionLog, LogType
 from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.dashboard.models.metric import SddDashboardMetric
@@ -791,6 +792,8 @@ def list_tasks(
     page: int = 1,
     page_size: int = 20,
     task_type: Optional[str] = None,
+    relation: Optional[str] = None,
+    current_user_id: Optional[str] = None,
 ) -> Tuple[List[SddTask], int]:
     query = db.query(SddTask).options(joinedload(SddTask.creator)).filter(SddTask.workspace_id == workspace_id)
 
@@ -800,6 +803,52 @@ def list_tasks(
     if task_type:
         query = query.filter(SddTask.task_type == task_type)
 
+    normalized_relations = {
+        value.strip().lower()
+        for value in str(relation or "").split(",")
+        if value.strip()
+    }
+    normalized_relations.discard("all")
+    actor_id = str(current_user_id or "").strip()
+    if normalized_relations and actor_id:
+        relation_filters = []
+        if "created_by_me" in normalized_relations:
+            relation_filters.append(SddTask.creator_id == actor_id)
+        if "messaged_by_me" in normalized_relations:
+            relation_filters.append(
+                exists().where(
+                    ChatMessage.task_id == SddTask.id,
+                    ChatMessage.workspace_id == workspace_id,
+                    ChatMessage.creator_id == actor_id,
+                    ChatMessage.role == MessageRole.USER,
+                )
+            )
+        if "followed_by_me" in normalized_relations:
+            relation_filters.append(
+                exists().where(
+                    SddTaskFollower.task_id == SddTask.id,
+                    SddTaskFollower.workspace_id == workspace_id,
+                    SddTaskFollower.user_id == actor_id,
+                )
+            )
+        if "mentioned_me" in normalized_relations:
+            # Mentions currently originate from the collaboration pre-input JSON.
+            # Keep the compatibility read here while the mention relation remains
+            # unnormalised in existing databases.
+            mentioned_task_ids = {
+                str(task_id)
+                for task_id, mentioned_user_ids in db.query(
+                    SddTaskPreInput.task_id,
+                    SddTaskPreInput.mentioned_user_ids,
+                ).filter(
+                    SddTaskPreInput.workspace_id == workspace_id,
+                ).all()
+                if actor_id in {str(value) for value in (mentioned_user_ids or [])}
+            }
+            relation_filters.append(SddTask.id.in_(mentioned_task_ids))
+        if relation_filters:
+            query = query.filter(or_(*relation_filters))
+
     total = query.count()
     items = (
         query.order_by(SddTask.created_at.desc())
@@ -808,6 +857,48 @@ def list_tasks(
         .all()
     )
     return items, total
+
+
+def list_following_task_ids(
+    db: Session,
+    workspace_id: str,
+    user_id: str,
+    task_ids: Optional[List[str]] = None,
+) -> set[str]:
+    query = db.query(SddTaskFollower.task_id).filter(
+        SddTaskFollower.workspace_id == workspace_id,
+        SddTaskFollower.user_id == str(user_id),
+    )
+    if task_ids is not None:
+        if not task_ids:
+            return set()
+        query = query.filter(SddTaskFollower.task_id.in_(task_ids))
+    return {str(task_id) for (task_id,) in query.all()}
+
+
+def set_task_following(
+    db: Session,
+    *,
+    task: SddTask,
+    user_id: str,
+    following: bool,
+) -> bool:
+    normalized_user_id = str(user_id or "").strip()
+    row = db.query(SddTaskFollower).filter(
+        SddTaskFollower.task_id == task.id,
+        SddTaskFollower.workspace_id == task.workspace_id,
+        SddTaskFollower.user_id == normalized_user_id,
+    ).first()
+    if following and row is None:
+        db.add(SddTaskFollower(
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            user_id=normalized_user_id,
+        ))
+    elif not following and row is not None:
+        db.delete(row)
+    db.commit()
+    return following
 
 
 def get_task(db: Session, task_id: str, workspace_id: str) -> Optional[SddTask]:
@@ -958,6 +1049,64 @@ def save_chat_message(
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    # 关注是任务级订阅；消息落库后同步写入站内信，实时 WS 投递由通知中心的
+    # 后续刷新兜底，避免在同步服务函数中驱动异步事件循环。
+    try:
+        role_value = getattr(role, "value", role)
+        if str(role_value or "").lower() == MessageRole.USER.value:
+            recipient_filter = SddTaskFollower.user_id != str(creator_id)
+        else:
+            recipient_filter = True
+        follower_ids = [
+            str(user_id)
+            for (user_id,) in db.query(SddTaskFollower.user_id).filter(
+                SddTaskFollower.task_id == task_id,
+                SddTaskFollower.workspace_id == workspace_id,
+                recipient_filter,
+            ).all()
+        ]
+        if follower_ids:
+            from app.domains.notification.services.notification_service import create_notifications
+            from app.domains.notification.models.notification import SddUserNotification
+
+            # Streaming providers may persist several assistant text chunks for one
+            # reply. Keep one unread notification per follower/task until it is
+            # consumed, so following a task does not turn into notification spam.
+            existing_rows = db.query(
+                SddUserNotification.recipient_user_id,
+                SddUserNotification.payload_json,
+            ).filter(
+                SddUserNotification.workspace_id == workspace_id,
+                SddUserNotification.type == "task_message",
+                SddUserNotification.read_at.is_(None),
+                SddUserNotification.recipient_user_id.in_(follower_ids),
+            ).all()
+            already_notified = {
+                str(recipient_id)
+                for recipient_id, payload in existing_rows
+                if isinstance(payload, dict) and str(payload.get("task_id") or "") == str(task_id)
+            }
+            follower_ids = [uid for uid in follower_ids if uid not in already_notified]
+        if follower_ids:
+
+            task_name = db.query(SddTask.name).filter(SddTask.id == task_id).scalar() or "任务"
+            create_notifications(
+                db,
+                follower_ids,
+                type="task_message",
+                title=f"「{task_name}」有新消息",
+                body=str(content or "")[:120],
+                payload_json={
+                    "task_id": task_id,
+                    "task_name": task_name,
+                    "workspace_id": workspace_id,
+                    "message_id": msg.id,
+                    "message_type": message_type,
+                },
+                workspace_id=workspace_id,
+            )
+    except Exception:
+        logger.exception("Failed to create task message notifications")
     return msg
 
 

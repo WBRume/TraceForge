@@ -73,6 +73,7 @@ class TaskResponse(BaseModel):
     total_duration_ms: int
     skill_ids: List[str] = Field(default_factory=list)
     creator_name: Optional[str] = None
+    is_following: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -82,6 +83,11 @@ class TaskListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class TaskFollowResponse(BaseModel):
+    task_id: str
+    is_following: bool
 
 
 class TaskStartRequest(BaseModel):

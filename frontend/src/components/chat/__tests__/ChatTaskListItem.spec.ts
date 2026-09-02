@@ -49,4 +49,12 @@ describe('ChatTaskListItem', () => {
     expect(wrapper.emitted('delete')?.[0]).toEqual([task])
     expect(wrapper.emitted('select')).toHaveLength(1)
   })
+
+  it('emits a follow toggle without selecting the task', async () => {
+    const wrapper = mountItem()
+
+    await wrapper.find('.follow-btn').trigger('click')
+    expect(wrapper.emitted('toggleFollow')?.[0]).toEqual([task])
+    expect(wrapper.emitted('select')).toBeUndefined()
+  })
 })

@@ -44,3 +44,8 @@ registerNotificationType({
   type: 'pre_input_submitted',
   resolveTarget: resolveTaskChatTarget,
 })
+
+registerNotificationType({
+  type: 'task_message',
+  resolveTarget: resolveTaskChatTarget,
+})

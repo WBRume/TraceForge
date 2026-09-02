@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import { formatTime } from '@/utils/chatFormatters'
+import { Star } from 'lucide-vue-next'
 
 interface ChatTaskListItemData {
   id: string
@@ -10,6 +11,7 @@ interface ChatTaskListItemData {
   task_type?: string | null
   creator_name?: string | null
   created_at?: string | null
+  is_following?: boolean
 }
 
 const props = defineProps<{
@@ -21,6 +23,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [task: ChatTaskListItemData]
   delete: [task: ChatTaskListItemData]
+  toggleFollow: [task: ChatTaskListItemData]
 }>()
 
 const normalizedStatus = computed(() => String(props.task.status || '').toLowerCase())
@@ -29,6 +32,7 @@ const hasMetadata = computed(() => Boolean(props.task.creator_name || props.task
 
 const selectTask = () => emit('select', props.task)
 const deleteTask = () => emit('delete', props.task)
+const toggleFollow = () => emit('toggleFollow', props.task)
 </script>
 
 <template>
@@ -65,6 +69,18 @@ const deleteTask = () => emit('delete', props.task)
       </span>
     </button>
 
+    <button
+      class="follow-btn"
+      :class="{ active: task.is_following }"
+      type="button"
+      :title="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
+      :aria-label="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
+      :aria-pressed="Boolean(task.is_following)"
+      @click.stop="toggleFollow"
+    >
+      <Star class="follow-icon" :fill="task.is_following ? 'currentColor' : 'none'" />
+    </button>
+
     <DeleteActionButton
       mode="icon"
       class="delete-btn"
@@ -84,7 +100,7 @@ const deleteTask = () => emit('delete', props.task)
 .task-select {
   display: block;
   width: 100%;
-  padding: 10px 44px 10px 12px;
+  padding: 10px 76px 10px 12px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: inherit;
@@ -267,6 +283,42 @@ const deleteTask = () => emit('delete', props.task)
   opacity: 0.35;
   translate: 0 -50%;
   transition: opacity 0.2s, color 0.2s;
+}
+
+.follow-btn {
+  position: absolute;
+  top: 50%;
+  right: 38px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 6px;
+  border: 0;
+  border-radius: 8px;
+  color: #94a3b8;
+  background: #f1f5f9;
+  cursor: pointer;
+  opacity: 1;
+  translate: 0 -50%;
+  transition: opacity 0.2s, color 0.2s, background-color 0.2s;
+}
+
+.follow-icon {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.follow-btn:hover {
+  color: #d97706;
+  background: #fef3c7;
+}
+
+.follow-btn.active {
+  color: #d97706;
+  background: #fef3c7;
 }
 
 .task-item:hover .delete-btn,

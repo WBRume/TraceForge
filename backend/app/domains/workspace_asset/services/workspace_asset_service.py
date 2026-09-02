@@ -517,7 +517,7 @@ def _knowledge_asset_response(asset: SddKnowledgeAsset) -> KnowledgeAssetRespons
     )
 
 
-def _task_summary(db: Session, task: SddTask) -> TaskSummary:
+def _task_summary(db: Session, task: SddTask, *, is_following: bool = False) -> TaskSummary:
     evidence_items = list(task.evidence_items or [])
     requirement_count = len(task.requirement_links or [])
     spec_count = _count(db, SddAsset, task.workspace_id, task_id=task.id, asset_type=AssetType.SPEC)
@@ -546,6 +546,7 @@ def _task_summary(db: Session, task: SddTask) -> TaskSummary:
         baselined_by_id=task.baselined_by_id,
         created_at=task.created_at,
         updated_at=task.updated_at,
+        is_following=is_following,
     )
 
 
