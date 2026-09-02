@@ -1140,10 +1140,27 @@
       "refresh": "Refresh",
       "loading": "Loading...",
       "empty": "No skills available. Please create skills in Skills Configuration first.",
+      "search_empty": "No matching skills found",
       "status_published": "Published",
       "status_draft": "Draft",
       "workspace_group": "Workspace Skills",
-      "global_group": "Global Skills"
+      "global_group": "Global Skills",
+      "search_placeholder": "Search skill name or description...",
+      "selected_count": "Selected {count} skills",
+      "none_selected": "No skills selected (Optional)",
+      "select_skills": "Configure Skills",
+      "close_panel": "Collapse Sidebar",
+      "apply_selection": "Done",
+      "select_all": "Select Page",
+      "clear_all": "Clear Page",
+      "sidebar_title": "Skills Injection",
+      "sidebar_subtitle": "Select skills to inject into the task directory (server search & pagination).",
+      "scope_all": "All",
+      "scope_workspace": "Workspace",
+      "scope_global": "Global",
+      "page_prev": "Prev",
+      "page_next": "Next",
+      "page_info": "Page {page} / {totalPages} · Total {total}"
     }
   },
   "api_mock": {

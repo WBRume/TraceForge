@@ -1140,10 +1140,27 @@
       "refresh": "刷新",
       "loading": "加载中...",
       "empty": "当前没有可用 Skills，请先到 Skills 配置页面新增。",
+      "search_empty": "未找到匹配的 Skills",
       "status_published": "已发布",
       "status_draft": "草稿中",
       "workspace_group": "工作区 Skills",
-      "global_group": "全局 Skills"
+      "global_group": "全局 Skills",
+      "search_placeholder": "搜索技能名称或描述...",
+      "selected_count": "已选择 {count} 个 Skills",
+      "none_selected": "未选择 Skills（可选）",
+      "select_skills": "配置 Skills",
+      "close_panel": "收起侧栏",
+      "apply_selection": "完成选择",
+      "select_all": "全选当前页",
+      "clear_all": "清空本页",
+      "sidebar_title": "Skills 注入配置",
+      "sidebar_subtitle": "按维度勾选要注入任务的 Skills，支持服务端搜索与分页。",
+      "scope_all": "全部",
+      "scope_workspace": "工作区",
+      "scope_global": "全局",
+      "page_prev": "上一页",
+      "page_next": "下一页",
+      "page_info": "第 {page} / {totalPages} 页 · 共 {total} 项"
     }
   },
   "api_mock": {
