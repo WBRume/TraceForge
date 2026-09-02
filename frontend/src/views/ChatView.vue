@@ -26,6 +26,7 @@ import {
   FolderGit2,
   GitFork,
   Upload,
+  SlidersHorizontal,
 } from 'lucide-vue-next'
 import NewTaskModal from '@/components/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -41,6 +42,7 @@ import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
+import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
 import TaskProvisionProgressModal from '@/components/TaskProvisionProgressModal.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
@@ -52,6 +54,7 @@ const showApplyPatchDrawer = ref(false)
 const preInputMode = ref(false)
 const chatInputRef = ref<any>(null)
 const pendingUndoMessage = ref<Record<string, any> | null>(null)
+const taskAdvancedDrawerOpen = ref(false)
 
 const handleUndoRequest = (message: Record<string, any>) => {
   if (rawVm.isUndoing.value || !rawVm.canUndoMessage(message)) return
@@ -152,9 +155,30 @@ const statusModelText = (card: any): string => {
       <div class="sidebar-header">
         <div class="sidebar-title-row">
           <h3>{{ $t('chat.terminal') }}</h3>
-          <button class="new-session-btn" :disabled="!vm.canCreateTask" @click="vm.openNewTaskModal" :title="$t('dashboard.new_task')">
-            <Plus class="w-4 h-4" />
-          </button>
+          <div class="sidebar-title-actions">
+            <span class="advanced-filter-anchor">
+              <button
+                class="advanced-filter-btn"
+                :class="{ active: vm.taskRelationFilter.length > 0 }"
+                type="button"
+                :title="$t('chat.task_advanced_filter')"
+                :aria-label="$t('chat.task_advanced_filter')"
+                @click="taskAdvancedDrawerOpen = true"
+              >
+                <SlidersHorizontal class="w-4 h-4" />
+                <span v-if="vm.taskRelationFilter.length > 0" class="advanced-filter-badge">{{ vm.taskRelationFilter.length }}</span>
+              </button>
+              <TaskAdvancedFilterDrawer
+                v-model="taskAdvancedDrawerOpen"
+                :relations="vm.taskRelationFilter"
+                @apply="vm.applyTaskRelationFilter"
+                @reset="vm.resetTaskRelationFilter"
+              />
+            </span>
+            <button class="new-session-btn" :disabled="!vm.canCreateTask" @click="vm.openNewTaskModal" :title="$t('dashboard.new_task')">
+              <Plus class="w-4 h-4" />
+            </button>
+          </div>
         </div>
         <div class="sidebar-filter-row">
           <div class="sidebar-filter-item">
@@ -196,6 +220,7 @@ const statusModelText = (card: any): string => {
           :can-delete="vm.canDeleteTask"
           @select="vm.selectTask"
           @delete="vm.handleDeleteTask"
+          @toggle-follow="vm.toggleTaskFollow"
         />
         <div v-if="vm.taskListLoading && vm.tasks.length === 0" class="empty-hint">
           {{ $t('common.loading') }}
@@ -1036,6 +1061,57 @@ const statusModelText = (card: any): string => {
 <style scoped src="@/styles/chat-view/chat-view-spec.css"></style>
 <style scoped src="@/styles/chat-view/chat-view-modal-buttons.css"></style>
 <style scoped>
+.sidebar-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.advanced-filter-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.advanced-filter-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.advanced-filter-btn:hover,
+.advanced-filter-btn.active {
+  border-color: rgba(37, 99, 235, 0.22);
+  color: var(--color-primary-600);
+  background: var(--color-primary-50);
+}
+
+.advanced-filter-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--color-primary-600);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .session-separator.is-highlighted {
   animation: context-reference-pulse 1.3s ease-in-out 2;
 }

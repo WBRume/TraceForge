@@ -5,7 +5,8 @@ SDD 任务与计划节点模型
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, func
+    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, func,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -141,6 +142,11 @@ class SddTask(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    followers = relationship(
+        "SddTaskFollower",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def skill_ids(self):
@@ -149,6 +155,25 @@ class SddTask(Base):
     @property
     def creator_name(self):
         return self.creator.display_name if self.creator else None
+
+
+class SddTaskFollower(Base):
+    """A user's durable subscription to task messages."""
+
+    __tablename__ = "sdd_task_followers"
+    __table_args__ = (
+        UniqueConstraint("task_id", "user_id", name="uq_sdd_task_followers_task_user"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    task = relationship("SddTask", back_populates="followers")
+    workspace = relationship("Workspace")
+    user = relationship("User")
 
 
 class SddPlanNode(Base):

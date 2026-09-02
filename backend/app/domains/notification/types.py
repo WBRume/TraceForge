@@ -58,3 +58,10 @@ register(NotificationTypeInfo(
     description="协作预输入已提交执行：通知发起人与参与成员",
     payload_keys=("task_id", "task_name", "workspace_id", "pre_input_id", "submit_reason"),
 ))
+
+register(NotificationTypeInfo(
+    code="task_message",
+    category="task",
+    description="任务消息关注：关注者收到任务新消息提醒",
+    payload_keys=("task_id", "task_name", "workspace_id", "message_id", "message_type"),
+))

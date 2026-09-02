@@ -64,6 +64,7 @@ export function useChatViewModel() {
   type OpenSpecDrawerLevel = 1 | 2 | 3
   type SpecDrawerTab = 'spec_doc' | 'superpowers_docs' | 'diag_docs' | 'diag_code'
   type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
+  type TaskRelationFilter = 'created_by_me' | 'mentioned_me' | 'messaged_by_me' | 'followed_by_me'
   type RuntimeSkillUsage = {
     is_used: boolean
     used_count: number
@@ -105,6 +106,7 @@ export function useChatViewModel() {
   const workspaceCurrentUserIsExpert = ref(false)
   const taskListContainer = ref<HTMLElement | null>(null)
   const taskStatusFilter = ref<TaskSessionFilter>('ALL')
+  const taskRelationFilter = ref<TaskRelationFilter[]>([])
   const taskListPage = ref(1)
   const taskListTotal = ref(0)
   const taskListLoading = ref(false)
@@ -1173,6 +1175,9 @@ export function useChatViewModel() {
       if (taskTypeFilter.value !== 'ALL') {
         params.task_type = taskTypeFilter.value
       }
+      if (taskRelationFilter.value.length > 0) {
+        params.relation = taskRelationFilter.value.join(',')
+      }
 
       const res = await api.get(`/workspaces/${wsId}/tasks`, { params })
       const items = Array.isArray(res.data?.items) ? res.data.items : []
@@ -1198,7 +1203,7 @@ export function useChatViewModel() {
         return
       }
 
-      if (!reset || statusQuery) return
+      if (!reset || statusQuery || taskRelationFilter.value.length > 0 || taskTypeFilter.value !== 'ALL') return
 
       try {
         const taskRes = await api.get(`/workspaces/${wsId}/tasks/${routeTaskId}`)
@@ -1232,6 +1237,15 @@ export function useChatViewModel() {
 
   const applyTaskStatusFilter = async () => {
     await loadTasks({ reset: true, trySelectRouteTask: false })
+  }
+
+  const applyTaskRelationFilter = async (relations: TaskRelationFilter[]) => {
+    taskRelationFilter.value = [...new Set(relations)]
+    await loadTasks({ reset: true, trySelectRouteTask: false })
+  }
+
+  const resetTaskRelationFilter = async () => {
+    await applyTaskRelationFilter([])
   }
 
   const handleTaskListScroll = () => {
@@ -1669,6 +1683,28 @@ export function useChatViewModel() {
 
   const applyTaskTypeFilter = async () => {
     await loadTasks({ reset: true, trySelectRouteTask: false })
+  }
+
+  const toggleTaskFollow = async (task: any) => {
+    const wsId = String(route.params.wsId || '')
+    const taskId = String(task?.id || '')
+    if (!wsId || !taskId) return
+    const following = !Boolean(task.is_following)
+    try {
+      const response = following
+        ? await api.put(`/workspaces/${wsId}/tasks/${taskId}/follow`)
+        : await api.delete(`/workspaces/${wsId}/tasks/${taskId}/follow`)
+      const nextFollowing = Boolean(response.data?.is_following ?? following)
+      tasks.value = tasks.value.map((item: any) => (
+        item.id === taskId ? { ...item, is_following: nextFollowing } : item
+      ))
+      if (currentTask.value?.id === taskId) {
+        currentTask.value = { ...currentTask.value, is_following: nextFollowing }
+      }
+    } catch (error) {
+      console.error('Failed to update task follow state', error)
+      ElMessage.error(resolveActionError(error, 'chat.task_follow_failed', 'chat.task_follow_failed'))
+    }
   }
   
   const openSpecWorkspace = () => {
@@ -3247,6 +3283,10 @@ export function useChatViewModel() {
     saveDiagnosisResult,
     taskTypeFilter,
     applyTaskTypeFilter,
+    taskRelationFilter,
+    applyTaskRelationFilter,
+    resetTaskRelationFilter,
+    toggleTaskFollow,
     openContextWindowDrawer,
     onTaskCreated,
     openNewTaskModal,

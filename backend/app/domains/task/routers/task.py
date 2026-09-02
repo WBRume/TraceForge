@@ -38,6 +38,7 @@ from app.domains.task.schemas.task import (
     TaskSkillRuntimeFileWriteRequest,
     TaskCliBootstrapResponse,
     TaskCreate,
+    TaskFollowResponse,
     TaskListResponse,
     TaskResponse,
     TaskInterruptRequest,
@@ -243,15 +244,36 @@ def list_tasks(
     ws_id: str,
     status: Optional[str] = None,
     task_type: Optional[str] = Query(default=None),
+    relation: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user, db)
-    items, total = task_service.list_tasks(db, ws_id, status, page, page_size, task_type=task_type)
+    items, total = task_service.list_tasks(
+        db,
+        ws_id,
+        status,
+        page,
+        page_size,
+        task_type=task_type,
+        relation=relation,
+        current_user_id=current_user.id,
+    )
+    following_ids = task_service.list_following_task_ids(
+        db,
+        ws_id,
+        current_user.id,
+        [task.id for task in items],
+    )
+    serialized_items = []
+    for task in items:
+        payload = TaskResponse.model_validate(task).model_dump()
+        payload["is_following"] = task.id in following_ids
+        serialized_items.append(payload)
     return {
-        "items": items,
+        "items": serialized_items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -269,7 +291,62 @@ def get_task(
     task = task_service.get_task(db, task_id, ws_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    payload = TaskResponse.model_validate(task).model_dump()
+    payload["is_following"] = task.id in task_service.list_following_task_ids(
+        db, ws_id, current_user.id, [task.id]
+    )
+    return payload
+
+
+@router.get("/{task_id}/follow", response_model=TaskFollowResponse)
+def get_task_following(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    following = task.id in task_service.list_following_task_ids(
+        db, ws_id, current_user.id, [task.id]
+    )
+    return TaskFollowResponse(task_id=task.id, is_following=following)
+
+
+@router.put("/{task_id}/follow", response_model=TaskFollowResponse)
+def follow_task_messages(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    following = task_service.set_task_following(
+        db, task=task, user_id=current_user.id, following=True
+    )
+    return TaskFollowResponse(task_id=task.id, is_following=following)
+
+
+@router.delete("/{task_id}/follow", response_model=TaskFollowResponse)
+def unfollow_task_messages(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    following = task_service.set_task_following(
+        db, task=task, user_id=current_user.id, following=False
+    )
+    return TaskFollowResponse(task_id=task.id, is_following=following)
 
 
 @router.get("/{task_id}/repositories")
