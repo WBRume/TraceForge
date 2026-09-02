@@ -4,14 +4,12 @@ FastAPI 主入口
 """
 
 import asyncio
-import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError
 
 from app.config import settings
 from app.core.redis_client import close_redis_client
-from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import (
     bind_log_context,
     bind_task_context,
@@ -21,15 +19,12 @@ from app.core.logging import (
 
 setup_logging()
 logger = get_logger(__name__)
-task_logger = get_logger(__name__, category="task_execution")
 api_mock_logger = get_logger(__name__, category="api_mock")
 
 from app.database import SessionLocal
 from app.domains.api_mock.models.api_mock import ApiMockCollabEventType
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import SddTask
 from app.domains.auth.models.user import User
-from app.engine.workflow_engine import WorkflowEngine, get_engine
-from app.agents.selection import resolve_task_backend
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.domains.ai.routers import agent
 from app.domains.auth.routers import auth, oauth
@@ -53,19 +48,14 @@ from app.domains.management.routers import (
     repositories_router,
     repo_groups_router,
 )
-from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
-from app.domains.ai.services import chat_message_idempotency_service
-from app.domains.task.services import task_service
-from app.domains.task.services import task_session_control_service
-from app.domains.task.services import task_session_service
 from app.domains.workspace.services import workspace_service
 from app.domains.websocket.ws.manager import manager
+from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
 from app.domains.notification.routers import notification as notification_router
 from app.domains.notification.ws.notification_manager import notification_ws_manager
-from app.domains.task.services import pre_input_service
 from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
@@ -149,46 +139,6 @@ app.include_router(api_mock.gateway_router)
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
-def _serialize_chat_ack(
-    *,
-    task_id: str,
-    status: str,
-    client_message_id: str,
-    content: str = "",
-    chat_message_id: str | None = None,
-    ai_job_id: str | None = None,
-    user_id: str | None = None,
-    display_name: str | None = None,
-    is_workspace_expert: bool = False,
-    created_at: str | None = None,
-    session_turn_id: str | None = None,
-    session_generation: int | None = None,
-    message: str | None = None,
-) -> dict:
-    return {
-        "task_id": task_id,
-        "status": status,
-        "client_message_id": client_message_id,
-        "id": chat_message_id,
-        "chat_message_id": chat_message_id,
-        "ai_job_id": ai_job_id,
-        "role": "user",
-        "content": content,
-        "message_type": "text",
-        "creator_id": user_id,
-        "creator_display_name": display_name,
-        "creator_is_workspace_expert": bool(is_workspace_expert),
-        "created_at": created_at,
-        "session_turn_id": session_turn_id,
-        "session_generation": session_generation,
-        "message": message,
-    }
-
-
-async def _send_chat_ack(websocket: WebSocket, payload: dict) -> None:
-    await websocket.send_json({"type": "chat_message_ack", "payload": payload})
-
-
 def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
     token = str(websocket.query_params.get("token") or "").strip()
     if not token:
@@ -250,423 +200,33 @@ def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
 
 # ── WebSocket 端点 ──
 @app.websocket("/ws/task/{task_id}")
-async def websocket_endpoint(websocket: WebSocket, task_id: str):
+async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
     ws_context = _authenticate_task_ws(websocket, task_id)
     if not ws_context:
         await websocket.close(code=1008, reason="Unauthorized task websocket")
         return
 
-    user_id = str(ws_context["user_id"])
-    user_display_name = str(ws_context.get("display_name") or "")
-    user_is_expert = bool(ws_context.get("is_workspace_expert"))
-    user_avatar_url = ws_context.get("avatar_url") or None
-    user_avatar_svg = ws_context.get("avatar_svg") or None
+    user = TaskWebSocketUser(
+        id=str(ws_context["user_id"]),
+        display_name=str(ws_context.get("display_name") or ""),
+        is_workspace_expert=bool(ws_context.get("is_workspace_expert")),
+        avatar_url=ws_context.get("avatar_url") or None,
+        avatar_svg=ws_context.get("avatar_svg") or None,
+    )
 
     with bind_task_context(
         task_id=task_id,
         workspace_id=str(ws_context.get("workspace_id") or ""),
-        user_id=user_id,
+        user_id=user.id,
     ):
-        await manager.connect(websocket, task_id)
-        try:
-            while True:
-                data = await websocket.receive_json()
-                msg_type = data.get("type")
-
-                if msg_type == "chat_message":
-                    # 用户发送消息 → Redis 幂等门禁 → 保存并创建异步 AI 作业
-                    payload = data.get("payload", {})
-                    user_content = str(payload.get("content", "") or "")
-                    client_message_id = str(
-                        payload.get("client_message_id")
-                        or data.get("client_message_id")
-                        or uuid.uuid4()
-                    ).strip()
-                    if not user_content.strip():
-                        continue
-
-                    # Do not put prompt text in persisted/file logs; undo is
-                    # required to forget sensitive user content.
-                    task_logger.info(f"User chat for task {task_id}: message_length={len(user_content)}")
-
-                    task_meta = None
-                    job_id = None
-                    saved_message = None
-                    claim = None
-                    db = SessionLocal()
-                    try:
-                        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-                        if not task_obj:
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status="failed",
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    message="Task not found",
-                                ),
-                            )
-                            continue
-
-                        task_meta = {
-                            "id": task_obj.id,
-                            "workspace_id": task_obj.workspace_id,
-                        }
-
-                        try:
-                            claim = await chat_message_idempotency_service.claim_message(
-                                task_id=task_obj.id,
-                                user_id=user_id,
-                                client_message_id=client_message_id,
-                                content=user_content,
-                            )
-                        except chat_message_idempotency_service.ChatMessageIdempotencyUnavailable as exc:
-                            task_logger.warning(f"Chat idempotency unavailable for task {task_id}: {exc}")
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status="failed",
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    message="Chat idempotency service is unavailable. Please retry.",
-                                ),
-                            )
-                            continue
-
-                        if not claim.claimed:
-                            existing = claim.existing or {}
-                            duplicate_status = "duplicate" if claim.status == "done" else claim.status
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status=duplicate_status,
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    chat_message_id=existing.get("chat_message_id"),
-                                    ai_job_id=existing.get("ai_job_id"),
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    created_at=existing.get("finished_at"),
-                                    message=(
-                                        "client_message_id was reused with different content"
-                                        if claim.status == "conflict"
-                                        else None
-                                    ),
-                                ),
-                            )
-                            continue
-
-                        try:
-                            if task_obj.status == TaskStatus.INTERRUPTED:
-                                async with lock_task(task_id):
-                                    resume_payload = await task_session_control_service.resume_interrupted_task(
-                                        db,
-                                        task=task_obj,
-                                        actor_user_id=user_id,
-                                        prompt=user_content,
-                                        confirm_continue=False,
-                                        client_message_id=client_message_id,
-                                    )
-                                resume_job = resume_payload.get("job") or {}
-                                resume_context = resume_job.get("context_json") or {}
-                                await chat_message_idempotency_service.mark_message_done(
-                                    claim,
-                                    chat_message_id=str(resume_context.get("chat_message_id") or ""),
-                                    ai_job_id=str(resume_job.get("id") or "") or None,
-                                )
-                                await _send_chat_ack(
-                                    websocket,
-                                    _serialize_chat_ack(
-                                        task_id=task_id,
-                                        status="accepted",
-                                        client_message_id=client_message_id,
-                                        content=user_content,
-                                        user_id=user_id,
-                                        display_name=user_display_name,
-                                        is_workspace_expert=user_is_expert,
-                                        chat_message_id=str(resume_context.get("chat_message_id") or "") or None,
-                                        ai_job_id=str(resume_job.get("id") or "") or None,
-                                        session_turn_id=resume_job.get("session_turn_id"),
-                                        session_generation=resume_job.get("session_generation"),
-                                    ),
-                                )
-                                continue
-
-                            async with lock_task(task_id):
-                                _turn, saved_message, job, _checkpoint = await task_session_service.create_task_chat_turn(
-                                    db,
-                                    task=task_obj,
-                                    actor_user_id=user_id,
-                                    content=user_content,
-                                    context_json={"client_message_id": client_message_id},
-                                    client_message_id=client_message_id,
-                                )
-                            job_id = job.id
-                            await chat_message_idempotency_service.mark_message_done(
-                                claim,
-                                chat_message_id=saved_message.id,
-                                ai_job_id=job_id,
-                            )
-                        except (task_session_service.TaskSessionUndoError, LockAcquireTimeout) as exc:
-                            if claim:
-                                try:
-                                    await chat_message_idempotency_service.mark_message_failed(claim)
-                                except Exception:
-                                    task_logger.warning(
-                                        f"Failed to clear chat idempotency claim for task {task_id}"
-                                    )
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status="failed",
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    message=(
-                                        "Task is busy; please retry."
-                                        if isinstance(exc, LockAcquireTimeout)
-                                        else str(exc)
-                                    ),
-                                ),
-                            )
-                            continue
-                        except Exception:
-                            if claim:
-                                try:
-                                    await chat_message_idempotency_service.mark_message_failed(claim)
-                                except Exception:
-                                    task_logger.warning(
-                                        f"Failed to clear chat idempotency claim for task {task_id}"
-                                    )
-                            raise
-                    finally:
-                        db.close()
-
-                    if not task_meta or not job_id or not saved_message:
-                        task_logger.warning(f"Task {task_id} not found, message ignored")
-                        continue
-                    await _send_chat_ack(
-                        websocket,
-                        _serialize_chat_ack(
-                            task_id=task_id,
-                            status="accepted",
-                            client_message_id=client_message_id,
-                            content=user_content,
-                            chat_message_id=saved_message.id,
-                            ai_job_id=job_id,
-                            user_id=user_id,
-                            display_name=user_display_name,
-                            is_workspace_expert=user_is_expert,
-                            created_at=saved_message.created_at.isoformat(),
-                            session_turn_id=saved_message.session_turn_id,
-                            session_generation=saved_message.session_generation,
-                        ),
-                    )
-                    await manager.send_message_to_room(
-                        task_id,
-                        WSMessage(
-                            type="chat_message",
-                            payload=WSChatPayload(
-                                task_id=task_id,
-                                role="user",
-                                content=user_content,
-                                message_type="text",
-                                id=saved_message.id,
-                                client_message_id=client_message_id,
-                                creator_id=user_id,
-                                creator_display_name=user_display_name,
-                                creator_is_workspace_expert=user_is_expert,
-                                creator_avatar_url=user_avatar_url,
-                                creator_avatar_svg=user_avatar_svg,
-                                created_at=saved_message.created_at.isoformat(),
-                                session_turn_id=saved_message.session_turn_id,
-                                session_generation=saved_message.session_generation,
-                            ).model_dump(),
-                        ),
-                    )
-                    await ai_job_service.enqueue_task_chat_job(job_id)
-
-                elif msg_type == "hitl_response":
-                    # HITL 回复 → 以用户回答恢复 CLI 会话
-                    payload = data.get("payload", {})
-                    response = payload.get("response", "")
-                    job_id = payload.get("job_id")
-                    if not response.strip():
-                        continue
-
-                    task_logger.info(f"HITL response for task {task_id}: message_length={len(response)}")
-                    resumed = await ai_job_service.resume_waiting_hitl_job(
-                        task_id=task_id,
-                        response=response.strip(),
-                        job_id=str(job_id) if job_id else None,
-                    )
-                    if resumed:
-                        continue
-
-                    engine = get_engine(task_id)
-                    if engine:
-                        asyncio.create_task(engine.send_message(response))
-                    else:
-                        task_meta = None
-                        db = SessionLocal()
-                        try:
-                            task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-                            if task_obj:
-                                task_meta = {
-                                    "id": task_obj.id,
-                                    "workspace_id": task_obj.workspace_id,
-                                    "creator_id": user_id,
-                                    "agent_backend": resolve_task_backend(db, task_obj.id),
-                                }
-                        finally:
-                            db.close()
-                        if not task_meta:
-                            task_logger.warning(
-                                f"No engine and task not found for HITL task {task_id}, response ignored"
-                            )
-                            continue
-                        task_logger.warning(
-                            f"No engine for HITL task {task_id}, rebuilding engine from DB and running response"
-                        )
-                        recovered_engine = WorkflowEngine(
-                            task_id=task_meta["id"],
-                            ws_id=task_meta["workspace_id"],
-                            user_id=user_id,
-                            backend_name=task_meta.get("agent_backend"),
-                        )
-                        asyncio.create_task(recovered_engine.run(response))
-
-                elif msg_type and msg_type.startswith("pre_input_"):
-                    # 协作预输入：发起 / 贡献 / 编辑 / 提交 / 取消，逻辑封装在 pre_input_service
-                    payload = data.get("payload", {}) or {}
-                    db = SessionLocal()
-                    try:
-                        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-                        if not task_obj:
-                            await websocket.send_json({
-                                "type": "pre_input_error",
-                                "payload": {"task_id": task_id, "message": "Task not found"},
-                            })
-                            continue
-
-                        error_payload: dict | None = None
-                        if msg_type == "pre_input_create":
-                            try:
-                                await pre_input_service.create_pre_input(
-                                    db,
-                                    task=task_obj,
-                                    creator_id=user_id,
-                                    main_text=str(payload.get("main_text") or ""),
-                                    mentioned_user_ids=payload.get("mentioned_user_ids") or [],
-                                    edit_permission=str(payload.get("edit_permission") or "NONE"),
-                                    wait_seconds=int(payload.get("wait_seconds") or 180),
-                                )
-                            except pre_input_service.PreInputError as exc:
-                                error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_edit_document":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.edit_pre_input_document(
-                                        db,
-                                        pre_input=pre_input,
-                                        user_id=user_id,
-                                        is_expert=user_is_expert,
-                                        new_text=str(payload.get("text") or ""),
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_replace_span":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.replace_pre_input_span(
-                                        db,
-                                        pre_input=pre_input,
-                                        user_id=user_id,
-                                        is_expert=user_is_expert,
-                                        start=int(payload.get("start") or 0),
-                                        end=int(payload.get("end") or 0),
-                                        anchor_text=str(payload.get("anchor_text") or ""),
-                                        replacement=str(payload.get("replacement") or ""),
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_mark_done":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.mark_pre_input_done(
-                                        db,
-                                        pre_input=pre_input,
-                                        user_id=user_id,
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_submit":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            elif user_id != pre_input.creator_id:
-                                error_payload = {"action": msg_type, "message": "Only the creator can submit"}
-                            else:
-                                try:
-                                    await pre_input_service.submit_pre_input(
-                                        db,
-                                        pre_input=pre_input,
-                                        actor_user_id=user_id,
-                                        reason="manual",
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_cancel":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.cancel_pre_input(
-                                        db,
-                                        pre_input=pre_input,
-                                        actor_user_id=user_id,
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        else:
-                            error_payload = {"action": msg_type, "message": f"Unknown pre input action"}
-
-                        if error_payload:
-                            await websocket.send_json({
-                                "type": "pre_input_error",
-                                "payload": {"task_id": task_id, **error_payload},
-                            })
-                    finally:
-                        db.close()
-
-        except WebSocketDisconnect:
-            manager.disconnect(websocket, task_id)
-        except Exception:
-            task_logger.exception("Task websocket endpoint failed")
-            manager.disconnect(websocket, task_id)
+        handler = TaskWebSocketHandler(
+            websocket,
+            task_id,
+            user,
+            session_factory=SessionLocal,
+            connection_manager=manager,
+        )
+        await handler.run()
 
 
 @app.websocket("/ws/notifications")
