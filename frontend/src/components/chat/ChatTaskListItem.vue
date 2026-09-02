@@ -124,10 +124,14 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
 }
 
-.task-item.active .task-select {
-  border-color: rgba(37, 99, 235, 0.12);
-  border-left: 3px solid var(--color-primary-500);
-  background-color: var(--color-primary-100);
+.task-item.active .task-select,
+.task-item.active:hover .task-select {
+  background-color: var(--color-surface-white);
+  border-color: rgba(14, 165, 233, 0.25);
+  box-shadow:
+    0 1px 3px 0 rgba(14, 165, 233, 0.06),
+    0 4px 16px -2px rgba(14, 165, 233, 0.12),
+    0 2px 4px -1px rgba(15, 23, 42, 0.04);
 }
 
 .task-name {
@@ -144,7 +148,8 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 }
 
 .task-item.active .task-name {
-  color: var(--color-primary-900);
+  color: var(--color-text-title);
+  font-weight: 700;
 }
 
 .task-state-row {
@@ -274,21 +279,10 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   opacity: 0.55;
 }
 
-.delete-btn {
+.follow-btn,
+.delete-btn.delete-action-btn {
   position: absolute;
   top: 50%;
-  right: 10px;
-  z-index: 1;
-  color: var(--color-text-muted);
-  opacity: 0.35;
-  translate: 0 -50%;
-  transition: opacity 0.2s, color 0.2s;
-}
-
-.follow-btn {
-  position: absolute;
-  top: 50%;
-  right: 38px;
   z-index: 1;
   display: inline-flex;
   align-items: center;
@@ -299,11 +293,19 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   border: 0;
   border-radius: 8px;
   color: #94a3b8;
-  background: #f1f5f9;
+  background: transparent;
   cursor: pointer;
-  opacity: 1;
+  opacity: 0.6;
   translate: 0 -50%;
-  transition: opacity 0.2s, color 0.2s, background-color 0.2s;
+  transition: opacity 0.2s, color 0.2s, background-color 0.2s, box-shadow 0.2s;
+}
+
+.follow-btn {
+  right: 38px;
+}
+
+.delete-btn.delete-action-btn {
+  right: 10px;
 }
 
 .follow-icon {
@@ -311,6 +313,18 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   height: 0.85rem;
 }
 
+/* 选中或悬停任务项时：按钮透明度提升并加深背景颜色 */
+.task-item:hover .follow-btn,
+.task-item:hover .delete-btn.delete-action-btn,
+.task-item:focus-within .follow-btn,
+.task-item:focus-within .delete-btn.delete-action-btn,
+.task-item.active .follow-btn,
+.task-item.active .delete-btn.delete-action-btn {
+  opacity: 1;
+  background: #f1f5f9;
+}
+
+/* 按钮自身 hover / active 时的微交互高亮 */
 .follow-btn:hover {
   color: #d97706;
   background: #fef3c7;
@@ -319,14 +333,12 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 .follow-btn.active {
   color: #d97706;
   background: #fef3c7;
-}
-
-.task-item:hover .delete-btn,
-.task-item:focus-within .delete-btn {
   opacity: 1;
 }
 
-.delete-btn:hover {
-  color: var(--color-accent-rose);
+.delete-btn.delete-action-btn:hover:not(:disabled) {
+  color: #fff;
+  background: #ef4444;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.25);
 }
 </style>
