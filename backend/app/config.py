@@ -69,6 +69,18 @@ class Settings(BaseSettings):
     OAUTH_GITHUB_REDIRECT_URI_DESKTOP: str = "http://127.0.0.1/callback"
     # 最小权限 Scope（NFR-S8）
     OAUTH_GITHUB_SCOPE: str = "read:user,user:email"
+    # ── Stub（本地 Demo，非三方接入）──
+    # 真实三方登录需登记回调地址，内网/localhost 无法被回调；Stub 在本地模拟 IdP，
+    # 走与 GitHub 完全相同的真实后端链路（state→ticket→三路判定→JWT）供演示验证。
+    # 🔴 生产必须保持 false：stub 不校验任何真实身份，等于「任意免密登录」。
+    OAUTH_STUB_ENABLED: bool = False
+    # 仅演示用的占位凭据（无真实权限；是否启用只看 OAUTH_STUB_ENABLED）
+    OAUTH_STUB_CLIENT_ID: str = "stub-demo-client"
+    OAUTH_STUB_CLIENT_SECRET: str = "stub-demo-secret"
+    # Web 端回调（Demo）：后端不在 127.0.0.1:8000 时请在 .env 覆盖为实际地址
+    OAUTH_STUB_REDIRECT_URI_WEB: str = "http://127.0.0.1:8000/api/auth/oauth/stub/callback"
+    # Electron 端回调模板（Demo 占位，本演示不使用桌面端）
+    OAUTH_STUB_REDIRECT_URI_DESKTOP: str = "http://127.0.0.1/callback"
     # state 有效期 10 min（NFR-S4）
     OAUTH_STATE_TTL_SECONDS: int = 600
     # ticket 有效期 10 min（E-17）

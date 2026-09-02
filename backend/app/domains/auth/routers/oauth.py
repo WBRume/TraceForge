@@ -15,10 +15,11 @@ OAuth 三方登录路由（B-12 / T02，9 端点，对应设计文档 §2.3 契�
 ``services/oauth_service.py``，本文件只做参数搬运与响应组装。
 """
 
+import urllib.parse
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from fastapi.security.utils import get_authorization_scheme_param
 from jose import JWTError
@@ -27,7 +28,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.errors import AuthRequiredError
 from app.domains.auth.models.user import User
-from app.domains.auth.providers import list_enabled_providers
+from app.domains.auth.providers import get_provider, list_enabled_providers
 from app.domains.auth.schemas.oauth import (
     AuthorizeParams,
     AuthorizeResponse,
@@ -121,6 +122,28 @@ def authorize(
         state=result.state,
         expires_in=result.expires_in,
     )
+
+
+# ── 2.5 dev-only：Stub 本地 Demo 的「三方授权页」（见 providers/stub.py）──
+@router.get("/stub/authorize-redirect", response_class=RedirectResponse)
+def stub_authorize_redirect(
+    state: str = Query(...),
+    redirect_uri: str = Query(...),
+):
+    """模拟三方授权页：真实 IdP 在这里展示同意界面并 302 回回调；Stub 直接跳回。
+
+    仅本地 Demo 使用（``OAUTH_STUB_ENABLED=true`` 且走完 authorize 后到达）：
+    携带固定 ``code=stub-code`` 与原始 ``state`` 跳回本项目的回调路由，
+    使后续 state 校验 / 换 token / ticket / 三路判定全部走真实后端链路。
+    """
+    # 未启用（默认 false）→ 404 OAUTH_PROVIDER_DISABLED，生产环境不会暴露
+    oauth = get_provider("stub")
+    # 防开放重定向双保险：只允许跳回本项目为该 provider 登记的回调地址
+    configured = oauth.resolve_redirect_uri("web")
+    if redirect_uri != configured:
+        raise HTTPException(status_code=400, detail="invalid redirect_uri")
+    target = f"{redirect_uri}?code=stub-code&state={urllib.parse.quote(state)}"
+    return RedirectResponse(target, status_code=302)
 
 
 # ── 3. GET /{provider}/callback ──

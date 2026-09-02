@@ -66,3 +66,4 @@ def list_enabled_providers() -> list["ProviderInfo"]:
 
 # ── 底部集中 import 触发注册（新增 provider 时只加这一行）──
 from . import github  # noqa: E402,F401
+from . import stub  # noqa: E402,F401  # dev-only 本地 Demo provider（OAUTH_STUB_ENABLED=false 时不可见/不可用）
