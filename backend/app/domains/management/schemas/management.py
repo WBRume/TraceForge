@@ -197,7 +197,7 @@ class RepositoryCreate(BaseModel):
     git_url: str = Field(..., min_length=1, max_length=500)
     repo_type: str = "OOTB"
     default_branch: str = Field(default="main", min_length=1, max_length=120)
-    group_id: Optional[str] = None
+    group_id: str = Field(..., min_length=1)
     description: Optional[str] = None
 
     @field_validator("git_url")
@@ -237,4 +237,4 @@ class RepoGroupUpdate(BaseModel):
 
 
 class RepoMoveRequest(BaseModel):
-    group_id: Optional[str] = None
+    group_id: str = Field(..., min_length=1)

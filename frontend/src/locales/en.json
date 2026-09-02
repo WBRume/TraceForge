@@ -96,6 +96,33 @@
     "language_desc": "Choose your preferred language for the interface.",
     "theme": "Appearance",
     "theme_desc": "Customize the interface theme and display mode.",
+    "connected_accounts": {
+      "title": "Connected Accounts",
+      "subtitle": "Manage third-party accounts linked to your TraceForge account.",
+      "bound_title": "Linked accounts",
+      "bound_empty": "No third-party accounts are linked yet.",
+      "bound_at": "Linked on {date}",
+      "link_title": "Link another account",
+      "link_desc": "Connect a third-party account to sign in faster.",
+      "link_with": "Link {provider}",
+      "linked_tag": "Linked",
+      "no_providers": "No sign-in providers are enabled yet.",
+      "unbind": "Unbind",
+      "unbind_confirm_title": "Unbind {provider}?",
+      "unbind_confirm_message": "This will disconnect your {provider} account. You can link it again later.",
+      "unbind_success": "{provider} account unbound successfully",
+      "unbind_failed": "Failed to unbind {provider}: {message}",
+      "loading": "Loading linked accounts...",
+      "load_failed": "Failed to load linked accounts",
+      "retry": "Retry",
+      "link_error": "Failed to start linking: {message}",
+      "link_success": "{provider} linked successfully",
+      "already_bound": "This {provider} account is already linked",
+      "admin_bind_title": "Confirm admin binding",
+      "admin_bind_desc": "Re-enter your account password to confirm linking this third-party account.",
+      "admin_bind_password": "Account password",
+      "admin_bind_submit": "Confirm & link"
+    },
     "local_dev": {
       "multi_repo_title": "Workspace Repository Bindings ({count})",
       "repo_bound": "Bound",
@@ -2629,6 +2656,75 @@
         "password": "Password",
         "display_name": "Display Name"
       }
+    },
+    "oauth": {
+      "divider": "or continue with",
+      "login_with": "Sign in with {provider}",
+      "bind_with": "Bind {provider}",
+      "callback": {
+        "title": "Completing sign-in",
+        "resolving": "Processing, please wait..."
+      },
+      "messages": {
+        "already_bound": "This {provider} account is already bound to your TraceForge account",
+        "bind_success": "{provider} account bound successfully"
+      },
+      "actions": {
+        "relogin": "Back to sign in",
+        "back_workspaces": "Back to Workspaces"
+      },
+      "errors": {
+        "access_denied": "Authorization was canceled. You can choose another sign-in method.",
+        "session_invalid": "Your sign-in session has expired. Please start again.",
+        "provider_unavailable": "The third-party service is temporarily unavailable. Please try again later or use email sign-in.",
+        "provider_disabled": "This sign-in method is not enabled yet.",
+        "ticket_invalid": "Invalid login credentials. Please start again.",
+        "ticket_expired": "This operation has timed out. Please start again.",
+        "ticket_locked": "Too many attempts. Please retry in 15 minutes.",
+        "password_invalid": "Incorrect email or password",
+        "email_taken": "This email is already registered. Sign in and bind it in Settings, or use a different email.",
+        "identity_conflict": "This third-party account is already bound to another TraceForge account.",
+        "no_password": "This account has no password set. Please set a password first.",
+        "email_not_allowed": "This email domain is not allowed for registration.",
+        "provider_not_found": "This sign-in method does not exist.",
+        "default": "Something went wrong during sign-in. Please retry or use email sign-in."
+      },
+      "bind_confirm": {
+        "title": "Confirm Binding",
+        "description": "The email {email} is already registered. Enter the account password to verify your identity, then this {provider} account will be bound to it and you will be signed in.",
+        "email_label": "Account email",
+        "password_label": "Account password",
+        "password_placeholder": "Enter your account password",
+        "password_required": "Please enter your password",
+        "submit": "Verify & Bind",
+        "submitting": "Verifying...",
+        "cancel": "Cancel",
+        "attempts_left": "{n} attempts remaining.",
+        "admin_title": "Admin Identity Confirmation",
+        "admin_desc": "An admin account is binding a third-party identity. For security, please re-enter the account password to confirm."
+      },
+      "register": {
+        "title": "Complete Registration",
+        "subtitle": "Quick sign-up with {provider} — just fill in the following",
+        "tip": "After setting a password, you can keep signing in with {provider} or with email + password. The password is also the only way to recover your account (via admin reset).",
+        "email_label": "Sign-in email",
+        "email_placeholder": "name@company.com",
+        "email_hint": "The third-party email is only a suggestion — use the email you actually want",
+        "email_unverified": "This email is not verified at {provider}. Please confirm before submitting.",
+        "email_required": "Please enter your email",
+        "password_label": "Set password",
+        "password_required": "Please set a password",
+        "confirm_password_label": "Confirm password",
+        "display_name_label": "Display name",
+        "display_name_placeholder": "How should we call you?",
+        "password_mismatch": "The two passwords do not match",
+        "submit": "Finish registration",
+        "submitting": "Registering...",
+        "leave_title": "Discard registration?",
+        "leave_confirm": "Registration is not finished. If you leave now, entered information will be lost and no account will be created.",
+        "leave_stay": "Keep registering",
+        "leave_go": "Discard & leave"
+      }
     }
   },
   "management": {
@@ -2829,16 +2925,14 @@
       "name": "Group Name",
       "parent": "Parent Group",
       "root": "Root",
-      "unassigned": "Unassigned Repositories",
       "readonly_hint": "Repo groups are maintained by administrators (read-only for you)",
       "move_repo_hint": "Choose the group for this repository",
-      "add_requires_group": "A repository is the smallest unit; select a repository group first",
       "parent_locked_hint": "The parent group is bound to the currently selected group and cannot be changed",
       "search_placeholder": "Search repo groups"
     },
     "repository": {
       "group": "Repo Group",
-      "no_group": "Unassigned",
+      "group_required_hint": "Select a repo group (every repository must belong to a group)",
       "title": "Repositories",
       "subtitle": "Repository registration, org tree and git branch/tag sync",
       "search_placeholder": "Search repository name / Git URL",

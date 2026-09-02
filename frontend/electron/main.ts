@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { registerConfigIpc } from './ipc/config'
 import { registerDownloadIpc } from './ipc/download'
 import { registerGitIpc } from './ipc/git'
+import { registerOauthIpc } from './ipc/oauth'
 import { registerPatchIpc } from './ipc/patch'
 import { registerProcessIpc } from './ipc/process'
 import { registerSystemIpc } from './ipc/system'
@@ -47,6 +48,7 @@ const registerIpc = () => {
   registerConfigIpc()
   registerDownloadIpc()
   registerGitIpc()
+  registerOauthIpc()
   registerPatchIpc()
   registerProcessIpc()
   registerSystemIpc()

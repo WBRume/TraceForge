@@ -56,6 +56,37 @@ class Settings(BaseSettings):
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 30  # 30 days for debug
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # ── OAuth 三方登录（设计文档 §4.1）──
+    # 命名约定：OAUTH_{PROVIDER_UPPER}_ 前缀；provider 适配类通过 name.upper() 拼 key 读取
+    # （providers/base.oauth_setting）→ 新增 provider 只需在 .env 加键，无需改本文件（NFR-M1）。
+    # GitHub（首批唯一 provider，拍板 #2）；CLIENT_ID 留空 = 该 provider 不启用（NFR-M2）
+    OAUTH_GITHUB_CLIENT_ID: str = ""
+    # 🔴 仅服务端使用，绝不下发前端
+    OAUTH_GITHUB_CLIENT_SECRET: str = ""
+    # Web 端回调地址，如 https://api.traceforge.internal/api/auth/oauth/github/callback
+    OAUTH_GITHUB_REDIRECT_URI_WEB: str = ""
+    # Electron 端回调模板；运行时由后端按 loopback_port 替换为 http://127.0.0.1:{port}/callback（RFC 8252）
+    OAUTH_GITHUB_REDIRECT_URI_DESKTOP: str = "http://127.0.0.1/callback"
+    # 最小权限 Scope（NFR-S8）
+    OAUTH_GITHUB_SCOPE: str = "read:user,user:email"
+    # state 有效期 10 min（NFR-S4）
+    OAUTH_STATE_TTL_SECONDS: int = 600
+    # ticket 有效期 10 min（E-17）
+    OAUTH_TICKET_TTL_SECONDS: int = 600
+    # 路径 B 最大密码尝试次数（E-18）
+    OAUTH_BIND_MAX_ATTEMPTS: int = 5
+    # 连续失败后的冷却时长 15 min（E-18 / NFR-S6）
+    OAUTH_BIND_COOLDOWN_SECONDS: int = 900
+    # 三方 HTTP 超时（K-3 / NFR-P2：connect 5s / read 10s）
+    OAUTH_HTTP_CONNECT_TIMEOUT: float = 5.0
+    OAUTH_HTTP_READ_TIMEOUT: float = 10.0
+    # 仅网络类错误的重试次数（K-3 / NFR-P3）
+    OAUTH_HTTP_MAX_RETRIES: int = 1
+    # 注册域名白名单：逗号分隔域名后缀（如 corp.com,example.com）；留空 = 不限制（拍板 #4）
+    REGISTER_EMAIL_DOMAIN_WHITELIST: str = ""
+    # 后端 302 跳转用的前端基址（如 http://localhost:5173）
+    FRONTEND_BASE_URL: str = ""
+
     # ── Agent Backend ──
     AGENT_BACKEND: str = "claude-code"  # claude-code | opencode | dsh | mock
     OPENCODE_SERVER_URL: str = "http://127.0.0.1:4097"

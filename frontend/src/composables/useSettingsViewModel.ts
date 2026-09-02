@@ -1,7 +1,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bell, Bot, Languages, MonitorCog, Palette, Shield, Users } from 'lucide-vue-next'
+import { Bell, Bot, Languages, Link, MonitorCog, Palette, Shield, Users } from 'lucide-vue-next'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
@@ -52,7 +52,7 @@ export function useSettingsViewModel() {
   const authStore = useAuthStore()
   
   const currentLang = ref(locale.value)
-  const activeSection = ref('general')
+  const activeSection = ref<string>('general')
   
   const workspaceId = computed(() => String(route.params.wsId || ''))
   
@@ -119,6 +119,12 @@ export function useSettingsViewModel() {
       icon: Users,
       label: 'settings.members.title',
       description: 'settings.members.subtitle',
+    },
+    {
+      id: 'connected_accounts',
+      icon: Link,
+      label: 'settings.connected_accounts.title',
+      description: 'settings.connected_accounts.subtitle',
     },
     {
       id: 'appearance',
