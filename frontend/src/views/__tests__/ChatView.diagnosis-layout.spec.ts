@@ -62,13 +62,42 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(glassRule).toContain('backdrop-filter: blur(6px) saturate(0.88)')
     expect(glassRule).toContain('pointer-events: auto')
     expect(layoutCss).toContain('.chat-main.is-session-busy .chat-header')
-    expect(layoutCss).toContain('.session-operation-banner')
+    expect(layoutCss).toContain('.session-operation-overlay')
+    expect(layoutCss).toContain('.session-operation-progress-ring')
+    expect(declarations(layoutCss, '.session-operation-card')).toContain('flex-direction: column')
+    expect(declarations(layoutCss, '.session-operation-card')).toContain('background: transparent')
+    expect(declarations(layoutCss, '.session-operation-card')).toContain('box-shadow: none')
+    const progressRingRule = declarations(layoutCss, '.session-operation-progress-ring')
+    expect(progressRingRule).toContain('animation: session-operation-rotator 1.4s linear infinite')
+    const progressTrackRule = declarations(layoutCss, '.session-operation-progress-track')
+    expect(progressTrackRule).toContain('stroke: var(--color-primary-200, #bae6fd)')
+    const progressPathRule = declarations(layoutCss, '.session-operation-progress-path')
+    expect(progressPathRule).toContain('stroke-dasharray: 2 98')
+    expect(progressPathRule).toContain('animation: session-operation-dash 1.4s ease-in-out infinite')
+    expect(layoutCss).toContain('@keyframes session-operation-dash')
+    expect(layoutCss).toContain('100% { transform: rotate(360deg); }')
+    expect(chatViewSource).toContain('pathLength="100"')
+    expect(layoutCss).not.toContain('session-operation-card-glow')
+    expect(layoutCss).not.toContain('.session-operation-banner')
   })
 
   it('routes undo through the shared confirmation modal before calling the view model', () => {
     expect(chatViewSource).toContain('@undo-request="handleUndoRequest"')
     expect(chatViewSource).toContain('<ConfirmActionModal')
+    expect(chatViewSource).toContain('class="session-operation-overlay"')
+    expect(chatViewSource).toContain('<span class="session-operation-copy">')
+    expect(chatViewSource).not.toContain('session-operation-card glass-panel')
+    expect(chatViewSource).not.toContain('class="session-operation-banner"')
     expect(chatViewSource).toContain(":title=\"$t('chat.undo.confirm_title')\"")
     expect(chatViewSource).toContain('@confirm="confirmUndoMessage"')
+
+    const confirmBlock = chatViewSource.slice(
+      chatViewSource.indexOf('const confirmUndoMessage'),
+      chatViewSource.indexOf('const handleStartPreInput'),
+    )
+    expect(confirmBlock.indexOf('pendingUndoMessage.value = null')).toBeGreaterThan(-1)
+    expect(confirmBlock.indexOf('pendingUndoMessage.value = null')).toBeLessThan(
+      confirmBlock.indexOf('await rawVm.undoMessage(message)'),
+    )
   })
 })

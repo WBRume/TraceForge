@@ -186,32 +186,72 @@
   flex: 0 0 auto;
 }
 
-.session-operation-banner {
-  position: relative;
+.session-operation-overlay {
+  position: absolute;
+  inset: 60px 0 0;
   z-index: 60;
-  pointer-events: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 32px;
-  padding: 6px var(--space-6);
-  border-bottom: 1px solid rgba(148, 163, 184, 0.2);
-  background: rgba(248, 250, 252, 0.64);
-  backdrop-filter: blur(12px) saturate(1.1);
-  -webkit-backdrop-filter: blur(12px) saturate(1.1);
-  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08);
-  color: #475569;
-  font-size: 0.78rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  flex: 0 0 auto;
+  padding: var(--space-6);
+  pointer-events: none;
+  isolation: isolate;
   animation: session-operation-in 0.18s ease-out;
 }
 
-.session-operation-spinner {
-  color: #64748b;
-  animation: session-operation-spin 0.9s linear infinite;
+.session-operation-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 11px;
+  min-width: min(220px, 88%);
+  padding: 16px 24px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.session-operation-progress-ring {
+  display: block;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  color: var(--color-primary-600, #0284c7);
+  overflow: visible;
+  transform-origin: center;
+  animation: session-operation-rotator 1.4s linear infinite;
+}
+
+.session-operation-progress-track,
+.session-operation-progress-path {
+  fill: none;
+  stroke-width: 3;
+  transform-origin: center;
+}
+
+.session-operation-progress-track {
+  stroke: var(--color-primary-200, #bae6fd);
+  opacity: 0.82;
+}
+
+.session-operation-progress-path {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-dasharray: 2 98;
+  stroke-dashoffset: 0;
+  animation: session-operation-dash 1.4s ease-in-out infinite;
+}
+
+.session-operation-copy {
+  display: block;
+  margin: 0;
+  color: var(--color-primary-900, #0c4a6e);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.4;
+  pointer-events: none;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(255, 255, 255, 0.72);
 }
 
 @keyframes session-operation-in {
@@ -224,8 +264,24 @@
   to { opacity: 1; backdrop-filter: blur(6px) saturate(0.88); }
 }
 
-@keyframes session-operation-spin {
-  to { transform: rotate(360deg); }
+@keyframes session-operation-rotator {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes session-operation-dash {
+  0% {
+    stroke-dasharray: 2 98;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 72 98;
+    stroke-dashoffset: -18;
+  }
+  100% {
+    stroke-dasharray: 2 98;
+    stroke-dashoffset: -100;
+  }
 }
 
 .badge {
