@@ -51,6 +51,27 @@ const vm = proxyRefs(rawVm)
 const showApplyPatchDrawer = ref(false)
 const preInputMode = ref(false)
 const chatInputRef = ref<any>(null)
+const pendingUndoMessage = ref<Record<string, any> | null>(null)
+
+const handleUndoRequest = (message: Record<string, any>) => {
+  if (rawVm.isUndoing.value || !rawVm.canUndoMessage(message)) return
+  pendingUndoMessage.value = message
+}
+
+const cancelUndoConfirmation = () => {
+  if (rawVm.isUndoing.value) return
+  pendingUndoMessage.value = null
+}
+
+const confirmUndoMessage = async () => {
+  const message = pendingUndoMessage.value
+  if (!message || rawVm.isUndoing.value) return
+  try {
+    await rawVm.undoMessage(message)
+  } finally {
+    pendingUndoMessage.value = null
+  }
+}
 
 const handleStartPreInput = (payload: {
   main_text: string
@@ -106,6 +127,7 @@ watch(
   () => vm.currentTask?.id,
   () => {
     preInputMode.value = false
+    pendingUndoMessage.value = null
   },
 )
 
@@ -464,6 +486,7 @@ const statusModelText = (card: any): string => {
             v-else
             :msg="msg"
             :vm="vm"
+            @undo-request="handleUndoRequest"
           />
         </template>
 
@@ -845,6 +868,19 @@ const statusModelText = (card: any): string => {
       :loading="vm.startingTask"
       @cancel="vm.showStartConfirm = false"
       @confirm="vm.startTask"
+    />
+
+    <ConfirmActionModal
+      :show="Boolean(pendingUndoMessage)"
+      :title="$t('chat.undo.confirm_title')"
+      :message="$t('chat.undo.confirm_message')"
+      :description="$t('chat.undo.confirm_description')"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('chat.undo.confirm_action')"
+      tone="danger"
+      :loading="vm.isUndoing"
+      @cancel="cancelUndoConfirmation"
+      @confirm="confirmUndoMessage"
     />
 
     <!-- Initialize Reason Modal -->

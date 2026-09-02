@@ -20,6 +20,10 @@ const props = defineProps<{
   vm: any
 }>()
 
+const emit = defineEmits<{
+  (event: 'undo-request', message: Record<string, any>): void
+}>()
+
 const { t } = useI18n()
 
 const isPopoverOpen = ref(false)
@@ -112,9 +116,9 @@ const canUndoMessage = computed(() => Boolean(props.vm?.canUndoMessage?.(props.m
 const isUndoingMessage = computed(() => String(props.vm?.undoingMessageId || '') === String(props.msg?.id || ''))
 const showUndoAction = computed(() => canUndoMessage.value || isUndoingMessage.value)
 
-async function handleUndoMessage() {
-  if (!canUndoMessage.value || isUndoingMessage.value) return
-  await props.vm.undoMessage(props.msg)
+function handleUndoMessage() {
+  if (!canUndoMessage.value || isUndoingMessage.value || Boolean(props.vm?.isUndoing)) return
+  emit('undo-request', props.msg)
 }
 
 const copyState = ref<'idle' | 'done' | 'failed'>('idle')
@@ -369,6 +373,7 @@ function openDiagnosisCase(caseId: string) {
       </div>
     </div>
   </div>
+
 </template>
 
 <style scoped>

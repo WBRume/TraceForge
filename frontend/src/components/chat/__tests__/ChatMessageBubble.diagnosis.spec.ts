@@ -107,6 +107,32 @@ describe('ChatMessageBubble diagnosis_result rendering', () => {
     expect(undoButton.find('.undo-spin').exists()).toBe(true)
   })
 
+  it('requires confirmation before starting an undo', async () => {
+    const wrapper = mountBubble(
+      {
+        id: 'msg-undo-confirm-1',
+        role: 'user',
+        content: '需要确认撤回',
+        message_type: 'text',
+        session_turn_id: 'turn-confirm-1',
+        session_generation: 1,
+        created_at: '2026-08-07T10:00:00Z',
+      },
+      {
+        canUndoMessage: () => true,
+        isUndoing: false,
+        undoingMessageId: '',
+      },
+    )
+
+    await wrapper.find('.message-undo-btn').trigger('click')
+    expect(wrapper.emitted('undo-request')).toHaveLength(1)
+    expect(wrapper.emitted('undo-request')?.[0]?.[0]).toMatchObject({
+      id: 'msg-undo-confirm-1',
+      content: '需要确认撤回',
+    })
+  })
+
   it('falls back to message content when metadata is missing', () => {
     const wrapper = mountBubble({
       id: 'msg-diag-2',
