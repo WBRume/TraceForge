@@ -132,7 +132,9 @@ class GitHubProvider(OAuthProvider):
             return None, None
         if response.status_code != 200:
             return None, None
-        emails: Any = self._parse_json(response)
+        # GitHub 的 /user/emails 响应是 JSON 数组，而 token/profile 接口返回对象。
+        # 先解析合法 JSON，再由调用方校验期望的顶层形状。
+        emails: Any = self._parse_json_value(response)
         if not isinstance(emails, list):
             return None, None
         for item in emails:
@@ -142,12 +144,18 @@ class GitHubProvider(OAuthProvider):
         return None, None
 
     @staticmethod
-    def _parse_json(response: httpx.Response) -> dict:
-        """安全解析 JSON；非法响应按上游错误处理（严禁透传原始报文，NFR-U2）。"""
+    def _parse_json_value(response: httpx.Response) -> Any:
+        """安全解析任意 JSON 值；非法响应按上游错误处理（NFR-U2）。"""
         try:
             data = response.json()
         except ValueError as exc:
             raise OAuthUpstreamError() from exc
+        return data
+
+    @staticmethod
+    def _parse_json(response: httpx.Response) -> dict:
+        """安全解析 JSON 对象；非法响应按上游错误处理（严禁透传原始报文，NFR-U2）。"""
+        data = GitHubProvider._parse_json_value(response)
         if not isinstance(data, dict):
             raise OAuthUpstreamError()
         return data
