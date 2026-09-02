@@ -66,10 +66,13 @@ const cancelUndoConfirmation = () => {
 const confirmUndoMessage = async () => {
   const message = pendingUndoMessage.value
   if (!message || rawVm.isUndoing.value) return
+  // Close the confirmation layer before the async provider/worktree restore starts.
+  // The chat-main busy overlay then becomes visible immediately.
+  pendingUndoMessage.value = null
   try {
     await rawVm.undoMessage(message)
-  } finally {
-    pendingUndoMessage.value = null
+  } catch {
+    // undoMessage owns user-facing error handling; keep this callback rejection-free.
   }
 }
 
@@ -315,13 +318,18 @@ const statusModelText = (card: any): string => {
 
       <div
         v-if="vm.isUndoing"
-        class="session-operation-banner"
+        class="session-operation-overlay"
         role="status"
         aria-live="polite"
         aria-busy="true"
       >
-        <Loader2 class="w-3.5 h-3.5 session-operation-spinner" />
-        <span>{{ $t('chat.undo.in_progress') }}</span>
+        <div class="session-operation-card">
+          <svg class="session-operation-progress-ring" viewBox="0 0 48 48" aria-hidden="true">
+            <circle class="session-operation-progress-track" cx="24" cy="24" r="18" pathLength="100" />
+            <circle class="session-operation-progress-path" cx="24" cy="24" r="18" pathLength="100" />
+          </svg>
+          <span class="session-operation-copy">{{ $t('chat.undo.in_progress') }}</span>
+        </div>
       </div>
 
       <div v-if="vm.isTaskPreStart && vm.currentTaskHasSpec" class="prestart-doc-tip glass-panel">
