@@ -139,6 +139,15 @@ def github_mock(monkeypatch) -> GitHubUpstreamMock:
     return mock
 
 
+@pytest.fixture(autouse=True)
+def _stub_disabled_in_tests(monkeypatch):
+    """stub 仅本地 Demo 用；测试环境恒定关闭它，避免 backend/.env 的 OAUTH_STUB_ENABLED=true 泄漏进用例。
+
+    需要验证 stub 的用例（test_oauth_stub_demo.py）在自己的 fixture 中显式置 true。
+    """
+    monkeypatch.setattr(settings, "OAUTH_STUB_ENABLED", False)
+
+
 # ══════════════════ FastAPI app / TestClient ══════════════════
 
 @pytest.fixture()
