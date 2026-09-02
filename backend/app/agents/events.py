@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 AgentEventType = Literal[
     "session_started",
+    "model",
     "text",
     "text_delta",
     "thinking",

@@ -117,6 +117,7 @@ class WorkflowEngine:
         self.last_result_interrupted = False
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
+        self._runtime_model: Optional[str] = None
         self._runtime_skill_index = []
         self._execution_log_buffer: List[Tuple[str, LogType, int]] = []
         self._execution_log_flush_task: Optional[asyncio.Task] = None
@@ -404,6 +405,23 @@ class WorkflowEngine:
         finally:
             db.close()
 
+    @staticmethod
+    def _normalize_runtime_model(value: Any) -> Optional[str]:
+        """Normalize a provider/model label received from an Agent backend."""
+        model = str(value or "").strip()
+        return model or None
+
+    async def _handle_model_observation(self, value: Any) -> None:
+        """Persist and publish the model reported by the active Agent backend."""
+        model = self._normalize_runtime_model(value)
+        if not model:
+            return
+        previous = self._runtime_model
+        self._runtime_model = model
+        self._update_context_snapshot(model=model, status="RUNNING")
+        if model != previous:
+            await self._push_status("RUNNING", f"Agent 当前模型: {model}", model=model)
+
     async def _push_thinking(self, content: str):
         """推送 AI 思考过程到前端（折叠面板）"""
         if not self._event_is_current():
@@ -544,14 +562,23 @@ class WorkflowEngine:
             session_id=self.session_id,
             event_type=str(event_type or "unknown"),
         ):
+            if event_type != "session_started":
+                await self._handle_model_observation(payload.get("model"))
             if event_type == "session_started":
                 sid = str(payload.get("provider_session_id") or "")
-                model = str(payload.get("model") or "unknown")
                 if sid:
+                    if self.session_id and self.session_id != sid:
+                        self._runtime_model = None
                     self.session_id = sid
+                model = self._normalize_runtime_model(payload.get("model")) or self._runtime_model
+                if model:
+                    self._runtime_model = model
                 self._update_context_snapshot(model=model, status="RUNNING")
                 await self._emit_hook(self.on_session, sid, self.current_job_id or "")
-                await self._push_status("INIT", f"Agent 会话已启动 (model: {model})", model=model)
+                suffix = f" (model: {model})" if model else ""
+                await self._push_status("INIT", f"Agent 会话已启动{suffix}", model=model)
+            elif event_type == "model":
+                pass
             elif event_type == "text":
                 text = str(payload.get("text") or "")
                 if text:
@@ -1195,8 +1222,7 @@ class WorkflowEngine:
 
             # DSH keeps the authenticated HTTP client and detected gateway
             # protocol on the adapter. Reusing it avoids a cold second-turn
-            # adapter falling back to legacy events.mux when session.models is
-            # not implemented by the current Web Host.
+            # adapter falling back to legacy events.mux on the current Web Host.
             if str(getattr(self.cli, "name", "")).strip().lower() != "dsh":
                 self.cli = self._create_engine_backend()
             await self.run(prompt)

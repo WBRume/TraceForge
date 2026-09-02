@@ -42,14 +42,45 @@ from app.agents.events import AgentEvent
 from app.config import settings
 
 
+def _format_dsh_model(provider: Any, model: Any) -> Optional[str]:
+    """Build the canonical provider/model label from a DSH model selection."""
+    provider_name = str(provider or "").strip()
+    model_name = str(model or "").strip()
+    if not model_name:
+        return None
+    return f"{provider_name}/{model_name}" if provider_name else model_name
+
+
 def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
     """DSH SessionEvent（web host 原生事件）→ 统一 AgentEvent。"""
     etype = str(raw_event.get("type") or "")
     data = raw_event.get("data") if isinstance(raw_event.get("data"), dict) else {}
 
+    if etype == "request/header":
+        # DSH records the effective model selected for this request before the
+        # model response is produced.  TraceForge observes this event; it does
+        # not query or configure the model itself.
+        header = data.get("header") if isinstance(data.get("header"), dict) else {}
+        config = header.get("config") if isinstance(header.get("config"), dict) else {}
+        model = _format_dsh_model(config.get("provider"), config.get("model"))
+        if not model:
+            return None
+        return AgentEvent(
+            type="model",
+            payload={"model": model, "provider": "dsh", "source": "request/header"},
+            provider="dsh",
+            raw=raw_event,
+        )
+
     if etype == "assistant/message":
         # web host 事件形状：data.message.{role,content[,usage]}（部分流式事件平铺在 data 上）
         msg = data.get("message") if isinstance(data.get("message"), dict) else data
+        source = msg.get("source") if isinstance(msg.get("source"), dict) else {}
+        model = (
+            _format_dsh_model(source.get("provider"), source.get("model"))
+            if source.get("kind") == "model"
+            else None
+        )
         blocks = msg.get("content") if isinstance(msg.get("content"), list) else []
         text = "\n".join(
             str(block.get("text") or "")
@@ -70,9 +101,23 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
                 raw=usage_raw,
             )
         if text or usage:
+            payload: dict[str, Any] = {
+                "text": text,
+                "usage": usage.__dict__ if usage else {},
+                "provider": "dsh",
+            }
+            if model:
+                payload["model"] = model
             return AgentEvent(
                 type="text" if text else "usage",
-                payload={"text": text, "usage": usage.__dict__ if usage else {}, "provider": "dsh"},
+                payload=payload,
+                provider="dsh",
+                raw=raw_event,
+            )
+        if model:
+            return AgentEvent(
+                type="model",
+                payload={"model": model, "provider": "dsh", "source": "assistant/message"},
                 provider="dsh",
                 raw=raw_event,
             )
@@ -279,39 +324,16 @@ class DshServerAdapter(AgentBackend):
             raise AgentError("DSH session.create returned no sessionId")
         return session_id
 
-    async def _resolve_session_model(
-        self,
-        session_id: str,
-        fallback: Optional[str] = None,
-    ) -> Optional[str]:
-        """从 web host 查询会话当前模型，避免启动状态显示 unknown。"""
-        if fallback:
-            return fallback
-        # ``session.models`` is optional on the current gateway and returns
-        # HTTP 404 even though the gateway itself is healthy.  A fresh adapter
-        # must therefore discover the wire protocol from the stable
-        # ``session.list`` route before attempting this best-effort lookup;
-        # otherwise ``_gateway_protocol`` stays ``None`` and the event stream
-        # is incorrectly downgraded to the legacy events.mux endpoint.
+    async def _ensure_event_protocol(self) -> None:
+        """Detect the DSH transport protocol without querying model state."""
         if self._gateway_protocol is None:
             try:
                 await self._rpc("session.list", {})
             except AgentError:
-                # Keep model lookup best-effort.  A server that cannot answer
-                # the probe will still be handled by the existing RPC errors.
+                # Preserve the existing fallback for older hosts that do not
+                # expose the discovery route.  This probe is only transport
+                # negotiation; model information comes from DSH events.
                 pass
-        try:
-            value = await self._rpc("session.models", {"sessionId": session_id})
-            current = value.get("current") if isinstance(value, dict) else None
-            if not isinstance(current, dict):
-                return fallback
-            provider = str(current.get("provider") or "").strip()
-            model = str(current.get("model") or "").strip()
-            if not model:
-                return fallback
-            return f"{provider}/{model}" if provider else model
-        except Exception:
-            return fallback
 
     def _ws_url(self) -> str:
         path = "remote.mux" if self._gateway_protocol is True else "events.mux"
@@ -592,15 +614,14 @@ class DshServerAdapter(AgentBackend):
         try:
             if not session_id:
                 session_id = await self._create_session(request)
+            await self._ensure_event_protocol()
             self._session_id = session_id
-            model = await self._resolve_session_model(session_id, request.model)
 
             await _tracked_event(AgentEvent(
                 type="session_started",
                 payload={
                     "provider_session_id": session_id,
                     "provider": "dsh",
-                    "model": model,
                     "directory": request.project_path,
                 },
                 provider="dsh",
