@@ -302,6 +302,10 @@
     "copy_failed": "Copy failed",
     "undo": {
       "message": "Undo and edit",
+      "confirm_title": "Confirm message undo",
+      "confirm_message": "Are you sure you want to undo this message?",
+      "confirm_description": "This message and all following turns will be removed, and the workspace and AI session will be restored to before it was sent. The original text will be returned to the input for editing.",
+      "confirm_action": "Confirm undo",
       "in_progress": "Reverting the session, please wait…",
       "success": "Turn reverted. The original message is ready to edit.",
       "failed": "Undo failed. Current history was not changed."

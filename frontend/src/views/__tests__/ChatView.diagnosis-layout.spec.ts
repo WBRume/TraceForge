@@ -7,6 +7,7 @@ const pinnedHistoryCss = source('../../styles/chat-view/chat-view-pinned-history
 const chatMessageBubbleSource = source('../../components/chat/ChatMessageBubble.vue')
 const diagnosisResultCardSource = source('../../components/chat/DiagnosisResultCard.vue')
 const chatExecutionInputSource = source('../../components/chat/ChatExecutionInput.vue')
+const chatViewSource = source('../ChatView.vue')
 
 function declarations(source: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -62,5 +63,12 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(glassRule).toContain('pointer-events: auto')
     expect(layoutCss).toContain('.chat-main.is-session-busy .chat-header')
     expect(layoutCss).toContain('.session-operation-banner')
+  })
+
+  it('routes undo through the shared confirmation modal before calling the view model', () => {
+    expect(chatViewSource).toContain('@undo-request="handleUndoRequest"')
+    expect(chatViewSource).toContain('<ConfirmActionModal')
+    expect(chatViewSource).toContain(":title=\"$t('chat.undo.confirm_title')\"")
+    expect(chatViewSource).toContain('@confirm="confirmUndoMessage"')
   })
 })

@@ -302,6 +302,10 @@
     "copy_failed": "复制失败",
     "undo": {
       "message": "撤销并重新编辑",
+      "confirm_title": "确认撤销消息",
+      "confirm_message": "确定要撤销这条消息吗？",
+      "confirm_description": "这条消息及其后续会话将被移除，工作区和 AI 会话会恢复到发送前。撤销后原文会放回输入框，可重新编辑。",
+      "confirm_action": "确认撤销",
       "in_progress": "正在撤回会话，请稍候…",
       "success": "已撤销后续会话，原消息已放回输入框",
       "failed": "撤销失败，当前历史未改变"
