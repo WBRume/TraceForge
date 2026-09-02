@@ -37,7 +37,6 @@ from tests.conftest import github_profile, make_user, run_login_flow
 
 # ══════════════════ 可插拔性（NFR-M1） ══════════════════
 
-@register_provider("mockcorp")
 class MockCorpProvider(OAuthProvider):
     """测试专用 mock provider：不触网、免配置（is_configured 恒真）、固定 profile。
 
@@ -72,10 +71,16 @@ class MockCorpProvider(OAuthProvider):
 
 @pytest.fixture()
 def mockcorp_configured():
-    """每用例重新注册（装饰器注册仅发生在模块导入时一次）；结束即注销避免污染。"""
-    PROVIDER_REGISTRY["mockcorp"] = MockCorpProvider
-    yield
-    PROVIDER_REGISTRY.pop("mockcorp", None)
+    """仅在用例生命周期内注册，避免模块收集阶段污染全局 registry。"""
+    previous = PROVIDER_REGISTRY.get("mockcorp")
+    register_provider("mockcorp")(MockCorpProvider)
+    try:
+        yield
+    finally:
+        if previous is None:
+            PROVIDER_REGISTRY.pop("mockcorp", None)
+        else:
+            PROVIDER_REGISTRY["mockcorp"] = previous
 
 
 def test_registry_and_get_provider(mockcorp_configured):
