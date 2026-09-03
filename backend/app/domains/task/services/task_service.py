@@ -4,7 +4,7 @@
 
 import os
 import shutil
-from typing import Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
@@ -32,6 +32,10 @@ logger = get_logger(__name__, category="task_execution")
 
 SUPERPOWERS_DOC_SECTIONS = {"plans", "specs"}
 TERMINAL_LOG_HISTORY_LIMIT = 500
+
+
+class ProvisionJobCancelled(Exception):
+    """任务创建准备过程被创建人取消（触发回滚：清理磁盘资源并删除任务记录）。"""
 
 
 def _terminal_execution_log_filter():
@@ -305,6 +309,7 @@ def prepare_task_resources_for_provision(
     *,
     workspace_id: str,
     task_id: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> SddTask:
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
@@ -314,12 +319,19 @@ def prepare_task_resources_for_provision(
     if not ws:
         raise ValueError("Workspace not found")
 
+    def _checkpoint() -> None:
+        # 取消检查点：命中即抛出，走 except 分支清理已创建的资源后上抛，
+        # 由 provision job 终局回滚删除任务记录。
+        if cancel_check is not None and cancel_check():
+            raise ProvisionJobCancelled("Task creation cancelled by user")
+
     use_git_worktree = git_worktree_service.should_use_git_worktree(ws.project_path, ws.git_repo_url)
     task_repos = get_task_repositories(db, task.id)
     use_multi_repo = bool(task_repos)
     workspace_prepared = False
     with bind_task_context(task_id=task.id, workspace_id=workspace_id, user_id=task.creator_id):
         try:
+            _checkpoint()
             if use_multi_repo:
                 prepare_task_repositories(db, ws, task, task_repos)
             elif use_git_worktree:
@@ -335,9 +347,15 @@ def prepare_task_resources_for_provision(
                 os.makedirs(task.project_path, exist_ok=False)
             workspace_prepared = True
 
+            _checkpoint()
             if task.skill_links:
                 skill_service.materialize_task_skills(db, task.id)
 
+            # 最终检查点：确认任务仍处于 PROVISIONING（防止用户已标记失败/关闭后复活）
+            db.expire(task)
+            db.refresh(task)
+            if task.status != TaskStatus.PROVISIONING:
+                raise ProvisionJobCancelled("Task no longer provisioning")
             task.status = TaskStatus.PENDING
             task.current_phase = None
             task.error_message = None
@@ -365,23 +383,63 @@ def prepare_task_resources_for_provision(
                         logger.warning(f"Failed to cleanup task worktree {task.id}: {cleanup_exc}")
                 else:
                     shutil.rmtree(task.project_path, ignore_errors=True)
+                _prune_empty_parent_dirs(task.project_path, ws.project_path or "")
             raise
 
 
-def mark_task_prepare_failed(
-    db: Session,
-    *,
-    workspace_id: str,
-    task_id: str,
-    error_message: str,
-) -> None:
+def _prune_empty_parent_dirs(task_project_path: str, workspace_project_path: str) -> None:
+    """best-effort 清理任务目录下残留的空父目录（不超过工作区根目录）。"""
+    try:
+        stop = os.path.abspath(str(workspace_project_path or "").strip())
+        if not stop or not os.path.isdir(stop):
+            return
+        current = os.path.dirname(os.path.abspath(str(task_project_path or "").strip()))
+        while current.startswith(stop + os.sep):
+            try:
+                os.rmdir(current)
+            except OSError:
+                break
+            current = os.path.dirname(current)
+    except Exception as exc:
+        logger.warning(f"Failed to prune empty task parent dirs {task_project_path}: {exc}")
+
+
+def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> bool:
+    """任务创建失败/被取消后的终局回滚：清理磁盘资源并删除任务记录。
+
+    与 prepare_task_resources_for_provision 的资源分支一一对应：
+    multi-repo → 清理各仓库 worktree；单仓 git → 移除 worktree；非 git → 删除目录。
+    任务记录删除后任务不会以 FAILED 形式残留（FAILED 仅允许用户标记触发）。
+    """
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
-        return
-    task.status = TaskStatus.FAILED
-    task.current_phase = "PREPARE_FAILED"
-    task.error_message = str(error_message or "Task preparation failed")
+        return False
+
+    ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    workspace_project_path = str(ws.project_path or "").strip() if ws else ""
+    task_repos = get_task_repositories(db, task.id)
+
+    try:
+        if task_repos and ws:
+            cleanup_task_repositories(db, ws, task, missing_ok=True)
+        elif ws and git_worktree_service.should_use_git_worktree(workspace_project_path, ws.git_repo_url or task.git_repo_url):
+            git_worktree_service.remove_task_worktree(
+                repo_path=workspace_project_path,
+                task_id=task.id,
+                task_project_path=task.project_path,
+                expected_git_repo_url=ws.git_repo_url or task.git_repo_url,
+                missing_ok=True,
+            )
+        else:
+            shutil.rmtree(task.project_path, ignore_errors=True)
+    except Exception as cleanup_exc:
+        logger.warning(f"Failed to cleanup provision task resources {task.id}: {cleanup_exc}")
+    finally:
+        _prune_empty_parent_dirs(task.project_path, workspace_project_path)
+
+    db.delete(task)
     db.commit()
+    return True
 
 
 def create_task(
@@ -796,6 +854,10 @@ def list_tasks(
     current_user_id: Optional[str] = None,
 ) -> Tuple[List[SddTask], int]:
     query = db.query(SddTask).options(joinedload(SddTask.creator)).filter(SddTask.workspace_id == workspace_id)
+
+    # 准备中的任务不在任务列表展示：进度由创建人的全局浮窗跟踪，
+    # 任务就绪（PENDING）后才会出现在列表中。
+    query = query.filter(SddTask.status != TaskStatus.PROVISIONING)
 
     if status_filter:
         query = query.filter(SddTask.status == status_filter)

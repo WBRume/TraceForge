@@ -946,7 +946,18 @@
     "spec_upload_failed": "Task is ready, but spec upload failed. Please upload it manually in chat.",
     "spec_lost_warning": "You selected a spec file when creating this task, but it was lost after refresh. Please upload it manually in chat.",
     "docs_upload_failed": "Task is ready, but some diagnosis documents failed to upload. You can re-upload them in the chat.",
-    "task_status_not_ready": "Task resources are ready, but the task status has not yet synced to PENDING. Please retry or refresh the page."
+    "task_status_not_ready": "Task resources are ready, but the task status has not yet synced to PENDING. Please retry or refresh the page.",
+    "widget_title": "Task Provisioning",
+    "minimize": "Minimize",
+    "all_finished_hint": "All provisioning jobs finished. You can dismiss their cards.",
+    "job_ready": "Ready to enter session",
+    "stage_cancelling": "Cancelling",
+    "stage_cancelled": "Cancelled",
+    "cancelling": "Cancelling task creation...",
+    "cancel_confirm_title": "Cancel Task Creation",
+    "cancel_confirm": "Cancel creating \"{name}\"? Prepared resources will be cleaned up and the task will not be kept.",
+    "cancel_failed": "Failed to cancel. Please try again later.",
+    "job_not_found": "Provisioning job not found (it may have been cancelled or cleaned up)."
   },
   "skills": {
     "entry": "Skills Configuration",

@@ -6,6 +6,7 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Column,
     DateTime,
     Enum,
@@ -53,6 +54,7 @@ class SddProvisionJob(Base):
     stage = Column(String(128), nullable=False, default="QUEUED")
     message = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
     result_json = Column(JSON, nullable=True)
     context_json = Column(JSON, nullable=True)
 
