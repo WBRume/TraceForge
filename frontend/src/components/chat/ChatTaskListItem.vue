@@ -297,7 +297,7 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   cursor: pointer;
   opacity: 0.6;
   translate: 0 -50%;
-  transition: opacity 0.2s, color 0.2s, background-color 0.2s, box-shadow 0.2s;
+  transition: opacity 0.2s, color 0.2s, background-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
 .follow-btn {
@@ -325,9 +325,14 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 }
 
 /* 按钮自身 hover / active 时的微交互高亮 */
-.follow-btn:hover {
-  color: #d97706;
+.follow-btn:hover,
+.task-item:hover .follow-btn:hover,
+.task-item:focus-within .follow-btn:hover,
+.task-item.active .follow-btn:hover {
+  color: #94a3b8;
   background: #fef3c7;
+  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.25);
+  transform: translateY(-1px);
 }
 
 .follow-btn.active {
