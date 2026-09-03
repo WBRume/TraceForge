@@ -364,11 +364,22 @@ class TaskWebSocketHandler:
         task_logger.info(
             f"HITL response for task {self._task_id}: message_length={len(response)}"
         )
-        resumed = await ai_job_service.resume_waiting_hitl_job(
-            task_id=self._task_id,
-            response=response.strip(),
-            job_id=str(job_id) if job_id else None,
-        )
+        try:
+            resumed = await ai_job_service.resume_waiting_hitl_job(
+                task_id=self._task_id,
+                response=response.strip(),
+                job_id=str(job_id) if job_id else None,
+            )
+        except ai_job_service.AiJobConflictError as exc:
+            # 会话/总结互斥：总结进行中拒绝恢复会话（不能让 WS 连接断开）
+            task_logger.warning(f"HITL response rejected for task {self._task_id}: {exc}")
+            await self._websocket.send_json(
+                {
+                    "type": "hitl_rejected",
+                    "payload": {"task_id": self._task_id, "message": str(exc)},
+                }
+            )
+            return
         if resumed:
             return
 

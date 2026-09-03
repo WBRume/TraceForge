@@ -547,7 +547,7 @@ const statusModelText = (card: any): string => {
         <template v-else>
           <button
             class="btn-micro"
-            :disabled="vm.engineRunning || vm.diagnosisSummarizing || vm.isDiagnosisAdopted"
+            :disabled="vm.engineRunning || vm.diagnosisChatBusy || vm.diagnosisSummarizing || vm.isDiagnosisAdopted"
             :title="vm.isDiagnosisAdopted ? $t('diagnosis.case_already_adopted_no_summary') : $t('diagnosis.summarize_case_button')"
             @click="vm.generateDiagnosisSummary"
           >

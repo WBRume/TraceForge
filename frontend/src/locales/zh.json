@@ -3188,6 +3188,7 @@
     "summary_started": "已开始生成定位结果，请稍候",
     "summary_failed": "生成定位结果失败",
     "summary_job_missing": "未获取到总结任务",
+    "summary_blocked_by_chat": "会话进行中，请等待完成或停止后再一键总结问题案例",
     "export_markdown": "导出 Markdown",
     "regenerate": "重新生成"
   },

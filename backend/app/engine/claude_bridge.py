@@ -22,6 +22,45 @@ from app.core.logging import get_logger
 logger = get_logger(__name__, category="ai_session")
 
 
+# read-only（如「一键总结问题案例」）场景禁用的写/执行类工具。
+# 保留 Read/Grep/Glob，允许模型核对上下文，但不允许任何副作用。
+_READONLY_DENIED_TOOLS = (
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Bash",
+    "BashOutput",
+    "KillShell",
+    "Task",
+    "TodoWrite",
+    "ExitPlanMode",
+    "WebFetch",
+    "WebSearch",
+)
+
+
+def resolve_claude_permission_args(permission_mode: str) -> list[str]:
+    """把语义化 permission_mode 解析为 Claude Code CLI 参数。
+
+    - read-only：只读运行——不再映射为 plan 模式。plan 模式的系统提示词会
+      驱动模型重新调研问题并把结果写进 ~/.claude/plans/*.md、调用
+      ExitPlanMode 等待审批，破坏「仅输出 JSON 总结」的契约；这里改用
+      default + --disallowedTools 只禁写/执行类工具。
+    - plan：显式要求 Claude Code 计划模式时保持原行为。
+    - 其他（default）：维持 bypassPermissions，与既有会话行为一致。
+    """
+    normalized = str(permission_mode or "").strip().lower()
+    if normalized in {"read-only", "readonly"}:
+        return [
+            "--permission-mode", "default",
+            "--disallowedTools", ",".join(_READONLY_DENIED_TOOLS),
+        ]
+    if normalized == "plan":
+        return ["--permission-mode", "plan"]
+    return ["--permission-mode", "bypassPermissions"]
+
+
 class CliBridgeBase(ABC):
     """CLI 桥接抽象基类"""
 
@@ -155,15 +194,11 @@ class SubprocessCliBridge(CliBridgeBase):
         # prompt 中的 "|" 等字符会被当作 shell 运算符；这里直接解析到真实入口。
         args = self._resolve_cli_base_args()
 
-        cli_permission_mode = (
-            "plan"
-            if str(permission_mode or "").strip().lower() in {"read-only", "readonly", "plan"}
-            else "bypassPermissions"
-        )
+        cli_permission_args = resolve_claude_permission_args(permission_mode)
         args.extend([
             "-p",
             "--output-format", "stream-json",
-            "--permission-mode", cli_permission_mode,
+            *cli_permission_args,
             "--verbose",
         ])
 

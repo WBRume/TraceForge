@@ -124,7 +124,7 @@ async def create_task_chat_turn(
     prompt = str(prompt_text if prompt_text is not None else content or "")
     if not str(content or "").strip() or not prompt.strip():
         raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
-    active_job = db.query(SddAiJob.id).filter(
+    active_job = db.query(SddAiJob).filter(
         SddAiJob.task_id == task.id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
         SddAiJob.status.in_([
@@ -134,6 +134,13 @@ async def create_task_chat_turn(
         ]),
     ).first()
     if active_job:
+        active_context = active_job.context_json if isinstance(active_job.context_json, dict) else {}
+        if str(active_context.get("job_kind") or "").strip().upper() == ai_job_service.JOB_KIND_DIAGNOSIS_SUMMARY:
+            # 会话/总结互斥：总结进行中禁止发送新的聊天消息
+            raise TaskSessionUndoError(
+                "一键总结问题案例进行中，请等待完成或停止后再发送消息",
+                code="DIAGNOSIS_SUMMARY_BUSY",
+            )
         raise TaskSessionUndoError("Task is currently running; wait for it to finish", code="TASK_SESSION_BUSY")
     current_generation = int(getattr(task, "session_generation", 0) or 0)
     if current_generation <= 0:

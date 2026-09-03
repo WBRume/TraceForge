@@ -10,7 +10,47 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-from app.engine.claude_bridge import SubprocessCliBridge
+from app.engine.claude_bridge import SubprocessCliBridge, resolve_claude_permission_args
+
+
+class ClaudeBridgePermissionArgsTest(unittest.TestCase):
+    """read-only 不得再映射为 plan 模式（plan 模式会让总结任务重新调研并写 plan 文件）。"""
+
+    def test_read_only_maps_to_default_with_denied_write_tools(self):
+        args = resolve_claude_permission_args("read-only")
+        self.assertIn("--permission-mode", args)
+        self.assertEqual(args[args.index("--permission-mode") + 1], "default")
+        self.assertNotIn("plan", args)
+        self.assertIn("--disallowedTools", args)
+        denied = args[args.index("--disallowedTools") + 1].split(",")
+        for tool in ("Write", "Edit", "MultiEdit", "NotebookEdit", "Bash", "ExitPlanMode"):
+            self.assertIn(tool, denied)
+        # 保留读类工具，允许必要的上下文核对
+        for allowed in ("Read", "Grep", "Glob"):
+            self.assertNotIn(allowed, denied)
+
+    def test_readonly_alias_matches_read_only(self):
+        self.assertEqual(
+            resolve_claude_permission_args("readonly"),
+            resolve_claude_permission_args("read-only"),
+        )
+        self.assertEqual(
+            resolve_claude_permission_args(" READ-ONLY "),
+            resolve_claude_permission_args("read-only"),
+        )
+
+    def test_explicit_plan_keeps_plan_mode(self):
+        self.assertEqual(
+            resolve_claude_permission_args("plan"),
+            ["--permission-mode", "plan"],
+        )
+
+    def test_default_and_unknown_keep_bypass_permissions(self):
+        for mode in ("default", "", None, "anything"):
+            self.assertEqual(
+                resolve_claude_permission_args(mode),
+                ["--permission-mode", "bypassPermissions"],
+            )
 
 
 class ClaudeBridgeCliResolutionTest(unittest.TestCase):

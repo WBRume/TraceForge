@@ -522,6 +522,12 @@ async def start_task(
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
             if task.status == TaskStatus.INTERRUPTED:
                 raise HTTPException(status_code=409, detail=_TASK_INTERRUPTED_MSG)
+            # 会话/总结互斥：总结进行中禁止启动会话
+            if ai_job_service.find_active_summary_job(db, task.id) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="一键总结问题案例进行中，请等待完成或停止后再启动会话",
+                )
             if existing_engine and not existing_engine.running:
                 await existing_engine.stop()
 
@@ -1476,40 +1482,33 @@ async def trigger_diagnosis_summary(
             detail="Case already adopted, diagnosis summarization is not allowed",
         )
 
-    active_job = (
-        db.query(ai_job_service.SddAiJob)
-        .filter(
-            ai_job_service.SddAiJob.task_id == task.id,
-            ai_job_service.SddAiJob.channel == ai_job_service.AiJobChannel.TASK_CHAT,
-            ai_job_service.SddAiJob.status.in_(
-                [
-                    ai_job_service.AiJobStatus.PENDING.value,
-                    ai_job_service.AiJobStatus.RUNNING.value,
-                ]
-            ),
-        )
-        .order_by(ai_job_service.SddAiJob.created_at.desc())
-        .first()
-    )
-    if active_job is not None:
-        active_context = (
-            active_job.context_json
-            if isinstance(active_job.context_json, dict)
-            else {}
-        )
-        if str(active_context.get("job_kind") or "").strip().upper() == "DIAGNOSIS_SUMMARY":
-            return {
-                "job_id": active_job.id,
-                "status": ai_job_service.serialize_job(active_job).get("status"),
-                "task_id": task.id,
-            }
+    try:
+        async with lock_task(task.id):
+            # 幂等：已有进行中的总结任务直接返回
+            active_summary = ai_job_service.find_active_summary_job(db, task.id)
+            if active_summary is not None:
+                return {
+                    "job_id": active_summary.id,
+                    "status": ai_job_service.serialize_job(active_summary).get("status"),
+                    "task_id": task.id,
+                }
+            # 会话/总结互斥：会话进行中（含排队、HITL 挂起）禁止发起总结。
+            # 守卫与创建都在 lock_task 内，和聊天创建路径串行化，杜绝双活跃竞态。
+            if ai_job_service.find_active_chat_job(db, task.id) is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="会话进行中，请等待完成或停止后再一键总结问题案例",
+                )
 
-    job = ai_job_service.create_diagnosis_summary_job(
-        db,
-        workspace_id=ws_id,
-        task_id=task.id,
-        creator_id=current_user.id,
-    )
+            job = ai_job_service.create_diagnosis_summary_job(
+                db,
+                workspace_id=ws_id,
+                task_id=task.id,
+                creator_id=current_user.id,
+            )
+    except LockAcquireTimeout as exc:
+        _raise_task_lock_conflict(exc)
+
     audit_log(
         action="diagnosis_summary_triggered",
         outcome="success",

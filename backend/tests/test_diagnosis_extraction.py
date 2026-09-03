@@ -94,6 +94,14 @@ def test_build_diagnosis_summary_prompt_reuses_removed_json_contract():
             assert "优先级: P1" in prompt
             assert "会话记录" in prompt
             assert "[用户] 接口偶发超时" in prompt
+            # 只读总结约束：压制 fork 会话历史中的定位惯性（写 plan 文件 /
+            # ExitPlanMode / 继续定位修复），保证仅输出 fenced JSON
+            assert "只读总结约束" in prompt
+            assert "禁止调用任何工具" in prompt
+            assert "ExitPlanMode" in prompt
+            assert "不要写计划文件" in prompt
+            assert "不要继续执行定位、修复、测试" in prompt
+            assert "不要输出任何 Markdown 正文" in prompt
             # 复用了原定位结果 JSON 契约
             assert "```json" in prompt
             assert '"summary"' in prompt

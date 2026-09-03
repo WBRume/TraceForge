@@ -88,6 +88,14 @@ _TIMEOUT_TEXT_MARKERS = (
 )
 
 
+class AiJobConflictError(Exception):
+    """AI 任务状态冲突（会话/总结互斥等）。由调用方转换为 409 或用户可读错误。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 def _queue_key_for_task(task_id: str) -> str:
     return f"TASK_CHAT:{task_id}"
 
@@ -97,8 +105,11 @@ def _queue_key_for_thread(thread_id: str) -> str:
 
 
 def _queue_key_for_diagnosis_summary(task_id: str) -> str:
-    # Deliberately separate from TASK_CHAT.  A diagnosis chat can be
-    # INTERRUPTED while its read-only summary still needs to run.
+    # 总结与聊天各自独立队列：任务 INTERRUPTED/FAILED 时聊天队列会暂停、
+    # INTERRUPTED 会话 job 也会阻塞取队，若共用队列「停止会话→一键总结」
+    # 将永远无法执行。会话/总结的互斥不由队列保证，而由创建期守卫保证：
+    # 所有会话/总结创建入口都会拒绝对方处于进行中（PENDING/RUNNING/WAITING_HITL），
+    # 因此同一任务同一时刻最多只有一个非终态 AI job 在执行。
     return f"DIAGNOSIS_SUMMARY:{task_id}"
 
 
@@ -129,6 +140,18 @@ def _is_cancel_requested(job_id: str) -> bool:
 
 def _clear_cancel_event(job_id: str) -> None:
     _JOB_CANCEL_EVENTS.pop(job_id, None)
+
+
+def _is_job_cancelled_or_final(job_id: str) -> bool:
+    """取消已请求，或 DB 中任务已进入终态（如被中断/停止标记为 CANCELLED）。"""
+    if _is_cancel_requested(job_id):
+        return True
+    db = SessionLocal()
+    try:
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        return bool(job and job.status in FINAL_STATUSES)
+    finally:
+        db.close()
 
 
 def _as_status(value: Any) -> str:
@@ -167,10 +190,56 @@ def _has_diagnosis_summary_job(db, task_id: str) -> bool:
         .all()
     )
     for job in jobs:
-        context = job.context_json if isinstance(job.context_json, dict) else {}
-        if str(context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
+        if _job_kind_of(job) == JOB_KIND_DIAGNOSIS_SUMMARY:
             return True
     return False
+
+
+def _job_kind_of(job: SddAiJob) -> str:
+    context = job.context_json if isinstance(job.context_json, dict) else {}
+    return str(context.get("job_kind") or "").strip().upper()
+
+
+def find_active_summary_job(db, task_id: str) -> Optional[SddAiJob]:
+    """进行中的一键总结任务（PENDING/RUNNING）。"""
+    jobs = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status.in_([AiJobStatus.PENDING.value, AiJobStatus.RUNNING.value]),
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .all()
+    )
+    for job in jobs:
+        if _job_kind_of(job) == JOB_KIND_DIAGNOSIS_SUMMARY:
+            return job
+    return None
+
+
+def find_active_chat_job(db, task_id: str) -> Optional[SddAiJob]:
+    """进行中的聊天任务（PENDING/RUNNING/WAITING_HITL；WAITING_HITL 视为会话进行中）。"""
+    jobs = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status.in_(
+                [
+                    AiJobStatus.PENDING.value,
+                    AiJobStatus.RUNNING.value,
+                    AiJobStatus.WAITING_HITL.value,
+                ]
+            ),
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .all()
+    )
+    for job in jobs:
+        if _job_kind_of(job) != JOB_KIND_DIAGNOSIS_SUMMARY:
+            return job
+    return None
 
 
 def serialize_job(job: SddAiJob) -> Dict[str, Any]:
@@ -1835,6 +1904,15 @@ async def _on_engine_error(error_text: str, job_id: str) -> None:
 
 
 async def _execute_task_chat_job(job_id: str) -> None:
+    try:
+        await _execute_task_chat_job_inner(job_id)
+    finally:
+        # 取消事件在执行结束（含取消/异常/超时）后统一回收，避免泄漏；
+        # 置位后不能立刻清除（见 mark_task_chat_jobs_cancelled）。
+        _clear_cancel_event(job_id)
+
+
+async def _execute_task_chat_job_inner(job_id: str) -> None:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -2038,16 +2116,28 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
                     },
                 )
 
-        result = await run_cli_single_turn(
-            prompt,
-            project_path,
-            session_id=summary_session_id if can_fork else None,
-            max_attempts=1,
-            should_cancel=lambda: _is_cancel_requested(job_id),
-            backend_name=task_backend,
-            fork_session=native_fork_on_resume,
-            permission_mode="read-only",
-        )
+        try:
+            result = await run_cli_single_turn(
+                prompt,
+                project_path,
+                session_id=summary_session_id if can_fork else None,
+                max_attempts=1,
+                should_cancel=lambda: _is_cancel_requested(job_id),
+                backend_name=task_backend,
+                fork_session=native_fork_on_resume,
+                permission_mode="read-only",
+            )
+        except RuntimeError as exc:
+            if _is_job_cancelled_or_final(job_id):
+                logger.info("Diagnosis summary run cancelled; discard result: job={}", job_id)
+                return
+            raise
+
+        # 用户已停止（或任务已终态）时丢弃结果：不能反填定位结果卡片、不能广播
+        if _is_job_cancelled_or_final(job_id):
+            logger.info("Diagnosis summary cancelled after run; discard result: job={}", job_id)
+            return
+
         summary_text = str(result.get("text") or "").strip()
         if not summary_text:
             raise ValueError("Diagnosis summary reply is empty")
@@ -2329,13 +2419,14 @@ def mark_task_chat_jobs_cancelled(
     now = datetime.utcnow()
     job_ids: List[str] = []
     for job in jobs:
+        # 只置位、不立刻清除：取消事件需由 run_cli_single_turn 的 cancel monitor
+        # 消费（触发 bridge.cancel() 真正终止 CLI 进程），执行结束后统一回收。
         _request_job_cancel(job.id)
         job.status = AiJobStatus.CANCELLED
         job.progress = 100
         job.message = message
         job.error_message = None
         job.finished_at = now
-        _clear_cancel_event(job.id)
         job_ids.append(job.id)
     if job_ids:
         db.commit()
@@ -2470,6 +2561,9 @@ async def resume_waiting_hitl_job(
 ) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:
+        # 会话/总结互斥：总结进行中禁止恢复会话（HITL 回复会重启 AI 执行）
+        if find_active_summary_job(db, task_id) is not None:
+            raise AiJobConflictError("一键总结问题案例进行中，请等待完成或停止后再回复")
         query = (
             db.query(SddAiJob)
             .filter(
