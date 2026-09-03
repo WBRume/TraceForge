@@ -22,7 +22,7 @@ from app.domains.auth.models.user import (  # noqa: E402
     WorkspaceMember,
     WorkspaceRole,
 )
-from app.domains.task.models.task import SddTask, TaskType  # noqa: E402
+from app.domains.task.models.task import SddTask, TaskStatus, TaskType  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from app.domains.case_center.routers import case as case_center_router  # noqa: E402
 from test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
@@ -82,6 +82,17 @@ def test_create_diagnosis_task_via_service_and_filter():
             assert diag_task.task_meta_json == {"phenomenon": "页面白屏", "priority": "P0"}
             assert dev_task.task_meta_json is None
 
+            # 准备中的任务不出现在任务列表（进度由创建人的全局浮窗跟踪）
+            all_items, total = list_tasks(db, workspace.id)
+            assert total == 1  # 仅种子任务
+            listed_ids = {item.id for item in all_items}
+            assert dev_task.id not in listed_ids
+            assert diag_task.id not in listed_ids
+
+            # 准备完成（PENDING）后才会出现在列表中
+            dev_task.status = TaskStatus.PENDING.value
+            diag_task.status = TaskStatus.PENDING.value
+            db.commit()
             all_items, total = list_tasks(db, workspace.id)
             assert total == 3  # 种子任务 + 研发态 + 问题定位
             diag_items, diag_total = list_tasks(db, workspace.id, task_type="DIAGNOSIS")

@@ -53,7 +53,7 @@ from app.domains.task.schemas.diagnosis import (
 from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseResponse
 from app.domains.case_center.models.case import SddCase
 from app.domains.case_center.services import case_service
-from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
+from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse, ProvisionJobResponse
 from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
@@ -237,6 +237,32 @@ async def create_task(
             reason=str(exc),
         )
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/{task_id}/provision-job/cancel", response_model=ProvisionJobResponse)
+def cancel_task_provision_job(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """创建人取消任务进行中的资源准备：后台工作流在下一个检查点终止并回滚（清理目录/worktree + 删除任务记录）。"""
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if str(task.creator_id or "") != str(current_user.id or ""):
+        raise HTTPException(status_code=403, detail="Only the task creator can cancel provisioning")
+
+    job = provision_job_service.get_latest_active_job_for_task(db, task_id)
+    if not job:
+        raise HTTPException(status_code=409, detail="No active provisioning job for this task")
+
+    if not provision_job_service.request_cancel(db, job, message="Task creation cancelled by user"):
+        raise HTTPException(status_code=409, detail="Provision job already finished")
+
+    return ProvisionJobResponse(**provision_job_service.serialize_job(job))
 
 
 @router.get("", response_model=TaskListResponse)
@@ -564,6 +590,12 @@ async def initialize_task(
                 raise HTTPException(
                     status_code=409,
                     detail="Task is still being provisioned. Please wait until the workspace is ready.",
+                )
+            # 准备失败的任务不可初始化（历史遗留的 PREPARE_FAILED 记录已无可用工作目录）
+            if str(task.current_phase or "").strip().upper() == "PREPARE_FAILED":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Task preparation failed and cannot be initialized. Please create a new task.",
                 )
 
             cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(

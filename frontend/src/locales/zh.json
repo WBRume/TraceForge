@@ -946,7 +946,18 @@
     "spec_upload_failed": "任务已创建，但需求文档上传失败，请在会话中手动上传。",
     "spec_lost_warning": "检测到你在创建时选择了需求文档，但页面刷新后文件已丢失，请进入任务后手动上传。",
     "docs_upload_failed": "任务已创建，但部分诊断文档上传失败，可进入会话后重新上传。",
-    "task_status_not_ready": "任务资源已准备完成，但任务状态尚未同步为待启动，请稍后重试或刷新页面。"
+    "task_status_not_ready": "任务资源已准备完成，但任务状态尚未同步为待启动，请稍后重试或刷新页面。",
+    "widget_title": "任务准备",
+    "minimize": "最小化",
+    "all_finished_hint": "所有任务已结束准备，可关闭对应卡片。",
+    "job_ready": "准备完成，可进入会话",
+    "stage_cancelling": "正在取消",
+    "stage_cancelled": "已取消",
+    "cancelling": "正在取消任务创建...",
+    "cancel_confirm_title": "取消任务创建",
+    "cancel_confirm": "确定取消创建「{name}」吗？正在准备的资源将被清理，任务不会保留。",
+    "cancel_failed": "取消失败，请稍后重试。",
+    "job_not_found": "任务准备记录不存在（可能已被取消或清理）。"
   },
   "skills": {
     "entry": "技能配置",

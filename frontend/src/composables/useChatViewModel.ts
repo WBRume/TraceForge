@@ -12,6 +12,7 @@ import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
 import { useChatDecision, type ChatDecisionPayload } from '@/composables/useChatDecision'
 import { useTaskSkillRuntimeTrace } from '@/composables/useTaskSkillRuntimeTrace'
 import { useAuthStore } from '@/stores/auth'
+import { useProvisioningStore } from '@/stores/provisioning'
 import type { ContextCompactionLocatePayload, ContextTokenCategory } from '@/types/contextWindow'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
 import {
@@ -1209,6 +1210,8 @@ export function useChatViewModel() {
         const taskRes = await api.get(`/workspaces/${wsId}/tasks/${routeTaskId}`)
         const routeTask = taskRes.data
         if (!routeTask?.id) return
+        // 准备中的任务不出现在任务列表（进度由全局浮窗跟踪），也不自动选中
+        if (String(routeTask.status || '') === 'PROVISIONING') return
         tasks.value = [routeTask, ...tasks.value.filter((task: any) => task.id !== routeTask.id)]
         if (currentTask.value?.id !== routeTask.id) {
           await selectTask(routeTask)
@@ -1275,47 +1278,34 @@ export function useChatViewModel() {
   }
 
   // 任务创建后：始终进入任务准备进度弹窗（等待 git worktree/clone 完成，防止提前启动会话）
-  const taskProvisionVisible = ref(false)
-  const taskProvisionJobId = ref('')
-  const taskProvisionTaskId = ref('')
+  const provisioningStore = useProvisioningStore()
 
-  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
+  // 准备浮窗终态变化（成功就绪/取消/失败）后刷新任务列表：任务此时才会出现（或已被回滚删除）
+  watch(() => provisioningStore.taskListRefreshToken, () => {
+    void loadTasks({ reset: true, trySelectRouteTask: false })
+  })
+
+  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; workspaceId?: string | null; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
     showTaskModal.value = false
     const taskId = typeof payload === 'string' ? payload : payload.taskId
     const jobId = typeof payload === 'string' ? '' : String(payload.jobId || '').trim()
+    const workspaceId = typeof payload === 'string' ? '' : String(payload.workspaceId || '').trim()
 
     preferredSpecTaskId.value = taskId
     preferredSpecAssetId.value = typeof payload === 'string' ? '' : (payload.assetId || '')
-    await loadTasks()
-
-    // 任务创建后即使仍在 PROVISIONING，也先选中新任务，避免准备弹窗期间/关闭后看不到会话与启动按钮
-    const createdTask = tasks.value.find((task: any) => task.id === taskId)
-    if (createdTask && currentTask.value?.id !== taskId) {
-      await selectTask(createdTask)
-    }
+    await loadTasks({ reset: true, trySelectRouteTask: false })
 
     if (jobId) {
-      // 无论是否携带 spec/诊断文档，都先等待运维队列准备完成
-      taskProvisionJobId.value = jobId
-      taskProvisionTaskId.value = taskId
-      taskProvisionVisible.value = true
+      // 准备中的任务不进入会话也不出现在任务列表：进度由全局浮窗跟踪，
+      // 就绪（PENDING）后任务才会出现在列表中，由用户主动进入。
+      provisioningStore.startWatching({ jobId, taskId, workspaceId })
       return
     }
     openTaskSession(taskId)
   }
 
-  const closeTaskProvision = () => {
-    const taskId = taskProvisionTaskId.value
-    if (taskId) {
-      void openTaskSession(taskId)
-    } else {
-      taskProvisionVisible.value = false
-    }
-  }
-
   const openTaskSession = async (taskId: string) => {
     const wsId = route.params.wsId
-    taskProvisionVisible.value = false
     router.push(`/ws/${wsId}/chat/${taskId}`)
     // 重新获取一下最新的 task 对象，并同步到任务列表，避免后续 loadTasks 用旧 PROVISIONING 覆盖当前状态
     try {
@@ -1886,7 +1876,13 @@ export function useChatViewModel() {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
     }
-  
+
+    // 准备中的任务：停止按钮 = 取消任务创建（回滚资源并删除任务），不走 closeout
+    if (isTaskProvisioning.value) {
+      void cancelTaskProvision()
+      return true
+    }
+
     const status = currentTask.value?.status
     const isRunningStatus = status && !['DONE', 'FAILED'].includes(status)
   
@@ -1896,6 +1892,35 @@ export function useChatViewModel() {
     }
     closeoutMode.value = 'fail'
     return true
+  }
+
+  /** 创建人取消当前任务的资源准备：后台回滚清理并删除任务，随后刷新列表并离开该任务 */
+  const cancelTaskProvision = async (): Promise<boolean> => {
+    const task = currentTask.value
+    const wsId = String(route.params.wsId || '')
+    if (!task?.id || !wsId) return false
+    try {
+      await api.post(`/workspaces/${wsId}/tasks/${task.id}/provision-job/cancel`)
+      ElMessage.info(t('provisioning.cancelling'))
+      const removedTaskId = task.id
+      tasks.value = tasks.value.filter((item: any) => item.id !== removedTaskId)
+      if (currentTask.value?.id === removedTaskId) {
+        currentTask.value = null
+        if (route.params.taskId) {
+          router.push(`/ws/${wsId}/chat`)
+        }
+      }
+      return true
+    } catch (e: any) {
+      const detail = String(e?.response?.data?.detail || '')
+      if (detail.includes('No active provisioning job')) {
+        // 已经没有进行中的准备（可能刚完成）：回读任务最新状态
+        await loadTasks({ reset: true, trySelectRouteTask: false })
+        return false
+      }
+      ElMessage.error(resolveActionError(e, 'provisioning.cancel_failed', 'provisioning.cancel_failed'))
+      return false
+    }
   }
   
   const handleCompleteClick = (): boolean => {
@@ -3257,10 +3282,7 @@ export function useChatViewModel() {
     closeTaskSkillsDrawer,
     openTaskSkillsDrawer,
     isTaskProvisioning,
-    taskProvisionVisible,
-    taskProvisionJobId,
-    taskProvisionTaskId,
-    closeTaskProvision,
+    cancelTaskProvision,
     openTaskSession,
     toggleDiagnosisDocsDrawer,
     createDiagnosisCase,

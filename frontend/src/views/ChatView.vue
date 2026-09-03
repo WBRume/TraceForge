@@ -43,7 +43,6 @@ import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
-import TaskProvisionProgressModal from '@/components/TaskProvisionProgressModal.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
 import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagnosisDocs'
@@ -855,14 +854,7 @@ const statusModelText = (card: any): string => {
     </aside>
 
     <!-- ─── Modals and Drawers ─── -->
-    <TaskProvisionProgressModal
-      :show="vm.taskProvisionVisible"
-      :job-id="vm.taskProvisionJobId"
-      :task-id="vm.taskProvisionTaskId"
-      :workspace-id="String(vm.route.params.wsId || '')"
-      @close="vm.closeTaskProvision"
-      @open-session="vm.openTaskSession(vm.taskProvisionTaskId)"
-    />
+    <!-- 任务准备进度由全局浮窗 ProvisionFloatingWidget（App.vue 挂载）负责 -->
 
     <NewTaskModal 
       :show="vm.showTaskModal" 

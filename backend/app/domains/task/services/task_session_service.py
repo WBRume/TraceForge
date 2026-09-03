@@ -682,11 +682,9 @@ async def undo_task_message(
                 operation.error_code = "UNDO_FAILED"
                 operation.error_message = "Undo failed; recovery checkpoint retained"
                 operation.finished_at = datetime.utcnow()
-                failed_task = db.query(SddTask).filter(SddTask.id == task.id).first()
-                if failed_task:
-                    failed_task.status = TaskStatus.FAILED
-                    failed_task.error_message = "Undo failed; recovery checkpoint retained"
                 db.commit()
+            # 代码异常不再把任务标记为 FAILED（FAILED 仅允许用户标记触发）；
+            # 任务保持原状态，失败信息由 operation 记录与上抛的异常承载。
             raise
         except Exception as exc:
             await _compensate_live_state()
@@ -697,10 +695,6 @@ async def undo_task_message(
                 operation.error_code = "UNDO_FAILED"
                 operation.error_message = "Undo failed; recovery checkpoint retained"
                 operation.finished_at = datetime.utcnow()
-                failed_task = db.query(SddTask).filter(SddTask.id == task.id).first()
-                if failed_task:
-                    failed_task.status = TaskStatus.FAILED
-                    failed_task.error_message = "Undo failed; recovery checkpoint retained"
                 db.commit()
             logger.error("Task session undo failed: task={}, operation={}, error={}", task.id, operation_id, str(exc))
             raise TaskSessionUndoError("Undo failed; recovery checkpoint retained", code="UNDO_FAILED") from exc
