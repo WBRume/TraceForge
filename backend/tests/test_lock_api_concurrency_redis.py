@@ -33,7 +33,26 @@ def _skip_unless_redis_lock_mode() -> None:
         pytest.skip("DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK is true; skip strict redis API concurrency tests")
 
 
+class _FakeQuery:
+    """支持 start_task 中 find_active_summary_job 的最小查询链。"""
+
+    def filter(self, *_args, **_kwargs) -> "_FakeQuery":
+        return self
+
+    def order_by(self, *_args, **_kwargs) -> "_FakeQuery":
+        return self
+
+    def all(self) -> list:
+        return []
+
+    def first(self):
+        return None
+
+
 class _FakeDb:
+    def query(self, _model) -> _FakeQuery:
+        return _FakeQuery()
+
     def commit(self) -> None:
         return None
 

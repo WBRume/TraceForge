@@ -206,6 +206,13 @@ async def resume_interrupted_task(
     if task.status != TaskStatus.INTERRUPTED:
         raise TaskSessionControlError("Only interrupted tasks can be resumed", status_code=409)
 
+    # 会话/总结互斥：总结进行中禁止恢复会话
+    if ai_job_service.find_active_summary_job(db, task.id) is not None:
+        raise TaskSessionControlError(
+            "一键总结问题案例进行中，请等待完成或停止后再恢复会话",
+            status_code=409,
+        )
+
     prompt_text = str(prompt or "").strip()
     if not prompt_text and confirm_continue:
         prompt_text = "Please continue the interrupted task from the current session context."

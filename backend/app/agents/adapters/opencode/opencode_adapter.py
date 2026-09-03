@@ -109,12 +109,23 @@ class OpenCodeAdapter(AgentBackend):
         # 使用 prompt_async：该接口立即返回 204，避免同步 prompt 接口
         # 一直持有 HTTP 连接直到 agent 回合结束，导致 SSE 事件虽然已产生
         # 却迟迟不被消费，前端长时间“只看到运行、没有数据”。
+        prompt_text = request.prompt
+        normalized_mode = str(request.permission_mode or "").strip().lower()
+        if normalized_mode in {"read-only", "readonly"}:
+            # 只读运行：不再切换到 plan agent——plan agent 的“调研→计划”行为
+            # 会把结论写进计划消息而非直接输出，破坏「仅输出 JSON 总结」契约。
+            # 改为注入只读约束前缀（与 dsh adapter 的做法一致）。
+            prompt_text = (
+                "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
+                "禁止执行会改变项目或外部系统状态的命令。\n\n"
+                + prompt_text
+            )
         body: dict[str, Any] = {
-            "parts": [{"type": "text", "text": request.prompt}],
+            "parts": [{"type": "text", "text": prompt_text}],
         }
         if request.model:
             body["model"] = {"providerID": "opencode", "modelID": request.model}
-        if str(request.permission_mode or "").strip().lower() in {"read-only", "readonly", "plan"}:
+        if normalized_mode == "plan":
             # OpenCode's built-in plan agent disables write-oriented execution.
             body["agent"] = "plan"
         params: dict[str, str] = {}

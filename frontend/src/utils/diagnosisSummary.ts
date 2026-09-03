@@ -37,6 +37,27 @@ export const isDiagnosisSummaryActiveForTask = (
 }
 
 /**
+ * 会话 job 是否仍在进行中（PENDING/RUNNING/WAITING_HITL）。
+ * 与一键总结强互斥：WAITING_HITL（AI 暂停等用户输入）也算会话进行中。
+ */
+export const isChatJobActive = (job: DiagnosisSummaryJobLite | undefined | null): boolean =>
+  Boolean(
+    job &&
+      !isDiagnosisSummaryJob(job) &&
+      (job.status === 'PENDING' || job.status === 'RUNNING' || job.status === 'WAITING_HITL'),
+  )
+
+/** 指定任务是否存在进行中的会话 job（会话/总结互斥的前端校验）。 */
+export const isChatActiveForTask = (
+  jobs: Record<string, DiagnosisSummaryJobLite> | DiagnosisSummaryJobLite[],
+  taskId: string | undefined | null,
+): boolean => {
+  if (!taskId) return false
+  const list = Array.isArray(jobs) ? jobs : Object.values(jobs)
+  return list.some((job) => String(job?.task_id || '') === String(taskId) && isChatJobActive(job))
+}
+
+/**
  * 解析当前任务正在进行的总结 job 的发起时刻（毫秒）。
  * 优先 created_at（点击发起时刻），started_at 兜底；跨 session/重新挂载保持不变，
  * 因此「已等待」时长以后端时间为准，不随组件生命周期重置。

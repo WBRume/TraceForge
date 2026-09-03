@@ -7,6 +7,7 @@
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -26,7 +27,7 @@ from app.domains.ai.services import ai_job_service  # noqa: E402
 from test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
 
-def _build_app(SessionLocal, user):
+def _build_app(SessionLocal, user, monkeypatch=None):
     def _override_db():
         db = SessionLocal()
         try:
@@ -38,6 +39,14 @@ def _build_app(SessionLocal, user):
     app.include_router(task_router.router, prefix="/api")
     app.dependency_overrides[task_router.get_db] = _override_db
     app.dependency_overrides[task_router.get_current_user] = lambda: user
+    if monkeypatch is not None:
+        # 触发总结的入口现在持有 lock_task（与会话创建路径串行化）；
+        # 单测环境无 Redis，替换为空锁（模式与 test_agent_api.py 一致）。
+        @asynccontextmanager
+        async def _fake_lock_task(_task_id):
+            yield
+
+        monkeypatch.setattr(task_router, "lock_task", _fake_lock_task)
     return app
 
 
@@ -49,12 +58,12 @@ def _seed_diagnosis_task(db, workspace_id="ws-summary", task_id="task-summary"):
     return user, workspace, task
 
 
-def test_trigger_diagnosis_summary_creates_job_and_polls_status():
+def test_trigger_diagnosis_summary_creates_job_and_polls_status(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_diagnosis_task(db)
-        client = TestClient(_build_app(SessionLocal, user))
+        client = TestClient(_build_app(SessionLocal, user, monkeypatch))
         ws_id, task_id = workspace.id, task.id
 
         resp = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-summary")

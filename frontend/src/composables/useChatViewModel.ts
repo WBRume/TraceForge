@@ -5,7 +5,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { formatApiError } from '@/utils/error'
 import { formatTime, formatToolInput, formatElapsedDuration } from '@/utils/chatFormatters'
-import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask, resolveDiagnosisSummaryStartedMs } from '@/utils/diagnosisSummary'
+import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask, isChatActiveForTask, resolveDiagnosisSummaryStartedMs } from '@/utils/diagnosisSummary'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
@@ -1397,6 +1397,10 @@ export function useChatViewModel() {
   const diagnosisSummarizing = computed<boolean>(() =>
     isDiagnosisSummaryActiveForTask(activeChatJobs.value, currentTask.value?.id),
   )
+  // 会话/总结互斥：会话 job（含排队与 HITL 挂起）进行中时禁止发起一键总结
+  const diagnosisChatBusy = computed<boolean>(() =>
+    isChatActiveForTask(activeChatJobs.value, currentTask.value?.id),
+  )
   const diagnosisSummaryJobId = ref('')
   // 长耗时提示：计时基准 = 后端 job 的 created_at（started_at 兜底）——发起时刻，
   // 跨 session 不变；切换会话/重新挂载后时间依然准确，不再用组件本地挂载时刻。
@@ -1601,6 +1605,10 @@ export function useChatViewModel() {
   const generateDiagnosisSummary = async (): Promise<boolean> => {
     const taskId = currentTask.value?.id
     if (!taskId || !isDiagnosisTask.value || diagnosisSummarizing.value) return false
+    if (diagnosisChatBusy.value) {
+      ElMessage.warning(t('diagnosis.summary_blocked_by_chat'))
+      return false
+    }
     if (isDiagnosisAdopted.value) {
       ElMessage.warning(t('diagnosis.case_already_adopted_no_summary'))
       return false
@@ -3292,6 +3300,7 @@ export function useChatViewModel() {
     diagnosisResultLoading,
     diagnosisResultSaving,
     diagnosisSummarizing,
+    diagnosisChatBusy,
     diagnosisSummarizingElapsed,
     diagnosisSummarizingLabel,
     diagnosisSummaryJobId,

@@ -3183,6 +3183,7 @@
     "summary_started": "Started generating the diagnosis result, please wait",
     "summary_failed": "Failed to generate diagnosis result",
     "summary_job_missing": "No summary job was returned",
+    "summary_blocked_by_chat": "A chat session is active; stop it or wait for it to finish before summarizing",
     "export_markdown": "Export Markdown",
     "regenerate": "Regenerate"
   },
