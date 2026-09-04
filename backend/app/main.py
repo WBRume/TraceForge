@@ -51,6 +51,7 @@ from app.domains.management.routers import (
 from app.domains.ai.services import ai_job_service
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
+from app.domains.system_config.routers import system_config
 from app.domains.workspace.services import workspace_service
 from app.domains.websocket.ws.manager import manager
 from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
@@ -132,6 +133,7 @@ app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(repositories_router, prefix="/api")
 app.include_router(repo_groups_router, prefix="/api")
+app.include_router(system_config.router, prefix="/api")
 app.include_router(rag_outbox_router.router, prefix="/api")
 app.include_router(api_mock.gateway_router)
 

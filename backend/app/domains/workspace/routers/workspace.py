@@ -67,7 +67,32 @@ async def create_workspace(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 配置项：新建工作区时是否启用“项目管理/产品管理”选择功能。
+    # 关闭时进入独立模式：不关联管理项目/产品，直接填写名称并手动选择仓库分支。
+    from app.domains.system_config.services import system_config_service
+
+    mgmt_selection_enabled = system_config_service.get_config_bool(
+        db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED
+    )
     try:
+        if not mgmt_selection_enabled:
+            if data.project_id or (data.product_ids or []):
+                raise ValueError(
+                    "Project/product selection is disabled by system config; "
+                    "provide project_name/product_name with repositories instead"
+                )
+            if not str(data.project_name or "").strip() or not str(data.product_name or "").strip():
+                raise ValueError("project_name and product_name are required")
+            if not data.repositories:
+                raise ValueError("At least one repository with branch is required")
+            missing_branch = [
+                item.repository_id
+                for item in data.repositories
+                if not str(item.branch_name or "").strip()
+            ]
+            if missing_branch:
+                raise ValueError("branch_name is required for every selected repository")
+
         job = provision_job_service.create_job(
             db,
             job_type=provision_job_service.ProvisionJobType.CREATE_WORKSPACE,
@@ -79,6 +104,8 @@ async def create_workspace(
                 "git_repo_url": data.git_repo_url,
                 "project_id": data.project_id,
                 "product_ids": list(data.product_ids or []),
+                "project_name": data.project_name,
+                "product_name": data.product_name,
                 "repositories": [
                     {"repository_id": item.repository_id, "branch_name": item.branch_name}
                     for item in (data.repositories or [])

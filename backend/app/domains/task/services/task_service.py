@@ -4,7 +4,7 @@
 
 import os
 import shutil
-from typing import Callable, Optional, List, Tuple
+from typing import Callable, Dict, Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
@@ -76,26 +76,57 @@ def snapshot_workspace_repositories_into_task(
     db: Session,
     workspace: Workspace,
     task: SddTask,
+    branch_overrides: Optional[Dict[str, str]] = None,
+    selected_ids: Optional[List[str]] = None,
 ) -> List:
-    """Snapshot workspace repository bindings into sdd_task_repositories."""
+    """Snapshot workspace repository bindings into sdd_task_repositories.
+
+    branch_overrides: repository_id -> 分支名；用于会话创建时按仓库选填分支覆盖。
+    selected_ids: 仓库 id 子集；提供时仅为所选仓库创建 worktree 绑定（默认全部仓库）。
+    """
     from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
     from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
 
+    overrides = {
+        str(repo_id or "").strip(): str(branch or "").strip()
+        for repo_id, branch in (branch_overrides or {}).items()
+        if str(repo_id or "").strip() and str(branch or "").strip()
+    }
     ws_repos = (
         db.query(SddWorkspaceRepository)
         .filter(SddWorkspaceRepository.workspace_id == workspace.id)
         .order_by(SddWorkspaceRepository.created_at.asc())
         .all()
     )
+    ws_by_id = {row.repository_id: row for row in ws_repos if row.repository_id}
+    unknown_overrides = sorted(set(overrides) - set(ws_by_id))
+    if unknown_overrides:
+        raise ValueError(
+            "Repository does not belong to this workspace: " + ", ".join(unknown_overrides)
+        )
+    if selected_ids is not None:
+        normalized_selected = {str(repo_id or "").strip() for repo_id in selected_ids}
+        normalized_selected.discard("")
+        unknown_selected = sorted(normalized_selected - set(ws_by_id))
+        if unknown_selected:
+            raise ValueError(
+                "Repository does not belong to this workspace: " + ", ".join(unknown_selected)
+            )
+        if not normalized_selected:
+            raise ValueError("At least one repository must be selected for the task")
+        ws_repos = [row for row in ws_repos if row.repository_id in normalized_selected]
+        # 未被选中的仓库不接受分支覆盖
+        overrides = {repo_id: branch for repo_id, branch in overrides.items() if repo_id in normalized_selected}
     bindings: List = []
     for ws_repo in ws_repos:
+        override = overrides.get(str(ws_repo.repository_id or ""), "")
         binding = SddTaskRepository(
             task_id=task.id,
             repository_id=ws_repo.repository_id,
             repo_url=ws_repo.repo_url,
             repo_name=ws_repo.repo_name,
             repo_slug=ws_repo.repo_slug,
-            branch_name=ws_repo.branch_name,
+            branch_name=override or ws_repo.branch_name,
             rel_path=ws_repo.repo_slug,
             state=TaskRepositoryState.PENDING,
         )
@@ -232,6 +263,8 @@ def create_task_record_for_provision(
     task_type: str = "DEVELOPMENT",
     phenomenon: Optional[str] = None,
     priority: Optional[str] = None,
+    repository_branches: Optional[List[Dict[str, str]]] = None,
+    repository_ids: Optional[List[str]] = None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -282,7 +315,23 @@ def create_task_record_for_provision(
         db.flush()
 
         # Multi-repository workspace: snapshot the workspace repo set onto the task.
-        snapshot_workspace_repositories_into_task(db, ws, task)
+        branch_overrides = {
+            str(item.get("repository_id") or "").strip(): str(item.get("branch_name") or "").strip()
+            for item in (repository_branches or [])
+            if isinstance(item, dict) and str(item.get("repository_id") or "").strip()
+        }
+        selected_repo_ids = (
+            [str(repo_id or "").strip() for repo_id in repository_ids if str(repo_id or "").strip()]
+            if repository_ids is not None
+            else None
+        )
+        snapshot_workspace_repositories_into_task(
+            db,
+            ws,
+            task,
+            branch_overrides=branch_overrides,
+            selected_ids=selected_repo_ids,
+        )
         db.flush()
 
         skill_service.bind_task_skills(db, task, selected_skills)

@@ -9,15 +9,24 @@ Serves centers distinguished by route meta.center:
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Package, FolderKanban, GitFork, ServerCog, Wrench, BookMarked, Briefcase, Layers } from 'lucide-vue-next'
+import { Package, FolderKanban, GitFork, ServerCog, Wrench, BookMarked, Briefcase, Layers, SlidersHorizontal } from 'lucide-vue-next'
 import AppSidebar from '@/components/AppSidebar.vue'
+import { useAuthStore } from '@/stores/auth'
+import { useSystemConfigStore } from '@/stores/systemConfig'
 
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const authStore = useAuthStore()
+const systemConfigStore = useSystemConfigStore()
 
 const routeName = computed(() => String(route.name ?? ''))
 const center = computed(() => String(route.meta.center || 'config'))
+const isAdmin = computed(() => Boolean(authStore.user?.is_admin))
+// 配置项关闭时屏蔽“项目管理/产品管理”入口
+const mgmtSelectionEnabled = computed(() => systemConfigStore.projectProductManagementEnabled)
+
+systemConfigStore.load()
 
 const isEditorRoute = computed(() =>
   ['skillsCreate', 'skillsEdit', 'skillsEditAnalysis', 'skillsEditAnalysisRisk'].includes(routeName.value))
@@ -28,29 +37,46 @@ const layoutTitle = computed(() => {
   return t('management.layout_title')
 })
 
-const configNavItems = computed(() => [
-  {
-    key: 'products',
-    label: t('management.nav_products'),
-    icon: Package,
-    to: '/management/products',
-    active: routeName.value === 'productsHome' || routeName.value === 'productDetail',
-  },
-  {
-    key: 'projects',
-    label: t('management.nav_projects'),
-    icon: FolderKanban,
-    to: '/management/projects',
-    active: routeName.value === 'projectsHome' || routeName.value === 'projectDetail',
-  },
-  {
-    key: 'repositories',
-    label: t('management.nav_repositories'),
-    icon: GitFork,
-    to: '/management/repositories',
-    active: routeName.value === 'repositoriesHome',
-  },
-])
+const configNavItems = computed(() => {
+  const items: Array<{ key: string; label: string; icon: typeof Package; to: string; active: boolean }> = []
+  if (mgmtSelectionEnabled.value) {
+    items.push(
+      {
+        key: 'products',
+        label: t('management.nav_products'),
+        icon: Package,
+        to: '/management/products',
+        active: routeName.value === 'productsHome' || routeName.value === 'productDetail',
+      },
+      {
+        key: 'projects',
+        label: t('management.nav_projects'),
+        icon: FolderKanban,
+        to: '/management/projects',
+        active: routeName.value === 'projectsHome' || routeName.value === 'projectDetail',
+      },
+    )
+  }
+  items.push(
+    {
+      key: 'repositories',
+      label: t('management.nav_repositories'),
+      icon: GitFork,
+      to: '/management/repositories',
+      active: routeName.value === 'repositoriesHome',
+    },
+  )
+  if (isAdmin.value) {
+    items.push({
+      key: 'system-config',
+      label: t('management.nav_system_config'),
+      icon: SlidersHorizontal,
+      to: '/management/system',
+      active: routeName.value === 'systemConfigHome',
+    })
+  }
+  return items
+})
 
 const opsNavItems = computed(() => [
   {

@@ -275,6 +275,9 @@ class WorkspaceCreate(BaseModel):
     project_id: Optional[str] = None
     product_ids: Optional[List[str]] = None
     repositories: Optional[List[WorkspaceRepositoryCreate]] = None
+    # 独立模式（未关联管理项目）下手动填写的项目/产品名称，不与项目管理/产品管理数据绑定
+    project_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    product_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def _validate_single_product_selection(self):
@@ -328,6 +331,8 @@ class WorkspaceResponse(BaseModel):
     project_id: Optional[str] = None
     owner_id: str
     agent_backend: Optional[str] = None
+    custom_project_name: Optional[str] = None
+    custom_product_name: Optional[str] = None
     created_at: datetime
     my_role: Optional[str] = None
     my_is_expert: Optional[bool] = None

@@ -111,6 +111,11 @@ const router = createRouter({
           component: () => import('../views/management/RepositoriesView.vue'),
         },
         {
+          path: 'system',
+          name: 'systemConfigHome',
+          component: () => import('../views/management/SystemConfigView.vue'),
+        },
+        {
           path: '',
           redirect: '/management/products',
         },
@@ -321,6 +326,21 @@ router.beforeEach(async (to) => {
     const me = await authStore.fetchCurrentUser()
     if (!me) {
       return { name: 'login', query: { redirect: to.fullPath } }
+    }
+  }
+
+  // 配置项：关闭“项目管理/产品管理”选择功能时，屏蔽对应功能页面。
+  if (
+    to.name === 'productsHome' ||
+    to.name === 'productDetail' ||
+    to.name === 'projectsHome' ||
+    to.name === 'projectDetail'
+  ) {
+    const { useSystemConfigStore } = await import('@/stores/systemConfig')
+    const systemConfigStore = useSystemConfigStore()
+    await systemConfigStore.load()
+    if (!systemConfigStore.projectProductManagementEnabled) {
+      return { path: '/management/repositories' }
     }
   }
 

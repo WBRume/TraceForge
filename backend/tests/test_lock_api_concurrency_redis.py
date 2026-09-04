@@ -241,6 +241,8 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
         task_type="DEVELOPMENT",
         phenomenon=None,
         priority=None,
+        repository_branches=None,
+        repository_ids=None,
     ):
         _ = (
             db,
@@ -250,6 +252,8 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
             task_type,
             phenomenon,
             priority,
+            repository_branches,
+            repository_ids,
         )
         # Simulate heavier synchronous record creation path.
         time.sleep(0.03)

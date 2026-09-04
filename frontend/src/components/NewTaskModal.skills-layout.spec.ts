@@ -75,19 +75,19 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
   it('renders standard modal initially and slides out skills sidebar when clicking skills entry card', async () => {
     const wrapper = await mountModal()
 
-    // 默认标准弹窗形态，侧边栏不展示
+    // 默认标准弹窗形态，侧边栏不展开
     expect(wrapper.find('.modal.with-sidebar').exists()).toBe(false)
-    expect(wrapper.find('.modal-skills-sidebar').exists()).toBe(false)
+    expect(wrapper.find('.modal-skills-sidebar.open').exists()).toBe(false)
 
-    // 点击整行 Skills 触发卡片
-    const skillsEntry = wrapper.find('.skills-entry-card')
+    // 点击整行 Skills 触发卡片（排除仓库入口条）
+    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card)')
     expect(skillsEntry.exists()).toBe(true)
     await skillsEntry.trigger('click')
     await flushPromises()
 
-    // 右侧侧边栏平滑滑出展示
+    // 右侧侧边栏平滑横向展开
     expect(wrapper.find('.modal.with-sidebar').exists()).toBe(true)
-    expect(wrapper.find('.modal-skills-sidebar').exists()).toBe(true)
+    expect(wrapper.find('.modal-skills-sidebar.open').exists()).toBe(true)
     expect(wrapper.text()).toContain('Vue Best Practices')
   })
 
@@ -95,8 +95,8 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
     vi.useFakeTimers()
     const wrapper = await mountModal()
 
-    // 展开侧栏
-    await wrapper.find('.skills-entry-card').trigger('click')
+    // 展开侧栏（Skills 入口条，排除仓库入口条）
+    await wrapper.find('.skills-entry-card:not(.repo-entry-card)').trigger('click')
     await flushPromises()
 
     const searchInput = wrapper.find('.skills-search-input')
@@ -121,8 +121,8 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
   it('selects skills, paginates and retains selected skills upon task creation', async () => {
     const wrapper = await mountModal()
 
-    // 展开侧栏
-    await wrapper.find('.skills-entry-card').trigger('click')
+    // 展开侧栏（Skills 入口条，排除仓库入口条）
+    await wrapper.find('.skills-entry-card:not(.repo-entry-card)').trigger('click')
     await flushPromises()
 
     // 勾选第一个技能
@@ -162,14 +162,73 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
     )
   })
 
-  it('renders embedded worktree repository cards cleanly without big clunky banner', async () => {
+  it('opens repo sidebar with tree rows and selects all repos by default', async () => {
     const wrapper = await mountModal()
 
-    // Worktree 仓库环境内嵌在模块三中，展示分支徽章与仓库名
-    expect(wrapper.find('.env-card').exists()).toBe(true)
-    expect(wrapper.findAll('.env-repo-item')).toHaveLength(2)
+    // 默认只展示仓库入口条，不展开仓库侧栏
+    const repoEntry = wrapper.find('.repo-entry-card')
+    expect(repoEntry.exists()).toBe(true)
+    expect(wrapper.find('.modal-skills-sidebar.open').exists()).toBe(false)
+
+    // 点击入口条：右侧滑出仓库树侧栏，默认勾选全部仓库
+    await repoEntry.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.modal.with-sidebar').exists()).toBe(true)
+    expect(wrapper.find('.modal-skills-sidebar.open').exists()).toBe(true)
+    expect(wrapper.findAll('.wf-tree-repo')).toHaveLength(2)
+    expect(wrapper.findAll('.wf-tree-checkbox')).toHaveLength(3)
+    expect(
+      wrapper
+        .findAll('.wf-tree-checkbox')
+        .every((c) => (c.element as HTMLInputElement).checked),
+    ).toBe(true)
     expect(wrapper.text()).toContain('frontend')
     expect(wrapper.text()).toContain('backend')
-    expect(wrapper.text()).toContain('feature/task-1')
+  })
+
+  it('submits repository_ids for the selected subset after unchecking a repo', async () => {
+    const wrapper = await mountModal()
+
+    // 打开仓库侧栏，取消勾选第一个仓库
+    await wrapper.find('.repo-entry-card').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.wf-tree-checkbox')[1].trigger('change')
+
+    await wrapper.find('input[placeholder="dashboard.task_name_placeholder"]').setValue('研发任务 2')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.post).toHaveBeenCalledWith(
+      '/workspaces/ws-1/tasks',
+      expect.objectContaining({
+        repository_ids: ['repo-2'],
+      }),
+    )
+  })
+
+  it('applies batch branch to selected repos and submits overrides', async () => {
+    const wrapper = await mountModal()
+
+    // 打开仓库侧栏，批量设置分支
+    await wrapper.find('.repo-entry-card').trigger('click')
+    await flushPromises()
+    await wrapper.find('.repo-batch-input').setValue('hotfix/batch')
+    await wrapper.find('.repo-batch-apply-btn').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="dashboard.task_name_placeholder"]').setValue('研发任务 3')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.post).toHaveBeenCalledWith(
+      '/workspaces/ws-1/tasks',
+      expect.objectContaining({
+        repository_branches: [
+          { repository_id: 'repo-1', branch_name: 'hotfix/batch' },
+          { repository_id: 'repo-2', branch_name: 'hotfix/batch' },
+        ],
+      }),
+    )
   })
 })

@@ -194,6 +194,12 @@ export const getRepository = async (repositoryId: string): Promise<Repository> =
   return res.data as Repository
 }
 
+// 列出仓库远端分支/tag（用于新建工作区与会话创建的分支选择器）
+export const getRepositoryRefs = async (repositoryId: string): Promise<RemoteRefsPayload> => {
+  const res = await api.get(`/management/repositories/${repositoryId}/refs`)
+  return res.data as RemoteRefsPayload
+}
+
 export const createRepository = async (payload: {
   name: string
   git_url: string

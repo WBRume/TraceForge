@@ -188,6 +188,11 @@ async def create_task(
             task_type=data.task_type,
             phenomenon=data.phenomenon,
             priority=data.priority,
+            repository_branches=[
+                {"repository_id": item.repository_id, "branch_name": item.branch_name}
+                for item in (data.repository_branches or [])
+            ] or None,
+            repository_ids=list(data.repository_ids or []) or None,
         )
         job = provision_job_service.create_job(
             db,

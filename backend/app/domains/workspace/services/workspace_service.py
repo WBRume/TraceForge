@@ -284,6 +284,8 @@ def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[s
         "project_id": workspace.project_id,
         "owner_id": workspace.owner_id,
         "agent_backend": workspace.agent_backend,
+        "custom_project_name": workspace.custom_project_name,
+        "custom_product_name": workspace.custom_product_name,
         "created_at": workspace.created_at,
         "my_role": member.role.value if hasattr(member.role, "value") else str(member.role),
         "my_is_expert": bool(member.is_expert),
@@ -310,11 +312,14 @@ def create_workspace(
     project_id: Optional[str] = None,
     product_ids: Optional[List[str]] = None,
     repositories: Optional[List[Dict[str, str]]] = None,
+    project_name: Optional[str] = None,
+    product_name: Optional[str] = None,
 ) -> Workspace:
     if product_ids and len(product_ids) > 1:
         raise ValueError("workspace can only select one product")
     from app.domains.management.services import project_service
     from app.domains.management.services import repository_service as mgmt_repository_service
+    from app.domains.management.models.management import SddManagementRepository
     from app.domains.workspace.models.workspace_repository import (
         SddWorkspaceRepository,
         WorkspaceRepositoryState,
@@ -322,8 +327,79 @@ def create_workspace(
 
     normalized_project_path = _normalize_optional(project_path)
     normalized_git_repo_url = _normalize_optional(git_repo_url)
+    normalized_project_name = _normalize_optional(project_name)
+    normalized_product_name = _normalize_optional(product_name)
 
-    if project_id:
+    def _slugify_unique(slug: str, seen: set) -> str:
+        candidate = slug
+        sequence = 1
+        while candidate in seen:
+            candidate = f"{slug}-{sequence}"
+            sequence += 1
+        seen.add(candidate)
+        return candidate
+
+    if not project_id and repositories:
+        # 独立多仓库模式：未关联管理项目，手动指定项目/产品名称，并逐仓选择分支。
+        if not normalized_project_path:
+            raise git_worktree_service.GitWorktreeError(
+                "project_path is required when repositories are provided",
+                status_code=400,
+            )
+        if not normalized_project_name or not normalized_product_name:
+            raise git_worktree_service.GitWorktreeError(
+                "project_name and product_name are required when repositories are provided",
+                status_code=400,
+            )
+
+        repo_rows = (
+            db.query(SddManagementRepository)
+            .filter(
+                SddManagementRepository.id.in_(
+                    [str(item.get("repository_id") or "").strip() for item in repositories]
+                )
+            )
+            .all()
+        )
+        repos_by_id = {row.id: row for row in repo_rows}
+        seen_slugs: set = set()
+        workspace = Workspace(
+            name=name,
+            description=description,
+            project_path=normalized_project_path,
+            git_repo_url=None,
+            project_id=None,
+            custom_project_name=normalized_project_name,
+            custom_product_name=normalized_product_name,
+            owner_id=user.id,
+        )
+        db.add(workspace)
+        db.flush()
+        for item in repositories:
+            repo_id = str(item.get("repository_id") or "").strip()
+            repo_row = repos_by_id.get(repo_id)
+            if repo_row is None:
+                raise ValueError(f"Repository not found: {repo_id}")
+            branch_name = str(item.get("branch_name") or "").strip() or str(
+                repo_row.default_branch or "main"
+            ).strip()
+            slug = mgmt_repository_service.build_repo_slug(repo_row.name)
+            candidate = _slugify_unique(slug, seen_slugs)
+            base_dir = os.path.join(normalized_project_path or "", candidate)
+            db.add(
+                SddWorkspaceRepository(
+                    workspace_id=workspace.id,
+                    repository_id=repo_row.id,
+                    repo_url=repo_row.git_url,
+                    repo_name=repo_row.name,
+                    repo_slug=candidate,
+                    branch_name=branch_name,
+                    ref_type="BRANCH",
+                    base_dir=base_dir,
+                    state=WorkspaceRepositoryState.PENDING,
+                )
+            )
+    elif project_id:
         # Multi-repository layout: the workspace references a management project
         # and its repository set is materialized by the provision job.
         project = (
@@ -421,6 +497,8 @@ def create_workspace(
             description=description,
             project_path=normalized_project_path,
             git_repo_url=normalized_git_repo_url,
+            custom_project_name=normalized_project_name,
+            custom_product_name=normalized_product_name,
             owner_id=user.id,
         )
         db.add(workspace)

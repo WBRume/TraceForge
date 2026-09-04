@@ -21,7 +21,11 @@ import {
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
+import { getRepoGroupTree } from '@/services/managementApi'
 import { useProvisioningStore } from '@/stores/provisioning'
+import RepoSelectTree from '@/components/workspace/create-workflow/RepoSelectTree.vue'
+import type { RepoSelectTreeNode, RepoSelectTreeRepo } from '@/components/workspace/create-workflow/RepoSelectTree.vue'
+import type { RepoGroupTreeNode } from '@/types/management'
 
 const props = defineProps<{
   show: boolean
@@ -52,9 +56,27 @@ const overlayCloseArmed = ref(false)
 // Skills 侧边栏展开状态
 const showSkillsSidebar = ref(false)
 
+// 仓库选择侧边栏（与 Skills 侧栏同款交互；研发态 / 问题定位任务共用）
+const showReposSidebar = ref(false)
+const repoGroups = ref<RepoGroupTreeNode[]>([])
+const repoTreeLoading = ref(false)
+
 // Worktree 仓库环境列表
 const workspaceRepos = ref<any[]>([])
 const reposLoading = ref(false)
+// 勾选的仓库（默认全部；仅为所选仓库创建 worktree）
+const selectedRepoIds = ref<string[]>([])
+// 会话创建时按仓库选填分支覆盖（留空 = 沿用工作区绑定分支）
+const repoBranchOverrides = ref<Record<string, string>>({})
+// 批量分支修改输入：一键应用到所有勾选仓库
+const batchBranchValue = ref('')
+const repoRefsCache = ref<Record<string, string[]>>({})
+const repoRefsLoading = ref<Record<string, boolean>>({})
+
+const selectedRepoCount = computed(() => selectedRepoIds.value.length)
+const allReposSelected = computed(
+  () => workspaceRepos.value.length > 0 && selectedRepoIds.value.length === workspaceRepos.value.length,
+)
 
 // Skills 服务端状态
 const skills = ref<any[]>([])
@@ -83,12 +105,146 @@ const loadWorkspaceRepos = async () => {
   try {
     const res = await api.get('/workspaces/' + props.wsId)
     workspaceRepos.value = res.data?.repositories || []
+    // 默认勾选工作区全部仓库
+    selectedRepoIds.value = workspaceRepos.value
+      .map((repo) => repoBindingId(repo))
+      .filter(Boolean)
   } catch (e) {
     workspaceRepos.value = []
+    selectedRepoIds.value = []
   } finally {
     reposLoading.value = false
   }
 }
+
+const repoBindingId = (repo: any): string => String(repo.repository_id || repo.id || '')
+
+const repoById = computed(() => {
+  const map = new Map<string, any>()
+  for (const repo of workspaceRepos.value) {
+    map.set(repoBindingId(repo), repo)
+  }
+  return map
+})
+
+const isSelectedRepoId = (repoId: string): boolean => selectedRepoIds.value.includes(repoId)
+
+const defaultBranchOf = (repoId: string): string => repoById.value.get(repoId)?.branch_name || 'main'
+
+const loadRepoRefsById = async (repoId: string) => {
+  if (!repoId || repoRefsCache.value[repoId] || repoRefsLoading.value[repoId]) return
+  repoRefsLoading.value = { ...repoRefsLoading.value, [repoId]: true }
+  try {
+    const res = await api.get(`/management/repositories/${repoId}/refs`)
+    repoRefsCache.value = { ...repoRefsCache.value, [repoId]: res.data?.branches || [] }
+  } catch (e) {
+    // 拉取分支列表失败不阻塞：保留默认分支提示 + 手动输入
+    repoRefsCache.value = { ...repoRefsCache.value, [repoId]: [] }
+  } finally {
+    repoRefsLoading.value = { ...repoRefsLoading.value, [repoId]: false }
+  }
+}
+
+const onBranchInputById = (repoId: string, value: string) => {
+  repoBranchOverrides.value = { ...repoBranchOverrides.value, [repoId]: value }
+}
+
+const toggleAllRepos = (): void => {
+  selectedRepoIds.value = allReposSelected.value
+    ? []
+    : workspaceRepos.value.map((repo) => repoBindingId(repo)).filter(Boolean)
+}
+
+const applyBatchBranch = (): void => {
+  const branch = batchBranchValue.value.trim()
+  if (!branch || selectedRepoIds.value.length === 0) return
+  const overrides = { ...repoBranchOverrides.value }
+  for (const repoId of selectedRepoIds.value) {
+    overrides[repoId] = branch
+  }
+  repoBranchOverrides.value = overrides
+  ElMessage.success(t('dashboard.task_repo_batch_applied', { count: selectedRepoIds.value.length, branch }))
+}
+
+// 仓库组树懒加载（侧栏首次展开时拉取，失败不阻塞：全部仓库归入“未分组”）
+const loadRepoGroups = async () => {
+  if (repoGroups.value.length > 0) return
+  repoTreeLoading.value = true
+  try {
+    const res = await getRepoGroupTree()
+    repoGroups.value = res.items || []
+  } catch (e) {
+    repoGroups.value = []
+  } finally {
+    repoTreeLoading.value = false
+  }
+}
+
+const toggleReposSidebar = async () => {
+  showReposSidebar.value = !showReposSidebar.value
+  if (showReposSidebar.value) {
+    showSkillsSidebar.value = false
+    await loadRepoGroups()
+  }
+}
+
+// 仓库组树：工作区仓库按仓库管理分组挂载，未分组仓库进入“未分组”节点，空组剪枝
+const repoTreeNodes = computed<RepoSelectTreeNode[]>(() => {
+  const groupIdByRepoId = new Map<string, string>()
+  const nodeByKey = new Map<string, RepoSelectTreeNode>()
+  const walkGroups = (items: RepoGroupTreeNode[]): void => {
+    for (const item of items) {
+      if (item.id) {
+        const node: RepoSelectTreeNode = { key: item.id, name: item.name, repos: [], children: [] }
+        nodeByKey.set(item.id, node)
+        for (const r of item.repositories || []) {
+          groupIdByRepoId.set(r.id, item.id)
+        }
+      }
+      walkGroups(item.children || [])
+    }
+  }
+  walkGroups(repoGroups.value)
+
+  const toTreeRepo = (repo: any): RepoSelectTreeRepo => ({
+    id: repoBindingId(repo),
+    name: repo.repo_name,
+    git_url: repo.repo_url,
+  })
+  const ungrouped: RepoSelectTreeRepo[] = []
+  for (const repo of workspaceRepos.value) {
+    const repoId = repoBindingId(repo)
+    if (!repoId) continue
+    const groupId = groupIdByRepoId.get(repoId)
+    if (groupId && nodeByKey.has(groupId)) {
+      nodeByKey.get(groupId)!.repos.push(toTreeRepo(repo))
+    } else {
+      ungrouped.push(toTreeRepo(repo))
+    }
+  }
+
+  const build = (items: RepoGroupTreeNode[]): RepoSelectTreeNode[] => {
+    const result: RepoSelectTreeNode[] = []
+    for (const item of items) {
+      const node = item.id ? nodeByKey.get(item.id) : undefined
+      if (!node) continue
+      const children = build(item.children || [])
+      if (node.repos.length === 0 && children.length === 0) continue
+      result.push({ ...node, children })
+    }
+    return result
+  }
+  const result = build(repoGroups.value)
+  if (ungrouped.length > 0) {
+    result.push({
+      key: '__ungrouped__',
+      name: t('workspace_create.ungrouped_repos'),
+      repos: ungrouped,
+      children: [],
+    })
+  }
+  return result
+})
 
 const loadSkills = async (targetPage = skillPage.value) => {
   skillsLoading.value = true
@@ -189,12 +345,19 @@ const removeDiagnosisFile = (index: number) => {
 
 const toggleSkillsSidebar = () => {
   showSkillsSidebar.value = !showSkillsSidebar.value
+  if (showSkillsSidebar.value) {
+    showReposSidebar.value = false
+  }
 }
 
 const handleCreateTask = async () => {
   if (!newTaskName.value) return
   if (isDiagnosisTask.value && !newTaskPhenomenon.value.trim()) {
     ElMessage.error(t('diagnosis.phenomenon_required'))
+    return
+  }
+  if (workspaceRepos.value.length > 0 && selectedRepoIds.value.length === 0) {
+    ElMessage.warning(t('dashboard.task_repo_required'))
     return
   }
   creatingTask.value = true
@@ -211,6 +374,25 @@ const handleCreateTask = async () => {
       payload.priority = newTaskPriority.value
     } else {
       payload.requirement_duration_hours = Number(requirementDuration.value)
+    }
+    // 仅为勾选的仓库创建 worktree（与全选等价时不下发，沿用默认行为）
+    const selectedSet = new Set(selectedRepoIds.value)
+    const bindingIds = workspaceRepos.value
+      .map((repo) => repoBindingId(repo))
+      .filter(Boolean)
+    if (selectedSet.size > 0 && selectedSet.size < bindingIds.length) {
+      payload.repository_ids = [...selectedSet]
+    }
+    // 选填：按仓库覆盖会话使用的分支（仅作用于勾选仓库；留空沿用工作区分支）
+    const branchOverrides = workspaceRepos.value
+      .filter((repo) => selectedSet.has(repoBindingId(repo)))
+      .map((repo) => ({
+        repository_id: repoBindingId(repo),
+        branch_name: (repoBranchOverrides.value[repoBindingId(repo)] || '').trim(),
+      }))
+      .filter((item) => item.repository_id && item.branch_name)
+    if (branchOverrides.length > 0) {
+      payload.repository_branches = branchOverrides
     }
     const res = await api.post(`/workspaces/${props.wsId}/tasks`, payload)
 
@@ -267,6 +449,13 @@ const resetForm = () => {
   skillScope.value = 'all'
   skillPage.value = 1
   workspaceRepos.value = []
+  selectedRepoIds.value = []
+  batchBranchValue.value = ''
+  repoBranchOverrides.value = {}
+  repoRefsCache.value = {}
+  repoRefsLoading.value = {}
+  showReposSidebar.value = false
+  repoGroups.value = []
 }
 
 const close = () => {
@@ -321,7 +510,10 @@ onBeforeUnmount(() => {
     @pointerleave.self="cancelOverlayClose"
     @pointercancel.self="cancelOverlayClose"
   >
-    <div class="modal glass-panel" :class="{ 'with-sidebar': showSkillsSidebar && !isDiagnosisTask }">
+    <div
+      class="modal glass-panel"
+      :class="{ 'with-sidebar': (showSkillsSidebar && !isDiagnosisTask) || showReposSidebar }"
+    >
       <!-- 顶部 Header（标题 + 任务类型分段控制器 + 关闭按钮） -->
       <header class="modal-top-bar">
         <div class="modal-title-group">
@@ -509,31 +701,31 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- 行 4：运行环境与扩展工具组（垂直分层独立展示，彻底解决遮挡与挤压问题） -->
-          <div v-if="!isDiagnosisTask" class="form-meta-container">
-            <!-- 1. Worktree 关联仓库展示（独占一行，横向充足，各仓库标签清晰，绝不遮挡） -->
-            <div v-if="workspaceRepos.length > 0" class="meta-env-card env-card">
-              <div class="meta-env-header">
-                <div class="meta-env-title">
+          <!-- 行 4：Worktree 仓库载入触发条（与 Skills 载入同款交互，整行可点击展开右侧仓库树） -->
+          <div v-if="workspaceRepos.length > 0" class="form-meta-container">
+            <div
+              class="meta-skills-bar skills-entry-card repo-entry-card"
+              :class="{ active: showReposSidebar, 'has-selection': selectedRepoCount > 0 }"
+              @click="toggleReposSidebar"
+            >
+              <div class="skills-bar-left">
+                <div class="skills-bar-icon-box">
                   <GitFork class="w-3.5 h-3.5 text-primary" />
-                  <span>{{ $t('dashboard.task_repo_preview', { count: workspaceRepos.length }) }}</span>
                 </div>
-                <div class="meta-repo-chips">
-                  <span
-                    v-for="repo in workspaceRepos"
-                    :key="repo.id"
-                    class="repo-chip env-repo-item"
-                    :title="`${repo.repo_name} (${repo.branch_name}) · ${repo.repo_url}`"
-                  >
-                    <span class="repo-chip-dot" :class="{ failed: repo.state === 'FAILED' }"></span>
-                    <span class="repo-chip-name">{{ repo.repo_name }}</span>
-                    <span class="repo-chip-branch">{{ repo.branch_name }}</span>
-                  </span>
-                </div>
+                <span class="skills-bar-title">{{ $t('dashboard.task_repo_entry_title') }}</span>
+                <span class="skills-bar-badge" :class="{ 'has-selected': selectedRepoCount > 0 }">
+                  {{ $t('dashboard.task_repo_selected_badge', { selected: selectedRepoCount, total: workspaceRepos.length }) }}
+                </span>
+              </div>
+              <div class="skills-bar-right">
+                <span class="skills-bar-action-text">{{ showReposSidebar ? $t('skills.task_panel.close_panel') : $t('dashboard.task_repo_entry_action') }}</span>
+                <ChevronRight class="w-3.5 h-3.5 chevron-icon" :class="{ open: showReposSidebar }" />
               </div>
             </div>
+          </div>
 
-            <!-- 2. Skills 载入触发条（独占一行，整行可点击展开/收起右侧侧栏） -->
+          <!-- 行 5：Skills 载入触发条（独占一行，整行可点击展开/收起右侧侧栏，仅研发态任务） -->
+          <div v-if="!isDiagnosisTask" class="form-meta-container">
             <div
               class="meta-skills-bar skills-entry-card"
               :class="{ active: showSkillsSidebar, 'has-selection': selectedSkillCount > 0 }"
@@ -576,8 +768,9 @@ onBeforeUnmount(() => {
           </div>
         </form>
 
-        <!-- 右侧平滑滑出的 Skills 侧边栏 -->
-        <aside v-if="showSkillsSidebar && !isDiagnosisTask" class="modal-skills-sidebar">
+        <!-- 右侧平滑横向展开的 Skills 侧边栏（常驻 DOM，通过 .open 宽度过渡展开/收起） -->
+        <aside class="modal-skills-sidebar" :class="{ open: showSkillsSidebar && !isDiagnosisTask }">
+          <div class="sidebar-inner">
           <!-- 侧栏头部 -->
           <div class="skills-sidebar-header">
             <div class="skills-sidebar-title-row">
@@ -755,6 +948,106 @@ onBeforeUnmount(() => {
               {{ $t('skills.list.next_page') }}
             </button>
           </footer>
+          </div>
+        </aside>
+
+        <!-- 右侧平滑横向展开的仓库选择侧边栏（研发态 / 问题定位任务共用，仓库按仓库组树形展示） -->
+        <aside class="modal-skills-sidebar" :class="{ open: showReposSidebar }">
+          <div class="sidebar-inner">
+          <!-- 侧栏头部 -->
+          <div class="skills-sidebar-header">
+            <div class="skills-sidebar-title-row">
+              <div class="skills-sidebar-title">
+                <GitFork class="w-4 h-4 text-primary" />
+                <h3>{{ $t('dashboard.task_repo_sidebar_title') }}</h3>
+              </div>
+              <div class="skills-header-actions">
+                <span class="skills-selected-badge" :class="{ 'has-selected': selectedRepoCount > 0 }">
+                  {{ $t('dashboard.task_repo_selected_badge', { selected: selectedRepoCount, total: workspaceRepos.length }) }}
+                </span>
+                <button
+                  type="button"
+                  class="sidebar-close-btn"
+                  :title="$t('skills.task_panel.close_panel')"
+                  @click="showReposSidebar = false"
+                >
+                  <X class="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <p class="skills-sidebar-subtitle">{{ $t('dashboard.task_repo_sidebar_subtitle') }}</p>
+
+            <!-- 批量分支修改 -->
+            <div class="skills-sidebar-tools">
+              <div class="skills-search-wrapper">
+                <GitBranch class="w-4 h-4 skills-search-icon" />
+                <input
+                  v-model="batchBranchValue"
+                  type="text"
+                  class="skills-search-input repo-batch-input"
+                  :placeholder="$t('dashboard.task_repo_batch_branch')"
+                />
+              </div>
+              <button
+                type="button"
+                class="tool-text-btn repo-batch-apply-btn"
+                :disabled="selectedRepoCount === 0 || !batchBranchValue.trim()"
+                @click="applyBatchBranch"
+              >
+                {{ $t('dashboard.task_repo_batch_apply') }}
+              </button>
+            </div>
+
+            <!-- 全选 / 清空 -->
+            <div class="skills-filter-row">
+              <span class="repo-sidebar-hint">{{ $t('dashboard.task_repo_sidebar_hint') }}</span>
+              <button
+                type="button"
+                class="tool-text-btn repo-select-all-btn"
+                :disabled="workspaceRepos.length === 0"
+                @click="toggleAllRepos"
+              >
+                {{ allReposSelected ? $t('skills.task_panel.clear_all') : $t('skills.task_panel.select_all') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 仓库树内容区（独立滚动，组节点勾选 = 全选其下仓库，支持搜索） -->
+          <div class="skills-sidebar-body">
+            <div v-if="repoTreeLoading" class="skills-state center">
+              <Loader2 class="w-6 h-6 spin text-primary" />
+              <span>{{ $t('management.common.loading') }}</span>
+            </div>
+
+            <RepoSelectTree
+              v-else-if="repoTreeNodes.length > 0"
+              v-model="selectedRepoIds"
+              :nodes="repoTreeNodes"
+            >
+              <template #repo-extra="{ repo }">
+                <div v-if="isSelectedRepoId(repo.id)" class="meta-repo-branch">
+                  <GitBranch class="w-3 h-3" />
+                  <input
+                    class="meta-branch-input"
+                    type="text"
+                    :list="`task-branch-refs-${repo.id}`"
+                    :value="repoBranchOverrides[repo.id] || ''"
+                    :placeholder="$t('dashboard.task_branch_placeholder', { branch: defaultBranchOf(repo.id) })"
+                    @focus="loadRepoRefsById(repo.id)"
+                    @input="onBranchInputById(repo.id, ($event.target as HTMLInputElement).value)"
+                  />
+                  <datalist :id="`task-branch-refs-${repo.id}`">
+                    <option v-for="branch in repoRefsCache[repo.id] || []" :key="branch" :value="branch"></option>
+                  </datalist>
+                </div>
+              </template>
+            </RepoSelectTree>
+
+            <div v-else class="skills-state empty center">
+              {{ $t('workspace_create.standalone_no_repo_hint') }}
+            </div>
+          </div>
+          </div>
         </aside>
       </div>
     </div>
@@ -1083,76 +1376,40 @@ onBeforeUnmount(() => {
   margin-top: 2px;
 }
 
-/* 1. Worktree 仓库环境展示卡片 */
-.meta-env-card {
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  background: #f8fafc;
-  padding: 8px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.meta-env-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.meta-env-title {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.76rem;
-  font-weight: 700;
-  color: #334155;
-}
-
-.meta-repo-chips {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.repo-chip {
+/* 仓库树侧栏内的分支输入 */
+.meta-repo-branch {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 7px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  font-size: 0.72rem;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.02);
-}
-
-.repo-chip-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #10b981;
-}
-
-.repo-chip-dot.failed {
-  background: #ef4444;
-}
-
-.repo-chip-name {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.repo-chip-branch {
-  font-family: var(--font-mono, monospace);
-  font-size: 0.68rem;
+  gap: 4px;
   color: #0369a1;
-  background: #e0f2fe;
-  padding: 0 4px;
-  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.meta-branch-input {
+  width: 170px;
+  padding: 2px 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-family: var(--font-mono, monospace);
+  color: #0f172a;
+  background: #ffffff;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.meta-branch-input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
+}
+
+.meta-branch-input::placeholder {
+  color: #94a3b8;
+}
+
+.w-3 {
+  width: 0.75rem;
+  height: 0.75rem;
 }
 
 /* 2. Skills 载入触发条（整行可点击） */
@@ -1376,26 +1633,42 @@ onBeforeUnmount(() => {
   box-shadow: none;
 }
 
-/* 右侧平滑滑出的 Skills 侧边栏 */
+/* 右侧平滑横向展开的侧边栏（Skills / 仓库共用机制）：
+   侧栏常驻 DOM，宽度 0 -> 440px 过渡，与弹窗 max-width 展开同步（等比例扩散感）；
+   内容绝对定位填充，不参与高度计算，弹窗高度始终由表单决定，避免纵向跳动。 */
 .modal-skills-sidebar {
-  width: 440px;
+  position: relative;
+  width: 0;
   flex-shrink: 0;
-  border-left: 1px solid #e2e8f0;
-  background: #f8fafc;
-  display: flex;
-  flex-direction: column;
-  animation: slideInRight 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+  transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-@keyframes slideInRight {
-  from {
-    opacity: 0;
-    transform: translateX(16px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
+.modal-skills-sidebar.open {
+  width: 440px;
+}
+
+.sidebar-inner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 440px;
+  display: flex;
+  flex-direction: column;
+  background: #f8fafc;
+  border-left: 1px solid #e2e8f0;
+  box-shadow: -12px 0 32px rgba(15, 23, 42, 0.06);
+  opacity: 0;
+  transform: translateX(14px);
+  transition: opacity 0.24s ease, transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+}
+
+.modal-skills-sidebar.open .sidebar-inner {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
 }
 
 .skills-sidebar-header {
@@ -1446,6 +1719,12 @@ onBeforeUnmount(() => {
   background: #0ea5e9;
   color: #ffffff;
   font-weight: 600;
+}
+
+/* 仓库侧栏提示与操作 */
+.repo-sidebar-hint {
+  font-size: 0.72rem;
+  color: #64748b;
 }
 
 .sidebar-close-btn {
