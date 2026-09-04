@@ -15,6 +15,9 @@ release
 # 临时构建校验产物（verify 脚本 / 手动 type-check 产物，非发布产物）
 .verify-build
 .verify-electron
+.verify-smoke/
+.tmp-shots/
+.tmp-*.mjs
 *.local
 
 # Editor directories and files
