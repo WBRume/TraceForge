@@ -80,6 +80,7 @@ from app.models.management import (
 from app.models.workspace_repository import SddWorkspaceRepository
 from app.models.task_repository import SddTaskRepository
 from app.models.session_turn import TaskSessionTurn, TaskSessionOperation
+from app.models.system_config import SystemConfig
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

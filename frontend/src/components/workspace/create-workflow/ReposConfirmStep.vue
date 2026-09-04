@@ -1,7 +1,10 @@
-<!-- Workspace creation workflow: step 4 repository selection (baseline + custom, multi-select). -->
+<!-- Workspace creation workflow: step 4 repository selection (OOTB / custom groups as tree). -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Boxes, FolderCog, Tag, GitBranch } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+import { GitBranch, Tag } from 'lucide-vue-next'
+import RepoSelectTree from './RepoSelectTree.vue'
+import type { RepoSelectTreeNode, RepoSelectTreeRepo } from './RepoSelectTree.vue'
 import type { ProjectRepoSetItem } from '@/types/management'
 
 const props = defineProps<{
@@ -14,20 +17,44 @@ const emit = defineEmits<{
   (e: 'update:modelValue', value: string[]): void
 }>()
 
-const ootbRepos = computed(() => props.repos.filter((item) => item.repo_kind === 'OOTB'))
-const customRepos = computed(() => props.repos.filter((item) => item.repo_kind === 'CUSTOM'))
+const { t } = useI18n()
 
-const isSelected = (repoId: string): boolean => props.modelValue.includes(repoId)
+const toTreeRepo = (item: ProjectRepoSetItem): RepoSelectTreeRepo => ({
+  id: item.repository_id,
+  name: item.repository_name,
+  git_url: item.git_url,
+  repo_type: item.repo_type,
+  ref_type: item.ref_type,
+  ref_name: item.ref_name,
+})
 
-const toggle = (repoId: string): void => {
-  const selected = new Set(props.modelValue)
-  if (selected.has(repoId)) {
-    selected.delete(repoId)
-  } else {
-    selected.add(repoId)
+const nodes = computed<RepoSelectTreeNode[]>(() => {
+  const nodes: RepoSelectTreeNode[] = []
+  const ootb = props.repos.filter((item) => item.repo_kind === 'OOTB')
+  const custom = props.repos.filter((item) => item.repo_kind === 'CUSTOM')
+  if (ootb.length > 0) {
+    nodes.push({
+      key: 'ootb',
+      name: t('workspace_create.ootb_repos'),
+      repos: ootb.map(toTreeRepo),
+      children: [],
+    })
   }
-  emit('update:modelValue', [...selected])
-}
+  if (custom.length > 0) {
+    nodes.push({
+      key: 'custom',
+      name: t('workspace_create.custom_repos'),
+      repos: custom.map(toTreeRepo),
+      children: [],
+    })
+  }
+  return nodes
+})
+
+const proxySelected = computed({
+  get: () => props.modelValue,
+  set: (value: string[]) => emit('update:modelValue', value),
+})
 </script>
 
 <template>
@@ -40,65 +67,15 @@ const toggle = (repoId: string): void => {
       {{ $t('workspace_create.no_repo_hint') }}
     </div>
 
-    <div v-else>
-      <div v-if="ootbRepos.length > 0" class="wf-repo-group">
-        <div class="wf-group-title">
-          <Boxes class="w-4 h-4" />
-          <span>{{ $t('workspace_create.ootb_repos') }}（{{ ootbRepos.length }}）</span>
-        </div>
-        <label
-          v-for="repo in ootbRepos"
-          :key="repo.repository_id"
-          class="wf-repo-row"
-          :class="{ selected: isSelected(repo.repository_id) }"
-        >
-          <input
-            type="checkbox"
-            class="wf-checkbox"
-            :checked="isSelected(repo.repository_id)"
-            @change="toggle(repo.repository_id)"
-          />
-          <div class="wf-repo-info">
-            <span class="wf-repo-name">{{ repo.repository_name }}</span>
-            <span class="wf-repo-url">{{ repo.git_url }}</span>
-          </div>
-          <span class="wf-ref-badge" :class="repo.ref_type === 'TAG' ? 'tag' : 'branch'">
-            <Tag v-if="repo.ref_type === 'TAG'" class="w-3.5 h-3.5" />
-            <GitBranch v-else class="w-3.5 h-3.5" />
-            {{ repo.ref_name }}
-          </span>
-        </label>
-      </div>
-
-      <div v-if="customRepos.length > 0" class="wf-repo-group">
-        <div class="wf-group-title">
-          <FolderCog class="w-4 h-4" />
-          <span>{{ $t('workspace_create.custom_repos') }}（{{ customRepos.length }}）</span>
-        </div>
-        <label
-          v-for="repo in customRepos"
-          :key="repo.repository_id"
-          class="wf-repo-row"
-          :class="{ selected: isSelected(repo.repository_id) }"
-        >
-          <input
-            type="checkbox"
-            class="wf-checkbox"
-            :checked="isSelected(repo.repository_id)"
-            @change="toggle(repo.repository_id)"
-          />
-          <div class="wf-repo-info">
-            <span class="wf-repo-name">{{ repo.repository_name }}</span>
-            <span class="wf-repo-url">{{ repo.git_url }}</span>
-          </div>
-          <span class="wf-ref-badge" :class="repo.ref_type === 'TAG' ? 'tag' : 'branch'">
-            <Tag v-if="repo.ref_type === 'TAG'" class="w-3.5 h-3.5" />
-            <GitBranch v-else class="w-3.5 h-3.5" />
-            {{ repo.ref_name }}
-          </span>
-        </label>
-      </div>
-    </div>
+    <RepoSelectTree v-else v-model="proxySelected" :nodes="nodes">
+      <template #repo-extra="{ repo }">
+        <span class="wf-ref-badge" :class="repo.ref_type === 'TAG' ? 'tag' : 'branch'">
+          <Tag v-if="repo.ref_type === 'TAG'" class="w-3.5 h-3.5" />
+          <GitBranch v-else class="w-3.5 h-3.5" />
+          {{ repo.ref_name }}
+        </span>
+      </template>
+    </RepoSelectTree>
   </div>
 </template>
 
@@ -108,79 +85,6 @@ const toggle = (repoId: string): void => {
   display: flex;
   flex-direction: column;
   gap: 0.9rem;
-}
-
-.wf-repo-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.wf-group-title {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: #334155;
-  margin-top: 0.4rem;
-}
-
-.wf-repo-row {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  border: 1.5px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 0.6rem 0.9rem 0.6rem 2.4rem;
-  background: rgba(248, 250, 252, 0.7);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.wf-repo-row:hover {
-  border-color: #7dd3fc;
-  background: #f0f9ff;
-}
-
-.wf-repo-row.selected {
-  border-color: #0ea5e9;
-  background: #f0f9ff;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.12);
-}
-
-.wf-checkbox {
-  position: absolute;
-  left: 0.8rem;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 1rem;
-  height: 1rem;
-  accent-color: #0ea5e9;
-}
-
-.wf-repo-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.wf-repo-name {
-  font-weight: 600;
-  font-size: 0.88rem;
-  color: #0f172a;
-}
-
-.wf-repo-url {
-  font-size: 0.75rem;
-  color: #94a3b8;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 340px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .wf-ref-badge {
@@ -205,5 +109,10 @@ const toggle = (repoId: string): void => {
   color: #15803d;
   background: #f0fdf4;
   border: 1px solid #bbf7d0;
+}
+
+.w-3\.5 {
+  width: 0.875rem;
+  height: 0.875rem;
 }
 </style>

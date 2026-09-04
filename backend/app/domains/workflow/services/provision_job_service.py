@@ -374,6 +374,8 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, A
             project_id=context.get("project_id"),
             product_ids=context.get("product_ids") if isinstance(context.get("product_ids"), list) else None,
             repositories=context.get("repositories") if isinstance(context.get("repositories"), list) else None,
+            project_name=context.get("project_name"),
+            product_name=context.get("product_name"),
         )
         repositories = []
         for row in workspace.repositories:
@@ -559,9 +561,16 @@ async def run_create_workspace_job(job_id: str) -> None:
     project_path = str(context.get("project_path") or "").strip()
     git_repo_url = str(context.get("git_repo_url") or "").strip()
     project_id = str(context.get("project_id") or "").strip()
-    use_multi_repo = bool(project_id)
+    # 多仓库模式：关联管理项目，或独立模式（未关联项目但手动指定了仓库集合）。
+    # 独立模式若不进入该分支，MATERIALIZE_REPOS 阶段会被跳过，仓库永远不会 clone。
+    context_repositories = (
+        context.get("repositories") if isinstance(context.get("repositories"), list) else None
+    )
+    use_multi_repo = bool(project_id) or bool(context_repositories)
     use_repo_lock = bool(project_path and git_repo_url)
-    creation_lock_url = git_repo_url if use_repo_lock else (f"project:{project_id}" if use_multi_repo else "")
+    # 独立模式（无 project_id）时按 project_path 隔离锁；不能落到全局常量“project:”上，
+    # 否则所有独立模式的工作区创建会互相串行阻塞。
+    creation_lock_url = git_repo_url if use_repo_lock else (f"project:{project_id}" if project_id else "")
 
     with bind_log_context(job_id=job_id, user_id=creator_id):
         try:

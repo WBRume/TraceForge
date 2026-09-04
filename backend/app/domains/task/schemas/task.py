@@ -7,6 +7,13 @@ from typing import Any, Optional, List, Literal
 from datetime import datetime
 
 
+class TaskRepositoryBranchInput(BaseModel):
+    """创建会话时可选的仓库分支覆盖（选填；未提供则沿用工作区绑定分支）。"""
+
+    repository_id: str = Field(..., min_length=1)
+    branch_name: str = Field(..., min_length=1, max_length=255)
+
+
 class TaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=300)
     description: Optional[str] = None
@@ -18,6 +25,10 @@ class TaskCreate(BaseModel):
     # 问题定位任务专用：现象与优先级
     phenomenon: Optional[str] = None
     priority: Optional[str] = None
+    # 可选：按仓库覆盖会话使用的工作区分支
+    repository_branches: Optional[List[TaskRepositoryBranchInput]] = None
+    # 可选：仅为所选仓库子集创建 worktree（缺省/为空时默认使用工作区全部仓库）
+    repository_ids: Optional[List[str]] = None
 
     @model_validator(mode="after")
     def _validate_diagnosis_phenomenon(self):

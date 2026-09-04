@@ -17,6 +17,7 @@ from app.domains.management.schemas.management import (
     ValidateRefRequest,
 )
 from app.domains.management.services import repository_service
+from app.domains.management.services import git_ref_service
 from app.domains.management.services.git_ref_service import GitRefAccessError
 
 router = APIRouter(prefix="/management/repositories", tags=["Management Repositories"])
@@ -96,6 +97,22 @@ def get_repository(
     if not repository:
         raise HTTPException(status_code=404, detail="Repository not found")
     return repository_service.serialize_repository(repository)
+
+
+@router.get("/{repository_id}/refs")
+def list_repository_refs(
+    repository_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """列出仓库远端分支/tag，供新建工作区与会话创建时的分支选择器使用。"""
+    repository = repository_service.get_repository(db, repository_id)
+    if not repository:
+        raise HTTPException(status_code=404, detail="Repository not found")
+    try:
+        return git_ref_service.list_refs_for_picker(repository.git_url)
+    except GitRefAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 @router.put("/{repository_id}")

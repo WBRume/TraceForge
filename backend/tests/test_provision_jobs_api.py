@@ -18,7 +18,19 @@ from app.domains.skill.routers import skill as skill_router
 from app.domains.workspace.routers import workspace as workspace_router
 
 
+class _FakeQuery:
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        # 无配置行 → system_config_service 返回默认值（功能开启）
+        return None
+
+
 class _FakeDb:
+    def query(self, model):
+        return _FakeQuery()
+
     def close(self) -> None:
         return None
 
@@ -78,7 +90,9 @@ def test_create_workspace_returns_accepted_payload(monkeypatch):
             "name": "Async Workspace",
             "description": "test",
             "project_path": "G:/tmp/ws-async",
-            "git_repo_url": "https://github.com/example/repo",
+            "project_name": "P",
+            "product_name": "PR",
+            "repositories": [{"repository_id": "repo-1", "branch_name": "main"}],
         },
     )
     assert resp.status_code == 202
