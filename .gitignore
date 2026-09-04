@@ -41,6 +41,10 @@ dist/
 .coverage.*
 htmlcov/
 
+# 本地验证/截图产物（不入库）
+/.verify/
+/.verify-smoke/
+
 # Editors / OS
 .vscode/*
 !.vscode/extensions.json
