@@ -81,12 +81,15 @@ def ws_env(monkeypatch, tmp_path):
     )
 
     # manager 是进程级单例：清掉此前用例留下的连接与离线缓冲，避免事件串扰
-    main_module.manager.active_connections.clear()
+    main_module.manager.registry.rooms.clear()
+    main_module.manager.registry.presence.clear()
     main_module.manager.pending_payloads.clear()
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: test_session)
     monkeypatch.setattr(ai_job_service, "SessionLocal", lambda: test_session)
     monkeypatch.setattr(pre_input_worker, "SessionLocal", lambda: test_session)
+    # offload 层（run_db/run_db_txn）在线程内从 app.database 惰性导入 SessionLocal
+    monkeypatch.setattr("app.database.SessionLocal", lambda: test_session)
 
     async def _noop_enqueue(job_id):
         return None
@@ -109,7 +112,8 @@ def ws_env(monkeypatch, tmp_path):
     _seed(test_session, str(task_root))
     yield test_session
 
-    main_module.manager.active_connections.clear()
+    main_module.manager.registry.rooms.clear()
+    main_module.manager.registry.presence.clear()
     main_module.manager.pending_payloads.clear()
 
 

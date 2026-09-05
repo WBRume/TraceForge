@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.agents.selection import resolve_task_backend
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
+from app.core.offload import run_db
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service, chat_message_idempotency_service
 from app.domains.ai.services.chat_message_idempotency_service import ChatMessageClaim
@@ -46,12 +47,6 @@ class TaskWebSocketUser:
 class _ChatMessageRequest:
     content: str
     client_message_id: str
-
-
-@dataclass(frozen=True)
-class _CreatedChatTurn:
-    message: ChatMessage
-    job_id: str
 
 
 class TaskWebSocketHandler:
@@ -129,31 +124,41 @@ class TaskWebSocketHandler:
         task_logger.info(
             f"User chat for task {self._task_id}: message_length={len(request.content)}"
         )
-        db = self._session_factory()
-        try:
-            task = db.query(SddTask).filter(SddTask.id == self._task_id).first()
-            if not task:
-                await self._send_chat_ack(request, status="failed", message="Task not found")
-                return
+        task_status = await run_db(self._load_task_status_sync, self._task_id)
+        if task_status is None:
+            await self._send_chat_ack(request, status="failed", message="Task not found")
+            return
 
-            claim = await self._claim_chat_message(task, request)
-            if claim is None:
-                return
-            created = await self._persist_chat_message(db, task, request, claim)
-        finally:
-            db.close()
+        claim = await self._claim_chat_message(self._task_id, request)
+        if claim is None:
+            return
+        if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
+            await self._resume_interrupted_task(request, claim)
+            return
+        created = await self._persist_chat_message(request, claim)
 
         if created is not None:
             await self._publish_chat_message(request, created)
 
+    def _load_task_status_sync(self, task_id: str) -> str | None:
+        """任务状态轻量查询（调用方需在事件循环外经 run_db 执行）。"""
+        db = self._session_factory()
+        try:
+            status = db.query(SddTask.status).filter(SddTask.id == task_id).scalar()
+            if status is None:
+                return None
+            return str(getattr(status, "value", status))
+        finally:
+            db.close()
+
     async def _claim_chat_message(
         self,
-        task: SddTask,
+        task_id: str,
         request: _ChatMessageRequest,
     ) -> ChatMessageClaim | None:
         try:
             claim = await chat_message_idempotency_service.claim_message(
-                task_id=task.id,
+                task_id=task_id,
                 user_id=self._user.id,
                 client_message_id=request.client_message_id,
                 content=request.content,
@@ -189,33 +194,24 @@ class TaskWebSocketHandler:
 
     async def _persist_chat_message(
         self,
-        db: Session,
-        task: SddTask,
         request: _ChatMessageRequest,
         claim: ChatMessageClaim,
-    ) -> _CreatedChatTurn | None:
+    ) -> task_session_service.CreatedChatTurn | None:
         try:
-            if task.status == TaskStatus.INTERRUPTED:
-                await self._resume_interrupted_task(db, task, request, claim)
-                return None
-
             async with lock_task(self._task_id):
-                _turn, saved_message, job, _checkpoint = (
-                    await task_session_service.create_task_chat_turn(
-                        db,
-                        task=task,
-                        actor_user_id=self._user.id,
-                        content=request.content,
-                        context_json={"client_message_id": request.client_message_id},
-                        client_message_id=request.client_message_id,
-                    )
+                created = await task_session_service.create_task_chat_turn(
+                    task_id=self._task_id,
+                    actor_user_id=self._user.id,
+                    content=request.content,
+                    context_json={"client_message_id": request.client_message_id},
+                    client_message_id=request.client_message_id,
                 )
             await chat_message_idempotency_service.mark_message_done(
                 claim,
-                chat_message_id=saved_message.id,
-                ai_job_id=job.id,
+                chat_message_id=created.message_id,
+                ai_job_id=created.job_id,
             )
-            return _CreatedChatTurn(message=saved_message, job_id=job.id)
+            return created
         except (
             task_session_service.TaskSessionUndoError,
             task_session_control_service.TaskSessionControlError,
@@ -238,15 +234,12 @@ class TaskWebSocketHandler:
 
     async def _resume_interrupted_task(
         self,
-        db: Session,
-        task: SddTask,
         request: _ChatMessageRequest,
         claim: ChatMessageClaim,
     ) -> None:
         async with lock_task(self._task_id):
             result = await task_session_control_service.resume_interrupted_task(
-                db,
-                task=task,
+                task_id=self._task_id,
                 actor_user_id=self._user.id,
                 prompt=request.content,
                 confirm_continue=False,
@@ -281,19 +274,18 @@ class TaskWebSocketHandler:
     async def _publish_chat_message(
         self,
         request: _ChatMessageRequest,
-        created: _CreatedChatTurn,
+        created: task_session_service.CreatedChatTurn,
     ) -> None:
-        saved_message = created.message
-        created_at = saved_message.created_at.isoformat()
+        created_at = created.created_at.isoformat() if created.created_at else None
         try:
             await self._send_chat_ack(
                 request,
                 status="accepted",
-                chat_message_id=saved_message.id,
+                chat_message_id=created.message_id,
                 ai_job_id=created.job_id,
                 created_at=created_at,
-                session_turn_id=saved_message.session_turn_id,
-                session_generation=saved_message.session_generation,
+                session_turn_id=created.session_turn_id,
+                session_generation=created.session_generation,
             )
             await self._manager.send_message_to_room(
                 self._task_id,
@@ -304,7 +296,7 @@ class TaskWebSocketHandler:
                         role="user",
                         content=request.content,
                         message_type="text",
-                        id=saved_message.id,
+                        id=created.message_id,
                         client_message_id=request.client_message_id,
                         creator_id=self._user.id,
                         creator_display_name=self._user.display_name,
@@ -312,8 +304,8 @@ class TaskWebSocketHandler:
                         creator_avatar_url=self._user.avatar_url,
                         creator_avatar_svg=self._user.avatar_svg,
                         created_at=created_at,
-                        session_turn_id=saved_message.session_turn_id,
-                        session_generation=saved_message.session_generation,
+                        session_turn_id=created.session_turn_id,
+                        session_generation=created.session_generation,
                     ).model_dump(),
                 ),
             )
@@ -391,21 +383,7 @@ class TaskWebSocketHandler:
         await self._rebuild_engine_for_hitl(response)
 
     async def _rebuild_engine_for_hitl(self, response: str) -> None:
-        db = self._session_factory()
-        try:
-            task = db.query(SddTask).filter(SddTask.id == self._task_id).first()
-            task_meta = (
-                {
-                    "id": task.id,
-                    "workspace_id": task.workspace_id,
-                    "agent_backend": resolve_task_backend(db, task.id),
-                }
-                if task
-                else None
-            )
-        finally:
-            db.close()
-
+        task_meta = await run_db(self._load_hitl_task_meta_sync)
         if not task_meta:
             task_logger.warning(
                 f"No engine and task not found for HITL task {self._task_id}, "
@@ -424,40 +402,44 @@ class TaskWebSocketHandler:
         )
         asyncio.create_task(recovered_engine.run(response))
 
+    def _load_hitl_task_meta_sync(self) -> dict | None:
+        """HITL 重建所需的任务元数据（线程内执行：含 resolve_task_backend 的查询/提交）。"""
+        db = self._session_factory()
+        try:
+            task = db.query(SddTask).filter(SddTask.id == self._task_id).first()
+            if not task:
+                return None
+            return {
+                "id": task.id,
+                "workspace_id": task.workspace_id,
+                "agent_backend": resolve_task_backend(db, task.id),
+            }
+        finally:
+            db.close()
+
     async def _handle_pre_input(
         self,
         action: str,
         payload: dict[str, Any],
     ) -> None:
-        db = self._session_factory()
         try:
-            task = db.query(SddTask).filter(SddTask.id == self._task_id).first()
-            if not task:
-                await self._send_pre_input_error(action, "Task not found")
-                return
-            try:
-                await self._dispatch_pre_input_action(db, task, action, payload)
-            except pre_input_service.PreInputError as exc:
-                await self._send_pre_input_error(action, exc.message)
-            except Exception:
-                task_logger.exception(
-                    f"Failed to process {action} for task {self._task_id}"
-                )
-                await self._send_pre_input_error(action, "Failed to process pre input")
-        finally:
-            db.close()
+            await self._dispatch_pre_input_action(action, payload)
+        except pre_input_service.PreInputError as exc:
+            await self._send_pre_input_error(action, exc.message)
+        except Exception:
+            task_logger.exception(
+                f"Failed to process {action} for task {self._task_id}"
+            )
+            await self._send_pre_input_error(action, "Failed to process pre input")
 
     async def _dispatch_pre_input_action(
         self,
-        db: Session,
-        task: SddTask,
         action: str,
         payload: dict[str, Any],
     ) -> None:
         if action == "pre_input_create":
             await pre_input_service.create_pre_input(
-                db,
-                task=task,
+                task_id=self._task_id,
                 creator_id=self._user.id,
                 main_text=str(payload.get("main_text") or ""),
                 mentioned_user_ids=payload.get("mentioned_user_ids") or [],
@@ -476,22 +458,23 @@ class TaskWebSocketHandler:
         if action not in known_actions:
             raise pre_input_service.PreInputError("Unknown pre input action")
 
-        pre_input = pre_input_service.get_active_pre_input(db, self._task_id)
-        if not pre_input:
+        pre_input_brief = await pre_input_service.get_active_pre_input_brief(self._task_id)
+        if not pre_input_brief:
             raise pre_input_service.PreInputError("No collecting pre input")
+        pre_input_id = pre_input_brief["id"]
 
         if action == "pre_input_edit_document":
             await pre_input_service.edit_pre_input_document(
-                db,
-                pre_input=pre_input,
+                pre_input_id=pre_input_id,
+                task_id=self._task_id,
                 user_id=self._user.id,
                 is_expert=self._user.is_workspace_expert,
                 new_text=str(payload.get("text") or ""),
             )
         elif action == "pre_input_replace_span":
             await pre_input_service.replace_pre_input_span(
-                db,
-                pre_input=pre_input,
+                pre_input_id=pre_input_id,
+                task_id=self._task_id,
                 user_id=self._user.id,
                 is_expert=self._user.is_workspace_expert,
                 start=int(payload.get("start") or 0),
@@ -501,23 +484,22 @@ class TaskWebSocketHandler:
             )
         elif action == "pre_input_mark_done":
             await pre_input_service.mark_pre_input_done(
-                db,
-                pre_input=pre_input,
+                pre_input_id=pre_input_id,
+                task_id=self._task_id,
                 user_id=self._user.id,
             )
         elif action == "pre_input_submit":
-            if self._user.id != pre_input.creator_id:
+            if self._user.id != pre_input_brief["creator_id"]:
                 raise pre_input_service.PreInputError("Only the creator can submit")
             await pre_input_service.submit_pre_input(
-                db,
-                pre_input=pre_input,
+                pre_input_id=pre_input_id,
                 actor_user_id=self._user.id,
                 reason="manual",
             )
         elif action == "pre_input_cancel":
             await pre_input_service.cancel_pre_input(
-                db,
-                pre_input=pre_input,
+                pre_input_id=pre_input_id,
+                task_id=self._task_id,
                 actor_user_id=self._user.id,
             )
 

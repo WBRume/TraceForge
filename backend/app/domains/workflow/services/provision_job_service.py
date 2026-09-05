@@ -4,7 +4,6 @@ Provision job orchestration service.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +17,7 @@ from app.core.distributed_lock import (
     queue_workspace_task_creation,
 )
 from app.core.logging import audit_log, bind_log_context, get_logger
+from app.core.offload import run_git_job
 from app.database import SessionLocal
 from app.domains.workflow.models.provision_job import (
     ProvisionJobStatus,
@@ -517,18 +517,18 @@ async def _rollback_task_resources(*, workspace_id: str, task_id: str) -> None:
     """
     use_repo_lock = _workspace_uses_git(workspace_id)
     if not use_repo_lock:
-        await asyncio.to_thread(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+        await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
         return
     try:
         async with lock_workspace_repo(workspace_id):
-            await asyncio.to_thread(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+            await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
     except LockAcquireTimeout:
         task_logger.warning(
             "Task provision rollback skipped repo lock (busy): workspace_id={}, task_id={}",
             workspace_id,
             task_id,
         )
-        await asyncio.to_thread(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+        await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
 
 
 def _workspace_uses_git(workspace_id: str) -> bool:
@@ -591,7 +591,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                         ):
                             if use_multi_repo:
                                 mark_progress(job_id, stage="CREATING_WORKSPACE", progress=25, message="Creating workspace")
-                                result = await asyncio.to_thread(
+                                result = await run_git_job(
                                     _create_workspace_sync,
                                     job_id=job_id,
                                     creator_id=creator_id,
@@ -603,14 +603,14 @@ async def run_create_workspace_job(job_id: str) -> None:
                                     progress=40,
                                     message="Materializing workspace repositories",
                                 )
-                                repo_result = await asyncio.to_thread(
+                                repo_result = await run_git_job(
                                     _materialize_workspace_repos_sync,
                                     workspace_id=str(result.get("workspace_id") or "").strip(),
                                 )
                                 result["repository_materialization"] = repo_result
                             else:
                                 mark_progress(job_id, stage="CLONING_REPOSITORY", progress=30, message="Cloning workspace repository")
-                                result = await asyncio.to_thread(
+                                result = await run_git_job(
                                     _create_workspace_sync,
                                     job_id=job_id,
                                     creator_id=creator_id,
@@ -620,7 +620,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                         raise ValueError("Workspace repository is busy. Please retry later.") from exc
                 else:
                     mark_progress(job_id, stage="CREATING_WORKSPACE", progress=40, message="Creating workspace")
-                    result = await asyncio.to_thread(
+                    result = await run_git_job(
                         _create_workspace_sync,
                         job_id=job_id,
                         creator_id=creator_id,
@@ -743,7 +743,7 @@ async def run_create_task_job(job_id: str) -> None:
                                 progress=40,
                                 message="Preparing repository worktree",
                             )
-                            result = await asyncio.to_thread(
+                            result = await run_git_job(
                                 _prepare_task_sync,
                                 workspace_id=workspace_id,
                                 task_id=task_id,
@@ -756,7 +756,7 @@ async def run_create_task_job(job_id: str) -> None:
                         progress=35,
                         message="Preparing local workspace",
                     )
-                    result = await asyncio.to_thread(
+                    result = await run_git_job(
                         _prepare_task_sync,
                         workspace_id=workspace_id,
                         task_id=task_id,
@@ -884,7 +884,7 @@ async def run_import_skill_job(job_id: str) -> None:
                     progress=20,
                     message=f"Importing {skill_name or 'skill'} from GitHub",
                 )
-                result = await asyncio.to_thread(
+                result = await run_git_job(
                     _import_skill_sync,
                     creator_id=creator_id,
                     context=context,

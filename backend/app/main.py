@@ -213,6 +213,33 @@ async def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
     return await run_db(_load)
 
 
+def _persist_api_mock_collab_event(
+    project_id: str,
+    user_id: str,
+    event_enum,
+    endpoint_id,
+    normalized_payload: dict,
+) -> None:
+    """api-mock 协作事件落库（线程内执行，由 run_db 包装）。"""
+    db = SessionLocal()
+    try:
+        project = api_mock_service.get_project_by_id(db, project_id)
+        if project:
+            try:
+                api_mock_service.create_collab_event(
+                    db,
+                    project,
+                    user_id=user_id,
+                    event_type=event_enum,
+                    endpoint_id=str(endpoint_id) if endpoint_id else None,
+                    payload=normalized_payload,
+                )
+            except Exception:
+                api_mock_logger.exception("Failed to persist API MOCK collab event")
+    finally:
+        db.close()
+
+
 # ── WebSocket 端点 ──
 @app.websocket("/ws/task/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
@@ -294,23 +321,10 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
                 event_enum = event_mapping.get(event_type, ApiMockCollabEventType.DRAFT)
 
                 if user_id != "anonymous":
-                    db = SessionLocal()
-                    try:
-                        project = api_mock_service.get_project_by_id(db, project_id)
-                        if project:
-                            try:
-                                api_mock_service.create_collab_event(
-                                    db,
-                                    project,
-                                    user_id=user_id,
-                                    event_type=event_enum,
-                                    endpoint_id=str(endpoint_id) if endpoint_id else None,
-                                    payload=normalized_payload,
-                                )
-                            except Exception:
-                                api_mock_logger.exception("Failed to persist API MOCK collab event")
-                    finally:
-                        db.close()
+                    await run_db(
+                        _persist_api_mock_collab_event,
+                        project_id, user_id, event_enum, endpoint_id, normalized_payload,
+                    )
 
                 await api_mock_ws_manager.broadcast(
                     project_id,

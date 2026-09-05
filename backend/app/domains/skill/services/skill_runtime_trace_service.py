@@ -11,13 +11,16 @@ import asyncio
 import os
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.logging import get_logger
+from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.skill.models.skill import (
     SddSkillRuntimeEvent,
@@ -470,13 +473,31 @@ def _enqueue_or_thread(payload: Dict[str, Any]) -> None:
         return
     _ensure_writer(loop)
     if _writer_queue is not None:
-        _writer_queue.put_nowait(payload)
+        try:
+            _writer_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # 队列上限保护：满则丢弃并限频告警，避免无界堆积拖垮内存
+            global _dropped_count, _last_drop_log_at
+            _dropped_count += 1
+            now = time.monotonic()
+            if now - _last_drop_log_at > 10.0:
+                _last_drop_log_at = now
+                logger.warning(
+                    f"Runtime skill trace queue full, dropped {_dropped_count} payloads "
+                    f"(maxsize={_writer_queue.maxsize})"
+                )
+
+
+_dropped_count = 0
+_last_drop_log_at = 0.0
 
 
 def _ensure_writer(loop: asyncio.AbstractEventLoop) -> None:
     global _writer_queue, _writer_task
     if _writer_queue is None:
-        _writer_queue = asyncio.Queue()
+        _writer_queue = asyncio.Queue(
+            maxsize=max(1, int(getattr(settings, "SKILL_TRACE_QUEUE_MAX_SIZE", 1000) or 1000))
+        )
     if _writer_task is None or _writer_task.done():
         _writer_task = loop.create_task(_writer_loop())
 
@@ -486,7 +507,7 @@ async def _writer_loop() -> None:
     while True:
         payload = await _writer_queue.get()
         try:
-            events = await asyncio.to_thread(_write_payload_sync, payload)
+            events = await run_db(_write_payload_sync, payload)
             for event_payload in events:
                 await ws_manager.send_message_to_room(
                     str(event_payload.get("task_id") or payload.get("task_id") or ""),

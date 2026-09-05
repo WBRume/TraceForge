@@ -18,6 +18,7 @@ from app.core.distributed_lock import (
     queue_change_proposal_jobs,
 )
 from app.core.logging import audit_log, bind_task_context, get_logger
+from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
 from app.engine.workflow_engine import get_engine
 from app.domains.task.models.task import TaskStatus
@@ -667,9 +668,8 @@ async def initialize_task(
                 content=init_reason_text,
                 message_type="init_reason",
             )
-            _turn, _prompt_message, job, _checkpoint = await task_session_service.create_task_chat_turn(
-                db,
-                task=task,
+            created = await task_session_service.create_task_chat_turn(
+                task_id=task_id,
                 actor_user_id=current_user.id,
                 content=user_display,
                 prompt_text=prompt,
@@ -680,9 +680,12 @@ async def initialize_task(
                 },
                 fresh_session=True,
             )
-            await ai_job_service.enqueue_task_chat_job(job.id)
+            await ai_job_service.enqueue_task_chat_job(created.job_id)
+            job_payload = await run_db_txn(
+                lambda db: ai_job_service.serialize_job(db.get(ai_job_service.SddAiJob, created.job_id))
+            )
 
-            return {"msg": "Task initialized", "job": ai_job_service.serialize_job(job)}
+            return {"msg": "Task initialized", "job": job_payload}
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -914,8 +917,7 @@ async def resume_interrupted_task(
                 raise HTTPException(status_code=404, detail="Task not found")
             _ensure_task_not_baselined(task)
             return await task_session_control_service.resume_interrupted_task(
-                db,
-                task=task,
+                task_id=task_id,
                 actor_user_id=current_user.id,
                 prompt=body.prompt,
                 confirm_continue=body.confirm_continue,

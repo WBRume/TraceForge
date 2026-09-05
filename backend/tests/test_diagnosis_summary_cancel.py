@@ -330,15 +330,20 @@ def test_chat_turn_rejected_while_summary_active():
                 job_kind="DIAGNOSIS_SUMMARY",
                 queue_key=f"DIAGNOSIS_SUMMARY:{task.id}",
             )
-            with pytest.raises(task_session_service.TaskSessionUndoError) as excinfo:
-                asyncio.run(
-                    task_session_service.create_task_chat_turn(
-                        db,
-                        task=task,
-                        actor_user_id=user.id,
-                        content="继续排查",
+            # offload 层在线程内从 app.database 惰性导入 SessionLocal
+            monkeypatch_tmp = pytest.MonkeyPatch()
+            try:
+                monkeypatch_tmp.setattr("app.database.SessionLocal", SessionLocal)
+                with pytest.raises(task_session_service.TaskSessionUndoError) as excinfo:
+                    asyncio.run(
+                        task_session_service.create_task_chat_turn(
+                            task_id=task.id,
+                            actor_user_id=user.id,
+                            content="继续排查",
+                        )
                     )
-                )
+            finally:
+                monkeypatch_tmp.undo()
             assert excinfo.value.code == "DIAGNOSIS_SUMMARY_BUSY"
     finally:
         engine.dispose()
@@ -363,15 +368,19 @@ def test_resume_interrupted_rejected_while_summary_active():
                 job_kind="DIAGNOSIS_SUMMARY",
                 queue_key=f"DIAGNOSIS_SUMMARY:{task.id}",
             )
-            with pytest.raises(task_session_control_service.TaskSessionControlError) as excinfo:
-                asyncio.run(
-                    task_session_control_service.resume_interrupted_task(
-                        db,
-                        task=task,
-                        actor_user_id=user.id,
-                        prompt="继续",
+            monkeypatch_tmp = pytest.MonkeyPatch()
+            try:
+                monkeypatch_tmp.setattr("app.database.SessionLocal", SessionLocal)
+                with pytest.raises(task_session_control_service.TaskSessionControlError) as excinfo:
+                    asyncio.run(
+                        task_session_control_service.resume_interrupted_task(
+                            task_id=task.id,
+                            actor_user_id=user.id,
+                            prompt="继续",
+                        )
                     )
-                )
+            finally:
+                monkeypatch_tmp.undo()
             assert excinfo.value.status_code == 409
     finally:
         engine.dispose()

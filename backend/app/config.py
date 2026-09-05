@@ -48,8 +48,10 @@ class Settings(BaseSettings):
     DB_POOL_RECYCLE_SECONDS: int = 3600
     # 同步 DB offload 线程池（app.core.offload）：db 专用 4 起步，压测后调整；git/文件独立池避免互相拖死
     DB_OFFLOAD_WORKERS: int = 4
-    GIT_OFFLOAD_WORKERS: int = 2
+    GIT_OFFLOAD_WORKERS: int = 4
     FILE_OFFLOAD_WORKERS: int = 2
+    # 本地 git 命令硬超时（秒）：subprocess_runner 统一注入，超时整组回收，防止 offload 线程被挂死 git 永久占用
+    GIT_COMMAND_TIMEOUT_SECONDS: int = 180
 
     @property
     def DATABASE_URL(self) -> str:
@@ -170,6 +172,10 @@ class Settings(BaseSettings):
     # context segment 批量写入：按条数或时间窗触发（结束/异常/HITL 前强制 flush）
     SEGMENT_FLUSH_INTERVAL_SECONDS: float = 0.2
     SEGMENT_FLUSH_MAX_ITEMS: int = 50
+    # thinking WS 帧节流：delta 帧按此窗口合并发送，快照帧立即发
+    THINKING_WS_INTERVAL_SECONDS: float = 0.2
+    # skill runtime trace writer 队列上限：满则丢弃并限频告警，避免无界堆积
+    SKILL_TRACE_QUEUE_MAX_SIZE: int = 1000
     # 事件门禁 TTL：缓存 job/task revision 状态，过期后经 DB 重校验一次（周期兜底）
     REVISION_GATE_TTL_SECONDS: float = 1.0
 

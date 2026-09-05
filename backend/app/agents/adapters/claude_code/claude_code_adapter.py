@@ -211,8 +211,10 @@ class ClaudeCodeAdapter(AgentBackend):
         try:
             os.link(source_file, target_file)
         except OSError:
-            # 跨卷/文件系统不支持硬链接时回退为复制（单文件，一次性）
-            shutil.copy2(source_file, target_file)
+            # 跨卷/文件系统不支持硬链接时回退为复制（单文件，一次性，offload 到 file 池）
+            from app.core.offload import run_file_job
+
+            await run_file_job(shutil.copy2, source_file, target_file)
         return session_id
 
     async def start_session(

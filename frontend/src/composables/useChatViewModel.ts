@@ -152,14 +152,17 @@ export function useChatViewModel() {
   let referenceHighlightTimer: number | null = null
   
   // AI 思考面�?
+  // AI thinking panel: delta/snapshot frame protocol state
   const thinkingContent = ref('')
   const showThinking = ref(false)
   const thinkingExpanded = ref(false)
+  const thinkingSequence = ref(0)
   const taskRuntimePanels = useTaskRuntimePanels()
   const resetThinkingPanel = () => {
     thinkingContent.value = ''
     showThinking.value = false
     thinkingExpanded.value = false
+    thinkingSequence.value = 0
   }
   
   // 运行状况总览
@@ -2515,8 +2518,19 @@ export function useChatViewModel() {
   
       case 'thinking': {
         // AI 思考过�?�?思考面�?(不进入对话气�?
+        const sequence = Number(payload?.sequence ?? 0)
+        if (sequence > 0 && sequence <= thinkingSequence.value) {
+          break
+        }
+        thinkingSequence.value = sequence
         const wasThinkingVisible = showThinking.value
-        thinkingContent.value = payload.content
+        const delta = typeof payload?.delta === 'string' ? payload.delta : null
+        if (delta !== null) {
+          // delta frame: append instead of whole replace (content is empty)
+          thinkingContent.value += delta
+        } else {
+          thinkingContent.value = String(payload?.content || '')
+        }
         showThinking.value = true
         if (!wasThinkingVisible) {
           thinkingExpanded.value = false

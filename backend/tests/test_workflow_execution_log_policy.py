@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -40,9 +41,10 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
         engine._push_chat.assert_awaited_once_with("assistant", "assistant reply")
         engine._queue_execution_log.assert_not_called()
 
-    async def test_thinking_delta_accumulates_and_full_thinking_replaces(self):
+    async def test_thinking_delta_throttles_and_snapshot_replaces(self):
         engine = self._engine()
 
+        # delta 帧：累积 buffer、节流发送（不立即推 WS）
         await engine.handle_agent_event(AgentEvent(
             type="thinking",
             payload={"text": "check", "delta": "check"},
@@ -53,18 +55,54 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
             payload={"text": "ing", "delta": "ing"},
             provider="dsh",
         ))
+        self.assertEqual(engine._thinking_buffer, "checking")
+        self.assertEqual(engine._ws_push.await_count, 0)
+
+        # 快照帧（无 delta 键）：整体替换 + 立即发送
         await engine.handle_agent_event(AgentEvent(
             type="thinking",
             payload={"text": "FINAL"},
             provider="dsh",
         ))
-
         self.assertEqual(engine._thinking_buffer, "FINAL")
-        self.assertEqual(engine._ws_push.await_count, 3)
-        thinking_payloads = [call.args[1] for call in engine._ws_push.await_args_list]
-        self.assertEqual(thinking_payloads[0].get("content"), "check")
-        self.assertEqual(thinking_payloads[1].get("content"), "checking")
-        self.assertEqual(thinking_payloads[2].get("content"), "FINAL")
+        self.assertEqual(engine._ws_push.await_count, 1)
+        frame = engine._ws_push.await_args.args[1]
+        self.assertEqual(frame.get("content"), "FINAL")
+        self.assertIsNone(frame.get("delta"))
+        self.assertGreaterEqual(frame.get("sequence"), 1)
+        self.assertFalse(frame.get("final"))
+
+    async def test_thinking_delta_frame_merged_and_final(self):
+        engine = self._engine()
+
+        await engine.handle_agent_event(AgentEvent(
+            type="thinking",
+            payload={"text": "a", "delta": "a"},
+            provider="dsh",
+        ))
+        await engine.handle_agent_event(AgentEvent(
+            type="thinking",
+            payload={"text": "b", "delta": "b"},
+            provider="dsh",
+        ))
+        self.assertEqual(engine._ws_push.await_count, 0)
+
+        # 节流窗口到期：两条 delta 合并为一帧增量
+        await asyncio.sleep(0.3)
+        self.assertEqual(engine._ws_push.await_count, 1)
+        frame = engine._ws_push.await_args.args[1]
+        self.assertEqual(frame.get("delta"), "ab")
+        self.assertEqual(frame.get("content"), "")
+        self.assertEqual(frame.get("sequence"), 1)
+        self.assertFalse(frame.get("final"))
+
+        # 收口帧：快照语义 + final 标记
+        await engine._finish_thinking()
+        self.assertEqual(engine._ws_push.await_count, 2)
+        final_frame = engine._ws_push.await_args.args[1]
+        self.assertTrue(final_frame.get("final"))
+        self.assertEqual(final_frame.get("content"), "ab")
+        self.assertIsNone(final_frame.get("delta"))
 
     async def test_tool_events_are_persisted_once_each(self):
         engine = self._engine()

@@ -18,6 +18,7 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.domains.task.models.task import TaskStatus  # noqa: E402
+from app.domains.task.services import task_session_service  # noqa: E402
 from app.domains.websocket.ws import task_handler  # noqa: E402
 from app.domains.websocket.ws.task_handler import (  # noqa: E402
     TaskWebSocketHandler,
@@ -93,27 +94,28 @@ async def test_run_disconnects_once_when_client_disconnects():
 async def test_chat_message_is_acked_broadcast_and_enqueued(monkeypatch):
     websocket = _FakeWebSocket()
     manager = _FakeConnectionManager()
-    db = Mock()
-    task = SimpleNamespace(id="task-1", status=TaskStatus.CODING)
-    db.query.return_value.filter.return_value.first.return_value = task
 
     claim = SimpleNamespace(claimed=True)
-    saved_message = SimpleNamespace(
-        id="message-1",
+    created = task_session_service.CreatedChatTurn(
+        task_id="task-1",
+        workspace_id="ws-1",
+        message_id="message-1",
         created_at=datetime(2026, 9, 2, 9, 30),
         session_turn_id="turn-1",
         session_generation=3,
+        job_id="job-1",
     )
-    job = SimpleNamespace(id="job-1")
     claim_message = AsyncMock(return_value=claim)
     mark_done = AsyncMock()
-    create_turn = AsyncMock(return_value=(Mock(), saved_message, job, Mock()))
+    create_turn = AsyncMock(return_value=created)
     enqueue = AsyncMock()
+    load_status = AsyncMock(return_value="CODING")
 
     @asynccontextmanager
     async def _unlocked(_task_id):
         yield
 
+    monkeypatch.setattr(task_handler, "run_db", load_status)
     monkeypatch.setattr(task_handler, "lock_task", _unlocked)
     monkeypatch.setattr(
         task_handler.chat_message_idempotency_service,
@@ -136,7 +138,7 @@ async def test_chat_message_is_acked_broadcast_and_enqueued(monkeypatch):
         enqueue,
     )
 
-    handler = _handler(websocket=websocket, manager=manager, session=db)
+    handler = _handler(websocket=websocket, manager=manager)
     await handler._dispatch(
         {
             "type": "chat_message",
@@ -159,14 +161,12 @@ async def test_chat_message_is_acked_broadcast_and_enqueued(monkeypatch):
     assert event.payload["creator_id"] == "user-1"
     assert event.payload["session_turn_id"] == "turn-1"
     enqueue.assert_awaited_once_with("job-1")
-    db.close.assert_called_once_with()
+    load_status.assert_awaited_once_with(handler._load_task_status_sync, "task-1")
 
 
 @pytest.mark.asyncio
 async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
     websocket = _FakeWebSocket()
-    db = Mock()
-    db.query.return_value.filter.return_value.first.return_value = SimpleNamespace(id="task-1")
     claim = SimpleNamespace(
         claimed=False,
         status="done",
@@ -176,13 +176,14 @@ async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
             "finished_at": "2026-09-02T09:30:00",
         },
     )
+    monkeypatch.setattr(task_handler, "run_db", AsyncMock(return_value="CODING"))
     monkeypatch.setattr(
         task_handler.chat_message_idempotency_service,
         "claim_message",
         AsyncMock(return_value=claim),
     )
 
-    await _handler(websocket=websocket, session=db)._dispatch(
+    await _handler(websocket=websocket)._dispatch(
         {
             "type": "chat_message",
             "payload": {"content": "hello", "client_message_id": "client-1"},
@@ -194,7 +195,6 @@ async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
     assert ack["chat_message_id"] == "message-existing"
     assert ack["ai_job_id"] == "job-existing"
     assert ack["created_at"] == "2026-09-02T09:30:00"
-    db.close.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -228,17 +228,19 @@ async def test_durable_chat_turn_is_enqueued_when_ack_connection_is_closed(monke
         "enqueue_task_chat_job",
         enqueue,
     )
-    saved_message = SimpleNamespace(
-        id="message-1",
+    created = task_session_service.CreatedChatTurn(
+        task_id="task-1",
+        workspace_id="ws-1",
+        message_id="message-1",
         created_at=datetime(2026, 9, 2, 9, 30),
         session_turn_id="turn-1",
         session_generation=3,
+        job_id="job-1",
     )
     request = task_handler._ChatMessageRequest(
         content="hello",
         client_message_id="client-1",
     )
-    created = task_handler._CreatedChatTurn(message=saved_message, job_id="job-1")
 
     with pytest.raises(WebSocketDisconnect):
         await _handler(websocket=_DisconnectedWebSocket())._publish_chat_message(

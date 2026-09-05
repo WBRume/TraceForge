@@ -6,8 +6,6 @@ from __future__ import annotations
 
 import os
 import re
-import signal
-import subprocess
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -75,69 +73,23 @@ def _git_timeout_seconds() -> int:
     return max(1, int(getattr(settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 240) or 240))
 
 
-def _git_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env.update(
-        {
-            "GIT_TERMINAL_PROMPT": "0",
-            "GCM_INTERACTIVE": "Never",
-            "GIT_ASKPASS": "echo",
-            "SSH_ASKPASS": "echo",
-        }
-    )
-    return env
-
-
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except Exception:
-        process.kill()
-
-
 def _run_git_checked(args: List[str], *, cwd: str | None = None) -> str:
-    command = ["git", *args]
+    from app.core.subprocess_runner import ProcessTimeoutError, run_git
+
     try:
-        process = subprocess.Popen(
-            command,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=_git_env(),
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-            start_new_session=os.name != "nt",
-        )
+        result = run_git(list(args), cwd=cwd, timeout_seconds=_git_timeout_seconds())
     except FileNotFoundError as exc:
         raise GithubImportError("Git executable not found in PATH") from exc
-
-    try:
-        stdout, stderr = process.communicate(timeout=_git_timeout_seconds())
-    except subprocess.TimeoutExpired as exc:
-        _terminate_process_tree(process)
-        try:
-            stdout, stderr = process.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            stdout, stderr = "", ""
+    except ProcessTimeoutError as exc:
         raise GithubImportError(f"Git command timed out: git {' '.join(args)}") from exc
 
-    if process.returncode != 0:
-        message = (stderr or "").strip() or (stdout or "").strip() or f"exit code {process.returncode}"
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        stdout = (result.stdout or "").strip()
+        message = stderr or stdout or f"exit code {result.returncode}"
         raise GithubImportError(f"Git command failed: git {' '.join(args)} | {message}")
 
-    return (stdout or "").strip()
+    return (result.stdout or "").strip()
 
 
 @contextmanager

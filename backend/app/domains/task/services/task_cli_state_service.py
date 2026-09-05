@@ -24,6 +24,7 @@ from app.core.distributed_lock import (
     queue_bootstrap_jobs,
 )
 from app.core.logging import bind_task_context, get_logger
+from app.core.offload import run_file_job
 from app.database import SessionLocal
 from app.agents.selection import (
     backend_supports_fork,
@@ -488,7 +489,7 @@ async def _run_bootstrap(task_id: str) -> None:
                                 baseline_dir=baseline_dir,
                                 error_message=None,
                             )
-                            spec_path = await asyncio.to_thread(
+                            spec_path = await run_file_job(
                                 _resolve_bootstrap_spec_path,
                                 task_spec_doc_path=task_spec_doc_path,
                                 version_original_path=version_original_path,
@@ -955,7 +956,7 @@ async def cleanup_task_cli_state(workspace_id: str, task_id: str) -> None:
     with bind_task_context(task_id=task_id, workspace_id=workspace_id):
         try:
             async with lock_task(task_id, ttl=settings.BOOTSTRAP_LOCK_TTL_SECONDS):
-                await asyncio.to_thread(_safe_rmtree, root)
+                await run_file_job(_safe_rmtree, root)
                 logger.info(f"Cleaned task CLI state root: {root}")
         except LockAcquireTimeout as exc:
             logger.warning(

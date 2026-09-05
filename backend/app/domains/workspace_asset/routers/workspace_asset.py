@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
+from app.core.offload import run_db
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationCreateRequest,
@@ -1018,7 +1019,7 @@ async def create_workspace_asset_task_human_delta(
 
     try:
         async with queue_workspace_compare_jobs(workspace_id=ws_id):
-            await asyncio.to_thread(
+            await run_db(
                 workspace_task_detail_service.create_human_delta,
                 db, ws_id, task_id, current_user.id, payload,
             )

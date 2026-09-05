@@ -96,6 +96,20 @@ async def run_db(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     return await run_in_executor(db_executor(), fn, *args, **kwargs)
 
 
+async def run_git_job(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """在 git 专用线程池中执行同步函数（git 子进程 + 快照/工作树操作）。
+
+    git 子进程由 app.core.subprocess_runner 保证硬超时与整组回收，
+    不会永久占用本池线程；本池与 DB/file 池隔离，避免互相拖死。
+    """
+    return await run_in_executor(git_executor(), fn, *args, **kwargs)
+
+
+async def run_file_job(fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """在文件专用线程池中执行同步函数（大文件复制/删除等）。"""
+    return await run_in_executor(file_executor(), fn, *args, **kwargs)
+
+
 async def run_db_txn(body: Callable[[Any], T]) -> T:
     """线程内创建 SessionLocal 执行 body；body 正常返回即 commit，异常即 rollback。
 
