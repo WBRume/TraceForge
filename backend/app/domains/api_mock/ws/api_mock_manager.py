@@ -1,5 +1,8 @@
 """
 WebSocket manager for API MOCK collaboration rooms.
+
+出站发送统一委托 ConnectionRegistry（每连接有界队列 + sender task）；
+Redis pub/sub 扇出与 worker 线程桥接逻辑保持不变。
 """
 
 from __future__ import annotations
@@ -14,66 +17,49 @@ from fastapi import WebSocket
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.redis_client import get_redis_client
+from app.domains.websocket.ws.connection import ConnectionRegistry, OutboundConnection
 
 logger = get_logger(__name__, category="api_mock")
 
 
 class ApiMockConnectionManager:
     def __init__(self) -> None:
-        self.active_connections: Dict[str, Set[WebSocket]] = {}
-        self.user_presence: Dict[str, Dict[WebSocket, str]] = {}
+        # project_id -> {websocket: OutboundConnection}（统一连接发送器）
+        self.registry = ConnectionRegistry()
         self._instance_id = uuid.uuid4().hex
         self._redis_channel_prefix = f"{settings.DISTRIBUTED_LOCK_KEY_PREFIX}:api-mock:jobs"
         self._redis_listener_task: Optional[asyncio.Task[None]] = None
         self._redis_listener_lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket, project_id: str, user_id: str) -> None:
+    # 兼容视图：project_id -> 活跃 WebSocket 集合（只读用途）
+    @property
+    def active_connections(self) -> Dict[str, Set[WebSocket]]:
+        return {key: set(sockets) for key, sockets in self.registry.rooms.items()}
+
+    @property
+    def user_presence(self) -> Dict[str, Dict[WebSocket, str]]:
+        return {key: dict(users) for key, users in self.registry.presence.items()}
+
+    async def connect(self, websocket: WebSocket, project_id: str, user_id: str) -> OutboundConnection:
         await websocket.accept()
-        self.active_connections.setdefault(project_id, set()).add(websocket)
-        self.user_presence.setdefault(project_id, {})[websocket] = user_id
+        connection = await self.registry.connect(project_id, websocket, user_id=user_id)
         if settings.REDIS_ENABLED:
             try:
                 await self.ensure_job_subscription()
             except Exception as exc:
                 logger.warning(f"API MOCK Redis subscription init failed: {exc}")
         logger.info(f"API MOCK WS connected: project={project_id} user={user_id}")
+        return connection
 
     def disconnect(self, websocket: WebSocket, project_id: str) -> None:
-        if project_id in self.active_connections:
-            self.active_connections[project_id].discard(websocket)
-            if not self.active_connections[project_id]:
-                self.active_connections.pop(project_id, None)
-
-        if project_id in self.user_presence:
-            self.user_presence[project_id].pop(websocket, None)
-            if not self.user_presence[project_id]:
-                self.user_presence.pop(project_id, None)
-
+        self.registry.disconnect(project_id, websocket)
         logger.info(f"API MOCK WS disconnected: project={project_id}")
 
     def online_users(self, project_id: str) -> List[str]:
-        users = list(self.user_presence.get(project_id, {}).values())
-        deduped: List[str] = []
-        for user_id in users:
-            if user_id not in deduped:
-                deduped.append(user_id)
-        return deduped
+        return self.registry.online_users(project_id)
 
     async def _broadcast_local(self, project_id: str, payload: dict) -> None:
-        connections = self.active_connections.get(project_id)
-        if not connections:
-            return
-
-        dead: List[WebSocket] = []
-        for ws in list(connections):
-            try:
-                await ws.send_json(payload)
-            except Exception as exc:
-                logger.warning(f"API MOCK WS send failed: {exc}")
-                dead.append(ws)
-
-        for ws in dead:
-            self.disconnect(ws, project_id)
+        self.registry.broadcast_json(project_id, payload)
 
     async def broadcast(self, project_id: str, payload: dict) -> None:
         await self._broadcast_local(project_id, payload)

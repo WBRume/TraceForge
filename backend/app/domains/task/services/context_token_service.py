@@ -290,6 +290,7 @@ def record_segment(
     preview: Optional[str] = None,
     metadata_json: Optional[Dict[str, Any]] = None,
     dedupe: bool = False,
+    commit: bool = True,
 ) -> SddContextTokenSegment:
     category_value = _coerce_category(category)
     text, char_count, byte_count, content_hash, generated_preview = _text_stats(content)
@@ -341,39 +342,24 @@ def record_segment(
         metadata_json=_json_safe_metadata(metadata_json),
     )
     db.add(row)
-    db.commit()
-    db.refresh(row)
+    if commit:
+        db.commit()
+        db.refresh(row)
     return row
 
 
-def update_snapshot_usage(
+def _apply_snapshot_usage(
     db: Session,
+    snapshot: SddContextTokenSnapshot,
     *,
-    snapshot: Optional[SddContextTokenSnapshot] = None,
-    workspace_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    ai_job_id: Optional[str] = None,
-    session_id: Optional[str] = None,
     usage: Optional[Dict[str, Any]] = None,
     model: Optional[str] = None,
     status: Optional[str] = None,
     duration_ms: Optional[int] = None,
     total_cost_usd: Optional[float] = None,
     raw_usage_json: Any = None,
-) -> Optional[SddContextTokenSnapshot]:
-    if snapshot is None:
-        if not workspace_id or not task_id:
-            return None
-        snapshot = ensure_snapshot(
-            db,
-            workspace_id=workspace_id,
-            task_id=task_id,
-            ai_job_id=ai_job_id,
-            session_id=session_id,
-            model=model,
-            status=status,
-        )
-
+) -> None:
+    """把用量/模型/状态合并进 snapshot（不提交）；供 update_snapshot_usage 与批量落库共用。"""
     normalized_usage = usage if isinstance(usage, dict) else {}
     has_provider_usage = any(_token_value(normalized_usage.get(field)) is not None for field in PROVIDER_TOKEN_FIELDS)
     for field in PROVIDER_TOKEN_FIELDS:
@@ -410,9 +396,233 @@ def update_snapshot_usage(
     elif normalized_usage.get("raw_usage") is not None:
         snapshot.raw_usage_json = normalized_usage.get("raw_usage")
 
+
+def update_snapshot_usage(
+    db: Session,
+    *,
+    snapshot: Optional[SddContextTokenSnapshot] = None,
+    workspace_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    ai_job_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    usage: Optional[Dict[str, Any]] = None,
+    model: Optional[str] = None,
+    status: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    total_cost_usd: Optional[float] = None,
+    raw_usage_json: Any = None,
+) -> Optional[SddContextTokenSnapshot]:
+    if snapshot is None:
+        if not workspace_id or not task_id:
+            return None
+        snapshot = ensure_snapshot(
+            db,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            ai_job_id=ai_job_id,
+            session_id=session_id,
+            model=model,
+            status=status,
+        )
+
+    _apply_snapshot_usage(
+        db,
+        snapshot,
+        usage=usage,
+        model=model,
+        status=status,
+        duration_ms=duration_ms,
+        total_cost_usd=total_cost_usd,
+        raw_usage_json=raw_usage_json,
+    )
+
     db.commit()
     db.refresh(snapshot)
     return snapshot
+
+
+def record_segments_batch(
+    db: Session,
+    entries: List[Tuple[str, Dict[str, Any]]],
+    *,
+    snapshot_update: Optional[Dict[str, Any]] = None,
+) -> int:
+    """批量落库 context segments（单事务一次 commit），供引擎按窗口 flush。
+
+    entries 为 (recorder, kwargs) 列表；recorder ∈ {"tool_input", "tool_result",
+    "thinking", "hitl"}，kwargs 与 record_tool_input / record_tool_result /
+    record_thinking / record_hitl 形参一致。snapshot_update 可选，与
+    update_snapshot_usage 同参（须含 workspace_id/task_id），在批内同事务更新。
+
+    原子性：ensure_snapshot 的内部 commit 发生在任何 segment 行 pending 之前，
+    随后全部 segment 行与 snapshot 更新在一次 commit 中提交；失败整体回滚。
+    返回真正新增的 segment 行数（批内去重命中不计入）。
+    """
+    if not entries and not snapshot_update:
+        return 0
+
+    supported = {"tool_input", "tool_result", "thinking", "hitl"}
+    for recorder, _kwargs in entries:
+        if recorder not in supported:
+            raise ValueError(f"Unsupported batch segment recorder: {recorder}")
+
+    def _snapshot_key(kwargs: Dict[str, Any]) -> Tuple[str, str, str, str]:
+        return (
+            str(kwargs.get("workspace_id") or ""),
+            str(kwargs.get("task_id") or ""),
+            str(kwargs.get("ai_job_id") or ""),
+            str(kwargs.get("session_id") or ""),
+        )
+
+    # 先集中 ensure 全部 snapshot（此时无 pending segment 行，内部 commit 不破坏原子性）
+    status_by_key: Dict[Tuple[str, str, str, str], str] = {}
+    for recorder, kwargs in entries:
+        key = _snapshot_key(kwargs)
+        if recorder == "hitl" and kwargs.get("response") is None:
+            status_by_key[key] = "WAITING_HITL"
+        else:
+            status_by_key.setdefault(key, "RUNNING")
+
+    snapshots: Dict[Tuple[str, str, str, str], SddContextTokenSnapshot] = {}
+    for key, snapshot_status in status_by_key.items():
+        workspace_id, task_id, ai_job_id, session_id = key
+        snapshots[key] = ensure_snapshot(
+            db,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            ai_job_id=ai_job_id or None,
+            session_id=session_id or None,
+            status=snapshot_status,
+        )
+
+    processed = 0
+    # 批内去重（autoflush=False 下 _existing_segment 看不到同批未 flush 的行）
+    seen_dedupe_keys: set = set()
+    try:
+        for recorder, kwargs in entries:
+            kwargs = dict(kwargs)
+            snapshot = snapshots[_snapshot_key(kwargs)]
+            if recorder == "tool_input":
+                tool_name = str(kwargs.get("tool_name") or "tool")
+                tool_input = kwargs.get("tool_input")
+                tool_use_id = str(kwargs.get("tool_use_id") or "")
+                input_text = _json_text(tool_input)
+                input_keys = list(tool_input.keys())[:50] if isinstance(tool_input, dict) else None
+                dedupe_key = (
+                    snapshot.id,
+                    ContextTokenCategory.TOOL_INPUT,
+                    "tool_use",
+                    tool_use_id,
+                    _content_hash(input_text),
+                )
+                if dedupe_key in seen_dedupe_keys:
+                    continue
+                seen_dedupe_keys.add(dedupe_key)
+                record_segment(
+                    db,
+                    snapshot=snapshot,
+                    category=ContextTokenCategory.TOOL_INPUT,
+                    source_kind="tool_use",
+                    source_ref_id=tool_use_id,
+                    tool_use_id=tool_use_id,
+                    content=input_text,
+                    title=tool_name,
+                    metadata_json={"tool_name": tool_name, "input_keys": input_keys},
+                    dedupe=True,
+                    commit=False,
+                )
+            elif recorder == "tool_result":
+                tool_use_id = str(kwargs.get("tool_use_id") or "")
+                has_runtime_skill_evidence = (
+                    db.query(SddSkillRuntimeEvent.id)
+                    .filter(
+                        SddSkillRuntimeEvent.task_id == str(kwargs.get("task_id") or ""),
+                        SddSkillRuntimeEvent.tool_use_id == tool_use_id.strip(),
+                        SddSkillRuntimeEvent.event_type != SkillRuntimeEventType.TOOL_RESULT,
+                    )
+                    .first()
+                    is not None
+                )
+                record_segment(
+                    db,
+                    snapshot=snapshot,
+                    category=ContextTokenCategory.RUNTIME_SKILLS if has_runtime_skill_evidence else ContextTokenCategory.TOOL_RESULT,
+                    source_kind="runtime_skill_tool_result" if has_runtime_skill_evidence else "tool_result",
+                    source_ref_id=tool_use_id,
+                    tool_use_id=tool_use_id,
+                    content=kwargs.get("output"),
+                    title="Tool Result",
+                    metadata_json={"is_error": bool(kwargs.get("is_error"))},
+                    dedupe=False,
+                    commit=False,
+                )
+            elif recorder == "thinking":
+                record_segment(
+                    db,
+                    snapshot=snapshot,
+                    category=ContextTokenCategory.THINKING,
+                    source_kind="assistant_thinking",
+                    source_ref_id=snapshot.ai_job_id,
+                    content=kwargs.get("content"),
+                    title="Thinking",
+                    dedupe=False,
+                    commit=False,
+                )
+            else:  # hitl
+                prompt = str(kwargs.get("prompt") or "")
+                response = kwargs.get("response")
+                content = prompt if response is None else f"{prompt}\n{response}"
+                record_segment(
+                    db,
+                    snapshot=snapshot,
+                    category=ContextTokenCategory.HITL,
+                    source_kind=str(kwargs.get("source_kind") or "hitl_prompt"),
+                    source_ref_id=snapshot.ai_job_id,
+                    content=content,
+                    title="HITL",
+                    metadata_json={"has_response": response is not None},
+                    dedupe=False,
+                    commit=False,
+                )
+
+        if snapshot_update:
+            target_kwargs = {
+                "workspace_id": snapshot_update.get("workspace_id"),
+                "task_id": snapshot_update.get("task_id"),
+                "ai_job_id": snapshot_update.get("ai_job_id"),
+                "session_id": snapshot_update.get("session_id"),
+            }
+            key = _snapshot_key(target_kwargs)
+            target = snapshots.get(key)
+            if target is None:
+                target = ensure_snapshot(
+                    db,
+                    workspace_id=str(target_kwargs["workspace_id"] or ""),
+                    task_id=str(target_kwargs["task_id"] or ""),
+                    ai_job_id=target_kwargs["ai_job_id"],
+                    session_id=target_kwargs["session_id"],
+                    status=snapshot_update.get("status") or "RUNNING",
+                )
+                snapshots[key] = target
+            _apply_snapshot_usage(
+                db,
+                target,
+                usage=snapshot_update.get("usage"),
+                model=snapshot_update.get("model"),
+                status=snapshot_update.get("status"),
+                duration_ms=snapshot_update.get("duration_ms"),
+                total_cost_usd=snapshot_update.get("total_cost_usd"),
+                raw_usage_json=snapshot_update.get("raw_usage_json"),
+            )
+
+        # 只统计真正新增的 segment 行（ensure 阶段的 pending 已提交/不存在；
+        # 批内去重命中不会进入 db.new；须在 commit 前读取）
+        written = len(db.new)
+        db.commit()
+        return written
+    except Exception:
+        db.rollback()
+        raise
 
 
 def record_task_prompt(

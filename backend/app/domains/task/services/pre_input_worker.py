@@ -41,7 +41,7 @@ async def _scan_once() -> int:
         for pre_input in due_rows:
             # 倒计时结束但仍有成员停留在任务会话窗口时，不自动提交；
             # 等最后一个人离开窗口后，由下一轮扫描再提交。
-            if task_ws_manager.active_connections.get(pre_input.task_id):
+            if task_ws_manager.has_subscribers(pre_input.task_id):
                 logger.info(
                     f"Pre input {pre_input.id} deadline reached but task still has active window users, skip auto-submit"
                 )

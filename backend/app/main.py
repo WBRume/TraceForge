@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError
 
 from app.config import settings
+from app.core.offload import run_db, shutdown_offload_executors
 from app.core.redis_client import close_redis_client
 from app.core.logging import (
     bind_log_context,
@@ -109,6 +110,10 @@ async def _on_shutdown() -> None:
         await close_redis_client()
     except Exception:
         logger.warning("Failed to close redis client on shutdown")
+    try:
+        shutdown_offload_executors()
+    except Exception:
+        logger.warning("Failed to shutdown offload executors")
 
 # ── 路由挂载 ──
 app.include_router(auth.router, prefix="/api")
@@ -141,45 +146,49 @@ app.include_router(api_mock.gateway_router)
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
-def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
+async def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
+    """连接即鉴权（JOIN 一次）：JWT 解码留事件循环，DB 查询经 DB executor。"""
     token = str(websocket.query_params.get("token") or "").strip()
     if not token:
         return None
 
-    db = SessionLocal()
     try:
+        payload = auth_service.decode_token(token, expected_type="access")
+    except JWTError:
+        return None
+
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        return None
+
+    def _load() -> dict | None:
+        db = SessionLocal()
         try:
-            payload = auth_service.decode_token(token, expected_type="access")
-        except JWTError:
-            return None
+            user = db.query(User).filter(User.id == user_id).first()
+            task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
+            if not user or not task_obj:
+                return None
 
-        user_id = str(payload.get("sub") or "").strip()
-        if not user_id:
-            return None
+            member = workspace_service.get_workspace_member(db, task_obj.workspace_id, user.id)
+            if not member:
+                return None
 
-        user = db.query(User).filter(User.id == user_id).first()
-        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-        if not user or not task_obj:
-            return None
+            return {
+                "user_id": user.id,
+                "display_name": user.display_name,
+                "avatar_url": user.avatar_url,
+                "avatar_svg": user.avatar_svg,
+                "workspace_id": task_obj.workspace_id,
+                "is_workspace_expert": bool(member.is_expert),
+            }
+        finally:
+            db.close()
 
-        member = workspace_service.get_workspace_member(db, task_obj.workspace_id, user.id)
-        if not member:
-            return None
-
-        return {
-            "user_id": user.id,
-            "display_name": user.display_name,
-            "avatar_url": user.avatar_url,
-            "avatar_svg": user.avatar_svg,
-            "workspace_id": task_obj.workspace_id,
-            "is_workspace_expert": bool(member.is_expert),
-        }
-    finally:
-        db.close()
+    return await run_db(_load)
 
 
-def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
-    """按用户维度认证（通知通道）：仅校验 JWT，不绑定工作区。"""
+async def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
+    """按用户维度认证（通知通道）：仅校验 JWT，不绑定工作区；DB 查询经 DB executor。"""
     token = str(websocket.query_params.get("token") or "").strip()
     if not token:
         return None
@@ -190,20 +199,24 @@ def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
     user_id = str(payload.get("sub") or "").strip()
     if not user_id:
         return None
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return None
-        return {"user_id": user.id, "display_name": user.display_name}
-    finally:
-        db.close()
+
+    def _load() -> dict | None:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return None
+            return {"user_id": user.id, "display_name": user.display_name}
+        finally:
+            db.close()
+
+    return await run_db(_load)
 
 
 # ── WebSocket 端点 ──
 @app.websocket("/ws/task/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
-    ws_context = _authenticate_task_ws(websocket, task_id)
+    ws_context = await _authenticate_task_ws(websocket, task_id)
     if not ws_context:
         await websocket.close(code=1008, reason="Unauthorized task websocket")
         return
@@ -234,7 +247,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
 @app.websocket("/ws/notifications")
 async def notification_websocket_endpoint(websocket: WebSocket):
     """站内信实时通道：按用户维度推送，前端断线重连时以 REST 未读数兜底。"""
-    context = _authenticate_user_ws(websocket)
+    context = await _authenticate_user_ws(websocket)
     if not context:
         await websocket.close(code=1008, reason="Unauthorized notification websocket")
         return
