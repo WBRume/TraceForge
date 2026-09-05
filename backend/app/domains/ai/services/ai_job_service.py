@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import settings
 from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
+from app.core.offload import run_db
 from app.database import SessionLocal
 from app.engine.claude_bridge import create_cli_bridge
 from app.agents.selection import (
@@ -2364,7 +2365,8 @@ async def _execute_job(job_id: str) -> None:
                 )
 
 
-async def _enqueue_job(job_id: str, expected_channel: Optional[AiJobChannel] = None) -> Optional[Dict[str, Any]]:
+def _load_enqueue_state_sync(job_id: str, expected_channel: Optional[AiJobChannel]) -> Optional[Dict[str, Any]]:
+    """入队前置查询（线程内执行，由 run_db 包装）。"""
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -2372,10 +2374,20 @@ async def _enqueue_job(job_id: str, expected_channel: Optional[AiJobChannel] = N
             return None
         if expected_channel and job.channel != expected_channel:
             raise ValueError(f"Job {job_id} channel mismatch")
-        payload = serialize_job(job)
-        queue_key = job.queue_key
+        return {
+            "payload": serialize_job(job),
+            "queue_key": job.queue_key,
+        }
     finally:
         db.close()
+
+
+async def _enqueue_job(job_id: str, expected_channel: Optional[AiJobChannel] = None) -> Optional[Dict[str, Any]]:
+    state = await run_db(_load_enqueue_state_sync, job_id, expected_channel)
+    if state is None:
+        return None
+    payload = state["payload"]
+    queue_key = state["queue_key"]
 
     await _broadcast_job_payload(payload, final=False)
     if queue_key:

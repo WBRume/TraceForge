@@ -70,9 +70,15 @@ class WSChatPayload(BaseModel):
 
 
 # ── AI 思考过程 ──
+# 统一帧协议：sequence 单调递增；delta 帧携带增量片段（前端 append），
+# 快照帧 content 为全量累积 buffer（前端整体替换，缺 delta 字段）；
+# final=True 为收口帧（本轮思考结束），此后不再有新帧。
 class WSThinkingPayload(BaseModel):
     task_id: str
     content: str
+    sequence: int = 0
+    delta: Optional[str] = None
+    final: bool = False
 
 
 # ── 工具调用 ──

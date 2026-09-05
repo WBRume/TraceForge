@@ -137,7 +137,7 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
             if chunk_type == "text-delta" and chunk_text:
                 return AgentEvent(
                     type="text_delta",
-                    payload={"text": chunk_text, "provider": "dsh"},
+                    payload={"text": chunk_text, "delta": chunk_text, "provider": "dsh"},
                     provider="dsh",
                     raw=raw_event,
                 )
@@ -164,7 +164,7 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
             return None
         return AgentEvent(
             type="text_delta",
-            payload={"text": chunk, "provider": "dsh"},
+            payload={"text": chunk, "delta": chunk, "provider": "dsh"},
             provider="dsh",
             raw=raw_event,
         )

@@ -273,12 +273,13 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
     db = SessionLocal()
     task, _job = _seed_task(db, task_status=TaskStatus.FAILED, job_status=AiJobStatus.INTERRUPTED)
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
+    # run_db_txn 在线程内从 app.database 惰性导入 SessionLocal
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
         asyncio.run(
             task_session_control_service.resume_interrupted_task(
-                db,
-                task=task,
+                task_id=task.id,
                 actor_user_id="user-1",
                 prompt="continue",
             )
@@ -301,8 +302,8 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     async def _publish_job(job_id, *, final=False):
         published.append((job_id, final))
 
-    async def _broadcast(event_type, event_task, job_payload):
-        events.append((event_type, event_task.id, job_payload["id"]))
+    async def _broadcast_event(event_type, payload):
+        events.append((event_type, payload["task_id"], payload["job"]["id"]))
 
     async def _enqueue(job_id):
         enqueued.append(job_id)
@@ -314,17 +315,21 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     async def _cleanup(_path):
         return None
 
+    class _CaptureManager:
+        async def send_message_to_room(self, task_id, message):
+            await _broadcast_event(message.type, message.payload)
+
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
     monkeypatch.setattr(task_session_control_service.ai_job_service, "publish_job", _publish_job)
     monkeypatch.setattr(task_session_control_service.ai_job_service, "enqueue_task_chat_job", _enqueue)
-    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
+    monkeypatch.setattr(task_session_control_service, "task_ws_manager", _CaptureManager())
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", _checkpoint)
     monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", _cleanup)
 
     payload = asyncio.run(
         task_session_control_service.resume_interrupted_task(
-            db,
-            task=task,
+            task_id=task.id,
             actor_user_id="user-1",
             prompt="use this correction",
             client_message_id="client-resume-1",
@@ -351,8 +356,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     # Retrying the same HTTP request is idempotent even though the task is now CODING.
     duplicate = asyncio.run(
         task_session_control_service.resume_interrupted_task(
-            db,
-            task=task,
+            task_id=task.id,
             actor_user_id="user-1",
             prompt="use this correction",
             client_message_id="client-resume-1",

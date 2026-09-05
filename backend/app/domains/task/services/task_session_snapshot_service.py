@@ -41,19 +41,30 @@ def _task_root(value: str) -> str:
 
 
 def _run_git(cwd: str, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", "-c", "protocol.file.allow=always", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
+    from app.core.subprocess_runner import (
+        ProcessTimeoutError,
+        check_completed,
+        run_git,
     )
+
+    try:
+        result = run_git(
+            ["-c", "protocol.file.allow=always", *args],
+            cwd=cwd,
+            timeout_seconds=float(getattr(settings, "GIT_COMMAND_TIMEOUT_SECONDS", 180) or 180),
+        )
+    except ProcessTimeoutError as exc:
+        if check:
+            raise TaskSessionSnapshotError(
+                f"git {' '.join(args[:3])} timed out after {exc.timeout_seconds:g}s",
+                code="WORKTREE_GIT_TIMEOUT",
+            ) from exc
+        return subprocess.CompletedProcess(args=["git", *args], returncode=-1, stdout="", stderr=str(exc))
     if check and result.returncode != 0:
-        detail = (result.stderr or result.stdout or "git command failed").strip()[-500:]
-        raise TaskSessionSnapshotError(
-            f"git {' '.join(args[:3])} failed: {detail}",
+        check_completed(
+            result,
+            error=TaskSessionSnapshotError,
+            message_prefix=f"git {' '.join(args[:3])} failed",
             code="WORKTREE_GIT_ERROR",
         )
     return result
@@ -532,11 +543,15 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
 
 
 async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str]) -> dict[str, Any]:
-    return await asyncio.to_thread(_create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id)
+    from app.core.offload import run_git_job
+
+    return await run_git_job(_create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id)
 
 
 async def restore_provider(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:
-    await asyncio.to_thread(_restore_provider_sync, checkpoint_root, provider, project_path, current_session_id)
+    from app.core.offload import run_git_job
+
+    await run_git_job(_restore_provider_sync, checkpoint_root, provider, project_path, current_session_id)
 
 
 async def backup_current_provider(
@@ -545,7 +560,9 @@ async def backup_current_provider(
     project_path: str,
     session_id: Optional[str],
 ) -> dict[str, Any]:
-    return await asyncio.to_thread(
+    from app.core.offload import run_git_job
+
+    return await run_git_job(
         _backup_current_provider_sync,
         checkpoint_root,
         provider,
@@ -555,7 +572,9 @@ async def backup_current_provider(
 
 
 async def restore_provider_backup(checkpoint_root: str) -> None:
-    await asyncio.to_thread(_restore_provider_backup_sync, checkpoint_root)
+    from app.core.offload import run_git_job
+
+    await run_git_job(_restore_provider_backup_sync, checkpoint_root)
 
 
 def _fork_dsh_session_sync(session_id: str, target_cwd: str) -> Optional[str]:
@@ -628,17 +647,25 @@ def _cleanup_dsh_session_sync(session_id: str) -> None:
 
 
 async def fork_dsh_session(session_id: str, target_cwd: str) -> Optional[str]:
-    return await asyncio.to_thread(_fork_dsh_session_sync, session_id, target_cwd)
+    from app.core.offload import run_file_job
+
+    return await run_file_job(_fork_dsh_session_sync, session_id, target_cwd)
 
 
 async def cleanup_dsh_session(session_id: str) -> None:
-    await asyncio.to_thread(_cleanup_dsh_session_sync, session_id)
+    from app.core.offload import run_file_job
+
+    await run_file_job(_cleanup_dsh_session_sync, session_id)
 
 
 async def restore_worktree(checkpoint_root: str, task_root: str, current_backup_path: str) -> None:
-    await asyncio.to_thread(_restore_worktree_sync, checkpoint_root, task_root, current_backup_path)
+    from app.core.offload import run_git_job
+
+    await run_git_job(_restore_worktree_sync, checkpoint_root, task_root, current_backup_path)
 
 
 async def cleanup_checkpoint(path: Optional[str]) -> None:
     if path:
-        await asyncio.to_thread(shutil.rmtree, path, True)
+        from app.core.offload import run_file_job
+
+        await run_file_job(shutil.rmtree, path, True)

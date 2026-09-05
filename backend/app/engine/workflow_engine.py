@@ -10,7 +10,7 @@ import time
 from typing import Optional, Dict, Any, Callable, Awaitable, List, Tuple
 from sqlalchemy.orm import Session
 
-from app.core.offload import run_db
+from app.core.offload import run_db, run_git_job
 from app.database import SessionLocal
 from app.config import settings
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
@@ -208,6 +208,12 @@ class WorkflowEngine:
         # 文本累积器：assistant 消息通常分多次 delta 推送，需累积
         self._text_buffer = ""
         self._thinking_buffer = ""
+        # thinking delta 协议：sequence 随发出的 WS 帧单调递增；
+        # _thinking_unsent 为待发送的增量片段（节流合并成一帧 delta）
+        self._thinking_seq = 0
+        self._thinking_unsent = ""
+        self._thinking_finalized = False
+        self._thinking_flush_task: Optional[asyncio.Task] = None
         self.current_job_id: Optional[str] = job_id
         self.session_turn_id: Optional[str] = None
         self.session_revision: Optional[int] = None
@@ -372,7 +378,8 @@ class WorkflowEngine:
             self._draining_execution_logs = False
 
     async def _drain_buffers(self) -> None:
-        """结束/异常/HITL 前统一排空：segment（含 snapshot）先于执行日志。"""
+        """结束/异常/HITL 前统一排空：thinking 收口帧 → segment（含 snapshot）→ 执行日志。"""
+        await self._finish_thinking()
         await self._drain_segments()
         await self._drain_execution_logs()
 
@@ -661,20 +668,85 @@ class WorkflowEngine:
             await self._push_status("RUNNING", f"Agent 当前模型: {model}", model=model)
 
     async def _push_thinking(self, content: str):
-        """推送 AI 思考过程到前端（折叠面板）"""
+        """推送 AI 思考过程到前端（折叠面板）——快照帧：整体替换语义。"""
         if not self._event_is_current():
             return
-        self._record_context_segment(
-            "thinking",
-            workspace_id=self.ws_id,
-            task_id=self.task_id,
-            ai_job_id=self.current_job_id,
-            session_id=self.session_id,
-            content=content,
-        )
+        self._thinking_buffer = content
+        self._record_context_segment("thinking", content=content)
+        await self._push_thinking_snapshot()
+
+    async def _handle_thinking_update(self, text: str, *, is_delta: bool) -> None:
+        """thinking 事件统一入口：delta 累积并节流发增量帧，快照整体替换。"""
+        if not self._event_is_current():
+            return
+        if is_delta:
+            self._thinking_buffer += text
+            self._thinking_unsent += text
+            self._record_context_segment("thinking", content=self._thinking_buffer)
+            self._schedule_thinking_flush()
+        else:
+            await self._push_thinking(text)
+
+    async def _push_thinking_snapshot(self, *, final: bool = False) -> None:
+        """发送快照帧（content=全量累积 buffer），并吞掉未发送的增量。"""
+        self._thinking_unsent = ""
+        self._cancel_thinking_flush()
+        self._thinking_seq += 1
         await self._ws_push("thinking", WSThinkingPayload(
-            task_id=self.task_id, content=content,
+            task_id=self.task_id,
+            content=self._thinking_buffer,
+            sequence=self._thinking_seq,
+            delta=None,
+            final=final,
         ).model_dump())
+
+    async def _flush_thinking_delta(self) -> None:
+        """发送一帧合并后的增量（前端 append；content 置空避免误替换）。"""
+        unsent, self._thinking_unsent = self._thinking_unsent, ""
+        if not unsent:
+            return
+        self._thinking_seq += 1
+        await self._ws_push("thinking", WSThinkingPayload(
+            task_id=self.task_id,
+            content="",
+            sequence=self._thinking_seq,
+            delta=unsent,
+        ).model_dump())
+
+    def _schedule_thinking_flush(self) -> None:
+        if self._thinking_flush_task is not None and not self._thinking_flush_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._thinking_flush_task = loop.create_task(self._flush_thinking_after_delay())
+
+    async def _flush_thinking_after_delay(self) -> None:
+        current_task = asyncio.current_task()
+        try:
+            interval = float(getattr(settings, "THINKING_WS_INTERVAL_SECONDS", 0.2) or 0.2)
+            if interval > 0:
+                await asyncio.sleep(interval)
+            if self._thinking_unsent:
+                await self._flush_thinking_delta()
+        finally:
+            if self._thinking_flush_task is current_task:
+                self._thinking_flush_task = None
+
+    def _cancel_thinking_flush(self) -> None:
+        task = self._thinking_flush_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._thinking_flush_task = None
+
+    async def _finish_thinking(self) -> None:
+        """本轮思考收口：发送 final 帧（快照语义），此后不再有新帧。"""
+        if self._thinking_finalized:
+            return
+        self._thinking_finalized = True
+        if self._thinking_buffer.strip() or self._thinking_unsent:
+            await self._push_thinking_snapshot(final=True)
 
     async def _push_tool_use(self, tool_name: str, tool_input: Any, tool_use_id: str = ""):
         """推送工具调用到前端（终端/日志面板）；门禁已在事件入口统一检查"""
@@ -820,15 +892,13 @@ class WorkflowEngine:
             elif event_type == "text":
                 text = str(payload.get("text") or "")
                 if text:
+                    await self._finish_thinking()
                     await self._push_chat("assistant", text)
             elif event_type == "thinking":
                 text = str(payload.get("text") or "")
                 if text:
-                    if payload.get("delta") is not None:
-                        self._thinking_buffer += text
-                    else:
-                        self._thinking_buffer = text
-                    await self._push_thinking(self._thinking_buffer)
+                    is_delta = payload.get("delta") is not None
+                    await self._handle_thinking_update(text, is_delta=is_delta)
             elif event_type == "tool_use":
                 tool_name = str(payload.get("tool_name") or "unknown")
                 tool_input = payload.get("tool_input", {})
@@ -906,7 +976,8 @@ class WorkflowEngine:
             self.last_result_text = result_text
             return
 
-        # 最终写入前强制排空缓冲：segment/snapshot 先于结果落库
+        # 最终写入前强制排空缓冲：thinking 收口 + segment/snapshot 先于结果落库
+        await self._finish_thinking()
         await self._flush_segments()
 
         normalized_result = result_text.lower()
@@ -1121,7 +1192,8 @@ class WorkflowEngine:
             self.last_result_text = result_text
             return
 
-        # 最终写入前强制排空缓冲：segment/snapshot 先于结果落库
+        # 最终写入前强制排空缓冲：thinking 收口 + segment/snapshot 先于结果落库
+        await self._finish_thinking()
         await self._flush_segments()
 
         normalized_result = str(result_text or "").lower()
@@ -1355,6 +1427,10 @@ class WorkflowEngine:
             self.last_result_interrupted = False
             self._hitl_requested_in_turn = False
             self._thinking_buffer = ""
+            self._thinking_seq = 0
+            self._thinking_unsent = ""
+            self._thinking_finalized = False
+            self._cancel_thinking_flush()
 
             logger.info(f"WorkflowEngine run: task={self.task_id}, prompt_length={len(prompt)}")
 
@@ -1372,7 +1448,7 @@ class WorkflowEngine:
                 await self._update_task_status(TaskStatus.CODING)
 
                 project_path = await run_db(self._get_project_path)
-                await run_db(self._materialize_skills)
+                await run_git_job(self._materialize_skills)
                 await run_db(self._refresh_runtime_skill_index)
                 env_overrides = self._build_cli_env_overrides()
 

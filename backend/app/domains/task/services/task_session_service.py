@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
 
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.distributed_lock import get_lock_provider, lock_task
 from app.core.logging import get_logger
+from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services import ai_job_service
@@ -75,7 +77,8 @@ def _next_turn_index(db: Session, task_id: str, generation: int) -> int:
 def _new_chat_message(
     db: Session,
     *,
-    task: SddTask,
+    task_id: str,
+    workspace_id: str,
     actor_user_id: str,
     content: str,
     prompt_text: Optional[str] = None,
@@ -83,14 +86,14 @@ def _new_chat_message(
     session_generation: int,
 ) -> ChatMessage:
     order_index = int(
-        db.query(ChatMessage.id).filter(ChatMessage.task_id == task.id).count()
+        db.query(ChatMessage.id).filter(ChatMessage.task_id == task_id).count()
         or 0
     )
     metadata = dict(metadata_json or {})
     metadata["order_index"] = order_index
     message = ChatMessage(
-        task_id=task.id,
-        workspace_id=task.workspace_id,
+        task_id=task_id,
+        workspace_id=workspace_id,
         creator_id=actor_user_id,
         role="user",
         content=content,
@@ -103,29 +106,43 @@ def _new_chat_message(
     return message
 
 
-async def create_task_chat_turn(
+@dataclass(frozen=True)
+class CreatedChatTurn:
+    """回合创建结果的纯数据快照。
+
+    全部字段在 DB 线程闭包内组装；禁止跨线程携带 ORM 对象，
+    调用方（WS handler / 路由 / 服务）只消费这些标量。
+    """
+
+    task_id: str
+    workspace_id: str
+    message_id: str
+    created_at: Optional[datetime]
+    session_turn_id: Optional[str]
+    session_generation: Optional[int]
+    job_id: str
+
+
+def _prepare_chat_turn_sync(
     db: Session,
     *,
-    task: SddTask,
-    actor_user_id: str,
+    task_id: str,
     content: str,
-    prompt_text: Optional[str] = None,
-    context_json: Optional[dict[str, Any]] = None,
-    session_id: Optional[str] = None,
-    fresh_session: bool = False,
-    client_message_id: Optional[str] = None,
-) -> tuple[TaskSessionTurn, ChatMessage, SddAiJob, dict[str, Any]]:
-    """Create one user message/job and its pre-turn checkpoints.
+    prompt: str,
+    session_id: Optional[str],
+    fresh_session: bool,
+) -> dict[str, Any]:
+    """回合准备段（线程内执行）：活跃 job 互斥 + generation/revision 推进 + backend 解析。
 
-    Callers must hold ``lock_task``.  The provider/worktree copy occurs before
-    the message is exposed to the queue, so every undoable turn has a stable
-    boundary even if the agent immediately starts producing events.
+    注意：本段在返回时提交。revision/generation 的推进先于 checkpoint 落库；
+    checkpoint 失败仅留下一次多余的 revision 推进（单调、无 job 引用，无副作用），
+    消息/turn/job 仍只在持久化段可见，维持"checkpoint 先于消息可见"的边界。
     """
-    prompt = str(prompt_text if prompt_text is not None else content or "")
-    if not str(content or "").strip() or not prompt.strip():
-        raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    if not task:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
     active_job = db.query(SddAiJob).filter(
-        SddAiJob.task_id == task.id,
+        SddAiJob.task_id == task_id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
         SddAiJob.status.in_([
             AiJobStatus.PENDING,
@@ -151,8 +168,6 @@ async def create_task_chat_turn(
         # undoing a not-yet-started fresh turn cannot target the old session.
         task.session_id = None
     task.session_revision = int(getattr(task, "session_revision", 0) or 0) + 1
-    generation = int(task.session_generation)
-    revision = int(task.session_revision)
 
     from app.agents.selection import resolve_task_backend
 
@@ -160,73 +175,157 @@ async def create_task_chat_turn(
     provider_session_id = str(
         session_id if session_id is not None else (None if fresh_session else task.session_id) or ""
     ).strip() or None
+    return {
+        "task_id": task.id,
+        "workspace_id": task.workspace_id,
+        "project_path": str(task.project_path or ""),
+        "repo_rel_paths": _repo_rel_paths(task),
+        "generation": int(task.session_generation),
+        "revision": int(task.session_revision),
+        "provider": provider,
+        "provider_session_id": provider_session_id,
+    }
+
+
+def _persist_chat_turn_sync(
+    db: Session,
+    *,
+    prepared: dict[str, Any],
+    content: str,
+    prompt: str,
+    context_json: Optional[dict[str, Any]],
+    client_message_id: Optional[str],
+) -> CreatedChatTurn:
+    """回合持久化段（线程内单事务）：message/turn/job + seed snapshot。"""
+    task_id = str(prepared["task_id"])
+    workspace_id = str(prepared["workspace_id"])
+    generation = int(prepared["generation"])
+    revision = int(prepared["revision"])
+    provider = prepared["provider"]
+    provider_session_id = prepared["provider_session_id"]
+    checkpoint_root = str(prepared["checkpoint_root"])
+
+    metadata = dict(context_json or {})
+    if client_message_id:
+        metadata["client_message_id"] = client_message_id
+    metadata.update({
+        "session_turn_generation": generation,
+        "session_revision": revision,
+    })
+    message = _new_chat_message(
+        db,
+        task_id=task_id,
+        workspace_id=workspace_id,
+        actor_user_id=prepared["actor_user_id"],
+        content=str(content),
+        metadata_json=metadata,
+        session_generation=generation,
+    )
+    turn = TaskSessionTurn(
+        task_id=task_id,
+        workspace_id=workspace_id,
+        user_message_id=message.id,
+        session_generation=generation,
+        turn_index=_next_turn_index(db, task_id, generation),
+        session_revision=revision,
+        provider=provider,
+        provider_session_id=provider_session_id,
+        provider_message_ids_json=None,
+        checkpoint_path=checkpoint_root,
+        worktree_snapshot_path=os.path.join(checkpoint_root, "worktree"),
+        status=TaskSessionTurnStatus.ACTIVE,
+    )
+    db.add(turn)
+    db.flush()
+    # The turn is created after its user message so the message can be
+    # used as the stable undo target.  Complete the reverse association
+    # before the message is committed/broadcast; history and live UI both
+    # rely on this column to expose the undo action.
+    message.session_turn_id = turn.id
+    metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
+    job = ai_job_service.create_task_chat_job(
+        db,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        creator_id=str(prepared["actor_user_id"]),
+        prompt_text=prompt,
+        context_json=metadata,
+        session_id=provider_session_id,
+        chat_message_id=message.id,
+        session_turn_id=turn.id,
+        session_generation=generation,
+        session_revision=revision,
+    )
+    turn.ai_job_id = job.id
+    db.commit()
+    # commit 过期属性后立即读取（session 尚在），组装纯数据结果
+    return CreatedChatTurn(
+        task_id=task_id,
+        workspace_id=workspace_id,
+        message_id=str(message.id),
+        created_at=message.created_at,
+        session_turn_id=str(turn.id),
+        session_generation=generation,
+        job_id=str(job.id),
+    )
+
+
+async def create_task_chat_turn(
+    *,
+    task_id: str,
+    actor_user_id: str,
+    content: str,
+    prompt_text: Optional[str] = None,
+    context_json: Optional[dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+    fresh_session: bool = False,
+    client_message_id: Optional[str] = None,
+) -> CreatedChatTurn:
+    """Create one user message/job and its pre-turn checkpoints.
+
+    Callers must hold ``lock_task``.  The provider/worktree copy occurs before
+    the message is exposed to the queue, so every undoable turn has a stable
+    boundary even if the agent immediately starts producing events.
+
+    同步 DB 全部经 DB executor 执行（准备段/持久化段各自单事务、线程内自建
+    session），checkpoint 走 git executor；事件循环不执行任何 DB/文件 IO。
+    """
+    prompt = str(prompt_text if prompt_text is not None else content or "")
+    if not str(content or "").strip() or not prompt.strip():
+        raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
+
+    prepared = await run_db_txn(
+        lambda db: _prepare_chat_turn_sync(
+            db,
+            task_id=task_id,
+            content=str(content),
+            prompt=prompt,
+            session_id=session_id,
+            fresh_session=fresh_session,
+        )
+    )
+    prepared["actor_user_id"] = str(actor_user_id)
+
     checkpoint = await task_session_snapshot_service.create_checkpoint(
-        str(task.project_path or ""),
-        _repo_rel_paths(task),
-        provider,
-        provider_session_id,
+        str(prepared["project_path"]),
+        list(prepared["repo_rel_paths"]),
+        prepared["provider"],
+        prepared["provider_session_id"],
     )
     checkpoint_root = str(checkpoint["root"])
+    prepared["checkpoint_root"] = checkpoint_root
     try:
-        metadata = dict(context_json or {})
-        if client_message_id:
-            metadata["client_message_id"] = client_message_id
-        metadata.update({
-            "session_turn_generation": generation,
-            "session_revision": revision,
-        })
-        message = _new_chat_message(
-            db,
-            task=task,
-            actor_user_id=actor_user_id,
-            content=str(content),
-            metadata_json=metadata,
-            session_generation=generation,
+        return await run_db_txn(
+            lambda db: _persist_chat_turn_sync(
+                db,
+                prepared=prepared,
+                content=str(content),
+                prompt=prompt,
+                context_json=context_json,
+                client_message_id=client_message_id,
+            )
         )
-        turn = TaskSessionTurn(
-            task_id=task.id,
-            workspace_id=task.workspace_id,
-            user_message_id=message.id,
-            session_generation=generation,
-            turn_index=_next_turn_index(db, task.id, generation),
-            session_revision=revision,
-            provider=provider,
-            provider_session_id=provider_session_id,
-            provider_message_ids_json=None,
-            checkpoint_path=checkpoint_root,
-            worktree_snapshot_path=os.path.join(checkpoint_root, "worktree"),
-            status=TaskSessionTurnStatus.ACTIVE,
-        )
-        db.add(turn)
-        db.flush()
-        # The turn is created after its user message so the message can be
-        # used as the stable undo target.  Complete the reverse association
-        # before the message is committed/broadcast; history and live UI both
-        # rely on this column to expose the undo action.
-        message.session_turn_id = turn.id
-        metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
-        job = ai_job_service.create_task_chat_job(
-            db,
-            workspace_id=task.workspace_id,
-            task_id=task.id,
-            creator_id=actor_user_id,
-            prompt_text=prompt,
-            context_json=metadata,
-            session_id=provider_session_id,
-            chat_message_id=message.id,
-            session_turn_id=turn.id,
-            session_generation=generation,
-            session_revision=revision,
-        )
-        turn.ai_job_id = job.id
-        db.commit()
-        db.refresh(task)
-        db.refresh(message)
-        db.refresh(turn)
-        db.refresh(job)
-        return turn, message, job, checkpoint
     except Exception:
-        db.rollback()
         await task_session_snapshot_service.cleanup_checkpoint(checkpoint_root)
         raise
 

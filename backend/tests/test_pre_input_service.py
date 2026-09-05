@@ -27,14 +27,24 @@ from app.domains.task.services import pre_input_service  # noqa: E402
 
 
 @pytest.fixture()
-def db_session():
+def session_factory(monkeypatch):
+    """SQLite 内存库 + 静态连接池；替换 app.database.SessionLocal
+    使 run_db / run_db_txn 的线程内 session 落在同一个内存库上。"""
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-    db = sessionmaker(bind=engine, expire_on_commit=False)()
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+    yield factory
+    engine.dispose()
+
+
+@pytest.fixture()
+def db_session(session_factory):
+    db = session_factory()
     try:
         yield db
     finally:
@@ -68,9 +78,9 @@ def _seed(db, *, task_status=TaskStatus.CODING):
     return {"task": task, "workspace": workspace}
 
 
-def _create(db, task, **kwargs):
+def _create(**kwargs):
     payload = {
-        "task": task,
+        "task_id": "task-1",
         "creator_id": "u-owner",
         "main_text": "hello world",
         "mentioned_user_ids": ["u-member"],
@@ -78,18 +88,24 @@ def _create(db, task, **kwargs):
         "wait_seconds": 180,
     }
     payload.update(kwargs)
-    return asyncio.run(pre_input_service.create_pre_input(db, **payload))
+    return asyncio.run(pre_input_service.create_pre_input(**payload))
 
 
-def _edit_document(db, pre_input, user_id, is_expert, text):
+def _get(db, pre_input_id):
+    return pre_input_service.get_pre_input(db, pre_input_id)
+
+
+def _edit(pre_input_id, user_id, is_expert, text):
     return asyncio.run(pre_input_service.edit_pre_input_document(
-        db, pre_input=pre_input, user_id=user_id, is_expert=is_expert, new_text=text,
+        pre_input_id=pre_input_id, task_id="task-1",
+        user_id=user_id, is_expert=is_expert, new_text=text,
     ))
 
 
-def _replace_span(db, pre_input, user_id, is_expert, start, end, anchor, replacement):
+def _replace_span(pre_input_id, user_id, is_expert, start, end, anchor, replacement):
     return asyncio.run(pre_input_service.replace_pre_input_span(
-        db, pre_input=pre_input, user_id=user_id, is_expert=is_expert,
+        pre_input_id=pre_input_id, task_id="task-1",
+        user_id=user_id, is_expert=is_expert,
         start=start, end=end, anchor_text=anchor, replacement=replacement,
     ))
 
@@ -126,9 +142,10 @@ def _noop_enqueue(monkeypatch, tmp_path):
 
 def test_create_initializes_document_with_creator_attribution(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"])
+    _seed(db)
+    created = _create()
 
+    pre_input = _get(db, created["pre_input_id"])
     segments = pre_input_service._document_segments(pre_input)
     assert pre_input_service._document_text(segments) == "hello world"
     assert all(s["created_by"] == "u-owner" and s["updated_by"] == "u-owner" for s in segments)
@@ -141,31 +158,34 @@ def test_create_rejects_duplicate_and_non_member_mention(db_session):
     seeded = _seed(db)
     task = seeded["task"]
 
-    pre_input = _create(db, task)
+    created = _create()
+    pre_input = _get(db, created["pre_input_id"])
     assert pre_input.status == PreInputStatus.COLLECTING
 
     with pytest.raises(pre_input_service.PreInputError) as exc:
-        _create(db, task)
+        _create()
     assert exc.value.status_code == 409
 
     task.status = TaskStatus.INTERRUPTED
     db.commit()
-    asyncio.run(pre_input_service.cancel_pre_input(db, pre_input=pre_input, actor_user_id="u-owner"))
+    asyncio.run(pre_input_service.cancel_pre_input(
+        pre_input_id=created["pre_input_id"], task_id="task-1", actor_user_id="u-owner",
+    ))
     with pytest.raises(pre_input_service.PreInputError):
-        _create(db, task, mentioned_user_ids=["u-out"])
+        _create(mentioned_user_ids=["u-out"])
 
 
 def test_create_rejects_terminal_task(db_session):
     db = db_session
-    seeded = _seed(db, task_status=TaskStatus.DONE)
+    _seed(db, task_status=TaskStatus.DONE)
     with pytest.raises(pre_input_service.PreInputError):
-        _create(db, seeded["task"])
+        _create()
 
 
 def test_create_dispatches_mention_notifications(db_session):
     db = db_session
-    seeded = _seed(db)
-    _create(db, seeded["task"], mentioned_user_ids=["u-member", "u-expert"])
+    _seed(db)
+    _create(mentioned_user_ids=["u-member", "u-expert"])
 
     notifications = db.query(SddUserNotification).all()
     recipients = {n.recipient_user_id for n in notifications}
@@ -174,15 +194,16 @@ def test_create_dispatches_mention_notifications(db_session):
 
 def test_insert_text_allowed_for_any_member_char_level(db_session):
     db = db_session
-    seeded = _seed(db)
+    _seed(db)
     # @的是尚未参与的 u-expert，避免成员编辑后触发全员参与自动提交
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=["u-expert"], edit_permission="NONE")
+    created = _create(mentioned_user_ids=["u-expert"], edit_permission="NONE")
+    pre_input_id = created["pre_input_id"]
 
     # 句中插字 / 句尾追加，均为 insert，无需权限
-    result = _edit_document(db, pre_input, "u-member", False, "hello brave world")
+    result = _edit(pre_input_id, "u-member", False, "hello brave world")
     assert result["auto_submitted"] is False
 
-    db.refresh(pre_input)
+    pre_input = _get(db, pre_input_id)
     segments = pre_input_service._document_segments(pre_input)
     assert pre_input_service._document_text(segments) == "hello brave world"
     # 字符级归属：新增字符全部归属编辑者，原文文字保留发起人
@@ -195,16 +216,20 @@ def test_insert_text_allowed_for_any_member_char_level(db_session):
 def test_modify_text_requires_permission_char_level(db_session):
     db = db_session
     seeded = _seed(db)
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=[], edit_permission="NONE")
+    created = _create(mentioned_user_ids=[], edit_permission="NONE")
+    pre_input_id = created["pre_input_id"]
     # world → trace：替换已有字符，需要权限
     with pytest.raises(pre_input_service.PreInputError) as exc:
-        _edit_document(db, pre_input, "u-member", False, "hello trace")
+        _edit(pre_input_id, "u-member", False, "hello trace")
     assert exc.value.status_code == 403
 
-    asyncio.run(pre_input_service.cancel_pre_input(db, pre_input=pre_input, actor_user_id="u-owner"))
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=[], edit_permission="EXPERTS")
-    _edit_document(db, pre_input, "u-expert", True, "hello trace")
-    db.refresh(pre_input)
+    asyncio.run(pre_input_service.cancel_pre_input(
+        pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-owner",
+    ))
+    created = _create(mentioned_user_ids=[], edit_permission="EXPERTS")
+    pre_input_id = created["pre_input_id"]
+    _edit(pre_input_id, "u-expert", True, "hello trace")
+    pre_input = _get(db, pre_input_id)
     segments = pre_input_service._document_segments(pre_input)
     assert pre_input_service._document_text(segments) == "hello trace"
     # 字符级双归属：被改字符可见修改者；未动字符保持原作者且修改者不变
@@ -217,12 +242,13 @@ def test_modify_text_requires_permission_char_level(db_session):
 
 def test_replace_span_box_selection(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=["u-expert"], edit_permission="EXPERTS")
+    _seed(db)
+    created = _create(mentioned_user_ids=["u-expert"], edit_permission="EXPERTS")
+    pre_input_id = created["pre_input_id"]
 
     # 框选 "world" 替换为 "traceforge"：与原文等长的 "trace" 保留原作者，多出的 "forge" 归专家
-    _replace_span(db, pre_input, "u-expert", True, 6, 11, "world", "traceforge")
-    db.refresh(pre_input)
+    _replace_span(pre_input_id, "u-expert", True, 6, 11, "world", "traceforge")
+    pre_input = _get(db, pre_input_id)
     segments = pre_input_service._document_segments(pre_input)
     assert pre_input_service._document_text(segments) == "hello traceforge"
     head = segments[0]
@@ -237,42 +263,47 @@ def test_replace_span_box_selection(db_session):
 
 def test_replace_span_insert_anyone_replace_needs_permission(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=["u-expert"], edit_permission="NONE")
+    _seed(db)
+    created = _create(mentioned_user_ids=["u-expert"], edit_permission="NONE")
+    pre_input_id = created["pre_input_id"]
 
     # 纯插入（start==end）：无权限成员也可
-    _replace_span(db, pre_input, "u-member", False, 5, 5, "", " brave")
-    db.refresh(pre_input)
+    _replace_span(pre_input_id, "u-member", False, 5, 5, "", " brave")
+    pre_input = _get(db, pre_input_id)
     assert pre_input_service._document_text(
         pre_input_service._document_segments(pre_input)
     ) == "hello brave world"
 
     # 替换所选：无权限 → 403
     with pytest.raises(pre_input_service.PreInputError) as exc:
-        _replace_span(db, pre_input, "u-member", False, 6, 11, "brave", "bold")
+        _replace_span(pre_input_id, "u-member", False, 6, 11, "brave", "bold")
     assert exc.value.status_code == 403
 
 
 def test_replace_span_rejects_stale_anchor(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=[], edit_permission="ALL")
+    _seed(db)
+    created = _create(mentioned_user_ids=[], edit_permission="ALL")
     with pytest.raises(pre_input_service.PreInputError) as exc:
-        _replace_span(db, pre_input, "u-expert", True, 6, 11, "WRONG", "x")
+        _replace_span(created["pre_input_id"], "u-expert", True, 6, 11, "WRONG", "x")
     assert exc.value.status_code == 409
 
 
 def test_delete_text_requires_permission(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=[], edit_permission="NONE")
+    _seed(db)
+    created = _create(mentioned_user_ids=[], edit_permission="NONE")
+    pre_input_id = created["pre_input_id"]
     with pytest.raises(pre_input_service.PreInputError):
-        _edit_document(db, pre_input, "u-member", False, "hello")
+        _edit(pre_input_id, "u-member", False, "hello")
 
-    asyncio.run(pre_input_service.cancel_pre_input(db, pre_input=pre_input, actor_user_id="u-owner"))
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=[], edit_permission="ALL")
-    _edit_document(db, pre_input, "u-member", False, "hello")
-    db.refresh(pre_input)
+    asyncio.run(pre_input_service.cancel_pre_input(
+        pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-owner",
+    ))
+    created = _create(mentioned_user_ids=[], edit_permission="ALL")
+    pre_input_id = created["pre_input_id"]
+    _edit(pre_input_id, "u-member", False, "hello")
+    pre_input = _get(db, pre_input_id)
     assert pre_input_service._document_text(
         pre_input_service._document_segments(pre_input)
     ) == "hello"
@@ -280,62 +311,68 @@ def test_delete_text_requires_permission(db_session):
 
 def test_mark_done_participates_without_edit(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"])
-    asyncio.run(pre_input_service.mark_pre_input_done(db, pre_input=pre_input, user_id="u-member"))
-    db.refresh(pre_input)
+    _seed(db)
+    created = _create()
+    asyncio.run(pre_input_service.mark_pre_input_done(
+        pre_input_id=created["pre_input_id"], task_id="task-1", user_id="u-member",
+    ))
+    pre_input = _get(db, created["pre_input_id"])
     participants = [c.user_id for c in pre_input.contributions]
     assert "u-member" in participants
 
 
 def test_auto_submit_when_all_mentioned_participated(db_session):
     db = db_session
-    seeded = _seed(db)
-    task = seeded["task"]
+    _seed(db)
+    task = db.query(SddTask).filter(SddTask.id == "task-1").one()
 
-    pre_input = _create(db, task, mentioned_user_ids=["u-member", "u-expert"])
-    result = _edit_document(db, pre_input, "u-member", False, "hello brave world")
+    created = _create(mentioned_user_ids=["u-member", "u-expert"])
+    pre_input_id = created["pre_input_id"]
+    result = _edit(pre_input_id, "u-member", False, "hello brave world")
     assert result["auto_submitted"] is False
     assert pre_input_service.get_active_pre_input(db, task.id) is not None
 
     result = asyncio.run(pre_input_service.mark_pre_input_done(
-        db, pre_input=pre_input, user_id="u-expert",
+        pre_input_id=pre_input_id, task_id="task-1", user_id="u-expert",
     ))
     assert result["auto_submitted"] is True
     assert result["submission"]["chat_message_id"]
     assert pre_input_service.get_active_pre_input(db, task.id) is None
 
-    db.refresh(pre_input)
+    pre_input = _get(db, pre_input_id)
     assert pre_input.status == PreInputStatus.SUBMITTED
     assert pre_input.submit_reason == "all_done"
 
 
 def test_submit_cas_prevents_double_submission(db_session):
     db = db_session
-    seeded = _seed(db)
-    task = seeded["task"]
+    _seed(db)
+    task = db.query(SddTask).filter(SddTask.id == "task-1").one()
 
-    pre_input = _create(db, task, mentioned_user_ids=[])
+    created = _create(mentioned_user_ids=[])
+    pre_input_id = created["pre_input_id"]
     first = asyncio.run(pre_input_service.submit_pre_input(
-        db, pre_input=pre_input, actor_user_id="u-owner", reason="manual",
+        pre_input_id=pre_input_id, actor_user_id="u-owner", reason="manual",
     ))
     assert first is not None
 
-    db.refresh(pre_input)
     second = asyncio.run(pre_input_service.submit_pre_input(
-        db, pre_input=pre_input, actor_user_id="u-owner", reason="timeout",
+        pre_input_id=pre_input_id, actor_user_id="u-owner", reason="timeout",
     ))
     assert second is None
 
 
 def test_submit_content_and_segment_metadata(db_session):
     db = db_session
-    seeded = _seed(db)
-    task = seeded["task"]
+    _seed(db)
+    task = db.query(SddTask).filter(SddTask.id == "task-1").one()
 
-    pre_input = _create(db, task, mentioned_user_ids=[], edit_permission="ALL")
-    _replace_span(db, pre_input, "u-member", False, 6, 11, "world", "traceforge")
-    asyncio.run(pre_input_service.submit_pre_input(db, pre_input=pre_input, actor_user_id="u-owner", reason="manual"))
+    created = _create(mentioned_user_ids=[], edit_permission="ALL")
+    pre_input_id = created["pre_input_id"]
+    _replace_span(pre_input_id, "u-member", False, 6, 11, "world", "traceforge")
+    asyncio.run(pre_input_service.submit_pre_input(
+        pre_input_id=pre_input_id, actor_user_id="u-owner", reason="manual",
+    ))
 
     from app.domains.task.models.chat import ChatMessage
 
@@ -344,7 +381,7 @@ def test_submit_content_and_segment_metadata(db_session):
     # 提交给 agent / 展示的内容 = 最终文档原文（无拼接标签）
     assert message.content == "hello traceforge"
     metadata = message.metadata_json
-    assert metadata["pre_input_id"] == pre_input.id
+    assert metadata["pre_input_id"] == pre_input_id
     segments = metadata["segments"]
     joined = "".join(s["text"] for s in segments)
     assert joined == "hello traceforge"
@@ -361,23 +398,30 @@ def test_submit_content_and_segment_metadata(db_session):
 
 def test_cancel_only_by_creator(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"])
+    _seed(db)
+    created = _create()
+    pre_input_id = created["pre_input_id"]
 
     with pytest.raises(pre_input_service.PreInputError):
-        asyncio.run(pre_input_service.cancel_pre_input(db, pre_input=pre_input, actor_user_id="u-member"))
+        asyncio.run(pre_input_service.cancel_pre_input(
+            pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-member",
+        ))
 
-    asyncio.run(pre_input_service.cancel_pre_input(db, pre_input=pre_input, actor_user_id="u-owner"))
-    db.refresh(pre_input)
+    asyncio.run(pre_input_service.cancel_pre_input(
+        pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-owner",
+    ))
+    pre_input = _get(db, pre_input_id)
     assert pre_input.status == PreInputStatus.CANCELLED
 
 
 def test_serialize_document_segments_attribution(db_session):
     db = db_session
-    seeded = _seed(db)
-    pre_input = _create(db, seeded["task"], mentioned_user_ids=["u-member", "u-expert"], edit_permission="EXPERTS")
-    _replace_span(db, pre_input, "u-expert", True, 6, 11, "world", "traceforge")
+    _seed(db)
+    created = _create(mentioned_user_ids=["u-member", "u-expert"], edit_permission="EXPERTS")
+    pre_input_id = created["pre_input_id"]
+    _replace_span(pre_input_id, "u-expert", True, 6, 11, "world", "traceforge")
 
+    pre_input = _get(db, pre_input_id)
     payload = pre_input_service.serialize_pre_input(db, pre_input)
     segments = payload["document_segments"]
     assert "".join(s["text"] for s in segments) == "hello traceforge"

@@ -29,7 +29,7 @@ def _get_providers():
 
 
 async def dispatch_notifications(
-    db: Session,
+    db: Session | None,
     recipient_user_ids: list[str],
     *,
     type: str,
@@ -41,29 +41,41 @@ async def dispatch_notifications(
     # 新通知来源需在 notification/types.py 注册；未注册仍投递，但留下告警便于排查遗漏
     if not is_registered(type):
         logger.warning(f"Dispatching unregistered notification type '{type}' — register it in app.domains.notification.types")
-    created = notification_service.create_notifications(
-        db,
-        recipient_user_ids,
-        type=type,
-        title=title,
-        body=body,
-        payload_json=payload_json,
-        workspace_id=workspace_id,
-    )
-    serialized = [
-        {
-            "id": row.id,
-            "workspace_id": row.workspace_id,
-            "recipient_user_id": row.recipient_user_id,
-            "type": row.type,
-            "title": row.title,
-            "body": row.body,
-            "payload": row.payload_json if isinstance(row.payload_json, dict) else None,
-            "read_at": None,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-        }
-        for row in created
-    ]
+
+    def _create_sync(session: Session):
+        created = notification_service.create_notifications(
+            session,
+            recipient_user_ids,
+            type=type,
+            title=title,
+            body=body,
+            payload_json=payload_json,
+            workspace_id=workspace_id,
+        )
+        return [
+            {
+                "id": row.id,
+                "workspace_id": row.workspace_id,
+                "recipient_user_id": row.recipient_user_id,
+                "type": row.type,
+                "title": row.title,
+                "body": row.body,
+                "payload": row.payload_json if isinstance(row.payload_json, dict) else None,
+                "read_at": None,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in created
+        ]
+
+    if db is not None:
+        # 兼容同步调用方（持有 request session 的 REST 路由）
+        serialized = _create_sync(db)
+    else:
+        # 事件循环调用方：落库段 offload 到 DB 线程（线程内自建 session）
+        from app.core.offload import run_db_txn
+
+        serialized = await run_db_txn(_create_sync)
+
     for item in serialized:
         try:
             await notification_ws_manager.send_message_to_user(item["recipient_user_id"], item)

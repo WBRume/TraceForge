@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import lock_task
 from app.core.logging import get_logger
+from app.core.offload import run_db, run_db_txn
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service
 from app.domains.auth.models.user import User
@@ -282,32 +283,59 @@ def serialize_pre_input(db: Session, pre_input: SddTaskPreInput) -> dict:
     }
 
 
-async def _broadcast_pre_input(db: Session, pre_input: SddTaskPreInput, event_type: str = "pre_input_update") -> None:
+async def _broadcast_pre_input_snapshot(
+    task_id: str,
+    pre_input_id: str,
+    event_type: str = "pre_input_update",
+) -> None:
+    """广播前在线程内序列化（懒加载 contributions/member 查询 off-loop）。"""
     try:
-        payload = serialize_pre_input(db, pre_input)
+        payload = await run_db_txn(
+            lambda db: serialize_pre_input(db, _get_pre_input_sync(db, pre_input_id))
+        )
         await task_ws_manager.send_message_to_room(
-            pre_input.task_id,
+            task_id,
             WSMessage(type=event_type, payload=payload),
         )
     except Exception:
-        logger.exception(f"Failed to broadcast {event_type} for pre input {pre_input.id}")
+        logger.exception(f"Failed to broadcast {event_type} for pre input {pre_input_id}")
+
+
+def _get_pre_input_sync(db: Session, pre_input_id: str) -> SddTaskPreInput:
+    pre_input = get_pre_input(db, pre_input_id)
+    if pre_input is None:
+        raise PreInputError("Pre input not found", status_code=404)
+    return pre_input
+
+
+async def get_active_pre_input_brief(task_id: str) -> Optional[dict]:
+    """活跃预输入简报（id + creator），供 WS handler 做权限判断（off-loop）。"""
+
+    def _brief_sync(db: Session) -> Optional[dict]:
+        pre_input = get_active_pre_input(db, task_id)
+        if pre_input is None:
+            return None
+        return {"id": str(pre_input.id), "creator_id": str(pre_input.creator_id)}
+
+    return await run_db_txn(_brief_sync)
 
 
 # ── 创建 ──
 
-async def create_pre_input(
+def _create_pre_input_sync(
     db: Session,
     *,
-    task: SddTask,
+    task_id: str,
     creator_id: str,
     main_text: str,
-    mentioned_user_ids: Optional[List[str]] = None,
-    edit_permission: str = "NONE",
-    wait_seconds: int = DEFAULT_WAIT_SECONDS,
-) -> SddTaskPreInput:
-    text = str(main_text or "").strip()
-    if not text:
-        raise PreInputError("Pre input main text is required")
+    mentioned_user_ids: Optional[List[str]],
+    edit_permission: str,
+    wait_seconds: int,
+) -> dict:
+    """创建段（线程内单事务）：状态校验 + @成员校验 + 落库。"""
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    if not task:
+        raise PreInputError("Task not found", status_code=404)
 
     task_status = task.status if isinstance(task.status, TaskStatus) else TaskStatus(str(task.status))
     if task_status in _PRE_INPUT_TERMINAL_TASK_STATUSES or task_status not in _PRE_INPUT_ALLOWED_TASK_STATUSES:
@@ -315,14 +343,14 @@ async def create_pre_input(
             f"Task status {task_status.value} does not allow pre input", status_code=409
         )
 
-    existing = get_active_pre_input(db, task.id)
+    existing = get_active_pre_input(db, task_id)
     if existing:
         raise PreInputError("Task already has a collecting pre input", status_code=409)
 
     member_ids = _member_ids(db, task.workspace_id)
     creator_id = str(creator_id)
-    mentioned = []
-    seen = set()
+    mentioned: List[str] = []
+    seen: set = set()
     for uid in mentioned_user_ids or []:
         uid = str(uid or "").strip()
         if not uid or uid in seen or uid == creator_id:
@@ -340,11 +368,11 @@ async def create_pre_input(
 
     now = datetime.utcnow()
     pre_input = SddTaskPreInput(
-        task_id=task.id,
+        task_id=task_id,
         workspace_id=task.workspace_id,
         creator_id=creator_id,
-        main_text=text,
-        document_json=_build_document(text, creator_id),
+        main_text=main_text,
+        document_json=_build_document(main_text, creator_id),
         mentioned_user_ids=mentioned,
         edit_permission=_normalize_edit_permission(edit_permission),
         status=PreInputStatus.COLLECTING,
@@ -356,33 +384,70 @@ async def create_pre_input(
     db.flush()
     db.add(SddTaskPreInputContribution(pre_input_id=pre_input.id, user_id=creator_id, content=""))
     db.commit()
-    db.refresh(pre_input)
+    return {
+        "pre_input_id": str(pre_input.id),
+        "task_id": task_id,
+        "task_name": str(task.name or ""),
+        "workspace_id": str(task.workspace_id),
+        "mentioned": mentioned,
+        "deadline_at": pre_input.deadline_at.isoformat() if pre_input.deadline_at else None,
+    }
 
-    await _broadcast_pre_input(db, pre_input)
 
-    if mentioned:
-        creator_info = _load_member_info(db, task.workspace_id, [creator_id]).get(creator_id, {})
+async def create_pre_input(
+    *,
+    task_id: str,
+    creator_id: str,
+    main_text: str,
+    mentioned_user_ids: Optional[List[str]] = None,
+    edit_permission: str = "NONE",
+    wait_seconds: int = DEFAULT_WAIT_SECONDS,
+) -> dict:
+    text = str(main_text or "").strip()
+    if not text:
+        raise PreInputError("Pre input main text is required")
+
+    created = await run_db_txn(
+        lambda db: _create_pre_input_sync(
+            db,
+            task_id=task_id,
+            creator_id=creator_id,
+            main_text=text,
+            mentioned_user_ids=mentioned_user_ids,
+            edit_permission=edit_permission,
+            wait_seconds=wait_seconds,
+        )
+    )
+
+    await _broadcast_pre_input_snapshot(task_id, created["pre_input_id"])
+
+    if created["mentioned"]:
+        creator_info = (
+            await run_db_txn(
+                lambda db: _load_member_info(db, created["workspace_id"], [str(creator_id)])
+            )
+        ).get(str(creator_id), {})
         creator_name = creator_info.get("display_name") or "成员"
         try:
             await delivery.dispatch_notifications(
-                db,
-                mentioned,
+                None,
+                created["mentioned"],
                 type="pre_input_mention",
-                title=f"{creator_name} 在「{task.name}」会话中 @了你，请参与协作预输入",
+                title=f"{creator_name} 在「{created['task_name']}」会话中 @了你，请参与协作预输入",
                 body=text[:120],
                 payload_json={
-                    "task_id": task.id,
-                    "task_name": task.name,
-                    "workspace_id": task.workspace_id,
-                    "pre_input_id": pre_input.id,
-                    "deadline_at": pre_input.deadline_at.isoformat() if pre_input.deadline_at else None,
+                    "task_id": created["task_id"],
+                    "task_name": created["task_name"],
+                    "workspace_id": created["workspace_id"],
+                    "pre_input_id": created["pre_input_id"],
+                    "deadline_at": created["deadline_at"],
                 },
-                workspace_id=task.workspace_id,
+                workspace_id=created["workspace_id"],
             )
         except Exception:
-            logger.exception(f"Failed to dispatch mention notifications for pre input {pre_input.id}")
+            logger.exception(f"Failed to dispatch mention notifications for pre input {created['pre_input_id']}")
 
-    return pre_input
+    return created
 
 
 # ── 参与 / 文档编辑 ──
@@ -438,10 +503,49 @@ def _maybe_auto_submit(db: Session, pre_input: SddTaskPreInput) -> Optional[dict
     return False
 
 
-async def edit_pre_input_document(
+def _apply_document_change_sync(
     db: Session,
     *,
-    pre_input: SddTaskPreInput,
+    pre_input_id: str,
+    user_id: str,
+    segments: List[dict],
+    new_text: str,
+) -> dict:
+    pre_input = _get_pre_input_sync(db, pre_input_id)
+    _require_collecting(pre_input)
+    pre_input.document_json = segments
+    pre_input.main_text = new_text
+    _record_participation(db, pre_input, str(user_id))
+    db.commit()
+    return {"auto_submit": bool(_maybe_auto_submit(db, pre_input))}
+
+
+async def _apply_document_change(
+    *,
+    pre_input_id: str,
+    task_id: str,
+    user_id: str,
+    segments: List[dict],
+    new_text: str,
+) -> dict:
+    state = await run_db_txn(
+        lambda db: _apply_document_change_sync(
+            db, pre_input_id=pre_input_id, user_id=user_id, segments=segments, new_text=new_text,
+        )
+    )
+    if state["auto_submit"]:
+        result = await submit_pre_input(pre_input_id=pre_input_id, actor_user_id=str(user_id), reason="all_done")
+        if result:
+            return {"pre_input_id": pre_input_id, "auto_submitted": True, "submission": result}
+
+    await _broadcast_pre_input_snapshot(task_id, pre_input_id)
+    return {"pre_input_id": pre_input_id, "auto_submitted": False, "submission": None}
+
+
+async def edit_pre_input_document(
+    *,
+    pre_input_id: str,
+    task_id: str,
     user_id: str,
     is_expert: bool,
     new_text: str,
@@ -452,18 +556,24 @@ async def edit_pre_input_document(
     - 插入的新文字归属编辑者（任何成员都可以增加内容）
     - 修改/删除已有文字需要编辑权限；被改文字保留原作者、修改者记为编辑者
     """
-    _require_collecting(pre_input)
     user_id = str(user_id)
     text = str(new_text or "")
     if not text.strip():
         raise PreInputError("Document text is required")
 
-    old_doc = _document_segments(pre_input)
-    merged = _merge_document(
-        old_doc, text, user_id,
-        pre_input=pre_input, is_expert=bool(is_expert),
+    def _prepare_sync(db: Session) -> List[dict]:
+        pre_input = _get_pre_input_sync(db, pre_input_id)
+        _require_collecting(pre_input)
+        old_doc = _document_segments(pre_input)
+        return _merge_document(
+            old_doc, text, user_id,
+            pre_input=pre_input, is_expert=bool(is_expert),
+        )
+
+    merged = await run_db_txn(_prepare_sync)
+    return await _apply_document_change(
+        pre_input_id=pre_input_id, task_id=task_id, user_id=user_id, segments=merged, new_text=text,
     )
-    return await _apply_document_change(db, pre_input=pre_input, user_id=user_id, segments=merged, new_text=text)
 
 
 def _slice_segments(segments: List[dict], start: int, end: int) -> tuple[List[dict], List[dict], List[dict]]:
@@ -493,11 +603,10 @@ def _slice_segments(segments: List[dict], start: int, end: int) -> tuple[List[di
             after.append({**seg, "text": text[local_e:]})
     return before, inside, after
 
-
 async def replace_pre_input_span(
-    db: Session,
     *,
-    pre_input: SddTaskPreInput,
+    pre_input_id: str,
+    task_id: str,
     user_id: str,
     is_expert: bool,
     start: int,
@@ -513,104 +622,90 @@ async def replace_pre_input_span(
     - 区间已知，直接拼接归属（不走 diff）：未选中的文字原样保留；
       替换文字与原文等长部分保留原作者、多出部分归编辑者；修改者记为编辑者
     """
-    _require_collecting(pre_input)
     user_id = str(user_id)
 
-    segments = _document_segments(pre_input)
-    text = _document_text(segments)
-    try:
-        start = max(0, min(int(start), len(text)))
-        end = max(start, min(int(end), len(text)))
-    except (TypeError, ValueError):
-        raise PreInputError("Invalid span offsets")
-    if text[start:end] != str(anchor_text or ""):
-        raise PreInputError("Selected text is outdated, please refresh", status_code=409)
+    def _prepare_sync(db: Session) -> tuple[List[dict], str]:
+        pre_input = _get_pre_input_sync(db, pre_input_id)
+        _require_collecting(pre_input)
+        segments = _document_segments(pre_input)
+        text = _document_text(segments)
+        try:
+            start_ = max(0, min(int(start), len(text)))
+            end_ = max(start_, min(int(end), len(text)))
+        except (TypeError, ValueError):
+            raise PreInputError("Invalid span offsets")
+        if text[start_:end_] != str(anchor_text or ""):
+            raise PreInputError("Selected text is outdated, please refresh", status_code=409)
 
-    replacement = str(replacement or "")
-    is_pure_insert = start == end or not str(anchor_text or "").strip()
-    if not is_pure_insert and not _shared_edit_allowed(pre_input, user_id=user_id, is_expert=bool(is_expert)):
-        raise PreInputError(
-            "Replacing or deleting selected content requires edit permission",
-            status_code=403,
-        )
+        replacement_text = str(replacement or "")
+        is_pure_insert = start_ == end_ or not str(anchor_text or "").strip()
+        if not is_pure_insert and not _shared_edit_allowed(pre_input, user_id=user_id, is_expert=bool(is_expert)):
+            raise PreInputError(
+                "Replacing or deleting selected content requires edit permission",
+                status_code=403,
+            )
 
-    before, inside, after = _slice_segments(segments, start, end)
-    new_text = f"{text[:start]}{replacement}{text[end:]}"
-    if not new_text.strip():
-        raise PreInputError("Document text is required")
+        before, inside, after = _slice_segments(segments, start_, end_)
+        new_text = f"{text[:start_]}{replacement_text}{text[end_:]}"
+        if not new_text.strip():
+            raise PreInputError("Document text is required")
 
-    merged: List[dict] = list(before)
-    if is_pure_insert:
-        if replacement:
-            merged.append({"text": replacement, "created_by": user_id, "updated_by": user_id})
-    else:
-        # 与被替换文字等长的前缀保留原作者（created_by 取自区间起点），修改者=编辑者
-        origin_author = str(inside[0]["created_by"]) if inside else user_id
-        aligned = replacement[: end - start]
-        extra = replacement[end - start:]
-        if aligned:
-            merged.append({"text": aligned, "created_by": origin_author, "updated_by": user_id})
-        if extra:
-            merged.append({"text": extra, "created_by": user_id, "updated_by": user_id})
-    merged.extend(after)
-
-    # 压缩相邻同归属段
-    compressed: List[dict] = []
-    for seg in merged:
-        if (
-            compressed
-            and compressed[-1]["created_by"] == seg["created_by"]
-            and compressed[-1]["updated_by"] == seg["updated_by"]
-        ):
-            compressed[-1]["text"] += seg["text"]
+        merged: List[dict] = list(before)
+        if is_pure_insert:
+            if replacement_text:
+                merged.append({"text": replacement_text, "created_by": user_id, "updated_by": user_id})
         else:
-            compressed.append(dict(seg))
+            # 与被替换文字等长的前缀保留原作者（created_by 取自区间起点），修改者=编辑者
+            origin_author = str(inside[0]["created_by"]) if inside else user_id
+            aligned = replacement_text[: end_ - start_]
+            extra = replacement_text[end_ - start_:]
+            if aligned:
+                merged.append({"text": aligned, "created_by": origin_author, "updated_by": user_id})
+            if extra:
+                merged.append({"text": extra, "created_by": user_id, "updated_by": user_id})
+        merged.extend(after)
 
-    return await _apply_document_change(db, pre_input=pre_input, user_id=user_id, segments=compressed, new_text=new_text)
+        # 压缩相邻同归属段
+        compressed: List[dict] = []
+        for seg in merged:
+            if (
+                compressed
+                and compressed[-1]["created_by"] == seg["created_by"]
+                and compressed[-1]["updated_by"] == seg["updated_by"]
+            ):
+                compressed[-1]["text"] += seg["text"]
+            else:
+                compressed.append(dict(seg))
+        return compressed, new_text
 
-
-async def _apply_document_change(
-    db: Session,
-    *,
-    pre_input: SddTaskPreInput,
-    user_id: str,
-    segments: List[dict],
-    new_text: str,
-) -> dict:
-    pre_input.document_json = segments
-    pre_input.main_text = new_text
-    _record_participation(db, pre_input, str(user_id))
-    db.commit()
-    db.refresh(pre_input)
-
-    if _maybe_auto_submit(db, pre_input):
-        result = await submit_pre_input(db, pre_input=pre_input, actor_user_id=str(user_id), reason="all_done")
-        if result:
-            return {"pre_input": pre_input, "auto_submitted": True, "submission": result}
-
-    await _broadcast_pre_input(db, pre_input)
-    return {"pre_input": pre_input, "auto_submitted": False, "submission": None}
+    compressed, new_text = await run_db_txn(_prepare_sync)
+    return await _apply_document_change(
+        pre_input_id=pre_input_id, task_id=task_id, user_id=user_id, segments=compressed, new_text=new_text,
+    )
 
 
 async def mark_pre_input_done(
-    db: Session,
     *,
-    pre_input: SddTaskPreInput,
+    pre_input_id: str,
+    task_id: str,
     user_id: str,
 ) -> dict:
     """标记"无补充，已完成"：记为参与但不改动文档。"""
-    _require_collecting(pre_input)
-    _record_participation(db, pre_input, str(user_id))
-    db.commit()
-    db.refresh(pre_input)
+    def _mark_sync(db: Session) -> dict:
+        pre_input = _get_pre_input_sync(db, pre_input_id)
+        _require_collecting(pre_input)
+        _record_participation(db, pre_input, str(user_id))
+        db.commit()
+        return {"auto_submit": bool(_maybe_auto_submit(db, pre_input))}
 
-    if _maybe_auto_submit(db, pre_input):
-        result = await submit_pre_input(db, pre_input=pre_input, actor_user_id=str(user_id), reason="all_done")
+    state = await run_db_txn(_mark_sync)
+    if state["auto_submit"]:
+        result = await submit_pre_input(pre_input_id=pre_input_id, actor_user_id=str(user_id), reason="all_done")
         if result:
-            return {"pre_input": pre_input, "auto_submitted": True, "submission": result}
+            return {"pre_input_id": pre_input_id, "auto_submitted": True, "submission": result}
 
-    await _broadcast_pre_input(db, pre_input)
-    return {"pre_input": pre_input, "auto_submitted": False, "submission": None}
+    await _broadcast_pre_input_snapshot(task_id, pre_input_id)
+    return {"pre_input_id": pre_input_id, "auto_submitted": False, "submission": None}
 
 
 # ── 提交 / 取消 ──
@@ -660,33 +755,30 @@ def _build_merged_content(db: Session, pre_input: SddTaskPreInput) -> tuple[str,
     return merged, participants, segments_meta
 
 
-async def submit_pre_input(
+def _claim_submit_sync(
     db: Session,
     *,
-    pre_input: SddTaskPreInput,
+    pre_input_id: str,
     actor_user_id: str,
     reason: str,
-) -> Optional[dict]:
-    """CAS 抢占 COLLECTING→SUBMITTED；把最终文档作为一条消息交给 agent。
-
-    WS 手动提交 / 全员参与自动提交 / worker 超时三方并发时只有一个成功。
-    返回提交结果；若已被并发提交则返回 None。
-    """
+    now: datetime,
+) -> dict:
+    """CAS 抢占段（线程内）：状态检查 + COLLECTING→SUBMITTED + 合并内容组装。"""
+    pre_input = _get_pre_input_sync(db, pre_input_id)
     current_status = (
         pre_input.status
         if isinstance(pre_input.status, PreInputStatus)
         else PreInputStatus(str(pre_input.status))
     )
     if current_status == PreInputStatus.SUBMITTED:
-        return None
+        return {"claimed": False, "already": PreInputStatus.SUBMITTED.value}
     if current_status == PreInputStatus.CANCELLED:
-        raise PreInputError("Pre input was cancelled", status_code=409)
+        return {"claimed": False, "already": PreInputStatus.CANCELLED.value}
 
-    now = datetime.utcnow()
     claimed = db.execute(
         update(SddTaskPreInput)
         .where(
-            SddTaskPreInput.id == pre_input.id,
+            SddTaskPreInput.id == pre_input_id,
             SddTaskPreInput.status == PreInputStatus.COLLECTING.value,
         )
         .values(
@@ -697,16 +789,13 @@ async def submit_pre_input(
         )
     )
     if not claimed.rowcount:
-        db.rollback()
-        db.refresh(pre_input)
-        return None
+        return {"claimed": False, "already": "RACE"}
     db.commit()
-    db.refresh(pre_input)
 
     task = db.query(SddTask).filter(SddTask.id == pre_input.task_id).first()
     if not task:
-        logger.warning(f"Pre input {pre_input.id} submitted but task {pre_input.task_id} missing")
-        return {"pre_input_id": pre_input.id, "chat_message_id": None, "ai_job_id": None}
+        logger.warning(f"Pre input {pre_input_id} submitted but task {pre_input.task_id} missing")
+        return {"claimed": True, "terminal": "task_missing", "pre_input_id": pre_input_id}
 
     task_status = task.status if isinstance(task.status, TaskStatus) else TaskStatus(str(task.status))
     if task_status in _PRE_INPUT_TERMINAL_TASK_STATUSES:
@@ -714,30 +803,97 @@ async def submit_pre_input(
         db.execute(
             update(SddTaskPreInput)
             .where(
-                SddTaskPreInput.id == pre_input.id,
+                SddTaskPreInput.id == pre_input_id,
                 SddTaskPreInput.status == PreInputStatus.SUBMITTED.value,
             )
             .values(status=PreInputStatus.CANCELLED.value, submitted_at=None)
         )
         db.commit()
-        db.refresh(pre_input)
-        await _broadcast_pre_input(db, pre_input)
-        raise PreInputError("Task already finished, pre input cancelled", status_code=409)
+        return {
+            "claimed": True,
+            "terminal": "task_done",
+            "pre_input_id": pre_input_id,
+            "task_id": str(task.id),
+        }
 
     merged_text, participants, segments_meta = _build_merged_content(db, pre_input)
     metadata = {
-        "pre_input_id": pre_input.id,
+        "pre_input_id": pre_input_id,
         "participants": participants,
         "segments": segments_meta,
         "submit_reason": reason,
     }
+    return {
+        "claimed": True,
+        "terminal": None,
+        "pre_input_id": pre_input_id,
+        "task_id": str(task.id),
+        "task_name": str(task.name or ""),
+        "workspace_id": str(task.workspace_id),
+        "creator_id": str(pre_input.creator_id),
+        "merged_text": merged_text,
+        "metadata": metadata,
+        "submitted_at": pre_input.submitted_at.isoformat() if pre_input.submitted_at else None,
+    }
+
+
+def _writeback_submitted_message_sync(db: Session, *, pre_input_id: str, message_id: Optional[str]) -> None:
+    db.execute(
+        update(SddTaskPreInput)
+        .where(SddTaskPreInput.id == pre_input_id)
+        .values(submitted_message_id=message_id)
+    )
+
+
+def _load_message_session_fields_sync(db: Session, message_id: str) -> dict:
+    row = db.query(ChatMessage.session_turn_id, ChatMessage.session_generation).filter(
+        ChatMessage.id == message_id
+    ).first()
+    return {
+        "session_turn_id": row[0] if row else None,
+        "session_generation": row[1] if row else None,
+    }
+
+
+async def submit_pre_input(
+    *,
+    pre_input_id: str,
+    actor_user_id: str,
+    reason: str,
+) -> Optional[dict]:
+    """CAS 抢占 COLLECTING→SUBMITTED；把最终文档作为一条消息交给 agent。
+
+    WS 手动提交 / 全员参与自动提交 / worker 超时三方并发时只有一个成功。
+    返回提交结果；若已被并发提交则返回 None。
+    同步 DB 段全部经 DB executor 执行；广播/锁/turn 创建保持在事件循环。
+    """
+    now = datetime.utcnow()
+    claimed_state = await run_db_txn(
+        lambda db: _claim_submit_sync(
+            db, pre_input_id=pre_input_id, actor_user_id=actor_user_id, reason=reason, now=now,
+        )
+    )
+    if not claimed_state["claimed"]:
+        if claimed_state["already"] == PreInputStatus.CANCELLED.value:
+            raise PreInputError("Pre input was cancelled", status_code=409)
+        return None
+
+    if claimed_state["terminal"] == "task_missing":
+        return {"pre_input_id": pre_input_id, "chat_message_id": None, "ai_job_id": None}
+    if claimed_state["terminal"] == "task_done":
+        await _broadcast_pre_input_snapshot(claimed_state["task_id"], pre_input_id, event_type="pre_input_update")
+        raise PreInputError("Task already finished, pre input cancelled", status_code=409)
+
+    task_id = claimed_state["task_id"]
+    merged_text = claimed_state["merged_text"]
+    metadata = claimed_state["metadata"]
 
     try:
-        if task_status == TaskStatus.INTERRUPTED:
-            async with lock_task(task.id):
+        task_status = await run_db(_load_task_status_value, task_id)
+        if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
+            async with lock_task(task_id):
                 resume_payload = await task_session_control_service.resume_interrupted_task(
-                    db,
-                    task=task,
+                    task_id=task_id,
                     actor_user_id=str(actor_user_id),
                     prompt=merged_text,
                     confirm_continue=False,
@@ -748,130 +904,146 @@ async def submit_pre_input(
             message_id = str(resume_context.get("chat_message_id") or "") or None
             job_id = str(resume_job.get("id") or "") or None
         else:
-            async with lock_task(task.id):
-                _turn, saved_message, job, _checkpoint = await task_session_service.create_task_chat_turn(
-                    db,
-                    task=task,
+            async with lock_task(task_id):
+                created = await task_session_service.create_task_chat_turn(
+                    task_id=task_id,
                     actor_user_id=str(actor_user_id),
                     content=merged_text,
                     context_json=metadata,
                     client_message_id=None,
                 )
-            message_id = saved_message.id
-            job_id = job.id
+            message_id = created.message_id
+            job_id = created.job_id
     except PreInputError:
         raise
     except Exception:
-        logger.exception(f"Failed to submit pre input {pre_input.id}, reverting to COLLECTING")
-        db.execute(
-            update(SddTaskPreInput)
-            .where(
-                SddTaskPreInput.id == pre_input.id,
-                SddTaskPreInput.status == PreInputStatus.SUBMITTED.value,
+        logger.exception(f"Failed to submit pre input {pre_input_id}, reverting to COLLECTING")
+
+        def _revert_sync(db: Session) -> None:
+            db.execute(
+                update(SddTaskPreInput)
+                .where(
+                    SddTaskPreInput.id == pre_input_id,
+                    SddTaskPreInput.status == PreInputStatus.SUBMITTED.value,
+                )
+                .values(status=PreInputStatus.COLLECTING.value, submitted_at=None, submitted_by_id=None, submit_reason=None)
             )
-            .values(status=PreInputStatus.COLLECTING.value, submitted_at=None, submitted_by_id=None, submit_reason=None)
-        )
-        db.commit()
-        db.refresh(pre_input)
+
+        await run_db_txn(_revert_sync)
         raise
 
     if message_id:
-        db.execute(
-            update(SddTaskPreInput)
-            .where(SddTaskPreInput.id == pre_input.id)
-            .values(submitted_message_id=message_id)
-        )
-        db.commit()
-        db.refresh(pre_input)
+        def _writeback_sync(db: Session) -> None:
+            _writeback_submitted_message_sync(db, pre_input_id=pre_input_id, message_id=message_id)
 
-    saved_message = (
-        db.query(ChatMessage).filter(ChatMessage.id == message_id).first()
-        if message_id
-        else None
+        await run_db_txn(_writeback_sync)
+
+    message_fields = (
+        await run_db_txn(lambda db: _load_message_session_fields_sync(db, message_id))
+        if message_id else {"session_turn_id": None, "session_generation": None}
     )
-
-    # 广播合并后的聊天消息 + 预输入终态
-    creator_info = _load_member_info(db, pre_input.workspace_id, [pre_input.creator_id]).get(pre_input.creator_id, {})
+    creator_info = (
+        await run_db_txn(
+            lambda db: _load_member_info(db, claimed_state["workspace_id"], [claimed_state["creator_id"]])
+        )
+    ).get(claimed_state["creator_id"], {})
     if message_id:
         await task_ws_manager.send_message_to_room(
-            task.id,
+            task_id,
             WSMessage(
                 type="chat_message",
                 payload=WSChatPayload(
-                    task_id=task.id,
+                    task_id=task_id,
                     role="user",
                     content=merged_text,
                     message_type="text",
                     metadata=metadata,
                     id=message_id,
-                    creator_id=pre_input.creator_id,
+                    creator_id=claimed_state["creator_id"],
                     creator_display_name=creator_info.get("display_name"),
                     creator_is_workspace_expert=creator_info.get("is_expert"),
                     creator_avatar_url=creator_info.get("avatar_url"),
                     creator_avatar_svg=creator_info.get("avatar_svg"),
-                    created_at=(pre_input.submitted_at or datetime.utcnow()).isoformat(),
-                    session_turn_id=getattr(saved_message, "session_turn_id", None),
-                    session_generation=getattr(saved_message, "session_generation", None),
+                    created_at=(claimed_state["submitted_at"] or datetime.utcnow().isoformat()),
+                    session_turn_id=message_fields["session_turn_id"],
+                    session_generation=message_fields["session_generation"],
                 ).model_dump(),
             ),
         )
-    await _broadcast_pre_input(db, pre_input, event_type="pre_input_submitted")
+    await _broadcast_pre_input_snapshot(task_id, pre_input_id, event_type="pre_input_submitted")
 
     if job_id:
         try:
             await ai_job_service.enqueue_task_chat_job(job_id)
         except Exception:
-            logger.exception(f"Failed to enqueue job {job_id} for pre input {pre_input.id}")
+            logger.exception(f"Failed to enqueue job {job_id} for pre input {pre_input_id}")
 
     # 通知发起人与参与成员
-    participant_ids = [c.user_id for c in (pre_input.contributions or [])]
-    notify_targets = [pre_input.creator_id] + [
-        uid for uid in participant_ids if uid != pre_input.creator_id
-    ]
     try:
+        participant_ids = await run_db_txn(
+            lambda db: [c.user_id for c in (_get_pre_input_sync(db, pre_input_id).contributions or [])]
+        )
+        notify_targets = [claimed_state["creator_id"]] + [
+            uid for uid in participant_ids if uid != claimed_state["creator_id"]
+        ]
         await delivery.dispatch_notifications(
-            db,
+            None,
             notify_targets,
             type="pre_input_submitted",
-            title=f"「{task.name}」协作预输入已提交执行",
+            title=f"「{claimed_state['task_name']}」协作预输入已提交执行",
             body=f"协作预输入已提交（长度 {len(merged_text)}）",
             payload_json={
-                "task_id": task.id,
-                "task_name": task.name,
-                "workspace_id": task.workspace_id,
-                "pre_input_id": pre_input.id,
+                "task_id": task_id,
+                "task_name": claimed_state["task_name"],
+                "workspace_id": claimed_state["workspace_id"],
+                "pre_input_id": pre_input_id,
                 "submit_reason": reason,
             },
-            workspace_id=task.workspace_id,
+            workspace_id=claimed_state["workspace_id"],
         )
     except Exception:
-        logger.exception(f"Failed to dispatch submit notifications for pre input {pre_input.id}")
+        logger.exception(f"Failed to dispatch submit notifications for pre input {pre_input_id}")
 
-    return {"pre_input_id": pre_input.id, "chat_message_id": message_id, "ai_job_id": job_id}
+    return {"pre_input_id": pre_input_id, "chat_message_id": message_id, "ai_job_id": job_id}
+
+
+def _load_task_status_value(task_id: str) -> Optional[str]:
+    """任务状态查询（线程内执行，由 run_db 包装调用）。"""
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        status = db.query(SddTask.status).filter(SddTask.id == task_id).scalar()
+        if status is None:
+            return None
+        return str(getattr(status, "value", status))
+    finally:
+        db.close()
 
 
 async def cancel_pre_input(
-    db: Session,
     *,
-    pre_input: SddTaskPreInput,
+    pre_input_id: str,
+    task_id: str,
     actor_user_id: str,
-) -> SddTaskPreInput:
-    _require_collecting(pre_input)
-    if str(actor_user_id) != pre_input.creator_id:
-        raise PreInputError("Only the creator can cancel the pre input", status_code=403)
-    claimed = db.execute(
-        update(SddTaskPreInput)
-        .where(
-            SddTaskPreInput.id == pre_input.id,
-            SddTaskPreInput.status == PreInputStatus.COLLECTING.value,
+) -> dict:
+    def _cancel_sync(db: Session) -> dict:
+        pre_input = _get_pre_input_sync(db, pre_input_id)
+        _require_collecting(pre_input)
+        if str(actor_user_id) != pre_input.creator_id:
+            raise PreInputError("Only the creator can cancel the pre input", status_code=403)
+        claimed = db.execute(
+            update(SddTaskPreInput)
+            .where(
+                SddTaskPreInput.id == pre_input_id,
+                SddTaskPreInput.status == PreInputStatus.COLLECTING.value,
+            )
+            .values(status=PreInputStatus.CANCELLED.value)
         )
-        .values(status=PreInputStatus.CANCELLED.value)
-    )
-    if not claimed.rowcount:
-        db.rollback()
-        db.refresh(pre_input)
-        raise PreInputError("Pre input is not collecting", status_code=409)
-    db.commit()
-    db.refresh(pre_input)
-    await _broadcast_pre_input(db, pre_input)
-    return pre_input
+        if not claimed.rowcount:
+            raise PreInputError("Pre input is not collecting", status_code=409)
+        return {"task_id": str(pre_input.task_id)}
+
+    await run_db_txn(_cancel_sync)
+    await _broadcast_pre_input_snapshot(task_id, pre_input_id)
+    return {"pre_input_id": pre_input_id}

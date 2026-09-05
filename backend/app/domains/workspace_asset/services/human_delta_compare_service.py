@@ -62,33 +62,30 @@ class HumanDeltaError(ValueError):
 # ---------------------------------------------------------------------------
 
 def _run_git(repo_path: str, args: List[str], *, check: bool = True) -> str:
+    from app.core.subprocess_runner import ProcessTimeoutError, run_git
+
     abs_repo = os.path.abspath(repo_path)
     cmd = ["git", *args]
     log.info("_run_git: cwd=%s cmd=%s", abs_repo, " ".join(cmd))
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=abs_repo,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_GIT_TIMEOUT_SECONDS,
-        )
-        if check and result.returncode != 0:
-            stderr = result.stderr.strip() or result.stdout.strip()
-            log.error("_run_git: exit=%d stderr=%s", result.returncode, stderr[:500])
-            raise HumanDeltaError(
-                f"git {' '.join(args[:3])} failed (exit {result.returncode}): {stderr[:300]}"
-            )
-        log.info("_run_git: exit=0 stdout=%d chars", len(result.stdout))
-        return result.stdout
+        result = run_git(list(args), cwd=abs_repo, timeout_seconds=_GIT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        log.error("_run_git: timed out after %ds", _GIT_TIMEOUT_SECONDS)
+        raise HumanDeltaError("git command timed out")
+    except ProcessTimeoutError:
         log.error("_run_git: timed out after %ds", _GIT_TIMEOUT_SECONDS)
         raise HumanDeltaError("git command timed out")
     except FileNotFoundError:
         log.error("_run_git: git not found in PATH")
         raise HumanDeltaError("git is not installed or not in PATH")
+    if check and result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip()
+        log.error("_run_git: exit=%d stderr=%s", result.returncode, stderr[:500])
+        raise HumanDeltaError(
+            f"git {' '.join(args[:3])} failed (exit {result.returncode}): {stderr[:300]}"
+        )
+    log.info("_run_git: exit=0 stdout=%d chars", len(result.stdout))
+    return result.stdout
 
 
 def _read_file_text(path: str, limit: int = 500_000) -> str:
