@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     DB_NAME: str = "sdd_platform"
     # SQLAlchemy echo（打印每条 SQL 及参数）：默认关闭，避免 DEBUG 启动时日志刷屏；排查 SQL 时置 true
     SQL_ECHO: bool = False
+    # MySQL 连接/读写超时（秒），透传 PyMySQL connect_args；防止 offload 线程被无超时查询永久占用
+    DB_CONNECT_TIMEOUT: int = 10
+    DB_READ_TIMEOUT: int = 30
+    DB_WRITE_TIMEOUT: int = 30
+    DB_POOL_RECYCLE_SECONDS: int = 3600
+    # 同步 DB offload 线程池（app.core.offload）：db 专用 4 起步，压测后调整；git/文件独立池避免互相拖死
+    DB_OFFLOAD_WORKERS: int = 4
+    GIT_OFFLOAD_WORKERS: int = 2
+    FILE_OFFLOAD_WORKERS: int = 2
 
     @property
     def DATABASE_URL(self) -> str:
@@ -156,6 +165,18 @@ class Settings(BaseSettings):
     TASK_CHANGE_DIFF_EXCERPT_CHARS: int = 12000
     TASK_CHANGE_PROPOSAL_QUEUE_WAIT_TIMEOUT_SECONDS: float = 120.0
     TASK_CHANGE_PROPOSAL_QUEUE_POLL_INTERVAL_SECONDS: float = 0.1
+
+    # ── WorkflowEngine 事件落库批处理 ──
+    # context segment 批量写入：按条数或时间窗触发（结束/异常/HITL 前强制 flush）
+    SEGMENT_FLUSH_INTERVAL_SECONDS: float = 0.2
+    SEGMENT_FLUSH_MAX_ITEMS: int = 50
+    # 事件门禁 TTL：缓存 job/task revision 状态，过期后经 DB 重校验一次（周期兜底）
+    REVISION_GATE_TTL_SECONDS: float = 1.0
+
+    # ── WebSocket 出站背压 ──
+    # 每连接出站队列条数上限 + 未确认字节上限，双重限长；超限断开该慢客户端，只影响其自身
+    WS_OUTBOUND_QUEUE_SIZE: int = 256
+    WS_OUTBOUND_MAX_BYTES: int = 1024 * 1024
 
     # ── CORS ──
     CORS_ORIGINS: list[str] = [

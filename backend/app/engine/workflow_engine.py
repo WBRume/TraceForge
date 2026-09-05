@@ -10,6 +10,7 @@ import time
 from typing import Optional, Dict, Any, Callable, Awaitable, List, Tuple
 from sqlalchemy.orm import Session
 
+from app.core.offload import run_db
 from app.database import SessionLocal
 from app.config import settings
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
@@ -70,6 +71,109 @@ def register_engine(engine: "WorkflowEngine", *, mark_running: bool = False) -> 
     _active_engines[engine.task_id] = engine
 
 
+class SessionGate:
+    """事件门禁：内存态判定 + TTL 周期 DB 重校验 + interrupt 立即失效。
+
+    - is_current()：O(1) 内存判定，事件热路径零 DB 查询（替代旧
+      _event_is_current 的"每事件 1-2 次 DB 查询"）；
+    - TTL 过期后经 run_db 异步重校验一次（周期兜底，跨请求撤销可见）；
+    - 关键最终写入（任务状态/聊天消息/segment 批/执行日志批）在线程闭包内用
+      fence_sync(db) 复核，作为条件更新兜底；
+    - interrupt() 或撤销路径调用 invalidate() 立即丢弃后续事件。
+    """
+
+    def __init__(
+        self,
+        *,
+        task_id: str,
+        job_id: Optional[str],
+        session_revision: Optional[int],
+        ttl_seconds: float,
+    ):
+        self.task_id = task_id
+        self.job_id = job_id
+        self.session_revision = session_revision
+        self._ttl = max(0.0, float(ttl_seconds))
+        self._armed = bool(job_id and session_revision is not None)
+        self._stale = False
+        self._db_current = True
+        self._last_refresh = 0.0
+        self._refresh_task: Optional[asyncio.Task] = None
+
+    def invalidate(self) -> None:
+        self._stale = True
+        self._db_current = False
+
+    def is_current(self) -> bool:
+        if self._stale:
+            return False
+        if not self._armed:
+            return True
+        now = time.monotonic()
+        if now - self._last_refresh >= self._ttl:
+            # 立即推进时间戳，保证一个 TTL 窗口内只调度一次重校验
+            self._last_refresh = now
+            self._schedule_refresh()
+        return self._db_current
+
+    def _schedule_refresh(self) -> None:
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 线程上下文（如执行日志落库闭包）：跳过，由事件循环内下一次判定触发
+            return
+        self._refresh_task = loop.create_task(self.refresh())
+
+    async def load(self) -> None:
+        """run() 开始时的基线校验：加载 job/task revision 快照。"""
+        if not self._armed:
+            return
+        try:
+            await self.refresh()
+        except Exception as exc:
+            logger.warning(f"Session gate initial load failed: {exc}")
+
+    async def refresh(self) -> bool:
+        def _check() -> bool:
+            db = SessionLocal()
+            try:
+                return self.fence_sync(db)
+            except Exception:
+                # 瞬时 DB 故障按过期处理：宁可丢事件，也不把过期事件写进历史
+                return False
+            finally:
+                db.close()
+
+        try:
+            result = await run_db(_check)
+        except Exception as exc:
+            logger.warning(f"Session gate refresh failed: {exc}")
+            return self._db_current
+        self._db_current = result
+        self._last_refresh = time.monotonic()
+        return result
+
+    def fence_sync(self, db) -> bool:
+        """线程闭包内的关键写入复核（复用调用方 session，不另开连接）。"""
+        if self._stale:
+            return False
+        if not self._armed:
+            return True
+        try:
+            job = db.query(SddAiJob).filter(SddAiJob.id == self.job_id).first()
+            if not job or job.status in {AiJobStatus.REVERTED, AiJobStatus.CANCELLED}:
+                return False
+            if job.task_id:
+                task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+                if not task or int(task.session_revision or -1) != int(self.session_revision):
+                    return False
+            return int(job.session_revision or -1) == int(self.session_revision)
+        except Exception:
+            return False
+
+
 class WorkflowEngine:
     """
     工作流引擎：
@@ -123,6 +227,15 @@ class WorkflowEngine:
         self._execution_log_flush_task: Optional[asyncio.Task] = None
         self._draining_execution_logs = False
         self._execution_log_order = time.time_ns()
+        # context segment / snapshot 批量窗口（高频事件不再逐条提交）
+        self._segment_buffer: List[Tuple[str, Dict[str, Any]]] = []
+        self._segment_flush_task: Optional[asyncio.Task] = None
+        self._draining_segments = False
+        self._thinking_dirty = False
+        self._pending_snapshot_update: Dict[str, Any] = {}
+        # 事件门禁与回合级缓存（run() 时加载）
+        self._gate: Optional[SessionGate] = None
+        self._session_generation: Optional[int] = None
 
     def _create_engine_backend(self) -> Any:
         """根据配置创建当前任务引擎使用的 Agent backend。
@@ -169,35 +282,24 @@ class WorkflowEngine:
     # ─────────────── DB 持久化 ───────────────
 
     def _event_is_current(self) -> bool:
-        """Fence late provider events after an undo or newer turn."""
-        if not self.current_job_id or self.session_revision is None:
-            return True
-        db = SessionLocal()
-        try:
-            job = db.query(SddAiJob).filter(SddAiJob.id == self.current_job_id).first()
-            if not job or job.status in {AiJobStatus.REVERTED, AiJobStatus.CANCELLED}:
-                return False
-            if job.task_id:
-                task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-                if not task or int(task.session_revision or -1) != int(self.session_revision):
-                    return False
-            return int(job.session_revision or -1) == int(self.session_revision)
-        except Exception:
-            # A transient DB error must not turn an already-running provider
-            # event into a new history row.
-            return False
-        finally:
-            db.close()
+        """Fence late provider events after an undo or newer turn.
+
+        现为内存判定（SessionGate）；DB 兜底见 SessionGate.fence_sync 与 TTL 重校验。
+        """
+        gate = self._gate
+        return True if gate is None else gate.is_current()
 
     def _persist_execution_logs_sync(self, entries: List[Tuple[str, LogType, int]]) -> None:
-        """Persist one execution-log batch in a single transaction."""
+        """Persist one execution-log batch in a single transaction (线程内执行)."""
         if not entries:
             return
 
-        if not self._event_is_current():
-            return
         db = SessionLocal()
         try:
+            # 关键写入兜底：复用同一 session 做门禁复核（job 未撤销/revision 未变）
+            gate = self._gate
+            if gate is not None and not gate.fence_sync(db):
+                return
             db.add_all([
                 SddExecutionLog(
                     task_id=self.task_id,
@@ -251,7 +353,7 @@ class WorkflowEngine:
         if not self._execution_log_buffer:
             return
         batch, self._execution_log_buffer = self._execution_log_buffer, []
-        await asyncio.to_thread(self._persist_execution_logs_sync, batch)
+        await run_db(self._persist_execution_logs_sync, batch)
 
     async def _drain_execution_logs(self) -> None:
         """Flush buffered terminal events before an engine run returns."""
@@ -269,11 +371,21 @@ class WorkflowEngine:
         finally:
             self._draining_execution_logs = False
 
+    async def _drain_buffers(self) -> None:
+        """结束/异常/HITL 前统一排空：segment（含 snapshot）先于执行日志。"""
+        await self._drain_segments()
+        await self._drain_execution_logs()
+
     def _update_task_status(self, status: TaskStatus, error_msg: Optional[str] = None):
-        if not self._event_is_current():
-            return
+        """任务状态更新（off-loop，条件更新兜底 fence）。"""
+        return run_db(self._update_task_status_sync, status, error_msg)
+
+    def _update_task_status_sync(self, status: TaskStatus, error_msg: Optional[str] = None):
         db = SessionLocal()
         try:
+            gate = self._gate
+            if gate is not None and not gate.fence_sync(db):
+                return
             task = db.query(SddTask).filter(SddTask.id == self.task_id).first()
             if task:
                 task.status = status
@@ -281,6 +393,7 @@ class WorkflowEngine:
                     task.error_message = error_msg
                 db.commit()
         except Exception as e:
+            db.rollback()
             logger.exception(f"Update task status failed: {e}")
         finally:
             db.close()
@@ -295,45 +408,146 @@ class WorkflowEngine:
         total_cost_usd: Optional[float] = None,
         raw_usage_json: Any = None,
     ) -> None:
+        """瞬态 snapshot 更新：合并进内存 pending，随 segment 批量窗口一次落库。
+
+        可合并字段按最后写入者胜出；usage 内非 None 字段浅合并。
+        最终写入点（result/超时/异常）调用方负责随后 await _flush_segments()。
+        """
         if not self._event_is_current():
+            return
+        pending = self._pending_snapshot_update
+        if usage is not None:
+            current_usage = pending.get("usage") if isinstance(pending.get("usage"), dict) else {}
+            merged_usage = dict(current_usage)
+            if isinstance(usage, dict):
+                for key, value in usage.items():
+                    if value is not None:
+                        merged_usage[key] = value
+            pending["usage"] = merged_usage
+        if model is not None:
+            pending["model"] = model
+        if status is not None:
+            pending["status"] = status
+        if duration_ms is not None:
+            pending["duration_ms"] = duration_ms
+        if total_cost_usd is not None:
+            pending["total_cost_usd"] = total_cost_usd
+        if raw_usage_json is not None:
+            pending["raw_usage_json"] = raw_usage_json
+        self._schedule_segment_flush()
+
+    def _record_context_segment(self, recorder: str, **kwargs: Any) -> None:
+        """入队 context segment，按数量/时间窗口批量落库（调用方已在事件入口过门禁）。
+
+        thinking 只打脏标记：flush 时以合并后的累积 buffer 落一条，替代逐 delta 提交。
+        """
+        if not self._event_is_current():
+            return
+        if recorder == "thinking":
+            self._thinking_dirty = True
+        else:
+            self._segment_buffer.append((recorder, kwargs))
+        self._schedule_segment_flush()
+
+    def _schedule_segment_flush(self) -> None:
+        if self._draining_segments:
+            return
+        if self._segment_flush_task is not None and not self._segment_flush_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 线程上下文：等待事件循环内的下一次入队触发
+            return
+        immediate = len(self._segment_buffer) >= int(
+            getattr(settings, "SEGMENT_FLUSH_MAX_ITEMS", 50)
+        )
+        self._segment_flush_task = loop.create_task(self._flush_segments_after_delay(immediate))
+
+    async def _flush_segments_after_delay(self, immediate: bool = False) -> None:
+        current_task = asyncio.current_task()
+        try:
+            if not immediate:
+                interval = float(getattr(settings, "SEGMENT_FLUSH_INTERVAL_SECONDS", 0.2))
+                if interval > 0:
+                    await asyncio.sleep(interval)
+            await self._flush_segments()
+        finally:
+            if self._segment_flush_task is current_task:
+                self._segment_flush_task = None
+            if (self._segment_buffer or self._thinking_dirty or self._pending_snapshot_update) \
+                    and not self._draining_segments:
+                self._segment_flush_task = asyncio.create_task(self._flush_segments_after_delay())
+
+    async def _flush_segments(self) -> None:
+        entries: List[Tuple[str, Dict[str, Any]]] = []
+        if self._thinking_dirty:
+            self._thinking_dirty = False
+            content = self._thinking_buffer
+            if content.strip():
+                entries.append(("thinking", {
+                    "workspace_id": self.ws_id,
+                    "task_id": self.task_id,
+                    "ai_job_id": self.current_job_id,
+                    "session_id": self.session_id,
+                    "content": content,
+                }))
+        if self._segment_buffer:
+            buffered, self._segment_buffer = self._segment_buffer, []
+            entries.extend(buffered)
+        snapshot_update: Optional[Dict[str, Any]] = None
+        if self._pending_snapshot_update:
+            pending, self._pending_snapshot_update = self._pending_snapshot_update, {}
+            snapshot_update = {
+                **pending,
+                "workspace_id": self.ws_id,
+                "task_id": self.task_id,
+                "ai_job_id": self.current_job_id,
+                "session_id": self.session_id,
+            }
+        if not entries and not snapshot_update:
+            return
+        try:
+            await run_db(self._persist_segments_sync, entries, snapshot_update)
+        except Exception as exc:
+            logger.warning(f"Context segment batch flush failed: {exc}")
+
+    def _persist_segments_sync(
+        self,
+        entries: List[Tuple[str, Dict[str, Any]]],
+        snapshot_update: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """线程内执行：单事务写入一批 segment（可选顺带 snapshot 更新）。"""
+        if not entries and not snapshot_update:
             return
         db = SessionLocal()
         try:
-            context_token_service.update_snapshot_usage(
-                db,
-                workspace_id=self.ws_id,
-                task_id=self.task_id,
-                ai_job_id=self.current_job_id,
-                session_id=self.session_id,
-                usage=usage,
-                model=model,
-                status=status,
-                duration_ms=duration_ms,
-                total_cost_usd=total_cost_usd,
-                raw_usage_json=raw_usage_json,
+            gate = self._gate
+            if gate is not None and not gate.fence_sync(db):
+                return
+            context_token_service.record_segments_batch(
+                db, entries, snapshot_update=snapshot_update,
             )
         except Exception as exc:
-            logger.warning(f"Context token snapshot update failed: {exc}")
+            logger.warning(f"Context token segment batch failed: {exc}")
         finally:
             db.close()
 
-    def _record_context_segment(self, recorder: str, **kwargs: Any) -> None:
-        if not self._event_is_current():
-            return
-        db = SessionLocal()
+    async def _drain_segments(self) -> None:
+        """强制排空 segment/snapshot 缓冲（结束、异常、HITL、最终消息前调用）。"""
+        self._draining_segments = True
         try:
-            if recorder == "tool_input":
-                context_token_service.record_tool_input(db, **kwargs)
-            elif recorder == "tool_result":
-                context_token_service.record_tool_result(db, **kwargs)
-            elif recorder == "thinking":
-                context_token_service.record_thinking(db, **kwargs)
-            elif recorder == "hitl":
-                context_token_service.record_hitl(db, **kwargs)
-        except Exception as exc:
-            logger.warning(f"Context token segment record failed ({recorder}): {exc}")
+            scheduled = self._segment_flush_task
+            if scheduled is not None and scheduled is not asyncio.current_task():
+                try:
+                    await scheduled
+                except asyncio.CancelledError:
+                    pass
+            self._segment_flush_task = None
+            while self._segment_buffer or self._thinking_dirty or self._pending_snapshot_update:
+                await self._flush_segments()
         finally:
-            db.close()
+            self._draining_segments = False
 
     # ─────────────── WebSocket 推送 ───────────────
 
@@ -342,22 +556,43 @@ class WorkflowEngine:
         await ws_manager.send_message_to_room(self.task_id, msg)
 
     async def _push_chat(self, role: str, content: str):
-        """推送自然语言对话消息到前端气泡区"""
+        """推送自然语言对话消息到前端气泡区（先落库后广播，DB 全程 off-loop）"""
         if not content.strip():
             return
         if not self._event_is_current():
             return
-        
-        # 保存到数据库
+
+        try:
+            payload = await run_db(self._persist_chat_message_sync, role, content)
+        except Exception as exc:
+            logger.exception(f"Persist chat message failed: {exc}")
+            return
+        if not payload:
+            return
+
+        await self._ws_push("chat_message", payload)
+
+    def _persist_chat_message_sync(self, role: str, content: str) -> Optional[dict]:
+        """线程内执行：消息落库（含每条即时通知）+ context 归因 + WS payload 组装。"""
         db = SessionLocal()
         try:
+            # 关键写入兜底 fence：job 未撤销/取消且 session_revision 未变
+            gate = self._gate
+            if gate is not None and not gate.fence_sync(db):
+                return None
+
+            generation = self._session_generation
+            if generation is None:
+                row = db.query(SddTask.session_generation).filter(SddTask.id == self.task_id).scalar()
+                generation = int(row) if row is not None else None
+
             saved_message = task_service.save_chat_message(
                 db, self.task_id, self.ws_id, self.user_id,
                 role=role,
                 content=content,
                 message_type="text",
                 session_turn_id=self.session_turn_id,
-                session_generation=self._current_session_generation()
+                session_generation=generation,
             )
             try:
                 snapshot = context_token_service.ensure_snapshot(
@@ -387,21 +622,24 @@ class WorkflowEngine:
                 id=saved_message.id,
                 creator_id=self.user_id,
                 creator_display_name=creator.display_name if creator else None,
+                creator_avatar_url=creator.avatar_url if creator else None,
+                creator_avatar_svg=creator.avatar_svg if creator else None,
                 creator_is_workspace_expert=bool(member.is_expert) if member else False,
                 created_at=saved_message.created_at.isoformat(),
                 session_turn_id=saved_message.session_turn_id,
                 session_generation=saved_message.session_generation,
             ).model_dump()
+            return payload
         finally:
             db.close()
 
-        await self._ws_push("chat_message", payload)
-
-    def _current_session_generation(self) -> Optional[int]:
+    def _load_session_generation_sync(self) -> Optional[int]:
         db = SessionLocal()
         try:
-            task = db.query(SddTask).filter(SddTask.id == self.task_id).first()
-            return int(task.session_generation) if task and task.session_generation is not None else None
+            row = db.query(SddTask.session_generation).filter(SddTask.id == self.task_id).scalar()
+            return int(row) if row is not None else None
+        except Exception:
+            return None
         finally:
             db.close()
 
@@ -439,9 +677,7 @@ class WorkflowEngine:
         ).model_dump())
 
     async def _push_tool_use(self, tool_name: str, tool_input: Any, tool_use_id: str = ""):
-        """推送工具调用到前端（终端/日志面板）"""
-        if not self._event_is_current():
-            return
+        """推送工具调用到前端（终端/日志面板）；门禁已在事件入口统一检查"""
         import json
         payload = {
             "tool_name": tool_name,
@@ -496,6 +732,8 @@ class WorkflowEngine:
             prompt=prompt,
             source_kind="hitl_prompt",
         )
+        # 先持久化再广播：HITL 前强制排空 segment/snapshot 缓冲
+        await self._flush_segments()
         await self._ws_push("hitl_request", WSHitlRequest(
             task_id=self.task_id, hitl_type=hitl_type,
             prompt=prompt, job_id=self.current_job_id, options=options, context=context,
@@ -668,6 +906,9 @@ class WorkflowEngine:
             self.last_result_text = result_text
             return
 
+        # 最终写入前强制排空缓冲：segment/snapshot 先于结果落库
+        await self._flush_segments()
+
         normalized_result = result_text.lower()
         timeout_like = any(
             marker in normalized_result
@@ -693,8 +934,8 @@ class WorkflowEngine:
                 total_cost_usd=cost,
             )
             logger.warning("Agent execution timed out, session is resumable")
-            self._update_task_status(TaskStatus.INTERRUPTED, "Agent execution timed out; session is resumable")
-            self._update_task_metrics(cost, duration, "INTERRUPTED")
+            await self._update_task_status(TaskStatus.INTERRUPTED, "Agent execution timed out; session is resumable")
+            await self._update_task_metrics(cost, duration, "INTERRUPTED")
             await self._push_status("INTERRUPTED", "执行超时，可继续发送消息恢复")
             self.last_result_success = None
             self.last_result_text = result_text
@@ -707,8 +948,8 @@ class WorkflowEngine:
                 total_cost_usd=cost,
             )
             logger.error("Agent execution failed, session is resumable")
-            self._update_task_status(TaskStatus.INTERRUPTED, "Agent execution failed; session is resumable")
-            self._update_task_metrics(cost, duration, "INTERRUPTED")
+            await self._update_task_status(TaskStatus.INTERRUPTED, "Agent execution failed; session is resumable")
+            await self._update_task_metrics(cost, duration, "INTERRUPTED")
             await self._push_result(False, result_text, duration, cost)
             await self._push_status("INTERRUPTED", "执行异常，可继续发送消息恢复")
             self.last_result_success = False
@@ -731,7 +972,7 @@ class WorkflowEngine:
                 total_cost_usd=cost,
             )
             logger.info(f"Agent execution succeeded in {duration}ms, cost: {cost}")
-            self._update_task_metrics(cost, duration)
+            await self._update_task_metrics(cost, duration)
             await self._push_result(True, result_text[:500], duration, cost)
             self.last_result_success = not waiting_hitl
             self.last_result_text = result_text
@@ -880,6 +1121,9 @@ class WorkflowEngine:
             self.last_result_text = result_text
             return
 
+        # 最终写入前强制排空缓冲：segment/snapshot 先于结果落库
+        await self._flush_segments()
+
         normalized_result = str(result_text or "").lower()
         timeout_like = any(
             marker in normalized_result
@@ -903,8 +1147,8 @@ class WorkflowEngine:
                 total_cost_usd=cost,
             )
             logger.warning("CLI execution timed out, session is resumable")
-            self._update_task_status(TaskStatus.INTERRUPTED, "CLI execution timed out; session is resumable")
-            self._update_task_metrics(cost, duration, "INTERRUPTED")
+            await self._update_task_status(TaskStatus.INTERRUPTED, "CLI execution timed out; session is resumable")
+            await self._update_task_metrics(cost, duration, "INTERRUPTED")
             await self._push_status("INTERRUPTED", "执行超时，可继续发送消息恢复")
             self.last_result_success = None
             self.last_result_text = result_text
@@ -917,8 +1161,8 @@ class WorkflowEngine:
                 total_cost_usd=cost,
             )
             logger.error("CLI execution failed, session is resumable")
-            self._update_task_status(TaskStatus.INTERRUPTED, "CLI execution failed; session is resumable")
-            self._update_task_metrics(cost, duration, "INTERRUPTED")
+            await self._update_task_status(TaskStatus.INTERRUPTED, "CLI execution failed; session is resumable")
+            await self._update_task_metrics(cost, duration, "INTERRUPTED")
             await self._push_result(False, result_text, duration, cost)
             await self._push_status("INTERRUPTED", "执行异常，可继续发送消息恢复")
             self.last_result_success = False
@@ -940,7 +1184,7 @@ class WorkflowEngine:
                 total_cost_usd=cost,
             )
             logger.info(f"CLI execution succeeded in {duration}ms, cost: {cost}")
-            self._update_task_metrics(cost, duration)
+            await self._update_task_metrics(cost, duration)
             await self._push_result(True, result_text[:500], duration, cost)
             self.last_result_success = not self._hitl_requested_in_turn
             self.last_result_text = result_text
@@ -954,12 +1198,16 @@ class WorkflowEngine:
             )
 
     def _update_task_metrics(self, cost: Optional[float], duration: Optional[int], status: Optional[str] = None):
-        """累加消耗并记录指标"""
-        if not self._event_is_current():
-            return
+        """累加消耗并记录指标（off-loop）"""
+        return run_db(self._update_task_metrics_sync, cost, duration, status)
+
+    def _update_task_metrics_sync(self, cost: Optional[float], duration: Optional[int], status: Optional[str] = None):
         from app.domains.dashboard.models.metric import SddDashboardMetric
         db = SessionLocal()
         try:
+            gate = self._gate
+            if gate is not None and not gate.fence_sync(db):
+                return
             task = db.query(SddTask).filter(SddTask.id == self.task_id).first()
             if not task:
                 return
@@ -1111,11 +1359,21 @@ class WorkflowEngine:
             logger.info(f"WorkflowEngine run: task={self.task_id}, prompt_length={len(prompt)}")
 
             try:
-                self._update_task_status(TaskStatus.CODING)
+                # 事件门禁：回合开始时一次性加载 job/task revision 快照（off-loop）
+                self._gate = SessionGate(
+                    task_id=self.task_id,
+                    job_id=self.current_job_id,
+                    session_revision=self.session_revision,
+                    ttl_seconds=float(getattr(settings, "REVISION_GATE_TTL_SECONDS", 1.0) or 1.0),
+                )
+                await self._gate.load()
+                self._session_generation = await run_db(self._load_session_generation_sync)
 
-                project_path = self._get_project_path()
-                self._materialize_skills()
-                self._refresh_runtime_skill_index()
+                await self._update_task_status(TaskStatus.CODING)
+
+                project_path = await run_db(self._get_project_path)
+                await run_db(self._materialize_skills)
+                await run_db(self._refresh_runtime_skill_index)
                 env_overrides = self._build_cli_env_overrides()
 
                 # 优先走统一 AgentBackend 路径；否则兼容旧 CliBridgeBase 路径
@@ -1149,7 +1407,7 @@ class WorkflowEngine:
                     )
                     if result.session_id:
                         self.session_id = result.session_id
-                    self._persist_provider_state(result)
+                    await run_db(self._persist_provider_state, result)
                 else:
                     # 启动 CLI（传入 session_id 时会 --resume）
                     self.session_id = await self.cli.start_session(
@@ -1169,8 +1427,9 @@ class WorkflowEngine:
                 self.last_result_interrupted = True
                 self.last_result_success = None
                 self.last_result_text = str(e)
-                self._update_task_status(TaskStatus.INTERRUPTED, str(e))
                 self._update_context_snapshot(status="INTERRUPTED")
+                await self._flush_segments()
+                await self._update_task_status(TaskStatus.INTERRUPTED, str(e))
                 await self._push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
             except Exception as e:
                 error_text = str(e)
@@ -1185,18 +1444,21 @@ class WorkflowEngine:
                     self.last_result_interrupted = True
                     self.last_result_success = None
                     self.last_result_text = error_text
-                    self._update_task_status(TaskStatus.INTERRUPTED, error_text)
                     self._update_context_snapshot(status="INTERRUPTED")
+                    await self._flush_segments()
+                    await self._update_task_status(TaskStatus.INTERRUPTED, error_text)
                     await self._push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
                 else:
                     logger.exception(f"WorkflowEngine error, session is resumable: {e}")
-                    self._update_task_status(TaskStatus.INTERRUPTED, error_text)
+                    self._update_context_snapshot(status="INTERRUPTED")
+                    await self._flush_segments()
+                    await self._update_task_status(TaskStatus.INTERRUPTED, error_text)
                     await self._push_status("INTERRUPTED", f"引擎异常，可继续发送消息恢复: {e}")
                     self.last_result_success = False
                     self.last_result_text = error_text
                     await self._emit_hook(self.on_error, error_text, self.current_job_id or "")
             finally:
-                await self._drain_execution_logs()
+                await self._drain_buffers()
                 self.running = False
                 if self._run_task is asyncio.current_task():
                     self._run_task = None
@@ -1236,6 +1498,9 @@ class WorkflowEngine:
             event_type="engine_interrupt",
         ):
             self._interrupt_requested = True
+            # 门禁立即失效：中断后的迟到事件一律丢弃
+            if self._gate is not None:
+                self._gate.invalidate()
             if self.cli:
                 await self.cli.interrupt()
             self.running = False
