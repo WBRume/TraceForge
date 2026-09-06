@@ -65,6 +65,7 @@ class OutboundConnection:
         self._max_bytes = int(max_bytes or getattr(settings, "WS_OUTBOUND_MAX_BYTES", 1024 * 1024))
         self._pending_bytes = 0
         self._sender_task: Optional[asyncio.Task] = None
+        self._close_task: Optional[asyncio.Task] = None
         self._closed = False
         self.dropped = False
         # 按 client 身份键控的重放缓冲（registry 持有，不随连接销毁）
@@ -143,19 +144,40 @@ class OutboundConnection:
             self._sender_task.cancel()
         if already:
             return
-        # 关闭底层 socket：服务端接收循环随之退出，被淘汰的连接不再上行
-        close = getattr(self.websocket, "close", None)
-        if callable(close):
-            try:
-                asyncio.get_running_loop().create_task(close(code=1001))
-            except RuntimeError:
-                pass
+        # 关闭底层 socket：服务端接收循环随之退出，被淘汰的连接不再上行。
+        # 关闭是 fire-and-forget：淘汰场景里连接往往已被对端断开或已被端点
+        # 关闭（uvicorn 会拒绝重复的 websocket.close 并抛 RuntimeError），
+        # 必须就地吞掉异常，否则每次淘汰都会留下一条
+        # “Task exception was never retrieved” 的未取回异常噪音。
+        self._close_socket(code=1001)
         callback = self._on_evicted
         if callback is not None:
             try:
                 callback(self)
             except Exception:
                 logger.exception("WS evict callback failed")
+
+    def _close_socket(self, code: int) -> None:
+        """fire-and-forget 关闭底层 socket；幂等且永不抛出。"""
+        close = getattr(self.websocket, "close", None)
+        if not callable(close):
+            return
+        # 对端已断开（Starlette 在 receive 抛 WebSocketDisconnect 时置位）：
+        # 此时再发 websocket.close 必被 uvicorn 拒绝，直接跳过
+        state = getattr(self.websocket, "client_state", None)
+        if state is not None and getattr(state, "name", "") == "DISCONNECTED":
+            return
+
+        async def _close_guarded() -> None:
+            try:
+                await close(code=code)
+            except Exception:
+                pass
+
+        try:
+            self._close_task = asyncio.get_running_loop().create_task(_close_guarded())
+        except RuntimeError:
+            pass  # 无运行中的事件循环（同步清理路径）：留给端点正常关闭
 
     async def close(self) -> None:
         """优雅关闭：发哨兵等待队列排空，必要时取消。"""
