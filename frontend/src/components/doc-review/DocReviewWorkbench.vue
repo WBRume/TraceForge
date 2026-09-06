@@ -67,6 +67,13 @@ const bootstrapStatus = ref<{
 const bootstrapLoading = ref(false);
 const bootstrapPollTimer = ref<number | null>(null);
 const bootstrapTriggering = ref(false);
+const showBootstrapConfirm = ref(false);
+
+const confirmBootstrapBuild = async () => {
+  if (bootstrapTriggering.value) return;
+  showBootstrapConfirm.value = false;
+  await triggerBootstrap();
+};
 const pendingRelocation = ref<{
   threadId: string;
   proposalId: string;
@@ -938,7 +945,7 @@ onBeforeUnmount(() => {
           v-if="canTriggerBootstrap"
           class="baseline-trigger-btn"
           :disabled="bootstrapTriggering"
-          @click="triggerBootstrap"
+          @click="showBootstrapConfirm = true"
         >
           {{ t("chat.spec_bootstrap_action_build") }}
         </button>
@@ -1028,6 +1035,18 @@ onBeforeUnmount(() => {
     tone="danger"
     @cancel="keepCurrentProposalDraft"
     @confirm="overwriteCurrentProposalDraft"
+  />
+
+  <ConfirmActionModal
+    :show="showBootstrapConfirm"
+    :title="t('chat.spec_bootstrap_build_confirm_title')"
+    :message="t('chat.spec_bootstrap_build_confirm_message')"
+    :cancel-text="t('common.cancel')"
+    :confirm-text="t('chat.spec_bootstrap_action_build')"
+    tone="primary"
+    :loading="bootstrapTriggering"
+    @cancel="showBootstrapConfirm = false"
+    @confirm="confirmBootstrapBuild"
   />
 </template>
 

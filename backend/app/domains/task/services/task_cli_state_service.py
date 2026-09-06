@@ -236,12 +236,15 @@ async def publish_bootstrap_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
     return payload
 
 
+_MESSAGE_UNSET = object()
+
+
 async def _update_bootstrap_state(
     task_id: str,
     *,
     status: Optional[TaskCliBootstrapStatus] = None,
     progress: Optional[int] = None,
-    message: Optional[str] = None,
+    message: Any = _MESSAGE_UNSET,
     baseline_dir: Optional[str] = None,
     baseline_session_id: Optional[str] = None,
     agent_backend: Optional[str] = None,
@@ -260,7 +263,7 @@ async def _update_bootstrap_state(
             record.status = status
         if progress is not None:
             record.progress = max(0, min(100, int(progress)))
-        if message is not None:
+        if message is not _MESSAGE_UNSET:
             record.message = message
         if baseline_dir is not None:
             record.baseline_dir = baseline_dir
@@ -610,20 +613,16 @@ async def _run_bootstrap(task_id: str) -> None:
 
                             # Fork 演练：提前暴露「baseline 无法复制给评审线程」的情况，
                             # 避免到发起讨论时才发现上下文无法复用。
-                            fork_probe_ok = await probe_session_fork(
+                            # 探测失败会直接抛错走 FAILED；成功与否不再写入 message（状态标签已足够表达）。
+                            await probe_session_fork(
                                 agent_backend, final_session_id, source_dir=baseline_dir
-                            )
-                            ready_message = (
-                                "Baseline ready"
-                                if fork_probe_ok
-                                else "Baseline ready (session fork unavailable; review threads will re-read the document)"
                             )
 
                             await _update_bootstrap_state(
                                 task_id,
                                 status=TaskCliBootstrapStatus.READY,
                                 progress=100,
-                                message=ready_message,
+                                message=None,
                                 baseline_session_id=final_session_id,
                                 agent_backend=agent_backend,
                                 error_message=None,

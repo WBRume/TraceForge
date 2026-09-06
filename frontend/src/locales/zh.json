@@ -484,6 +484,8 @@
     "spec_bootstrap_action_build": "构建基线",
     "spec_bootstrap_build_started": "基线构建已开始，请稍候",
     "spec_bootstrap_build_failed": "基线构建触发失败",
+    "spec_bootstrap_build_confirm_title": "构建需求文档基线？",
+    "spec_bootstrap_build_confirm_message": "将启动一次 CLI 会话读取需求文档并建立基线上下文，可能占用较多资源，确认开始构建？",
     "spec_bootstrap_status_pending": "基座已排队",
     "spec_bootstrap_status_running": "基座初始化中",
     "spec_bootstrap_status_ready": "基座已就绪",

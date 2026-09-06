@@ -484,6 +484,8 @@
     "spec_bootstrap_action_build": "Build baseline",
     "spec_bootstrap_build_started": "Baseline build started, please wait",
     "spec_bootstrap_build_failed": "Failed to trigger baseline build",
+    "spec_bootstrap_build_confirm_title": "Build requirement baseline?",
+    "spec_bootstrap_build_confirm_message": "A CLI session will read the requirement document to build the baseline context. This may consume significant resources. Start now?",
     "spec_bootstrap_status_pending": "Baseline queued",
     "spec_bootstrap_status_running": "Baseline initializing",
     "spec_bootstrap_status_ready": "Baseline ready",
