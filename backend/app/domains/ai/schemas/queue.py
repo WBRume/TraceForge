@@ -58,3 +58,48 @@ class QueueJobActionResponse(BaseModel):
     job_id: str
     message: Optional[str] = None
     new_job_id: Optional[str] = None
+
+
+class OrphanedJobItem(BaseModel):
+    job_id: str
+    workspace_id: Optional[str] = None
+    task_id: Optional[str] = None
+    queue_key: str
+    status: str
+    attempt_count: int
+    max_attempts: int
+    worker_id: Optional[str] = None
+    worker_boot_id: Optional[str] = None
+    run_token: Optional[str] = None
+    process_pid: Optional[int] = None
+    process_started_at: Optional[datetime] = None
+    process_group_id: Optional[int] = None
+    first_failure_at: Optional[datetime] = None
+    orphaned_at: Optional[datetime] = None
+    last_reap_attempt_at: Optional[datetime] = None
+    last_reap_verified_at: Optional[datetime] = None
+    next_reap_at: Optional[datetime] = None
+    reap_failure_count: int = 0
+    last_reap_error: Optional[str] = None
+    failure_code: Optional[str] = None
+    terminal_reason: Optional[str] = None
+    manual_intervention_required: bool = False
+    manual_intervention_operator_id: Optional[str] = None
+    manual_intervention_reason: Optional[str] = None
+    manual_intervention_evidence: Optional[str] = None
+
+
+class OrphanedJobListResponse(BaseModel):
+    items: list[OrphanedJobItem]
+    total: int
+
+
+class OrphanedJobProtectionRequest(BaseModel):
+    reason: str
+    evidence: str
+
+
+class OrphanedJobProtectionResponse(BaseModel):
+    ok: bool = True
+    job_id: str
+    message: str

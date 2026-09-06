@@ -57,6 +57,7 @@ def control_frame(
     from_sequence: Optional[int] = None,
     to_sequence: Optional[int] = None,
     barrier_sequence: Optional[int] = None,
+    high_watermark: Optional[int] = None,
     reason: Optional[str] = None,
 ) -> dict[str, Any]:
     frame: dict[str, Any] = {"type": frame_type}
@@ -68,6 +69,8 @@ def control_frame(
         frame["to_sequence"] = to_sequence
     if barrier_sequence is not None:
         frame["barrier_sequence"] = barrier_sequence
+    if high_watermark is not None:
+        frame["high_watermark"] = high_watermark
     if reason is not None:
         frame["reason"] = reason
     return frame

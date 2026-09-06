@@ -198,19 +198,15 @@ def test_request_bootstrap_run_rejects_ready_and_missing():
         service.request_bootstrap_run(db, workspace_id="ws-1", task_id="task-missing")
 
 
-def test_ensure_bootstrap_ready_or_start_lazy_starts_pending(monkeypatch):
+def test_ensure_bootstrap_ready_or_start_does_not_lazy_start_pending():
     SessionLocal = _build_session()
     db = SessionLocal()
     _seed_bootstrap(db, status=TaskCliBootstrapStatus.PENDING)
 
-    scheduled = []
-    monkeypatch.setattr(service, "schedule_bootstrap", lambda task_id: scheduled.append(task_id))
-
     with pytest.raises(service.BootstrapNotReadyError) as exc_info:
         service.ensure_bootstrap_ready_or_start(db, workspace_id="ws-1", task_id="task-1")
 
-    assert "Baseline build started" in str(exc_info.value)
-    assert scheduled == ["task-1"]
+    assert "click Build baseline" in str(exc_info.value)
 
 
 def test_ensure_bootstrap_ready_or_start_ready_returns_record():
@@ -237,16 +233,10 @@ def test_ensure_bootstrap_ready_or_start_running_reports_progress():
     assert "42%" in str(exc_info.value)
 
 
-def test_ensure_bootstrap_ready_or_start_failed_requires_manual_retry(monkeypatch):
+def test_ensure_bootstrap_ready_or_start_failed_requires_manual_retry():
     SessionLocal = _build_session()
     db = SessionLocal()
     _seed_bootstrap(db, status=TaskCliBootstrapStatus.FAILED)
 
-    scheduled = []
-    monkeypatch.setattr(service, "schedule_bootstrap", lambda task_id: scheduled.append(task_id))
-
     with pytest.raises(service.BootstrapNotReadyError):
         service.ensure_bootstrap_ready_or_start(db, workspace_id="ws-1", task_id="task-1")
-
-    assert scheduled == []
-

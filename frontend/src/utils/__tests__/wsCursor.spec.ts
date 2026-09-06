@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   buildWsCursorQuery,
+  clearWsCursorMemory,
+  finalizeWsResync,
   getWsCursor,
   prepareWsFrame,
   sendResyncComplete,
@@ -9,6 +11,7 @@ import {
 describe('ws cursor protocol', () => {
   beforeEach(() => {
     window.sessionStorage.clear()
+    clearWsCursorMemory()
   })
 
   it('keeps a tab-scoped client id and commits only after event application', () => {
@@ -50,7 +53,7 @@ describe('ws cursor protocol', () => {
     })).toMatchObject({ kind: 'resync', reason: 'gap' })
   })
 
-  it('sends resync completion after recording the server barrier', () => {
+  it('stages the barrier and persists it only after resync_ok', () => {
     const sent: string[] = []
     const socket = { send: (value: string) => sent.push(value) } as unknown as WebSocket
     sendResyncComplete(socket, {
@@ -60,6 +63,13 @@ describe('ws cursor protocol', () => {
       type: 'resync_complete',
       epoch: 'epoch-2',
       barrier_sequence: 9,
+    })
+    expect(getWsCursor('task:one')).toBeNull()
+    expect(finalizeWsResync('task:one', {
+      type: 'resync_ok', epoch: 'epoch-2', to_sequence: 9,
+    })).toMatchObject({ epoch: 'epoch-2', lastAppliedSequence: 9 })
+    expect(getWsCursor('task:one')).toMatchObject({
+      epoch: 'epoch-2', lastAppliedSequence: 9,
     })
   })
 })

@@ -15,7 +15,7 @@ from app.core.distributed_lock import (
     make_resource_busy_error,
 )
 from app.core.logging import audit_log, get_logger
-from app.core.offload import run_db
+from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.ai_job import AiJobResponse
@@ -403,32 +403,28 @@ async def cancel_ai_job(
     ws_id: str,
     job_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    _ensure_workspace_member(db, ws_id, current_user.id)
-    job = ai_job_service.get_job(db, job_id=job_id)
-    if not job or str(job.workspace_id) != str(ws_id):
-        raise HTTPException(status_code=404, detail="AI job not found")
-    can_manage = workspace_service.user_has_permission(db, ws_id, current_user.id, "MANAGE_TASK_STATUS")
-    is_owner = str(job.creator_id or "") == str(current_user.id)
-    if not (can_manage or is_owner):
-        raise HTTPException(status_code=403, detail="No permission to cancel AI jobs")
-
     try:
-        # 查询+提交的同步段 off-loop（request session 顺序单线程使用）
-        job = await run_db(
-            ai_job_service.cancel_job,
-            db,
-            workspace_id=ws_id,
-            job_id=job_id,
-        )
+        def cancel_sync(db: Session):
+            _ensure_workspace_member(db, ws_id, current_user.id)
+            job = ai_job_service.get_job(db, job_id=job_id)
+            if not job or str(job.workspace_id) != str(ws_id):
+                raise HTTPException(status_code=404, detail="AI job not found")
+            can_manage = workspace_service.user_has_permission(db, ws_id, current_user.id, "MANAGE_TASK_STATUS")
+            is_owner = str(job.creator_id or "") == str(current_user.id)
+            if not (can_manage or is_owner):
+                raise HTTPException(status_code=403, detail="No permission to cancel AI jobs")
+            cancelled = ai_job_service.cancel_job(db, workspace_id=ws_id, job_id=job_id)
+            if not cancelled:
+                raise HTTPException(status_code=404, detail="AI job not found")
+            return ai_job_service.serialize_job(cancelled)
+
+        payload = await run_db_txn(cancel_sync)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    if not job:
-        raise HTTPException(status_code=404, detail="AI job not found")
 
-    await ai_job_service.publish_job(job.id, final=True)
-    return AiJobResponse(**ai_job_service.serialize_job(job))
+    await ai_job_service.publish_job(str(payload["id"]), final=True)
+    return AiJobResponse(**payload)
 
 
 @router.get("/{ws_id}/members", response_model=WorkspaceMemberListResponse)

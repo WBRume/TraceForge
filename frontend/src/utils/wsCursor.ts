@@ -27,9 +27,41 @@ const writeJson = (key: string, value: unknown) => {
   try {
     window.sessionStorage.setItem(key, JSON.stringify(value))
   } catch {
-    // A private browsing context can reject sessionStorage. The connection
-    // still works; it simply falls back to REST resync on the next reconnect.
+    // sessionStorage is an optional persistence layer. In-memory state remains
+    // authoritative for the lifetime of this tab when it is unavailable.
   }
+}
+
+const cloneCursor = (cursor: WsCursor): WsCursor => ({
+  epoch: cursor.epoch,
+  lastAppliedSequence: cursor.lastAppliedSequence,
+  recentEventIds: [...cursor.recentEventIds],
+})
+
+const cursorMemory = new Map<string, WsCursor>()
+const pendingResync = new Map<string, WsCursor>()
+let hydrated = false
+
+const hydrateCursorMemory = () => {
+  if (hydrated) return
+  hydrated = true
+  const stored = readJson<Record<string, WsCursor>>(CURSORS_KEY, {})
+  for (const [room, value] of Object.entries(stored || {})) {
+    if (!value?.epoch || !Number.isFinite(Number(value.lastAppliedSequence))) continue
+    cursorMemory.set(room, {
+      epoch: String(value.epoch),
+      lastAppliedSequence: Math.max(0, Number(value.lastAppliedSequence)),
+      recentEventIds: Array.isArray(value.recentEventIds)
+        ? value.recentEventIds.map(String).slice(-RECENT_EVENT_LIMIT)
+        : [],
+    })
+  }
+}
+
+const persistCursorMemory = () => {
+  const cursors: Record<string, WsCursor> = {}
+  for (const [room, cursor] of cursorMemory.entries()) cursors[room] = cloneCursor(cursor)
+  writeJson(CURSORS_KEY, cursors)
 }
 
 export const getWsClientId = (): string => {
@@ -46,18 +78,26 @@ export const getWsClientId = (): string => {
   }
 }
 
-const allCursors = (): Record<string, WsCursor> => readJson(CURSORS_KEY, {})
-
 export const getWsCursor = (room: string): WsCursor | null => {
-  const cursor = allCursors()[room]
+  hydrateCursorMemory()
+  const cursor = cursorMemory.get(room)
   if (!cursor || !cursor.epoch || !Number.isFinite(cursor.lastAppliedSequence)) return null
-  return cursor
+  return cloneCursor(cursor)
 }
 
-const saveCursor = (room: string, cursor: WsCursor) => {
-  const cursors = allCursors()
-  cursors[room] = cursor
-  writeJson(CURSORS_KEY, cursors)
+const commitCursor = (room: string, cursor: WsCursor, persist = true): WsCursor => {
+  hydrateCursorMemory()
+  const normalized = cloneCursor(cursor)
+  const existing = cursorMemory.get(room)
+  // A late completion from an older handler must never move an applied cursor
+  // backwards. Epoch changes are allowed only through an explicit resync.
+  if (existing && existing.epoch === normalized.epoch
+    && existing.lastAppliedSequence > normalized.lastAppliedSequence) {
+    return cloneCursor(existing)
+  }
+  cursorMemory.set(room, normalized)
+  if (persist) persistCursorMemory()
+  return cloneCursor(normalized)
 }
 
 export const buildWsCursorQuery = (room: string): Record<string, string> => {
@@ -70,14 +110,40 @@ export const buildWsCursorQuery = (room: string): Record<string, string> => {
   return query
 }
 
+/** Stage a resync barrier without persisting it before the server confirms. */
 export const acknowledgeWsResync = (room: string, frame: any): WsCursor => {
+  hydrateCursorMemory()
   const cursor: WsCursor = {
     epoch: String(frame?.epoch || ''),
-    lastAppliedSequence: Number(frame?.barrier_sequence || 0),
+    lastAppliedSequence: Math.max(0, Number(frame?.barrier_sequence ?? frame?.high_watermark ?? 0)),
     recentEventIds: [],
   }
-  saveCursor(room, cursor)
-  return cursor
+  pendingResync.set(room, cursor)
+  return cloneCursor(cursor)
+}
+
+export const finalizeWsResync = (room: string, frame: any): WsCursor | null => {
+  hydrateCursorMemory()
+  const staged = pendingResync.get(room)
+  if (!staged) return null
+  const sequence = Number(frame?.high_watermark ?? frame?.to_sequence ?? staged.lastAppliedSequence)
+  const finalized = {
+    ...staged,
+    lastAppliedSequence: Math.max(staged.lastAppliedSequence, Number.isFinite(sequence) ? sequence : 0),
+  }
+  pendingResync.delete(room)
+  return commitCursor(room, finalized)
+}
+
+export const discardWsResync = (room: string) => {
+  pendingResync.delete(room)
+}
+
+/** Test/support hook: clear module memory without changing the public protocol. */
+export const clearWsCursorMemory = () => {
+  cursorMemory.clear()
+  pendingResync.clear()
+  hydrated = false
 }
 
 export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
@@ -91,13 +157,19 @@ export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
     return { kind: 'resync', reason: 'gap', frame }
   }
 
-  const cursor = getWsCursor(room)
+  const stored = getWsCursor(room)
+  const staged = pendingResync.get(room)
+  const cursor = stored && stored.epoch === epoch
+    ? stored
+    : staged && staged.epoch === epoch
+      ? cloneCursor(staged)
+      : stored
   if (cursor && cursor.epoch !== epoch) {
     return { kind: 'resync', reason: 'epoch_changed', frame }
   }
 
-  // A first connection has already loaded REST state. Establish the cursor
-  // immediately before this event so a journal high-watermark is accepted.
+  // Keep the legacy synthetic first-event rule for a server that predates the
+  // barrier protocol. Current servers send resync_required before events.
   const previous: WsCursor = cursor || {
     epoch,
     lastAppliedSequence: sequence - 1,
@@ -123,7 +195,11 @@ export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
           ? [...previous.recentEventIds, eventId].slice(-RECENT_EVENT_LIMIT)
           : previous.recentEventIds,
       }
-      saveCursor(room, next)
+      if (pendingResync.has(room) && pendingResync.get(room)?.epoch === epoch) {
+        pendingResync.set(room, cloneCursor(next))
+      } else {
+        commitCursor(room, next)
+      }
     },
   }
 }

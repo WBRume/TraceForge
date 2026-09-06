@@ -121,10 +121,6 @@ async def _on_shutdown() -> None:
     except Exception:
         logger.exception("Failed to shutdown active workflow engines")
     try:
-        await task_cli_state_service.shutdown_bootstrap_runners()
-    except Exception:
-        logger.exception("Failed to shutdown CLI bootstrap runners")
-    try:
         await api_mock_ws_manager.shutdown()
     except Exception:
         logger.warning("Failed to shutdown API MOCK redis listener")
@@ -542,13 +538,17 @@ def health_check():
 
 @app.get("/health/ready")
 def readiness_check():
-    ready = bool(getattr(app.state, "ai_runtime_ready", False))
+    worker_health = ai_job_service.runtime_worker_health()
+    runtime_ready = bool(getattr(app.state, "ai_runtime_ready", False))
+    ready = runtime_ready and bool(worker_health.get("healthy", False))
+    status = "ready" if ready else ("degraded" if runtime_ready else "starting")
     return JSONResponse(
         status_code=200 if ready else 503,
         content={
-            "status": "ready" if ready else "starting",
+            "status": status,
             "ready": ready,
             "app": settings.APP_NAME,
+            "workers": worker_health,
         },
     )
 

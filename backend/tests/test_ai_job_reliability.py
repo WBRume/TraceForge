@@ -89,3 +89,62 @@ def test_cancel_running_job_is_not_reported_as_finished(monkeypatch):
     assert result is not None
     assert result.status == AiJobStatus.TERMINATING
     assert result.finished_at is None
+
+
+def test_runtime_worker_survives_one_iteration_failure_and_honors_cancel(monkeypatch):
+    calls = 0
+    holder = {}
+    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {})
+    monkeypatch.setattr(ai_job_service, "_SHUTTING_DOWN", False)
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary database outage")
+        asyncio.get_running_loop().call_soon(holder["task"].cancel)
+
+    async def run():
+        task = asyncio.create_task(ai_job_service._run_runtime_worker_loop("test", operation, 1))
+        holder["task"] = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+
+    health = ai_job_service._RUNTIME_WORKER_HEALTH["test"]
+    assert calls == 2
+    assert health["consecutive_failures"] == 0
+    assert health["last_success_at"]
+    assert health["iteration_duration_ms"] >= 0
+    assert health["last_scan_count"] == 0
+
+
+def test_start_runtime_workers_is_idempotent(monkeypatch):
+    stop = asyncio.Event()
+
+    async def idle_loop():
+        await stop.wait()
+
+    async def recover():
+        return 0
+
+    monkeypatch.setattr(ai_job_service, "_REAPER_TASK", None)
+    monkeypatch.setattr(ai_job_service, "_DISPATCHER_TASK", None)
+    monkeypatch.setattr(ai_job_service, "_SHUTTING_DOWN", False)
+    monkeypatch.setattr(ai_job_service, "_reaper_loop", idle_loop)
+    monkeypatch.setattr(ai_job_service, "_dispatcher_loop", idle_loop)
+    monkeypatch.setattr(ai_job_service, "recover_pending_queues", recover)
+    monkeypatch.setattr(ai_job_service, "_mark_worker_jobs_terminating_sync", lambda reason: [])
+
+    async def run():
+        await ai_job_service.start_runtime_workers()
+        first = (ai_job_service._REAPER_TASK, ai_job_service._DISPATCHER_TASK)
+        await ai_job_service.start_runtime_workers()
+        second = (ai_job_service._REAPER_TASK, ai_job_service._DISPATCHER_TASK)
+        assert first == second
+        await ai_job_service.shutdown_runtime_workers()
+
+    asyncio.run(run())

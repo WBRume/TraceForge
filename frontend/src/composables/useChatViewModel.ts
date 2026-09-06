@@ -10,9 +10,9 @@ import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
 import {
   buildWsCursorQuery,
-  prepareWsFrame,
   sendResyncComplete,
 } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
 import { useChatDecision, type ChatDecisionPayload } from '@/composables/useChatDecision'
@@ -247,6 +247,7 @@ export function useChatViewModel() {
   let ws: WebSocket | null = null
   let wsReconnectTimer: number | null = null
   let wsManualClose = false
+  let taskWsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
   let activeChatJobsRequestSeq = 0
   
   const hasTaskSpecDoc = (task: any): boolean => {
@@ -2392,6 +2393,8 @@ export function useChatViewModel() {
   const connectWebSocket = (taskId: string) => {
     clearWsReconnectTimer()
     wsManualClose = false
+    taskWsConsumer?.close()
+    taskWsConsumer = null
     if (ws) {
       ws.onopen = null
       ws.onmessage = null
@@ -2401,6 +2404,32 @@ export function useChatViewModel() {
       ws = null
     }
     ws = new WebSocket(buildTaskWsUrl(taskId))
+    const socket = ws
+    const consumer = createSerializedWsConsumer({
+      room: `task:${taskId}`,
+      onEvent: (event) => {
+        handleWsMessage({ type: event.event_type, payload: event.payload })
+      },
+      onResync: async (frame, reason, context, signal) => {
+        if (reason === 'gap') {
+          context.socket.close(4000, 'sequence_gap')
+          return
+        }
+        await loadHistory(taskId, true)
+        await loadActiveChatJobs(taskId)
+        if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
+          sendResyncComplete(context.socket, frame, `task:${taskId}`)
+        }
+      },
+      onControl: (frame) => {
+        if (!['resume_ok', 'resync_ok'].includes(String(frame?.type || ''))) handleWsMessage(frame)
+      },
+      onFailure: (_error, context) => {
+        if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+      },
+    })
+    taskWsConsumer = consumer
+    const generation = consumer.resetForConnection(socket)
     ws.onopen = () => {
       console.log(`WS Connected: task=${taskId}`)
       wsReconnectAttempt = 0
@@ -2415,28 +2444,7 @@ export function useChatViewModel() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        const prepared = prepareWsFrame(`task:${taskId}`, data)
-        if (prepared.kind === 'event') {
-          handleWsMessage({ type: prepared.event.event_type, payload: prepared.event.payload })
-          prepared.commit()
-          return
-        }
-        if (prepared.kind === 'resync') {
-          const currentSocket = socketForTask(taskId)
-          if (prepared.reason === 'gap') {
-            currentSocket?.close(4000, 'sequence_gap')
-          } else {
-            void completeTaskWsResync(currentSocket, data, taskId)
-          }
-          return
-        }
-        if (prepared.kind === 'control') {
-          if (data?.type === 'resync_required') {
-            void completeTaskWsResync(ws, data, taskId)
-          } else if (!['resume_ok', 'resync_ok'].includes(String(data?.type || ''))) {
-            handleWsMessage(data)
-          }
-        }
+        consumer.enqueue(data, generation)
       } catch {
         // Ignore malformed frames; the next reconnect will resync from REST.
       }
@@ -2445,6 +2453,7 @@ export function useChatViewModel() {
       console.error('WS Error', event)
     }
     ws.onclose = (event) => {
+      consumer.close(generation)
       console.log(`WS Disconnected: task=${taskId}`)
       if (event.code === 1008) {
         ElMessage.error('Task WebSocket authentication failed. Please sign in again.')
@@ -2455,26 +2464,6 @@ export function useChatViewModel() {
     }
   }
 
-  const socketForTask = (taskId: string): WebSocket | null => (
-    currentTask.value?.id === taskId ? ws : null
-  )
-
-  const completeTaskWsResync = async (
-    socket: WebSocket | null,
-    frame: any,
-    taskId: string,
-  ) => {
-    if (!socket || currentTask.value?.id !== taskId) return
-    try {
-      await loadHistory(taskId, true)
-      await loadActiveChatJobs(taskId)
-      if (socket === ws && socket.readyState === WebSocket.OPEN) {
-        sendResyncComplete(socket, frame, `task:${taskId}`)
-      }
-    } catch {
-      // Stay disconnected/syncing; the reconnect loop will retry REST sync.
-    }
-  }
   
   const highlightMessageFromRouteQuery = async () => {
     const messageId = String(route.query.messageId || '').trim()

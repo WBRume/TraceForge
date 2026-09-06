@@ -39,7 +39,12 @@ def _replay_timeout() -> float:
     return max(0.1, float(getattr(settings, "WS_REPLAY_TIMEOUT_SECONDS", 30.0) or 30.0))
 
 
+def _shutdown_timeout() -> float:
+    return max(0.1, float(getattr(settings, "WS_SHUTDOWN_TIMEOUT_SECONDS", 5.0) or 5.0))
+
+
 class ConnectionState(str, Enum):
+    CONNECTING = "CONNECTING"
     SYNCING = "SYNCING"
     REPLAYING = "REPLAYING"
     LIVE = "LIVE"
@@ -59,9 +64,11 @@ class OutboundConnection:
         client_id: Optional[str] = None,
         message_kind: str = "text",
         on_evicted=None,
+        generation: int = 0,
     ) -> None:
         self.websocket = websocket
         self.client_id = str(client_id or "") or None
+        self.generation = int(generation or 0)
         self.message_kind = message_kind if message_kind in {"text", "json"} else "text"
         self._queue: asyncio.Queue[Optional[_QueueItem]] = asyncio.Queue(
             maxsize=max(1, int(queue_size if queue_size is not None else _queue_size()))
@@ -74,7 +81,7 @@ class OutboundConnection:
         self._queue_low_water.set()
         self._closed = False
         self.dropped = False
-        self.state = ConnectionState.LIVE
+        self.state = ConnectionState.CONNECTING
         self.barrier_sequence: Optional[int] = None
         self.cutover_sequence: Optional[int] = None
         self.replay_task: Optional[asyncio.Task] = None
@@ -87,6 +94,7 @@ class OutboundConnection:
             1, int(getattr(settings, "WS_DEFERRED_LIVE_MAX_BYTES", 1024 * 1024) or 1024 * 1024)
         )
         self._on_evicted = on_evicted
+        self.eviction_reason: Optional[str] = None
 
     @property
     def sender_task(self) -> Optional[asyncio.Task]:
@@ -197,6 +205,8 @@ class OutboundConnection:
         return True
 
     async def wait_flushed(self) -> None:
+        if self._closed or self.dropped:
+            return
         await self._queue.join()
 
     def drop(self) -> None:
@@ -204,12 +214,17 @@ class OutboundConnection:
 
     def evict(self, reason: str) -> None:
         already = self.dropped
+        if self.eviction_reason is None:
+            self.eviction_reason = str(reason)
         self.dropped = True
         self._closed = True
         self.state = ConnectionState.CLOSED
         if self._sender_task is not None and not self._sender_task.done():
             if self._sender_task is not asyncio.current_task():
                 self._sender_task.cancel()
+        if self.replay_task is not None and not self.replay_task.done():
+            if self.replay_task is not asyncio.current_task():
+                self.replay_task.cancel()
         if already:
             return
         self._close_socket(code=1001)
@@ -245,6 +260,10 @@ class OutboundConnection:
     async def close(self) -> None:
         self._closed = True
         self.state = ConnectionState.CLOSING
+        if self.replay_task is not None and not self.replay_task.done():
+            if self.replay_task is not asyncio.current_task():
+                self.replay_task.cancel()
+                await asyncio.gather(self.replay_task, return_exceptions=True)
         task = self._sender_task
         if task is None or task.done():
             self.state = ConnectionState.CLOSED
@@ -259,7 +278,11 @@ class OutboundConnection:
             pass
         self.state = ConnectionState.CLOSED
         if self._close_task is not None:
-            await self._close_task
+            try:
+                await asyncio.wait_for(self._close_task, timeout=_shutdown_timeout())
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                self._close_task.cancel()
+                await asyncio.gather(self._close_task, return_exceptions=True)
 
     async def _send(self, kind: str, value: object) -> None:
         if kind == "json":

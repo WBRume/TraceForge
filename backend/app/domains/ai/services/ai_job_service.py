@@ -7,8 +7,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import socket
+import time
 import uuid
 import inspect
 from contextlib import ExitStack
@@ -48,6 +50,7 @@ from app.domains.asset.models.asset import (
     SddAssetVersion,
 )
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task_cli_bootstrap import SddTaskCliBootstrap, TaskCliBootstrapStatus
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service
 from app.domains.task.services import context_token_service, task_cli_state_service
@@ -92,6 +95,7 @@ JOB_KIND_THREAD_AI_REPLY = "THREAD_AI_REPLY"
 JOB_KIND_RESOLUTION_PROPOSAL = "RESOLUTION_PROPOSAL"
 JOB_KIND_RESOLUTION_REWRITE = "RESOLUTION_REWRITE"
 JOB_KIND_DIAGNOSIS_SUMMARY = "DIAGNOSIS_SUMMARY"
+JOB_KIND_TASK_BASELINE = "TASK_BASELINE"
 
 _QUEUE_LOCKS: Dict[str, asyncio.Lock] = {}
 _QUEUE_RUNNERS: Dict[str, asyncio.Task] = {}
@@ -100,6 +104,7 @@ _JOB_HEARTBEAT_TASKS: Dict[str, asyncio.Task] = {}
 _REAPER_TASK: Optional[asyncio.Task] = None
 _DISPATCHER_TASK: Optional[asyncio.Task] = None
 _SHUTTING_DOWN = False
+_RUNTIME_WORKER_HEALTH: Dict[str, Dict[str, Any]] = {}
 WORKER_BOOT_ID = str(uuid.uuid4())
 WORKER_ID = (
     f"{socket.gethostname()}:{getattr(settings, 'WORKER_SERVICE_NAME', 'traceforge-api')}"
@@ -177,6 +182,10 @@ def _queue_key_for_diagnosis_summary(task_id: str) -> str:
     return f"DIAGNOSIS_SUMMARY:{task_id}"
 
 
+def _queue_key_for_task_baseline(task_id: str) -> str:
+    return f"TASK_BASELINE:{task_id}"
+
+
 def _get_queue_lock(queue_key: str) -> asyncio.Lock:
     lock = _QUEUE_LOCKS.get(queue_key)
     if lock is None:
@@ -212,7 +221,16 @@ def _get_or_create_cancel_event(job_id: str) -> asyncio.Event:
 
 
 def _request_job_cancel(job_id: str) -> None:
-    _get_or_create_cancel_event(job_id).set()
+    event = _get_or_create_cancel_event(job_id)
+    event_loop = getattr(event, "_loop", None)
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+    if event_loop is not None and event_loop.is_running() and event_loop is not current_loop:
+        event_loop.call_soon_threadsafe(event.set)
+    else:
+        event.set()
 
 
 def _is_cancel_requested(job_id: str) -> bool:
@@ -298,6 +316,8 @@ def _persist_process_identity_sync(
 
 def _normalize_job_kind(value: Optional[str]) -> str:
     normalized = str(value or "").strip().upper()
+    if normalized == JOB_KIND_TASK_BASELINE:
+        return JOB_KIND_TASK_BASELINE
     if normalized == JOB_KIND_RESOLUTION_PROPOSAL:
         return JOB_KIND_RESOLUTION_PROPOSAL
     if normalized == JOB_KIND_RESOLUTION_REWRITE:
@@ -407,6 +427,17 @@ def serialize_job(job: SddAiJob) -> Dict[str, Any]:
         "termination_attempts": int(job.termination_attempts or 0),
         "failure_code": job.failure_code,
         "terminal_reason": job.terminal_reason,
+        "orphaned_at": job.orphaned_at.isoformat() if job.orphaned_at else None,
+        "first_failure_at": job.first_failure_at.isoformat() if job.first_failure_at else None,
+        "last_reap_attempt_at": job.last_reap_attempt_at.isoformat() if job.last_reap_attempt_at else None,
+        "last_reap_verified_at": job.last_reap_verified_at.isoformat() if job.last_reap_verified_at else None,
+        "next_reap_at": job.next_reap_at.isoformat() if job.next_reap_at else None,
+        "reap_failure_count": int(job.reap_failure_count or 0),
+        "last_reap_error": job.last_reap_error,
+        "manual_intervention_required": bool(job.manual_intervention_required),
+        "manual_intervention_operator_id": job.manual_intervention_operator_id,
+        "manual_intervention_reason": job.manual_intervention_reason,
+        "manual_intervention_evidence": job.manual_intervention_evidence,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "updated_at": job.updated_at.isoformat() if job.updated_at else None,
     }
@@ -856,6 +887,111 @@ def create_diagnosis_summary_job(
     return job
 
 
+def create_task_baseline_job(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+    creator_id: str,
+) -> SddAiJob:
+    """Create/reuse the durable baseline job for the current spec revision."""
+    record = (
+        db.query(SddTaskCliBootstrap)
+        .filter(
+            SddTaskCliBootstrap.task_id == task_id,
+            SddTaskCliBootstrap.workspace_id == workspace_id,
+        )
+        .first()
+    )
+    if not record:
+        raise ValueError("Specification baseline is not initialized")
+    queue_key = _queue_key_for_task_baseline(task_id)
+    input_revision = str(record.spec_version_id or "missing")
+    existing_jobs = (
+        db.query(SddAiJob)
+        .filter(SddAiJob.task_id == task_id, SddAiJob.queue_key == queue_key)
+        .order_by(SddAiJob.created_at.desc())
+        .all()
+    )
+    for existing in existing_jobs:
+        context = existing.context_json if isinstance(existing.context_json, dict) else {}
+        if str(context.get("input_revision") or "") != input_revision:
+            continue
+        baseline_active_statuses = {
+            AiJobStatus.PENDING,
+            AiJobStatus.RUNNING,
+            AiJobStatus.WAITING_HITL,
+            AiJobStatus.TERMINATING,
+            AiJobStatus.ORPHANED,
+        }
+        if existing.status in baseline_active_statuses or existing.status == AiJobStatus.SUCCESS:
+            return existing
+        # A failed/cancelled attempt for the same immutable input revision is
+        # safely reusable as a manual retry; do not create duplicate baselines.
+        existing.status = AiJobStatus.PENDING
+        existing.progress = 0
+        existing.message = "Baseline build queued"
+        existing.error_message = None
+        existing.finished_at = None
+        existing.run_token = None
+        existing.worker_id = None
+        existing.worker_boot_id = None
+        existing.attempt_count = 0
+        existing.context_json = {
+            **context,
+            "job_kind": JOB_KIND_TASK_BASELINE,
+            "input_revision": input_revision,
+        }
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    job = SddAiJob(
+        workspace_id=workspace_id,
+        task_id=task_id,
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=queue_key,
+        status=AiJobStatus.PENDING,
+        progress=0,
+        message="Baseline build queued",
+        prompt_text="[TASK_BASELINE]",
+        context_json={
+            "source": "task_specification",
+            "job_kind": JOB_KIND_TASK_BASELINE,
+            "input_revision": input_revision,
+            "bootstrap_id": record.id,
+        },
+        creator_id=creator_id,
+        max_attempts=1,
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+async def enqueue_task_baseline_job(
+    *,
+    workspace_id: str,
+    task_id: str,
+    creator_id: str,
+) -> Optional[Dict[str, Any]]:
+    queue_key = _queue_key_for_task_baseline(task_id)
+    # The durable row is the source of truth; the queue lock closes the
+    # cross-process create/retry race before the database unique boundary is
+    # reached, while the input revision in context makes the key explicit.
+    async with lock_ai_queue(queue_key):
+        job_id = await run_db_txn(
+            lambda db: create_task_baseline_job(
+                db,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                creator_id=creator_id,
+            ).id
+        )
+    return await _enqueue_job(job_id, expected_channel=AiJobChannel.TASK_CHAT)
+
+
 def _runtime_shutdown_in_progress() -> bool:
     """Return true only while shutdown is actively draining workers.
 
@@ -865,6 +1001,142 @@ def _runtime_shutdown_in_progress() -> bool:
     reaper/dispatcher workers are being drained.
     """
     return bool(_SHUTTING_DOWN and (_REAPER_TASK is not None or _DISPATCHER_TASK is not None))
+
+
+def _runtime_worker_task(name: str) -> Optional[asyncio.Task]:
+    return _REAPER_TASK if name == "reaper" else _DISPATCHER_TASK
+
+
+def _set_runtime_worker_health(name: str, **updates: Any) -> None:
+    state = _RUNTIME_WORKER_HEALTH.setdefault(name, {})
+    state.update(updates)
+
+
+def runtime_worker_health() -> Dict[str, Any]:
+    """Return bounded readiness telemetry for the durable runtime loops."""
+    threshold = max(1, int(getattr(settings, "AI_JOB_WORKER_FAILURE_ALERT_THRESHOLD", 3) or 3))
+    result: Dict[str, Any] = {}
+    overall = True
+    for name in ("reaper", "dispatcher"):
+        task = _runtime_worker_task(name)
+        state = dict(_RUNTIME_WORKER_HEALTH.get(name, {}))
+        alive = bool(task is not None and not task.done())
+        failure_count = int(state.get("failure_count") or 0)
+        healthy = alive and failure_count < threshold
+        state.update({"alive": alive, "running": alive, "healthy": healthy})
+        result[name] = state
+        overall = overall and healthy
+    result["healthy"] = overall
+    return result
+
+
+def _runtime_worker_done(name: str, task: asyncio.Task) -> None:
+    if _runtime_worker_task(name) is not task:
+        return
+    if task.cancelled():
+        _set_runtime_worker_health(name, state="cancelled", alive=False)
+        return
+    try:
+        error = task.exception()
+    except asyncio.CancelledError:
+        error = None
+    if error is not None:
+        logger.error("AI runtime worker exited unexpectedly: name={}, error={}", name, error)
+        _set_runtime_worker_health(
+            name,
+            state="exited",
+            alive=False,
+            running=False,
+            last_error_at=datetime.utcnow().isoformat() + "Z",
+            last_error_type=type(error).__name__,
+            last_error=str(error)[:800],
+            failure_count=int(_RUNTIME_WORKER_HEALTH.get(name, {}).get("failure_count") or 0) + 1,
+            consecutive_failures=int(_RUNTIME_WORKER_HEALTH.get(name, {}).get("consecutive_failures") or 0) + 1,
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            delay = min(
+                max(1, int(getattr(settings, "AI_JOB_WORKER_MAX_BACKOFF_SECONDS", 60) or 60)),
+                2 ** min(int(_RUNTIME_WORKER_HEALTH.get(name, {}).get("failure_count") or 1), 6),
+            )
+            loop.call_later(delay, _restart_runtime_worker, name, task)
+        except RuntimeError:
+            pass
+
+
+def _restart_runtime_worker(name: str, previous: asyncio.Task) -> None:
+    global _REAPER_TASK, _DISPATCHER_TASK
+    if _SHUTTING_DOWN or _runtime_worker_task(name) is not previous:
+        return
+    task = asyncio.create_task(_reaper_loop() if name == "reaper" else _dispatcher_loop())
+    if name == "reaper":
+        _REAPER_TASK = task
+    else:
+        _DISPATCHER_TASK = task
+    task.add_done_callback(lambda done: _runtime_worker_done(name, done))
+    _set_runtime_worker_health(name, state="running", alive=True, restarted=True)
+
+
+async def _run_runtime_worker_loop(name: str, operation: Callable[[], Any], interval: int) -> None:
+    failures = 0
+    _set_runtime_worker_health(name, state="starting", alive=True, running=True, failure_count=0, consecutive_failures=0)
+    while not _SHUTTING_DOWN:
+        started_at = datetime.utcnow()
+        started_monotonic = time.monotonic()
+        _set_runtime_worker_health(
+            name,
+            state="running",
+            alive=True,
+            running=True,
+            last_started_at=started_at.isoformat() + "Z",
+        )
+        try:
+            result = await operation()
+            failures = 0
+            duration_ms = max(0, int((time.monotonic() - started_monotonic) * 1000))
+            _set_runtime_worker_health(
+                name,
+                state="healthy",
+                alive=True,
+                running=True,
+                failure_count=0,
+                consecutive_failures=0,
+                last_success_at=datetime.utcnow().isoformat() + "Z",
+                last_error=None,
+                last_error_type=None,
+                iteration_duration_ms=duration_ms,
+                last_scan_count=int(result) if isinstance(result, int) else 0,
+            )
+            delay = max(1, interval)
+        except asyncio.CancelledError:
+            _set_runtime_worker_health(name, state="cancelled", alive=False, running=False)
+            raise
+        except Exception as exc:
+            failures += 1
+            duration_ms = max(0, int((time.monotonic() - started_monotonic) * 1000))
+            _set_runtime_worker_health(
+                name,
+                state="degraded",
+                alive=True,
+                running=True,
+                failure_count=failures,
+                consecutive_failures=failures,
+                last_error_at=datetime.utcnow().isoformat() + "Z",
+                last_error_type=type(exc).__name__,
+                last_error=str(exc)[:800],
+                iteration_duration_ms=duration_ms,
+            )
+            logger.exception("AI runtime worker iteration failed: name={}, failure_count={}", name, failures)
+            base = min(
+                max(1, int(getattr(settings, "AI_JOB_WORKER_MAX_BACKOFF_SECONDS", 60) or 60)),
+                max(1, interval) * (2 ** min(failures - 1, 6)),
+            )
+            jitter = random.uniform(
+                0.0,
+                max(0.0, float(getattr(settings, "AI_JOB_WORKER_JITTER_SECONDS", 0.5) or 0.5)),
+            )
+            delay = base + jitter
+        await asyncio.sleep(delay)
 
 
 def schedule_queue(queue_key: str) -> None:
@@ -893,7 +1165,9 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
                     AiJobStatus.RUNNING,
                     AiJobStatus.TERMINATING,
                     AiJobStatus.ORPHANED,
-                ])
+                ]),
+                SddAiJob.manual_intervention_required.isnot(True),
+                (SddAiJob.next_reap_at.is_(None) | (SddAiJob.next_reap_at <= now)),
             )
             .all()
         )
@@ -912,6 +1186,9 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
                     "process_started_at": job.process_started_at,
                     "queue_key": str(job.queue_key or ""),
                     "reason": "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED",
+                    "attempt_count": int(job.attempt_count or 0),
+                    "worker_boot_id": job.worker_boot_id,
+                    "reap_failure_count": int(job.reap_failure_count or 0),
                 }
             )
         return result
@@ -950,6 +1227,7 @@ def _adopt_reclaimable_job_sync(
                     SddAiJob.termination_attempts: SddAiJob.termination_attempts + 1,
                     SddAiJob.terminal_reason: reason,
                     SddAiJob.failure_code: reason,
+                    SddAiJob.last_reap_attempt_at: datetime.utcnow(),
                 },
                 synchronize_session=False,
             )
@@ -1006,34 +1284,66 @@ async def reap_stale_jobs() -> int:
 
 
 async def _reaper_loop() -> None:
-    try:
-        while not _SHUTTING_DOWN:
-            await asyncio.sleep(max(1, int(getattr(settings, "AI_JOB_REAPER_INTERVAL_SECONDS", 10) or 10)))
-            await reap_stale_jobs()
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("AI job lease reaper exited unexpectedly")
+    await _run_runtime_worker_loop(
+        "reaper",
+        reap_stale_jobs,
+        max(1, int(getattr(settings, "AI_JOB_REAPER_INTERVAL_SECONDS", 10) or 10)),
+    )
 
 
 async def _dispatcher_loop() -> None:
-    try:
-        while not _SHUTTING_DOWN:
-            await asyncio.sleep(max(1, int(getattr(settings, "AI_JOB_DISPATCH_INTERVAL_SECONDS", 2) or 2)))
-            await recover_pending_queues()
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("AI job dispatcher exited unexpectedly")
+    await _run_runtime_worker_loop(
+        "dispatcher",
+        recover_pending_queues,
+        max(1, int(getattr(settings, "AI_JOB_DISPATCH_INTERVAL_SECONDS", 2) or 2)),
+    )
 
 
 async def start_runtime_workers() -> int:
     """Run recovery before readiness, then start independent durable workers."""
     global _REAPER_TASK, _DISPATCHER_TASK, _SHUTTING_DOWN
     _SHUTTING_DOWN = False
-    count = await recover_pending_queues()
-    _REAPER_TASK = asyncio.create_task(_reaper_loop())
-    _DISPATCHER_TASK = asyncio.create_task(_dispatcher_loop())
+    already_running = bool(
+        _REAPER_TASK is not None
+        and not _REAPER_TASK.done()
+        and _DISPATCHER_TASK is not None
+        and not _DISPATCHER_TASK.done()
+    )
+    count = 0
+    if not already_running:
+        try:
+            count = await recover_pending_queues()
+            recovered_at = datetime.utcnow().isoformat() + "Z"
+            for name in ("reaper", "dispatcher"):
+                _set_runtime_worker_health(
+                    name,
+                    state="starting",
+                    last_success_at=recovered_at,
+                    last_error=None,
+                    last_error_type=None,
+                    failure_count=0,
+                    consecutive_failures=0,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Initial AI runtime recovery failed")
+            for name in ("reaper", "dispatcher"):
+                _set_runtime_worker_health(
+                    name,
+                    state="degraded",
+                    last_error_at=datetime.utcnow().isoformat() + "Z",
+                    last_error_type=type(exc).__name__,
+                    last_error=str(exc)[:800],
+                    failure_count=1,
+                    consecutive_failures=1,
+                )
+    if _REAPER_TASK is None or _REAPER_TASK.done():
+        _REAPER_TASK = asyncio.create_task(_reaper_loop())
+        _REAPER_TASK.add_done_callback(lambda task: _runtime_worker_done("reaper", task))
+    if _DISPATCHER_TASK is None or _DISPATCHER_TASK.done():
+        _DISPATCHER_TASK = asyncio.create_task(_dispatcher_loop())
+        _DISPATCHER_TASK.add_done_callback(lambda task: _runtime_worker_done("dispatcher", task))
     return count
 
 
@@ -1130,6 +1440,14 @@ async def shutdown_runtime_workers() -> None:
 async def recover_pending_queues() -> int:
     """Schedule durable PENDING jobs after an API process restart."""
     await reap_stale_jobs()
+    queue_keys = await run_db(_list_pending_queue_keys_sync)
+    for queue_key in queue_keys:
+        schedule_queue(queue_key)
+    return len(queue_keys)
+
+
+def _list_pending_queue_keys_sync() -> List[str]:
+    """List queue keys in a worker thread; never open ORM sessions on-loop."""
     db = SessionLocal()
     try:
         rows = (
@@ -1143,24 +1461,24 @@ async def recover_pending_queues() -> int:
             f"{AiJobChannel.ASSET_THREAD.value}:",
             "DIAGNOSIS_SUMMARY:",
             "REQUIREMENT_PREVIEW:",
+            "TASK_BASELINE:",
         )
-        queue_keys = [
+        return [
             str(row[0] or "").strip()
             for row in rows
             if str(row[0] or "").strip().startswith(managed_prefixes)
         ]
     finally:
         db.close()
-    for queue_key in queue_keys:
-        schedule_queue(queue_key)
-    return len(queue_keys)
 
 
 def _task_id_from_queue_key(queue_key: str) -> Optional[str]:
-    prefix = f"{AiJobChannel.TASK_CHAT.value}:"
-    if not str(queue_key or "").startswith(prefix):
+    normalized = str(queue_key or "")
+    prefixes = (f"{AiJobChannel.TASK_CHAT.value}:", "TASK_BASELINE:")
+    prefix = next((candidate for candidate in prefixes if normalized.startswith(candidate)), None)
+    if prefix is None:
         return None
-    task_id = str(queue_key or "")[len(prefix):].strip()
+    task_id = normalized[len(prefix):].strip()
     return task_id or None
 
 
@@ -1379,11 +1697,31 @@ def _finish_termination_sync(
         if not job:
             return None
         if not confirmed_dead:
+            now = datetime.utcnow()
+            failures = int(job.reap_failure_count or 0) + 1
+            interval = max(1, int(getattr(settings, "AI_JOB_REAPER_INTERVAL_SECONDS", 10) or 10))
+            cap = max(
+                interval,
+                int(getattr(settings, "AI_JOB_REAPER_MAX_BACKOFF_SECONDS", 3600) or 3600),
+            )
+            backoff = min(cap, interval * (2 ** min(failures - 1, 8)))
+            backoff += random.uniform(
+                0.0,
+                max(0.0, float(getattr(settings, "AI_JOB_WORKER_JITTER_SECONDS", 0.5) or 0.5)),
+            )
             job.status = AiJobStatus.ORPHANED
             job.message = "Agent process could not be confirmed dead"
             job.error_message = reason
             job.failure_code = failure_code
             job.terminal_reason = reason
+            job.orphaned_at = job.orphaned_at or now
+            job.first_failure_at = job.first_failure_at or now
+            job.last_reap_attempt_at = now
+            job.last_reap_verified_at = now
+            job.reap_failure_count = failures
+            job.last_reap_error = reason
+            job.next_reap_at = now + timedelta(seconds=backoff)
+            job.lease_expires_at = now
             db.commit()
             db.refresh(job)
             return serialize_job(job)
@@ -1405,6 +1743,15 @@ def _finish_termination_sync(
             job.message = "Job cancelled by user"
             job.finished_at = datetime.utcnow()
             job.error_message = None
+        elif str(job.queue_key or "").startswith("TASK_BASELINE:"):
+            # A dead baseline attempt must become explicitly retryable.  The
+            # next manual request resets this row to PENDING for the same
+            # immutable input revision; no automatic CLI rerun is hidden here.
+            job.status = AiJobStatus.FAILED
+            job.progress = 100
+            job.message = "Baseline process interrupted; rebuild manually"
+            job.finished_at = datetime.utcnow()
+            job.error_message = reason
         elif job.channel == AiJobChannel.TASK_CHAT:
             job.status = AiJobStatus.INTERRUPTED
             job.progress = 100
@@ -1425,6 +1772,8 @@ def _finish_termination_sync(
         job.process_group_id = None
         job.failure_code = failure_code
         job.terminal_reason = reason
+        job.last_reap_verified_at = datetime.utcnow()
+        job.next_reap_at = None
         db.commit()
         db.refresh(job)
         return serialize_job(job)
@@ -2461,7 +2810,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     fork_session=fork_first_turn,
                 )
                 if fork_first_turn:
-                    task_cli_state_service.record_thread_session_id(
+                    await task_cli_state_service.record_thread_session_id_async(
                         base["thread_id"], str(result.get("session_id") or "")
                     )
                 proposal_text = str(result.get("text") or "").strip()
@@ -2526,7 +2875,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     fork_session=fork_first_turn,
                 )
                 if fork_first_turn:
-                    task_cli_state_service.record_thread_session_id(
+                    await task_cli_state_service.record_thread_session_id_async(
                         base["thread_id"], str(result.get("session_id") or "")
                     )
                 rewrite_payload = _parse_rewrite_payload(str(result.get("text") or ""))
@@ -2600,7 +2949,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 fork_session=fork_first_turn,
             )
             if fork_first_turn:
-                task_cli_state_service.record_thread_session_id(
+                await task_cli_state_service.record_thread_session_id_async(
                     base["thread_id"], str(result.get("session_id") or "")
                 )
             reply = str(result.get("text") or "").strip()
@@ -3295,23 +3644,11 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             }
 
         summary_state = await run_db_txn(_persist_diagnosis_result_sync)
-        # 结果卡片发布（含 WS 广播）保持在事件循环；DB 段自建短 session
-        from app.domains.task.models.chat import ChatMessage
-
-        card_db = SessionLocal()
-        try:
-            card_task = card_db.query(SddTask).filter(SddTask.id == summary_state["task_id"]).first()
-            card_message = (
-                card_db.query(ChatMessage).filter(ChatMessage.id == summary_state["source_chat_message_id"]).first()
-                if summary_state["source_chat_message_id"]
-                else None
+        if summary_state["source_chat_message_id"]:
+            await diagnosis_result_service.publish_diagnosis_result_message(
+                task_id=summary_state["task_id"],
+                message_id=summary_state["source_chat_message_id"],
             )
-            if card_task is not None and card_message is not None:
-                await diagnosis_result_service.publish_diagnosis_result_message(
-                    card_db, task=card_task, message=card_message
-                )
-        finally:
-            card_db.close()
 
         await _update_job_state(
             job_id,
@@ -3536,7 +3873,9 @@ def _load_job_dispatch_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
         return {
             "channel": job.channel,
             "queue_key": str(job.queue_key or ""),
+            "task_id": str(job.task_id or ""),
             "job_kind": str(job_context.get("job_kind") or "").strip().upper(),
+            "input_revision": str(job_context.get("input_revision") or ""),
         }
     finally:
         db.close()
@@ -3556,6 +3895,31 @@ def _load_job_failure_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
         }
     finally:
         db.close()
+
+
+async def _execute_task_baseline_job(job_id: str, task_id: str) -> None:
+    if not task_id:
+        raise ValueError("Baseline job has no task")
+    attempt = current_agent_attempt()
+    dispatch = await run_db(_load_job_dispatch_context_sync, job_id)
+    payload = await task_cli_state_service.run_bootstrap_for_job(
+        task_id,
+        run_token=attempt.run_token if attempt else None,
+        expected_input_revision=(dispatch or {}).get("input_revision") or None,
+    )
+    await _update_job_state(
+        job_id,
+        status=AiJobStatus.SUCCESS,
+        progress=100,
+        message="Specification baseline ready",
+        result_patch={
+            "bootstrap_status": payload.get("status"),
+            "spec_version_id": payload.get("spec_version_id"),
+            "baseline_session_id": payload.get("baseline_session_id"),
+        },
+        finalize=True,
+        run_token=attempt.run_token if attempt else None,
+    )
 
 
 async def _execute_job(job_id: str) -> None:
@@ -3585,6 +3949,12 @@ async def _execute_job(job_id: str) -> None:
                     # compatible while production runners receive the fence.
                     await runner(job_id)
                 return
+            if queue_key.startswith("TASK_BASELINE:") or job_kind == JOB_KIND_TASK_BASELINE:
+                await _execute_task_baseline_job(
+                    job_id,
+                    str(dispatch.get("task_id") or ""),
+                )
+                return
             if channel == AiJobChannel.ASSET_THREAD:
                 await _execute_asset_thread_job(job_id)
                 return
@@ -3599,7 +3969,10 @@ async def _execute_job(job_id: str) -> None:
                 return
             job_channel = failure_context["channel"]
             job_kind = failure_context["job_kind"]
-            if job_channel == AiJobChannel.TASK_CHAT and job_kind != JOB_KIND_DIAGNOSIS_SUMMARY:
+            if (
+                job_channel == AiJobChannel.TASK_CHAT
+                and job_kind not in {JOB_KIND_DIAGNOSIS_SUMMARY, JOB_KIND_TASK_BASELINE}
+            ):
                 await _mark_task_chat_job_interrupted(
                     job_id,
                     str(exc),

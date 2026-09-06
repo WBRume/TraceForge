@@ -7,7 +7,8 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
-import { buildWsCursorQuery, prepareWsFrame, sendResyncComplete } from '@/utils/wsCursor'
+import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 import { useAuthStore } from '@/stores/auth'
 import type {
   ApiMockDocument,
@@ -114,6 +115,7 @@ const activeAutoMockJob = ref<ActiveJobState | null>(null)
 const autoMockStartBusy = ref(false)
 const collabConnected = ref(false)
 let collabSocket: WebSocket | null = null
+let collabConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
 let collabSocketManualClose = false
 let collabReconnectTimer: number | null = null
 let keywordTimer: number | null = null
@@ -391,6 +393,8 @@ const pollActiveAutoMockJob = async () => {
 
 const closeSocket = () => {
   clearCollabReconnectTimer()
+  collabConsumer?.close()
+  collabConsumer = null
   if (collabSocket) {
     collabSocketManualClose = true
     collabSocket.close()
@@ -411,6 +415,28 @@ const connectCollab = () => {
   })
   const socket = new WebSocket(url)
   collabSocket = socket
+  const consumer = createSerializedWsConsumer({
+    room,
+    onEvent: (event) => applyCollabMessage(event.payload || {}),
+    onResync: async (frame, reason, context, signal) => {
+      if (reason === 'gap') {
+        context.socket.close(4000, 'sequence_gap')
+        return
+      }
+      await refreshProjectContext()
+      if (!signal.aborted && collabSocket === context.socket && context.socket.readyState === WebSocket.OPEN) {
+        sendResyncComplete(context.socket, frame, room)
+      }
+    },
+    onControl: (frame) => {
+      if (!['resume_ok', 'resync_ok'].includes(String(frame?.type || ''))) applyCollabMessage(frame)
+    },
+    onFailure: (_error, context) => {
+      if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+    },
+  })
+  collabConsumer = consumer
+  const generation = consumer.resetForConnection(socket)
   socket.onopen = () => {
     if (collabSocket !== socket) return
     collabSocketManualClose = false
@@ -419,6 +445,7 @@ const connectCollab = () => {
     collabConnected.value = true
   }
   socket.onclose = () => {
+    consumer.close(generation)
     if (collabSocket !== socket) return
     collabConnected.value = false
     collabSocket = null
@@ -436,29 +463,7 @@ const connectCollab = () => {
     if (collabSocket !== socket) return
     try {
       const raw = JSON.parse(event.data || '{}')
-      const prepared = prepareWsFrame(room, raw)
-      if (prepared.kind === 'event') {
-        const data = prepared.event.payload || {}
-        applyCollabMessage(data)
-        prepared.commit()
-        return
-      }
-      if (prepared.kind === 'resync' || (prepared.kind === 'control' && raw?.type === 'resync_required')) {
-        if (prepared.kind === 'resync' && prepared.reason === 'gap') {
-          socket.close(4000, 'sequence_gap')
-          return
-        }
-        void (async () => {
-          await refreshProjectContext()
-          if (collabSocket === socket && socket.readyState === WebSocket.OPEN) {
-            sendResyncComplete(socket, raw, room)
-          }
-        })()
-        return
-      }
-      const data = raw
-      if (prepared.kind === 'control' && ['resume_ok', 'resync_ok'].includes(String(data?.type || ''))) return
-      applyCollabMessage(data)
+      consumer.enqueue(raw, generation)
     } catch {
       // ignore ws parse errors
     }

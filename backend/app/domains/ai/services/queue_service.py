@@ -26,6 +26,7 @@ from app.domains.task.models.task_cli_bootstrap import (
 )
 from app.domains.auth.models.user import User, WorkspaceMember, WorkspacePermission
 from app.domains.ai.schemas.queue import QueueJobActions, QueueJobItem
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.api_mock.services import api_mock_service
 from app.domains.skill.services import skill_analysis_service
 from app.domains.task.services import task_cli_state_service
@@ -42,6 +43,73 @@ QUEUE_SOURCES = {QUEUE_SOURCE_PROVISION, QUEUE_SOURCE_API_MOCK, QUEUE_SOURCE_BOO
 API_MOCK_JOB_SYNC = "SYNC_TASK_SOURCE"
 API_MOCK_JOB_IMPORT = "IMPORT_SWAGGER"
 API_MOCK_JOB_AUTO = api_mock_service.AUTO_MOCK_JOB_TYPE
+
+
+def list_orphaned_jobs(
+    db: Session,
+    *,
+    user_id: str,
+    page: int = 1,
+    page_size: int = 50,
+) -> Tuple[List[SddAiJob], int]:
+    """Admin-only ORPHANED evidence view; no status mutation is performed."""
+    if not _is_admin(db, user_id):
+        raise PermissionError("Only platform administrators can inspect orphaned jobs")
+    query = (
+        db.query(SddAiJob)
+        .filter(SddAiJob.status == AiJobStatus.ORPHANED)
+        .order_by(SddAiJob.orphaned_at.asc(), SddAiJob.updated_at.asc())
+    )
+    total = query.count()
+    safe_page = max(1, int(page or 1))
+    safe_size = max(1, min(int(page_size or 50), 200))
+    rows = query.offset((safe_page - 1) * safe_size).limit(safe_size).all()
+    return rows, total
+
+
+def protect_orphaned_job(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: str,
+) -> SddAiJob:
+    """Pause automatic reaping with explicit operator evidence.
+
+    This is intentionally not a generic status-edit endpoint. The job stays
+    ORPHANED until a separate, evidence-backed recovery workflow is performed.
+    """
+    if not _is_admin(db, operator_id):
+        raise PermissionError("Only platform administrators can protect orphaned jobs")
+    normalized_reason = str(reason or "").strip()
+    normalized_evidence = str(evidence or "").strip()
+    if not normalized_reason or not normalized_evidence:
+        raise ValueError("reason and evidence are required")
+    job = db.query(SddAiJob).filter(SddAiJob.id == str(job_id or "").strip()).first()
+    if not job:
+        raise LookupError("Queue job not found")
+    if job.status != AiJobStatus.ORPHANED:
+        raise ValueError("Only ORPHANED jobs can be protected")
+    job.manual_intervention_required = True
+    job.manual_intervention_operator_id = str(operator_id)
+    job.manual_intervention_reason = normalized_reason
+    job.manual_intervention_evidence = normalized_evidence
+    job.next_reap_at = None
+    db.commit()
+    db.refresh(job)
+    audit_log(
+        action="orphaned_job_protect",
+        outcome="success",
+        resource_type="ai_job",
+        resource_id=job.id,
+        operator_id=operator_id,
+        workspace_id=job.workspace_id,
+        task_id=job.task_id,
+        reason=normalized_reason,
+        evidence=normalized_evidence,
+    )
+    return job
 
 
 def _enum_text(value: Any) -> str:
@@ -1057,7 +1125,14 @@ def retry_queue_job(
         record.error_message = None
         db.commit()
         db.refresh(record)
-        task_cli_state_service.schedule_bootstrap(record.task_id)
+        from app.domains.ai.services import ai_job_service
+
+        baseline_job = ai_job_service.create_task_baseline_job(
+            db,
+            workspace_id=record.workspace_id,
+            task_id=record.task_id,
+            creator_id=normalized_user_id,
+        )
         audit_log(
             action="queue_retry",
             outcome="success",
@@ -1067,11 +1142,13 @@ def retry_queue_job(
             operator_id=normalized_user_id,
             workspace_id=record.workspace_id,
             task_id=record.task_id,
+            new_job_id=baseline_job.id,
         )
         return {
             "source": normalized_source,
             "job_id": record.id,
-            "new_job_id": None,
+            "new_job_id": baseline_job.id,
+            "queue_key": baseline_job.queue_key,
             "message": "Bootstrap retry queued",
         }
 

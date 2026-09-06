@@ -4,7 +4,8 @@ import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
-import { buildWsCursorQuery, prepareWsFrame, sendResyncComplete } from '@/utils/wsCursor'
+import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 
 export type AppNotificationItem = {
   id: string
@@ -29,6 +30,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
   let reconnectTimer: number | null = null
   let started = false
   let wsReconnectAttempt = 0
+  let wsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
 
   const refreshUnreadCount = async () => {
     if (!authStore.isAuthenticated) return
@@ -132,6 +134,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
 
   const connectWs = () => {
     if (!started || !authStore.token) return
+    wsConsumer?.close()
+    wsConsumer = null
     if (ws) {
       ws.onopen = null
       ws.onmessage = null
@@ -145,6 +149,36 @@ export const useNotificationStore = defineStore('appNotification', () => {
       token: authStore.token,
       ...buildWsCursorQuery(room),
     }))
+    const socket = ws
+    const consumer = createSerializedWsConsumer({
+      room,
+      onEvent: (event) => {
+        if (event.event_type === 'notification' && event.payload) {
+          handleIncoming(event.payload as AppNotificationItem)
+        }
+      },
+      onResync: async (frame, reason, context, signal) => {
+        if (reason === 'gap') {
+          context.socket.close(4000, 'sequence_gap')
+          return
+        }
+        await fetchList()
+        await refreshUnreadCount()
+        if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
+          sendResyncComplete(context.socket, frame, room)
+        }
+      },
+      onControl: (frame) => {
+        if (frame?.type === 'notification' && frame.payload) {
+          handleIncoming(frame.payload as AppNotificationItem)
+        }
+      },
+      onFailure: (_error, context) => {
+        if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+      },
+    })
+    wsConsumer = consumer
+    const generation = consumer.resetForConnection(socket)
     ws.onopen = () => {
       connected.value = true
       wsReconnectAttempt = 0
@@ -152,36 +186,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        const prepared = prepareWsFrame(room, data)
-        if (prepared.kind === 'event') {
-          if (prepared.event.event_type === 'notification' && prepared.event.payload) {
-            handleIncoming(prepared.event.payload as AppNotificationItem)
-            prepared.commit()
-          }
-          return
-        }
-        if (prepared.kind === 'resync' || (prepared.kind === 'control' && data?.type === 'resync_required')) {
-          const socket = ws
-          if (!socket) return
-          if (prepared.kind === 'resync' && prepared.reason === 'gap') {
-            socket.close(4000, 'sequence_gap')
-            return
-          }
-          void (async () => {
-            await fetchList()
-            await refreshUnreadCount()
-            if (socket === ws && socket.readyState === WebSocket.OPEN) {
-              sendResyncComplete(socket, data, room)
-            }
-          })()
-          return
-        }
-        if (prepared.kind === 'control') {
-          // Backward-compatible handling for a raw notification frame.
-          if (data?.type === 'notification' && data.payload) {
-            handleIncoming(data.payload as AppNotificationItem)
-          }
-        }
+        consumer.enqueue(data, generation)
       } catch {
         // 忽略非 JSON 帧
       }
@@ -190,6 +195,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
       connected.value = false
     }
     ws.onclose = (event) => {
+      consumer.close(generation)
       connected.value = false
       if (event.code === 1008 || !started) return
       clearReconnectTimer()
@@ -221,6 +227,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
       ws.close()
       ws = null
     }
+    wsConsumer?.close()
+    wsConsumer = null
     connected.value = false
   }
 

@@ -5,6 +5,7 @@ Unified AI async job model.
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    Boolean,
     JSON,
     Column,
     DateTime,
@@ -124,6 +125,28 @@ class SddAiJob(Base):
     termination_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     failure_code = Column(String(64), nullable=True)
     terminal_reason = Column(Text, nullable=True)
+    # ORPHANED evidence/reaper state.  These fields make manual recovery
+    # auditable and keep retries due-time driven rather than hot-looping.
+    orphaned_at = Column(DateTime, nullable=True)
+    first_failure_at = Column(DateTime, nullable=True)
+    last_reap_attempt_at = Column(DateTime, nullable=True)
+    last_reap_verified_at = Column(DateTime, nullable=True)
+    next_reap_at = Column(DateTime, nullable=True, index=True)
+    reap_failure_count = Column(Integer, nullable=False, default=0, server_default="0")
+    last_reap_error = Column(Text, nullable=True)
+    manual_intervention_required = Column(
+        Boolean,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    manual_intervention_operator_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    manual_intervention_reason = Column(Text, nullable=True)
+    manual_intervention_evidence = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

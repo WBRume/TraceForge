@@ -111,12 +111,24 @@ class ConnectionRegistryTest(unittest.IsolatedAsyncioTestCase):
         registry.disconnect("room-1", ws2)
         self.assertFalse(registry.has_subscribers("room-1"))
         self.assertEqual(registry.online_users("room-1"), [])
+        await registry.shutdown()
 
     async def test_broadcast_skips_dropped_and_cleans_registry(self):
         registry = ConnectionRegistry()
         good, bad = _FakeSocket(), _FakeSocket()
-        await registry.connect("room-1", good)
+        good_conn = await registry.connect("room-1", good)
         await registry.connect("room-1", bad)
+        await good_conn.wait_flushed()
+        initial = json.loads(good.sent_texts[0])
+        self.assertTrue(
+            await registry.complete_resync(
+                "room-1",
+                good,
+                epoch=initial["epoch"],
+                barrier_sequence=initial["barrier_sequence"],
+            )
+        )
+        await good_conn.wait_flushed()
 
         bad_conn = registry.rooms["room-1"][bad]
         bad_conn.dropped = True  # 模拟已被判定的慢客户端
@@ -125,9 +137,11 @@ class ConnectionRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivered, 1)
         self.assertNotIn(bad, registry.rooms["room-1"])
         await asyncio.wait_for(good_conn_wait(registry, good), timeout=2)
-        frame = json.loads(good.sent_texts[0])
+        frame = json.loads(good.sent_texts[-1])
         self.assertEqual(frame["type"], "event")
         self.assertEqual(frame["payload"], "hello")
+        await bad_conn.close()
+        await registry.shutdown()
 
 
 async def good_conn_wait(registry, socket):

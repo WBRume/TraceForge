@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
-from app.core.offload import run_db
+from app.core.offload import run_db_txn
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationCreateRequest,
@@ -1002,23 +1002,24 @@ async def create_workspace_asset_task_human_delta(
     task_id: str,
     payload: HumanDeltaCreateRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    _verify_manage_task_process_assets(ws_id, current_user, db)
     from app.core.distributed_lock import LockAcquireTimeout, make_resource_busy_error, queue_workspace_compare_jobs
 
     try:
         async with queue_workspace_compare_jobs(workspace_id=ws_id):
-            await run_db(
-                workspace_task_detail_service.create_human_delta,
-                db, ws_id, task_id, current_user.id, payload,
-            )
+            def create_delta_sync(db: Session):
+                _verify_manage_task_process_assets(ws_id, current_user, db)
+                workspace_task_detail_service.create_human_delta(
+                    db, ws_id, task_id, current_user.id, payload,
+                )
+                return _task_summary_or_404(db, ws_id, task_id)
+
+            return await run_db_txn(create_delta_sync)
     except workspace_task_detail_service.TaskDetailWriteError as exc:
         _raise_task_detail_write_error(exc)
     except LockAcquireTimeout as exc:
         busy = make_resource_busy_error(exc, "Compare queue busy, please retry later.")
         raise HTTPException(status_code=busy.status_code, detail=str(busy)) from exc
-    return _task_summary_or_404(db, ws_id, task_id)
 
 
 @router.patch("/tasks/{task_id}/human-deltas/{delta_id}", response_model=TaskDetailSummaryResponse)
