@@ -15,6 +15,7 @@ from app.domains.websocket.ws.connection import (  # noqa: E402
     ConnectionRegistry,
     OutboundConnection,
 )
+from starlette.websockets import WebSocketState  # noqa: E402
 
 
 class _FakeSocket:
@@ -39,6 +40,21 @@ async def _flush_all(registry, room_key):
     room = registry.rooms.get(room_key, {})
     for connection in list(room.values()):
         await asyncio.wait_for(connection.wait_flushed(), timeout=2)
+
+
+class _BrokenCloseSocket(_FakeSocket):
+    """模拟 uvicorn 拒绝重复 close：close 抛 RuntimeError 且连接已不可用。"""
+
+    def __init__(self):
+        super().__init__(fail=True)
+        self.close_attempts = []
+
+    async def close(self, code: int = 1000):
+        self.close_attempts.append(code)
+        raise RuntimeError(
+            "Unexpected ASGI message 'websocket.close', after sending "
+            "'websocket.close' or response already completed."
+        )
 
 
 class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
@@ -85,6 +101,44 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(connection.dropped)
         self.assertEqual(socket.closed_codes, [1001])
         self.assertFalse(registry.has_subscribers("room-3"))
+
+    async def test_evict_close_failure_is_swallowed(self):
+        """close 被拒（重复 close/已断开）不得留下未取回的 Task 异常。"""
+        registry = ConnectionRegistry()
+        socket = _BrokenCloseSocket()
+        connection = await registry.connect("room-4", socket, user_id="u-broken")
+        registry.broadcast_text("room-4", "hello")
+        await asyncio.sleep(0.05)
+
+        self.assertTrue(connection.dropped)
+        self.assertFalse(registry.has_subscribers("room-4"))
+        # fire-and-forget 关闭任务的异常必须被就地吞掉
+        if connection._close_task is not None:
+            await connection._close_task
+            self.assertIsNone(connection._close_task.exception())
+        self.assertEqual(socket.close_attempts, [1001])
+
+    async def test_evict_skips_close_when_client_already_disconnected(self):
+        registry = ConnectionRegistry()
+        socket = _FakeSocket(fail=True)
+        socket.client_state = WebSocketState.DISCONNECTED  # 端点已收到断开
+        connection = await registry.connect("room-5", socket, user_id="u-gone")
+        connection.evict("send_failed")
+
+        self.assertTrue(connection.dropped)
+        self.assertEqual(socket.closed_codes, [])  # 不再对已断开的连接发 close
+        self.assertFalse(registry.has_subscribers("room-5"))
+
+    async def test_double_evict_closes_socket_once(self):
+        registry = ConnectionRegistry()
+        socket = _FakeSocket()
+        connection = await registry.connect("room-6", socket, user_id="u-dup")
+        connection.evict("queue_full")
+        connection.evict("dropped")
+        if connection._close_task is not None:
+            await connection._close_task
+
+        self.assertEqual(socket.closed_codes, [1001])
 
 
 class ClientReplayTest(unittest.IsolatedAsyncioTestCase):
