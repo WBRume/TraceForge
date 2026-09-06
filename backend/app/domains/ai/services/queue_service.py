@@ -216,7 +216,7 @@ def _build_api_mock_actions(*, job_type: str, item_status: str, target_path: Opt
 def _build_bootstrap_actions(item_status: str, target_path: Optional[str]) -> QueueJobActions:
     return QueueJobActions(
         can_stop=False,
-        can_retry=item_status == "FAILED",
+        can_retry=item_status in {"PENDING", "FAILED"},
         can_open=bool(item_status == "SUCCESS" and target_path),
     )
 
@@ -1044,8 +1044,12 @@ def retry_queue_job(
         if not _can_manage_task_jobs(db, workspace_id=record.workspace_id, user_id=normalized_user_id):
             raise PermissionError("No permission to retry bootstrap jobs")
         status_text = _enum_text(record.status)
-        if status_text not in {TaskCliBootstrapStatus.FAILED.value, TaskCliBootstrapStatus.STALE.value}:
-            raise ValueError("Only failed/stale bootstrap jobs can be retried")
+        if status_text not in {
+            TaskCliBootstrapStatus.PENDING.value,
+            TaskCliBootstrapStatus.FAILED.value,
+            TaskCliBootstrapStatus.STALE.value,
+        }:
+            raise ValueError("Only pending/failed/stale bootstrap jobs can be retried")
 
         record.status = TaskCliBootstrapStatus.PENDING
         record.progress = 0

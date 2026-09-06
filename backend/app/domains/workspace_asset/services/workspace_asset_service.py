@@ -93,7 +93,7 @@ from app.domains.asset.services.asset_document_service import parse_document_pay
 from app.domains.workspace_asset.services import workspace_task_detail_service
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
-from app.domains.ai.services.ai_job_service import run_cli_single_turn
+from app.domains.ai.services.ai_job_service import run_cli_single_turn, schedule_queue
 from app.agents.selection import resolve_workspace_backend
 
 logger = get_logger(__name__, category="workspace_asset")
@@ -1444,6 +1444,15 @@ def create_requirement_direct_import(
     return result
 
 
+REQUIREMENT_PREVIEW_QUEUE_PREFIX = "REQUIREMENT_PREVIEW:"
+REQUIREMENT_IMPORT_MAX_BYTES = 20 * 1024 * 1024
+
+
+def schedule_requirement_preview_queue(workspace_id: str) -> None:
+    """Requirement preview 作业统一走 AI 任务队列（可恢复、按 workspace 串行）。"""
+    schedule_queue(f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}")
+
+
 def create_requirement_import_preview_job(
     db: Session,
     workspace_id: str,
@@ -1455,6 +1464,17 @@ def create_requirement_import_preview_job(
     source_uri: Optional[str] = None,
     source_ref: Optional[str] = None,
 ) -> RequirementPreviewJobResponse:
+    """创建 import preview 作业：请求时同步解析文档并把内容持久化进 context_json。
+
+    上传的原始字节不再保存在进程内，服务重启后 recover_pending_queues 可重新调度执行。
+    """
+    if len(raw) > REQUIREMENT_IMPORT_MAX_BYTES:
+        raise WorkspaceAssetWriteError(
+            "Requirement import file is too large (max 20MB).",
+            status_code=413,
+        )
+    parsed = _parsed_document(file_name, raw)
+    markdown = str(parsed.get("normalized_markdown") or "").strip()
     project_path = _workspace_project_path_or_error(db, workspace_id)
     job = SddAiJob(
         workspace_id=workspace_id,
@@ -1462,7 +1482,7 @@ def create_requirement_import_preview_job(
         asset_id=None,
         thread_id=None,
         channel=AiJobChannel.ASSET_THREAD,
-        queue_key=f"REQUIREMENT_PREVIEW:{workspace_id}",
+        queue_key=f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}",
         status=AiJobStatus.PENDING,
         progress=0,
         message="Requirement AI preview queued",
@@ -1473,6 +1493,10 @@ def create_requirement_import_preview_job(
             "source_filename": file_name,
             "source_uri": source_uri,
             "source_ref": source_ref,
+            "normalized_markdown": markdown,
+            "source_ext": parsed.get("source_ext"),
+            "source_mime": parsed.get("source_mime"),
+            "render_json": parsed.get("render_json"),
         },
         creator_id=actor_id,
     )
@@ -1499,7 +1523,7 @@ def create_requirement_split_preview_job(
         asset_id=None,
         thread_id=None,
         channel=AiJobChannel.ASSET_THREAD,
-        queue_key=f"REQUIREMENT_PREVIEW:{workspace_id}",
+        queue_key=f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}",
         status=AiJobStatus.PENDING,
         progress=0,
         message="Requirement split preview queued",
@@ -1753,28 +1777,57 @@ def _finalize_requirement_split_sync(
     return {"batch_id": str(batch.id), "item_count": len(items)}
 
 
-async def run_requirement_import_preview_job(
-    job_id: str,
+def _load_requirement_import_context_sync(
+    db: Session,
     *,
-    file_name: str,
-    raw: bytes,
-    source_kind: Optional[str],
-    source_uri: Optional[str],
-    source_ref: Optional[str],
-) -> None:
-    """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。"""
-    parsed = _parsed_document(file_name, raw)
-    markdown = str(parsed.get("normalized_markdown") or "").strip()
+    job_id: str,
+) -> Optional[Dict[str, Any]]:
+    """恢复/执行前置查询：从 job.context_json 读取持久化的导入内容。"""
+    job = _load_preview_job_sync(db, job_id)
+    if not job:
+        return None
+    context = job.context_json if isinstance(job.context_json, dict) else {}
+    if str(context.get("job_kind") or "") != "REQUIREMENT_IMPORT_PREVIEW":
+        return None
+    markdown = str(context.get("normalized_markdown") or "").strip()
+    if not markdown:
+        raise WorkspaceAssetWriteError(
+            "Persisted import content is missing (job may have been created before a restart). Please re-upload the document.",
+            status_code=422,
+        )
+    return {
+        "markdown": markdown,
+        "file_name": str(context.get("source_filename") or "requirements.md"),
+        "source_kind": context.get("source_kind"),
+        "source_uri": context.get("source_uri"),
+        "source_ref": context.get("source_ref"),
+        "source_ext": context.get("source_ext"),
+        "source_mime": context.get("source_mime"),
+        "render_json": context.get("render_json"),
+    }
+
+
+async def run_requirement_import_preview_job(job_id: str) -> None:
+    """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。
+
+    输入内容在作业创建时已解析并持久化到 job.context_json，
+    服务重启后可由 recover_pending_queues 重新调度执行。
+    """
     try:
+        context = await run_db_txn(
+            lambda db: _load_requirement_import_context_sync(db, job_id=job_id)
+        )
+        if context is None:
+            return
         prepared = await run_db_txn(
             lambda db: _prepare_requirement_import_sync(
                 db,
                 job_id=job_id,
-                markdown=markdown,
-                source_kind=source_kind,
-                source_ref=source_ref,
-                source_uri=source_uri,
-                file_name=file_name,
+                markdown=context["markdown"],
+                source_kind=context["source_kind"],
+                source_ref=context["source_ref"],
+                source_uri=context["source_uri"],
+                file_name=context["file_name"],
             )
         )
         if prepared is None:
@@ -1789,12 +1842,16 @@ async def run_requirement_import_preview_job(
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
         items = _coalesce_simple_import_preview_items(
-            markdown=markdown,
-            file_name=file_name,
+            markdown=context["markdown"],
+            file_name=context["file_name"],
             items=items,
         )
         metadata = _document_metadata(
-            parsed,
+            {
+                "source_ext": context["source_ext"],
+                "source_mime": context["source_mime"],
+                "render_json": context["render_json"],
+            },
             extra={
                 "ai_preview": True,
                 "ai_job_id": job_id,
@@ -1806,11 +1863,11 @@ async def run_requirement_import_preview_job(
             lambda db: _finalize_requirement_import_sync(
                 db,
                 job_id=job_id,
-                file_name=file_name,
-                markdown=markdown,
-                source_kind=source_kind,
-                source_uri=source_uri,
-                source_ref=source_ref,
+                file_name=context["file_name"],
+                markdown=context["markdown"],
+                source_kind=context["source_kind"],
+                source_uri=context["source_uri"],
+                source_ref=context["source_ref"],
                 items=items,
                 metadata=metadata,
             )

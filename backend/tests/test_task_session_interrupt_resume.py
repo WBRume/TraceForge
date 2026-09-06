@@ -398,7 +398,7 @@ def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(mon
         check_db.close()
 
 
-def test_startup_recovery_only_schedules_queues_owned_by_ai_job_service(monkeypatch):
+def test_startup_recovery_schedules_requirement_preview_queues(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
     task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
@@ -411,7 +411,7 @@ def test_startup_recovery_only_schedules_queues_owned_by_ai_job_service(monkeypa
         status=AiJobStatus.PENDING,
         creator_id="user-1",
     )
-    foreign = SddAiJob(
+    preview = SddAiJob(
         id="requirement-pending",
         workspace_id=task.workspace_id,
         channel=AiJobChannel.ASSET_THREAD,
@@ -419,7 +419,7 @@ def test_startup_recovery_only_schedules_queues_owned_by_ai_job_service(monkeypa
         status=AiJobStatus.PENDING,
         creator_id="user-1",
     )
-    db.add_all([managed, foreign])
+    db.add_all([managed, preview])
     db.commit()
     db.close()
 
@@ -430,8 +430,52 @@ def test_startup_recovery_only_schedules_queues_owned_by_ai_job_service(monkeypa
 
     count = asyncio.run(ai_job_service.recover_pending_queues())
 
-    assert count == 1
-    assert scheduled == [f"TASK_CHAT:{task.id}"]
+    assert count == 2
+    assert sorted(scheduled) == sorted(
+        [
+            f"TASK_CHAT:{task.id}",
+            f"REQUIREMENT_PREVIEW:{task.workspace_id}",
+        ]
+    )
+
+
+def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    preview_job = SddAiJob(
+        id="preview-job-1",
+        workspace_id=task.workspace_id,
+        channel=AiJobChannel.ASSET_THREAD,
+        queue_key=f"REQUIREMENT_PREVIEW:{task.workspace_id}",
+        status=AiJobStatus.RUNNING,
+        context_json={"job_kind": "REQUIREMENT_IMPORT_PREVIEW"},
+        creator_id="user-1",
+    )
+    db.add(preview_job)
+    db.commit()
+    db.close()
+
+    calls = []
+
+    class _FakePreviewService:
+        @staticmethod
+        async def run_requirement_import_preview_job(job_id):
+            calls.append(("import", job_id))
+
+        @staticmethod
+        async def run_requirement_split_preview_job(job_id):
+            calls.append(("split", job_id))
+
+    import app.domains.workspace_asset.services.workspace_asset_service as workspace_asset_service
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(workspace_asset_service, "run_requirement_import_preview_job", _FakePreviewService.run_requirement_import_preview_job)
+    monkeypatch.setattr(workspace_asset_service, "run_requirement_split_preview_job", _FakePreviewService.run_requirement_split_preview_job)
+
+    asyncio.run(ai_job_service._execute_job("preview-job-1"))
+    assert calls == [("import", "preview-job-1")]
 
 
 def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):

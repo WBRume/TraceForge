@@ -66,6 +66,7 @@ const bootstrapStatus = ref<{
 } | null>(null);
 const bootstrapLoading = ref(false);
 const bootstrapPollTimer = ref<number | null>(null);
+const bootstrapTriggering = ref(false);
 const pendingRelocation = ref<{
   threadId: string;
   proposalId: string;
@@ -153,6 +154,33 @@ const showBaselineStatus = computed(() => {
 const bootstrapStatusCode = computed(() =>
   String(bootstrapStatus.value?.status || "").toUpperCase(),
 );
+const canTriggerBootstrap = computed(
+  () =>
+    !readOnlyMode.value &&
+    ["PENDING", "FAILED", "STALE"].includes(bootstrapStatusCode.value),
+);
+
+const triggerBootstrap = async () => {
+  if (!props.wsId || !props.taskId || bootstrapTriggering.value) return;
+  bootstrapTriggering.value = true;
+  try {
+    await api.post(`/workspaces/${props.wsId}/tasks/${props.taskId}/spec-bootstrap/run`);
+    ElMessage.success(t("chat.spec_bootstrap_build_started"));
+  } catch (error: unknown) {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 409) {
+      const detail = (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+      ElMessage.info(
+        typeof detail === "string" && detail ? detail : t("chat.spec_bootstrap_build_started"),
+      );
+    } else {
+      ElMessage.error(formatApiError(error, t("chat.spec_bootstrap_build_failed"), t));
+    }
+  } finally {
+    bootstrapTriggering.value = false;
+    void loadBootstrapStatus();
+  }
+};
 const isRelocationPending = computed(() => !!pendingRelocation.value);
 const relocationHintText = computed(() =>
   t("doc_review.anchor_relocation_pick_hint"),
@@ -906,6 +934,14 @@ onBeforeUnmount(() => {
         <span v-else-if="bootstrapLoading">{{ t("chat.spec_bootstrap_loading") }}</span>
       </div>
       <div class="baseline-right">
+        <button
+          v-if="canTriggerBootstrap"
+          class="baseline-trigger-btn"
+          :disabled="bootstrapTriggering"
+          @click="triggerBootstrap"
+        >
+          {{ t("chat.spec_bootstrap_action_build") }}
+        </button>
         <span>{{ Number(bootstrapStatus?.progress || 0) }}%</span>
       </div>
     </div>
@@ -1046,11 +1082,30 @@ onBeforeUnmount(() => {
 }
 
 .baseline-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
   color: #0369a1;
   font-weight: 600;
   min-width: 52px;
   text-align: right;
+}
+
+.baseline-trigger-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  background: #ffffff;
+  color: #0369a1;
+  cursor: pointer;
+}
+
+.baseline-trigger-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .relocation-hint {

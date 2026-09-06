@@ -754,6 +754,33 @@ export function useChatViewModel() {
     return ''
   }
 
+  const specBootstrapTriggering = ref(false)
+
+  const canTriggerSpecBootstrap = computed(() => {
+    const status = specBootstrap.value?.status
+    return status === 'PENDING' || status === 'FAILED' || status === 'STALE'
+  })
+
+  const triggerSpecBootstrap = async () => {
+    const taskId = currentTask.value?.id
+    if (!taskId || specBootstrapTriggering.value) return
+    specBootstrapTriggering.value = true
+    try {
+      await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/spec-bootstrap/run`)
+      ElMessage.success(t('chat.spec_bootstrap_build_started'))
+    } catch (e: any) {
+      if (e?.response?.status === 409) {
+        const detail = typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : ''
+        ElMessage.info(detail || t('chat.spec_bootstrap_build_started'))
+      } else {
+        ElMessage.error(formatApiError(e, t('chat.spec_bootstrap_build_failed'), t))
+      }
+    } finally {
+      specBootstrapTriggering.value = false
+      void loadTaskSpecBootstrap(taskId, currentTask.value)
+    }
+  }
+
   const clearRuntimeUsageRefreshTimer = () => {
     if (runtimeUsageRefreshTimer !== null) {
       window.clearTimeout(runtimeUsageRefreshTimer)
@@ -3381,6 +3408,9 @@ export function useChatViewModel() {
     showThinking,
     specBootstrap,
     specBootstrapLoading,
+    specBootstrapTriggering,
+    canTriggerSpecBootstrap,
+    triggerSpecBootstrap,
     specDrawerLevel,
     specDrawerTab,
     startingTask,

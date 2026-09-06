@@ -633,7 +633,7 @@ async def create_asset_thread_ai_job(
         raise HTTPException(status_code=400, detail="Thread task is required")
 
     try:
-        task_cli_state_service.ensure_bootstrap_ready(
+        task_cli_state_service.ensure_bootstrap_ready_or_start(
             db,
             workspace_id=ws_id,
             task_id=thread.task_id,
@@ -754,7 +754,7 @@ async def create_thread_resolution_proposal(
         )
 
     try:
-        task_cli_state_service.ensure_bootstrap_ready(
+        task_cli_state_service.ensure_bootstrap_ready_or_start(
             db,
             workspace_id=ws_id,
             task_id=thread.task_id,
@@ -904,7 +904,7 @@ async def rewrite_thread_resolution_proposal(
     relocated_anchor = data.relocated_anchor if isinstance(data.relocated_anchor, dict) else None
 
     try:
-        task_cli_state_service.ensure_bootstrap_ready(
+        task_cli_state_service.ensure_bootstrap_ready_or_start(
             db,
             workspace_id=ws_id,
             task_id=thread.task_id,
