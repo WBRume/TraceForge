@@ -18,8 +18,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.core.offload import run_db
+from app.database import SessionLocal
 from app.domains.case_center.models.case import CaseStatus, SddCase
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.task import SddTask
 from app.domains.task.models.diagnosis import (
     DiagnosisResultStatus,
     SddDiagnosisResult,
@@ -548,8 +551,23 @@ def serialize_diagnosis_result(result: SddDiagnosisResult) -> dict:
     }
 
 
-async def publish_diagnosis_result_message(db: Session, *, task, message: ChatMessage) -> None:
-    """把定位结果卡片消息广播到任务房间（多端原位更新）。"""
+def _build_diagnosis_result_message_payload_sync(
+    task_id: str,
+    message_id: str,
+) -> Optional[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        task = db.query(SddTask).filter(SddTask.id == task_id).first()
+        message = db.query(ChatMessage).filter(ChatMessage.id == message_id).first()
+        if task is None or message is None:
+            return None
+        return _build_diagnosis_result_message_payload(db, task=task, message=message)
+    finally:
+        db.close()
+
+
+def _build_diagnosis_result_message_payload(db: Session, *, task, message: ChatMessage) -> Dict[str, Any]:
+    """Build the WS payload while a short-lived DB session is owned by caller."""
     from app.domains.auth.models.user import User, WorkspaceMember
 
     creator = db.query(User).filter(User.id == message.creator_id).first()
@@ -561,7 +579,7 @@ async def publish_diagnosis_result_message(db: Session, *, task, message: ChatMe
         )
         .first()
     )
-    payload = WSChatPayload(
+    return WSChatPayload(
         task_id=task.id,
         role=MessageRole.ASSISTANT.value,
         content=message.content,
@@ -573,4 +591,10 @@ async def publish_diagnosis_result_message(db: Session, *, task, message: ChatMe
         creator_is_workspace_expert=bool(member.is_expert) if member else False,
         created_at=message.created_at.isoformat() if message.created_at else None,
     ).model_dump()
-    await ws_manager.send_message_to_room(task.id, WSMessage(type="chat_message", payload=payload))
+
+
+async def publish_diagnosis_result_message(*, task_id: str, message_id: str) -> None:
+    """Build the card payload off-loop, then broadcast without holding ORM state."""
+    payload = await run_db(_build_diagnosis_result_message_payload_sync, task_id, message_id)
+    if payload:
+        await ws_manager.send_message_to_room(task_id, WSMessage(type="chat_message", payload=payload))

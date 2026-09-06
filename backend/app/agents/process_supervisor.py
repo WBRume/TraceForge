@@ -29,6 +29,65 @@ from app.core.logging import get_logger
 logger = get_logger(__name__, category="agent_process")
 
 
+def _windows_kernel32():
+    """Return kernel32 with explicit pointer-width-safe signatures."""
+    kernel32 = ctypes.windll.kernel32
+    handle = ctypes.wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [handle, ctypes.wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = handle
+    kernel32.SetInformationJobObject.argtypes = [
+        handle,
+        ctypes.wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.QueryInformationJobObject.argtypes = [
+        handle,
+        ctypes.wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    kernel32.QueryInformationJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [handle, handle]
+    kernel32.AssignProcessToJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [handle, ctypes.wintypes.UINT]
+    kernel32.TerminateJobObject.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [handle]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+    kernel32.ResumeThread.argtypes = [handle]
+    kernel32.ResumeThread.restype = ctypes.wintypes.DWORD
+    return kernel32
+
+
+_ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+class _WindowsJobProcessIdList(ctypes.Structure):
+    _fields_ = [
+        ("NumberOfAssignedProcesses", ctypes.wintypes.DWORD),
+        ("NumberOfProcessIdsInList", ctypes.wintypes.DWORD),
+    ]
+
+
+def _resume_windows_process(process_handle: int) -> None:
+    """Resume a suspended process after Job Object assignment.
+
+    CPython closes the primary thread handle after CreateProcess, so
+    ResumeThread cannot be used through asyncio's public subprocess object.
+    NtResumeProcess is the pointer-width-safe equivalent for this narrow
+    hand-off and is configured explicitly before use.
+    """
+    ntdll = ctypes.windll.ntdll
+    handle = ctypes.wintypes.HANDLE
+    ntdll.NtResumeProcess.argtypes = [handle]
+    ntdll.NtResumeProcess.restype = ctypes.wintypes.LONG
+    result = int(ntdll.NtResumeProcess(handle(process_handle)))
+    if result != 0:
+        raise OSError(result, "NtResumeProcess failed")
+
+
 @dataclass(frozen=True)
 class TerminationResult:
     confirmed_dead: bool
@@ -45,7 +104,7 @@ def _windows_job_object() -> Optional[int]:
     if os.name != "nt":
         return None
     try:
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _windows_kernel32()
         handle = kernel32.CreateJobObjectW(None, None)
         if not handle:
             return None
@@ -94,7 +153,7 @@ def _windows_job_object() -> Optional[int]:
         ):
             kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
             return None
-        return int(handle)
+        return int(handle.value if hasattr(handle, "value") else handle)
     except Exception as exc:  # pragma: no cover - platform-specific fallback
         logger.warning("Unable to create Windows Job Object: {}", exc)
         return None
@@ -103,7 +162,7 @@ def _windows_job_object() -> Optional[int]:
 def _close_windows_handle(handle: Optional[int]) -> None:
     if handle and os.name == "nt":
         try:
-            ctypes.windll.kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
+            _windows_kernel32().CloseHandle(ctypes.wintypes.HANDLE(handle))
         except Exception:
             logger.debug("Failed to close Windows Job Object handle", exc_info=True)
 
@@ -152,22 +211,25 @@ class ManagedAgentProcess:
         if os.name != "nt" or not self.job_handle:
             return False
         try:
-            # JobObjectBasicProcessIdList (class 3): DWORD count fields,
-            # followed by an array of DWORD process ids.
-            buffer = (ctypes.c_byte * 4096)()
+            # JOB_OBJECT_BASIC_PROCESS_ID_LIST stores ULONG_PTR PIDs.  A
+            # DWORD array truncates handles/PIDs on 64-bit Windows.
+            capacity = 256
+            buffer_size = ctypes.sizeof(_WindowsJobProcessIdList) + ctypes.sizeof(_ULONG_PTR) * capacity
+            buffer = (ctypes.c_byte * buffer_size)()
             returned = ctypes.wintypes.DWORD()
-            ok = ctypes.windll.kernel32.QueryInformationJobObject(
+            ok = _windows_kernel32().QueryInformationJobObject(
                 ctypes.wintypes.HANDLE(self.job_handle),
                 3,
                 ctypes.byref(buffer),
-                ctypes.sizeof(buffer),
+                buffer_size,
                 ctypes.byref(returned),
             )
             if not ok:
                 return False
-            count = ctypes.cast(ctypes.byref(buffer, 4), ctypes.POINTER(ctypes.wintypes.DWORD))[0]
-            ids = ctypes.cast(ctypes.byref(buffer, 8), ctypes.POINTER(ctypes.wintypes.DWORD))
-            return any(int(ids[index]) != self.pid for index in range(int(count)))
+            header = _WindowsJobProcessIdList.from_buffer(buffer)
+            count = min(int(header.NumberOfProcessIdsInList), capacity)
+            ids = (_ULONG_PTR * capacity).from_buffer(buffer, ctypes.sizeof(_WindowsJobProcessIdList))
+            return any(int(ids[index]) != self.pid for index in range(count))
         except Exception:
             return False
 
@@ -244,7 +306,7 @@ class ManagedAgentProcess:
         if os.name == "nt":
             if self.job_handle:
                 try:
-                    ctypes.windll.kernel32.TerminateJobObject(
+                    _windows_kernel32().TerminateJobObject(
                         ctypes.wintypes.HANDLE(self.job_handle), 1
                     )
                     signals.append("TERMINATE_JOB_OBJECT")
@@ -413,7 +475,12 @@ class ProcessSupervisor:
             "stderr": asyncio.subprocess.PIPE,
         }
         if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # Keep the process suspended until it is assigned to the
+            # kill-on-close Job Object.  This closes the spawn escape window.
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | int(getattr(subprocess, "CREATE_SUSPENDED", 0x00000004))
+            )
         else:
             kwargs["start_new_session"] = True
         process = await asyncio.create_subprocess_exec(*args, cwd=cwd, env=env, **kwargs)
@@ -421,22 +488,64 @@ class ProcessSupervisor:
             process=process,
             run_token=run_token,
             worker_boot_id=worker_boot_id,
-            job_handle=_windows_job_object(),
+            job_handle=_windows_job_object() if os.name == "nt" else None,
         )
-        if managed.job_handle and os.name == "nt":
+        if os.name == "nt":
             try:
-                ok = ctypes.windll.kernel32.AssignProcessToJobObject(
-                    ctypes.wintypes.HANDLE(managed.job_handle),
-                    ctypes.wintypes.HANDLE(getattr(process, "_handle", 0)),
-                )
-                if not ok:
-                    logger.warning("AssignProcessToJobObject failed for pid {}", process.pid)
-            except Exception:
-                logger.warning("AssignProcessToJobObject raised for pid {}", process.pid, exc_info=True)
+                if not managed.job_handle:
+                    raise RuntimeError("CreateJobObjectW failed")
+                process_handle, _thread_handle = self._windows_process_handles(process)
+                if not process_handle:
+                    # A test double or an extremely short-lived process may
+                    # already be dead before asyncio exposes its Popen
+                    # handle.  There is no live process left to escape, so
+                    # release the unused job object.  A live process still
+                    # fails closed below instead of running unsupervised.
+                    if process.returncode is not None:
+                        _close_windows_handle(managed.job_handle)
+                        managed.job_handle = None
+                    else:
+                        raise RuntimeError("Suspended subprocess process handle is unavailable")
+                if process_handle:
+                    kernel32 = _windows_kernel32()
+                    assigned = kernel32.AssignProcessToJobObject(
+                        ctypes.wintypes.HANDLE(managed.job_handle),
+                        ctypes.wintypes.HANDLE(process_handle),
+                    )
+                    if not assigned:
+                        raise RuntimeError("AssignProcessToJobObject failed")
+                    _resume_windows_process(process_handle)
+            except Exception as exc:
+                logger.error("Windows supervised spawn failed for pid {}: {}", process.pid, exc)
+                managed.stop_monitor = True
+                try:
+                    process.kill()
+                    await asyncio.wait_for(asyncio.shield(process.wait()), timeout=5.0)
+                except Exception:
+                    logger.exception("Failed to terminate unsupervised Windows process: pid={}", process.pid)
+                _close_windows_handle(managed.job_handle)
+                managed.job_handle = None
+                raise RuntimeError(f"Could not establish Windows process supervision: {exc}") from exc
         self._processes.add(managed)
         if psutil is not None:
             managed.monitor_task = asyncio.create_task(self._monitor_tree(managed))
         return managed
+
+    @staticmethod
+    def _windows_process_handles(process: asyncio.subprocess.Process) -> tuple[Optional[int], Optional[int]]:
+        """Extract Popen process/thread handles from asyncio's Windows transport."""
+        transport = getattr(process, "_transport", None)
+        popen = None
+        if transport is not None:
+            get_extra_info = getattr(transport, "get_extra_info", None)
+            if callable(get_extra_info):
+                popen = get_extra_info("subprocess")
+            popen = popen or getattr(transport, "_proc", None)
+        popen = popen or getattr(process, "_proc", None)
+        process_handle = getattr(popen, "_handle", None) if popen is not None else None
+        thread_handle = getattr(popen, "_thread", None) if popen is not None else None
+        process_handle = process_handle or getattr(process, "_handle", None)
+        return (int(process_handle) if process_handle else None, int(thread_handle) if thread_handle else None)
 
     @staticmethod
     async def _monitor_tree(managed: ManagedAgentProcess) -> None:

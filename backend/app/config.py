@@ -144,9 +144,16 @@ class Settings(BaseSettings):
     AI_JOB_LEASE_SECONDS: int = 45
     AI_JOB_REAPER_INTERVAL_SECONDS: int = 10
     AI_JOB_DISPATCH_INTERVAL_SECONDS: int = 2
+    AI_JOB_WORKER_FAILURE_ALERT_THRESHOLD: int = 3
+    AI_JOB_WORKER_MAX_BACKOFF_SECONDS: int = 60
+    AI_JOB_WORKER_JITTER_SECONDS: float = 0.5
     WORKER_SERVICE_NAME: str = "traceforge-api"
     WORKER_INDEX: str = "0"
     AGENT_TERMINATION_TIMEOUT_SECONDS: float = 30.0
+
+    # WebSocket graceful shutdown budget.  A disconnected peer must not hold
+    # application shutdown indefinitely.
+    WS_SHUTDOWN_TIMEOUT_SECONDS: float = 5.0
 
     # 空闲引擎回收 TTL：非 running 引擎在注册表中保留的最长时间，
     # 超过后由周期收割器摘除（resume 均可走 DB 重建，内存仅是快路径）

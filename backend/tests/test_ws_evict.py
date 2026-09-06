@@ -43,6 +43,19 @@ async def _flush_all(registry, room_key):
         await asyncio.wait_for(connection.wait_flushed(), timeout=2)
 
 
+async def _complete_initial_sync(registry, room_key, socket, connection):
+    await connection.wait_flushed()
+    control = json.loads(socket.sent_texts[0])
+    assert control["type"] == "resync_required"
+    assert await registry.complete_resync(
+        room_key,
+        socket,
+        epoch=control["epoch"],
+        barrier_sequence=control["barrier_sequence"],
+    )
+    await connection.wait_flushed()
+
+
 class _BrokenCloseSocket(_FakeSocket):
     """模拟 uvicorn 拒绝重复 close：close 抛 RuntimeError 且连接已不可用。"""
 
@@ -61,9 +74,13 @@ class _BrokenCloseSocket(_FakeSocket):
 class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
     async def test_send_timeout_evicts_closes_socket_and_removes_from_registry(self):
         registry = ConnectionRegistry()
-        socket = _FakeSocket(block_event=asyncio.Event())  # send 永久挂起
+        initial_release = asyncio.Event()
+        socket = _FakeSocket(block_event=initial_release)
         with mock.patch.object(settings, "WS_SEND_TIMEOUT_SECONDS", 0.2):
-            await registry.connect("room-evict", socket, user_id="u-slow")
+            connection = await registry.connect("room-evict", socket, user_id="u-slow")
+            initial_release.set()
+            await _complete_initial_sync(registry, "room-evict", socket, connection)
+            socket._block_event = asyncio.Event()  # send 永久挂起
             # 未确认字节未超限，但 send 超时应触发 evict 闭环
             registry.broadcast_text("room-evict", "x" * 10)
             await asyncio.sleep(0.6)
@@ -73,9 +90,14 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_queue_full_evicts_only_slow_connection(self):
         registry = ConnectionRegistry()
-        fast, slow = _FakeSocket(), _FakeSocket(block_event=asyncio.Event())
+        slow_release = asyncio.Event()
+        fast, slow = _FakeSocket(), _FakeSocket(block_event=slow_release)
         fast_conn = await registry.connect("room-2", fast, user_id="u-fast")
         slow_conn = await registry.connect("room-2", slow, user_id="u-slow")
+        await _complete_initial_sync(registry, "room-2", fast, fast_conn)
+        slow_release.set()
+        await _complete_initial_sync(registry, "room-2", slow, slow_conn)
+        slow._block_event = asyncio.Event()
         # 人为压缩慢连接队列容量
         slow_conn._queue._maxsize = 1  # type: ignore[attr-defined]
 
@@ -94,8 +116,10 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_send_failure_evicts_closes_socket(self):
         registry = ConnectionRegistry()
-        socket = _FakeSocket(fail=True)
+        socket = _FakeSocket()
         connection = await registry.connect("room-3", socket, user_id="u-dead")
+        await _complete_initial_sync(registry, "room-3", socket, connection)
+        socket.fail = True
         registry.broadcast_text("room-3", "hello")
         await asyncio.wait_for(connection.sender_task, timeout=2)
 
@@ -107,7 +131,10 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
         """close 被拒（重复 close/已断开）不得留下未取回的 Task 异常。"""
         registry = ConnectionRegistry()
         socket = _BrokenCloseSocket()
+        socket.fail = False
         connection = await registry.connect("room-4", socket, user_id="u-broken")
+        await _complete_initial_sync(registry, "room-4", socket, connection)
+        socket.fail = True
         registry.broadcast_text("room-4", "hello")
         await asyncio.wait_for(connection.sender_task, timeout=2)
 
@@ -121,9 +148,11 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_evict_skips_close_when_client_already_disconnected(self):
         registry = ConnectionRegistry()
-        socket = _FakeSocket(fail=True)
+        socket = _FakeSocket()
         socket.client_state = WebSocketState.DISCONNECTED  # 端点已收到断开
         connection = await registry.connect("room-5", socket, user_id="u-gone")
+        await _complete_initial_sync(registry, "room-5", socket, connection)
+        socket.fail = True
         connection.evict("send_failed")
 
         self.assertTrue(connection.dropped)
@@ -134,6 +163,7 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
         registry = ConnectionRegistry()
         socket = _FakeSocket()
         connection = await registry.connect("room-6", socket, user_id="u-dup")
+        await _complete_initial_sync(registry, "room-6", socket, connection)
         connection.evict("queue_full")
         connection.evict("dropped")
         if connection._close_task is not None:
@@ -147,9 +177,10 @@ class ClientReplayTest(unittest.IsolatedAsyncioTestCase):
         registry = ConnectionRegistry()
         socket1 = _FakeSocket()
         conn1 = await registry.connect("room-rp", socket1, client_id="tab-1")
+        await _complete_initial_sync(registry, "room-rp", socket1, conn1)
         registry.broadcast_text("room-rp", "event-1")
         await conn1.wait_flushed()
-        first = json.loads(socket1.sent_texts[0])
+        first = next(json.loads(frame) for frame in socket1.sent_texts if json.loads(frame).get("type") == "event")
         registry.disconnect("room-rp", socket1)
         registry.broadcast_text("room-rp", "event-2")
 
@@ -172,10 +203,10 @@ class ClientReplayTest(unittest.IsolatedAsyncioTestCase):
         registry = ConnectionRegistry()
         socket = _FakeSocket()
         connection = await registry.connect("room-anon", socket)
+        await _complete_initial_sync(registry, "room-anon", socket, connection)
         registry.broadcast_text("room-anon", "msg")
         await asyncio.wait_for(connection.wait_flushed(), timeout=2)
-        self.assertEqual(len(socket.sent_texts), 1)
-        self.assertEqual(json.loads(socket.sent_texts[0])["type"], "event")
+        self.assertEqual(json.loads(socket.sent_texts[-1])["type"], "event")
         self.assertFalse(hasattr(registry, "client_replay"))
 
 

@@ -39,10 +39,36 @@ from app.domains.websocket.ws import task_handler  # noqa: E402
 
 
 def _receive_business(websocket):
+    while True:
+        frame = websocket.receive_json()
+        frame_type = frame.get("type")
+        if frame_type == "resync_required":
+            websocket.send_json({
+                "type": "resync_complete",
+                "payload": {
+                    "epoch": frame["epoch"],
+                    "barrier_sequence": frame["barrier_sequence"],
+                },
+            })
+            continue
+        if frame_type in {"resync_ok", "resume_ok"}:
+            continue
+        if frame_type == "event":
+            return {"type": frame["event_type"], "payload": frame.get("payload")}
+        return frame
+
+
+def _complete_initial_sync(websocket):
     frame = websocket.receive_json()
-    if frame.get("type") == "event":
-        return {"type": frame["event_type"], "payload": frame.get("payload")}
-    return frame
+    assert frame["type"] == "resync_required"
+    websocket.send_json({
+        "type": "resync_complete",
+        "payload": {
+            "epoch": frame["epoch"],
+            "barrier_sequence": frame["barrier_sequence"],
+        },
+    })
+    assert websocket.receive_json()["type"] == "resync_ok"
 
 
 def _seed(db, project_path: str):
@@ -124,6 +150,7 @@ def test_ws_pre_input_full_flow(ws_env):
     with TestClient(main_module.app) as client:
         # 1) 发起人连接并发起预输入
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {
@@ -201,6 +228,7 @@ def test_ws_chat_message_acknowledges_broadcasts_and_enqueues(ws_env, monkeypatc
 
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json(
                 {
                     "type": "chat_message",
@@ -234,6 +262,7 @@ def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):
 
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {
@@ -263,6 +292,7 @@ def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):
 def test_ws_pre_input_submit_rejected_for_non_creator(ws_env):
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {"main_text": "hello world", "mentioned_user_ids": [], "edit_permission": "ALL", "wait_seconds": 180},
@@ -271,6 +301,7 @@ def test_ws_pre_input_submit_rejected_for_non_creator(ws_env):
 
         # 非发起人提交 → pre_input_error
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
+            _complete_initial_sync(member_ws)
             member_ws.send_json({"type": "pre_input_submit", "payload": {}})
             evt = member_ws.receive_json()
             assert evt["type"] == "pre_input_error"
@@ -280,12 +311,14 @@ def test_ws_pre_input_submit_rejected_for_non_creator(ws_env):
 def test_ws_pre_input_edit_document_flow(ws_env):
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
+            _complete_initial_sync(member_ws)
             # 无进行中预输入 → 报错
             member_ws.send_json({"type": "pre_input_edit_document", "payload": {"text": "x"}})
             evt = member_ws.receive_json()
             assert evt["type"] == "pre_input_error"
 
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {"main_text": "hello world", "mentioned_user_ids": [], "edit_permission": "ALL", "wait_seconds": 180},
@@ -293,6 +326,7 @@ def test_ws_pre_input_edit_document_flow(ws_env):
             assert _receive_business(owner_ws)["type"] == "pre_input_update"
 
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
+            _complete_initial_sync(member_ws)
             member_ws.send_json({"type": "pre_input_edit_document", "payload": {"text": "hello brave world"}})
             evt = _receive_business(member_ws)
             assert evt["type"] == "pre_input_update"

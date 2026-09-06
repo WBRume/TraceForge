@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import threading
 import time
 import uuid
 from collections import deque
@@ -107,7 +108,11 @@ class RoomHub:
     journal: RoomJournal
     connections: Dict[WebSocket, OutboundConnection] = field(default_factory=dict)
     last_activity_at: float = field(default_factory=time.monotonic)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # publish() is intentionally synchronous because the fan-out path must
+    # never await while holding the room critical section.  The same lock is
+    # used by connect/replay/resync hand-off so registration, HWM capture and
+    # deferred/live state transitions are atomic with respect to publish().
+    lock: threading.RLock = field(default_factory=threading.RLock)
 
 
 class RoomHubRegistry:
@@ -121,6 +126,11 @@ class RoomHubRegistry:
         self._replay_events_total = 0
         self._resync_required_total: Dict[str, int] = {}
         self._slow_client_evictions = 0
+        self._next_generation = 1
+        self._metrics: Dict[str, int] = {}
+
+    def _inc_metric(self, name: str, amount: int = 1) -> None:
+        self._metrics[name] = self._metrics.get(name, 0) + amount
 
     def _ensure_sweeper(self) -> None:
         try:
@@ -164,6 +174,25 @@ class RoomHubRegistry:
             hub.last_activity_at = time.monotonic()
             hub.journal.last_activity_at = hub.last_activity_at
 
+    def _on_connection_evicted(
+        self,
+        room_key: str,
+        websocket: WebSocket,
+        connection: OutboundConnection,
+    ) -> None:
+        reason = connection.eviction_reason or "unknown"
+        if reason in {
+            "queue_full",
+            "pending_bytes_over_limit",
+            "message_over_byte_limit",
+            "send_failed",
+            "replay_timeout",
+            "flush_timeout",
+        }:
+            self._slow_client_evictions += 1
+            self._inc_metric("ws_slow_client_evictions_total")
+        self._remove_connection(room_key, websocket, connection)
+
     async def connect(
         self,
         room_key: str,
@@ -181,34 +210,49 @@ class RoomHubRegistry:
             websocket,
             client_id=client_id,
             message_kind=message_kind,
-            on_evicted=lambda conn: self._remove_connection(room_key, websocket, conn),
+            on_evicted=lambda conn: self._on_connection_evicted(room_key, websocket, conn),
+            generation=self._next_generation,
         )
-        hub.connections[websocket] = connection
-        if user_id is not None:
-            self.presence.setdefault(room_key, {})[websocket] = str(user_id)
-
+        self._next_generation += 1
         replay_snapshot: list[EventEnvelope] = []
-        cutover_sequence = hub.journal.high_watermark
-        # A connection without a cursor is a first load. The client loads the
-        # authoritative REST state before opening the socket, so it can start
-        # live immediately. Explicit cursors are always validated.
-        if epoch is None and parsed_last is None:
-            connection.mark_state(ConnectionState.LIVE)
-        else:
-            valid, reason = hub.journal.can_replay(
-                epoch=epoch,
-                last_sequence=parsed_last if parsed_last is not None else -1,
-            )
-            if valid:
-                connection.mark_state(ConnectionState.REPLAYING)
-                connection.cutover_sequence = cutover_sequence
-                replay_snapshot = hub.journal.snapshot_after(parsed_last or 0, cutover_sequence)
-            else:
+        reason = "initial_sync"
+        cutover_sequence = 0
+        await connection.start()
+        with hub.lock:
+            hub.connections[websocket] = connection
+            if user_id is not None:
+                self.presence.setdefault(room_key, {})[websocket] = str(user_id)
+            cutover_sequence = hub.journal.high_watermark
+            # Every cursor-less connection must establish an authoritative
+            # REST snapshot barrier before receiving sequenced live events.
+            if epoch is None and parsed_last is None:
                 connection.mark_state(ConnectionState.SYNCING)
                 connection.barrier_sequence = cutover_sequence
-                self._resync_required_total[reason] = self._resync_required_total.get(reason, 0) + 1
-
-        await connection.start()
+                self._record_resync_required(reason)
+            else:
+                valid, reason = hub.journal.can_replay(
+                    epoch=epoch,
+                    last_sequence=parsed_last if parsed_last is not None else -1,
+                )
+                if valid:
+                    connection.mark_state(ConnectionState.REPLAYING)
+                    connection.cutover_sequence = cutover_sequence
+                    replay_snapshot = hub.journal.snapshot_after(parsed_last or 0, cutover_sequence)
+                else:
+                    connection.mark_state(ConnectionState.SYNCING)
+                    connection.barrier_sequence = cutover_sequence
+                    self._record_resync_required(reason)
+            if connection.state == ConnectionState.SYNCING:
+                self._send_control(
+                    connection,
+                    control_frame(
+                        "resync_required",
+                        epoch=hub.journal.epoch,
+                        barrier_sequence=connection.barrier_sequence or 0,
+                        high_watermark=connection.barrier_sequence or 0,
+                        reason=reason,
+                    ),
+                )
         if connection.state == ConnectionState.REPLAYING:
             connection.replay_task = asyncio.create_task(
                 self._replay_connection(
@@ -220,17 +264,11 @@ class RoomHubRegistry:
                     cutover_sequence,
                 )
             )
-        elif connection.state == ConnectionState.SYNCING:
-            self._send_control(
-                connection,
-                control_frame(
-                    "resync_required",
-                    epoch=hub.journal.epoch,
-                    barrier_sequence=connection.barrier_sequence or 0,
-                    reason=reason,
-                ),
-            )
         return connection
+
+    def _record_resync_required(self, reason: str) -> None:
+        self._resync_required_total[reason] = self._resync_required_total.get(reason, 0) + 1
+        self._inc_metric(f"ws_resync_required_{reason}_total")
 
     @staticmethod
     def _parse_sequence(value: Optional[int]) -> Optional[int]:
@@ -270,7 +308,10 @@ class RoomHubRegistry:
         if connection.state == ConnectionState.LIVE:
             accepted = connection.submit_frame(value, kind=kind)
         elif connection.state in {ConnectionState.REPLAYING, ConnectionState.SYNCING}:
+            before = connection.deferred_count
             accepted = connection.defer_frame(value, kind=kind, sequence=sequence)
+            if accepted and connection.deferred_count > before:
+                self._inc_metric("ws_deferred_events_total")
         else:
             accepted = False
         if not accepted:
@@ -339,30 +380,63 @@ class RoomHubRegistry:
         aggregate_version: Optional[int],
     ) -> int:
         hub = self._hub(room_key)
-        if sequenced:
-            envelope = hub.journal.append(
-                event_type=event_type,
-                payload=payload,
-                aggregate_id=aggregate_id,
-                aggregate_version=aggregate_version,
-            )
-            value: object = envelope.to_dict()
-            sequence = envelope.sequence
-        else:
-            value = copy.deepcopy(payload)
-            sequence = None
-        delivered = 0
-        for websocket, connection in list(hub.connections.items()):
-            if self._submit_or_remove(
-                hub,
-                websocket,
-                connection,
-                value,
-                kind=kind,
-                sequence=sequence,
-            ):
-                delivered += 1
-        return delivered
+        with hub.lock:
+            if sequenced:
+                envelope = hub.journal.append(
+                    event_type=event_type,
+                    payload=payload,
+                    aggregate_id=aggregate_id,
+                    aggregate_version=aggregate_version,
+                )
+                value: object = envelope.to_dict()
+                sequence = envelope.sequence
+            else:
+                value = copy.deepcopy(payload)
+                sequence = None
+            delivered = 0
+            for websocket, connection in list(hub.connections.items()):
+                if self._submit_or_remove(
+                    hub,
+                    websocket,
+                    connection,
+                    value,
+                    kind=kind,
+                    sequence=sequence,
+                ):
+                    delivered += 1
+            return delivered
+
+    def _deferred_has_contiguous_sequences(
+        self,
+        deferred: list[Tuple[str, object, int, Optional[int]]],
+        *,
+        after_sequence: int,
+        high_watermark: int,
+    ) -> bool:
+        expected = after_sequence + 1
+        for _kind, _value, _size, sequence in deferred:
+            if sequence is None or sequence <= after_sequence:
+                continue
+            if sequence != expected:
+                return False
+            expected += 1
+        return expected == high_watermark + 1
+
+    def _request_resync_locked(self, hub: RoomHub, connection: OutboundConnection, reason: str) -> None:
+        connection.mark_state(ConnectionState.SYNCING)
+        connection.barrier_sequence = hub.journal.high_watermark
+        connection.drain_deferred()
+        self._record_resync_required(reason)
+        self._send_control(
+            connection,
+            control_frame(
+                "resync_required",
+                epoch=hub.journal.epoch,
+                barrier_sequence=connection.barrier_sequence,
+                high_watermark=connection.barrier_sequence,
+                reason=reason,
+            ),
+        )
 
     async def _replay_connection(
         self,
@@ -382,29 +456,38 @@ class RoomHubRegistry:
                     return
                 self._replay_events_total += 1
 
-            # The synchronous publish path cannot interleave while this
-            # critical section is running. New events therefore either appear
-            # in deferred_live before the hand-off or in the live queue after it.
-            current = hub.connections.get(websocket)
-            if current is not connection or connection.dropped:
-                return
-            deferred = connection.drain_deferred()
-            for kind, value, _size, sequence in deferred:
-                if sequence is not None and sequence <= cutover_sequence:
-                    continue
-                if not connection.submit_frame(value, kind=kind):
+            # Registration, HWM capture, deferred drain and LIVE transition
+            # share one synchronous room critical section with publish().
+            with hub.lock:
+                current = hub.connections.get(websocket)
+                if current is not connection or connection.dropped:
                     return
-            if not self._send_control(
-                connection,
-                control_frame(
-                    "resume_ok",
-                    epoch=hub.journal.epoch,
-                    from_sequence=last_sequence + 1,
-                    to_sequence=cutover_sequence,
-                ),
-            ):
-                return
-            connection.mark_state(ConnectionState.LIVE)
+                high_watermark = hub.journal.high_watermark
+                deferred = connection.drain_deferred()
+                if not self._deferred_has_contiguous_sequences(
+                    deferred,
+                    after_sequence=cutover_sequence,
+                    high_watermark=high_watermark,
+                ):
+                    self._request_resync_locked(hub, connection, "journal_gap")
+                    return
+                for kind, value, _size, sequence in deferred:
+                    if sequence is not None and sequence <= cutover_sequence:
+                        continue
+                    if not connection.submit_frame(value, kind=kind):
+                        return
+                if not self._send_control(
+                    connection,
+                    control_frame(
+                        "resume_ok",
+                        epoch=hub.journal.epoch,
+                        from_sequence=last_sequence + 1,
+                        to_sequence=high_watermark,
+                        high_watermark=high_watermark,
+                    ),
+                ):
+                    return
+                connection.mark_state(ConnectionState.LIVE)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -423,28 +506,40 @@ class RoomHubRegistry:
     ) -> bool:
         hub = self._hubs.get(room_key)
         connection = hub.connections.get(websocket) if hub else None
-        if hub is None or connection is None or connection.state != ConnectionState.SYNCING:
+        if hub is None or connection is None:
             return False
-        if epoch != hub.journal.epoch or connection.barrier_sequence != int(barrier_sequence):
-            return False
-        deferred = connection.drain_deferred()
-        for kind, value, _size, sequence in deferred:
-            if sequence is not None and sequence <= int(barrier_sequence):
-                continue
-            if not connection.submit_frame(value, kind=kind):
+        with hub.lock:
+            if connection.state != ConnectionState.SYNCING:
                 return False
-        if not self._send_control(
-            connection,
-            control_frame(
-                "resync_ok",
-                epoch=hub.journal.epoch,
-                from_sequence=int(barrier_sequence) + 1,
-                to_sequence=hub.journal.high_watermark,
-            ),
-        ):
-            return False
-        connection.mark_state(ConnectionState.LIVE)
-        return True
+            if epoch != hub.journal.epoch or connection.barrier_sequence != int(barrier_sequence):
+                return False
+            high_watermark = hub.journal.high_watermark
+            deferred = connection.drain_deferred()
+            if not self._deferred_has_contiguous_sequences(
+                deferred,
+                after_sequence=int(barrier_sequence),
+                high_watermark=high_watermark,
+            ):
+                self._request_resync_locked(hub, connection, "journal_gap")
+                return False
+            for kind, value, _size, sequence in deferred:
+                if sequence is not None and sequence <= int(barrier_sequence):
+                    continue
+                if not connection.submit_frame(value, kind=kind):
+                    return False
+            if not self._send_control(
+                connection,
+                control_frame(
+                    "resync_ok",
+                    epoch=hub.journal.epoch,
+                    from_sequence=int(barrier_sequence) + 1,
+                    to_sequence=high_watermark,
+                    high_watermark=high_watermark,
+                ),
+            ):
+                return False
+            connection.mark_state(ConnectionState.LIVE)
+            return True
 
     def has_subscribers(self, room_key: str) -> bool:
         return bool(self.rooms.get(room_key))
@@ -508,6 +603,7 @@ class RoomHubRegistry:
             "ws_slow_client_evictions_total": self._slow_client_evictions,
             "ws_replay_events_total": self._replay_events_total,
             "ws_resync_required_total": sum(self._resync_required_total.values()),
+            **self._metrics,
         }
 
     async def shutdown(self) -> None:
@@ -533,9 +629,16 @@ class RoomHubRegistry:
         ]
         for connection in connections:
             connection.evict("shutdown")
-            if connection.close_task is not None:
-                await connection.close_task
-        if sender_tasks:
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*(connection.close() for connection in connections), return_exceptions=True),
+                timeout=_float_setting("WS_SHUTDOWN_TIMEOUT_SECONDS", 5.0),
+            )
+        except asyncio.TimeoutError:
+            self._inc_metric("ws_shutdown_timeout_total")
+            for task in sender_tasks:
+                if task and not task.done():
+                    task.cancel()
             await asyncio.gather(*sender_tasks, return_exceptions=True)
         self._hubs.clear()
         self.rooms.clear()

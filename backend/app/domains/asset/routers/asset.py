@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
 from app.domains.asset.models.asset import (
     AssetResolutionProposalStatus,
@@ -945,103 +946,119 @@ async def apply_thread_resolution(
     asset_id: str,
     thread_id: str,
     data: AssetResolutionApplyRequest,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    _verify_expert_permission(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
-    if not asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
-    _ensure_spec_editable(asset)
-    thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    _ensure_thread_open(thread)
-
-    proposal = (
-        db.query(SddAssetResolutionProposal)
-        .filter(
-            SddAssetResolutionProposal.id == data.proposal_id,
-            SddAssetResolutionProposal.thread_id == thread.id,
-        )
-        .first()
-    )
-    if not proposal:
-        raise HTTPException(status_code=404, detail="Resolution proposal not found")
-
     try:
-        version = asset_resolution_service.apply_resolution_proposal(
-            db,
-            asset=asset,
-            thread=thread,
-            proposal=proposal,
-            actor_user_id=current_user.id,
-            final_block_ast=data.final_block_ast,
-            final_blocks_ast=data.final_blocks_ast,
-            change_note=data.change_note,
-        )
+        def persist_resolution(db: Session):
+            _verify_expert_permission(ws_id, current_user, db)
+            asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+            if not asset:
+                raise HTTPException(status_code=404, detail="Asset not found")
+            _ensure_spec_editable(asset)
+            thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
+            if not thread:
+                raise HTTPException(status_code=404, detail="Thread not found")
+            _ensure_thread_open(thread)
+
+            proposal = (
+                db.query(SddAssetResolutionProposal)
+                .filter(
+                    SddAssetResolutionProposal.id == data.proposal_id,
+                    SddAssetResolutionProposal.thread_id == thread.id,
+                )
+                .first()
+            )
+            if not proposal:
+                raise HTTPException(status_code=404, detail="Resolution proposal not found")
+
+            try:
+                version = asset_resolution_service.apply_resolution_proposal(
+                    db,
+                    asset=asset,
+                    thread=thread,
+                    proposal=proposal,
+                    actor_user_id=current_user.id,
+                    final_block_ast=data.final_block_ast,
+                    final_blocks_ast=data.final_blocks_ast,
+                    change_note=data.change_note,
+                )
+            except asset_resolution_service.ResolutionServiceError as exc:
+                raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+            if data.decision:
+                if not thread.task_id:
+                    raise HTTPException(status_code=422, detail="Decision source requires a Task-bound Spec / Plan asset")
+                try:
+                    workspace_task_detail_service.create_decision(
+                        db,
+                        ws_id,
+                        thread.task_id,
+                        current_user.id,
+                        DecisionCreateRequest(
+                            requirement_id=data.decision.requirement_id,
+                            status="ACCEPTED",
+                            title=data.decision.title,
+                            body=data.decision.body,
+                            impact_scope=data.decision.impact_scope,
+                            promote_candidate=data.decision.promote_candidate,
+                            source_type="SPEC_PLAN_CHANGE",
+                            source_asset_id=asset.id,
+                            source_asset_version_id=version.id,
+                            source_asset_thread_id=thread.id,
+                            source_resolution_proposal_id=proposal.id,
+                            source_metadata={
+                                "asset_type": asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type),
+                                "asset_name": asset.name,
+                                "thread_block_id": thread.block_id,
+                                "resolution_applied": True,
+                            },
+                            change_reason="Recorded from Spec / Plan resolution apply.",
+                        ),
+                    )
+                except workspace_task_detail_service.TaskDetailWriteError as exc:
+                    raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+            db.commit()
+            return {
+                "asset_id": asset.id,
+                "thread_id": thread.id,
+                "task_id": thread.task_id,
+                "version": _serialize_version(version).model_dump(mode="json"),
+                "thread": _serialize_thread_with_context(
+                    db,
+                    thread=thread,
+                    context_version=version,
+                ).model_dump(mode="json"),
+            }
+
+        result = await run_db_txn(persist_resolution)
     except asset_resolution_service.ResolutionServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
-
-    if data.decision:
-        if not thread.task_id:
-            raise HTTPException(status_code=422, detail="Decision source requires a Task-bound Spec / Plan asset")
-        try:
-            workspace_task_detail_service.create_decision(
-                db,
-                ws_id,
-                thread.task_id,
-                current_user.id,
-                DecisionCreateRequest(
-                    requirement_id=data.decision.requirement_id,
-                    status="ACCEPTED",
-                    title=data.decision.title,
-                    body=data.decision.body,
-                    impact_scope=data.decision.impact_scope,
-                    promote_candidate=data.decision.promote_candidate,
-                    source_type="SPEC_PLAN_CHANGE",
-                    source_asset_id=asset.id,
-                    source_asset_version_id=version.id,
-                    source_asset_thread_id=thread.id,
-                    source_resolution_proposal_id=proposal.id,
-                    source_metadata={
-                        "asset_type": asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type),
-                        "asset_name": asset.name,
-                        "thread_block_id": thread.block_id,
-                        "resolution_applied": True,
-                    },
-                    change_reason="Recorded from Spec / Plan resolution apply.",
-                ),
-            )
-        except workspace_task_detail_service.TaskDetailWriteError as exc:
-            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-
-    db.commit()
-    if thread.task_id:
-        task_cli_state_service.schedule_bootstrap(thread.task_id)
-        await task_cli_state_service.publish_bootstrap_snapshot(thread.task_id)
-    thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread.id)
-    version_response = _serialize_version(version)
+    version_response = AssetVersionResponse(**result["version"])
+    if result["task_id"]:
+        await task_cli_state_service.mark_bootstrap_stale_async(
+            workspace_id=ws_id,
+            task_id=result["task_id"],
+            spec_version_id=version_response.id,
+            reason="Specification context changed; rebuild baseline manually",
+        )
+        await task_cli_state_service.publish_bootstrap_snapshot(result["task_id"])
 
     await asset_discussion_ws_manager.broadcast(
-        asset.id,
+        result["asset_id"],
         {
             "type": "version_applied",
-            "asset_id": asset.id,
-            "thread_id": thread.id,
+            "asset_id": result["asset_id"],
+            "thread_id": result["thread_id"],
             "version": version_response.model_dump(mode="json"),
         },
     )
     await asset_discussion_ws_manager.broadcast(
-        asset.id,
+        result["asset_id"],
         {
             "type": "thread_updated",
-            "asset_id": asset.id,
-            "thread": _serialize_thread_with_context(
-                db,
-                thread=thread,
-                context_version=version,
-            ).model_dump(mode="json"),
+            "asset_id": result["asset_id"],
+            "thread": result["thread"],
         },
     )
     return version_response

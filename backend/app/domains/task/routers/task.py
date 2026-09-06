@@ -1194,40 +1194,48 @@ async def run_task_spec_bootstrap(
     ws_id: str,
     task_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """手动触发 spec 基线构建（PENDING/FAILED/STALE 可触发；RUNNING 幂等；READY 返回 409）。"""
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to run task specification baseline",
-    )
-    task = task_service.get_task(db, task_id, ws_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
-            task_cli_state_service.request_bootstrap_run(
-                db,
-                workspace_id=ws_id,
-                task_id=task_id,
-            )
+            def prepare_baseline_request(db: Session):
+                verify_workspace_permission(
+                    ws_id,
+                    current_user,
+                    db,
+                    WorkspacePermission.UPLOAD_TASK_SPEC,
+                    "No permission to run task specification baseline",
+                )
+                task = task_service.get_task(db, task_id, ws_id)
+                if not task:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                task_cli_state_service.request_bootstrap_run(
+                    db,
+                    workspace_id=ws_id,
+                    task_id=task_id,
+                )
+                snapshot = task_cli_state_service.get_bootstrap_snapshot(
+                    db,
+                    workspace_id=ws_id,
+                    task_id=task_id,
+                )
+                if not snapshot:
+                    raise HTTPException(status_code=404, detail="Specification baseline not initialized")
+                return snapshot
+
+            snapshot = await run_db_txn(prepare_baseline_request)
         except KeyError:
             raise HTTPException(status_code=404, detail="Specification baseline not initialized")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        snapshot = task_cli_state_service.get_bootstrap_snapshot(
-            db,
+        await task_cli_state_service.publish_bootstrap_snapshot(task_id)
+        baseline_job = await ai_job_service.enqueue_task_baseline_job(
             workspace_id=ws_id,
             task_id=task_id,
+            creator_id=current_user.id,
         )
-        if not snapshot:
-            raise HTTPException(status_code=404, detail="Specification baseline not initialized")
-        await task_cli_state_service.publish_bootstrap_snapshot(task_id)
-        task_cli_state_service.schedule_bootstrap(task_id)
+        if baseline_job:
+            snapshot["job_id"] = baseline_job.get("id")
         return TaskCliBootstrapResponse(**snapshot)
 
 
@@ -1319,44 +1327,56 @@ async def upload_task_spec(
     task_id: str,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to upload task specification",
-    )
-
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
             async with lock_task(task_id):
-                task = task_service.get_task(db, task_id, ws_id)
-                if not task:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                _ensure_task_not_baselined(task)
                 content = await file.read()
-                file_path, asset_id, version_id = task_service.upload_task_spec(db, task_id, file.filename, content)
-                bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
-                    db,
-                    workspace_id=ws_id,
-                    task_id=task_id,
-                    spec_asset_id=asset_id,
-                    spec_version_id=version_id,
-                )
-                db.commit()
-                db.refresh(bootstrap)
-                asyncio.create_task(task_cli_state_service.publish_bootstrap_snapshot(task_id))
-                # 基线构建改为手动触发（或首次评审 AI 操作时懒启动），
+
+                def persist_task_spec_upload(db: Session):
+                    verify_workspace_permission(
+                        ws_id,
+                        current_user,
+                        db,
+                        WorkspacePermission.UPLOAD_TASK_SPEC,
+                        "No permission to upload task specification",
+                    )
+                    task = task_service.get_task(db, task_id, ws_id)
+                    if not task:
+                        raise HTTPException(status_code=404, detail="Task not found")
+                    _ensure_task_not_baselined(task)
+                    file_path, asset_id, version_id = task_service.upload_task_spec(
+                        db, task_id, file.filename, content
+                    )
+                    bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
+                        db,
+                        workspace_id=ws_id,
+                        task_id=task_id,
+                        spec_asset_id=asset_id,
+                        spec_version_id=version_id,
+                    )
+                    return {
+                        "path": file_path,
+                        "asset_id": asset_id,
+                        "version_id": version_id,
+                        "spec_bootstrap_status": (
+                            bootstrap.status.value
+                            if hasattr(bootstrap.status, "value")
+                            else str(bootstrap.status)
+                        ),
+                    }
+
+                upload = await run_db_txn(persist_task_spec_upload)
+                await task_cli_state_service.publish_bootstrap_snapshot(task_id)
+                # 基线构建改为手动触发，
                 # 避免批量上传 spec 时 CLI 资源被大量并发 bootstrap 抢占。
                 return {
                     "status": "success",
-                    "path": file_path,
+                    "path": upload["path"],
                     "filename": file.filename,
-                    "asset_id": asset_id,
-                    "version_id": version_id,
-                    "spec_bootstrap_status": bootstrap.status.value if hasattr(bootstrap.status, "value") else str(bootstrap.status),
+                    "asset_id": upload["asset_id"],
+                    "version_id": upload["version_id"],
+                    "spec_bootstrap_status": upload["spec_bootstrap_status"],
                 }
         except LockAcquireTimeout as exc:
             _raise_task_lock_conflict(exc)

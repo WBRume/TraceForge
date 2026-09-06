@@ -239,6 +239,7 @@ class TaskCliBootstrapResponse(BaseModel):
     error_message: Optional[str] = None
     refresh_mode: Optional[str] = None
     refresh_context_json: Optional[dict] = None
+    job_id: Optional[str] = None
     updated_at: Optional[datetime] = None
 
 

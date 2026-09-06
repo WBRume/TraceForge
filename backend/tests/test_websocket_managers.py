@@ -58,15 +58,26 @@ class WebSocketManagerTest(unittest.IsolatedAsyncioTestCase):
         task_id = "task-buffer"
 
         first_ws = _FakeTextSocket()
-        await manager.connect(first_ws, task_id)
+        first_connection = await manager.connect(first_ws, task_id)
+        await first_connection.wait_flushed()
+        initial = json.loads(first_ws.sent_texts[0])
+        self.assertEqual(initial["type"], "resync_required")
+        self.assertTrue(
+            await manager.complete_resync(
+                first_ws,
+                task_id,
+                epoch=initial["epoch"],
+                barrier_sequence=initial["barrier_sequence"],
+            )
+        )
         await manager.send_message_to_room(
             task_id,
             WSMessage(type="status", payload={"step": 1}),
         )
         self.assertTrue(first_ws.accepted)
         await _wait_all(manager, first_ws)
-        self.assertEqual(len(first_ws.sent_texts), 1)
-        first = json.loads(first_ws.sent_texts[0])
+        self.assertEqual(len(first_ws.sent_texts), 3)
+        first = next(json.loads(frame) for frame in first_ws.sent_texts if json.loads(frame).get("type") == "event")
         self.assertEqual(first["type"], "event")
         manager.disconnect(first_ws, task_id)
 
@@ -114,28 +125,55 @@ class WebSocketManagerTest(unittest.IsolatedAsyncioTestCase):
 
         slow = _BlockingSocket()
         fast = _FakeTextSocket()
-        await manager.connect(slow, task_id)
-        await manager.connect(fast, task_id)
+        slow_connection = await manager.connect(slow, task_id)
+        fast_connection = await manager.connect(fast, task_id)
+        slow._release = asyncio.get_running_loop().create_future()
+        slow._release.set_result(None)
+        for socket, connection in ((slow, slow_connection), (fast, fast_connection)):
+            await connection.wait_flushed()
+            initial = json.loads(socket.sent_texts[0])
+            self.assertTrue(
+                await manager.complete_resync(
+                    socket,
+                    task_id,
+                    epoch=initial["epoch"],
+                    barrier_sequence=initial["barrier_sequence"],
+                )
+            )
+            await connection.wait_flushed()
+        slow._release = asyncio.get_running_loop().create_future()
 
         await manager.send_message_to_room(task_id, WSMessage(type="status", payload={"step": 1}))
         await _wait_all(manager, fast)
 
         # 慢客户端阻塞自身 sender，但快连接已送达，广播未阻塞
-        self.assertEqual(len(fast.sent_texts), 1)
-        self.assertEqual(len(slow.sent_texts), 0)
+        self.assertEqual(json.loads(fast.sent_texts[-1])["type"], "event")
+        self.assertEqual(len(slow.sent_texts), 2)
 
         if slow._release is not None:
             slow._release.set_result(None)
         await _wait_all(manager, fast, slow)
-        self.assertEqual(len(slow.sent_texts), 1)
+        self.assertEqual(len(slow.sent_texts), 3)
 
     async def test_api_mock_broadcast_safe_when_connection_set_mutates(self):
         manager = ApiMockConnectionManager()
         project_id = "project-1"
         ws1 = _MutatingJsonSocket()
-        ws2 = _MutatingJsonSocket(mutate=lambda: manager.disconnect(ws1, project_id))
-        await manager.connect(ws1, project_id, "u1")
-        await manager.connect(ws2, project_id, "u2")
+        ws2 = _MutatingJsonSocket()
+        conn1 = await manager.connect(ws1, project_id, "u1")
+        conn2 = await manager.connect(ws2, project_id, "u2")
+        for socket, connection in ((ws1, conn1), (ws2, conn2)):
+            await connection.wait_flushed()
+            control = socket.sent_json[0]
+            self.assertTrue(
+                await manager.complete_resync(
+                    socket,
+                    project_id,
+                    epoch=control["epoch"],
+                    barrier_sequence=control["barrier_sequence"],
+                )
+            )
+        ws2._mutate = lambda: manager.disconnect(ws1, project_id)
 
         await manager.broadcast(project_id, {"type": "event"})
         await _wait_all(manager, ws1, ws2)
@@ -145,9 +183,21 @@ class WebSocketManagerTest(unittest.IsolatedAsyncioTestCase):
         manager = AssetDiscussionConnectionManager()
         asset_id = "asset-1"
         ws1 = _MutatingJsonSocket()
-        ws2 = _MutatingJsonSocket(mutate=lambda: manager.disconnect(ws1, asset_id))
-        await manager.connect(ws1, asset_id, "u1")
-        await manager.connect(ws2, asset_id, "u2")
+        ws2 = _MutatingJsonSocket()
+        conn1 = await manager.connect(ws1, asset_id, "u1")
+        conn2 = await manager.connect(ws2, asset_id, "u2")
+        for socket, connection in ((ws1, conn1), (ws2, conn2)):
+            await connection.wait_flushed()
+            control = socket.sent_json[0]
+            self.assertTrue(
+                await manager.complete_resync(
+                    socket,
+                    asset_id,
+                    epoch=control["epoch"],
+                    barrier_sequence=control["barrier_sequence"],
+                )
+            )
+        ws2._mutate = lambda: manager.disconnect(ws1, asset_id)
 
         await manager.broadcast(asset_id, {"type": "event"})
         await _wait_all(manager, ws1, ws2)

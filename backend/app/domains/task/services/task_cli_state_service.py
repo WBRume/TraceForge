@@ -24,7 +24,7 @@ from app.core.distributed_lock import (
     queue_bootstrap_jobs,
 )
 from app.core.logging import bind_task_context, get_logger
-from app.core.offload import run_file_job
+from app.core.offload import run_db, run_file_job
 from app.database import SessionLocal
 from app.agents.selection import (
     backend_supports_fork,
@@ -49,12 +49,9 @@ from app.domains.websocket.ws.manager import manager as task_ws_manager
 logger = get_logger(__name__, category="task_execution")
 
 
-_BOOTSTRAP_RUNNERS: Dict[str, asyncio.Task] = {}
 _BOOTSTRAP_LOCKS: Dict[str, asyncio.Lock] = {}
 _THREAD_WORKSPACE_LOCKS: Dict[str, asyncio.Lock] = {}
 _CLEANUP_RUNNERS: Dict[str, asyncio.Task] = {}
-_BOOTSTRAP_REQUEUE: set[str] = set()
-
 _RUNNING_STALE_MINUTES = 30
 
 
@@ -224,16 +221,22 @@ async def _broadcast_bootstrap(payload: Dict[str, Any]) -> None:
 
 
 async def publish_bootstrap_snapshot(task_id: str) -> Optional[Dict[str, Any]]:
+    payload = await run_db(_load_bootstrap_snapshot_sync, task_id)
+    if not payload:
+        return None
+    await _broadcast_bootstrap(payload)
+    return payload
+
+
+def _load_bootstrap_snapshot_sync(task_id: str) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:
         record = mark_running_bootstrap_stale_if_needed(db, task_id)
         if not record:
             return None
-        payload = _serialize_bootstrap(record)
+        return _serialize_bootstrap(record)
     finally:
         db.close()
-    await _broadcast_bootstrap(payload)
-    return payload
 
 
 _MESSAGE_UNSET = object()
@@ -242,6 +245,44 @@ _MESSAGE_UNSET = object()
 async def _update_bootstrap_state(
     task_id: str,
     *,
+    expected_input_revision: Optional[str] = None,
+    status: Optional[TaskCliBootstrapStatus] = None,
+    progress: Optional[int] = None,
+    message: Any = _MESSAGE_UNSET,
+    baseline_dir: Optional[str] = None,
+    baseline_session_id: Optional[str] = None,
+    agent_backend: Optional[str] = None,
+    error_message: Optional[str] = None,
+    spec_asset_id: Optional[str] = None,
+    spec_version_id: Optional[str] = None,
+    refresh_mode: Optional[str] = None,
+    refresh_context_json: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    payload = await run_db(
+        _update_bootstrap_state_sync,
+        task_id,
+        expected_input_revision=expected_input_revision,
+        status=status,
+        progress=progress,
+        message=message,
+        baseline_dir=baseline_dir,
+        baseline_session_id=baseline_session_id,
+        agent_backend=agent_backend,
+        error_message=error_message,
+        spec_asset_id=spec_asset_id,
+        spec_version_id=spec_version_id,
+        refresh_mode=refresh_mode,
+        refresh_context_json=refresh_context_json,
+    )
+    if payload:
+        await _broadcast_bootstrap(payload)
+    return payload
+
+
+def _update_bootstrap_state_sync(
+    task_id: str,
+    *,
+    expected_input_revision: Optional[str] = None,
     status: Optional[TaskCliBootstrapStatus] = None,
     progress: Optional[int] = None,
     message: Any = _MESSAGE_UNSET,
@@ -259,6 +300,10 @@ async def _update_bootstrap_state(
         record = db.query(SddTaskCliBootstrap).filter(SddTaskCliBootstrap.task_id == task_id).first()
         if not record:
             return None
+        if expected_input_revision is not None and str(record.spec_version_id or "missing") != str(expected_input_revision):
+            # The specification changed while this CLI attempt was running.
+            # Its late progress/result must not overwrite the newer revision.
+            return _serialize_bootstrap(record)
         if status is not None:
             record.status = status
         if progress is not None:
@@ -287,7 +332,6 @@ async def _update_bootstrap_state(
     finally:
         db.close()
 
-    await _broadcast_bootstrap(payload)
     return payload
 
 
@@ -434,62 +478,89 @@ def _get_thread_workspace_lock(thread_id: str) -> asyncio.Lock:
     return lock
 
 
-async def _run_bootstrap(task_id: str) -> None:
+def _load_bootstrap_run_context_sync(task_id: str) -> Optional[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(SddTaskCliBootstrap)
+            .filter(SddTaskCliBootstrap.task_id == task_id)
+            .first()
+        )
+        if not record:
+            return None
+        task = db.query(SddTask).filter(SddTask.id == task_id).first()
+        if not task:
+            raise ValueError("Task not found for bootstrap")
+        version = None
+        if record.spec_version_id:
+            version = (
+                db.query(SddAssetVersion)
+                .filter(SddAssetVersion.id == record.spec_version_id)
+                .first()
+            )
+        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
+            db, record.workspace_id
+        )
+        return {
+            "task_spec_doc_path": str(task.spec_doc_path or "").strip(),
+            "version_original_path": str((version.original_path if version else "") or "").strip(),
+            "baseline_dir": record.baseline_dir or _baseline_dir_for(record.workspace_id, record.task_id),
+            "refresh_mode": str(record.refresh_mode or "FULL").strip().upper() or "FULL",
+            "refresh_context": record.refresh_context_json if isinstance(record.refresh_context_json, dict) else {},
+            "baseline_session_id": str(record.baseline_session_id or "").strip(),
+            "spec_version_id": str(record.spec_version_id or "missing"),
+            "agent_backend": agent_backend,
+            "workspace_id": str(record.workspace_id or ""),
+            "task_creator_id": str(task.creator_id or ""),
+        }
+    finally:
+        db.close()
+
+
+async def _run_bootstrap(
+    task_id: str,
+    *,
+    run_token: Optional[str] = None,
+    expected_input_revision: Optional[str] = None,
+) -> None:
     lock = _get_bootstrap_lock(task_id)
     try:
         async with queue_bootstrap_jobs(queue_tag="task_cli_bootstrap"):
             async with lock_task_bootstrap(task_id):
                 async with lock:
-                    db = SessionLocal()
-                    try:
-                        record = (
-                            db.query(SddTaskCliBootstrap)
-                            .filter(SddTaskCliBootstrap.task_id == task_id)
-                            .first()
-                        )
-                        if not record:
-                            return
-                        task = db.query(SddTask).filter(SddTask.id == task_id).first()
-                        if not task:
-                            raise ValueError("Task not found for bootstrap")
-                        version = None
-                        if record.spec_version_id:
-                            version = (
-                                db.query(SddAssetVersion)
-                                .filter(SddAssetVersion.id == record.spec_version_id)
-                                .first()
-                            )
-                        task_spec_doc_path = str(task.spec_doc_path or "").strip()
-                        version_original_path = str((version.original_path if version else "") or "").strip()
-                        baseline_dir = record.baseline_dir or _baseline_dir_for(record.workspace_id, record.task_id)
-                        refresh_mode = str(record.refresh_mode or "FULL").strip().upper() or "FULL"
-                        if refresh_mode not in {"FULL", "DELTA"}:
-                            refresh_mode = "FULL"
-                        refresh_context = (
-                            record.refresh_context_json
-                            if isinstance(record.refresh_context_json, dict)
-                            else {}
-                        )
-                        baseline_session_id = str(record.baseline_session_id or "").strip()
-                        agent_backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
-                            db, record.workspace_id
-                        )
-                        # 仅 claude-code 的会话上下文是本地 project store 快照；
-                        # opencode 上下文在 server 侧、dsh 无 resume，均跳过快照逻辑
-                        session_snapshot_backend = agent_backend in ("claude-code", "mock")
-                        workspace_id = str(record.workspace_id or "")
-                        task_creator_id = str(task.creator_id or "")
-                    finally:
-                        db.close()
+                    context = await run_db(_load_bootstrap_run_context_sync, task_id)
+                    if not context:
+                        return
+                    current_input_revision = str(context.get("spec_version_id") or "missing")
+                    if expected_input_revision and str(expected_input_revision) != current_input_revision:
+                        # The durable job was created for an older revision;
+                        # do not even start a CLI for the newer one.
+                        return
+                    task_spec_doc_path = context["task_spec_doc_path"]
+                    version_original_path = context["version_original_path"]
+                    baseline_dir = context["baseline_dir"]
+                    refresh_mode = context["refresh_mode"]
+                    if refresh_mode not in {"FULL", "DELTA"}:
+                        refresh_mode = "FULL"
+                    refresh_context = context["refresh_context"]
+                    baseline_session_id = context["baseline_session_id"]
+                    expected_input_revision = str(expected_input_revision or current_input_revision)
+                    agent_backend = context["agent_backend"]
+                    # 仅 claude-code 的会话上下文是本地 project store 快照；
+                    # opencode 上下文在 server 侧、dsh 无 resume，均跳过快照逻辑
+                    session_snapshot_backend = agent_backend in ("claude-code", "mock")
+                    workspace_id = context["workspace_id"]
+                    task_creator_id = context["task_creator_id"]
 
                     with bind_task_context(task_id=task_id, workspace_id=workspace_id, user_id=task_creator_id):
                         bridge = None
                         failure_message: Optional[str] = None
                         cleanup_confirmed = True
                         try:
-                            _refresh_task_skill_context(task_id)
+                            await run_db(_refresh_task_skill_context, task_id)
                             await _update_bootstrap_state(
                                 task_id,
+                                expected_input_revision=expected_input_revision,
                                 status=TaskCliBootstrapStatus.RUNNING,
                                 progress=8,
                                 message="Preparing baseline in task directory",
@@ -504,6 +575,7 @@ async def _run_bootstrap(task_id: str) -> None:
 
                             await _update_bootstrap_state(
                                 task_id,
+                                expected_input_revision=expected_input_revision,
                                 status=TaskCliBootstrapStatus.RUNNING,
                                 progress=40,
                                 message=(
@@ -547,6 +619,7 @@ async def _run_bootstrap(task_id: str) -> None:
                                                 ready_seen = True
                                                 await _update_bootstrap_state(
                                                     task_id,
+                                                    expected_input_revision=expected_input_revision,
                                                     status=TaskCliBootstrapStatus.RUNNING,
                                                     progress=72,
                                                     message="CLI is digesting specification context",
@@ -555,7 +628,11 @@ async def _run_bootstrap(task_id: str) -> None:
                                 elif event_type == "system" and str(event.get("subtype") or "") == "init":
                                     sid = str(event.get("session_id") or "").strip()
                                     if sid:
-                                        await _update_bootstrap_state(task_id, baseline_session_id=sid)
+                                        await _update_bootstrap_state(
+                                            task_id,
+                                            expected_input_revision=expected_input_revision,
+                                            baseline_session_id=sid,
+                                        )
 
                             await bridge.start_session(
                                 prompt=_build_bootstrap_prompt(
@@ -623,6 +700,7 @@ async def _run_bootstrap(task_id: str) -> None:
 
                             await _update_bootstrap_state(
                                 task_id,
+                                expected_input_revision=expected_input_revision,
                                 status=TaskCliBootstrapStatus.READY,
                                 progress=100,
                                 message=None,
@@ -654,6 +732,7 @@ async def _run_bootstrap(task_id: str) -> None:
                                 if cleanup_confirmed:
                                     await _update_bootstrap_state(
                                         task_id,
+                                        expected_input_revision=expected_input_revision,
                                         status=TaskCliBootstrapStatus.FAILED,
                                         progress=100,
                                         message="Baseline bootstrap failed",
@@ -662,6 +741,7 @@ async def _run_bootstrap(task_id: str) -> None:
                                 else:
                                     await _update_bootstrap_state(
                                         task_id,
+                                        expected_input_revision=expected_input_revision,
                                         status=TaskCliBootstrapStatus.STALE,
                                         progress=100,
                                         message="Baseline process termination was not confirmed; rebuild is required",
@@ -681,41 +761,34 @@ async def _run_bootstrap(task_id: str) -> None:
         )
         await _update_bootstrap_state(
             task_id,
+            expected_input_revision=locals().get("expected_input_revision"),
             status=TaskCliBootstrapStatus.FAILED,
             progress=100,
             message="Baseline bootstrap failed",
             error_message=err,
         )
-    finally:
-        _BOOTSTRAP_RUNNERS.pop(task_id, None)
-        if task_id in _BOOTSTRAP_REQUEUE:
-            _BOOTSTRAP_REQUEUE.discard(task_id)
-            schedule_bootstrap(task_id)
+def _get_bootstrap_status_sync(task_id: str) -> Optional[Dict[str, Any]]:
+    return _load_bootstrap_snapshot_sync(task_id)
 
 
-def schedule_bootstrap(task_id: str) -> None:
-    if not task_id:
-        return
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    running = _BOOTSTRAP_RUNNERS.get(task_id)
-    if running and not running.done():
-        _BOOTSTRAP_REQUEUE.add(task_id)
-        return
-    _BOOTSTRAP_RUNNERS[task_id] = loop.create_task(_run_bootstrap(task_id))
-
-
-async def shutdown_bootstrap_runners() -> None:
-    """Cancel bootstrap workers and let their bridge finally blocks reap CLI."""
-    runners = list(_BOOTSTRAP_RUNNERS.values())
-    for runner in runners:
-        runner.cancel()
-    if runners:
-        await asyncio.gather(*runners, return_exceptions=True)
-    _BOOTSTRAP_RUNNERS.clear()
-    _BOOTSTRAP_REQUEUE.clear()
+async def run_bootstrap_for_job(
+    task_id: str,
+    *,
+    run_token: Optional[str] = None,
+    expected_input_revision: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Execute a durable baseline job through the existing bridge lifecycle."""
+    await _run_bootstrap(
+        task_id,
+        run_token=run_token,
+        expected_input_revision=expected_input_revision,
+    )
+    payload = await run_db(_get_bootstrap_status_sync, task_id)
+    if not payload:
+        raise BootstrapNotReadyError("Specification baseline record disappeared")
+    if payload.get("status") != TaskCliBootstrapStatus.READY.value:
+        raise BootstrapStateError(str(payload.get("error_message") or "Baseline bootstrap failed"))
+    return payload
 
 
 def mark_running_bootstrap_stale_if_needed(db: Session, task_id: str) -> Optional[SddTaskCliBootstrap]:
@@ -773,19 +846,14 @@ def ensure_bootstrap_ready_or_start(
     workspace_id: str,
     task_id: str,
 ) -> SddTaskCliBootstrap:
-    """评审 AI 入口 gate：READY 直接放行；PENDING（尚未构建）懒启动构建后要求稍后重试。
-
-    FAILED/STALE 不自动重试，需用户通过手动触发入口重建。
-    """
+    """评审 AI 入口 gate; it never starts a baseline as a side effect."""
     record = mark_running_bootstrap_stale_if_needed(db, task_id)
     if not record or record.workspace_id != workspace_id:
         raise BootstrapNotReadyError("Specification baseline is not initialized yet")
     if record.status == TaskCliBootstrapStatus.READY:
         return record
     if record.status == TaskCliBootstrapStatus.PENDING:
-        # 懒启动：首次评审 AI 操作时开始构建（schedule_bootstrap 幂等，重复调用安全）。
-        schedule_bootstrap(task_id)
-        raise BootstrapNotReadyError("Baseline build started; please retry when it completes")
+        raise BootstrapNotReadyError("Baseline build is pending; click Build baseline and retry when it completes")
     if record.status == TaskCliBootstrapStatus.FAILED:
         raise BootstrapNotReadyError(record.error_message or "Specification baseline bootstrap failed")
     if record.status == TaskCliBootstrapStatus.STALE:
@@ -793,6 +861,71 @@ def ensure_bootstrap_ready_or_start(
     raise BootstrapNotReadyError(
         f"Specification baseline is building (progress={int(record.progress or 0)}%)"
     )
+
+
+def mark_bootstrap_stale(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+    spec_version_id: Optional[str] = None,
+    reason: str = "Specification changed; rebuild baseline",
+) -> Optional[Dict[str, Any]]:
+    """Invalidate an existing baseline without launching a worker."""
+    record = db.query(SddTaskCliBootstrap).filter(
+        SddTaskCliBootstrap.task_id == task_id,
+        SddTaskCliBootstrap.workspace_id == workspace_id,
+    ).first()
+    if not record:
+        return None
+    # Mark an active attempt stale as well. Its revision fence will make all
+    # late progress/result callbacks no-ops while the new revision can be
+    # rebuilt explicitly by the user.
+    record.status = TaskCliBootstrapStatus.STALE
+    if spec_version_id:
+        record.spec_version_id = str(spec_version_id)
+    record.progress = 0
+    record.message = reason
+    record.error_message = None
+    db.commit()
+    db.refresh(record)
+    return _serialize_bootstrap(record)
+
+
+async def mark_bootstrap_stale_async(
+    *,
+    workspace_id: str,
+    task_id: str,
+    spec_version_id: Optional[str] = None,
+    reason: str = "Specification changed; rebuild baseline",
+) -> Optional[Dict[str, Any]]:
+    return await run_db(
+        _mark_bootstrap_stale_sync,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        spec_version_id=spec_version_id,
+        reason=reason,
+    )
+
+
+def _mark_bootstrap_stale_sync(
+    *,
+    workspace_id: str,
+    task_id: str,
+    spec_version_id: Optional[str] = None,
+    reason: str,
+) -> Optional[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        return mark_bootstrap_stale(
+            db,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            spec_version_id=spec_version_id,
+            reason=reason,
+        )
+    finally:
+        db.close()
 
 
 def request_bootstrap_run(
@@ -859,6 +992,41 @@ class ThreadSessionPlan:
         self.baseline_session_id = baseline_session_id
 
 
+def _load_thread_session_inputs_sync(
+    thread_id: str,
+    *,
+    require_ready: bool = True,
+) -> Dict[str, Any]:
+    """Load only detached primitives before any async fork/network work."""
+    db = SessionLocal()
+    try:
+        thread, record = _load_thread_fork_inputs(db, thread_id, require_ready=require_ready)
+        existing = str(thread.cli_session_id or "").strip()
+        backend = normalize_backend_name(record.agent_backend) or resolve_workspace_backend(
+            db, thread.workspace_id
+        )
+        if existing:
+            return {"plan": ThreadSessionPlan(backend=backend, session_id=existing)}
+
+        latest = get_latest_thread_session_id(db, thread.id)
+        if latest:
+            thread.cli_session_id = latest
+            db.commit()
+            return {"plan": ThreadSessionPlan(backend=backend, session_id=latest)}
+
+        return {
+            "plan": ThreadSessionPlan(
+                backend=backend,
+                session_id=None,
+                baseline_session_id=str(record.baseline_session_id or "").strip() or None,
+            ),
+            "task_dir": str(thread.task.project_path or "").strip() if thread.task else "",
+            "baseline_dir": str(record.baseline_dir or "").strip(),
+        }
+    finally:
+        db.close()
+
+
 def _load_thread_fork_inputs(
     db: Session,
     thread_id: str,
@@ -892,6 +1060,11 @@ def record_thread_session_id(thread_id: str, session_id: Optional[str]) -> None:
         db.close()
 
 
+async def record_thread_session_id_async(thread_id: str, session_id: Optional[str]) -> None:
+    """Persist a thread session without running ORM work on the event loop."""
+    await run_db(record_thread_session_id, thread_id, session_id)
+
+
 async def ensure_thread_session(
     thread_id: str,
     *,
@@ -911,44 +1084,16 @@ async def ensure_thread_session(
     try:
         async with lock_thread_workspace(thread_id):
             async with lock:
-                db = SessionLocal()
-                try:
-                    thread, record = _load_thread_fork_inputs(
-                        db, thread_id, require_ready=require_ready
-                    )
-                    existing = str(thread.cli_session_id or "").strip()
-                    if existing:
-                        return ThreadSessionPlan(
-                            backend=normalize_backend_name(record.agent_backend)
-                            or resolve_workspace_backend(db, thread.workspace_id),
-                            session_id=existing,
-                        )
-
-                    # 存量线程回填：此前成功回合的会话即线程自己的会话
-                    latest = get_latest_thread_session_id(db, thread.id)
-                    if latest:
-                        thread.cli_session_id = latest
-                        db.commit()
-                        return ThreadSessionPlan(
-                            backend=normalize_backend_name(record.agent_backend)
-                            or resolve_workspace_backend(db, thread.workspace_id),
-                            session_id=latest,
-                        )
-
-                    baseline_session_id = str(record.baseline_session_id or "").strip()
-                    baseline_dir = str(record.baseline_dir or "").strip()
-                    agent_backend = normalize_backend_name(record.agent_backend) or (
-                        resolve_workspace_backend(db, thread.workspace_id)
-                    )
-                    # 线程在任务目录执行，fork 目标即任务目录
-                    task_dir = str(thread.task.project_path or "").strip() if thread.task else ""
-                    plan = ThreadSessionPlan(
-                        backend=agent_backend,
-                        session_id=None,
-                        baseline_session_id=baseline_session_id or None,
-                    )
-                finally:
-                    db.close()
+                inputs = await run_db(
+                    _load_thread_session_inputs_sync,
+                    thread_id,
+                    require_ready=require_ready,
+                )
+                plan = inputs["plan"]
+                task_dir = str(inputs.get("task_dir") or "")
+                baseline_dir = str(inputs.get("baseline_dir") or "")
+                baseline_session_id = plan.baseline_session_id
+                agent_backend = plan.backend
 
                 if not task_dir or not baseline_dir or not baseline_session_id or not backend_supports_fork(agent_backend):
                     logger.warning(
@@ -991,14 +1136,7 @@ async def ensure_thread_session(
                     )
                     return plan
 
-                db = SessionLocal()
-                try:
-                    thread = db.query(SddAssetThread).filter(SddAssetThread.id == thread_id).first()
-                    if thread and not str(thread.cli_session_id or "").strip():
-                        thread.cli_session_id = new_session_id
-                        db.commit()
-                finally:
-                    db.close()
+                await record_thread_session_id_async(thread_id, new_session_id)
                 plan.session_id = new_session_id
                 return plan
     except LockAcquireTimeout:

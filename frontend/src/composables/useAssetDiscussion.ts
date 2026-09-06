@@ -3,7 +3,8 @@ import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
-import { buildWsCursorQuery, prepareWsFrame, sendResyncComplete } from '@/utils/wsCursor'
+import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 export type AssetSummary = {
   id: string
   task_id: string
@@ -180,6 +181,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
   const reconnectTimer = shallowRef<number | null>(null)
   const wsReconnectAttempt = ref(0)
   const wsManualClose = ref(false)
+  let wsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
   const jobPollTimers = shallowRef<Record<string, number>>({})
 
   const wsIdRef = computed(() => String(toValue(options.wsId) || ''))
@@ -757,6 +759,8 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       return
     }
     wsManualClose.value = false
+    wsConsumer?.close()
+    wsConsumer = null
     if (ws.value) {
       ws.value.onopen = null
       ws.value.onmessage = null
@@ -768,6 +772,26 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
     const socket = new WebSocket(buildWsUrl(assetId, userIdRef.value))
     ws.value = socket
+    const consumer = createSerializedWsConsumer({
+      room: `asset:${assetId}`,
+      onEvent: (event) => handleWsEvent(event.payload),
+      onResync: async (frame, reason, context, signal) => {
+        if (reason === 'gap') {
+          context.socket.close(4000, 'sequence_gap')
+          return
+        }
+        await refresh()
+        if (!signal.aborted && context.socket === ws.value && context.socket.readyState === WebSocket.OPEN) {
+          sendResyncComplete(context.socket, frame, `asset:${assetId}`)
+        }
+      },
+      onControl: (frame) => handleWsEvent(frame),
+      onFailure: (_error, context) => {
+        if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+      },
+    })
+    wsConsumer = consumer
+    const generation = consumer.resetForConnection(socket)
     socket.onopen = () => {
       wsConnected.value = true
       wsReconnectAttempt.value = 0
@@ -775,27 +799,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     socket.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data)
-        const prepared = prepareWsFrame(`asset:${assetId}`, data)
-        if (prepared.kind === 'event') {
-          void handleWsEvent(prepared.event.payload).then(prepared.commit)
-          return
-        }
-        if (prepared.kind === 'resync' || (prepared.kind === 'control' && data?.type === 'resync_required')) {
-          if (prepared.kind === 'resync' && prepared.reason === 'gap') {
-            socket.close(4000, 'sequence_gap')
-            return
-          }
-          void (async () => {
-            await refresh()
-            if (socket === ws.value && socket.readyState === WebSocket.OPEN) {
-              sendResyncComplete(socket, data, `asset:${assetId}`)
-            }
-          })()
-          return
-        }
-        if (prepared.kind === 'control') {
-          void handleWsEvent(data)
-        }
+        consumer.enqueue(data, generation)
       } catch {
         // Ignore malformed events
       }
@@ -804,6 +808,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       wsConnected.value = false
     }
     socket.onclose = () => {
+      consumer.close(generation)
       wsConnected.value = false
       if (assetIdRef.value === assetId) {
         scheduleReconnect()
@@ -815,6 +820,8 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     wsManualClose.value = true
     clearWsTimer()
     wsConnected.value = false
+    wsConsumer?.close()
+    wsConsumer = null
     if (ws.value) {
       ws.value.onopen = null
       ws.value.onmessage = null
