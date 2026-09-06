@@ -299,6 +299,7 @@ class TaskWebSocketHandler:
                 created_at=created_at,
                 session_turn_id=created.session_turn_id,
                 session_generation=created.session_generation,
+                can_undo=created.can_undo,
             )
             await self._manager.send_message_to_room(
                 self._task_id,
@@ -319,6 +320,7 @@ class TaskWebSocketHandler:
                         created_at=created_at,
                         session_turn_id=created.session_turn_id,
                         session_generation=created.session_generation,
+                        can_undo=created.can_undo,
                     ).model_dump(),
                 ),
             )
@@ -337,6 +339,7 @@ class TaskWebSocketHandler:
         created_at: str | None = None,
         session_turn_id: str | None = None,
         session_generation: int | None = None,
+        can_undo: bool | None = None,
         message: str | None = None,
     ) -> None:
         payload = {
@@ -355,6 +358,7 @@ class TaskWebSocketHandler:
             "created_at": created_at,
             "session_turn_id": session_turn_id,
             "session_generation": session_generation,
+            "can_undo": can_undo,
             "message": message,
         }
         self._send_to_self({"type": "chat_message_ack", "payload": payload})

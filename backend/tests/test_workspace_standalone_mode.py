@@ -115,6 +115,32 @@ def test_create_workspace_standalone_builds_custom_names_and_repos(db):
     assert all(row.ref_type == "BRANCH" for row in workspace.repositories)
 
 
+def test_create_workspace_standalone_allows_empty_repository_selection(db, tmp_path, monkeypatch):
+    user = _seed_user(db)
+    init_paths = []
+    monkeypatch.setattr(
+        git_worktree_service,
+        "init_git_repository",
+        lambda path: init_paths.append(path),
+    )
+
+    workspace = workspace_service.create_workspace(
+        db,
+        user,
+        "Script Workspace",
+        project_path=str(tmp_path / "script-workspace"),
+        repositories=[],
+        project_name="Automation",
+        product_name="Scripts",
+    )
+
+    assert workspace.project_id is None
+    assert workspace.custom_project_name == "Automation"
+    assert workspace.custom_product_name == "Scripts"
+    assert workspace.repositories == []
+    assert init_paths == [str(tmp_path / "script-workspace")]
+
+
 def test_create_workspace_standalone_requires_names_and_path(db):
     user = _seed_user(db)
     _seed_repos(db)
@@ -538,12 +564,16 @@ def test_create_workspace_api_rejects_project_selection_when_disabled(db, monkey
     assert "disabled" in resp.json()["detail"]
 
 
-def test_create_workspace_api_standalone_requires_names_and_repos_when_disabled(db, monkeypatch):
+def test_create_workspace_api_standalone_requires_names_but_allows_empty_repos_when_disabled(db, monkeypatch):
     _disable_mgmt_selection(db)
     app = _build_test_app(db)
     monkeypatch.setattr(
         workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job()
     )
+    async def _noop(_job_id):
+        return None
+
+    monkeypatch.setattr(workspace_router.provision_job_service, "run_create_workspace_job", _noop)
 
     client = TestClient(app)
     resp = client.post(
@@ -555,9 +585,15 @@ def test_create_workspace_api_standalone_requires_names_and_repos_when_disabled(
 
     resp = client.post(
         "/api/workspaces",
-        json={"name": "WS", "project_path": "C:/ws/api", "project_name": "P", "product_name": "PR"},
+        json={
+            "name": "WS",
+            "project_path": "C:/ws/api",
+            "project_name": "P",
+            "product_name": "PR",
+            "repositories": [],
+        },
     )
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 202, resp.text
 
 
 def test_create_workspace_api_standalone_accepted_and_context_payload(db, monkeypatch):

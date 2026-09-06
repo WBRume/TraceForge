@@ -1,5 +1,5 @@
 <!-- Workflow-style workspace creation dialog: basic -> project -> products -> repos. -->
-<!-- 配置项关闭“项目管理/产品管理选择”时：basic(含项目/产品名称) -> repos(选仓库+分支)。 -->
+<!-- 配置项关闭“项目管理/产品管理选择”时：basic(含项目/产品名称) -> repos(可选仓库+分支)。 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -87,10 +87,8 @@ const productsValid = computed(() => {
 
 const reposValid = computed(() => {
   if (standalone.value) {
-    return (
-      selectedRepoIds.value.length > 0 &&
-      selectedRepoIds.value.every((id) => Boolean((standaloneBranches.value[id] || '').trim()))
-    )
+    // 独立模式允许不选择仓库，创建仅包含根目录的工作区；已选仓库仍必须填写分支。
+    return selectedRepoIds.value.every((id) => Boolean((standaloneBranches.value[id] || '').trim()))
   }
   return repos.value.length === 0 || selectedRepoIds.value.length > 0
 })

@@ -69,7 +69,7 @@ async def create_workspace(
     db: Session = Depends(get_db),
 ):
     # 配置项：新建工作区时是否启用“项目管理/产品管理”选择功能。
-    # 关闭时进入独立模式：不关联管理项目/产品，直接填写名称并手动选择仓库分支。
+    # 关闭时进入独立模式：不关联管理项目/产品，直接填写名称，并可选手动选择仓库分支。
     from app.domains.system_config.services import system_config_service
 
     mgmt_selection_enabled = system_config_service.get_config_bool(
@@ -80,15 +80,13 @@ async def create_workspace(
             if data.project_id or (data.product_ids or []):
                 raise ValueError(
                     "Project/product selection is disabled by system config; "
-                    "provide project_name/product_name with repositories instead"
+                    "provide project_name/product_name; repositories are optional"
                 )
             if not str(data.project_name or "").strip() or not str(data.product_name or "").strip():
                 raise ValueError("project_name and product_name are required")
-            if not data.repositories:
-                raise ValueError("At least one repository with branch is required")
             missing_branch = [
                 item.repository_id
-                for item in data.repositories
+                for item in (data.repositories or [])
                 if not str(item.branch_name or "").strip()
             ]
             if missing_branch:

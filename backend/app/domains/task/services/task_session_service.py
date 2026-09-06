@@ -121,6 +121,7 @@ class CreatedChatTurn:
     session_turn_id: Optional[str]
     session_generation: Optional[int]
     job_id: str
+    can_undo: bool = True
 
 
 def _prepare_chat_turn_sync(
@@ -203,7 +204,7 @@ def _persist_chat_turn_sync(
     revision = int(prepared["revision"])
     provider = prepared["provider"]
     provider_session_id = prepared["provider_session_id"]
-    checkpoint_root = str(prepared["checkpoint_root"])
+    checkpoint_root = str(prepared.get("checkpoint_root") or "").strip() or None
 
     metadata = dict(context_json or {})
     if client_message_id:
@@ -232,7 +233,7 @@ def _persist_chat_turn_sync(
         provider_session_id=provider_session_id,
         provider_message_ids_json=None,
         checkpoint_path=checkpoint_root,
-        worktree_snapshot_path=os.path.join(checkpoint_root, "worktree"),
+        worktree_snapshot_path=os.path.join(checkpoint_root, "worktree") if checkpoint_root else None,
         status=TaskSessionTurnStatus.ACTIVE,
     )
     db.add(turn)
@@ -267,6 +268,7 @@ def _persist_chat_turn_sync(
         session_turn_id=str(turn.id),
         session_generation=generation,
         job_id=str(job.id),
+        can_undo=bool(checkpoint_root),
     )
 
 
@@ -280,12 +282,15 @@ async def create_task_chat_turn(
     session_id: Optional[str] = None,
     fresh_session: bool = False,
     client_message_id: Optional[str] = None,
+    skip_checkpoint: bool = False,
 ) -> CreatedChatTurn:
-    """Create one user message/job and its pre-turn checkpoints.
+    """Create one user message/job and, unless skipped, its pre-turn checkpoints.
 
     Callers must hold ``lock_task``.  The provider/worktree copy occurs before
     the message is exposed to the queue, so every undoable turn has a stable
-    boundary even if the agent immediately starts producing events.
+    boundary even if the agent immediately starts producing events.  The
+    explicit initialization turn may set ``skip_checkpoint`` because it is the
+    first session boundary and is intentionally not undoable.
 
     同步 DB 全部经 DB executor 执行（准备段/持久化段各自单事务、线程内自建
     session），checkpoint 走 git executor；事件循环不执行任何 DB/文件 IO。
@@ -306,14 +311,16 @@ async def create_task_chat_turn(
     )
     prepared["actor_user_id"] = str(actor_user_id)
 
-    checkpoint = await task_session_snapshot_service.create_checkpoint(
-        str(prepared["project_path"]),
-        list(prepared["repo_rel_paths"]),
-        prepared["provider"],
-        prepared["provider_session_id"],
-    )
-    checkpoint_root = str(checkpoint["root"])
-    prepared["checkpoint_root"] = checkpoint_root
+    checkpoint_root: Optional[str] = None
+    if not skip_checkpoint:
+        checkpoint = await task_session_snapshot_service.create_checkpoint(
+            str(prepared["project_path"]),
+            list(prepared["repo_rel_paths"]),
+            prepared["provider"],
+            prepared["provider_session_id"],
+        )
+        checkpoint_root = str(checkpoint["root"])
+        prepared["checkpoint_root"] = checkpoint_root
     try:
         return await run_db_txn(
             lambda db: _persist_chat_turn_sync(
@@ -326,7 +333,18 @@ async def create_task_chat_turn(
             )
         )
     except Exception:
-        await task_session_snapshot_service.cleanup_checkpoint(checkpoint_root)
+        if checkpoint_root:
+            try:
+                await task_session_snapshot_service.cleanup_checkpoint(checkpoint_root)
+            except Exception as cleanup_exc:
+                # Keep the persistence error as the result; cleanup is best
+                # effort and can be retried by recovery.
+                logger.warning(
+                    "Task session checkpoint cleanup deferred after turn persistence failure: task={}, checkpoint={}, error={}",
+                    task_id,
+                    _secret_fingerprint(checkpoint_root),
+                    str(cleanup_exc),
+                )
         raise
 
 
@@ -339,7 +357,7 @@ def _load_turn_target(db: Session, task: SddTask, message_id: str) -> tuple[Task
     if not message:
         raise TaskSessionUndoError("Message not found", code="MESSAGE_NOT_FOUND", status_code=404)
     turn = db.query(TaskSessionTurn).filter(TaskSessionTurn.user_message_id == message.id).first()
-    if not turn:
+    if not turn or not str(turn.checkpoint_path or "").strip():
         raise TaskSessionUndoError("This message has no session checkpoint", code="UNDO_NO_CHECKPOINT")
     if turn.session_generation != int(getattr(task, "session_generation", 0) or 0):
         raise TaskSessionUndoError("Messages before the current session cannot be undone", code="UNDO_NOT_CURRENT_GENERATION")

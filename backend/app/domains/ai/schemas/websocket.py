@@ -67,6 +67,7 @@ class WSChatPayload(BaseModel):
     created_at: Optional[str] = None
     session_turn_id: Optional[str] = None
     session_generation: Optional[int] = None
+    can_undo: Optional[bool] = None
 
 
 # ── AI 思考过程 ──

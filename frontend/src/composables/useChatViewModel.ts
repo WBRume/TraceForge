@@ -2471,6 +2471,7 @@ export function useChatViewModel() {
           metadata: payload.metadata || null,
           session_turn_id: payload.session_turn_id || null,
           session_generation: payload.session_generation ?? null,
+          can_undo: payload.can_undo,
           delivery_status: 'sent',
         })
         scrollToBottom('chat')
@@ -2502,6 +2503,7 @@ export function useChatViewModel() {
           metadata: payload.metadata || null,
           session_turn_id: payload.session_turn_id || null,
           session_generation: payload.session_generation ?? null,
+          can_undo: payload.can_undo,
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
@@ -3142,14 +3144,10 @@ export function useChatViewModel() {
       engineRunning.value = true
       showStartConfirm.value = false
       specDrawerLevel.value = 0
-  
-      messages.value.push({
-        id: Date.now().toString(),
-        role: 'system',
-        content: '🚀 ' + t('dashboard.new_task') + '...',
-        created_at: new Date().toISOString(),
-        message_type: 'text',
-      })
+
+      // The API persists the exact user-visible initial prompt. Reload it so
+      // start and initialize share the same durable transcript behavior.
+      await loadHistory(currentTask.value.id)
       scrollToBottom('chat')
       return true
     } catch (e) {

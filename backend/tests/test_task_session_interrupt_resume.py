@@ -366,6 +366,61 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     assert db.query(SddAiJob).count() == 2
 
 
+def test_initialize_turn_can_skip_checkpoint_and_is_not_undoable(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    db.close()
+
+    checkpoint_calls = []
+
+    async def _unexpected_checkpoint(*args, **kwargs):
+        checkpoint_calls.append((args, kwargs))
+        raise AssertionError("initialization must not create a checkpoint")
+
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.agents.selection.resolve_task_backend", lambda *_args: "opencode")
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service,
+        "create_checkpoint",
+        _unexpected_checkpoint,
+    )
+
+    created = asyncio.run(
+        task_session_service.create_task_chat_turn(
+            task_id=task.id,
+            actor_user_id="user-1",
+            content="初始化任务",
+            context_json={"source": "task_initialize", "fresh_session": True},
+            fresh_session=True,
+            skip_checkpoint=True,
+        )
+    )
+
+    assert checkpoint_calls == []
+    assert created.can_undo is False
+    check_db = SessionLocal()
+    try:
+        message = check_db.query(ChatMessage).filter(ChatMessage.id == created.message_id).one()
+        turn = check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == created.session_turn_id).one()
+        assert message.session_turn_id == turn.id
+        assert turn.checkpoint_path is None
+        assert turn.worktree_snapshot_path is None
+
+        history = task_session_service.task_service.get_task_history(
+            check_db,
+            task.id,
+            task.workspace_id,
+        )
+        assert history["messages"][0]["can_undo"] is False
+
+        with pytest.raises(task_session_service.TaskSessionUndoError) as exc_info:
+            task_session_service._load_turn_target(check_db, check_db.get(SddTask, task.id), message.id)
+        assert exc_info.value.code == "UNDO_NO_CHECKPOINT"
+    finally:
+        check_db.close()
+
+
 def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()

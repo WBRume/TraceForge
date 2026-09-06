@@ -122,9 +122,24 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
     monkeypatch.setattr(task_router, "verify_workspace_permission", lambda *args, **kwargs: None)
     monkeypatch.setattr(task_router.task_service, "get_task", lambda db, task_id, ws_id: fake_task)
     monkeypatch.setattr(task_router, "get_engine", lambda task_id: None)
+    monkeypatch.setattr(
+        task_router.task_service,
+        "save_chat_message",
+        lambda *args, **kwargs: SimpleNamespace(id="message-start-1"),
+    )
 
-    def _create_task_chat_job(db, *, workspace_id, task_id, creator_id, prompt_text, context_json=None, session_id=None):
-        _ = (db, workspace_id, task_id, creator_id, prompt_text, context_json, session_id)
+    def _create_task_chat_job(
+        db,
+        *,
+        workspace_id,
+        task_id,
+        creator_id,
+        prompt_text,
+        context_json=None,
+        session_id=None,
+        chat_message_id=None,
+    ):
+        _ = (db, workspace_id, task_id, creator_id, prompt_text, context_json, session_id, chat_message_id)
         return SimpleNamespace(id="job-start-1", status="PENDING")
 
     async def _enqueue_task_chat_job(job_id: str):
