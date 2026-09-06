@@ -11,7 +11,6 @@ import re
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from dataclasses import dataclass
 from typing import AsyncIterator, Dict, Optional
 
@@ -180,7 +179,11 @@ class LocalLockProvider(DistributedLockProvider):
     backend_name = "local"
 
     def __init__(self) -> None:
-        self._locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._locks: Dict[str, asyncio.Lock] = {}
+        # 每个 lock_key 的活跃持有/等待计数：等待者计入以保证"仍有人等待"时
+        # 条目不被回收（否则新建锁对象会破坏互斥）；计数归零且锁未被持有时
+        # 同步回收条目，避免锁表只增不减。单事件循环内判定点无 await 夹缝。
+        self._lock_refs: Dict[str, int] = {}
 
     @contextlib.asynccontextmanager
     async def lock(
@@ -199,30 +202,43 @@ class LocalLockProvider(DistributedLockProvider):
             blocking_timeout=blocking_timeout,
             sleep=sleep,
         )
-        local_lock = self._locks[context.lock_key]
+        local_lock = self._locks.get(context.lock_key)
+        if local_lock is None:
+            local_lock = asyncio.Lock()
+            self._locks[context.lock_key] = local_lock
+        self._lock_refs[context.lock_key] = self._lock_refs.get(context.lock_key, 0) + 1
         acquired = False
         try:
-            await asyncio.wait_for(local_lock.acquire(), timeout=context.blocking_timeout)
-            acquired = True
-        except asyncio.TimeoutError as exc:
-            logger.warning(
-                "local lock acquire timeout: resource_type={}, resource_id={}, lock_key={}",
-                context.resource_type,
-                context.resource_id,
-                context.lock_key,
-            )
-            raise LockAcquireTimeout(
-                lock_key=context.lock_key,
-                resource_type=context.resource_type,
-                resource_id=context.resource_id,
-                backend=self.backend_name,
-            ) from exc
+            try:
+                await asyncio.wait_for(local_lock.acquire(), timeout=context.blocking_timeout)
+                acquired = True
+            except asyncio.TimeoutError as exc:
+                logger.warning(
+                    "local lock acquire timeout: resource_type={}, resource_id={}, lock_key={}",
+                    context.resource_type,
+                    context.resource_id,
+                    context.lock_key,
+                )
+                raise LockAcquireTimeout(
+                    lock_key=context.lock_key,
+                    resource_type=context.resource_type,
+                    resource_id=context.resource_id,
+                    backend=self.backend_name,
+                ) from exc
 
-        try:
-            yield context
+            try:
+                yield context
+            finally:
+                if acquired and local_lock.locked():
+                    local_lock.release()
         finally:
-            if acquired and local_lock.locked():
-                local_lock.release()
+            refs = self._lock_refs.get(context.lock_key, 1) - 1
+            if refs > 0:
+                self._lock_refs[context.lock_key] = refs
+            else:
+                self._lock_refs.pop(context.lock_key, None)
+                if not local_lock.locked():
+                    self._locks.pop(context.lock_key, None)
 
 
 class RedisLockProvider(DistributedLockProvider):
@@ -303,7 +319,33 @@ class RedisLockProvider(DistributedLockProvider):
 _PROVIDER: Optional[DistributedLockProvider] = None
 _PROVIDER_LOCK = asyncio.Lock()
 _LOCAL_QUEUE_SLOTS: Dict[str, tuple[asyncio.Semaphore, int]] = {}
+# 每个 queue key 的活跃引用计数：归零后回收信号量条目，避免按 key 缓存的
+# 信号量表只增不减（key 含 workspace/task id，会随业务无限增长）
+_LOCAL_QUEUE_SLOT_REFS: Dict[str, int] = {}
 _LOCAL_QUEUE_SLOTS_LOCK = asyncio.Lock()
+
+
+async def _get_local_queue_semaphore(queue_key: str, max_concurrent: int) -> asyncio.Semaphore:
+    """Get-or-create 并持有引用；调用方完成后必须调用 _release_local_queue_semaphore。"""
+    async with _LOCAL_QUEUE_SLOTS_LOCK:
+        current = _LOCAL_QUEUE_SLOTS.get(queue_key)
+        if current and int(current[1]) == int(max_concurrent):
+            semaphore = current[0]
+        else:
+            semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
+            _LOCAL_QUEUE_SLOTS[queue_key] = (semaphore, int(max_concurrent))
+        _LOCAL_QUEUE_SLOT_REFS[queue_key] = _LOCAL_QUEUE_SLOT_REFS.get(queue_key, 0) + 1
+        return semaphore
+
+
+async def _release_local_queue_semaphore(queue_key: str) -> None:
+    async with _LOCAL_QUEUE_SLOTS_LOCK:
+        refs = _LOCAL_QUEUE_SLOT_REFS.get(queue_key, 0) - 1
+        if refs > 0:
+            _LOCAL_QUEUE_SLOT_REFS[queue_key] = refs
+            return
+        _LOCAL_QUEUE_SLOT_REFS.pop(queue_key, None)
+        _LOCAL_QUEUE_SLOTS.pop(queue_key, None)
 
 
 async def _build_provider() -> DistributedLockProvider:
@@ -351,16 +393,6 @@ async def get_lock_provider() -> DistributedLockProvider:
         if _PROVIDER is None:
             _PROVIDER = await _build_provider()
     return _PROVIDER
-
-
-async def _get_local_queue_semaphore(queue_key: str, max_concurrent: int) -> asyncio.Semaphore:
-    async with _LOCAL_QUEUE_SLOTS_LOCK:
-        current = _LOCAL_QUEUE_SLOTS.get(queue_key)
-        if current and int(current[1]) == int(max_concurrent):
-            return current[0]
-        semaphore = asyncio.Semaphore(max(1, int(max_concurrent)))
-        _LOCAL_QUEUE_SLOTS[queue_key] = (semaphore, int(max_concurrent))
-        return semaphore
 
 
 @contextlib.asynccontextmanager
@@ -618,20 +650,22 @@ async def queue_background_job(
         semaphore = await _get_local_queue_semaphore(queue_key, limit)
         acquired = False
         try:
-            await asyncio.wait_for(semaphore.acquire(), timeout=timeout_sec)
-            acquired = True
-            yield
-        except asyncio.TimeoutError as exc:
-            raise LockAcquireTimeout(
-                lock_key=queue_key,
-                resource_type=resource_type,
-                resource_id=rid,
-                backend="local",
-                message=f"Timed out waiting in queue '{queue_name}'",
-            ) from exc
+            try:
+                await asyncio.wait_for(semaphore.acquire(), timeout=timeout_sec)
+                acquired = True
+                yield
+            except asyncio.TimeoutError as exc:
+                raise LockAcquireTimeout(
+                    lock_key=queue_key,
+                    resource_type=resource_type,
+                    resource_id=rid,
+                    backend="local",
+                    message=f"Timed out waiting in queue '{queue_name}'",
+                ) from exc
         finally:
             if acquired:
                 semaphore.release()
+            await _release_local_queue_semaphore(queue_key)
         return
 
     token = uuid.uuid4().hex.encode("ascii")
