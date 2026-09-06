@@ -220,10 +220,16 @@ def test_diagnosis_summary_forks_source_session_read_only(monkeypatch, tmp_path)
             return None
 
         monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         monkeypatch.setattr(ai_job_service, "resolve_task_backend", lambda *_args: "opencode")
         monkeypatch.setattr(ai_job_service, "backend_supports_fork", lambda *_args: True)
         monkeypatch.setattr(ai_job_service, "fork_session_for_backend", _fake_fork)
         monkeypatch.setattr(ai_job_service, "_collect_diagnosis_transcript", lambda *_args: "history")
+        monkeypatch.setattr(
+            ai_job_service,
+            "_collect_diagnosis_transcript_sync",
+            lambda *_args, **_kwargs: "history",
+        )
         monkeypatch.setattr(ai_job_service, "run_cli_single_turn", _fake_run)
         monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _ignore_broadcast)
         monkeypatch.setattr(

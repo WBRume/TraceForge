@@ -25,7 +25,7 @@ api_mock_logger = get_logger(__name__, category="api_mock")
 from app.database import SessionLocal
 from app.domains.api_mock.models.api_mock import ApiMockCollabEventType
 from app.domains.task.models.task import SddTask
-from app.domains.auth.models.user import User
+from app.domains.auth.models.user import User, WorkspaceMember
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.domains.ai.routers import agent
 from app.domains.auth.routers import auth, oauth
@@ -53,7 +53,6 @@ from app.domains.ai.services import ai_job_service
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
 from app.domains.system_config.routers import system_config
-from app.domains.workspace.services import workspace_service
 from app.domains.websocket.ws.manager import manager
 from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
 from app.domains.notification.routers import notification as notification_router
@@ -111,7 +110,10 @@ async def _on_shutdown() -> None:
     except Exception:
         logger.warning("Failed to close redis client on shutdown")
     try:
-        shutdown_offload_executors()
+        # 在线程中执行有限等待的 executor 关闭，避免阻塞事件循环
+        await asyncio.get_running_loop().run_in_executor(
+            None, shutdown_offload_executors, True
+        )
     except Exception:
         logger.warning("Failed to shutdown offload executors")
 
@@ -147,7 +149,7 @@ app.include_router(api_mock.gateway_router)
 
 
 async def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
-    """连接即鉴权（JOIN 一次）：JWT 解码留事件循环，DB 查询经 DB executor。"""
+    """连接即鉴权（每连接一次）：JWT 解码留事件循环，单条 join 查询经 DB executor。"""
     token = str(websocket.query_params.get("token") or "").strip()
     if not token:
         return None
@@ -162,24 +164,35 @@ async def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | No
         return None
 
     def _load() -> dict | None:
+        # 单条 join：user × task × workspace_member 一次往返完成三项校验
         db = SessionLocal()
         try:
-            user = db.query(User).filter(User.id == user_id).first()
-            task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-            if not user or not task_obj:
+            row = (
+                db.query(
+                    User.id,
+                    User.display_name,
+                    User.avatar_url,
+                    User.avatar_svg,
+                    SddTask.workspace_id,
+                    WorkspaceMember.is_expert,
+                )
+                .filter(
+                    User.id == user_id,
+                    SddTask.id == task_id,
+                    WorkspaceMember.workspace_id == SddTask.workspace_id,
+                    WorkspaceMember.user_id == User.id,
+                )
+                .first()
+            )
+            if not row:
                 return None
-
-            member = workspace_service.get_workspace_member(db, task_obj.workspace_id, user.id)
-            if not member:
-                return None
-
             return {
-                "user_id": user.id,
-                "display_name": user.display_name,
-                "avatar_url": user.avatar_url,
-                "avatar_svg": user.avatar_svg,
-                "workspace_id": task_obj.workspace_id,
-                "is_workspace_expert": bool(member.is_expert),
+                "user_id": row[0],
+                "display_name": row[1],
+                "avatar_url": row[2],
+                "avatar_svg": row[3],
+                "workspace_id": row[4],
+                "is_workspace_expert": bool(row[5]),
             }
         finally:
             db.close()
@@ -267,6 +280,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
             user,
             session_factory=SessionLocal,
             connection_manager=manager,
+            client_key=user.id,
         )
         await handler.run()
 

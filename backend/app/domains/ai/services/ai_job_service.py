@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session, joinedload
 from app.config import settings
 from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
-from app.core.offload import run_db
+from app.core.offload import run_db, run_db_txn
 from app.database import SessionLocal
 from app.engine.claude_bridge import create_cli_bridge
 from app.agents.selection import (
@@ -143,16 +143,21 @@ def _clear_cancel_event(job_id: str) -> None:
     _JOB_CANCEL_EVENTS.pop(job_id, None)
 
 
-def _is_job_cancelled_or_final(job_id: str) -> bool:
-    """取消已请求，或 DB 中任务已进入终态（如被中断/停止标记为 CANCELLED）。"""
-    if _is_cancel_requested(job_id):
-        return True
+def _is_job_cancelled_or_final_sync(job_id: str) -> bool:
+    """DB 部分取消/终态检查（线程内执行，由 run_db 包装）。"""
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         return bool(job and job.status in FINAL_STATUSES)
     finally:
         db.close()
+
+
+async def _is_job_cancelled_or_final(job_id: str) -> bool:
+    """取消已请求，或 DB 中任务已进入终态（如被中断/停止标记为 CANCELLED）。"""
+    if _is_cancel_requested(job_id):
+        return True
+    return await run_db(_is_job_cancelled_or_final_sync, job_id)
 
 
 def _as_status(value: Any) -> str:
@@ -338,7 +343,7 @@ async def _broadcast_job_payload(payload: Dict[str, Any], *, final: bool = False
             )
 
 
-async def _load_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
+def _load_job_payload_sync(job_id: str) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -349,6 +354,10 @@ async def _load_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
+async def _load_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
+    return await run_db(_load_job_payload_sync, job_id)
+
+
 async def _publish_job_state(job_id: str, *, final: bool = False) -> None:
     payload = await _load_job_payload(job_id)
     if not payload:
@@ -356,7 +365,7 @@ async def _publish_job_state(job_id: str, *, final: bool = False) -> None:
     await _broadcast_job_payload(payload, final=final)
 
 
-async def _update_job_state(
+def _update_job_state_sync(
     job_id: str,
     *,
     status: Optional[AiJobStatus] = None,
@@ -369,6 +378,11 @@ async def _update_job_state(
     agent_backend: Optional[str] = None,
     finalize: bool = False,
 ) -> Optional[Dict[str, Any]]:
+    """状态更新 DB 段（线程内执行，由 run_db 包装）。
+
+    返回 {"payload": ..., "broadcast": bool, "is_final": bool}；
+    broadcast=False 表示被 fence/终态幂等拦下，仅回读当前 payload。
+    """
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -379,13 +393,12 @@ async def _update_job_state(
             if not task or int(task.session_revision or -1) != int(job.session_revision):
                 # An undo or a newer session generation has fenced this worker.
                 # Do not let a late callback resurrect the old job state.
-                return serialize_job(job)
+                return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         current_status = job.status
         requested_status = status
         if current_status in FINAL_STATUSES:
             if requested_status is None or requested_status != current_status:
-                payload = serialize_job(job)
-                return payload
+                return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         if status is not None:
             job.status = status
         if progress is not None:
@@ -409,9 +422,44 @@ async def _update_job_state(
         db.commit()
         db.refresh(job)
         payload = serialize_job(job)
+        is_final = finalize or (status in FINAL_STATUSES)
+        return {"payload": payload, "broadcast": True, "is_final": is_final}
     finally:
         db.close()
-    is_final = finalize or (status in FINAL_STATUSES)
+
+
+async def _update_job_state(
+    job_id: str,
+    *,
+    status: Optional[AiJobStatus] = None,
+    progress: Optional[int] = None,
+    message: Optional[str] = None,
+    context_patch: Optional[Dict[str, Any]] = None,
+    result_patch: Optional[Dict[str, Any]] = None,
+    error_message: Optional[str] = None,
+    session_id: Optional[str] = None,
+    agent_backend: Optional[str] = None,
+    finalize: bool = False,
+) -> Optional[Dict[str, Any]]:
+    result = await run_db(
+        _update_job_state_sync,
+        job_id,
+        status=status,
+        progress=progress,
+        message=message,
+        context_patch=context_patch,
+        result_patch=result_patch,
+        error_message=error_message,
+        session_id=session_id,
+        agent_backend=agent_backend,
+        finalize=finalize,
+    )
+    if result is None:
+        return None
+    payload = result["payload"]
+    if not result["broadcast"]:
+        return payload
+    is_final = result["is_final"]
     await _broadcast_job_payload(payload, final=is_final)
     if is_final:
         _clear_cancel_event(job_id)
@@ -766,7 +814,8 @@ def _take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
 async def _take_next_pending_job_id(queue_key: str) -> Optional[str]:
     try:
         async with lock_ai_queue(queue_key):
-            return _take_next_pending_job_id_sync(queue_key)
+            # 取队 4 stmts + commit 在 Redis 锁内完成，全部 off-loop
+            return await run_db(_take_next_pending_job_id_sync, queue_key)
     except LockAcquireTimeout as exc:
         logger.warning(
             "AI queue lock timeout: queue_key={}, resource_type={}, resource_id={}, lock_key={}, backend={}",
@@ -779,7 +828,7 @@ async def _take_next_pending_job_id(queue_key: str) -> Optional[str]:
         return None
 
 
-def _get_job_status(job_id: str) -> Optional[AiJobStatus]:
+def _get_job_status_sync(job_id: str) -> Optional[AiJobStatus]:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob.status).filter(SddAiJob.id == job_id).first()
@@ -788,6 +837,10 @@ def _get_job_status(job_id: str) -> Optional[AiJobStatus]:
         return job[0]
     finally:
         db.close()
+
+
+async def _get_job_status(job_id: str) -> Optional[AiJobStatus]:
+    return await run_db(_get_job_status_sync, job_id)
 
 
 async def _run_queue(queue_key: str) -> None:
@@ -799,7 +852,7 @@ async def _run_queue(queue_key: str) -> None:
                 return
             await _publish_job_state(job_id)
             await _execute_job(job_id)
-            status = _get_job_status(job_id)
+            status = await _get_job_status(job_id)
             if status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}:
                 return
 
@@ -1149,154 +1202,663 @@ async def run_cli_single_turn(
     raise RuntimeError("AI reply failed with unknown reason")
 
 
-async def _execute_asset_thread_job(job_id: str) -> None:
-    db = SessionLocal()
-    context_stack = ExitStack()
-    job_kind = JOB_KIND_THREAD_AI_REPLY
-    try:
-        job = (
-            db.query(SddAiJob)
-            .options(
-                joinedload(SddAiJob.thread)
-                .joinedload(SddAssetThread.messages)
-                .joinedload(SddAssetThreadMessage.creator),
-                joinedload(SddAiJob.thread).joinedload(SddAssetThread.version),
-                joinedload(SddAiJob.thread).joinedload(SddAssetThread.task),
-                joinedload(SddAiJob.thread).joinedload(SddAssetThread.asset),
+def _prepare_asset_thread_context_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
+    """asset thread job 上下文准备段 A（线程内执行，由 run_db_txn 包装）。
+
+    只做读取与轻量状态推进，返回纯数据；CLI 前后的其余 DB 段各自独立事务。
+    """
+    job = (
+        db.query(SddAiJob)
+        .options(
+            joinedload(SddAiJob.thread)
+            .joinedload(SddAssetThread.task),
+            joinedload(SddAiJob.thread).joinedload(SddAssetThread.asset),
+        )
+        .filter(SddAiJob.id == job_id)
+        .first()
+    )
+    if not job or job.channel != AiJobChannel.ASSET_THREAD:
+        return None
+    thread = job.thread
+    if not thread:
+        raise ValueError("Thread not found for AI job")
+    job_kind = _job_kind_from_job(job)
+    task = thread.task
+    if not thread.task_id or not task:
+        raise ValueError("Thread task is required for AI job")
+
+    bootstrap = task_cli_state_service.ensure_bootstrap_ready(
+        db,
+        workspace_id=thread.workspace_id,
+        task_id=thread.task_id,
+    )
+    return {
+        "job_kind": job_kind,
+        "creator_id": job.creator_id,
+        "thread_id": thread.id,
+        "asset_id": thread.asset_id,
+        "task_id": thread.task_id,
+        "workspace_id": thread.workspace_id,
+        "task_name": str(task.name or ""),
+        "task_project_path": str(task.project_path or ""),
+        "document_name": thread.asset.name if thread.asset else "",
+        "bootstrap_status": _as_status(bootstrap.status),
+        "bootstrap_version_id": bootstrap.spec_version_id,
+        "context_json": job.context_json if isinstance(job.context_json, dict) else {},
+    }
+
+
+def _build_asset_thread_run_sync(
+    db: Session,
+    *,
+    job_id: str,
+    base: Dict[str, Any],
+    session_plan,
+) -> Dict[str, Any]:
+    """asset thread job 准备段 B（线程内执行）：prompt 构建与执行参数解析。"""
+    job_kind = base["job_kind"]
+    thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
+    if not thread:
+        raise ValueError("Thread not found for AI job")
+    task = thread.task
+    version = thread.version
+    thread_backend = session_plan.backend
+    resume_session_id = session_plan.session_id
+    fork_first_turn = session_plan.fork_first_turn
+    if not fork_first_turn:
+        resume_session_id = (
+            task_cli_state_service.get_latest_thread_session_id(db, thread.id)
+            or resume_session_id
+        )
+    # 线程执行目录 = 任务目录（含 git worktree），评审答疑可直接读仓库内容
+    from app.domains.task.services import task_service as task_service_module
+
+    project_path = (
+        task_service_module.resolve_task_cli_dir(db, task)
+        if task
+        else "."
+    )
+    if not os.path.isdir(project_path):
+        project_path = (task.project_path if task and task.project_path else ".").strip() or "."
+    if not os.path.isdir(project_path):
+        project_path = "."
+    thread_cwd = project_path
+
+    run_state: Dict[str, Any] = {
+        **base,
+        "thread_backend": thread_backend,
+        "resume_session_id": resume_session_id,
+        "fork_first_turn": fork_first_turn,
+        "thread_cwd": thread_cwd,
+        "project_path": project_path,
+    }
+
+    if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
+        context_json = base.get("context_json") or {}
+        overwrite_existing_draft = bool(context_json.get("overwrite_existing_draft"))
+        context_version = _resolve_context_version(
+            db,
+            thread=thread,
+            requested_version_id=str(context_json.get("context_version_id") or "").strip() or None,
+        )
+        anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
+            db,
+            thread=thread,
+            context_version=context_version,
+        )
+        effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
+        effective_block_id = str(
+            (effective_anchor or {}).get("block_id")
+            or thread.block_id
+            or ""
+        ).strip() or thread.block_id
+        selected_block = (
+            asset_discussion_service.get_block_by_id(context_version, effective_block_id)
+            if context_version
+            else None
+        )
+        if not selected_block and version:
+            selected_block = asset_discussion_service.get_block_by_id(version, thread.block_id)
+            effective_block_id = thread.block_id
+            effective_anchor = {
+                "block_id": thread.block_id,
+                "selected_text": thread.selected_text,
+                "char_start": thread.char_start,
+                "char_end": thread.char_end,
+            }
+        anchor_meta = _resolve_thread_anchor_text(
+            thread,
+            selected_block,
+            selected_text=(effective_anchor or {}).get("selected_text"),
+            char_start=(effective_anchor or {}).get("char_start"),
+            char_end=(effective_anchor or {}).get("char_end"),
+        )
+        discussion_lines = _proposal_discussion_lines(thread)
+        source_message_ids = _proposal_source_message_ids(thread)
+        prompt = build_resolution_proposal_prompt(
+            task_name=task.name if task else "",
+            document_name=thread.asset.name if thread.asset else "",
+            document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
+            block_id=effective_block_id or "",
+            thread_id=thread.id or "",
+            anchor_text=anchor_meta["anchor_text"],
+            block_context_text=anchor_meta["block_text"],
+            discussion_lines=discussion_lines,
+        )
+        run_state.update({
+            "prompt": prompt,
+            "overwrite_existing_draft": overwrite_existing_draft,
+            "source_message_ids": source_message_ids,
+            "effective_anchor": effective_anchor,
+            "context_version_id": context_version.id if context_version else None,
+            "anchor_text": anchor_meta["anchor_text"],
+            "block_text": anchor_meta["block_text"],
+            "discussion_lines_tail": discussion_lines[-12:],
+        })
+        return run_state
+
+    if job_kind == JOB_KIND_RESOLUTION_REWRITE:
+        context_json = base.get("context_json") or {}
+        proposal_id = str(context_json.get("proposal_id") or "").strip()
+        if not proposal_id:
+            raise ValueError("proposal_id is required for rewrite job")
+
+        proposal = (
+            db.query(SddAssetResolutionProposal)
+            .filter(
+                SddAssetResolutionProposal.id == proposal_id,
+                SddAssetResolutionProposal.thread_id == thread.id,
             )
-            .filter(SddAiJob.id == job_id)
             .first()
         )
-        if not job or job.channel != AiJobChannel.ASSET_THREAD:
-            return
-        thread = job.thread
-        if not thread:
-            raise ValueError("Thread not found for AI job")
-        job_kind = _job_kind_from_job(job)
-        context_stack.enter_context(
-            bind_task_context(
-                task_id=thread.task_id,
-                workspace_id=thread.workspace_id,
-                user_id=job.creator_id,
-            )
-        )
-        context_stack.enter_context(
-            bind_ai_context(
-                job_id=job_id,
-                task_id=thread.task_id,
-                session_id=job.session_id,
-                event_type=job_kind,
-            )
-        )
+        if not proposal:
+            raise ValueError("Resolution proposal not found for rewrite")
 
-        await _update_job_state(job_id, progress=12, message="Building discussion context")
-
-        version = thread.version
-        task = thread.task
-        if not thread.task_id or not task:
-            raise ValueError("Thread task is required for AI job")
-
-        bootstrap = task_cli_state_service.ensure_bootstrap_ready(
+        proposal_text = str(context_json.get("proposal_text") or "").strip()
+        if not proposal_text:
+            patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
+            proposal_text = str(patch.get("proposal_text") or "").strip()
+        if not proposal_text:
+            raise ValueError("proposal_text is required for rewrite")
+        requested_scope = str(context_json.get("rewrite_scope") or "").strip().lower()
+        if requested_scope not in {"anchor", "document"}:
+            requested_scope = "anchor"
+        context_version = _resolve_context_version(
             db,
-            workspace_id=thread.workspace_id,
-            task_id=thread.task_id,
+            thread=thread,
+            requested_version_id=str(context_json.get("context_version_id") or "").strip() or proposal.base_version_id,
         )
+        anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
+            db,
+            thread=thread,
+            context_version=context_version,
+        )
+        effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
+        relocated_anchor = _normalize_relocated_anchor(context_json.get("relocated_anchor"))
+        if relocated_anchor:
+            effective_anchor = relocated_anchor
+        effective_block_id = str(
+            (effective_anchor or {}).get("block_id")
+            or thread.block_id
+            or ""
+        ).strip() or thread.block_id
+        selected_block = (
+            asset_discussion_service.get_block_by_id(context_version, effective_block_id)
+            if context_version
+            else None
+        )
+        if not selected_block:
+            raise ValueError("Anchor block not found for rewrite context")
+        anchor_meta = _resolve_thread_anchor_text(
+            thread,
+            selected_block,
+            selected_text=(effective_anchor or {}).get("selected_text"),
+            char_start=(effective_anchor or {}).get("char_start"),
+            char_end=(effective_anchor or {}).get("char_end"),
+        )
+        selection_mode = bool(anchor_meta["selected_text"])
+        prompt = build_resolution_rewrite_prompt(
+            task_name=task.name if task else "",
+            document_name=thread.asset.name if thread.asset else "",
+            document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
+            block_id=effective_block_id or "",
+            thread_id=thread.id or "",
+            anchor_text=anchor_meta["anchor_text"],
+            block_context_text=anchor_meta["block_text"],
+            proposal_text=proposal_text,
+            rewrite_scope=requested_scope,
+            selection_mode=selection_mode,
+        )
+        run_state.update({
+            "prompt": prompt,
+            "proposal_id": proposal_id,
+            "proposal_text": proposal_text,
+            "rewrite_scope": requested_scope,
+            "selection_mode": selection_mode,
+            "effective_anchor": effective_anchor,
+            "context_version_id": context_version.id if context_version else None,
+            "anchor_text": anchor_meta["anchor_text"],
+            "block_text": anchor_meta["block_text"],
+        })
+        return run_state
 
-        await _update_job_state(
-            job_id,
-            progress=18,
-            message="Preparing isolated thread workspace",
-            context_patch={
-                "bootstrap_status": _as_status(bootstrap.status),
-                "bootstrap_version_id": bootstrap.spec_version_id,
-                "job_kind": job_kind,
-            },
-        )
-        # 线程专属会话：首次使用时从 baseline fork（各讨论上下文独立），
-        # 之后一直用线程自己的会话；绝不直接 resume baseline 会话。
-        # 线程在任务目录执行，可直接读取 git 出的仓库内容做评审答疑。
-        session_plan = await task_cli_state_service.ensure_thread_session(
-            thread.id,
-            require_ready=True,
-        )
-        thread_backend = session_plan.backend
-        # claude: 首轮 --resume baseline --fork-session 生成线程新会话；
-        # 其余后端 / 后续轮次：直接 resume 线程自有会话
-        resume_session_id = session_plan.session_id
-        fork_first_turn = session_plan.fork_first_turn
-        if not fork_first_turn:
-            resume_session_id = (
-                task_cli_state_service.get_latest_thread_session_id(db, thread.id)
-                or resume_session_id
-            )
-        # 线程执行目录 = 任务目录（含 git worktree），评审答疑可直接读仓库内容
-        thread_cwd = str(task.project_path or "").strip() or "."
+    context = (
+        asset_discussion_service.get_block_context(version, thread.block_id)
+        if version else {"selected": None, "neighbors": []}
+    )
+    selected_block = context.get("selected") if isinstance(context, dict) else None
+    neighbor_blocks = context.get("neighbors") if isinstance(context, dict) else []
+    anchor_meta = _resolve_thread_anchor_text(thread, selected_block)
+    selected_text = anchor_meta["anchor_text"]
+    anchor_block_text = anchor_meta["block_text"]
+    neighbor_text = "\n".join(
+        f"- {_extract_block_text(item)}"
+        for item in (neighbor_blocks or [])
+        if _extract_block_text(item)
+    ).strip()
+    history_lines = _thread_history_lines(thread)
+    prompt = build_asset_thread_prompt(
+        task_name=task.name if task else "",
+        document_name=thread.asset.name if thread.asset else "",
+        document_version_label=(f"v{version.version_no}" if version else "unknown"),
+        block_id=thread.block_id or "",
+        thread_id=thread.id or "",
+        project_path=project_path,
+        selected_text=selected_text or (thread.selected_text or ""),
+        anchor_block_text=anchor_block_text,
+        neighbor_text=neighbor_text,
+        history_lines=history_lines,
+        manual_prompt=_job_prompt_text(db, base["thread_id"]),
+    )
+    run_state.update({
+        "prompt": prompt,
+        "selected_text": selected_text,
+        "anchor_block_text": anchor_block_text,
+        "neighbor_text": neighbor_text,
+        "history_lines": history_lines,
+    })
+    return run_state
 
-        if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
-            context_json = job.context_json if isinstance(job.context_json, dict) else {}
-            overwrite_existing_draft = bool(context_json.get("overwrite_existing_draft"))
-            context_version = _resolve_context_version(
-                db,
-                thread=thread,
-                requested_version_id=str(context_json.get("context_version_id") or "").strip() or None,
+
+def _job_prompt_text(db: Session, thread_id: str) -> Optional[str]:
+    job = (
+        db.query(SddAiJob.prompt_text)
+        .filter(
+            SddAiJob.thread_id == thread_id,
+            SddAiJob.channel == AiJobChannel.ASSET_THREAD,
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .first()
+    )
+    return job[0] if job else None
+
+
+def _persist_asset_proposal_sync(
+    db: Session,
+    *,
+    base: Dict[str, Any],
+    proposal_text: str,
+) -> Dict[str, Any]:
+    thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
+    if not thread:
+        raise ValueError("Thread disappeared during proposal generation")
+    context_version = _resolve_context_version(
+        db,
+        thread=thread,
+        requested_version_id=base.get("context_version_id"),
+    )
+    proposal = asset_resolution_service.create_resolution_proposal(
+        db,
+        thread=thread,
+        creator_id=base["creator_id"],
+        proposed_text=proposal_text,
+        overwrite_existing_draft=bool(base.get("overwrite_existing_draft")),
+        source_message_ids=base.get("source_message_ids") or [],
+        version=context_version,
+        effective_anchor=base.get("effective_anchor") if isinstance(base.get("effective_anchor"), dict) else None,
+    )
+    db.commit()
+    db.refresh(proposal)
+    return {
+        "proposal": _serialize_proposal_for_ws(proposal),
+        "proposal_id": str(proposal.id),
+    }
+
+
+def _persist_asset_rewrite_sync(
+    db: Session,
+    *,
+    base: Dict[str, Any],
+    proposal_text: str,
+    rewritten_text: str,
+    rewrite_scope: str,
+    rewritten_markdown: str,
+    selection_mode: bool,
+) -> Dict[str, Any]:
+    thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
+    if not thread:
+        raise ValueError("Thread disappeared during proposal rewrite")
+    proposal = (
+        db.query(SddAssetResolutionProposal)
+        .filter(
+            SddAssetResolutionProposal.id == base["proposal_id"],
+            SddAssetResolutionProposal.thread_id == thread.id,
+        )
+        .first()
+    )
+    if not proposal:
+        raise ValueError("Resolution proposal not found after rewrite")
+
+    proposal = asset_resolution_service.update_resolution_proposal_rewrite(
+        db,
+        thread=thread,
+        proposal=proposal,
+        proposal_text=proposal_text,
+        rewritten_text=rewritten_text,
+        rewrite_scope=rewrite_scope,
+        rewritten_markdown=rewritten_markdown or None,
+        selection_mode=selection_mode,
+        context_version_id=base.get("context_version_id"),
+        relocated_anchor=base.get("effective_anchor") if isinstance(base.get("effective_anchor"), dict) else None,
+    )
+    db.commit()
+    db.refresh(proposal)
+    proposal_patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
+    rewrite_ready = str(proposal_patch.get("rewrite_status") or "").strip().lower() == "ready"
+    has_merged = bool(
+        (isinstance(proposal_patch.get("merged_block_ast"), dict) and proposal_patch.get("merged_block_ast"))
+        or (
+            isinstance(proposal_patch.get("merged_blocks_ast"), list)
+            and len(proposal_patch.get("merged_blocks_ast") or []) > 0
+        )
+    )
+    if not rewrite_ready or not has_merged:
+        raise ValueError(
+            "Resolution rewrite persisted without merged AST payload"
+        )
+    return {
+        "proposal": _serialize_proposal_for_ws(proposal),
+        "proposal_id": str(proposal.id),
+    }
+
+
+def _persist_asset_reply_sync(
+    db: Session,
+    *,
+    base: Dict[str, Any],
+    reply: str,
+    thread_backend: Optional[str],
+    job_id: str,
+) -> Dict[str, Any]:
+    thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
+    if not thread:
+        raise ValueError("Thread disappeared during AI execution")
+
+    ai_message = asset_discussion_service.add_thread_message(
+        db,
+        thread=thread,
+        role=AssetThreadMessageRole.AI,
+        content=reply,
+        creator_id=None,
+        metadata_json={"provider": thread_backend or "claude-cli", "job_id": job_id},
+    )
+    db.commit()
+    db.refresh(ai_message)
+    return {
+        "message": {
+            "id": ai_message.id,
+            "thread_id": ai_message.thread_id,
+            "role": _as_status(ai_message.role),
+            "content": ai_message.content,
+            "creator_id": ai_message.creator_id,
+            "creator_display_name": None,
+            "creator_avatar_svg": None,
+            "metadata_json": ai_message.metadata_json,
+            "created_at": ai_message.created_at.isoformat() if ai_message.created_at else None,
+        },
+        "message_id": str(ai_message.id),
+    }
+
+
+def _persist_asset_failure_message_sync(
+    db: Session,
+    *,
+    job_id: str,
+    error_text: str,
+) -> Optional[Dict[str, Any]]:
+    failed_job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if not failed_job or not failed_job.thread_id:
+        return None
+    thread = asset_discussion_service.get_thread(
+        db, asset_id=failed_job.asset_id, thread_id=failed_job.thread_id
+    )
+    if not thread:
+        return None
+    failure_message = asset_discussion_service.add_thread_message(
+        db,
+        thread=thread,
+        role=AssetThreadMessageRole.SYSTEM,
+        content=f"AI 回复失败: {error_text}\n\n可重试：已自动采用超时重试策略，如仍失败请稍后再次触发。",
+        creator_id=failed_job.creator_id,
+        metadata_json={"error": error_text, "job_id": job_id},
+    )
+    db.commit()
+    db.refresh(failure_message)
+    return {
+        "asset_id": thread.asset_id,
+        "message": {
+            "id": failure_message.id,
+            "thread_id": failure_message.thread_id,
+            "role": _as_status(failure_message.role),
+            "content": failure_message.content,
+            "creator_id": failure_message.creator_id,
+            "creator_display_name": None,
+            "creator_avatar_svg": None,
+            "metadata_json": failure_message.metadata_json,
+            "created_at": failure_message.created_at.isoformat() if failure_message.created_at else None,
+        },
+    }
+
+
+async def _execute_asset_thread_job(job_id: str) -> None:
+    job_kind = JOB_KIND_THREAD_AI_REPLY
+    try:
+        base = await run_db_txn(lambda db: _prepare_asset_thread_context_sync(db, job_id))
+        if base is None:
+            return
+        job_kind = base["job_kind"]
+        with ExitStack() as context_stack:
+            context_stack.enter_context(
+                bind_task_context(
+                    task_id=base["task_id"],
+                    workspace_id=base["workspace_id"],
+                    user_id=base["creator_id"],
+                )
             )
-            anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
-                db,
-                thread=thread,
-                context_version=context_version,
+            context_stack.enter_context(
+                bind_ai_context(
+                    job_id=job_id,
+                    task_id=base["task_id"],
+                    session_id=None,
+                    event_type=job_kind,
+                )
             )
-            effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
-            effective_block_id = str(
-                (effective_anchor or {}).get("block_id")
-                or thread.block_id
-                or ""
-            ).strip() or thread.block_id
-            selected_block = (
-                asset_discussion_service.get_block_by_id(context_version, effective_block_id)
-                if context_version
-                else None
+
+            await _update_job_state(job_id, progress=12, message="Building discussion context")
+
+            await _update_job_state(
+                job_id,
+                progress=18,
+                message="Preparing isolated thread workspace",
+                context_patch={
+                    "bootstrap_status": base["bootstrap_status"],
+                    "bootstrap_version_id": base["bootstrap_version_id"],
+                    "job_kind": job_kind,
+                },
             )
-            if not selected_block and version:
-                selected_block = asset_discussion_service.get_block_by_id(version, thread.block_id)
-                effective_block_id = thread.block_id
-                effective_anchor = {
-                    "block_id": thread.block_id,
-                    "selected_text": thread.selected_text,
-                    "char_start": thread.char_start,
-                    "char_end": thread.char_end,
-                }
-            anchor_meta = _resolve_thread_anchor_text(
-                thread,
-                selected_block,
-                selected_text=(effective_anchor or {}).get("selected_text"),
-                char_start=(effective_anchor or {}).get("char_start"),
-                char_end=(effective_anchor or {}).get("char_end"),
+            # 线程专属会话：首次使用时从 baseline fork（各讨论上下文独立），
+            # 之后一直用线程自己的会话；绝不直接 resume baseline 会话。
+            session_plan = await task_cli_state_service.ensure_thread_session(
+                base["thread_id"],
+                require_ready=True,
             )
-            discussion_lines = _proposal_discussion_lines(thread)
-            source_message_ids = _proposal_source_message_ids(thread)
-            prompt = build_resolution_proposal_prompt(
-                task_name=task.name if task else "",
-                document_name=thread.asset.name if thread.asset else "",
-                document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
-                block_id=effective_block_id or "",
-                thread_id=thread.id or "",
-                anchor_text=anchor_meta["anchor_text"],
-                block_context_text=anchor_meta["block_text"],
-                discussion_lines=discussion_lines,
+            # 准备段 B：prompt 构建 + 执行参数（线程内，无长持 session）
+            run_state = await run_db_txn(
+                lambda db: _build_asset_thread_run_sync(db, job_id=job_id, base=base, session_plan=session_plan)
             )
+            thread_cwd = run_state["thread_cwd"]
+            thread_backend = run_state["thread_backend"]
+            resume_session_id = run_state["resume_session_id"]
+            fork_first_turn = run_state["fork_first_turn"]
+            prompt = run_state["prompt"]
+
+            if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
+                await _update_job_state(
+                    job_id,
+                    progress=46,
+                    message="Generating resolution proposal",
+                    context_patch={
+                        "thread_workspace": thread_cwd,
+                        "discussion_lines": run_state["discussion_lines_tail"],
+                        "anchor_text": run_state["anchor_text"],
+                        "block_text": run_state["block_text"],
+                        "context_version_id": run_state["context_version_id"],
+                        "effective_anchor": run_state["effective_anchor"],
+                    },
+                )
+                result = await run_cli_single_turn(
+                    prompt,
+                    thread_cwd,
+                    session_id=resume_session_id,
+                    should_cancel=lambda: _is_cancel_requested(job_id),
+                    backend_name=thread_backend,
+                    fork_session=fork_first_turn,
+                )
+                if fork_first_turn:
+                    task_cli_state_service.record_thread_session_id(
+                        base["thread_id"], str(result.get("session_id") or "")
+                    )
+                proposal_text = str(result.get("text") or "").strip()
+                final_session_id = str(result.get("session_id") or "").strip()
+                if not proposal_text:
+                    raise ValueError("Resolution proposal text is empty")
+
+                persisted = await run_db_txn(
+                    lambda db: _persist_asset_proposal_sync(db, base=run_state, proposal_text=proposal_text)
+                )
+                await asset_discussion_ws_manager.broadcast(
+                    base["asset_id"],
+                    {
+                        "type": "proposal_created",
+                        "asset_id": base["asset_id"],
+                        "thread_id": base["thread_id"],
+                        "proposal": persisted["proposal"],
+                    },
+                )
+                await _update_job_state(
+                    job_id,
+                    status=AiJobStatus.SUCCESS,
+                    progress=100,
+                    message="Resolution proposal generated",
+                    result_patch={
+                        "proposal_id": persisted["proposal_id"],
+                        "proposal_excerpt": proposal_text[:1200],
+                    },
+                    session_id=final_session_id or None,
+                    agent_backend=thread_backend,
+                    finalize=True,
+                )
+                return
+
+            if job_kind == JOB_KIND_RESOLUTION_REWRITE:
+                await _update_job_state(
+                    job_id,
+                    progress=48,
+                    message="Rewriting document from proposal",
+                    context_patch={
+                        "proposal_id": run_state["proposal_id"],
+                        "thread_workspace": thread_cwd,
+                        "rewrite_scope": run_state["rewrite_scope"],
+                        "selection_mode": run_state["selection_mode"],
+                        "anchor_text": run_state["anchor_text"],
+                        "block_text": run_state["block_text"],
+                        "context_version_id": run_state["context_version_id"],
+                        "effective_anchor": run_state["effective_anchor"],
+                    },
+                )
+                result = await run_cli_single_turn(
+                    prompt,
+                    thread_cwd,
+                    session_id=resume_session_id,
+                    should_cancel=lambda: _is_cancel_requested(job_id),
+                    backend_name=thread_backend,
+                    fork_session=fork_first_turn,
+                )
+                if fork_first_turn:
+                    task_cli_state_service.record_thread_session_id(
+                        base["thread_id"], str(result.get("session_id") or "")
+                    )
+                rewrite_payload = _parse_rewrite_payload(str(result.get("text") or ""))
+                rewrite_scope = run_state["rewrite_scope"] or str(rewrite_payload.get("scope") or "anchor").strip().lower()
+                rewritten_text = str(rewrite_payload.get("anchor_text") or "").strip()
+                rewritten_markdown = str(rewrite_payload.get("document_markdown") or "").strip()
+                final_session_id = str(result.get("session_id") or "").strip()
+                if rewrite_scope == "document" and not rewritten_markdown:
+                    raise ValueError("Rewritten document markdown is empty")
+                if rewrite_scope != "document" and not rewritten_text:
+                    raise ValueError("Rewritten block text is empty")
+
+                persisted = await run_db_txn(
+                    lambda db: _persist_asset_rewrite_sync(
+                        db,
+                        base=run_state,
+                        proposal_text=run_state["proposal_text"],
+                        rewritten_text=rewritten_text,
+                        rewrite_scope=rewrite_scope,
+                        rewritten_markdown=rewritten_markdown,
+                        selection_mode=run_state["selection_mode"],
+                    )
+                )
+                await asset_discussion_ws_manager.broadcast(
+                    base["asset_id"],
+                    {
+                        "type": "proposal_created",
+                        "asset_id": base["asset_id"],
+                        "thread_id": base["thread_id"],
+                        "proposal": persisted["proposal"],
+                    },
+                )
+                await _update_job_state(
+                    job_id,
+                    status=AiJobStatus.SUCCESS,
+                    progress=100,
+                    message="Resolution proposal rewrite completed",
+                    result_patch={
+                        "proposal_id": persisted["proposal_id"],
+                        "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
+                    },
+                    session_id=final_session_id or None,
+                    agent_backend=thread_backend,
+                    finalize=True,
+                )
+                return
+
+            await _update_job_state(job_id, progress=24, message="Preparing AI prompt")
+
             await _update_job_state(
                 job_id,
                 progress=46,
-                message="Generating resolution proposal",
+                message="Calling AI engine",
                 context_patch={
+                    "selected_text": run_state["selected_text"] or "",
+                    "anchor_block_text": run_state["anchor_block_text"],
+                    "neighbor_text": run_state["neighbor_text"],
+                    "history_lines": run_state["history_lines"][-10:],
+                    "project_path": run_state["project_path"],
                     "thread_workspace": thread_cwd,
-                    "discussion_lines": discussion_lines[-12:],
-                    "anchor_text": anchor_meta["anchor_text"],
-                    "block_text": anchor_meta["block_text"],
-                    "context_version_id": context_version.id if context_version else None,
-                    "effective_anchor": effective_anchor,
                 },
             )
+
             result = await run_cli_single_turn(
                 prompt,
                 thread_cwd,
@@ -1307,349 +1869,37 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             )
             if fork_first_turn:
                 task_cli_state_service.record_thread_session_id(
-                    thread.id, str(result.get("session_id") or "")
+                    base["thread_id"], str(result.get("session_id") or "")
                 )
-            proposal_text = str(result.get("text") or "").strip()
+            reply = str(result.get("text") or "").strip()
             final_session_id = str(result.get("session_id") or "").strip()
-            if not proposal_text:
-                raise ValueError("Resolution proposal text is empty")
 
-            thread = asset_discussion_service.get_thread(db, asset_id=thread.asset_id, thread_id=thread.id)
-            if not thread:
-                raise ValueError("Thread disappeared during proposal generation")
-
-            proposal = asset_resolution_service.create_resolution_proposal(
-                db,
-                thread=thread,
-                creator_id=job.creator_id,
-                proposed_text=proposal_text,
-                overwrite_existing_draft=overwrite_existing_draft,
-                source_message_ids=source_message_ids,
-                version=context_version,
-                effective_anchor=effective_anchor if isinstance(effective_anchor, dict) else None,
+            persisted = await run_db_txn(
+                lambda db: _persist_asset_reply_sync(
+                    db, base=run_state, reply=reply, thread_backend=thread_backend, job_id=job_id,
+                )
             )
-            db.commit()
-            db.refresh(proposal)
-
             await asset_discussion_ws_manager.broadcast(
-                thread.asset_id,
+                base["asset_id"],
                 {
-                    "type": "proposal_created",
-                    "asset_id": thread.asset_id,
-                    "thread_id": thread.id,
-                    "proposal": _serialize_proposal_for_ws(proposal),
+                    "type": "message_created",
+                    "asset_id": base["asset_id"],
+                    "thread_id": base["thread_id"],
+                    "message": persisted["message"],
                 },
             )
             await _update_job_state(
                 job_id,
                 status=AiJobStatus.SUCCESS,
                 progress=100,
-                message="Resolution proposal generated",
-                result_patch={
-                    "proposal_id": proposal.id,
-                    "proposal_excerpt": proposal_text[:1200],
-                },
+                message="AI reply completed",
+                result_patch={"message_id": persisted["message_id"]},
                 session_id=final_session_id or None,
                 agent_backend=thread_backend,
                 finalize=True,
             )
-            return
-
-        if job_kind == JOB_KIND_RESOLUTION_REWRITE:
-            context_json = job.context_json if isinstance(job.context_json, dict) else {}
-            proposal_id = str(context_json.get("proposal_id") or "").strip()
-            if not proposal_id:
-                raise ValueError("proposal_id is required for rewrite job")
-
-            proposal = (
-                db.query(SddAssetResolutionProposal)
-                .filter(
-                    SddAssetResolutionProposal.id == proposal_id,
-                    SddAssetResolutionProposal.thread_id == thread.id,
-                )
-                .first()
-            )
-            if not proposal:
-                raise ValueError("Resolution proposal not found for rewrite")
-
-            proposal_text = str(context_json.get("proposal_text") or "").strip()
-            if not proposal_text:
-                patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
-                proposal_text = str(patch.get("proposal_text") or "").strip()
-            if not proposal_text:
-                raise ValueError("proposal_text is required for rewrite")
-            requested_scope = str(context_json.get("rewrite_scope") or "").strip().lower()
-            if requested_scope not in {"anchor", "document"}:
-                requested_scope = "anchor"
-            context_version = _resolve_context_version(
-                db,
-                thread=thread,
-                requested_version_id=str(context_json.get("context_version_id") or "").strip() or proposal.base_version_id,
-            )
-            anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
-                db,
-                thread=thread,
-                context_version=context_version,
-            )
-            effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
-            relocated_anchor = _normalize_relocated_anchor(context_json.get("relocated_anchor"))
-            if relocated_anchor:
-                effective_anchor = relocated_anchor
-            effective_block_id = str(
-                (effective_anchor or {}).get("block_id")
-                or thread.block_id
-                or ""
-            ).strip() or thread.block_id
-            selected_block = (
-                asset_discussion_service.get_block_by_id(context_version, effective_block_id)
-                if context_version
-                else None
-            )
-            if not selected_block:
-                raise ValueError("Anchor block not found for rewrite context")
-            anchor_meta = _resolve_thread_anchor_text(
-                thread,
-                selected_block,
-                selected_text=(effective_anchor or {}).get("selected_text"),
-                char_start=(effective_anchor or {}).get("char_start"),
-                char_end=(effective_anchor or {}).get("char_end"),
-            )
-            selection_mode = bool(anchor_meta["selected_text"])
-            prompt = build_resolution_rewrite_prompt(
-                task_name=task.name if task else "",
-                document_name=thread.asset.name if thread.asset else "",
-                document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
-                block_id=effective_block_id or "",
-                thread_id=thread.id or "",
-                anchor_text=anchor_meta["anchor_text"],
-                block_context_text=anchor_meta["block_text"],
-                proposal_text=proposal_text,
-                rewrite_scope=requested_scope,
-                selection_mode=selection_mode,
-            )
-            await _update_job_state(
-                job_id,
-                progress=48,
-                message="Rewriting document from proposal",
-                context_patch={
-                    "proposal_id": proposal.id,
-                    "thread_workspace": thread_cwd,
-                    "rewrite_scope": requested_scope,
-                    "selection_mode": selection_mode,
-                    "anchor_text": anchor_meta["anchor_text"],
-                    "block_text": anchor_meta["block_text"],
-                    "context_version_id": context_version.id if context_version else None,
-                    "effective_anchor": effective_anchor,
-                },
-            )
-            result = await run_cli_single_turn(
-                prompt,
-                thread_cwd,
-                session_id=resume_session_id,
-                should_cancel=lambda: _is_cancel_requested(job_id),
-                backend_name=thread_backend,
-                fork_session=fork_first_turn,
-            )
-            if fork_first_turn:
-                task_cli_state_service.record_thread_session_id(
-                    thread.id, str(result.get("session_id") or "")
-                )
-            rewrite_payload = _parse_rewrite_payload(str(result.get("text") or ""))
-            rewrite_scope = requested_scope or str(rewrite_payload.get("scope") or "anchor").strip().lower()
-            rewritten_text = str(rewrite_payload.get("anchor_text") or "").strip()
-            rewritten_markdown = str(rewrite_payload.get("document_markdown") or "").strip()
-            final_session_id = str(result.get("session_id") or "").strip()
-            if rewrite_scope == "document" and not rewritten_markdown:
-                raise ValueError("Rewritten document markdown is empty")
-            if rewrite_scope != "document" and not rewritten_text:
-                raise ValueError("Rewritten block text is empty")
-
-            thread = asset_discussion_service.get_thread(db, asset_id=thread.asset_id, thread_id=thread.id)
-            if not thread:
-                raise ValueError("Thread disappeared during proposal rewrite")
-            proposal = (
-                db.query(SddAssetResolutionProposal)
-                .filter(
-                    SddAssetResolutionProposal.id == proposal_id,
-                    SddAssetResolutionProposal.thread_id == thread.id,
-                )
-                .first()
-            )
-            if not proposal:
-                raise ValueError("Resolution proposal not found after rewrite")
-
-            proposal = asset_resolution_service.update_resolution_proposal_rewrite(
-                db,
-                thread=thread,
-                proposal=proposal,
-                proposal_text=proposal_text,
-                rewritten_text=rewritten_text,
-                rewrite_scope=rewrite_scope,
-                rewritten_markdown=rewritten_markdown or None,
-                selection_mode=selection_mode,
-                context_version_id=context_version.id if context_version else None,
-                relocated_anchor=effective_anchor if isinstance(effective_anchor, dict) else None,
-            )
-            db.commit()
-            db.refresh(proposal)
-            proposal_patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
-            rewrite_ready = str(proposal_patch.get("rewrite_status") or "").strip().lower() == "ready"
-            has_merged = bool(
-                (isinstance(proposal_patch.get("merged_block_ast"), dict) and proposal_patch.get("merged_block_ast"))
-                or (
-                    isinstance(proposal_patch.get("merged_blocks_ast"), list)
-                    and len(proposal_patch.get("merged_blocks_ast") or []) > 0
-                )
-            )
-            if not rewrite_ready or not has_merged:
-                raise ValueError(
-                    "Resolution rewrite persisted without merged AST payload"
-                )
-
-            await asset_discussion_ws_manager.broadcast(
-                thread.asset_id,
-                {
-                    "type": "proposal_created",
-                    "asset_id": thread.asset_id,
-                    "thread_id": thread.id,
-                    "proposal": _serialize_proposal_for_ws(proposal),
-                },
-            )
-            await _update_job_state(
-                job_id,
-                status=AiJobStatus.SUCCESS,
-                progress=100,
-                message="Resolution proposal rewrite completed",
-                result_patch={
-                    "proposal_id": proposal.id,
-                    "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
-                },
-                session_id=final_session_id or None,
-                agent_backend=thread_backend,
-                finalize=True,
-            )
-            return
-
-        context = (
-            asset_discussion_service.get_block_context(version, thread.block_id)
-            if version else {"selected": None, "neighbors": []}
-        )
-        selected_block = context.get("selected") if isinstance(context, dict) else None
-        neighbor_blocks = context.get("neighbors") if isinstance(context, dict) else []
-        anchor_meta = _resolve_thread_anchor_text(thread, selected_block)
-        selected_text = anchor_meta["anchor_text"]
-        anchor_block_text = anchor_meta["block_text"]
-        neighbor_text = "\n".join(
-            f"- {_extract_block_text(item)}"
-            for item in (neighbor_blocks or [])
-            if _extract_block_text(item)
-        ).strip()
-        history_lines = _thread_history_lines(thread)
-        from app.domains.task.services import task_service as task_service_module
-
-        project_path = (
-            task_service_module.resolve_task_cli_dir(db, task)
-            if task
-            else "."
-        )
-        if not os.path.isdir(project_path):
-            project_path = (task.project_path if task and task.project_path else ".").strip() or "."
-        if not os.path.isdir(project_path):
-            project_path = "."
-        # 线程统一在任务目录执行（与 prompt 中的 project_path 一致）
-        thread_cwd = project_path
-        await _update_job_state(job_id, progress=24, message="Preparing AI prompt")
-
-        prompt = build_asset_thread_prompt(
-            task_name=task.name if task else "",
-            document_name=thread.asset.name if thread.asset else "",
-            document_version_label=(f"v{version.version_no}" if version else "unknown"),
-            block_id=thread.block_id or "",
-            thread_id=thread.id or "",
-            project_path=project_path,
-            selected_text=selected_text or (thread.selected_text or ""),
-            anchor_block_text=anchor_block_text,
-            neighbor_text=neighbor_text,
-            history_lines=history_lines,
-            manual_prompt=job.prompt_text,
-        )
-
-        await _update_job_state(
-            job_id,
-            progress=46,
-            message="Calling AI engine",
-            context_patch={
-                "selected_text": selected_text or (thread.selected_text or ""),
-                "anchor_block_text": anchor_block_text,
-                "neighbor_text": neighbor_text,
-                "history_lines": history_lines[-10:],
-                "project_path": project_path,
-                "thread_workspace": thread_cwd,
-            },
-        )
-
-        result = await run_cli_single_turn(
-            prompt,
-            thread_cwd,
-            session_id=resume_session_id,
-            should_cancel=lambda: _is_cancel_requested(job_id),
-            backend_name=thread_backend,
-            fork_session=fork_first_turn,
-        )
-        if fork_first_turn:
-            task_cli_state_service.record_thread_session_id(
-                thread.id, str(result.get("session_id") or "")
-            )
-        reply = str(result.get("text") or "").strip()
-        final_session_id = str(result.get("session_id") or "").strip()
-
-        thread = asset_discussion_service.get_thread(db, asset_id=thread.asset_id, thread_id=thread.id)
-        if not thread:
-            raise ValueError("Thread disappeared during AI execution")
-
-        ai_message = asset_discussion_service.add_thread_message(
-            db,
-            thread=thread,
-            role=AssetThreadMessageRole.AI,
-            content=reply,
-            creator_id=None,
-            metadata_json={"provider": thread_backend or "claude-cli", "job_id": job_id},
-        )
-        db.commit()
-        db.refresh(ai_message)
-
-        await asset_discussion_ws_manager.broadcast(
-            thread.asset_id,
-            {
-                "type": "message_created",
-                "asset_id": thread.asset_id,
-                "thread_id": thread.id,
-                "message": {
-                    "id": ai_message.id,
-                    "thread_id": ai_message.thread_id,
-                    "role": _as_status(ai_message.role),
-                    "content": ai_message.content,
-                    "creator_id": ai_message.creator_id,
-                    "creator_display_name": None,
-                    "creator_avatar_svg": None,
-                    "metadata_json": ai_message.metadata_json,
-                    "created_at": ai_message.created_at.isoformat() if ai_message.created_at else None,
-                },
-            },
-        )
-        await _update_job_state(
-            job_id,
-            status=AiJobStatus.SUCCESS,
-            progress=100,
-            message="AI reply completed",
-            result_patch={"message_id": ai_message.id},
-            session_id=final_session_id or None,
-            agent_backend=thread_backend,
-            finalize=True,
-        )
     except Exception as exc:
-        db.rollback()
-        status_after_error = _get_job_status(job_id)
+        status_after_error = await _get_job_status(job_id)
         if _is_cancel_requested(job_id) or status_after_error == AiJobStatus.CANCELLED:
             _clear_cancel_event(job_id)
             return
@@ -1666,64 +1916,42 @@ async def _execute_asset_thread_job(job_id: str) -> None:
         if job_kind in {JOB_KIND_RESOLUTION_PROPOSAL, JOB_KIND_RESOLUTION_REWRITE}:
             return
         try:
-            failed_job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-            if failed_job and failed_job.thread_id:
-                thread = asset_discussion_service.get_thread(db, asset_id=failed_job.asset_id, thread_id=failed_job.thread_id)
-                if thread:
-                    failure_message = asset_discussion_service.add_thread_message(
-                        db,
-                        thread=thread,
-                        role=AssetThreadMessageRole.SYSTEM,
-                        content=f"AI 回复失败: {exc}\n\n可重试：已自动采用超时重试策略，如仍失败请稍后再次触发。",
-                        creator_id=failed_job.creator_id,
-                        metadata_json={"error": str(exc), "job_id": job_id},
-                    )
-                    db.commit()
-                    db.refresh(failure_message)
-                    await asset_discussion_ws_manager.broadcast(
-                        thread.asset_id,
-                        {
-                            "type": "message_created",
-                            "asset_id": thread.asset_id,
-                            "thread_id": thread.id,
-                            "message": {
-                                "id": failure_message.id,
-                                "thread_id": failure_message.thread_id,
-                                "role": _as_status(failure_message.role),
-                                "content": failure_message.content,
-                                "creator_id": failure_message.creator_id,
-                                "creator_display_name": None,
-                                "creator_avatar_svg": None,
-                                "metadata_json": failure_message.metadata_json,
-                                "created_at": failure_message.created_at.isoformat() if failure_message.created_at else None,
-                            },
-                        },
-                    )
+            failure_state = await run_db_txn(
+                lambda db: _persist_asset_failure_message_sync(db, job_id=job_id, error_text=str(exc))
+            )
+            if failure_state:
+                await asset_discussion_ws_manager.broadcast(
+                    failure_state["asset_id"],
+                    {
+                        "type": "message_created",
+                        "asset_id": failure_state["asset_id"],
+                        "thread_id": failure_state["message"]["thread_id"],
+                        "message": failure_state["message"],
+                    },
+                )
         except Exception as msg_exc:
             logger.warning(f"Failed to append asset AI failure message: {msg_exc}")
-    finally:
-        context_stack.close()
-        db.close()
+def _sync_engine_session_sync(db: Session, job_id: str, session_id: str) -> bool:
+    """引擎 session 上报落库（线程内执行，由 run_db_txn 包装）；返回是否继续广播。"""
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if not job or not job.task_id:
+        return True
+    task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+    if task and (
+        job.session_revision is None
+        or int(task.session_revision or -1) == int(job.session_revision)
+    ):
+        task.session_id = session_id
+        return True
+    return False
 
 
 async def _on_engine_session(session_id: str, job_id: str) -> None:
     if not job_id:
         return
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if job and job.task_id:
-            task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if task and (
-                job.session_revision is None
-                or int(task.session_revision or -1) == int(job.session_revision)
-            ):
-                task.session_id = session_id
-                db.commit()
-            elif task:
-                return
-    finally:
-        db.close()
+    proceed = await run_db_txn(lambda db: _sync_engine_session_sync(db, job_id, session_id))
+    if not proceed:
+        return
     await _update_job_state(job_id, session_id=session_id)
 
 
@@ -1805,6 +2033,38 @@ def _apply_task_chat_job_interrupted(
     return serialize_job(job)
 
 
+def _mark_task_chat_job_interrupted_sync(
+    db: Session,
+    *,
+    job_id: str,
+    reason: str,
+    message: Optional[str],
+    session_id: Optional[str],
+    context_patch: Optional[Dict[str, Any]],
+    result_patch: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """中断标记 DB 段（线程内执行，由 run_db_txn 包装）。"""
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if (
+        not job
+        or job.channel != AiJobChannel.TASK_CHAT
+        or job.status in FINAL_STATUSES
+        or job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}
+    ):
+        return None
+    task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+    return _apply_task_chat_job_interrupted(
+        db,
+        job,
+        task,
+        reason,
+        message=message,
+        session_id=session_id,
+        context_patch=context_patch,
+        result_patch=result_patch,
+    )
+
+
 async def _mark_task_chat_job_interrupted(
     job_id: str,
     reason: str,
@@ -1816,32 +2076,40 @@ async def _mark_task_chat_job_interrupted(
 ) -> Optional[Dict[str, Any]]:
     if not job_id:
         return None
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if (
-            not job
-            or job.channel != AiJobChannel.TASK_CHAT
-            or job.status in FINAL_STATUSES
-            or job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}
-        ):
-            return None
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
-        payload = _apply_task_chat_job_interrupted(
+    payload = await run_db_txn(
+        lambda db: _mark_task_chat_job_interrupted_sync(
             db,
-            job,
-            task,
-            reason,
+            job_id=job_id,
+            reason=reason,
             message=message,
             session_id=session_id,
             context_patch=context_patch,
             result_patch=result_patch,
         )
-    finally:
-        db.close()
+    )
     if payload:
         await _broadcast_job_payload(payload, final=False)
     return payload
+
+
+def _engine_result_gate_sync(job_id: str, *, success: bool) -> bool:
+    """结果回调前置检查（线程内执行，由 run_db 包装）；返回是否继续处理。
+
+    WAITING_HITL 的失败结果不改变作业状态（保持挂起等待人工输入）；
+    成功结果照常走 finalize。
+    """
+    db = SessionLocal()
+    try:
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        if not job or job.status in FINAL_STATUSES:
+            return False
+        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}:
+            return False
+        if job.status == AiJobStatus.WAITING_HITL and not success:
+            return False
+        return True
+    finally:
+        db.close()
 
 
 async def _on_engine_result(
@@ -1853,18 +2121,9 @@ async def _on_engine_result(
 ) -> None:
     if not job_id:
         return
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job or job.status in FINAL_STATUSES:
-            return
-        if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}:
-            return
-        if job.status == AiJobStatus.WAITING_HITL and not success:
-            db.commit()
-            return
-    finally:
-        db.close()
+    proceed = await run_db(_engine_result_gate_sync, job_id, success=success)
+    if not proceed:
+        return
 
     if success:
         # 问题定位卡片只在用户点击「一键总结问题案例」时生成；
@@ -1913,36 +2172,57 @@ async def _execute_task_chat_job(job_id: str) -> None:
         _clear_cancel_event(job_id)
 
 
-async def _execute_task_chat_job_inner(job_id: str) -> None:
+def _load_task_chat_job_dispatch_sync(job_id: str) -> Optional[Dict[str, Any]]:
+    """任务聊天 job 分发前置查询（线程内执行，由 run_db 包装）。
+
+    返回 None：job 不存在/通道不符/已终态（无需执行）；
+    返回 {"job_kind": "diagnosis_summary"}：转交诊断总结执行器；
+    否则返回完整分发上下文。
+    """
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
         if not job or job.channel != AiJobChannel.TASK_CHAT:
-            return
+            return None
         # 防止“停止/中断”发生在排队阶段时，任务稍后仍被启动
         if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.CANCELLED, AiJobStatus.REVERTED}:
-            return
+            return None
+        job_context = job.context_json if isinstance(job.context_json, dict) else {}
+        if str(job_context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
+            return {"job_kind": "diagnosis_summary"}
         task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
         if not task:
             raise ValueError("Task not found for AI job")
-        # 问题定位任务「一键总结问题案例」：一次性总结任务，不写会话气泡，走独立执行器
-        job_context = job.context_json if isinstance(job.context_json, dict) else {}
-        if str(job_context.get("job_kind") or "").strip().upper() == JOB_KIND_DIAGNOSIS_SUMMARY:
-            return await _execute_diagnosis_summary_job(job_id)
+        return {
+            "task_id": task.id,
+            "workspace_id": task.workspace_id,
+            "creator_id": job.creator_id,
+            "session_id": job.session_id,
+            "prompt_text": job.prompt_text,
+        }
     finally:
         db.close()
 
+
+async def _execute_task_chat_job_inner(job_id: str) -> None:
+    state = await run_db(_load_task_chat_job_dispatch_sync, job_id)
+    if state is None:
+        return
+    if state.get("job_kind") == "diagnosis_summary":
+        # 问题定位任务「一键总结问题案例」：一次性总结任务，不写会话气泡，走独立执行器
+        return await _execute_diagnosis_summary_job(job_id)
+
     with bind_task_context(
-        task_id=task.id,
-        workspace_id=task.workspace_id,
-        user_id=job.creator_id,
+        task_id=state["task_id"],
+        workspace_id=state["workspace_id"],
+        user_id=state["creator_id"],
     ), bind_ai_context(
         job_id=job_id,
-        task_id=task.id,
-        session_id=job.session_id,
+        task_id=state["task_id"],
+        session_id=state["session_id"],
         event_type="execute_task_chat_job",
     ):
-        prompt = str((job.prompt_text or "")).strip()
+        prompt = str((state["prompt_text"] or "")).strip()
         if not prompt:
             raise ValueError("Empty task chat prompt")
 
@@ -2008,19 +2288,82 @@ def _resolve_task_project_path(task) -> str:
     return project_path
 
 
-async def _publish_diagnosis_summary_card(db: Session, task, result_record) -> None:
-    if result_record is None or not result_record.source_chat_message_id:
-        return
-    from app.domains.task.models.chat import ChatMessage
+def _prepare_diagnosis_summary_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
+    """诊断总结准备段（线程内执行，由 run_db_txn 包装）。
 
-    message = (
+    一次性完成 job/task 加载、transcript 汇总、project_path 解析与
+    任务粘性 backend 解析，返回纯数据（prompt 文本 + 各字段）。
+    """
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if not job:
+        return None
+    task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+    if not task or getattr(task, "task_type", None) != "DIAGNOSIS":
+        raise ValueError("Only diagnosis tasks support diagnosis summary")
+    job_context = job.context_json if isinstance(job.context_json, dict) else {}
+    source_session_id = str(
+        job_context.get("source_session_id") or job.session_id or task.session_id or ""
+    ).strip()
+    project_path = _resolve_task_project_path(task)
+    transcript = _collect_diagnosis_transcript_sync(db, task.id)
+    prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
+    task_backend = resolve_task_backend(db, task.id) if task.id else None
+    return {
+        "task_id": task.id,
+        "workspace_id": task.workspace_id,
+        "creator_id": str(job.creator_id or ""),
+        "source_session_id": source_session_id,
+        "project_path": project_path,
+        "prompt": prompt,
+        "task_backend": task_backend,
+    }
+
+
+def _collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int = 60000) -> str:
+    """汇总问题定位任务的会话文本（user/assistant/system），供一键总结使用。"""
+    from app.domains.task.models.chat import ChatMessage, MessageType
+    from app.domains.task.services import task_service as task_service_module
+
+    rows = (
         db.query(ChatMessage)
-        .filter(ChatMessage.id == result_record.source_chat_message_id)
-        .first()
+        .filter(
+            ChatMessage.task_id == task_id,
+            ChatMessage.message_type.in_([MessageType.TEXT, MessageType.INIT_REASON]),
+        )
+        .all()
     )
-    if not message:
-        return
-    await diagnosis_result_service.publish_diagnosis_result_message(db, task=task, message=message)
+    rows = task_service_module.sort_chat_messages(rows)
+    parts: List[str] = []
+    for row in rows:
+        role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)
+        if role == "user":
+            label = "用户"
+        elif role == "system":
+            label = "系统"
+        else:
+            label = "AI"
+        content = str(row.content or "").strip()
+        if not content:
+            continue
+        parts.append(f"[{label}] {content}")
+    transcript = "\n\n".join(parts).strip()
+    if not transcript:
+        return ""
+    limit = max(0, int(max_chars or 60000))
+    if len(transcript) > limit:
+        head = transcript[: limit * 3 // 4]
+        tail = transcript[-limit // 4:]
+        transcript = f"{head}\n\n…（中间内容过长已截断）…\n\n{tail}"
+    return transcript
+
+
+def _collect_diagnosis_transcript(task_id: str, max_chars: int = 60000) -> str:
+    """兼容入口：自建 session 汇总 transcript（调用方应在线程内调用）。"""
+    db = SessionLocal()
+    try:
+        return _collect_diagnosis_transcript_sync(db, task_id, max_chars)
+    finally:
+        db.close()
 
 
 async def _execute_diagnosis_summary_job(job_id: str) -> None:
@@ -2028,33 +2371,22 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
 
     汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并广播。
     与正常聊天不同：不向会话写入 AI 回复气泡。
+    准备段/结果落库段经 DB executor；CLI 调用期间不持有任何 session。
     """
-    db = SessionLocal()
-    task = None
-    creator_id = ""
-    source_session_id = ""
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job:
-            return
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-        if not task or getattr(task, "task_type", None) != "DIAGNOSIS":
-            raise ValueError("Only diagnosis tasks support diagnosis summary")
-        creator_id = str(job.creator_id or "")
-        job_context = job.context_json if isinstance(job.context_json, dict) else {}
-        source_session_id = str(
-            job_context.get("source_session_id") or job.session_id or task.session_id or ""
-        ).strip()
-    finally:
-        db.close()
+    prepared = await run_db_txn(lambda db: _prepare_diagnosis_summary_sync(db, job_id))
+    if prepared is None:
+        return
+    task_id = prepared["task_id"]
+    creator_id = prepared["creator_id"]
+    source_session_id = prepared["source_session_id"]
 
     with bind_task_context(
-        task_id=task.id,
-        workspace_id=task.workspace_id,
+        task_id=task_id,
+        workspace_id=prepared["workspace_id"],
         user_id=creator_id,
     ), bind_ai_context(
         job_id=job_id,
-        task_id=task.id,
+        task_id=task_id,
         session_id=None,
         event_type="diagnosis_summary",
     ):
@@ -2065,15 +2397,9 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             message="正在汇总会话并生成定位结果",
             context_patch={"job_kind": JOB_KIND_DIAGNOSIS_SUMMARY},
         )
-        project_path = _resolve_task_project_path(task)
-        transcript = _collect_diagnosis_transcript(task.id)
-        prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
-        # 任务粘性 backend：与该任务聊天引擎保持同一后端
-        task_backend_db = SessionLocal()
-        try:
-            task_backend = resolve_task_backend(task_backend_db, task.id) if task.id else None
-        finally:
-            task_backend_db.close()
+        project_path = prepared["project_path"]
+        task_backend = prepared["task_backend"]
+        prompt = prepared["prompt"]
 
         await _update_job_state(job_id, progress=55, message="AI 正在生成结构化定位结果")
         can_fork = bool(source_session_id and backend_supports_fork(task_backend))
@@ -2101,7 +2427,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
                 # transcript is the deterministic fallback for stale snapshots.
                 logger.warning(
                     "Diagnosis summary fork failed; using transcript fallback: task={}, backend={}, error={}",
-                    task.id,
+                    task_id,
                     task_backend,
                     exc,
                 )
@@ -2129,13 +2455,13 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
                 permission_mode="read-only",
             )
         except RuntimeError as exc:
-            if _is_job_cancelled_or_final(job_id):
+            if await _is_job_cancelled_or_final(job_id):
                 logger.info("Diagnosis summary run cancelled; discard result: job={}", job_id)
                 return
             raise
 
         # 用户已停止（或任务已终态）时丢弃结果：不能反填定位结果卡片、不能广播
-        if _is_job_cancelled_or_final(job_id):
+        if await _is_job_cancelled_or_final(job_id):
             logger.info("Diagnosis summary cancelled after run; discard result: job={}", job_id)
             return
 
@@ -2147,9 +2473,8 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
         if payload is None:
             raise ValueError("Failed to parse structured diagnosis summary")
 
-        db = SessionLocal()
-        try:
-            latest_task = db.query(SddTask).filter(SddTask.id == task.id).first()
+        def _persist_diagnosis_result_sync(db: Session) -> Dict[str, Any]:
+            latest_task = db.query(SddTask).filter(SddTask.id == task_id).first()
             if not latest_task:
                 raise ValueError("Task disappeared during diagnosis summary")
             result_record = diagnosis_result_service.upsert_diagnosis_result_from_ai(
@@ -2158,9 +2483,29 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
                 payload=payload,
                 actor_user_id=creator_id,
             )
-            await _publish_diagnosis_summary_card(db, latest_task, result_record)
+            return {
+                "task_id": str(latest_task.id),
+                "source_chat_message_id": str(result_record.source_chat_message_id or "") or None,
+            }
+
+        summary_state = await run_db_txn(_persist_diagnosis_result_sync)
+        # 结果卡片发布（含 WS 广播）保持在事件循环；DB 段自建短 session
+        from app.domains.task.models.chat import ChatMessage
+
+        card_db = SessionLocal()
+        try:
+            card_task = card_db.query(SddTask).filter(SddTask.id == summary_state["task_id"]).first()
+            card_message = (
+                card_db.query(ChatMessage).filter(ChatMessage.id == summary_state["source_chat_message_id"]).first()
+                if summary_state["source_chat_message_id"]
+                else None
+            )
+            if card_task is not None and card_message is not None:
+                await diagnosis_result_service.publish_diagnosis_result_message(
+                    card_db, task=card_task, message=card_message
+                )
         finally:
-            db.close()
+            card_db.close()
 
         await _update_job_state(
             job_id,
@@ -2179,62 +2524,73 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
         )
 
 
-async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job or not job.task_id:
-            return
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-        if not task:
-            raise ValueError("Task not found")
+def _load_task_chat_turn_state_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if not job or not job.task_id:
+        return None
+    task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+    if not task:
+        raise ValueError("Task not found")
+    # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
+    task_backend = resolve_task_backend(db, task.id)
+    return {
+        "task_id": task.id,
+        "workspace_id": task.workspace_id,
+        "creator_id": job.creator_id,
+        "fresh_session": bool((job.context_json if isinstance(job.context_json, dict) else {}).get("fresh_session")),
+        "task_backend": task_backend,
+        "job_session_id": job.session_id,
+        "session_turn_id": getattr(job, "session_turn_id", None),
+        "session_revision": getattr(job, "session_revision", None),
+    }
 
-        context = job.context_json if isinstance(job.context_json, dict) else {}
-        fresh_session = bool(context.get("fresh_session"))
-        # 任务粘性 backend：首次运行固化到 sdd_tasks，之后工作区切换不影响本任务
-        task_backend = resolve_task_backend(db, task.id)
-        engine = get_engine(task.id)
-        if not engine:
-            engine = WorkflowEngine(
-                task_id=task.id,
-                ws_id=task.workspace_id,
-                user_id=job.creator_id,
-                job_id=job_id,
-                backend_name=task_backend,
-                on_result=_on_engine_result,
-                on_hitl=_on_engine_hitl,
-                on_session=_on_engine_session,
-                on_error=_on_engine_error,
-            )
-            if job.session_id and not fresh_session:
-                engine.session_id = job.session_id
-        else:
-            engine.set_job_callbacks(
-                job_id=job_id,
-                on_result=_on_engine_result,
-                on_hitl=_on_engine_hitl,
-                on_session=_on_engine_session,
-                on_error=_on_engine_error,
-            )
-            if fresh_session:
-                engine.session_id = None
-            elif job.session_id:
-                # 恢复上次中断（或继续）的会话：总是以 DB 持久化的 session_id
-                # 为准，保证下次启动使用 --resume 重新进入原会话，而不是新开会话。
-                engine.session_id = job.session_id
-        engine.session_turn_id = getattr(job, "session_turn_id", None)
-        engine.session_revision = getattr(job, "session_revision", None)
-    finally:
-        db.close()
+
+async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
+    state = await run_db_txn(lambda db: _load_task_chat_turn_state_sync(db, job_id))
+    if state is None:
+        return
+    fresh_session = state["fresh_session"]
+    task_backend = state["task_backend"]
+    engine = get_engine(state["task_id"])
+    if not engine:
+        engine = WorkflowEngine(
+            task_id=state["task_id"],
+            ws_id=state["workspace_id"],
+            user_id=state["creator_id"],
+            job_id=job_id,
+            backend_name=task_backend,
+            on_result=_on_engine_result,
+            on_hitl=_on_engine_hitl,
+            on_session=_on_engine_session,
+            on_error=_on_engine_error,
+        )
+        if state["job_session_id"] and not fresh_session:
+            engine.session_id = state["job_session_id"]
+    else:
+        engine.set_job_callbacks(
+            job_id=job_id,
+            on_result=_on_engine_result,
+            on_hitl=_on_engine_hitl,
+            on_session=_on_engine_session,
+            on_error=_on_engine_error,
+        )
+        if fresh_session:
+            engine.session_id = None
+        elif state["job_session_id"]:
+            # 恢复上次中断（或继续）的会话：总是以 DB 持久化的 session_id
+            # 为准，保证下次启动使用 --resume 重新进入原会话，而不是新开会话。
+            engine.session_id = state["job_session_id"]
+    engine.session_turn_id = state["session_turn_id"]
+    engine.session_revision = state["session_revision"]
 
     with bind_task_context(
-        task_id=task.id,
-        workspace_id=task.workspace_id,
-        user_id=job.creator_id,
+        task_id=state["task_id"],
+        workspace_id=state["workspace_id"],
+        user_id=state["creator_id"],
     ), bind_ai_context(
         job_id=job_id,
-        task_id=task.id,
-        session_id=job.session_id,
+        task_id=state["task_id"],
+        session_id=state["job_session_id"],
         event_type="run_task_chat_turn",
     ):
         await _update_job_state(job_id, status=AiJobStatus.RUNNING, progress=55, message="AI is processing")
@@ -2249,65 +2605,84 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
         await _finalize_task_chat_job_from_engine(job_id, engine)
 
 
+def _finalize_task_chat_job_sync(
+    db: Session,
+    *,
+    job_id: str,
+    last_result_success: Optional[bool],
+    last_result_text: str,
+    is_timeout_interrupted: bool,
+    engine_session_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """finalize DB 段（线程内执行，由 run_db 包装）；返回 None 表示无需收尾。"""
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if (
+        not job
+        or job.status in FINAL_STATUSES
+        or job.status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}
+    ):
+        return None
+    task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+    if (
+        task
+        and job.session_revision is not None
+        and int(task.session_revision or -1) != int(job.session_revision)
+    ):
+        return None
+    if last_result_success is True:
+        job.status = AiJobStatus.SUCCESS
+        job.progress = 100
+        job.message = "AI reply completed"
+        payload = _merge_json(job.result_json, {"result_preview": (last_result_text or "")[:1600]})
+        job.result_json = payload
+        job.finished_at = datetime.utcnow()
+        db.commit()
+        db.refresh(job)
+        return serialize_job(job)
+    session_id = str(
+        engine_session_id or job.session_id or (getattr(task, "session_id", None) or "")
+    ).strip() or None
+    if is_timeout_interrupted:
+        message = "AI 会话超时，可继续发送消息恢复"
+        context_patch = {
+            "timeout_interrupted": True,
+            "timeout_message": last_result_text or "",
+        }
+        reason = last_result_text or "AI 会话超时"
+    else:
+        message = "AI 执行异常，可继续发送消息恢复"
+        context_patch = {
+            "interrupted_reason": last_result_text or "AI 执行异常",
+        }
+        reason = last_result_text or "AI 执行异常"
+    return _apply_task_chat_job_interrupted(
+        db,
+        job,
+        task,
+        reason,
+        message=message,
+        session_id=session_id,
+        context_patch=context_patch,
+    )
+
+
 async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngine) -> None:
     # Fallback for missing callback updates.
     is_timeout_interrupted = bool(getattr(engine, "last_result_interrupted", False)) or _looks_like_timeout_text(
         engine.last_result_text or ""
     )
-    db = SessionLocal()
-    try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if (
-            not job
-            or job.status in FINAL_STATUSES
-            or job.status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}
-        ):
-            return
-        task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
-        if (
-            task
-            and job.session_revision is not None
-            and int(task.session_revision or -1) != int(job.session_revision)
-        ):
-            return
-        if engine.last_result_success is True:
-            job.status = AiJobStatus.SUCCESS
-            job.progress = 100
-            job.message = "AI reply completed"
-            payload = _merge_json(job.result_json, {"result_preview": (engine.last_result_text or "")[:1600]})
-            job.result_json = payload
-            job.finished_at = datetime.utcnow()
-            db.commit()
-            db.refresh(job)
-            payload = serialize_job(job)
-        else:
-            session_id = str(
-                engine.session_id or job.session_id or (getattr(task, "session_id", None) or "")
-            ).strip() or None
-            if is_timeout_interrupted:
-                message = "AI 会话超时，可继续发送消息恢复"
-                context_patch = {
-                    "timeout_interrupted": True,
-                    "timeout_message": engine.last_result_text or "",
-                }
-                reason = engine.last_result_text or "AI 会话超时"
-            else:
-                message = "AI 执行异常，可继续发送消息恢复"
-                context_patch = {
-                    "interrupted_reason": engine.last_result_text or "AI 执行异常",
-                }
-                reason = engine.last_result_text or "AI 执行异常"
-            payload = _apply_task_chat_job_interrupted(
-                db,
-                job,
-                task,
-                reason,
-                message=message,
-                session_id=session_id,
-                context_patch=context_patch,
-            )
-    finally:
-        db.close()
+    payload = await run_db_txn(
+        lambda db: _finalize_task_chat_job_sync(
+            db,
+            job_id=job_id,
+            last_result_success=getattr(engine, "last_result_success", None),
+            last_result_text=engine.last_result_text or "",
+            is_timeout_interrupted=is_timeout_interrupted,
+            engine_session_id=getattr(engine, "session_id", None),
+        )
+    )
+    if payload is None:
+        return
     is_success = str(payload.get("status") or "") == AiJobStatus.SUCCESS.value
     await _broadcast_job_payload(payload, final=is_success)
     if not is_success:
@@ -2317,15 +2692,35 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
         schedule_queue(queue_key)
 
 
-async def _execute_job(job_id: str) -> None:
+def _load_job_channel_sync(job_id: str) -> Optional[AiJobChannel]:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job:
-            return
-        channel = job.channel
+        return job.channel if job else None
     finally:
         db.close()
+
+
+def _load_job_failure_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
+    """异常收尾查询（线程内执行，由 run_db 包装）；None 表示已终态/不存在。"""
+    db = SessionLocal()
+    try:
+        latest = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        if not latest or latest.status in FINAL_STATUSES or latest.status == AiJobStatus.INTERRUPTED:
+            return None
+        job_context = latest.context_json if isinstance(latest.context_json, dict) else {}
+        return {
+            "channel": latest.channel,
+            "job_kind": str(job_context.get("job_kind") or "").strip().upper(),
+        }
+    finally:
+        db.close()
+
+
+async def _execute_job(job_id: str) -> None:
+    channel = await run_db(_load_job_channel_sync, job_id)
+    if channel is None:
+        return
 
     with bind_ai_context(job_id=job_id, event_type="execute_job"):
         try:
@@ -2338,16 +2733,11 @@ async def _execute_job(job_id: str) -> None:
             raise ValueError(f"Unsupported AI job channel: {channel}")
         except Exception as exc:
             logger.exception(f"AI job execution failed: job={job_id}, error={exc}")
-            db = SessionLocal()
-            try:
-                latest = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-                if not latest or latest.status in FINAL_STATUSES or latest.status == AiJobStatus.INTERRUPTED:
-                    return
-                job_channel = latest.channel
-                job_context = latest.context_json if isinstance(latest.context_json, dict) else {}
-                job_kind = str(job_context.get("job_kind") or "").strip().upper()
-            finally:
-                db.close()
+            failure_context = await run_db(_load_job_failure_context_sync, job_id)
+            if failure_context is None:
+                return
+            job_channel = failure_context["channel"]
+            job_kind = failure_context["job_kind"]
             if job_channel == AiJobChannel.TASK_CHAT and job_kind != JOB_KIND_DIAGNOSIS_SUMMARY:
                 await _mark_task_chat_job_interrupted(
                     job_id,
@@ -2477,69 +2867,68 @@ def _merge_hitl_context(
     return merged
 
 
+def _load_hitl_resume_state_sync(db: Session, *, job_id: str, response: str) -> Optional[Dict[str, Any]]:
+    """HITL 恢复准备段（线程内执行，由 run_db_txn 包装）。"""
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    if not job or job.channel != AiJobChannel.TASK_CHAT or not job.task_id:
+        return None
+    task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+    if not task:
+        raise ValueError("Task not found")
+    return {
+        "task_id": task.id,
+        "workspace_id": task.workspace_id,
+        "user_id": job.creator_id,
+        "session_id": job.session_id,
+        # 任务粘性 backend：与任务聊天保持同一后端
+        "task_backend": resolve_task_backend(db, task.id),
+    }
+
+
 async def _resume_task_chat_job(job_id: str, response: str) -> None:
     try:
-        db = SessionLocal()
-        task_context: Dict[str, Optional[str]] = {
-            "task_id": None,
-            "workspace_id": None,
-            "user_id": None,
-            "session_id": None,
-        }
-        try:
-            job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-            if not job or job.channel != AiJobChannel.TASK_CHAT or not job.task_id:
-                return
-            task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if not task:
-                raise ValueError("Task not found")
-            task_context = {
-                "task_id": task.id,
-                "workspace_id": task.workspace_id,
-                "user_id": job.creator_id,
-                "session_id": job.session_id,
-            }
-
-            # 任务粘性 backend：与任务聊天保持同一后端
-            task_backend = resolve_task_backend(db, task.id)
-            engine = get_engine(task.id)
-            if not engine:
-                engine = WorkflowEngine(
-                    task_id=task.id,
-                    ws_id=task.workspace_id,
-                    user_id=job.creator_id,
-                    job_id=job_id,
-                    backend_name=task_backend,
-                    on_result=_on_engine_result,
-                    on_hitl=_on_engine_hitl,
-                    on_session=_on_engine_session,
-                    on_error=_on_engine_error,
-                )
-                if job.session_id:
-                    engine.session_id = job.session_id
-            else:
-                engine.set_job_callbacks(
-                    job_id=job_id,
-                    on_result=_on_engine_result,
-                    on_hitl=_on_engine_hitl,
-                    on_session=_on_engine_session,
-                    on_error=_on_engine_error,
-                )
-                if job.session_id:
-                    # 恢复中断/HITL 挂起会话：以 DB 持久化的 session_id 为准，
-                    # 保证下一步用 --resume 回到原会话而非新开会话。
-                    engine.session_id = job.session_id
-        finally:
-            db.close()
+        state = await run_db_txn(
+            lambda db: _load_hitl_resume_state_sync(db, job_id=job_id, response=response)
+        )
+        if state is None:
+            return
+        task_backend = state["task_backend"]
+        engine = get_engine(state["task_id"])
+        if not engine:
+            engine = WorkflowEngine(
+                task_id=state["task_id"],
+                ws_id=state["workspace_id"],
+                user_id=state["user_id"],
+                job_id=job_id,
+                backend_name=task_backend,
+                on_result=_on_engine_result,
+                on_hitl=_on_engine_hitl,
+                on_session=_on_engine_session,
+                on_error=_on_engine_error,
+            )
+            if state["session_id"]:
+                engine.session_id = state["session_id"]
+        else:
+            engine.set_job_callbacks(
+                job_id=job_id,
+                on_result=_on_engine_result,
+                on_hitl=_on_engine_hitl,
+                on_session=_on_engine_session,
+                on_error=_on_engine_error,
+            )
+            if state["session_id"]:
+                # 恢复中断/HITL 挂起会话：以 DB 持久化的 session_id 为准，
+                # 保证下一步用 --resume 回到原会话而非新开会话。
+                engine.session_id = state["session_id"]
 
         with bind_task_context(
-            task_id=task_context.get("task_id"),
-            workspace_id=task_context.get("workspace_id"),
-            user_id=task_context.get("user_id"),
+            task_id=state["task_id"],
+            workspace_id=state["workspace_id"],
+            user_id=state["user_id"],
         ), bind_ai_context(
             job_id=job_id,
-            task_id=task_context.get("task_id"),
-            session_id=task_context.get("session_id"),
+            task_id=state["task_id"],
+            session_id=state["session_id"],
             event_type="resume_waiting_hitl_job",
         ):
             await _update_job_state(
@@ -2564,6 +2953,62 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
         )
 
 
+def _claim_hitl_response_sync(
+    db: Session,
+    *,
+    task_id: str,
+    response: str,
+    job_id: Optional[str],
+    actor_user_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """HITL 认领段（线程内单事务）：互斥检查 + WAITING_HITL 认领 + context 归因。"""
+    # 会话/总结互斥：总结进行中禁止恢复会话（HITL 回复会重启 AI 执行）
+    if find_active_summary_job(db, task_id) is not None:
+        raise AiJobConflictError("一键总结问题案例进行中，请等待完成或停止后再回复")
+    query = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status == AiJobStatus.WAITING_HITL,
+        )
+        .order_by(SddAiJob.created_at.asc())
+    )
+    if job_id:
+        query = query.filter(SddAiJob.id == job_id)
+    job = query.first()
+    if not job:
+        return None
+
+    job.status = AiJobStatus.RUNNING
+    job.progress = 65
+    job.message = "Human response received"
+    job.error_message = None
+    pending_hitl = job.context_json.get("pending_hitl") if isinstance(job.context_json, dict) else None
+    job.context_json = _merge_hitl_context(
+        job.context_json,
+        response,
+        actor_user_id=actor_user_id,
+    )
+    db.commit()
+    db.refresh(job)
+    if isinstance(pending_hitl, dict):
+        try:
+            context_token_service.record_hitl(
+                db,
+                workspace_id=job.workspace_id,
+                task_id=str(job.task_id or ""),
+                ai_job_id=job.id,
+                session_id=job.session_id,
+                prompt=str(pending_hitl.get("prompt") or ""),
+                response=response,
+                source_kind="hitl_response",
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to record HITL context attribution for job {job.id}: {exc}")
+    return serialize_job(job)
+
+
 async def resume_waiting_hitl_job(
     *,
     task_id: str,
@@ -2571,55 +3016,13 @@ async def resume_waiting_hitl_job(
     job_id: Optional[str] = None,
     actor_user_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    db = SessionLocal()
-    try:
-        # 会话/总结互斥：总结进行中禁止恢复会话（HITL 回复会重启 AI 执行）
-        if find_active_summary_job(db, task_id) is not None:
-            raise AiJobConflictError("一键总结问题案例进行中，请等待完成或停止后再回复")
-        query = (
-            db.query(SddAiJob)
-            .filter(
-                SddAiJob.task_id == task_id,
-                SddAiJob.channel == AiJobChannel.TASK_CHAT,
-                SddAiJob.status == AiJobStatus.WAITING_HITL,
-            )
-            .order_by(SddAiJob.created_at.asc())
+    payload = await run_db_txn(
+        lambda db: _claim_hitl_response_sync(
+            db, task_id=task_id, response=response, job_id=job_id, actor_user_id=actor_user_id,
         )
-        if job_id:
-            query = query.filter(SddAiJob.id == job_id)
-        job = query.first()
-        if not job:
-            return None
-
-        job.status = AiJobStatus.RUNNING
-        job.progress = 65
-        job.message = "Human response received"
-        job.error_message = None
-        pending_hitl = job.context_json.get("pending_hitl") if isinstance(job.context_json, dict) else None
-        job.context_json = _merge_hitl_context(
-            job.context_json,
-            response,
-            actor_user_id=actor_user_id,
-        )
-        db.commit()
-        db.refresh(job)
-        if isinstance(pending_hitl, dict):
-            try:
-                context_token_service.record_hitl(
-                    db,
-                    workspace_id=job.workspace_id,
-                    task_id=str(job.task_id or ""),
-                    ai_job_id=job.id,
-                    session_id=job.session_id,
-                    prompt=str(pending_hitl.get("prompt") or ""),
-                    response=response,
-                    source_kind="hitl_response",
-                )
-            except Exception as exc:
-                logger.warning(f"Failed to record HITL context attribution for job {job.id}: {exc}")
-        payload = serialize_job(job)
-    finally:
-        db.close()
+    )
+    if payload is None:
+        return None
 
     await _broadcast_job_payload(payload, final=False)
     asyncio.create_task(_resume_task_chat_job(payload["id"], response))

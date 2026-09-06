@@ -83,6 +83,7 @@ def ws_env(monkeypatch, tmp_path):
     # manager 是进程级单例：清掉此前用例留下的连接与离线缓冲，避免事件串扰
     main_module.manager.registry.rooms.clear()
     main_module.manager.registry.presence.clear()
+    main_module.manager.registry.client_replay.clear()
     main_module.manager.pending_payloads.clear()
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: test_session)
@@ -114,6 +115,7 @@ def ws_env(monkeypatch, tmp_path):
 
     main_module.manager.registry.rooms.clear()
     main_module.manager.registry.presence.clear()
+    main_module.manager.registry.client_replay.clear()
     main_module.manager.pending_payloads.clear()
 
 

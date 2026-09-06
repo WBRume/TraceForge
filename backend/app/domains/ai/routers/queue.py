@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
+from app.core.offload import run_db
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.queue import (
     QueueActionValue,
@@ -86,14 +87,17 @@ async def act_queue_job(
 ):
     try:
         if action == "stop":
-            payload = queue_service.stop_queue_job(
+            # 多表查询+提交的同步段 off-loop（request session 顺序单线程使用）
+            payload = await run_db(
+                queue_service.stop_queue_job,
                 db,
                 source=source,
                 job_id=job_id,
                 user_id=current_user.id,
             )
         else:
-            payload = queue_service.retry_queue_job(
+            payload = await run_db(
+                queue_service.retry_queue_job,
                 db,
                 source=source,
                 job_id=job_id,

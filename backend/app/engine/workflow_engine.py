@@ -55,6 +55,11 @@ logger = get_logger(__name__, category="task_execution")
 
 EXECUTION_LOG_CONTENT_LIMIT = 4000
 EXECUTION_LOG_FLUSH_INTERVAL_SECONDS = 0.5
+# 批量落库失败重试：回填缓冲后，连续失败达上限丢弃最旧批次；drain 阶段最多重试轮数
+EXECUTION_LOG_MAX_CONSECUTIVE_FAILURES = 3
+EXECUTION_LOG_DRAIN_MAX_ROUNDS = 3
+SEGMENT_MAX_CONSECUTIVE_FAILURES = 3
+SEGMENT_DRAIN_MAX_ROUNDS = 3
 
 
 # ── 全局引擎注册表：task_id -> WorkflowEngine ──
@@ -233,12 +238,14 @@ class WorkflowEngine:
         self._execution_log_flush_task: Optional[asyncio.Task] = None
         self._draining_execution_logs = False
         self._execution_log_order = time.time_ns()
+        self._execution_log_failures = 0
         # context segment / snapshot 批量窗口（高频事件不再逐条提交）
         self._segment_buffer: List[Tuple[str, Dict[str, Any]]] = []
         self._segment_flush_task: Optional[asyncio.Task] = None
         self._draining_segments = False
         self._thinking_dirty = False
         self._pending_snapshot_update: Dict[str, Any] = {}
+        self._segment_failures = 0
         # 事件门禁与回合级缓存（run() 时加载）
         self._gate: Optional[SessionGate] = None
         self._session_generation: Optional[int] = None
@@ -296,7 +303,10 @@ class WorkflowEngine:
         return True if gate is None else gate.is_current()
 
     def _persist_execution_logs_sync(self, entries: List[Tuple[str, LogType, int]]) -> None:
-        """Persist one execution-log batch in a single transaction (线程内执行)."""
+        """Persist one execution-log batch in a single transaction (线程内执行).
+
+        失败抛出由调用方负责回填重试（见 _requeue_execution_logs）。
+        """
         if not entries:
             return
 
@@ -319,11 +329,23 @@ class WorkflowEngine:
                 for content, log_type, event_order in entries
             ])
             db.commit()
-        except Exception as e:
+        except Exception:
             db.rollback()
-            logger.exception(f"Save execution log batch failed: {e}")
+            raise
         finally:
             db.close()
+
+    def _requeue_execution_logs(self, batch: List[Tuple[str, LogType, int]]) -> None:
+        """落库失败：回填缓冲保持顺序；连续失败达上限则丢弃最旧批次（防缓冲无限增长）。"""
+        self._execution_log_failures += 1
+        if self._execution_log_failures >= EXECUTION_LOG_MAX_CONSECUTIVE_FAILURES:
+            logger.error(
+                f"Execution log persist failed {self._execution_log_failures}x "
+                f"consecutively, dropping oldest batch ({len(batch)} entries)"
+            )
+            self._execution_log_failures = 0
+            return
+        self._execution_log_buffer[:0] = batch
 
     def _queue_execution_log(self, content: str, log_type: LogType = LogType.STDOUT) -> None:
         """Queue a business-relevant terminal event for short-window batching."""
@@ -336,7 +358,12 @@ class WorkflowEngine:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             batch, self._execution_log_buffer = self._execution_log_buffer, []
-            self._persist_execution_logs_sync(batch)
+            try:
+                self._persist_execution_logs_sync(batch)
+                self._execution_log_failures = 0
+            except Exception as exc:
+                logger.warning(f"Execution log batch flush failed: {exc}")
+                self._requeue_execution_logs(batch)
             return
 
         if self._draining_execution_logs:
@@ -359,10 +386,19 @@ class WorkflowEngine:
         if not self._execution_log_buffer:
             return
         batch, self._execution_log_buffer = self._execution_log_buffer, []
-        await run_db(self._persist_execution_logs_sync, batch)
+        try:
+            await run_db(self._persist_execution_logs_sync, batch)
+            self._execution_log_failures = 0
+        except Exception as exc:
+            logger.warning(f"Execution log batch flush failed: {exc}")
+            self._requeue_execution_logs(batch)
 
     async def _drain_execution_logs(self) -> None:
-        """Flush buffered terminal events before an engine run returns."""
+        """Flush buffered terminal events before an engine run returns.
+
+        drain 阶段不轻易丢批：最多重试 3 轮（每轮失败回填），仍失败则保留缓冲
+        等待进程级后续 flush（由 _drain 之外的定时窗口继续兜底）。
+        """
         self._draining_execution_logs = True
         try:
             scheduled = self._execution_log_flush_task
@@ -372,8 +408,12 @@ class WorkflowEngine:
                 except asyncio.CancelledError:
                     pass
             self._execution_log_flush_task = None
-            while self._execution_log_buffer:
+            retries = 0
+            while self._execution_log_buffer and retries < EXECUTION_LOG_DRAIN_MAX_ROUNDS:
+                before = len(self._execution_log_buffer)
                 await self._flush_execution_logs()
+                if len(self._execution_log_buffer) >= before:
+                    retries += 1
         finally:
             self._draining_execution_logs = False
 
@@ -516,15 +556,44 @@ class WorkflowEngine:
             return
         try:
             await run_db(self._persist_segments_sync, entries, snapshot_update)
+            self._segment_failures = 0
         except Exception as exc:
             logger.warning(f"Context segment batch flush failed: {exc}")
+            self._requeue_segments(entries, snapshot_update)
+
+    def _requeue_segments(
+        self,
+        entries: List[Tuple[str, Dict[str, Any]]],
+        snapshot_update: Optional[Dict[str, Any]],
+    ) -> None:
+        """落库失败：回填 segment 与 snapshot 待写值；连续失败达上限丢最旧 segment 批。"""
+        if snapshot_update:
+            # snapshot 是 last-write-wins 合并值，失败后先恢复为 pending
+            merged = dict(snapshot_update)
+            if self._pending_snapshot_update:
+                merged.update(self._pending_snapshot_update)
+            self._pending_snapshot_update = merged
+        self._segment_failures += 1
+        if self._segment_failures >= SEGMENT_MAX_CONSECUTIVE_FAILURES:
+            logger.error(
+                f"Context segment persist failed {self._segment_failures}x "
+                f"consecutively, dropping oldest batch ({len(entries)} entries)"
+            )
+            self._segment_failures = 0
+            self._schedule_segment_flush()
+            return
+        self._segment_buffer[:0] = entries
+        self._schedule_segment_flush()
 
     def _persist_segments_sync(
         self,
         entries: List[Tuple[str, Dict[str, Any]]],
         snapshot_update: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """线程内执行：单事务写入一批 segment（可选顺带 snapshot 更新）。"""
+        """线程内执行：单事务写入一批 segment（可选顺带 snapshot 更新）。
+
+        失败抛出由调用方负责回填重试（见 _requeue_segments）。
+        """
         if not entries and not snapshot_update:
             return
         db = SessionLocal()
@@ -535,13 +604,17 @@ class WorkflowEngine:
             context_token_service.record_segments_batch(
                 db, entries, snapshot_update=snapshot_update,
             )
-        except Exception as exc:
-            logger.warning(f"Context token segment batch failed: {exc}")
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
     async def _drain_segments(self) -> None:
-        """强制排空 segment/snapshot 缓冲（结束、异常、HITL、最终消息前调用）。"""
+        """强制排空 segment/snapshot 缓冲（结束、异常、HITL、最终消息前调用）。
+
+        最多重试 3 轮（每轮失败回填），仍失败则保留 pending 等后续窗口兜底。
+        """
         self._draining_segments = True
         try:
             scheduled = self._segment_flush_task
@@ -551,8 +624,24 @@ class WorkflowEngine:
                 except asyncio.CancelledError:
                     pass
             self._segment_flush_task = None
-            while self._segment_buffer or self._thinking_dirty or self._pending_snapshot_update:
+            retries = 0
+            while (
+                (self._segment_buffer or self._thinking_dirty or self._pending_snapshot_update)
+                and retries < SEGMENT_DRAIN_MAX_ROUNDS
+            ):
+                before = (
+                    len(self._segment_buffer)
+                    + (1 if self._thinking_dirty else 0)
+                    + (1 if self._pending_snapshot_update else 0)
+                )
                 await self._flush_segments()
+                after = (
+                    len(self._segment_buffer)
+                    + (1 if self._thinking_dirty else 0)
+                    + (1 if self._pending_snapshot_update else 0)
+                )
+                if after >= before:
+                    retries += 1
         finally:
             self._draining_segments = False
 

@@ -15,6 +15,7 @@ from app.core.distributed_lock import (
     make_resource_busy_error,
 )
 from app.core.logging import audit_log, get_logger
+from app.core.offload import run_db
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.ai_job import AiJobResponse
@@ -416,7 +417,9 @@ async def cancel_ai_job(
         raise HTTPException(status_code=403, detail="No permission to cancel AI jobs")
 
     try:
-        job = ai_job_service.cancel_job(
+        # 查询+提交的同步段 off-loop（request session 顺序单线程使用）
+        job = await run_db(
+            ai_job_service.cancel_job,
             db,
             workspace_id=ws_id,
             job_id=job_id,

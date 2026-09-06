@@ -91,8 +91,12 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 )
 from app.domains.asset.services.asset_document_service import parse_document_payload
 from app.domains.workspace_asset.services import workspace_task_detail_service
+from app.core.logging import get_logger
+from app.core.offload import run_db_txn
 from app.domains.ai.services.ai_job_service import run_cli_single_turn
 from app.agents.selection import resolve_workspace_backend
+
+logger = get_logger(__name__, category="workspace_asset")
 
 
 class WorkspaceAssetWriteError(Exception):
@@ -1535,6 +1539,207 @@ def _update_preview_job_state(
     db.refresh(job)
 
 
+def _load_preview_job_sync(db: Session, job_id: str) -> Optional[SddAiJob]:
+    return db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+
+
+def _prepare_requirement_import_sync(
+    db: Session,
+    *,
+    job_id: str,
+    markdown: str,
+    source_kind: Optional[str],
+    source_ref: Optional[str],
+    source_uri: Optional[str],
+    file_name: str,
+) -> Optional[Dict[str, Any]]:
+    """import preview 准备段（线程内单事务）：状态推进 + prompt + backend。"""
+    job = _load_preview_job_sync(db, job_id)
+    if not job:
+        return None
+    _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=8, message="Parsing requirement document")
+    project_path = _workspace_project_path_or_error(db, job.workspace_id)
+    prompt = _build_requirement_preview_prompt(
+        mode="import",
+        markdown=markdown,
+        source_kind=source_kind,
+        source_ref=source_ref,
+        source_uri=source_uri,
+        file_name=file_name,
+    )
+    job.prompt_text = prompt
+    _update_preview_job_state(db, job, progress=28, message="Running agent CLI requirement preview")
+    backend_name = resolve_workspace_backend(db, job.workspace_id)
+    return {
+        "workspace_id": str(job.workspace_id),
+        "creator_id": str(job.creator_id),
+        "project_path": project_path,
+        "prompt": prompt,
+        "backend_name": backend_name,
+    }
+
+
+def _finalize_requirement_import_sync(
+    db: Session,
+    *,
+    job_id: str,
+    file_name: str,
+    markdown: str,
+    source_kind: Optional[str],
+    source_uri: Optional[str],
+    source_ref: Optional[str],
+    items: List[dict],
+    metadata: dict,
+) -> Dict[str, Any]:
+    """import preview 收尾段（线程内单事务）：batch 创建 + 终态。"""
+    job = _load_preview_job_sync(db, job_id)
+    if not job:
+        raise WorkspaceAssetWriteError("Requirement preview job not found", status_code=404)
+    batch = _create_requirement_preview_batch(
+        db,
+        workspace_id=job.workspace_id,
+        actor_id=job.creator_id,
+        file_name=file_name,
+        markdown=markdown,
+        source_kind=source_kind,
+        source_uri=source_uri,
+        source_ref=source_ref,
+        source_metadata=metadata,
+        items=items,
+        audit_action=RequirementAuditAction.IMPORT_PREVIEW_CREATED,
+    )
+    _update_preview_job_state(
+        db,
+        job,
+        status=AiJobStatus.SUCCESS,
+        progress=100,
+        message="Requirement AI preview created",
+        context_patch={"preview_batch_id": batch.id},
+        result={"item_count": len(items), "batch_id": batch.id},
+    )
+    return {"batch_id": str(batch.id), "item_count": len(items)}
+
+
+def _fail_requirement_preview_sync(
+    db: Session,
+    *,
+    job_id: str,
+    message: str,
+    error: str,
+) -> None:
+    """preview job 失败终态（线程内单事务，重新加载 job）。"""
+    job = _load_preview_job_sync(db, job_id)
+    if not job:
+        return
+    _update_preview_job_state(
+        db,
+        job,
+        status=AiJobStatus.FAILED,
+        progress=100,
+        message=message,
+        error=error,
+    )
+
+
+def _prepare_requirement_split_sync(
+    db: Session,
+    *,
+    job_id: str,
+) -> Optional[Dict[str, Any]]:
+    """split preview 准备段（线程内单事务）。"""
+    job = _load_preview_job_sync(db, job_id)
+    if not job:
+        return None
+    context = job.context_json if isinstance(job.context_json, dict) else {}
+    requirement_id = str(context.get("requirement_id") or "").strip()
+    requirement = _get_requirement(db, job.workspace_id, requirement_id)
+    if not requirement:
+        raise WorkspaceAssetWriteError("Requirement not found", status_code=404)
+    content = (requirement.body or requirement.title or "").strip()
+    if not content:
+        raise WorkspaceAssetWriteError("Requirement content is required for AI split preview.", status_code=422)
+    project_path = _workspace_project_path_or_error(db, job.workspace_id)
+    _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=16, message="Running Claude Code CLI split preview")
+    prompt = _build_requirement_preview_prompt(
+        mode="split",
+        markdown=content,
+        source_kind="split",
+        source_ref=requirement.id,
+        source_uri=requirement.source_uri,
+        file_name=None,
+    )
+    job.prompt_text = prompt
+    backend_name = resolve_workspace_backend(db, job.workspace_id)
+    return {
+        "requirement_id": str(requirement.id),
+        "parent_source_metadata": requirement.source_metadata_json if isinstance(requirement.source_metadata_json, dict) else {},
+        "requirement_source_uri": requirement.source_uri,
+        "change_reason": context.get("change_reason"),
+        "workspace_id": str(job.workspace_id),
+        "creator_id": str(job.creator_id),
+        "content": content,
+        "project_path": project_path,
+        "prompt": prompt,
+        "backend_name": backend_name,
+    }
+
+
+def _finalize_requirement_split_sync(
+    db: Session,
+    *,
+    job_id: str,
+    prepared: Dict[str, Any],
+    items: List[dict],
+    backend_name: Optional[str],
+    session_id: Optional[str],
+) -> Dict[str, Any]:
+    """split preview 收尾段（线程内单事务）。"""
+    job = _load_preview_job_sync(db, job_id)
+    if not job:
+        raise WorkspaceAssetWriteError("Requirement preview job not found", status_code=404)
+    requirement = _get_requirement(db, job.workspace_id, prepared["requirement_id"])
+    if not requirement:
+        raise WorkspaceAssetWriteError("Requirement not found", status_code=404)
+    metadata = {
+        **prepared["parent_source_metadata"],
+        "parent_requirement_id": prepared["requirement_id"],
+        "ai_preview": True,
+        "ai_job_id": job.id,
+        "splitter": backend_name,
+        "session_id": session_id,
+    }
+    for item in items:
+        item["source_metadata"] = {
+            **(item.get("source_metadata") or {}),
+            "parent_requirement_id": prepared["requirement_id"],
+        }
+    batch = _create_requirement_preview_batch(
+        db,
+        workspace_id=job.workspace_id,
+        actor_id=job.creator_id,
+        file_name=None,
+        markdown=prepared["content"],
+        source_kind="split",
+        source_uri=prepared["requirement_source_uri"],
+        source_ref=prepared["requirement_id"],
+        source_metadata=metadata,
+        items=items,
+        audit_action=RequirementAuditAction.SPLIT_PREVIEW_CREATED,
+        requirement_id=prepared["requirement_id"],
+        reason=prepared["change_reason"],
+    )
+    _update_preview_job_state(
+        db,
+        job,
+        status=AiJobStatus.SUCCESS,
+        progress=100,
+        message="Requirement split preview created",
+        context_patch={"preview_batch_id": batch.id},
+        result={"item_count": len(items), "batch_id": batch.id},
+    )
+    return {"batch_id": str(batch.id), "item_count": len(items)}
+
+
 async def run_requirement_import_preview_job(
     job_id: str,
     *,
@@ -1544,161 +1749,107 @@ async def run_requirement_import_preview_job(
     source_uri: Optional[str],
     source_ref: Optional[str],
 ) -> None:
-    db = SessionLocal()
+    """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。"""
+    parsed = _parsed_document(file_name, raw)
+    markdown = str(parsed.get("normalized_markdown") or "").strip()
     try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job:
+        prepared = await run_db_txn(
+            lambda db: _prepare_requirement_import_sync(
+                db,
+                job_id=job_id,
+                markdown=markdown,
+                source_kind=source_kind,
+                source_ref=source_ref,
+                source_uri=source_uri,
+                file_name=file_name,
+            )
+        )
+        if prepared is None:
             return
+        # CLI 调用期间不持有任何 DB session
+        ai_result = await run_cli_single_turn(
+            prepared["prompt"],
+            prepared["project_path"],
+            max_attempts=1,
+            backend_name=prepared["backend_name"],
+        )
+        parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
+        items = _normalize_ai_preview_items(parsed_json)
+        items = _coalesce_simple_import_preview_items(
+            markdown=markdown,
+            file_name=file_name,
+            items=items,
+        )
+        metadata = _document_metadata(
+            parsed,
+            extra={
+                "ai_preview": True,
+                "ai_job_id": job_id,
+                "splitter": "claude-code-cli",
+                "session_id": ai_result.get("session_id"),
+            },
+        )
+        await run_db_txn(
+            lambda db: _finalize_requirement_import_sync(
+                db,
+                job_id=job_id,
+                file_name=file_name,
+                markdown=markdown,
+                source_kind=source_kind,
+                source_uri=source_uri,
+                source_ref=source_ref,
+                items=items,
+                metadata=metadata,
+            )
+        )
+    except Exception as exc:
         try:
-            _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=8, message="Parsing requirement document")
-            parsed = _parsed_document(file_name, raw)
-            markdown = str(parsed.get("normalized_markdown") or "").strip()
-            project_path = _workspace_project_path_or_error(db, job.workspace_id)
-            prompt = _build_requirement_preview_prompt(
-                mode="import",
-                markdown=markdown,
-                source_kind=source_kind,
-                source_ref=source_ref,
-                source_uri=source_uri,
-                file_name=file_name,
+            await run_db_txn(
+                lambda db: _fail_requirement_preview_sync(
+                    db, job_id=job_id, message="Requirement AI preview failed", error=str(exc),
+                )
             )
-            job.prompt_text = prompt
-            _update_preview_job_state(db, job, progress=28, message="Running agent CLI requirement preview")
-            backend_name = resolve_workspace_backend(db, job.workspace_id)
-            ai_result = await run_cli_single_turn(prompt, project_path, max_attempts=1, backend_name=backend_name)
-            parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
-            items = _normalize_ai_preview_items(parsed_json)
-            items = _coalesce_simple_import_preview_items(
-                markdown=markdown,
-                file_name=file_name,
-                items=items,
-            )
-            metadata = _document_metadata(
-                parsed,
-                extra={
-                    "ai_preview": True,
-                    "ai_job_id": job.id,
-                    "splitter": "claude-code-cli",
-                    "session_id": ai_result.get("session_id"),
-                },
-            )
-            batch = _create_requirement_preview_batch(
-                db,
-                workspace_id=job.workspace_id,
-                actor_id=job.creator_id,
-                file_name=file_name,
-                markdown=markdown,
-                source_kind=source_kind,
-                source_uri=source_uri,
-                source_ref=source_ref,
-                source_metadata=metadata,
-                items=items,
-                audit_action=RequirementAuditAction.IMPORT_PREVIEW_CREATED,
-            )
-            _update_preview_job_state(
-                db,
-                job,
-                status=AiJobStatus.SUCCESS,
-                progress=100,
-                message="Requirement AI preview created",
-                context_patch={"preview_batch_id": batch.id},
-                result={"item_count": len(items), "batch_id": batch.id},
-            )
-        except Exception as exc:
-            db.rollback()
-            _update_preview_job_state(
-                db,
-                job,
-                status=AiJobStatus.FAILED,
-                progress=100,
-                message="Requirement AI preview failed",
-                error=str(exc),
-            )
-    finally:
-        db.close()
+        except Exception:
+            logger.exception("Failed to mark requirement import preview job failed")
 
 
 async def run_requirement_split_preview_job(job_id: str) -> None:
-    db = SessionLocal()
+    """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。"""
     try:
-        job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not job:
+        prepared = await run_db_txn(lambda db: _prepare_requirement_split_sync(db, job_id=job_id))
+        if prepared is None:
             return
-        context = job.context_json if isinstance(job.context_json, dict) else {}
-        requirement_id = str(context.get("requirement_id") or "").strip()
-        try:
-            requirement = _get_requirement(db, job.workspace_id, requirement_id)
-            if not requirement:
-                raise WorkspaceAssetWriteError("Requirement not found", status_code=404)
-            content = (requirement.body or requirement.title or "").strip()
-            if not content:
-                raise WorkspaceAssetWriteError("Requirement content is required for AI split preview.", status_code=422)
-            project_path = _workspace_project_path_or_error(db, job.workspace_id)
-            _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=16, message="Running Claude Code CLI split preview")
-            prompt = _build_requirement_preview_prompt(
-                mode="split",
-                markdown=content,
-                source_kind="split",
-                source_ref=requirement.id,
-                source_uri=requirement.source_uri,
-                file_name=None,
-            )
-            job.prompt_text = prompt
-            backend_name = resolve_workspace_backend(db, job.workspace_id)
-            ai_result = await run_cli_single_turn(prompt, project_path, max_attempts=1, backend_name=backend_name)
-            parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
-            items = _normalize_ai_preview_items(parsed_json)
-            if len(items) <= 1:
-                raise WorkspaceAssetWriteError("AI split preview must produce at least two Requirement preview items.", status_code=422)
-            metadata = {
-                **(requirement.source_metadata_json or {}),
-                "parent_requirement_id": requirement.id,
-                "ai_preview": True,
-                "ai_job_id": job.id,
-                "splitter": backend_name,
-                "session_id": ai_result.get("session_id"),
-            }
-            for item in items:
-                item["source_metadata"] = {
-                    **(item.get("source_metadata") or {}),
-                    "parent_requirement_id": requirement.id,
-                }
-            batch = _create_requirement_preview_batch(
+        backend_name = prepared["backend_name"]
+        # CLI 调用期间不持有任何 DB session
+        ai_result = await run_cli_single_turn(
+            prepared["prompt"],
+            prepared["project_path"],
+            max_attempts=1,
+            backend_name=backend_name,
+        )
+        parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
+        items = _normalize_ai_preview_items(parsed_json)
+        if len(items) <= 1:
+            raise WorkspaceAssetWriteError("AI split preview must produce at least two Requirement preview items.", status_code=422)
+        await run_db_txn(
+            lambda db: _finalize_requirement_split_sync(
                 db,
-                workspace_id=job.workspace_id,
-                actor_id=job.creator_id,
-                file_name=None,
-                markdown=content,
-                source_kind="split",
-                source_uri=requirement.source_uri,
-                source_ref=requirement.id,
-                source_metadata=metadata,
+                job_id=job_id,
+                prepared=prepared,
                 items=items,
-                audit_action=RequirementAuditAction.SPLIT_PREVIEW_CREATED,
-                requirement_id=requirement.id,
-                reason=context.get("change_reason"),
+                backend_name=backend_name,
+                session_id=ai_result.get("session_id"),
             )
-            _update_preview_job_state(
-                db,
-                job,
-                status=AiJobStatus.SUCCESS,
-                progress=100,
-                message="Requirement split preview created",
-                context_patch={"preview_batch_id": batch.id},
-                result={"item_count": len(items), "batch_id": batch.id},
+        )
+    except Exception as exc:
+        try:
+            await run_db_txn(
+                lambda db: _fail_requirement_preview_sync(
+                    db, job_id=job_id, message="Requirement split preview failed", error=str(exc),
+                )
             )
-        except Exception as exc:
-            db.rollback()
-            _update_preview_job_state(
-                db,
-                job,
-                status=AiJobStatus.FAILED,
-                progress=100,
-                message="Requirement split preview failed",
-                error=str(exc),
-            )
-    finally:
-        db.close()
+        except Exception:
+            logger.exception("Failed to mark requirement split preview job failed")
 
 
 def create_requirement_import_preview(

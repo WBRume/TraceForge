@@ -140,6 +140,7 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import", task_id="task-import")
@@ -200,6 +201,7 @@ def test_requirement_import_preview_keeps_simple_requirement_as_single_item(monk
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-simple-import", task_id="task-simple-import")
@@ -232,6 +234,7 @@ def test_requirement_ai_preview_requires_configured_project_path(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         with _session(SessionLocal) as db:
             user, _workspace, _task = _seed_workspace(db, workspace_id="ws-import-no-path", task_id="task-import-no-path")
 
@@ -383,6 +386,7 @@ def test_requirement_import_preview_multiple_items_creates_parent_with_children(
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import-tree", task_id="task-import-tree")
@@ -485,6 +489,7 @@ def test_requirement_split_preview_and_confirm_create_child_requirements(monkeyp
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_split_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-split", task_id="task-split")

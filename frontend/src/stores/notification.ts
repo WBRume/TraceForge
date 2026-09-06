@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { buildBackendWsUrl } from '@/utils/ws'
+import { wsBackoffDelay } from '@/utils/wsBackoff'
 
 export type AppNotificationItem = {
   id: string
@@ -26,6 +27,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
   let ws: WebSocket | null = null
   let reconnectTimer: number | null = null
   let started = false
+  let wsReconnectAttempt = 0
 
   const refreshUnreadCount = async () => {
     if (!authStore.isAuthenticated) return
@@ -140,6 +142,7 @@ export const useNotificationStore = defineStore('appNotification', () => {
     ws = new WebSocket(buildBackendWsUrl('/ws/notifications', { token: authStore.token }))
     ws.onopen = () => {
       connected.value = true
+      wsReconnectAttempt = 0
     }
     ws.onmessage = (event) => {
       try {
@@ -158,13 +161,15 @@ export const useNotificationStore = defineStore('appNotification', () => {
       connected.value = false
       if (event.code === 1008 || !started) return
       clearReconnectTimer()
+      const delay = wsBackoffDelay(wsReconnectAttempt, 3000)
+      wsReconnectAttempt += 1
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null
         if (started && authStore.isAuthenticated) {
           connectWs()
           void refreshUnreadCount()
         }
-      }, 3000)
+      }, delay)
     }
   }
 

@@ -29,7 +29,7 @@ class NotificationConnectionManager:
 
     async def connect(self, websocket: WebSocket, user_id: str) -> OutboundConnection:
         await websocket.accept()
-        connection = await self.registry.connect(user_id, websocket)
+        connection = await self.registry.connect(user_id, websocket, user_id=user_id)
         logger.info(
             f"Notification websocket connected for user {user_id} "
             f"(active={len(self.registry.rooms.get(user_id, {}))})"

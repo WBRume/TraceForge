@@ -381,6 +381,7 @@ def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(mon
         return None
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "_execute_task_chat_job", _raise)
     monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _ignore_broadcast)
 
@@ -424,6 +425,7 @@ def test_startup_recovery_only_schedules_queues_owned_by_ai_job_service(monkeypa
 
     scheduled = []
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "schedule_queue", scheduled.append)
 
     count = asyncio.run(ai_job_service.recover_pending_queues())
@@ -451,6 +453,7 @@ def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):
     db.close()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     assert ai_job_service._take_next_pending_job_id_sync(f"{AiJobChannel.TASK_CHAT.value}:task-1") is None
     check_db = SessionLocal()
@@ -479,6 +482,7 @@ def test_ai_job_queue_pauses_failed_task_pending_jobs(monkeypatch):
     db.close()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     assert ai_job_service._take_next_pending_job_id_sync(f"{AiJobChannel.TASK_CHAT.value}:task-1") is None
     check_db = SessionLocal()
@@ -526,6 +530,7 @@ def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
     engine = _FakeEngine()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "get_engine", lambda _task_id: engine)
     monkeypatch.setattr(ai_job_service, "_update_job_state", _noop_update_job_state)
     monkeypatch.setattr(ai_job_service, "_finalize_task_chat_job_from_engine", _noop_finalize)
@@ -558,6 +563,7 @@ def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
         broadcasted.append((payload["id"], final))
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _broadcast)
     monkeypatch.setattr(ai_job_service, "schedule_queue", lambda queue_key: scheduled.append(queue_key))
 
@@ -601,6 +607,7 @@ def test_finalize_auto_failure_marks_task_and_job_interrupted(monkeypatch):
         broadcasted.append((payload["id"], final))
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _broadcast)
     monkeypatch.setattr(ai_job_service, "schedule_queue", lambda queue_key: scheduled.append(queue_key))
 
@@ -654,6 +661,7 @@ def test_run_task_chat_turn_fresh_session_clears_engine_session(monkeypatch):
     engine = _FakeEngine()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "get_engine", lambda _task_id: engine)
     monkeypatch.setattr(ai_job_service, "_update_job_state", _noop_update_job_state)
     monkeypatch.setattr(ai_job_service, "_finalize_task_chat_job_from_engine", _noop_finalize)

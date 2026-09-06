@@ -2,7 +2,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, toValue, watch, type MaybeR
 import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { buildBackendWsUrl } from '@/utils/ws'
-
+import { wsBackoffDelay } from '@/utils/wsBackoff'
 export type AssetSummary = {
   id: string
   task_id: string
@@ -177,6 +177,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   const ws = shallowRef<WebSocket | null>(null)
   const reconnectTimer = shallowRef<number | null>(null)
+  const wsReconnectAttempt = ref(0)
   const wsManualClose = ref(false)
   const jobPollTimers = shallowRef<Record<string, number>>({})
 
@@ -657,10 +658,12 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   const scheduleReconnect = () => {
     if (wsManualClose.value || reconnectTimer.value !== null || !assetIdRef.value) return
+    const delay = wsBackoffDelay(wsReconnectAttempt.value)
+    wsReconnectAttempt.value += 1
     reconnectTimer.value = window.setTimeout(() => {
       reconnectTimer.value = null
       connectWs()
-    }, 1200)
+    }, delay)
   }
 
   const handleWsEvent = async (eventData: any) => {
@@ -765,6 +768,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     ws.value = socket
     socket.onopen = () => {
       wsConnected.value = true
+      wsReconnectAttempt.value = 0
     }
     socket.onmessage = (evt) => {
       try {
