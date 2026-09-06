@@ -9,7 +9,9 @@ from sqlalchemy import (
     Column,
     DateTime,
     Enum,
+    BigInteger,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -31,6 +33,8 @@ class AiJobStatus(str, PyEnum):
     RUNNING = "RUNNING"
     WAITING_HITL = "WAITING_HITL"
     INTERRUPTED = "INTERRUPTED"
+    TERMINATING = "TERMINATING"
+    ORPHANED = "ORPHANED"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -39,6 +43,11 @@ class AiJobStatus(str, PyEnum):
 
 class SddAiJob(Base):
     __tablename__ = "sdd_ai_jobs"
+    __table_args__ = (
+        Index("ix_sdd_ai_jobs_reclaim", "status", "lease_expires_at"),
+        Index("ix_sdd_ai_jobs_queue_claim", "queue_key", "status", "created_at", "id"),
+        Index("ix_sdd_ai_jobs_worker_active", "worker_id", "worker_boot_id", "status"),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(
@@ -99,6 +108,22 @@ class SddAiJob(Base):
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+    # Durable execution lease and fencing fields.  These deliberately live on
+    # the job row so recovery does not depend on in-memory asyncio state.
+    attempt_count = Column(Integer, nullable=False, default=0, server_default="0")
+    max_attempts = Column(Integer, nullable=False, default=1, server_default="1")
+    run_token = Column(String(36), nullable=True)
+    worker_id = Column(String(190), nullable=True)
+    worker_boot_id = Column(String(36), nullable=True)
+    heartbeat_at = Column(DateTime, nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True)
+    cancel_requested_at = Column(DateTime, nullable=True)
+    process_pid = Column(BigInteger, nullable=True)
+    process_started_at = Column(DateTime, nullable=True)
+    process_group_id = Column(BigInteger, nullable=True)
+    termination_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    failure_code = Column(String(64), nullable=True)
+    terminal_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

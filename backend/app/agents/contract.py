@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
@@ -12,6 +13,37 @@ from app.agents.events import AgentEvent
 from app.agents.errors import AgentError, AgentConfigurationError
 
 AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class AgentAttemptContext:
+    """不可变的执行 attempt 归属，作为所有 Agent 回调的 fence。"""
+
+    job_id: str
+    task_id: str | None
+    queue_key: str
+    run_token: str
+    worker_id: str
+    worker_boot_id: str
+    attempt_count: int
+
+
+_CURRENT_ATTEMPT: ContextVar[AgentAttemptContext | None] = ContextVar(
+    "traceforge_current_agent_attempt", default=None
+)
+
+
+def current_agent_attempt() -> AgentAttemptContext | None:
+    return _CURRENT_ATTEMPT.get()
+
+
+def bind_agent_attempt(attempt: AgentAttemptContext):
+    """Bind an attempt for the current asyncio task; caller resets the token."""
+    return _CURRENT_ATTEMPT.set(attempt)
+
+
+def reset_agent_attempt(token) -> None:
+    _CURRENT_ATTEMPT.reset(token)
 
 
 @dataclass

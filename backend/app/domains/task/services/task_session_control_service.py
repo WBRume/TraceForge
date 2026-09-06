@@ -54,7 +54,13 @@ def _find_active_task_job(db: Session, task_id: str) -> Optional[SddAiJob]:
         .filter(
             SddAiJob.task_id == task_id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.in_([AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL]),
+            SddAiJob.status.in_([
+                AiJobStatus.PENDING,
+                AiJobStatus.RUNNING,
+                AiJobStatus.WAITING_HITL,
+                AiJobStatus.TERMINATING,
+                AiJobStatus.ORPHANED,
+            ]),
         )
         .order_by(SddAiJob.created_at.desc())
         .first()
@@ -118,14 +124,22 @@ async def interrupt_task(
         task.interrupted_by_id = actor_user_id
         task.interrupted_at = now
 
-        job.status = AiJobStatus.INTERRUPTED
+        # Do not make the attempt terminal before the CLI process tree has
+        # been confirmed dead.  The queue/reaper treats TERMINATING as a
+        # durable blocker and can converge it to ORPHANED when ownership is
+        # uncertain.
+        run_token = str(job.run_token or "").strip() or None
+        job.status = AiJobStatus.TERMINATING
         job.message = "AI session interrupted by user"
         job.error_message = None
         job.session_id = session_id
         job.interrupt_reason = reason_text
         job.interrupted_by_id = actor_user_id
         job.interrupted_at = now
-        job.finished_at = now
+        job.finished_at = None
+        job.termination_attempts = int(job.termination_attempts or 0) + 1
+        job.terminal_reason = reason_text
+        job.failure_code = "USER_INTERRUPT"
         job.context_json = _merge_json(
             job.context_json,
             {
@@ -138,11 +152,57 @@ async def interrupt_task(
         db.refresh(task)
         db.refresh(job)
 
-        await engine.interrupt()
+        termination_error: Optional[str] = None
+        try:
+            termination = await engine.interrupt()
+        except Exception as exc:
+            # The process state is unknown when the engine stop path itself
+            # fails.  Preserve the durable blocker as ORPHANED instead of
+            # claiming an INTERRUPTED terminal state.
+            termination = None
+            termination_error = str(exc) or exc.__class__.__name__
+
+        termination_reason = termination_error or str(
+            getattr(termination, "error_message", "") or reason_text
+        )
+        confirmed_dead = termination_error is None and (
+            termination is None or bool(getattr(termination, "confirmed_dead", False))
+        )
+        if run_token:
+            await ai_job_service.finalize_attempt_termination(
+                job.id,
+                run_token,
+                confirmed_dead=confirmed_dead,
+                reason=termination_reason,
+                failure_code=str(
+                    getattr(termination, "error_code", "") or (
+                        "USER_INTERRUPT" if confirmed_dead else "PROCESS_TREE_UNKNOWN"
+                    )
+                ),
+            )
+        else:
+            # Compatibility path for pre-reliability rows without a fencing
+            # token.  New claims always take the fenced path above.
+            if confirmed_dead:
+                job.status = AiJobStatus.INTERRUPTED
+                job.progress = 100
+                job.message = "AI session interrupted by user"
+                job.finished_at = datetime.utcnow()
+                job.error_message = None
+            else:
+                job.status = AiJobStatus.ORPHANED
+                job.message = "Agent process could not be confirmed dead"
+                job.error_message = termination_reason
+                job.failure_code = "PROCESS_TREE_UNKNOWN"
+            job.terminal_reason = termination_reason
+            db.commit()
         db.refresh(task)
         db.refresh(job)
 
-        await ai_job_service.publish_job(job.id, final=False)
+        await ai_job_service.publish_job(
+            job.id,
+            final=job.status in ai_job_service.FINAL_STATUSES,
+        )
         job_payload = ai_job_service.serialize_job(job)
         await _broadcast_task_event("task_interrupted", task, job_payload)
         return _task_payload(task, job_payload)
@@ -171,7 +231,11 @@ async def interrupt_task(
 
     db.refresh(active_job)
     for job_id in cancelled_ids:
-        await ai_job_service.publish_job(job_id, final=True)
+        current_job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        await ai_job_service.publish_job(
+            job_id,
+            final=bool(current_job and current_job.status in ai_job_service.FINAL_STATUSES),
+        )
     job_payload = ai_job_service.serialize_job(active_job)
     await _broadcast_task_event("task_interrupted", task, job_payload)
     return _task_payload(task, job_payload)

@@ -10,6 +10,7 @@ Agent 适配层。
 """
 
 from app.agents.contract import (
+    AgentAttemptContext,
     AgentBackend,
     AgentCapabilities,
     AgentRunRequest,
@@ -17,6 +18,9 @@ from app.agents.contract import (
     AgentEventSink,
     SkillRef,
     TokenUsage,
+    current_agent_attempt,
+    bind_agent_attempt,
+    reset_agent_attempt,
 )
 from app.agents.events import AgentEvent
 from app.agents.errors import (
@@ -29,9 +33,13 @@ from app.agents.errors import (
 
 __all__ = [
     "AgentBackend",
+    "AgentAttemptContext",
     "AgentCapabilities",
     "AgentEvent",
     "AgentEventSink",
+    "current_agent_attempt",
+    "bind_agent_attempt",
+    "reset_agent_attempt",
     "AgentRunRequest",
     "AgentRunResult",
     "AgentCancelledError",

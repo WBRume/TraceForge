@@ -26,6 +26,7 @@ from app.domains.task.services import context_token_service, task_service
 from app.engine.claude_bridge import CliBridgeBase
 from app.agents import (
     AgentBackend,
+    AgentAttemptContext,
     AgentEvent,
     AgentRunRequest,
     AgentRunResult,
@@ -129,6 +130,27 @@ def _ensure_idle_sweeper() -> None:
     _idle_sweeper_task = loop.create_task(_idle_sweeper_loop())
 
 
+async def shutdown_active_engines() -> None:
+    """Stop every in-process engine before DB/executor shutdown.
+
+    The registry is a fast-path only, but it is also the authoritative list of
+    bridges owned by this event loop during graceful shutdown.
+    """
+    global _idle_sweeper_task
+    sweeper = _idle_sweeper_task
+    if sweeper is not None and sweeper is not asyncio.current_task():
+        sweeper.cancel()
+        await asyncio.gather(sweeper, return_exceptions=True)
+    _idle_sweeper_task = None
+    engines = list(_active_engines.values())
+    if engines:
+        await asyncio.gather(
+            *(engine.stop() for engine in engines),
+            return_exceptions=True,
+        )
+    _active_engines.clear()
+
+
 class SessionGate:
     """事件门禁：内存态判定 + TTL 周期 DB 重校验 + interrupt 立即失效。
 
@@ -147,10 +169,12 @@ class SessionGate:
         job_id: Optional[str],
         session_revision: Optional[int],
         ttl_seconds: float,
+        attempt: Optional[AgentAttemptContext] = None,
     ):
         self.task_id = task_id
         self.job_id = job_id
         self.session_revision = session_revision
+        self.attempt = attempt
         self._ttl = max(0.0, float(ttl_seconds))
         self._armed = bool(job_id and session_revision is not None)
         self._stale = False
@@ -221,7 +245,19 @@ class SessionGate:
             return True
         try:
             job = db.query(SddAiJob).filter(SddAiJob.id == self.job_id).first()
-            if not job or job.status in {AiJobStatus.REVERTED, AiJobStatus.CANCELLED}:
+            if not job or job.status in {
+                AiJobStatus.REVERTED,
+                AiJobStatus.CANCELLED,
+                AiJobStatus.TERMINATING,
+                AiJobStatus.ORPHANED,
+            }:
+                return False
+            if self.attempt is not None and (
+                str(job.run_token or "") != self.attempt.run_token
+                or str(job.worker_boot_id or "") != self.attempt.worker_boot_id
+                or job.cancel_requested_at is not None
+                or job.status != AiJobStatus.RUNNING
+            ):
                 return False
             if job.task_id:
                 task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
@@ -252,6 +288,7 @@ class WorkflowEngine:
         on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
         on_session: Optional[Callable[[str, str], Any]] = None,
         on_error: Optional[Callable[[str, str], Any]] = None,
+        attempt: Optional[AgentAttemptContext] = None,
     ):
         self.task_id = task_id
         self.ws_id = ws_id
@@ -275,6 +312,7 @@ class WorkflowEngine:
         self._thinking_finalized = False
         self._thinking_flush_task: Optional[asyncio.Task] = None
         self.current_job_id: Optional[str] = job_id
+        self.attempt: Optional[AgentAttemptContext] = attempt
         self.session_turn_id: Optional[str] = None
         self.session_revision: Optional[int] = None
         self._run_task: Optional[asyncio.Task] = None
@@ -285,6 +323,7 @@ class WorkflowEngine:
         self.last_result_success: Optional[bool] = None
         self.last_result_text: str = ""
         self.last_result_interrupted = False
+        self.last_termination_confirmed_dead: Optional[bool] = None
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_model: Optional[str] = None
@@ -335,6 +374,7 @@ class WorkflowEngine:
         on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
         on_session: Optional[Callable[[str, str], Any]] = None,
         on_error: Optional[Callable[[str, str], Any]] = None,
+        attempt: Optional[AgentAttemptContext] = None,
     ) -> None:
         if job_id is not None:
             self.current_job_id = job_id
@@ -346,6 +386,8 @@ class WorkflowEngine:
             self.on_session = on_session
         if on_error is not None:
             self.on_error = on_error
+        if attempt is not None:
+            self.attempt = attempt
 
     # ─────────────── DB 持久化 ───────────────
 
@@ -1503,8 +1545,7 @@ class WorkflowEngine:
 
         access_token = auth_service.create_access_token(self.user_id)
         mock_base_url = f"{api_base_url}/mock/{self.ws_id}/{self.task_id}"
-
-        return {
+        env = {
             "API_BASE_URL": api_base_url,
             "ACCESS_TOKEN": access_token,
             "WORKSPACE_ID": self.ws_id,
@@ -1515,6 +1556,14 @@ class WorkflowEngine:
             "API_MOCK_BASE_URL": mock_base_url,
             "API_MOCK_CONTEXT_URL": f"{api_base_url}/api/workspaces/{self.ws_id}/api-mock/projects/{self.task_id}/context",
         }
+        if self.attempt is not None:
+            env.update(
+                {
+                    "TRACEFORGE_RUN_TOKEN": self.attempt.run_token,
+                    "WORKER_BOOT_ID": self.attempt.worker_boot_id,
+                }
+            )
+        return env
 
     def _persist_provider_state(self, result: AgentRunResult) -> None:
         """Attach provider IDs to the metadata-only turn audit row."""
@@ -1570,6 +1619,7 @@ class WorkflowEngine:
             self.last_result_success = None
             self.last_result_text = ""
             self.last_result_interrupted = False
+            self.last_termination_confirmed_dead = None
             self._hitl_requested_in_turn = False
             self._thinking_buffer = ""
             self._thinking_seq = 0
@@ -1586,6 +1636,7 @@ class WorkflowEngine:
                     job_id=self.current_job_id,
                     session_revision=self.session_revision,
                     ttl_seconds=float(getattr(settings, "REVISION_GATE_TTL_SECONDS", 1.0) or 1.0),
+                    attempt=self.attempt,
                 )
                 await self._gate.load()
                 self._session_generation = await run_db(self._load_session_generation_sync)
@@ -1599,6 +1650,7 @@ class WorkflowEngine:
 
                 # 优先走统一 AgentBackend 路径；否则兼容旧 CliBridgeBase 路径
                 if isinstance(self.cli, AgentBackend):
+                    attempt = self.attempt
                     request = AgentRunRequest(
                         run_id=f"{self.task_id}-{self.current_job_id or 'turn'}",
                         prompt=prompt,
@@ -1619,6 +1671,10 @@ class WorkflowEngine:
                             "workspace_id": self.ws_id,
                             "user_id": self.user_id,
                             "ai_job_id": self.current_job_id or "",
+                            "run_token": attempt.run_token if attempt else None,
+                            "worker_id": attempt.worker_id if attempt else None,
+                            "worker_boot_id": attempt.worker_boot_id if attempt else None,
+                            "attempt_count": attempt.attempt_count if attempt else None,
                         },
                     )
                     result = await run_agent_backend_with_logging(
@@ -1645,6 +1701,9 @@ class WorkflowEngine:
 
             except AgentTimeoutError as e:
                 logger.warning(f"WorkflowEngine timed out (resumable): {e}")
+                self.last_termination_confirmed_dead = getattr(
+                    e, "termination_confirmed_dead", None
+                )
                 self.last_result_interrupted = True
                 self.last_result_success = None
                 self.last_result_text = str(e)
@@ -1727,10 +1786,12 @@ class WorkflowEngine:
             # 门禁立即失效：中断后的迟到事件一律丢弃
             if self._gate is not None:
                 self._gate.invalidate()
+            termination = None
             if self.cli:
-                await self.cli.interrupt()
+                termination = await self.cli.interrupt()
             self.running = False
             logger.info(f"WorkflowEngine interrupted: {self.task_id}")
+            return termination
 
     async def stop(self):
         """停止引擎"""

@@ -93,7 +93,12 @@ from app.domains.asset.services.asset_document_service import parse_document_pay
 from app.domains.workspace_asset.services import workspace_task_detail_service
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
-from app.domains.ai.services.ai_job_service import run_cli_single_turn, schedule_queue
+from app.domains.ai.services.ai_job_service import (
+    WORKER_BOOT_ID,
+    run_cli_single_turn,
+    schedule_queue,
+)
+from app.agents import current_agent_attempt
 from app.agents.selection import resolve_workspace_backend
 
 logger = get_logger(__name__, category="workspace_asset")
@@ -1484,6 +1489,7 @@ def create_requirement_import_preview_job(
         channel=AiJobChannel.ASSET_THREAD,
         queue_key=f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}",
         status=AiJobStatus.PENDING,
+        max_attempts=2,
         progress=0,
         message="Requirement AI preview queued",
         context_json={
@@ -1525,6 +1531,7 @@ def create_requirement_split_preview_job(
         channel=AiJobChannel.ASSET_THREAD,
         queue_key=f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}",
         status=AiJobStatus.PENDING,
+        max_attempts=2,
         progress=0,
         message="Requirement split preview queued",
         context_json={
@@ -1554,7 +1561,19 @@ def _update_preview_job_state(
     error: Optional[str] = None,
     context_patch: Optional[Dict[str, Any]] = None,
     result: Optional[Dict[str, Any]] = None,
+    run_token: Optional[str] = None,
 ) -> None:
+    attempt = current_agent_attempt()
+    effective_token = run_token or (attempt.run_token if attempt else None)
+    if effective_token and (
+        str(job.run_token or "") != effective_token
+        or str(job.worker_boot_id or "")
+        != str(attempt.worker_boot_id if attempt else WORKER_BOOT_ID)
+        or job.status in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}
+        or job.cancel_requested_at is not None
+    ):
+        logger.warning("Dropped fenced requirement preview write: job_id={}", job.id)
+        return
     if status is not None:
         job.status = status
         if status == AiJobStatus.RUNNING and job.started_at is None:
@@ -1580,6 +1599,23 @@ def _load_preview_job_sync(db: Session, job_id: str) -> Optional[SddAiJob]:
     return db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
 
 
+def _preview_attempt_is_current(
+    job: SddAiJob,
+    run_token: Optional[str],
+) -> bool:
+    attempt = current_agent_attempt()
+    effective_token = run_token or (attempt.run_token if attempt else None)
+    if not effective_token:
+        return True
+    return bool(
+        job.status == AiJobStatus.RUNNING
+        and str(job.run_token or "") == str(effective_token)
+        and str(job.worker_boot_id or "")
+        == str(attempt.worker_boot_id if attempt else WORKER_BOOT_ID)
+        and job.cancel_requested_at is None
+    )
+
+
 def _prepare_requirement_import_sync(
     db: Session,
     *,
@@ -1589,12 +1625,15 @@ def _prepare_requirement_import_sync(
     source_ref: Optional[str],
     source_uri: Optional[str],
     file_name: str,
+    run_token: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """import preview 准备段（线程内单事务）：状态推进 + prompt + backend。"""
     job = _load_preview_job_sync(db, job_id)
     if not job:
         return None
-    _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=8, message="Parsing requirement document")
+    if not _preview_attempt_is_current(job, run_token):
+        raise WorkspaceAssetWriteError("Requirement preview attempt is no longer current", status_code=409)
+    _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=8, message="Parsing requirement document", run_token=run_token)
     project_path = _workspace_project_path_or_error(db, job.workspace_id)
     prompt = _build_requirement_preview_prompt(
         mode="import",
@@ -1605,7 +1644,7 @@ def _prepare_requirement_import_sync(
         file_name=file_name,
     )
     job.prompt_text = prompt
-    _update_preview_job_state(db, job, progress=28, message="Running agent CLI requirement preview")
+    _update_preview_job_state(db, job, progress=28, message="Running agent CLI requirement preview", run_token=run_token)
     backend_name = resolve_workspace_backend(db, job.workspace_id)
     return {
         "workspace_id": str(job.workspace_id),
@@ -1627,11 +1666,14 @@ def _finalize_requirement_import_sync(
     source_ref: Optional[str],
     items: List[dict],
     metadata: dict,
+    run_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """import preview 收尾段（线程内单事务）：batch 创建 + 终态。"""
     job = _load_preview_job_sync(db, job_id)
     if not job:
         raise WorkspaceAssetWriteError("Requirement preview job not found", status_code=404)
+    if not _preview_attempt_is_current(job, run_token):
+        raise WorkspaceAssetWriteError("Requirement preview attempt is no longer current", status_code=409)
     batch = _create_requirement_preview_batch(
         db,
         workspace_id=job.workspace_id,
@@ -1653,6 +1695,7 @@ def _finalize_requirement_import_sync(
         message="Requirement AI preview created",
         context_patch={"preview_batch_id": batch.id},
         result={"item_count": len(items), "batch_id": batch.id},
+        run_token=run_token,
     )
     return {"batch_id": str(batch.id), "item_count": len(items)}
 
@@ -1663,10 +1706,13 @@ def _fail_requirement_preview_sync(
     job_id: str,
     message: str,
     error: str,
+    run_token: Optional[str] = None,
 ) -> None:
     """preview job 失败终态（线程内单事务，重新加载 job）。"""
     job = _load_preview_job_sync(db, job_id)
     if not job:
+        return
+    if not _preview_attempt_is_current(job, run_token):
         return
     _update_preview_job_state(
         db,
@@ -1675,6 +1721,7 @@ def _fail_requirement_preview_sync(
         progress=100,
         message=message,
         error=error,
+        run_token=run_token,
     )
 
 
@@ -1682,11 +1729,14 @@ def _prepare_requirement_split_sync(
     db: Session,
     *,
     job_id: str,
+    run_token: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """split preview 准备段（线程内单事务）。"""
     job = _load_preview_job_sync(db, job_id)
     if not job:
         return None
+    if not _preview_attempt_is_current(job, run_token):
+        raise WorkspaceAssetWriteError("Requirement preview attempt is no longer current", status_code=409)
     context = job.context_json if isinstance(job.context_json, dict) else {}
     requirement_id = str(context.get("requirement_id") or "").strip()
     requirement = _get_requirement(db, job.workspace_id, requirement_id)
@@ -1696,7 +1746,7 @@ def _prepare_requirement_split_sync(
     if not content:
         raise WorkspaceAssetWriteError("Requirement content is required for AI split preview.", status_code=422)
     project_path = _workspace_project_path_or_error(db, job.workspace_id)
-    _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=16, message="Running Claude Code CLI split preview")
+    _update_preview_job_state(db, job, status=AiJobStatus.RUNNING, progress=16, message="Running Claude Code CLI split preview", run_token=run_token)
     prompt = _build_requirement_preview_prompt(
         mode="split",
         markdown=content,
@@ -1729,11 +1779,14 @@ def _finalize_requirement_split_sync(
     items: List[dict],
     backend_name: Optional[str],
     session_id: Optional[str],
+    run_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """split preview 收尾段（线程内单事务）。"""
     job = _load_preview_job_sync(db, job_id)
     if not job:
         raise WorkspaceAssetWriteError("Requirement preview job not found", status_code=404)
+    if not _preview_attempt_is_current(job, run_token):
+        raise WorkspaceAssetWriteError("Requirement preview attempt is no longer current", status_code=409)
     requirement = _get_requirement(db, job.workspace_id, prepared["requirement_id"])
     if not requirement:
         raise WorkspaceAssetWriteError("Requirement not found", status_code=404)
@@ -1773,6 +1826,7 @@ def _finalize_requirement_split_sync(
         message="Requirement split preview created",
         context_patch={"preview_batch_id": batch.id},
         result={"item_count": len(items), "batch_id": batch.id},
+        run_token=run_token,
     )
     return {"batch_id": str(batch.id), "item_count": len(items)}
 
@@ -1807,12 +1861,14 @@ def _load_requirement_import_context_sync(
     }
 
 
-async def run_requirement_import_preview_job(job_id: str) -> None:
+async def run_requirement_import_preview_job(job_id: str, run_token: Optional[str] = None) -> None:
     """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。
 
     输入内容在作业创建时已解析并持久化到 job.context_json，
     服务重启后可由 recover_pending_queues 重新调度执行。
     """
+    attempt = current_agent_attempt()
+    run_token = run_token or (attempt.run_token if attempt else None)
     try:
         context = await run_db_txn(
             lambda db: _load_requirement_import_context_sync(db, job_id=job_id)
@@ -1828,6 +1884,7 @@ async def run_requirement_import_preview_job(job_id: str) -> None:
                 source_ref=context["source_ref"],
                 source_uri=context["source_uri"],
                 file_name=context["file_name"],
+                run_token=run_token,
             )
         )
         if prepared is None:
@@ -1838,6 +1895,7 @@ async def run_requirement_import_preview_job(job_id: str) -> None:
             prepared["project_path"],
             max_attempts=1,
             backend_name=prepared["backend_name"],
+            **({"run_token": run_token} if run_token else {}),
         )
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
@@ -1870,23 +1928,28 @@ async def run_requirement_import_preview_job(job_id: str) -> None:
                 source_ref=context["source_ref"],
                 items=items,
                 metadata=metadata,
+                run_token=run_token,
             )
         )
     except Exception as exc:
         try:
             await run_db_txn(
                 lambda db: _fail_requirement_preview_sync(
-                    db, job_id=job_id, message="Requirement AI preview failed", error=str(exc),
+                    db, job_id=job_id, message="Requirement AI preview failed", error=str(exc), run_token=run_token,
                 )
             )
         except Exception:
             logger.exception("Failed to mark requirement import preview job failed")
 
 
-async def run_requirement_split_preview_job(job_id: str) -> None:
+async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str] = None) -> None:
     """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。"""
+    attempt = current_agent_attempt()
+    run_token = run_token or (attempt.run_token if attempt else None)
     try:
-        prepared = await run_db_txn(lambda db: _prepare_requirement_split_sync(db, job_id=job_id))
+        prepared = await run_db_txn(
+            lambda db: _prepare_requirement_split_sync(db, job_id=job_id, run_token=run_token)
+        )
         if prepared is None:
             return
         backend_name = prepared["backend_name"]
@@ -1896,6 +1959,7 @@ async def run_requirement_split_preview_job(job_id: str) -> None:
             prepared["project_path"],
             max_attempts=1,
             backend_name=backend_name,
+            **({"run_token": run_token} if run_token else {}),
         )
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
@@ -1909,13 +1973,14 @@ async def run_requirement_split_preview_job(job_id: str) -> None:
                 items=items,
                 backend_name=backend_name,
                 session_id=ai_result.get("session_id"),
+                run_token=run_token,
             )
         )
     except Exception as exc:
         try:
             await run_db_txn(
                 lambda db: _fail_requirement_preview_sync(
-                    db, job_id=job_id, message="Requirement split preview failed", error=str(exc),
+                    db, job_id=job_id, message="Requirement split preview failed", error=str(exc), run_token=run_token,
                 )
             )
         except Exception:

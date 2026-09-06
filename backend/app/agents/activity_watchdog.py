@@ -79,7 +79,11 @@ class AgentActivityWatchdog:
             if remaining <= 0:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                raise AgentTimeoutError(self._message(phase, limit))
+                raise AgentTimeoutError(
+                    self._message(phase, limit),
+                    phase=phase,
+                    limit_seconds=limit,
+                )
             done, _ = await asyncio.wait({task}, timeout=remaining)
             if task in done:
                 return await task

@@ -123,10 +123,11 @@ def test_mark_task_chat_jobs_cancelled_keeps_cancel_event():
         assert job_id in cancelled_ids
         try:
             assert ai_job_service._is_cancel_requested(job_id) is True
-            # DB 状态仍被标记为 CANCELLED（前端立即收敛 UI）
+            # CLI 仍可能存活时只能进入 TERMINATING；确认进程树退出后
+            # 才允许收敛为 CANCELLED。
             with _session(SessionLocal) as db:
                 assert db.query(SddAiJob).filter(SddAiJob.id == job_id).first().status == (
-                    AiJobStatus.CANCELLED
+                    AiJobStatus.TERMINATING
                 )
         finally:
             ai_job_service._clear_cancel_event(job_id)

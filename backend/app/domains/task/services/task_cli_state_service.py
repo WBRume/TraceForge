@@ -483,6 +483,9 @@ async def _run_bootstrap(task_id: str) -> None:
                         db.close()
 
                     with bind_task_context(task_id=task_id, workspace_id=workspace_id, user_id=task_creator_id):
+                        bridge = None
+                        failure_message: Optional[str] = None
+                        cleanup_confirmed = True
                         try:
                             _refresh_task_skill_context(task_id)
                             await _update_bootstrap_state(
@@ -629,13 +632,43 @@ async def _run_bootstrap(task_id: str) -> None:
                             )
                         except Exception as exc:
                             logger.exception(f"Task CLI bootstrap failed: task={task_id}, err={exc}")
-                            await _update_bootstrap_state(
-                                task_id,
-                                status=TaskCliBootstrapStatus.FAILED,
-                                progress=100,
-                                message="Baseline bootstrap failed",
-                                error_message=str(exc),
-                            )
+                            failure_message = str(exc)
+                        finally:
+                            # Timeout/cancellation must prove that the complete
+                            # CLI tree is gone before the bootstrap is reported
+                            # failed.  The bridge is a compatibility facade, but
+                            # its underlying local process is supervisor-owned.
+                            if bridge is not None and getattr(bridge, "is_running", lambda: False)():
+                                try:
+                                    termination = await asyncio.shield(bridge.cancel())
+                                    if termination is not None:
+                                        cleanup_confirmed = bool(termination.confirmed_dead)
+                                except Exception as cleanup_exc:
+                                    cleanup_confirmed = False
+                                    logger.exception(
+                                        "Task CLI bootstrap process cleanup failed: task={}, err={}",
+                                        task_id,
+                                        cleanup_exc,
+                                    )
+                            if failure_message is not None:
+                                if cleanup_confirmed:
+                                    await _update_bootstrap_state(
+                                        task_id,
+                                        status=TaskCliBootstrapStatus.FAILED,
+                                        progress=100,
+                                        message="Baseline bootstrap failed",
+                                        error_message=failure_message,
+                                    )
+                                else:
+                                    await _update_bootstrap_state(
+                                        task_id,
+                                        status=TaskCliBootstrapStatus.STALE,
+                                        progress=100,
+                                        message="Baseline process termination was not confirmed; rebuild is required",
+                                        error_message=(
+                                            f"{failure_message}; CLI process tree could not be confirmed dead"
+                                        ),
+                                    )
     except LockAcquireTimeout as exc:
         err = "Bootstrap queue is busy. Please retry later."
         logger.warning(
@@ -672,6 +705,17 @@ def schedule_bootstrap(task_id: str) -> None:
         _BOOTSTRAP_REQUEUE.add(task_id)
         return
     _BOOTSTRAP_RUNNERS[task_id] = loop.create_task(_run_bootstrap(task_id))
+
+
+async def shutdown_bootstrap_runners() -> None:
+    """Cancel bootstrap workers and let their bridge finally blocks reap CLI."""
+    runners = list(_BOOTSTRAP_RUNNERS.values())
+    for runner in runners:
+        runner.cancel()
+    if runners:
+        await asyncio.gather(*runners, return_exceptions=True)
+    _BOOTSTRAP_RUNNERS.clear()
+    _BOOTSTRAP_REQUEUE.clear()
 
 
 def mark_running_bootstrap_stale_if_needed(db: Session, task_id: str) -> Optional[SddTaskCliBootstrap]:

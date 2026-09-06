@@ -18,6 +18,11 @@ from typing import Optional, Callable, Any, Dict
 
 from app.config import settings
 from app.core.logging import get_logger
+from app.agents.process_supervisor import (
+    ManagedAgentProcess,
+    TerminationResult,
+    process_supervisor,
+)
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -86,12 +91,12 @@ class CliBridgeBase(ABC):
         pass
 
     @abstractmethod
-    async def cancel(self) -> None:
+    async def cancel(self) -> Optional[TerminationResult]:
         """取消正在运行的 CLI 进程"""
         pass
 
     @abstractmethod
-    async def interrupt(self) -> None:
+    async def interrupt(self) -> Optional[TerminationResult]:
         """临时中断正在运行的 CLI 进程，保留会话用于后续恢复"""
         pass
 
@@ -109,10 +114,13 @@ class SubprocessCliBridge(CliBridgeBase):
 
     def __init__(self, cli_path: Optional[str] = None):
         self.process: Optional[asyncio.subprocess.Process] = None
+        self._managed_process: Optional[ManagedAgentProcess] = None
         self._reader_task: Optional[asyncio.Task] = None
+        self._stderr_task: Optional[asyncio.Task] = None
         self._event_cb: Optional[Callable] = None
         self._session_id: Optional[str] = None
         self._running = False
+        self.last_termination: Optional[TerminationResult] = None
         self._cli_path = (cli_path or settings.CLAUDE_CLI_PATH).strip() or settings.CLAUDE_CLI_PATH
 
     def _subprocess_kwargs(self) -> Dict[str, Any]:
@@ -225,21 +233,22 @@ class SubprocessCliBridge(CliBridgeBase):
                     if key and value is not None:
                         env[str(key)] = str(value)
 
-            self.process = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            self._managed_process = await process_supervisor.spawn(
+                args,
                 cwd=project_path,
                 env=env,
-                **self._subprocess_kwargs(),
+                run_token=str(env.get("TRACEFORGE_RUN_TOKEN") or "") or None,
+                worker_boot_id=str(env.get("WORKER_BOOT_ID") or "") or None,
             )
+            self.process = self._managed_process.process
 
             # 启动异步读取循环
             self._reader_task = asyncio.create_task(self._read_loop())
 
             # 启动 stderr 读取
-            asyncio.create_task(self._read_stderr())
+            self._stderr_task = asyncio.create_task(self._read_stderr())
+            self._managed_process.add_reader_task(self._reader_task)
+            self._managed_process.add_reader_task(self._stderr_task)
 
             return self._session_id
 
@@ -308,103 +317,74 @@ class SubprocessCliBridge(CliBridgeBase):
 
     async def wait(self):
         """等待 CLI 进程结束"""
-        if self._reader_task:
-            await self._reader_task
-        if self.process:
+        if self._managed_process:
+            await self._managed_process.wait()
+            process_supervisor.forget(self._managed_process)
+        elif self.process:
             await self.process.wait()
+        self._running = False
 
-    async def _wait_for_exit(self, timeout: float) -> bool:
+    async def _taskkill_tree(self) -> None:
+        """兼容旧调用方的进程树终止入口。"""
+        if not self.process or self.process.returncode is not None:
+            return
+        await process_supervisor.stop_persisted(
+            pid=int(self.process.pid),
+            process_started_at=None,
+            reason="bridge_force_stop",
+        )
+
+    async def _wait_for_exit(self, timeout: float = 5.0) -> bool:
         if not self.process:
             return True
         try:
             await asyncio.wait_for(self.process.wait(), timeout=timeout)
-            return True
         except asyncio.TimeoutError:
             return False
+        return self.process.returncode is not None
 
-    def _send_process_signal(self, sig: signal.Signals) -> None:
+    async def _force_stop_process(self, reason: str = "cancel") -> None:
+        """保留旧的强制停止契约，并确保先处理进程树再等待根进程。"""
+        if self._managed_process:
+            self.last_termination = await asyncio.shield(
+                self._managed_process.close(reason=reason)
+            )
+            process_supervisor.forget(self._managed_process)
+            return
+
         if not self.process or self.process.returncode is not None:
             return
-        if os.name != "nt":
-            try:
-                os.killpg(os.getpgid(self.process.pid), sig)
-                return
-            except Exception:
-                pass
-        self.process.send_signal(sig)
 
-    def _send_interrupt_signal(self) -> str:
-        if os.name == "nt":
-            break_signal = getattr(signal, "CTRL_BREAK_EVENT", None)
-            if break_signal is not None:
-                self._send_process_signal(break_signal)
-                return "CTRL_BREAK_EVENT"
-        self._send_process_signal(signal.SIGINT)
-        return "SIGINT"
-
-    async def _taskkill_tree(self) -> None:
-        if os.name != "nt" or not self.process:
-            return
-        try:
-            taskkill = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/PID",
-                str(self.process.pid),
-                "/T",
-                "/F",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await taskkill.wait()
-        except Exception:
-            pass
-
-    async def _force_stop_process(self, *, reason: str) -> None:
-        if not self.process:
-            return
-        try:
-            # On Windows, killing only the npm/cmd wrapper can leave the actual
-            # agent process alive.  taskkill must run while the root PID still
-            # owns its descendants, so make the tree operation the first force
-            # step instead of returning as soon as the wrapper exits.
-            if os.name == "nt":
-                await self._taskkill_tree()
-                await self._wait_for_exit(2.0)
-                return
-            if self.process.returncode is not None:
-                return
+        await self._taskkill_tree()
+        stopped = await self._wait_for_exit()
+        if not stopped and self.process.returncode is None:
             self.process.terminate()
-            if await self._wait_for_exit(2.0):
-                return
-            self.process.kill()
-            if await self._wait_for_exit(2.0):
-                return
-            await self._taskkill_tree()
-        except ProcessLookupError:
-            return
-        except Exception as exc:
-            logger.exception(f"Failed to stop Claude CLI process: {exc}")
+            await self._wait_for_exit(timeout=2.0)
+            if self.process.returncode is None and hasattr(self.process, "kill"):
+                self.process.kill()
+                await self._wait_for_exit(timeout=2.0)
 
-    async def cancel(self) -> None:
+    async def cancel(self) -> Optional[TerminationResult]:
         self._running = False
-        if self.process and self.process.returncode is None:
-            await self._force_stop_process(reason="cancel")
-            await self._wait_for_exit(1.0)
+        if self._managed_process:
+            self.last_termination = await asyncio.shield(
+                self._managed_process.close(reason="cancel")
+            )
+            process_supervisor.forget(self._managed_process)
+        elif self.process and self.process.returncode is None:
+            await self.process.wait()
+        return self.last_termination
 
-    async def interrupt(self) -> None:
+    async def interrupt(self) -> Optional[TerminationResult]:
         self._running = False
-        if self.process and self.process.returncode is None:
-            try:
-                self._send_interrupt_signal()
-                if os.name == "nt":
-                    # CTRL_BREAK can make the wrapper exit before its child.
-                    # Kill the tree while the root PID still owns descendants.
-                    await self._force_stop_process(reason="interrupt")
-                elif not await self._wait_for_exit(3.0):
-                    await self._force_stop_process(reason="interrupt")
-            except Exception:
-                await self._force_stop_process(reason="interrupt")
-            await self._wait_for_exit(1.0)
+        if self._managed_process:
+            self.last_termination = await asyncio.shield(
+                self._managed_process.close(reason="interrupt")
+            )
+            process_supervisor.forget(self._managed_process)
+        elif self.process and self.process.returncode is None:
+            await self.process.wait()
+        return self.last_termination
 
     def is_running(self) -> bool:
         return self._running
@@ -496,13 +476,15 @@ class MockCliBridge(CliBridgeBase):
             if asyncio.iscoroutine(result):
                 await result
 
-    async def cancel(self) -> None:
+    async def cancel(self) -> Optional[TerminationResult]:
         self._running = False
         logger.info("[Mock CLI] Cancelled")
+        return None
 
-    async def interrupt(self) -> None:
+    async def interrupt(self) -> Optional[TerminationResult]:
         self._running = False
         logger.info("[Mock CLI] Interrupted")
+        return None
 
     def is_running(self) -> bool:
         return self._running
