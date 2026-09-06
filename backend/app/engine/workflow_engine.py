@@ -65,6 +65,14 @@ SEGMENT_DRAIN_MAX_ROUNDS = 3
 # ── 全局引擎注册表：task_id -> WorkflowEngine ──
 _active_engines: Dict[str, "WorkflowEngine"] = {}
 
+# 空闲引擎收割：非 running 引擎超过 ENGINE_IDLE_TTL_SECONDS 后由周期任务摘除。
+# 正常结束后立即摘除（成功即删）；INTERRUPTED/WAITING_HITL 等可恢复态保留以便
+# 快速 resume，但用户不再回来时由本收割器兜底，避免注册表只增不减。
+# resume 正确性不依赖内存引擎：ai_job_service 的两条恢复路径都会以 DB 持久化的
+# session_id 重建引擎。
+ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = 60.0
+_idle_sweeper_task: Optional[asyncio.Task] = None
+
 
 def get_engine(task_id: str) -> Optional["WorkflowEngine"]:
     return _active_engines.get(task_id)
@@ -74,6 +82,51 @@ def register_engine(engine: "WorkflowEngine", *, mark_running: bool = False) -> 
     if mark_running:
         engine.running = True
     _active_engines[engine.task_id] = engine
+    _ensure_idle_sweeper()
+
+
+def unregister_engine(task_id: str) -> None:
+    _active_engines.pop(task_id, None)
+
+
+def _sweep_idle_engines() -> int:
+    """摘除非 running 且空闲超过 TTL 的引擎；返回摘除数量（仅供测试/观测）。"""
+    ttl = max(1.0, float(getattr(settings, "ENGINE_IDLE_TTL_SECONDS", 1800) or 1800))
+    now = time.monotonic()
+    stale = [
+        task_id
+        for task_id, engine in _active_engines.items()
+        if not engine.running and now - float(getattr(engine, "_last_idle_since", now)) >= ttl
+    ]
+    for task_id in stale:
+        _active_engines.pop(task_id, None)
+    if stale:
+        logger.info(f"Swept {len(stale)} idle engine(s) from registry")
+    return len(stale)
+
+
+async def _idle_sweeper_loop() -> None:
+    global _idle_sweeper_task
+    try:
+        while _active_engines:
+            await asyncio.sleep(ENGINE_IDLE_SWEEP_INTERVAL_SECONDS)
+            _sweep_idle_engines()
+    finally:
+        if _idle_sweeper_task is asyncio.current_task():
+            _idle_sweeper_task = None
+
+
+def _ensure_idle_sweeper() -> None:
+    global _idle_sweeper_task
+    task = _idle_sweeper_task
+    if task is not None and not task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # 无事件循环（线程上下文）：等待事件循环内下一次注册触发
+        return
+    _idle_sweeper_task = loop.create_task(_idle_sweeper_loop())
 
 
 class SessionGate:
@@ -209,6 +262,8 @@ class WorkflowEngine:
         self.cli: CliBridgeBase = self._create_engine_backend()
         self.session_id: Optional[str] = None  # CLI session id (可跨对话恢复)
         self.running = False
+        # 空闲时间戳：非 running 起点由收割器据此判定 TTL
+        self._last_idle_since = time.monotonic()
 
         # 文本累积器：assistant 消息通常分多次 delta 推送，需累积
         self._text_buffer = ""
@@ -1509,7 +1564,8 @@ class WorkflowEngine:
                 self.session_id = None
                 self.cli = self._create_engine_backend()
             self.running = True
-            _active_engines[self.task_id] = self
+            self._last_idle_since = time.monotonic()
+            register_engine(self)
             self._interrupt_requested = False
             self.last_result_success = None
             self.last_result_text = ""
@@ -1625,9 +1681,14 @@ class WorkflowEngine:
             finally:
                 await self._drain_buffers()
                 self.running = False
+                self._last_idle_since = time.monotonic()
                 if self._run_task is asyncio.current_task():
                     self._run_task = None
-                # 不从注册表移除，便于后续 --resume
+                if self.last_result_success is True:
+                    # 正常收口（job 已 SUCCESS）：立即摘除注册表条目，resume 走 DB 重建
+                    unregister_engine(self.task_id)
+                # 其余为可恢复态（INTERRUPTED/WAITING_HITL/超时）：保留以快速 resume，
+                # 由空闲收割器按 ENGINE_IDLE_TTL_SECONDS 兜底摘除
 
     async def send_message(self, prompt: str, *, job_id: Optional[str] = None):
         """
@@ -1689,5 +1750,5 @@ class WorkflowEngine:
                 except asyncio.TimeoutError as exc:
                     raise RuntimeError("Agent run did not exit after cancellation") from exc
             if self.task_id in _active_engines:
-                del _active_engines[self.task_id]
+                unregister_engine(self.task_id)
             logger.info(f"WorkflowEngine stopped: {self.task_id}")

@@ -122,6 +122,24 @@ def _get_queue_lock(queue_key: str) -> asyncio.Lock:
     return lock
 
 
+def _reap_queue_runner(queue_key: str, task: "asyncio.Task") -> None:
+    """Runner 结束后回收注册表条目（单事件循环内同步判定，无 await 夹缝）。
+
+    仅当条目仍指向本 task 时摘除（避免误删后继 runner）；同 key 锁在无后继
+    runner 且未被持有时一并回收。顺带消费未检视的异常避免告警噪音。
+    """
+    if _QUEUE_RUNNERS.get(queue_key) is not task:
+        return
+    _QUEUE_RUNNERS.pop(queue_key, None)
+    if not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"AI queue runner exited with error: queue_key={queue_key}, error={exc}")
+    lock = _QUEUE_LOCKS.get(queue_key)
+    if lock is not None and not lock.locked():
+        _QUEUE_LOCKS.pop(queue_key, None)
+
+
 def _get_or_create_cancel_event(job_id: str) -> asyncio.Event:
     event = _JOB_CANCEL_EVENTS.get(job_id)
     if event is None:
@@ -706,7 +724,9 @@ def schedule_queue(queue_key: str) -> None:
     running = _QUEUE_RUNNERS.get(queue_key)
     if running and not running.done():
         return
-    _QUEUE_RUNNERS[queue_key] = loop.create_task(_run_queue(queue_key))
+    runner = loop.create_task(_run_queue(queue_key))
+    _QUEUE_RUNNERS[queue_key] = runner
+    runner.add_done_callback(lambda task: _reap_queue_runner(queue_key, task))
 
 
 async def recover_pending_queues() -> int:

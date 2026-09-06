@@ -138,6 +138,10 @@ class Settings(BaseSettings):
     AGENT_MAX_RUNTIME_SECONDS: int = 7200
     PLATFORM_API_BASE_URL: str = "http://localhost:8000"
 
+    # 空闲引擎回收 TTL：非 running 引擎在注册表中保留的最长时间，
+    # 超过后由周期收割器摘除（resume 均可走 DB 重建，内存仅是快路径）
+    ENGINE_IDLE_TTL_SECONDS: int = 1800
+
     # ── Workflow ──
     MAX_RETRY_COUNT: int = 3
     SKILLS_STORAGE_ROOT: str = "storage/skills"
