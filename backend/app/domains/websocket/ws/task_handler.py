@@ -64,6 +64,8 @@ class TaskWebSocketHandler:
         engine_getter: Callable[[str], WorkflowEngine | None] | None = None,
         engine_factory: Callable[..., WorkflowEngine] | None = None,
         client_key: str | None = None,
+        resume_epoch: str | None = None,
+        last_sequence: int | None = None,
     ) -> None:
         self._websocket = websocket
         self._task_id = task_id
@@ -73,13 +75,18 @@ class TaskWebSocketHandler:
         self._engine_getter = engine_getter or get_engine
         self._engine_factory = engine_factory or WorkflowEngine
         self._client_key = client_key
+        self._resume_epoch = resume_epoch
+        self._last_sequence = last_sequence
         # 单连接单写：所有出站（含回执）都经该发送器入队，禁止与 sender task
         # 并发直写底层 ASGI socket
         self._outbound: OutboundConnection | None = None
 
     async def run(self) -> None:
         """Accept, serve, and always unregister the connection."""
-        self._outbound = await self._manager.connect(self._websocket, self._task_id, client_key=self._client_key)
+        connect_kwargs = {"client_key": self._client_key}
+        if self._resume_epoch is not None or self._last_sequence is not None:
+            connect_kwargs.update(epoch=self._resume_epoch, last_sequence=self._last_sequence)
+        self._outbound = await self._manager.connect(self._websocket, self._task_id, **connect_kwargs)
         try:
             while True:
                 message = await self._websocket.receive_json()
@@ -112,6 +119,20 @@ class TaskWebSocketHandler:
             await self._handle_hitl_response(message)
         elif isinstance(message_type, str) and message_type.startswith("pre_input_"):
             await self._handle_pre_input(message_type, self._payload(message))
+        elif message_type == "resync_complete":
+            payload = self._payload(message)
+            epoch = str(payload.get("epoch") or message.get("epoch") or "")
+            barrier = payload.get("barrier_sequence", message.get("barrier_sequence"))
+            try:
+                barrier_sequence = int(barrier)
+            except (TypeError, ValueError):
+                return
+            await self._manager.complete_resync(
+                self._websocket,
+                self._task_id,
+                epoch=epoch,
+                barrier_sequence=barrier_sequence,
+            )
 
     @staticmethod
     def _payload(message: dict[str, Any]) -> dict[str, Any]:

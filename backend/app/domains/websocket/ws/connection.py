@@ -1,32 +1,17 @@
-"""
-统一的 WebSocket 连接发送器（出站有界队列）。
+"""Shared per-connection sender and room-registry facade.
 
-所有域的连接管理器（任务房间 / 站内信 / api-mock 协作 / asset 讨论）共用：
-
-- 每连接一条出站队列 + 独立 sender task：广播方只做 put_nowait，绝不
-  await send_text，慢客户端只拖住自己的 sender，不影响同房间其他连接，
-  更不会反压事件循环或 stdout 读取循环；
-- 事件数与未确认字节双重限长：任一超限（含单条消息超字节上限）判定为
-  慢/异常客户端，evict 闭环 = 取消 sender + 关闭底层 socket（接收循环
-  随之退出）+ 从 registry（rooms/presence）移除，只影响其自身；
-- 发送带超时（WS_SEND_TIMEOUT_SECONDS）：TCP 缓冲塞满的客户端不会把
-  sender 永久挂死；
-- 每连接出站即写入按 client 身份键控的重放缓冲（registry 持有，不随
-  连接销毁），慢客户端被淘汰后重连可补回自己丢失的事件；
-- ConnectionRegistry 维护 room_key → 连接 的注册表与可选 presence 映射，
-  供四套 manager 收敛为薄封装（公共方法签名保持不变）。
-
-消息通道分两类：text（任务房间 WSMessage / 站内信序列化后的 JSON 串，
-经 send_text）与 json（api-mock / asset 协作的结构化 dict，经 send_json；
-fake/精简连接缺 send_json 时回退 send_text）。
+The sender owns all writes to a WebSocket. Replay state is deliberately not
+stored here: recovery is room-scoped and is implemented by ``RoomHubRegistry``
+in :mod:`room_hub`, so two tabs for one user can never consume one another's
+server-side buffer.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from collections import deque
-from typing import Deque, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import WebSocket
 
@@ -35,19 +20,35 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="task_execution")
 
-_QueueItem = Tuple[str, object, int]  # (kind, value, size)
+_QueueItem = Tuple[str, object, int]
 
 
 def _ws_send_timeout() -> float:
     return max(0.5, float(getattr(settings, "WS_SEND_TIMEOUT_SECONDS", 5.0) or 5.0))
 
 
-def _ws_replay_size() -> int:
-    return max(0, int(getattr(settings, "WS_BUFFER_SIZE", 200) or 200))
+def _queue_size() -> int:
+    return max(1, int(getattr(settings, "WS_OUTBOUND_QUEUE_SIZE", 256) or 256))
+
+
+def _max_bytes() -> int:
+    return max(1, int(getattr(settings, "WS_OUTBOUND_MAX_BYTES", 1024 * 1024) or 1024 * 1024))
+
+
+def _replay_timeout() -> float:
+    return max(0.1, float(getattr(settings, "WS_REPLAY_TIMEOUT_SECONDS", 30.0) or 30.0))
+
+
+class ConnectionState(str, Enum):
+    SYNCING = "SYNCING"
+    REPLAYING = "REPLAYING"
+    LIVE = "LIVE"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
 
 
 class OutboundConnection:
-    """单条 WebSocket 连接的出站发送器。"""
+    """One WebSocket's bounded outbound queue and sender task."""
 
     def __init__(
         self,
@@ -55,59 +56,126 @@ class OutboundConnection:
         *,
         queue_size: Optional[int] = None,
         max_bytes: Optional[int] = None,
-        replay_buffer: Optional[Deque[str]] = None,
+        client_id: Optional[str] = None,
+        message_kind: str = "text",
         on_evicted=None,
     ) -> None:
         self.websocket = websocket
+        self.client_id = str(client_id or "") or None
+        self.message_kind = message_kind if message_kind in {"text", "json"} else "text"
         self._queue: asyncio.Queue[Optional[_QueueItem]] = asyncio.Queue(
-            maxsize=int(queue_size or getattr(settings, "WS_OUTBOUND_QUEUE_SIZE", 256))
+            maxsize=max(1, int(queue_size if queue_size is not None else _queue_size()))
         )
-        self._max_bytes = int(max_bytes or getattr(settings, "WS_OUTBOUND_MAX_BYTES", 1024 * 1024))
+        self._max_bytes = max(1, int(max_bytes if max_bytes is not None else _max_bytes()))
         self._pending_bytes = 0
         self._sender_task: Optional[asyncio.Task] = None
         self._close_task: Optional[asyncio.Task] = None
+        self._queue_low_water = asyncio.Event()
+        self._queue_low_water.set()
         self._closed = False
         self.dropped = False
-        # 按 client 身份键控的重放缓冲（registry 持有，不随连接销毁）
-        self._replay_buffer = replay_buffer
+        self.state = ConnectionState.LIVE
+        self.barrier_sequence: Optional[int] = None
+        self.cutover_sequence: Optional[int] = None
+        self.replay_task: Optional[asyncio.Task] = None
+        self._deferred_live: list[Tuple[str, object, int, Optional[int]]] = []
+        self._deferred_bytes = 0
+        self._max_deferred_events = max(
+            1, int(getattr(settings, "WS_DEFERRED_LIVE_MAX_EVENTS", 256) or 256)
+        )
+        self._max_deferred_bytes = max(
+            1, int(getattr(settings, "WS_DEFERRED_LIVE_MAX_BYTES", 1024 * 1024) or 1024 * 1024)
+        )
         self._on_evicted = on_evicted
+
+    @property
+    def sender_task(self) -> Optional[asyncio.Task]:
+        return self._sender_task
+
+    @property
+    def close_task(self) -> Optional[asyncio.Task]:
+        return self._close_task
+
+    @property
+    def pending_bytes(self) -> int:
+        return self._pending_bytes
+
+    @property
+    def deferred_bytes(self) -> int:
+        return self._deferred_bytes
+
+    @property
+    def deferred_count(self) -> int:
+        return len(self._deferred_live)
 
     async def start(self) -> None:
         if self._sender_task is None or self._sender_task.done():
             self._sender_task = asyncio.create_task(self._sender_loop())
 
+    def mark_state(self, state: ConnectionState) -> None:
+        if self.state in {ConnectionState.CLOSING, ConnectionState.CLOSED}:
+            return
+        self.state = state
+
     def submit_text(self, text: str) -> bool:
-        return self._submit("text", text, len(text.encode("utf-8", errors="ignore")))
+        return self._submit("text", text, len(str(text).encode("utf-8", errors="ignore")))
 
     def submit_json(self, payload: dict) -> bool:
         text = json.dumps(payload, ensure_ascii=False, default=str)
         return self._submit("json", payload, len(text.encode("utf-8", errors="ignore")))
 
-    @property
-    def has_replay(self) -> bool:
-        return self._replay_buffer is not None
+    def submit_frame(self, value: object, *, kind: Optional[str] = None) -> bool:
+        selected_kind = kind or self.message_kind
+        if selected_kind == "json" and isinstance(value, dict):
+            return self.submit_json(value)
+        if selected_kind == "json":
+            return self.submit_text(json.dumps(value, ensure_ascii=False, default=str))
+        return self.submit_text(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
 
-    def record_replay_text(self, text: str) -> None:
-        """广播前预记录：即使本帧触发淘汰，重连后也能补回。"""
-        if self._replay_buffer is not None:
-            self._replay_buffer.append(text)
+    def defer_frame(self, value: object, *, kind: Optional[str] = None, sequence: Optional[int] = None) -> bool:
+        """Hold a frame until replay/resync hands over to live delivery."""
+        if self._closed or self.dropped:
+            return False
+        selected_kind = kind or self.message_kind
+        if selected_kind == "json" and isinstance(value, dict):
+            size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8", errors="ignore"))
+            stored_value = value
+        else:
+            stored_value = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+            size = len(str(stored_value).encode("utf-8", errors="ignore"))
+        if size > self._max_deferred_bytes or (
+            len(self._deferred_live) >= self._max_deferred_events
+            or self._deferred_bytes + size > self._max_deferred_bytes
+        ):
+            self.evict("deferred_live_overflow")
+            return False
+        self._deferred_live.append((selected_kind, stored_value, size, sequence))
+        self._deferred_bytes += size
+        return True
 
-    def record_replay_json(self, payload: dict) -> None:
-        if self._replay_buffer is not None:
-            self._replay_buffer.append(json.dumps(payload, ensure_ascii=False, default=str))
+    def drain_deferred(self) -> list[Tuple[str, object, int, Optional[int]]]:
+        items = list(self._deferred_live)
+        self._deferred_live.clear()
+        self._deferred_bytes = 0
+        return items
+
+    async def wait_for_low_water(self) -> None:
+        """Wait for this connection only; never hold a room lock here."""
+        if self._closed or self.dropped:
+            return
+        if self._queue.qsize() < max(1, self._queue.maxsize // 2) and self._pending_bytes < self._max_bytes // 2:
+            return
+        try:
+            await asyncio.wait_for(self._queue_low_water.wait(), timeout=_replay_timeout())
+        except asyncio.TimeoutError:
+            self.evict("replay_timeout")
 
     def _submit(self, kind: str, value: object, size: int) -> bool:
-        """入队一条消息；False 表示该连接已被移除（慢客户端/发送失败/已关闭）。
-
-        重放缓冲由 registry 在广播前统一预记录（见 record_replay_*），
-        此处不再重复记录。
-        """
         if self._closed or self.dropped:
             return False
         if size > self._max_bytes:
             logger.warning(
-                f"WS outbound message exceeds byte limit "
-                f"({size} > {self._max_bytes}), evicting connection"
+                f"WS outbound message exceeds byte limit ({size} > {self._max_bytes}), evicting connection"
             )
             self.evict("message_over_byte_limit")
             return False
@@ -118,37 +186,32 @@ class OutboundConnection:
             self.evict("queue_full")
             return False
         self._pending_bytes += size
+        if self._queue.qsize() >= max(1, self._queue.maxsize // 2) or self._pending_bytes >= self._max_bytes // 2:
+            self._queue_low_water.clear()
         if self._pending_bytes > self._max_bytes:
             logger.warning(
-                f"WS outbound pending bytes {self._pending_bytes} exceed "
-                f"{self._max_bytes}, evicting slow client"
+                f"WS outbound pending bytes {self._pending_bytes} exceed {self._max_bytes}, evicting slow client"
             )
             self.evict("pending_bytes_over_limit")
             return False
         return True
 
     async def wait_flushed(self) -> None:
-        """等待队列全部发送完成（测试与优雅关闭用）。"""
         await self._queue.join()
 
     def drop(self) -> None:
-        """立即移除：evict 闭环（cancel sender + 关 socket + 回调 registry）。"""
         self.evict("dropped")
 
     def evict(self, reason: str) -> None:
-        """慢/失效连接淘汰闭环：停止发送、关闭 socket、通知 registry 移除。"""
         already = self.dropped
         self.dropped = True
         self._closed = True
+        self.state = ConnectionState.CLOSED
         if self._sender_task is not None and not self._sender_task.done():
-            self._sender_task.cancel()
+            if self._sender_task is not asyncio.current_task():
+                self._sender_task.cancel()
         if already:
             return
-        # 关闭底层 socket：服务端接收循环随之退出，被淘汰的连接不再上行。
-        # 关闭是 fire-and-forget：淘汰场景里连接往往已被对端断开或已被端点
-        # 关闭（uvicorn 会拒绝重复的 websocket.close 并抛 RuntimeError），
-        # 必须就地吞掉异常，否则每次淘汰都会留下一条
-        # “Task exception was never retrieved” 的未取回异常噪音。
         self._close_socket(code=1001)
         callback = self._on_evicted
         if callback is not None:
@@ -156,14 +219,14 @@ class OutboundConnection:
                 callback(self)
             except Exception:
                 logger.exception("WS evict callback failed")
+        logger.info(
+            f"WebSocket connection evicted: reason={reason} client_id={self.client_id or ''}"
+        )
 
     def _close_socket(self, code: int) -> None:
-        """fire-and-forget 关闭底层 socket；幂等且永不抛出。"""
         close = getattr(self.websocket, "close", None)
         if not callable(close):
             return
-        # 对端已断开（Starlette 在 receive 抛 WebSocketDisconnect 时置位）：
-        # 此时再发 websocket.close 必被 uvicorn 拒绝，直接跳过
         state = getattr(self.websocket, "client_state", None)
         if state is not None and getattr(state, "name", "") == "DISCONNECTED":
             return
@@ -177,21 +240,26 @@ class OutboundConnection:
         try:
             self._close_task = asyncio.get_running_loop().create_task(_close_guarded())
         except RuntimeError:
-            pass  # 无运行中的事件循环（同步清理路径）：留给端点正常关闭
+            pass
 
     async def close(self) -> None:
-        """优雅关闭：发哨兵等待队列排空，必要时取消。"""
         self._closed = True
-        if self._sender_task is None or self._sender_task.done():
+        self.state = ConnectionState.CLOSING
+        task = self._sender_task
+        if task is None or task.done():
+            self.state = ConnectionState.CLOSED
             return
         try:
             self._queue.put_nowait(None)
         except asyncio.QueueFull:
-            self._sender_task.cancel()
+            task.cancel()
         try:
-            await self._sender_task
+            await task
         except asyncio.CancelledError:
             pass
+        self.state = ConnectionState.CLOSED
+        if self._close_task is not None:
+            await self._close_task
 
     async def _send(self, kind: str, value: object) -> None:
         if kind == "json":
@@ -223,41 +291,30 @@ class OutboundConnection:
                 finally:
                     self._pending_bytes = max(0, self._pending_bytes - size)
                     self._queue.task_done()
+                    if self._queue.qsize() < max(1, self._queue.maxsize // 2) and self._pending_bytes < self._max_bytes // 2:
+                        self._queue_low_water.set()
         except asyncio.CancelledError:
             raise
         finally:
-            self._closed = True
+            if not self.dropped:
+                self.state = ConnectionState.CLOSED
 
 
 class ConnectionRegistry:
-    """room_key → 连接 的注册表；可选 presence 映射与按 client 重放缓冲。"""
+    """Compatibility facade over the shared :class:`RoomHubRegistry`."""
 
-    def __init__(self, *, replay_size: Optional[int] = None) -> None:
-        self.rooms: Dict[str, Dict[WebSocket, OutboundConnection]] = {}
-        self.presence: Dict[str, Dict[WebSocket, str]] = {}
-        # (room_key, client_key) → 重放缓冲；不随连接销毁，重连时补回该 client 丢的事件
-        self.client_replay: Dict[Tuple[str, str], Deque[str]] = {}
-        self._replay_size = replay_size or _ws_replay_size()
+    def __init__(self, **kwargs: Any) -> None:
+        from app.domains.websocket.ws.room_hub import RoomHubRegistry
 
-    def _client_deque(self, room_key: str, client_key: str) -> Deque[str]:
-        key = (room_key, str(client_key))
-        buffer = self.client_replay.get(key)
-        if buffer is None:
-            buffer = deque(maxlen=self._replay_size)
-            self.client_replay[key] = buffer
-        return buffer
+        self._hub_registry = RoomHubRegistry(**kwargs)
 
-    def _remove(self, room_key: str, websocket: WebSocket) -> None:
-        room = self.rooms.get(room_key)
-        if room is not None:
-            room.pop(websocket, None)
-            if not room:
-                self.rooms.pop(room_key, None)
-        room_presence = self.presence.get(room_key)
-        if room_presence is not None:
-            room_presence.pop(websocket, None)
-            if not room_presence:
-                self.presence.pop(room_key, None)
+    @property
+    def rooms(self) -> Dict[str, Dict[WebSocket, OutboundConnection]]:
+        return self._hub_registry.rooms
+
+    @property
+    def presence(self) -> Dict[str, Dict[WebSocket, str]]:
+        return self._hub_registry.presence
 
     async def connect(
         self,
@@ -265,82 +322,59 @@ class ConnectionRegistry:
         websocket: WebSocket,
         *,
         user_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        epoch: Optional[str] = None,
+        last_sequence: Optional[int] = None,
+        message_kind: str = "text",
     ) -> OutboundConnection:
-        replay_buffer = self._client_deque(room_key, user_id) if user_id else None
-        connection = OutboundConnection(
+        return await self._hub_registry.connect(
+            room_key,
             websocket,
-            replay_buffer=replay_buffer,
-            on_evicted=lambda _conn: self._remove(room_key, websocket),
+            user_id=user_id,
+            client_id=client_id,
+            epoch=epoch,
+            last_sequence=last_sequence,
+            message_kind=message_kind,
         )
-        connection.initial_client_replayed = bool(replay_buffer and len(replay_buffer))
-        room = self.rooms.setdefault(room_key, {})
-        room[websocket] = connection
-        if user_id is not None:
-            self.presence.setdefault(room_key, {})[websocket] = user_id
-        # 连接级（按 client）重放：先补回该 client 丢的事件，再清空
-        if replay_buffer and len(replay_buffer):
-            for payload in list(replay_buffer):
-                if not connection.submit_text(payload):
-                    self.disconnect(room_key, websocket)
-                    return connection
-            replay_buffer.clear()
-        await connection.start()
-        return connection
 
     def disconnect(self, room_key: str, websocket: WebSocket) -> Optional[OutboundConnection]:
-        removed: Optional[OutboundConnection] = None
-        room = self.rooms.get(room_key)
-        if room is not None:
-            removed = room.pop(websocket, None)
-            if not room:
-                self.rooms.pop(room_key, None)
-        room_presence = self.presence.get(room_key)
-        if room_presence is not None:
-            room_presence.pop(websocket, None)
-            if not room_presence:
-                self.presence.pop(room_key, None)
-        if removed is not None:
-            removed.drop()
-        return removed
+        return self._hub_registry.disconnect(room_key, websocket)
 
-    def broadcast_text(self, room_key: str, text: str) -> int:
-        """向房间内所有连接入队文本消息；返回成功入队的连接数。"""
-        return self._broadcast(room_key, "text", text)
+    async def complete_resync(
+        self,
+        room_key: str,
+        websocket: WebSocket,
+        *,
+        epoch: str,
+        barrier_sequence: int,
+    ) -> bool:
+        return await self._hub_registry.complete_resync(
+            room_key,
+            websocket,
+            epoch=epoch,
+            barrier_sequence=barrier_sequence,
+        )
 
-    def broadcast_json(self, room_key: str, payload: dict) -> int:
-        """向房间内所有连接入队结构化消息；返回成功入队的连接数。"""
-        return self._broadcast(room_key, "json", payload)
+    def broadcast_text(self, room_key: str, text: str, *, sequenced: Optional[bool] = None) -> int:
+        return self._hub_registry.publish_text(room_key, text, sequenced=sequenced)
 
-    def _broadcast(self, room_key: str, kind: str, value: object) -> int:
-        room = self.rooms.get(room_key)
-        if not room:
-            return 0
-        delivered = 0
-        removed: List[WebSocket] = []
-        for websocket, connection in list(room.items()):
-            # 广播前预记录重放缓冲：即使本帧触发淘汰，重连后也能补回
-            if connection.has_replay:
-                if kind == "json":
-                    connection.record_replay_json(value)
-                else:
-                    connection.record_replay_text(str(value))
-            submitted = connection.submit_json(value) if kind == "json" else connection.submit_text(value)
-            if submitted:
-                delivered += 1
-            else:
-                removed.append(websocket)
-        if removed:
-            # submit 失败已触发 evict（关 socket + 回调 _remove）；此处兜底幂等清理
-            for websocket in removed:
-                self._remove(room_key, websocket)
-        return delivered
+    def broadcast_json(self, room_key: str, payload: dict, *, sequenced: Optional[bool] = None) -> int:
+        return self._hub_registry.publish_json(room_key, payload, sequenced=sequenced)
 
     def has_subscribers(self, room_key: str) -> bool:
-        return bool(self.rooms.get(room_key))
+        return self._hub_registry.has_subscribers(room_key)
 
     def online_users(self, room_key: str) -> List[str]:
-        users: List[str] = []
-        for user_id in self.presence.get(room_key, {}).values():
-            if user_id not in users:
-                users.append(user_id)
-        return users
+        return self._hub_registry.online_users(room_key)
+
+    async def sweep(self) -> int:
+        return await self._hub_registry.sweep()
+
+    async def shutdown(self) -> None:
+        await self._hub_registry.shutdown()
+
+    def reset(self) -> None:
+        self._hub_registry.reset()
+
+    def stats(self) -> dict[str, int]:
+        return self._hub_registry.stats()

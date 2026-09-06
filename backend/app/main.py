@@ -4,6 +4,7 @@ FastAPI 主入口
 """
 
 import asyncio
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -127,6 +128,15 @@ async def _on_shutdown() -> None:
         await api_mock_ws_manager.shutdown()
     except Exception:
         logger.warning("Failed to shutdown API MOCK redis listener")
+    for ws_manager, label in (
+        (manager, "task"),
+        (notification_ws_manager, "notification"),
+        (asset_discussion_ws_manager, "asset discussion"),
+    ):
+        try:
+            await ws_manager.shutdown()
+        except Exception:
+            logger.warning("Failed to shutdown %s websocket hubs", label)
     try:
         await close_redis_client()
     except Exception:
@@ -248,6 +258,21 @@ async def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
     return await run_db(_load)
 
 
+def _ws_resume_query(websocket: WebSocket) -> tuple[str | None, str | None, int | None]:
+    """Read a tab-scoped cursor; never substitute user_id for client_id."""
+    client_id = str(websocket.query_params.get("client_id") or "").strip() or None
+    epoch = str(websocket.query_params.get("epoch") or "").strip() or None
+    raw_sequence = websocket.query_params.get("last_sequence")
+    if raw_sequence in (None, ""):
+        last_sequence = None
+    else:
+        try:
+            last_sequence = int(raw_sequence)
+        except (TypeError, ValueError):
+            last_sequence = -1
+    return client_id, epoch, last_sequence
+
+
 def _persist_api_mock_collab_event(
     project_id: str,
     user_id: str,
@@ -290,6 +315,7 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
         avatar_url=ws_context.get("avatar_url") or None,
         avatar_svg=ws_context.get("avatar_svg") or None,
     )
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
 
     with bind_task_context(
         task_id=task_id,
@@ -302,7 +328,9 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
             user,
             session_factory=SessionLocal,
             connection_manager=manager,
-            client_key=user.id,
+            client_key=client_id,
+            resume_epoch=resume_epoch,
+            last_sequence=last_sequence,
         )
         await handler.run()
 
@@ -315,11 +343,33 @@ async def notification_websocket_endpoint(websocket: WebSocket):
         await websocket.close(code=1008, reason="Unauthorized notification websocket")
         return
     user_id = str(context["user_id"])
-    await notification_ws_manager.connect(websocket, user_id)
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
+    await notification_ws_manager.connect(
+        websocket,
+        user_id,
+        client_id=client_id,
+        epoch=resume_epoch,
+        last_sequence=last_sequence,
+    )
     try:
         while True:
-            # 通道只下行；忽略客户端上行（保活 ping 等）
-            await websocket.receive_text()
+            # 通道只下行；仅处理 resync_complete 控制帧。
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if data.get("type") == "resync_complete":
+                payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+                try:
+                    await notification_ws_manager.complete_resync(
+                        websocket,
+                        user_id,
+                        epoch=str(payload.get("epoch") or ""),
+                        barrier_sequence=int(payload.get("barrier_sequence")),
+                    )
+                except (TypeError, ValueError):
+                    continue
     except WebSocketDisconnect:
         notification_ws_manager.disconnect(websocket, user_id)
     except Exception:
@@ -330,8 +380,16 @@ async def notification_websocket_endpoint(websocket: WebSocket):
 @app.websocket("/ws/api-mock/{project_id}")
 async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
     user_id = websocket.query_params.get("userId", "anonymous")
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(project_id=project_id, user_id=user_id):
-        await api_mock_ws_manager.connect(websocket, project_id, user_id)
+        await api_mock_ws_manager.connect(
+            websocket,
+            project_id,
+            user_id,
+            client_id=client_id,
+            epoch=resume_epoch,
+            last_sequence=last_sequence,
+        )
         await api_mock_ws_manager.broadcast(
             project_id,
             {
@@ -343,6 +401,18 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
         try:
             while True:
                 data = await websocket.receive_json()
+                if data.get("type") == "resync_complete":
+                    payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+                    try:
+                        await api_mock_ws_manager.complete_resync(
+                            websocket,
+                            project_id,
+                            epoch=str(payload.get("epoch") or ""),
+                            barrier_sequence=int(payload.get("barrier_sequence")),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                    continue
                 event_type = str(data.get("type") or "draft").lower()
                 payload = data.get("payload")
                 endpoint_id = data.get("endpoint_id") or (payload or {}).get("endpoint_id")
@@ -392,8 +462,16 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
 @app.websocket("/ws/assets/{asset_id}/discussion")
 async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: str):
     user_id = websocket.query_params.get("userId", "anonymous")
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(asset_id=asset_id, user_id=user_id):
-        await asset_discussion_ws_manager.connect(websocket, asset_id, user_id)
+        await asset_discussion_ws_manager.connect(
+            websocket,
+            asset_id,
+            user_id,
+            client_id=client_id,
+            epoch=resume_epoch,
+            last_sequence=last_sequence,
+        )
         await asset_discussion_ws_manager.broadcast(
             asset_id,
             {
@@ -405,6 +483,18 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
         try:
             while True:
                 data = await websocket.receive_json()
+                if data.get("type") == "resync_complete":
+                    payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+                    try:
+                        await asset_discussion_ws_manager.complete_resync(
+                            websocket,
+                            asset_id,
+                            epoch=str(payload.get("epoch") or ""),
+                            barrier_sequence=int(payload.get("barrier_sequence")),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                    continue
                 msg_type = str(data.get("type") or "").lower()
                 payload = data.get("payload")
 

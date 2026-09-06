@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
+import { buildWsCursorQuery, prepareWsFrame, sendResyncComplete } from '@/utils/wsCursor'
 export type AssetSummary = {
   id: string
   task_id: string
@@ -653,6 +654,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
   const buildWsUrl = (assetId: string, userId: string): string => {
     return buildBackendWsUrl(`/ws/assets/${assetId}/discussion`, {
       userId: userId || 'anonymous',
+      ...buildWsCursorQuery(`asset:${assetId}`),
     })
   }
 
@@ -773,7 +775,27 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     socket.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data)
-        void handleWsEvent(data)
+        const prepared = prepareWsFrame(`asset:${assetId}`, data)
+        if (prepared.kind === 'event') {
+          void handleWsEvent(prepared.event.payload).then(prepared.commit)
+          return
+        }
+        if (prepared.kind === 'resync' || (prepared.kind === 'control' && data?.type === 'resync_required')) {
+          if (prepared.kind === 'resync' && prepared.reason === 'gap') {
+            socket.close(4000, 'sequence_gap')
+            return
+          }
+          void (async () => {
+            await refresh()
+            if (socket === ws.value && socket.readyState === WebSocket.OPEN) {
+              sendResyncComplete(socket, data, `asset:${assetId}`)
+            }
+          })()
+          return
+        }
+        if (prepared.kind === 'control') {
+          void handleWsEvent(data)
+        }
       } catch {
         // Ignore malformed events
       }

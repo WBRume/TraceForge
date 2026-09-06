@@ -4,6 +4,7 @@ import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
+import { buildWsCursorQuery, prepareWsFrame, sendResyncComplete } from '@/utils/wsCursor'
 
 export type AppNotificationItem = {
   id: string
@@ -139,7 +140,11 @@ export const useNotificationStore = defineStore('appNotification', () => {
       ws.close()
       ws = null
     }
-    ws = new WebSocket(buildBackendWsUrl('/ws/notifications', { token: authStore.token }))
+    const room = `notification:${authStore.user?.id || ''}`
+    ws = new WebSocket(buildBackendWsUrl('/ws/notifications', {
+      token: authStore.token,
+      ...buildWsCursorQuery(room),
+    }))
     ws.onopen = () => {
       connected.value = true
       wsReconnectAttempt = 0
@@ -147,8 +152,35 @@ export const useNotificationStore = defineStore('appNotification', () => {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        if (data?.type === 'notification' && data.payload) {
-          handleIncoming(data.payload as AppNotificationItem)
+        const prepared = prepareWsFrame(room, data)
+        if (prepared.kind === 'event') {
+          if (prepared.event.event_type === 'notification' && prepared.event.payload) {
+            handleIncoming(prepared.event.payload as AppNotificationItem)
+            prepared.commit()
+          }
+          return
+        }
+        if (prepared.kind === 'resync' || (prepared.kind === 'control' && data?.type === 'resync_required')) {
+          const socket = ws
+          if (!socket) return
+          if (prepared.kind === 'resync' && prepared.reason === 'gap') {
+            socket.close(4000, 'sequence_gap')
+            return
+          }
+          void (async () => {
+            await fetchList()
+            await refreshUnreadCount()
+            if (socket === ws && socket.readyState === WebSocket.OPEN) {
+              sendResyncComplete(socket, data, room)
+            }
+          })()
+          return
+        }
+        if (prepared.kind === 'control') {
+          // Backward-compatible handling for a raw notification frame.
+          if (data?.type === 'notification' && data.payload) {
+            handleIncoming(data.payload as AppNotificationItem)
+          }
         }
       } catch {
         // 忽略非 JSON 帧

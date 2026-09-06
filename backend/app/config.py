@@ -203,6 +203,15 @@ class Settings(BaseSettings):
     WS_OUTBOUND_MAX_BYTES: int = 1024 * 1024
     # 单次 send_text/send_json 超时：防 TCP 缓冲塞满的客户端把 sender 永久挂死
     WS_SEND_TIMEOUT_SECONDS: float = 5.0
+    # 单 worker WebSocket 房间 journal / replay 约束
+    WS_REPLAY_MAX_EVENTS: int = 1000
+    WS_REPLAY_MAX_BYTES: int = 4 * 1024 * 1024
+    WS_REPLAY_ROOM_TTL_SECONDS: float = 900.0
+    WS_REPLAY_SWEEP_INTERVAL_SECONDS: float = 60.0
+    WS_REPLAY_BATCH_SIZE: int = 100
+    WS_REPLAY_TIMEOUT_SECONDS: float = 30.0
+    WS_DEFERRED_LIVE_MAX_EVENTS: int = 256
+    WS_DEFERRED_LIVE_MAX_BYTES: int = 1024 * 1024
 
     # ── CORS ──
     CORS_ORIGINS: list[str] = [

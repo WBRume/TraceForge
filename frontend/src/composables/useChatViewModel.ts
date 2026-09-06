@@ -8,6 +8,11 @@ import { formatTime, formatToolInput, formatElapsedDuration } from '@/utils/chat
 import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask, isChatActiveForTask, resolveDiagnosisSummaryStartedMs } from '@/utils/diagnosisSummary'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
+import {
+  buildWsCursorQuery,
+  prepareWsFrame,
+  sendResyncComplete,
+} from '@/utils/wsCursor'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
 import { useChatDecision, type ChatDecisionPayload } from '@/composables/useChatDecision'
@@ -2368,6 +2373,7 @@ export function useChatViewModel() {
   const buildTaskWsUrl = (taskId: string): string => {
     return buildBackendWsUrl(`/ws/task/${taskId}`, {
       token: authStore.token || undefined,
+      ...buildWsCursorQuery(`task:${taskId}`),
     })
   }
   
@@ -2407,8 +2413,33 @@ export function useChatViewModel() {
       }
     }
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      handleWsMessage(data)
+      try {
+        const data = JSON.parse(event.data)
+        const prepared = prepareWsFrame(`task:${taskId}`, data)
+        if (prepared.kind === 'event') {
+          handleWsMessage({ type: prepared.event.event_type, payload: prepared.event.payload })
+          prepared.commit()
+          return
+        }
+        if (prepared.kind === 'resync') {
+          const currentSocket = socketForTask(taskId)
+          if (prepared.reason === 'gap') {
+            currentSocket?.close(4000, 'sequence_gap')
+          } else {
+            void completeTaskWsResync(currentSocket, data, taskId)
+          }
+          return
+        }
+        if (prepared.kind === 'control') {
+          if (data?.type === 'resync_required') {
+            void completeTaskWsResync(ws, data, taskId)
+          } else if (!['resume_ok', 'resync_ok'].includes(String(data?.type || ''))) {
+            handleWsMessage(data)
+          }
+        }
+      } catch {
+        // Ignore malformed frames; the next reconnect will resync from REST.
+      }
     }
     ws.onerror = (event) => {
       console.error('WS Error', event)
@@ -2421,6 +2452,27 @@ export function useChatViewModel() {
       }
       if (currentTask.value?.id !== taskId) return
       scheduleWsReconnect(taskId)
+    }
+  }
+
+  const socketForTask = (taskId: string): WebSocket | null => (
+    currentTask.value?.id === taskId ? ws : null
+  )
+
+  const completeTaskWsResync = async (
+    socket: WebSocket | null,
+    frame: any,
+    taskId: string,
+  ) => {
+    if (!socket || currentTask.value?.id !== taskId) return
+    try {
+      await loadHistory(taskId, true)
+      await loadActiveChatJobs(taskId)
+      if (socket === ws && socket.readyState === WebSocket.OPEN) {
+        sendResyncComplete(socket, frame, `task:${taskId}`)
+      }
+    } catch {
+      // Stay disconnected/syncing; the reconnect loop will retry REST sync.
     }
   }
   
