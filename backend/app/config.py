@@ -138,6 +138,16 @@ class Settings(BaseSettings):
     AGENT_MAX_RUNTIME_SECONDS: int = 7200
     PLATFORM_API_BASE_URL: str = "http://localhost:8000"
 
+    # Durable AI job ownership.  The lease is intentionally shorter than the
+    # reaper's retry horizon so a dead worker cannot hold a queue indefinitely.
+    AI_JOB_HEARTBEAT_SECONDS: int = 10
+    AI_JOB_LEASE_SECONDS: int = 45
+    AI_JOB_REAPER_INTERVAL_SECONDS: int = 10
+    AI_JOB_DISPATCH_INTERVAL_SECONDS: int = 2
+    WORKER_SERVICE_NAME: str = "traceforge-api"
+    WORKER_INDEX: str = "0"
+    AGENT_TERMINATION_TIMEOUT_SECONDS: float = 30.0
+
     # 空闲引擎回收 TTL：非 running 引擎在注册表中保留的最长时间，
     # 超过后由周期收割器摘除（resume 均可走 DB 重建，内存仅是快路径）
     ENGINE_IDLE_TTL_SECONDS: int = 1800

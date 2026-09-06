@@ -125,8 +125,12 @@ class ClaudeCodeAdapter(AgentBackend):
             )
             try:
                 await watchdog.wait(program.wait())
-            except AgentTimeoutError:
-                await program.cancel()
+            except AgentTimeoutError as timeout_error:
+                termination = await program.cancel()
+                if termination is not None:
+                    timeout_error.termination_confirmed_dead = bool(
+                        termination.confirmed_dead
+                    )
                 raise
         except AgentError:
             raise
@@ -161,13 +165,40 @@ class ClaudeCodeAdapter(AgentBackend):
             raw_trace=None,
         )
 
-    async def interrupt(self, run_id: str | None = None) -> None:
+    async def interrupt(self, run_id: str | None = None):
         self._cancelled = True
-        await self._bridge.interrupt()
+        termination = await self._bridge.interrupt()
+        await self._await_legacy_task_exit()
+        return termination
 
-    async def cancel(self, run_id: str | None = None) -> None:
+    async def cancel(self, run_id: str | None = None):
         self._cancelled = True
-        await self._bridge.cancel()
+        termination = await self._bridge.cancel()
+        await self._await_legacy_task_exit()
+        return termination
+
+    async def _await_legacy_task_exit(self) -> None:
+        task = self._legacy_run_task
+        if task is None or task is asyncio.current_task():
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=float(
+                    getattr(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 30) or 30
+                ),
+            )
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        except Exception:
+            # The run task may already have completed with the timeout/error
+            # that triggered cleanup.  Its process lifecycle is handled above;
+            # do not turn that original failure into a cleanup failure.
+            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            if self._legacy_run_task is task:
+                self._legacy_run_task = None
 
     def is_running(self, run_id: str | None = None) -> bool:
         if self._legacy_run_task is not None and not self._legacy_run_task.done():
@@ -177,6 +208,7 @@ class ClaudeCodeAdapter(AgentBackend):
     async def close(self) -> None:
         if self._bridge.is_running():
             await self._bridge.cancel()
+        await self._await_legacy_task_exit()
         self._last_result_payload = {}
 
     # ── 旧 CliBridgeBase 兼容入口 ──────────────────────────────
@@ -245,6 +277,8 @@ class ClaudeCodeAdapter(AgentBackend):
                 "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
                 "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
                 "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
+                "run_token": str((env_overrides or {}).get("TRACEFORGE_RUN_TOKEN") or "").strip() or None,
+                "worker_boot_id": str((env_overrides or {}).get("WORKER_BOOT_ID") or "").strip() or None,
             },
             timeout_seconds=float(
                 getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
@@ -289,6 +323,8 @@ class ClaudeCodeAdapter(AgentBackend):
                 await self._legacy_run_task
             finally:
                 self._legacy_run_task = None
+                if self._bridge.is_running():
+                    await asyncio.shield(self._bridge.cancel())
         else:
             await self._bridge.wait()
 

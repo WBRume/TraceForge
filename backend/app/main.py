@@ -5,6 +5,7 @@ FastAPI 主入口
 
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError
 
@@ -50,6 +51,7 @@ from app.domains.management.routers import (
     repo_groups_router,
 )
 from app.domains.ai.services import ai_job_service
+from app.engine.workflow_engine import shutdown_active_engines
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
 from app.domains.system_config.routers import system_config
@@ -58,6 +60,7 @@ from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebS
 from app.domains.notification.routers import notification as notification_router
 from app.domains.notification.ws.notification_manager import notification_ws_manager
 from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
+from app.domains.task.services import task_cli_state_service
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.rag.routers import outbox as rag_outbox_router
@@ -69,6 +72,7 @@ app = FastAPI(
 )
 
 _pre_input_worker_task: asyncio.Task | None = None
+app.state.ai_runtime_ready = False
 
 # ── CORS ──
 app.add_middleware(
@@ -89,8 +93,10 @@ app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
 @app.on_event("startup")
 async def _on_startup() -> None:
     global _pre_input_worker_task
+    app.state.ai_runtime_ready = False
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
-    recovered_queue_count = await ai_job_service.recover_pending_queues()
+    recovered_queue_count = await ai_job_service.start_runtime_workers()
+    app.state.ai_runtime_ready = True
     if recovered_queue_count:
         logger.info("Recovered {} pending AI job queues", recovered_queue_count)
 
@@ -98,9 +104,25 @@ async def _on_startup() -> None:
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
     global _pre_input_worker_task
+    app.state.ai_runtime_ready = False
     if _pre_input_worker_task is not None:
         _pre_input_worker_task.cancel()
+        await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
         _pre_input_worker_task = None
+    # Stop new durable claims and queue runners first.  The service then
+    # terminates every locally supervised process before infrastructure closes.
+    try:
+        await ai_job_service.shutdown_runtime_workers()
+    except Exception:
+        logger.exception("Failed to shutdown AI job runtime")
+    try:
+        await shutdown_active_engines()
+    except Exception:
+        logger.exception("Failed to shutdown active workflow engines")
+    try:
+        await task_cli_state_service.shutdown_bootstrap_runners()
+    except Exception:
+        logger.exception("Failed to shutdown CLI bootstrap runners")
     try:
         await api_mock_ws_manager.shutdown()
     except Exception:
@@ -426,6 +448,19 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
 @app.get("/health")
 def health_check():
     return {"status": "ok", "app": settings.APP_NAME}
+
+
+@app.get("/health/ready")
+def readiness_check():
+    ready = bool(getattr(app.state, "ai_runtime_ready", False))
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "starting",
+            "ready": ready,
+            "app": settings.APP_NAME,
+        },
+    )
 
 if __name__ == "__main__":
     import uvicorn

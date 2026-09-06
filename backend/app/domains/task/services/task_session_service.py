@@ -149,6 +149,8 @@ def _prepare_chat_turn_sync(
             AiJobStatus.PENDING,
             AiJobStatus.RUNNING,
             AiJobStatus.WAITING_HITL,
+            AiJobStatus.TERMINATING,
+            AiJobStatus.ORPHANED,
         ]),
     ).first()
     if active_job:

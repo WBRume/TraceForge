@@ -8,6 +8,24 @@ class AgentError(Exception):
 class AgentTimeoutError(AgentError):
     """Agent 回合超时。"""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str | None = None,
+        limit_seconds: float | None = None,
+        termination_confirmed_dead: bool | None = None,
+    ):
+        super().__init__(message)
+        self.phase = phase
+        self.limit_seconds = limit_seconds
+        self.termination_confirmed_dead = termination_confirmed_dead
+        self.failure_code = {
+            "startup": "STARTUP_TIMEOUT",
+            "idle": "IDLE_TIMEOUT",
+            "hard": "HARD_TIMEOUT",
+        }.get(str(phase or "").lower(), "AGENT_TIMEOUT")
+
 
 class AgentCancelledError(AgentError):
     """Agent 回合被取消。"""
