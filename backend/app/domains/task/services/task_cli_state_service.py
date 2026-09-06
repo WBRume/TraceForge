@@ -320,7 +320,8 @@ def upsert_bootstrap_for_upload(
         record.spec_version_id = spec_version_id
         record.status = TaskCliBootstrapStatus.PENDING
         record.progress = 0
-        record.message = "Specification uploaded, waiting for CLI bootstrap"
+        # 上传后基线为待手动触发状态，不再展示额外文案（状态标签已足够表达）
+        record.message = None
         record.baseline_dir = baseline_dir
         if normalized_mode == "FULL":
             record.baseline_session_id = None
@@ -336,7 +337,7 @@ def upsert_bootstrap_for_upload(
             spec_version_id=spec_version_id,
             status=TaskCliBootstrapStatus.PENDING,
             progress=0,
-            message="Specification uploaded, waiting for CLI bootstrap",
+            message=None,
             baseline_dir=baseline_dir,
             baseline_session_id=None,
             error_message=None,
@@ -720,6 +721,62 @@ def ensure_bootstrap_ready(db: Session, *, workspace_id: str, task_id: str) -> S
     if not record or record.workspace_id != workspace_id:
         raise BootstrapNotReadyError("Specification baseline is not initialized yet")
     _raise_not_ready(record)
+    return record
+
+
+def ensure_bootstrap_ready_or_start(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+) -> SddTaskCliBootstrap:
+    """评审 AI 入口 gate：READY 直接放行；PENDING（尚未构建）懒启动构建后要求稍后重试。
+
+    FAILED/STALE 不自动重试，需用户通过手动触发入口重建。
+    """
+    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    if not record or record.workspace_id != workspace_id:
+        raise BootstrapNotReadyError("Specification baseline is not initialized yet")
+    if record.status == TaskCliBootstrapStatus.READY:
+        return record
+    if record.status == TaskCliBootstrapStatus.PENDING:
+        # 懒启动：首次评审 AI 操作时开始构建（schedule_bootstrap 幂等，重复调用安全）。
+        schedule_bootstrap(task_id)
+        raise BootstrapNotReadyError("Baseline build started; please retry when it completes")
+    if record.status == TaskCliBootstrapStatus.FAILED:
+        raise BootstrapNotReadyError(record.error_message or "Specification baseline bootstrap failed")
+    if record.status == TaskCliBootstrapStatus.STALE:
+        raise BootstrapNotReadyError("Specification baseline is stale and must be rebuilt")
+    raise BootstrapNotReadyError(
+        f"Specification baseline is building (progress={int(record.progress or 0)}%)"
+    )
+
+
+def request_bootstrap_run(
+    db: Session,
+    *,
+    workspace_id: str,
+    task_id: str,
+) -> SddTaskCliBootstrap:
+    """手动触发基线构建：重置为 PENDING 并返回记录（调度由调用方完成）。
+
+    - RUNNING：幂等返回当前记录（不重置进度）
+    - READY：抛 ValueError（由路由转换为 409）
+    - 记录不存在：抛 KeyError（由路由转换为 404）
+    """
+    record = mark_running_bootstrap_stale_if_needed(db, task_id)
+    if not record or record.workspace_id != workspace_id:
+        raise KeyError("Specification baseline is not initialized yet")
+    if record.status == TaskCliBootstrapStatus.RUNNING:
+        return record
+    if record.status == TaskCliBootstrapStatus.READY:
+        raise ValueError("Specification baseline is already ready")
+    record.status = TaskCliBootstrapStatus.PENDING
+    record.progress = 0
+    record.message = "Baseline build requested"
+    record.error_message = None
+    db.commit()
+    db.refresh(record)
     return record
 
 

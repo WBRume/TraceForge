@@ -365,6 +365,14 @@ const statusModelText = (card: any): string => {
           <div class="bootstrap-status-main">
             <Loader2 v-if="vm.isSpecBootstrapActive" class="w-4 h-4 spin text-primary" />
             <span>{{ vm.bootstrapStatusText(vm.specBootstrap.status) }} · {{ vm.specBootstrap.progress }}%</span>
+            <button
+              v-if="vm.canTriggerSpecBootstrap"
+              class="btn-secondary bootstrap-trigger-btn"
+              :disabled="vm.specBootstrapTriggering"
+              @click="vm.triggerSpecBootstrap"
+            >
+              {{ $t('chat.spec_bootstrap_action_build') }}
+            </button>
           </div>
           <p v-if="vm.specBootstrap.message" class="bootstrap-status-message">{{ vm.specBootstrap.message }}</p>
           <p v-if="vm.specBootstrap.error_message" class="bootstrap-status-error">{{ vm.specBootstrap.error_message }}</p>

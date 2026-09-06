@@ -723,6 +723,7 @@ async def recover_pending_queues() -> int:
             f"{AiJobChannel.TASK_CHAT.value}:",
             f"{AiJobChannel.ASSET_THREAD.value}:",
             "DIAGNOSIS_SUMMARY:",
+            "REQUIREMENT_PREVIEW:",
         )
         queue_keys = [
             str(row[0] or "").strip()
@@ -2692,11 +2693,18 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
         schedule_queue(queue_key)
 
 
-def _load_job_channel_sync(job_id: str) -> Optional[AiJobChannel]:
+def _load_job_dispatch_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        return job.channel if job else None
+        if not job:
+            return None
+        job_context = job.context_json if isinstance(job.context_json, dict) else {}
+        return {
+            "channel": job.channel,
+            "queue_key": str(job.queue_key or ""),
+            "job_kind": str(job_context.get("job_kind") or "").strip().upper(),
+        }
     finally:
         db.close()
 
@@ -2718,12 +2726,25 @@ def _load_job_failure_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 async def _execute_job(job_id: str) -> None:
-    channel = await run_db(_load_job_channel_sync, job_id)
-    if channel is None:
+    dispatch = await run_db(_load_job_dispatch_context_sync, job_id)
+    if dispatch is None:
         return
+    channel = dispatch.get("channel")
+    queue_key = str(dispatch.get("queue_key") or "")
+    job_kind = str(dispatch.get("job_kind") or "")
 
     with bind_ai_context(job_id=job_id, event_type="execute_job"):
         try:
+            if queue_key.startswith("REQUIREMENT_PREVIEW:"):
+                # Requirement preview 作业（import/split）：输入内容持久化在
+                # job.context_json，走独立队列 runner，可跨重启恢复。
+                from app.domains.workspace_asset.services import workspace_asset_service
+
+                if job_kind == "REQUIREMENT_SPLIT_PREVIEW":
+                    await workspace_asset_service.run_requirement_split_preview_job(job_id)
+                else:
+                    await workspace_asset_service.run_requirement_import_preview_job(job_id)
+                return
             if channel == AiJobChannel.ASSET_THREAD:
                 await _execute_asset_thread_job(job_id)
                 return

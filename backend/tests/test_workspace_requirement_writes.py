@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import json
@@ -14,6 +15,7 @@ if TEST_ROOT not in sys.path:
 
 from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.ai.services import ai_job_service
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
     RequirementStatus,
@@ -30,6 +32,23 @@ def _use_project_path(db, workspace, task, project_path):
     workspace.project_path = str(project_path)
     task.project_path = str(project_path)
     db.commit()
+
+
+def _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, workspace_id):
+    """preview 作业改走 AI 任务队列后，测试中同步驱动队列执行以便断言终态。"""
+    scheduled = []
+    monkeypatch.setattr(
+        workspace_asset_service,
+        "schedule_requirement_preview_queue",
+        lambda ws_id: scheduled.append(ws_id),
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+
+    def _drive():
+        assert scheduled == [workspace_id]
+        asyncio.run(ai_job_service._run_queue(f"REQUIREMENT_PREVIEW:{workspace_id}"))
+
+    return _drive
 
 
 async def _fake_requirement_preview_cli(prompt, project_path, max_attempts=1, **kwargs):
@@ -146,6 +165,7 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import", task_id="task-import")
             _use_project_path(db, workspace, task, tmp_path)
 
+        drive_queue = _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, "ws-import")
         client = TestClient(_build_app(SessionLocal, user))
         preview = client.post(
             "/api/workspaces/ws-import/workspace-assets/requirements/imports",
@@ -158,6 +178,7 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
         assert preview.status_code == 202
         job = preview.json()
         assert job["status"] in {"PENDING", "SUCCESS"}
+        drive_queue()
         job_result = client.get(
             f"/api/workspaces/ws-import/workspace-assets/requirements/preview-jobs/{job['job_id']}"
         )
@@ -207,6 +228,7 @@ def test_requirement_import_preview_keeps_simple_requirement_as_single_item(monk
             user, workspace, task = _seed_workspace(db, workspace_id="ws-simple-import", task_id="task-simple-import")
             _use_project_path(db, workspace, task, tmp_path)
 
+        drive_queue = _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, "ws-simple-import")
         client = TestClient(_build_app(SessionLocal, user))
         preview = client.post(
             "/api/workspaces/ws-simple-import/workspace-assets/requirements/imports",
@@ -217,6 +239,7 @@ def test_requirement_import_preview_keeps_simple_requirement_as_single_item(monk
         )
 
         assert preview.status_code == 202
+        drive_queue()
         job_result = client.get(
             f"/api/workspaces/ws-simple-import/workspace-assets/requirements/preview-jobs/{preview.json()['job_id']}"
         )
@@ -392,6 +415,7 @@ def test_requirement_import_preview_multiple_items_creates_parent_with_children(
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import-tree", task_id="task-import-tree")
             _use_project_path(db, workspace, task, tmp_path)
 
+        drive_queue = _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, "ws-import-tree")
         client = TestClient(_build_app(SessionLocal, user))
         preview = client.post(
             "/api/workspaces/ws-import-tree/workspace-assets/requirements/imports",
@@ -402,6 +426,7 @@ def test_requirement_import_preview_multiple_items_creates_parent_with_children(
             },
         )
         assert preview.status_code == 202
+        drive_queue()
         job = client.get(
             f"/api/workspaces/ws-import-tree/workspace-assets/requirements/preview-jobs/{preview.json()['job_id']}"
         )
@@ -505,12 +530,14 @@ def test_requirement_split_preview_and_confirm_create_child_requirements(monkeyp
             db.add(requirement)
             db.commit()
 
+        drive_queue = _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, "ws-split")
         client = TestClient(_build_app(SessionLocal, user))
         preview = client.post(
             "/api/workspaces/ws-split/workspace-assets/requirements/req-parent/split-preview",
             json={"change_reason": "Split into traceable items"},
         )
         assert preview.status_code == 202
+        drive_queue()
         job_result = client.get(
             f"/api/workspaces/ws-split/workspace-assets/requirements/preview-jobs/{preview.json()['job_id']}"
         )

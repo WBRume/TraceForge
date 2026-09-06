@@ -1167,6 +1167,48 @@ def get_task_spec_bootstrap(
     return TaskCliBootstrapResponse(**snapshot)
 
 
+@router.post("/{task_id}/spec-bootstrap/run", response_model=TaskCliBootstrapResponse)
+async def run_task_spec_bootstrap(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """手动触发 spec 基线构建（PENDING/FAILED/STALE 可触发；RUNNING 幂等；READY 返回 409）。"""
+    verify_workspace_permission(
+        ws_id,
+        current_user,
+        db,
+        WorkspacePermission.UPLOAD_TASK_SPEC,
+        "No permission to run task specification baseline",
+    )
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
+        try:
+            task_cli_state_service.request_bootstrap_run(
+                db,
+                workspace_id=ws_id,
+                task_id=task_id,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Specification baseline not initialized")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        snapshot = task_cli_state_service.get_bootstrap_snapshot(
+            db,
+            workspace_id=ws_id,
+            task_id=task_id,
+        )
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="Specification baseline not initialized")
+        await task_cli_state_service.publish_bootstrap_snapshot(task_id)
+        task_cli_state_service.schedule_bootstrap(task_id)
+        return TaskCliBootstrapResponse(**snapshot)
+
+
 @router.get("/{task_id}/superpowers-docs", response_model=SuperpowersDocsListResponse)
 def list_task_superpowers_docs(
     ws_id: str,
@@ -1284,7 +1326,8 @@ async def upload_task_spec(
                 db.commit()
                 db.refresh(bootstrap)
                 asyncio.create_task(task_cli_state_service.publish_bootstrap_snapshot(task_id))
-                task_cli_state_service.schedule_bootstrap(task_id)
+                # 基线构建改为手动触发（或首次评审 AI 操作时懒启动），
+                # 避免批量上传 spec 时 CLI 资源被大量并发 bootstrap 抢占。
                 return {
                     "status": "success",
                     "path": file_path,

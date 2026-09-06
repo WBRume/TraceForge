@@ -5,7 +5,7 @@ Workspace Assets API routes.
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
@@ -204,7 +204,6 @@ def create_workspace_asset_requirement(
 )
 async def create_workspace_asset_requirement_import_preview(
     ws_id: str,
-    background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(default=None),
     text: Optional[str] = Form(default=None),
     source_kind: Optional[str] = Form(default="document"),
@@ -233,15 +232,7 @@ async def create_workspace_asset_requirement_import_preview(
             source_uri=source_uri,
             source_ref=source_ref,
         )
-        background_tasks.add_task(
-            workspace_asset_service.run_requirement_import_preview_job,
-            response.job_id,
-            file_name=file_name,
-            raw=raw,
-            source_kind=source_kind,
-            source_uri=source_uri,
-            source_ref=source_ref,
-        )
+        workspace_asset_service.schedule_requirement_preview_queue(ws_id)
         return response
     except workspace_asset_service.WorkspaceAssetWriteError as exc:
         _raise_write_error(exc)
@@ -401,11 +392,10 @@ def unlink_workspace_asset_requirement_task(
     response_model=RequirementPreviewJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def create_workspace_asset_requirement_split_preview(
+async def create_workspace_asset_requirement_split_preview(
     ws_id: str,
     requirement_id: str,
     payload: RequirementSplitPreviewRequest,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -422,7 +412,7 @@ def create_workspace_asset_requirement_split_preview(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
-    background_tasks.add_task(workspace_asset_service.run_requirement_split_preview_job, result.job_id)
+    workspace_asset_service.schedule_requirement_preview_queue(ws_id)
     return result
 
 
