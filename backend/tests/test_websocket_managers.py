@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -52,30 +53,44 @@ async def _wait_all(manager, *sockets):
 
 
 class WebSocketManagerTest(unittest.IsolatedAsyncioTestCase):
-    async def test_task_ws_buffer_replay_kept_until_live_delivery(self):
+    async def test_task_ws_journal_replay_is_not_cleared_by_live_delivery(self):
         manager = ConnectionManager()
         task_id = "task-buffer"
 
+        first_ws = _FakeTextSocket()
+        await manager.connect(first_ws, task_id)
         await manager.send_message_to_room(
             task_id,
             WSMessage(type="status", payload={"step": 1}),
         )
-        self.assertEqual(len(manager.pending_payloads[task_id]), 1)
+        self.assertTrue(first_ws.accepted)
+        await _wait_all(manager, first_ws)
+        self.assertEqual(len(first_ws.sent_texts), 1)
+        first = json.loads(first_ws.sent_texts[0])
+        self.assertEqual(first["type"], "event")
+        manager.disconnect(first_ws, task_id)
 
-        ws = _FakeTextSocket()
-        await manager.connect(ws, task_id)
-        self.assertTrue(ws.accepted)
-        await _wait_all(manager, ws)
-        self.assertEqual(len(ws.sent_texts), 1)
-        self.assertEqual(len(manager.pending_payloads[task_id]), 1)
-
+        # This event is offline; reconnect with the explicit cursor to ask for
+        # the room journal rather than relying on a user-scoped buffer.
         await manager.send_message_to_room(
             task_id,
             WSMessage(type="status", payload={"step": 2}),
         )
+        ws = _FakeTextSocket()
+        await manager.connect(
+            ws,
+            task_id,
+            epoch=first["epoch"],
+            last_sequence=first["sequence"],
+        )
         await _wait_all(manager, ws)
+        await asyncio.sleep(0)
+        await _wait_all(manager, ws)
+
         self.assertEqual(len(ws.sent_texts), 2)
-        self.assertEqual(len(manager.pending_payloads[task_id]), 0)
+        journal = manager.registry._hub_registry._hubs["task:task-buffer"].journal
+        self.assertEqual([event.sequence for event in journal.events], [1, 2])
+        self.assertFalse(hasattr(manager, "pending_payloads"))
 
     async def test_task_ws_slow_client_does_not_block_room_broadcast(self):
         manager = ConnectionManager()
@@ -119,13 +134,11 @@ class WebSocketManagerTest(unittest.IsolatedAsyncioTestCase):
         project_id = "project-1"
         ws1 = _MutatingJsonSocket()
         ws2 = _MutatingJsonSocket(mutate=lambda: manager.disconnect(ws1, project_id))
-        # 单测禁用 Redis 扇出：避免 .env REDIS_ENABLED=true 时启动真实订阅循环
-        with mock.patch("app.domains.api_mock.ws.api_mock_manager.settings.REDIS_ENABLED", False):
-            await manager.connect(ws1, project_id, "u1")
-            await manager.connect(ws2, project_id, "u2")
+        await manager.connect(ws1, project_id, "u1")
+        await manager.connect(ws2, project_id, "u2")
 
-            await manager.broadcast(project_id, {"type": "event"})
-            await _wait_all(manager, ws1, ws2)
+        await manager.broadcast(project_id, {"type": "event"})
+        await _wait_all(manager, ws1, ws2)
         self.assertGreaterEqual(len(ws2.sent_json), 1)
 
     async def test_asset_discussion_broadcast_safe_when_connection_set_mutates(self):

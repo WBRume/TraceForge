@@ -1,6 +1,7 @@
 """OutboundConnection / ConnectionRegistry：双重限长与慢客户端隔离。"""
 
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -124,7 +125,9 @@ class ConnectionRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delivered, 1)
         self.assertNotIn(bad, registry.rooms["room-1"])
         await asyncio.wait_for(good_conn_wait(registry, good), timeout=2)
-        self.assertEqual(good.sent_texts, ["hello"])
+        frame = json.loads(good.sent_texts[0])
+        self.assertEqual(frame["type"], "event")
+        self.assertEqual(frame["payload"], "hello")
 
 
 async def good_conn_wait(registry, socket):

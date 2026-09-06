@@ -1,6 +1,7 @@
 """WS evict 闭环：发送超时、背压淘汰关 socket、按 client 重放缓冲。"""
 
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -96,7 +97,7 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
         socket = _FakeSocket(fail=True)
         connection = await registry.connect("room-3", socket, user_id="u-dead")
         registry.broadcast_text("room-3", "hello")
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(connection.sender_task, timeout=2)
 
         self.assertTrue(connection.dropped)
         self.assertEqual(socket.closed_codes, [1001])
@@ -108,7 +109,7 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
         socket = _BrokenCloseSocket()
         connection = await registry.connect("room-4", socket, user_id="u-broken")
         registry.broadcast_text("room-4", "hello")
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(connection.sender_task, timeout=2)
 
         self.assertTrue(connection.dropped)
         self.assertFalse(registry.has_subscribers("room-4"))
@@ -142,28 +143,30 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ClientReplayTest(unittest.IsolatedAsyncioTestCase):
-    async def test_slow_client_reconnect_replays_own_missed_events(self):
+    async def test_reconnect_replays_from_room_journal_without_client_buffer(self):
         registry = ConnectionRegistry()
-        # 第一个连接：塞满其队列使其被淘汰（模拟慢客户端）
-        socket1 = _FakeSocket(block_event=asyncio.Event())
-        conn1 = await registry.connect("room-rp", socket1, user_id="u-1")
-        conn1._queue._maxsize = 1  # type: ignore[attr-defined]
+        socket1 = _FakeSocket()
+        conn1 = await registry.connect("room-rp", socket1, client_id="tab-1")
         registry.broadcast_text("room-rp", "event-1")
+        await conn1.wait_flushed()
+        first = json.loads(socket1.sent_texts[0])
+        registry.disconnect("room-rp", socket1)
         registry.broadcast_text("room-rp", "event-2")
-        await asyncio.sleep(0.05)
-        self.assertTrue(conn1.dropped)
-        if socket1._block_event is not None:
-            socket1._block_event.set()
 
-        # 同 client 重连：连接级（按 client）缓冲补回丢失事件
         socket2 = _FakeSocket()
-        conn2 = await registry.connect("room-rp", socket2, user_id="u-1")
+        conn2 = await registry.connect(
+            "room-rp",
+            socket2,
+            client_id="tab-1",
+            epoch=first["epoch"],
+            last_sequence=first["sequence"],
+        )
+        await asyncio.wait_for(conn2.replay_task, timeout=2)
         await asyncio.wait_for(conn2.wait_flushed(), timeout=2)
 
-        self.assertIn("event-1", socket2.sent_texts)
-        self.assertIn("event-2", socket2.sent_texts)
-        # 重放后清空，避免重复投递
-        self.assertEqual(len(registry.client_replay[("room-rp", "u-1")]), 0)
+        frames = [json.loads(frame) for frame in socket2.sent_texts]
+        self.assertEqual([frame["sequence"] for frame in frames if frame.get("type") == "event"], [2])
+        self.assertFalse(hasattr(registry, "client_replay"))
 
     async def test_no_client_key_uses_no_replay(self):
         registry = ConnectionRegistry()
@@ -171,9 +174,9 @@ class ClientReplayTest(unittest.IsolatedAsyncioTestCase):
         connection = await registry.connect("room-anon", socket)
         registry.broadcast_text("room-anon", "msg")
         await asyncio.wait_for(connection.wait_flushed(), timeout=2)
-        self.assertEqual(socket.sent_texts, ["msg"])
-        # 无 user_id：不创建 client 重放缓冲
-        self.assertEqual(len(registry.client_replay), 0)
+        self.assertEqual(len(socket.sent_texts), 1)
+        self.assertEqual(json.loads(socket.sent_texts[0])["type"], "event")
+        self.assertFalse(hasattr(registry, "client_replay"))
 
 
 if __name__ == "__main__":

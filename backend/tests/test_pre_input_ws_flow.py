@@ -38,6 +38,13 @@ from app.domains.task.services import pre_input_worker  # noqa: E402
 from app.domains.websocket.ws import task_handler  # noqa: E402
 
 
+def _receive_business(websocket):
+    frame = websocket.receive_json()
+    if frame.get("type") == "event":
+        return {"type": frame["event_type"], "payload": frame.get("payload")}
+    return frame
+
+
 def _seed(db, project_path: str):
     owner = User(id="u-owner", email="owner@example.com", hashed_password="x", display_name="Owner")
     member = User(id="u-member", email="member@example.com", hashed_password="x", display_name="Member")
@@ -80,11 +87,8 @@ def ws_env(monkeypatch, tmp_path):
         str(tmp_path / "snapshots"),
     )
 
-    # manager 是进程级单例：清掉此前用例留下的连接与离线缓冲，避免事件串扰
-    main_module.manager.registry.rooms.clear()
-    main_module.manager.registry.presence.clear()
-    main_module.manager.registry.client_replay.clear()
-    main_module.manager.pending_payloads.clear()
+    # manager 是进程级单例：清掉此前用例留下的连接与房间 journal，避免事件串扰
+    main_module.manager.registry.reset()
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: test_session)
     monkeypatch.setattr(ai_job_service, "SessionLocal", lambda: test_session)
@@ -113,10 +117,7 @@ def ws_env(monkeypatch, tmp_path):
     _seed(test_session, str(task_root))
     yield test_session
 
-    main_module.manager.registry.rooms.clear()
-    main_module.manager.registry.presence.clear()
-    main_module.manager.registry.client_replay.clear()
-    main_module.manager.pending_payloads.clear()
+    main_module.manager.registry.reset()
 
 
 def test_ws_pre_input_full_flow(ws_env):
@@ -132,7 +133,7 @@ def test_ws_pre_input_full_flow(ws_env):
                     "wait_seconds": 180,
                 },
             })
-            evt = owner_ws.receive_json()
+            evt = _receive_business(owner_ws)
             assert evt["type"] == "pre_input_update"
             assert evt["payload"]["status"] == "COLLECTING"
             assert evt["payload"]["document_segments"][0]["text"] == "hello world"
@@ -142,19 +143,19 @@ def test_ws_pre_input_full_flow(ws_env):
                 "type": "pre_input_replace_span",
                 "payload": {"start": 6, "end": 11, "anchor_text": "world", "replacement": "traceforge"},
             })
-            evt = owner_ws.receive_json()
+            evt = _receive_business(owner_ws)
             assert evt["type"] == "pre_input_update"
             joined = "".join(s["text"] for s in evt["payload"]["document_segments"])
             assert joined == "hello traceforge"
 
             # 3) 立即提交（发起人）
             owner_ws.send_json({"type": "pre_input_submit", "payload": {}})
-            chat_evt = owner_ws.receive_json()
+            chat_evt = _receive_business(owner_ws)
             assert chat_evt["type"] == "chat_message"
             # 内容 = 文档原文，无拼接标签
             assert chat_evt["payload"]["content"] == "hello traceforge"
             assert chat_evt["payload"]["metadata"]["segments"]
-            done_evt = owner_ws.receive_json()
+            done_evt = _receive_business(owner_ws)
             assert done_evt["type"] == "pre_input_submitted"
             assert done_evt["payload"]["status"] == "SUBMITTED"
 
@@ -210,7 +211,7 @@ def test_ws_chat_message_acknowledges_broadcasts_and_enqueues(ws_env, monkeypatc
                 }
             )
             ack = owner_ws.receive_json()
-            chat_event = owner_ws.receive_json()
+            chat_event = _receive_business(owner_ws)
 
     assert ack["type"] == "chat_message_ack"
     assert ack["payload"]["status"] == "accepted"
@@ -242,10 +243,10 @@ def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):
                     "wait_seconds": 180,
                 },
             })
-            assert owner_ws.receive_json()["type"] == "pre_input_update"
+            assert _receive_business(owner_ws)["type"] == "pre_input_update"
 
             owner_ws.send_json({"type": "pre_input_submit", "payload": {}})
-            evt = owner_ws.receive_json()
+            evt = _receive_business(owner_ws)
             assert evt["type"] == "pre_input_error"
             assert evt["payload"]["action"] == "pre_input_submit"
             assert evt["payload"]["message"] == "Failed to process pre input"
@@ -255,7 +256,7 @@ def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):
                 "type": "pre_input_edit_document",
                 "payload": {"text": "still connected"},
             })
-            update_evt = owner_ws.receive_json()
+            update_evt = _receive_business(owner_ws)
             assert update_evt["type"] == "pre_input_update"
 
 
@@ -266,7 +267,7 @@ def test_ws_pre_input_submit_rejected_for_non_creator(ws_env):
                 "type": "pre_input_create",
                 "payload": {"main_text": "hello world", "mentioned_user_ids": [], "edit_permission": "ALL", "wait_seconds": 180},
             })
-            assert owner_ws.receive_json()["type"] == "pre_input_update"
+            assert _receive_business(owner_ws)["type"] == "pre_input_update"
 
         # 非发起人提交 → pre_input_error
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
@@ -289,11 +290,11 @@ def test_ws_pre_input_edit_document_flow(ws_env):
                 "type": "pre_input_create",
                 "payload": {"main_text": "hello world", "mentioned_user_ids": [], "edit_permission": "ALL", "wait_seconds": 180},
             })
-            assert owner_ws.receive_json()["type"] == "pre_input_update"
+            assert _receive_business(owner_ws)["type"] == "pre_input_update"
 
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
             member_ws.send_json({"type": "pre_input_edit_document", "payload": {"text": "hello brave world"}})
-            evt = member_ws.receive_json()
+            evt = _receive_business(member_ws)
             assert evt["type"] == "pre_input_update"
             joined = "".join(s["text"] for s in evt["payload"]["document_segments"])
             assert joined == "hello brave world"

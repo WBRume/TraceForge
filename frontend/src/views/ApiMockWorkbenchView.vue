@@ -7,6 +7,7 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
+import { buildWsCursorQuery, prepareWsFrame, sendResyncComplete } from '@/utils/wsCursor'
 import { useAuthStore } from '@/stores/auth'
 import type {
   ApiMockDocument,
@@ -403,7 +404,11 @@ const connectCollab = () => {
   closeSocket()
   if (!project.value?.id) return
   const userId = authStore.user?.id || 'anonymous'
-  const url = buildBackendWsUrl(`/ws/api-mock/${project.value.id}`, { userId })
+  const room = `api-mock:${project.value.id}`
+  const url = buildBackendWsUrl(`/ws/api-mock/${project.value.id}`, {
+    userId,
+    ...buildWsCursorQuery(room),
+  })
   const socket = new WebSocket(url)
   collabSocket = socket
   socket.onopen = () => {
@@ -430,7 +435,36 @@ const connectCollab = () => {
   socket.onmessage = (event) => {
     if (collabSocket !== socket) return
     try {
-      const data = JSON.parse(event.data || '{}')
+      const raw = JSON.parse(event.data || '{}')
+      const prepared = prepareWsFrame(room, raw)
+      if (prepared.kind === 'event') {
+        const data = prepared.event.payload || {}
+        applyCollabMessage(data)
+        prepared.commit()
+        return
+      }
+      if (prepared.kind === 'resync' || (prepared.kind === 'control' && raw?.type === 'resync_required')) {
+        if (prepared.kind === 'resync' && prepared.reason === 'gap') {
+          socket.close(4000, 'sequence_gap')
+          return
+        }
+        void (async () => {
+          await refreshProjectContext()
+          if (collabSocket === socket && socket.readyState === WebSocket.OPEN) {
+            sendResyncComplete(socket, raw, room)
+          }
+        })()
+        return
+      }
+      const data = raw
+      if (prepared.kind === 'control' && ['resume_ok', 'resync_ok'].includes(String(data?.type || ''))) return
+      applyCollabMessage(data)
+    } catch {
+      // ignore ws parse errors
+    }
+  }
+
+  const applyCollabMessage = (data: any) => {
       if (Array.isArray(data.online_users)) {
         onlineUserIds.value = data.online_users
           .map((item: unknown) => String(item || '').trim())
@@ -459,9 +493,6 @@ const connectCollab = () => {
           })
         }
       }
-    } catch {
-      // ignore ws parse errors
-    }
   }
 }
 

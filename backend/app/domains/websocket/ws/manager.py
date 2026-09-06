@@ -1,14 +1,11 @@
-"""
-WebSocket Manager（任务房间，task_id 维度）
+"""Task WebSocket manager backed by the shared RoomHub journal."""
 
-出站发送统一委托 ConnectionRegistry（每连接有界队列 + sender task）：
-广播方只做 put_nowait，慢客户端只影响自身连接。
-本类保留房间级离线重放缓冲（pending_payloads）与既有公共签名。
-"""
+from __future__ import annotations
 
-from collections import defaultdict, deque
-from typing import DefaultDict, Deque, Dict, Optional, Set
+from typing import Dict, Optional, Set
+
 from fastapi import WebSocket
+
 from app.core.logging import get_logger
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.websocket.ws.connection import ConnectionRegistry, OutboundConnection
@@ -16,88 +13,81 @@ from app.domains.websocket.ws.connection import ConnectionRegistry, OutboundConn
 logger = get_logger(__name__, category="task_execution")
 
 
-WS_BUFFER_SIZE = 200
-
-
 class ConnectionManager:
-    def __init__(self):
-        # task_id -> {websocket: OutboundConnection}（统一连接发送器）
+    def __init__(self) -> None:
         self.registry = ConnectionRegistry()
-        # task_id -> buffered ws payloads (for late joiners / transient reconnect)
-        self.pending_payloads: DefaultDict[str, Deque[str]] = defaultdict(
-            lambda: deque(maxlen=WS_BUFFER_SIZE)
-        )
 
-    # 兼容视图：task_id -> 活跃 WebSocket 集合（只读用途）
+    @staticmethod
+    def _room_key(task_id: str) -> str:
+        return f"task:{task_id}"
+
     @property
     def active_connections(self) -> Dict[str, Set[WebSocket]]:
         return {task_id: set(sockets) for task_id, sockets in self.registry.rooms.items()}
 
     def has_subscribers(self, task_id: str) -> bool:
-        return self.registry.has_subscribers(task_id)
+        return self.registry.has_subscribers(self._room_key(task_id))
 
-    def _clear_buffer(self, task_id: str, *, reason: str) -> None:
-        if task_id in self.pending_payloads and self.pending_payloads[task_id]:
-            count = len(self.pending_payloads[task_id])
-            self.pending_payloads[task_id].clear()
-            logger.info(f"Cleared {count} buffered WS messages for task {task_id} ({reason})")
-
-    async def connect(self, websocket: WebSocket, task_id: str, *, client_key: Optional[str] = None) -> OutboundConnection:
+    async def connect(
+        self,
+        websocket: WebSocket,
+        task_id: str,
+        *,
+        client_key: Optional[str] = None,
+        client_id: Optional[str] = None,
+        epoch: Optional[str] = None,
+        last_sequence: Optional[int] = None,
+    ) -> OutboundConnection:
         await websocket.accept()
-        connection = await self.registry.connect(task_id, websocket, user_id=client_key)
-        buffered_count = len(self.pending_payloads.get(task_id, ()))
+        connection = await self.registry.connect(
+            self._room_key(task_id),
+            websocket,
+            user_id=None,
+            client_id=client_id or client_key,
+            epoch=epoch,
+            last_sequence=last_sequence,
+            message_kind="text",
+        )
         logger.info(
             f"Client connected to task {task_id} "
-            f"(active={len(self.registry.rooms.get(task_id, {}))}, buffered={buffered_count})"
+            f"(active={len(self.registry.rooms.get(self._room_key(task_id), {}))}, "
+            f"state={connection.state.value}, epoch={epoch or ''}, "
+            f"last_sequence={last_sequence if last_sequence is not None else ''})"
         )
-
-        # 连接级（按 client）重放已在 registry.connect 内完成；仅在无 client
-        # 重放缓冲时才走房间级兜底重放（离线期间无任何客户端在线的消息）。
-        if not getattr(connection, "initial_client_replayed", False) and buffered_count:
-            replay_payloads = list(self.pending_payloads[task_id])
-            for payload in replay_payloads:
-                if not connection.submit_text(payload):
-                    self.disconnect(websocket, task_id)
-                    break
-            else:
-                logger.info(f"Replayed {len(replay_payloads)} buffered messages for task {task_id}")
         return connection
 
-    def disconnect(self, websocket: WebSocket, task_id: str):
-        self.registry.disconnect(task_id, websocket)
+    def disconnect(self, websocket: WebSocket, task_id: str) -> None:
+        self.registry.disconnect(self._room_key(task_id), websocket)
         logger.info(
             f"Client disconnected from task {task_id} "
-            f"(active={len(self.registry.rooms.get(task_id, {}))})"
+            f"(active={len(self.registry.rooms.get(self._room_key(task_id), {}))})"
         )
 
-    def _buffer_payload(self, task_id: str, payload: str):
-        buffer = self.pending_payloads[task_id]
-        dropped_oldest = len(buffer) >= WS_BUFFER_SIZE
-        buffer.append(payload)
+    async def complete_resync(
+        self,
+        websocket: WebSocket,
+        task_id: str,
+        *,
+        epoch: str,
+        barrier_sequence: int,
+    ) -> bool:
+        return await self.registry.complete_resync(
+            self._room_key(task_id),
+            websocket,
+            epoch=epoch,
+            barrier_sequence=barrier_sequence,
+        )
 
-        if dropped_oldest:
-            logger.warning(
-                f"WS buffer full for task {task_id}, dropped oldest message "
-                f"(size={len(buffer)})"
-            )
-        else:
-            logger.warning(
-                f"No active WS client for task {task_id}, buffered message "
-                f"(size={len(buffer)})"
-            )
-
-    async def send_message_to_room(self, task_id: str, message: WSMessage):
-        """发送结构化消息到特定任务的所有订阅者（入队，非阻塞）"""
+    async def send_message_to_room(self, task_id: str, message: WSMessage) -> int:
+        """Append one task event and enqueue it for every current connection."""
         json_data = message.model_dump_json()
-        delivered = self.registry.broadcast_text(task_id, json_data)
+        return self.registry.broadcast_text(self._room_key(task_id), json_data)
 
-        if delivered == 0:
-            # 无在线客户端（或全部因背压被移除）：保留给下次重连重放
-            self._buffer_payload(task_id, json_data)
-            return
+    async def sweep(self) -> int:
+        return await self.registry.sweep()
 
-        # Buffered replay payloads are only cleared after successful live delivery.
-        self._clear_buffer(task_id, reason="live_delivery")
+    async def shutdown(self) -> None:
+        await self.registry.shutdown()
 
 
 manager = ConnectionManager()
