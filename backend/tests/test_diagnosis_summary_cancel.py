@@ -403,6 +403,7 @@ def test_hitl_resume_rejected_while_summary_active(monkeypatch):
                 queue_key=f"DIAGNOSIS_SUMMARY:{task.id}",
             )
         monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         with pytest.raises(ai_job_service.AiJobConflictError):
             asyncio.run(
                 ai_job_service.resume_waiting_hitl_job(

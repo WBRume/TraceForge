@@ -7,6 +7,7 @@ import { formatApiError } from '@/utils/error'
 import { formatTime, formatToolInput, formatElapsedDuration } from '@/utils/chatFormatters'
 import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask, isChatActiveForTask, resolveDiagnosisSummaryStartedMs } from '@/utils/diagnosisSummary'
 import { buildBackendWsUrl } from '@/utils/ws'
+import { wsBackoffDelay } from '@/utils/wsBackoff'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
 import { useChatDecision, type ChatDecisionPayload } from '@/composables/useChatDecision'
@@ -2343,15 +2344,18 @@ export function useChatViewModel() {
     })
   }
   
+  let wsReconnectAttempt = 0
   const scheduleWsReconnect = (taskId: string) => {
     if (wsManualClose || wsReconnectTimer !== null) return
+    const delay = wsBackoffDelay(wsReconnectAttempt)
+    wsReconnectAttempt += 1
     wsReconnectTimer = window.setTimeout(() => {
       wsReconnectTimer = null
       if (currentTask.value?.id !== taskId) return
       connectWebSocket(taskId)
-    }, 1200)
+    }, delay)
   }
-  
+
   const connectWebSocket = (taskId: string) => {
     clearWsReconnectTimer()
     wsManualClose = false
@@ -2366,6 +2370,7 @@ export function useChatViewModel() {
     ws = new WebSocket(buildTaskWsUrl(taskId))
     ws.onopen = () => {
       console.log(`WS Connected: task=${taskId}`)
+      wsReconnectAttempt = 0
       if (currentTask.value?.id === taskId) {
         void loadActiveChatJobs(taskId)
         void loadActivePreInput(taskId)
@@ -2513,6 +2518,12 @@ export function useChatViewModel() {
         ElMessage.error(payload?.message || t('preInput.errors.generic'))
         const taskId = String(payload?.task_id || currentTask.value?.id || '')
         if (taskId) void loadActivePreInput(taskId)
+        break
+      }
+
+      case 'hitl_rejected': {
+        // HITL 回复被拒（如一键总结进行中互斥）：明确告知用户，不中断连接
+        ElMessage.warning(payload?.message || 'HITL response rejected, please wait and retry')
         break
       }
   

@@ -45,14 +45,30 @@ class _DisconnectedWebSocket(_FakeWebSocket):
         raise WebSocketDisconnect()
 
 
+class _FakeOutbound:
+    """单连接发送器替身：记录 submit_json 的回执。"""
+
+    def __init__(self):
+        self.sent_json = []
+        self.dropped = False
+
+    def submit_json(self, payload) -> bool:
+        if self.dropped:
+            return False
+        self.sent_json.append(payload)
+        return True
+
+
 class _FakeConnectionManager:
     def __init__(self):
         self.connect_calls = []
         self.disconnect_calls = []
         self.room_messages = []
+        self.outbound = _FakeOutbound()
 
-    async def connect(self, websocket, task_id):
+    async def connect(self, websocket, task_id, client_key=None):
         self.connect_calls.append((websocket, task_id))
+        return self.outbound
 
     def disconnect(self, websocket, task_id):
         self.disconnect_calls.append((websocket, task_id))
@@ -65,7 +81,7 @@ def _handler(*, websocket=None, manager=None, session=None):
     websocket = websocket or _FakeWebSocket()
     manager = manager or _FakeConnectionManager()
     session = session or Mock()
-    return TaskWebSocketHandler(
+    handler = TaskWebSocketHandler(
         websocket,
         "task-1",
         TaskWebSocketUser(
@@ -77,17 +93,23 @@ def _handler(*, websocket=None, manager=None, session=None):
         session_factory=lambda: session,
         connection_manager=manager,
     )
+    # 直调 _dispatch 的用例绕过 run()：预先绑定单连接发送器
+    handler._outbound = manager.outbound
+    return handler
 
 
 @pytest.mark.asyncio
 async def test_run_disconnects_once_when_client_disconnects():
     websocket = _FakeWebSocket(incoming=[{"type": "unknown"}])
     manager = _FakeConnectionManager()
+    handler = _handler(websocket=websocket, manager=manager)
 
-    await _handler(websocket=websocket, manager=manager).run()
+    await handler.run()
 
     assert manager.connect_calls == [(websocket, "task-1")]
     assert manager.disconnect_calls == [(websocket, "task-1")]
+    # handler 持有单连接发送器（单写契约）
+    assert handler._outbound is manager.outbound
 
 
 @pytest.mark.asyncio
@@ -146,7 +168,7 @@ async def test_chat_message_is_acked_broadcast_and_enqueued(monkeypatch):
         }
     )
 
-    ack = websocket.sent_json[0]
+    ack = manager.outbound.sent_json[0]
     assert ack["type"] == "chat_message_ack"
     assert ack["payload"]["status"] == "accepted"
     assert ack["payload"]["client_message_id"] == "client-1"
@@ -166,7 +188,7 @@ async def test_chat_message_is_acked_broadcast_and_enqueued(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
-    websocket = _FakeWebSocket()
+    manager = _FakeConnectionManager()
     claim = SimpleNamespace(
         claimed=False,
         status="done",
@@ -183,14 +205,15 @@ async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
         AsyncMock(return_value=claim),
     )
 
-    await _handler(websocket=websocket)._dispatch(
+    handler = _handler(manager=manager)
+    await handler._dispatch(
         {
             "type": "chat_message",
             "payload": {"content": "hello", "client_message_id": "client-1"},
         }
     )
 
-    ack = websocket.sent_json[0]["payload"]
+    ack = manager.outbound.sent_json[0]["payload"]
     assert ack["status"] == "duplicate"
     assert ack["chat_message_id"] == "message-existing"
     assert ack["ai_job_id"] == "job-existing"
@@ -242,10 +265,11 @@ async def test_durable_chat_turn_is_enqueued_when_ack_connection_is_closed(monke
         client_message_id="client-1",
     )
 
-    with pytest.raises(WebSocketDisconnect):
-        await _handler(websocket=_DisconnectedWebSocket())._publish_chat_message(
-            request,
-            created,
-        )
+    # 回执连接已死（outbound dropped）：不再抛断连异常，turn 仍然入队
+    manager = _FakeConnectionManager()
+    manager.outbound.dropped = True
+    handler = _handler(manager=manager)
+    await handler._publish_chat_message(request, created)
 
     enqueue.assert_awaited_once_with("job-1")
+    assert manager.outbound.sent_json == []

@@ -6,6 +6,7 @@ import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { buildBackendWsUrl } from '@/utils/ws'
+import { wsBackoffDelay } from '@/utils/wsBackoff'
 import { useAuthStore } from '@/stores/auth'
 import type {
   ApiMockDocument,
@@ -120,6 +121,7 @@ let autoMockPolling = false
 const handledAutoMockDoneJobIds = new Set<string>()
 let jobWaitSeq = 0
 const COLLAB_RECONNECT_DELAY_MS = 1200
+let collabReconnectAttempt = 0
 const AUTO_MOCK_POLL_INTERVAL_MS = 1500
 
 const canView = computed(() => Boolean(permissions.value?.view_api_mock))
@@ -301,12 +303,14 @@ const clearCollabReconnectTimer = () => {
 
 const scheduleCollabReconnect = () => {
   if (!project.value?.id || collabReconnectTimer !== null) return
+  const delay = wsBackoffDelay(collabReconnectAttempt, COLLAB_RECONNECT_DELAY_MS)
+  collabReconnectAttempt += 1
   collabReconnectTimer = window.setTimeout(() => {
     collabReconnectTimer = null
     if (!project.value?.id) return
     if (collabSocket && collabSocket.readyState !== WebSocket.CLOSED) return
     connectCollab()
-  }, COLLAB_RECONNECT_DELAY_MS)
+  }, delay)
 }
 
 const stopAutoMockPolling = () => {
@@ -406,6 +410,7 @@ const connectCollab = () => {
     if (collabSocket !== socket) return
     collabSocketManualClose = false
     clearCollabReconnectTimer()
+    collabReconnectAttempt = 0
     collabConnected.value = true
   }
   socket.onclose = () => {

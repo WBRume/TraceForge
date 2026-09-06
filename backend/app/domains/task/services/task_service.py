@@ -1138,6 +1138,7 @@ def save_chat_message(
     session_generation: Optional[int] = None,
 ) -> ChatMessage:
     # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
+    # followers 与 task_name 合并为一条 join 查询，减少每条消息的 DB 往返。
     order_index = (
         db.query(sqlfunc.count(ChatMessage.id))
         .filter(ChatMessage.task_id == task_id)
@@ -1168,14 +1169,19 @@ def save_chat_message(
             recipient_filter = SddTaskFollower.user_id != str(creator_id)
         else:
             recipient_filter = True
-        follower_ids = [
-            str(user_id)
-            for (user_id,) in db.query(SddTaskFollower.user_id).filter(
+        # 单条 join：关注者 + task_name 一次往返
+        follower_rows = (
+            db.query(SddTaskFollower.user_id, SddTask.name)
+            .outerjoin(SddTask, SddTask.id == SddTaskFollower.task_id)
+            .filter(
                 SddTaskFollower.task_id == task_id,
                 SddTaskFollower.workspace_id == workspace_id,
                 recipient_filter,
-            ).all()
-        ]
+            )
+            .all()
+        )
+        task_name = str(follower_rows[0][1] or "任务") if follower_rows else "任务"
+        follower_ids = [str(row[0]) for row in follower_rows]
         if follower_ids:
             from app.domains.notification.services.notification_service import create_notifications
             from app.domains.notification.models.notification import SddUserNotification
@@ -1199,8 +1205,6 @@ def save_chat_message(
             }
             follower_ids = [uid for uid in follower_ids if uid not in already_notified]
         if follower_ids:
-
-            task_name = db.query(SddTask.name).filter(SddTask.id == task_id).scalar() or "任务"
             create_notifications(
                 db,
                 follower_ids,

@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     DB_OFFLOAD_WORKERS: int = 4
     GIT_OFFLOAD_WORKERS: int = 4
     FILE_OFFLOAD_WORKERS: int = 2
+    # 在飞任务上限（信号量背压）：提交方事件循环等待而非无限排队；默认 worker+排队额度
+    DB_OFFLOAD_MAX_INFLIGHT: Optional[int] = None
+    GIT_OFFLOAD_MAX_INFLIGHT: Optional[int] = None
+    FILE_OFFLOAD_MAX_INFLIGHT: Optional[int] = None
     # 本地 git 命令硬超时（秒）：subprocess_runner 统一注入，超时整组回收，防止 offload 线程被挂死 git 永久占用
     GIT_COMMAND_TIMEOUT_SECONDS: int = 180
 
@@ -183,6 +187,8 @@ class Settings(BaseSettings):
     # 每连接出站队列条数上限 + 未确认字节上限，双重限长；超限断开该慢客户端，只影响其自身
     WS_OUTBOUND_QUEUE_SIZE: int = 256
     WS_OUTBOUND_MAX_BYTES: int = 1024 * 1024
+    # 单次 send_text/send_json 超时：防 TCP 缓冲塞满的客户端把 sender 永久挂死
+    WS_SEND_TIMEOUT_SECONDS: float = 5.0
 
     # ── CORS ──
     CORS_ORIGINS: list[str] = [

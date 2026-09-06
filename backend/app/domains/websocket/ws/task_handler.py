@@ -25,6 +25,7 @@ from app.domains.task.services import (
     task_session_control_service,
     task_session_service,
 )
+from app.domains.websocket.ws.connection import OutboundConnection
 from app.domains.websocket.ws.manager import ConnectionManager, manager
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 
@@ -62,6 +63,7 @@ class TaskWebSocketHandler:
         connection_manager: ConnectionManager = manager,
         engine_getter: Callable[[str], WorkflowEngine | None] | None = None,
         engine_factory: Callable[..., WorkflowEngine] | None = None,
+        client_key: str | None = None,
     ) -> None:
         self._websocket = websocket
         self._task_id = task_id
@@ -70,10 +72,14 @@ class TaskWebSocketHandler:
         self._manager = connection_manager
         self._engine_getter = engine_getter or get_engine
         self._engine_factory = engine_factory or WorkflowEngine
+        self._client_key = client_key
+        # 单连接单写：所有出站（含回执）都经该发送器入队，禁止与 sender task
+        # 并发直写底层 ASGI socket
+        self._outbound: OutboundConnection | None = None
 
     async def run(self) -> None:
         """Accept, serve, and always unregister the connection."""
-        await self._manager.connect(self._websocket, self._task_id)
+        self._outbound = await self._manager.connect(self._websocket, self._task_id, client_key=self._client_key)
         try:
             while True:
                 message = await self._websocket.receive_json()
@@ -84,6 +90,13 @@ class TaskWebSocketHandler:
             task_logger.exception("Task websocket endpoint failed")
         finally:
             self._manager.disconnect(self._websocket, self._task_id)
+
+    def _send_to_self(self, payload: dict) -> bool:
+        """本连接回执：经出站队列发送（非阻塞；失败仅返回 False，不断开连接）。"""
+        connection = self._outbound
+        if connection is None or connection.dropped:
+            return False
+        return connection.submit_json(payload)
 
     async def _dispatch(self, message: Any) -> None:
         if not isinstance(message, dict):
@@ -344,7 +357,7 @@ class TaskWebSocketHandler:
             "session_generation": session_generation,
             "message": message,
         }
-        await self._websocket.send_json({"type": "chat_message_ack", "payload": payload})
+        self._send_to_self({"type": "chat_message_ack", "payload": payload})
 
     async def _handle_hitl_response(self, message: dict[str, Any]) -> None:
         payload = self._payload(message)
@@ -365,7 +378,7 @@ class TaskWebSocketHandler:
         except ai_job_service.AiJobConflictError as exc:
             # 会话/总结互斥：总结进行中拒绝恢复会话（不能让 WS 连接断开）
             task_logger.warning(f"HITL response rejected for task {self._task_id}: {exc}")
-            await self._websocket.send_json(
+            self._send_to_self(
                 {
                     "type": "hitl_rejected",
                     "payload": {"task_id": self._task_id, "message": str(exc)},
@@ -504,7 +517,7 @@ class TaskWebSocketHandler:
             )
 
     async def _send_pre_input_error(self, action: str, message: str) -> None:
-        await self._websocket.send_json(
+        self._send_to_self(
             {
                 "type": "pre_input_error",
                 "payload": {

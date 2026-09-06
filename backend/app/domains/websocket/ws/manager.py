@@ -7,7 +7,7 @@ WebSocket Manager（任务房间，task_id 维度）
 """
 
 from collections import defaultdict, deque
-from typing import DefaultDict, Deque, Dict, Set
+from typing import DefaultDict, Deque, Dict, Optional, Set
 from fastapi import WebSocket
 from app.core.logging import get_logger
 from app.domains.ai.schemas.websocket import WSMessage
@@ -42,17 +42,18 @@ class ConnectionManager:
             self.pending_payloads[task_id].clear()
             logger.info(f"Cleared {count} buffered WS messages for task {task_id} ({reason})")
 
-    async def connect(self, websocket: WebSocket, task_id: str) -> OutboundConnection:
+    async def connect(self, websocket: WebSocket, task_id: str, *, client_key: Optional[str] = None) -> OutboundConnection:
         await websocket.accept()
-        connection = await self.registry.connect(task_id, websocket)
+        connection = await self.registry.connect(task_id, websocket, user_id=client_key)
         buffered_count = len(self.pending_payloads.get(task_id, ()))
         logger.info(
             f"Client connected to task {task_id} "
             f"(active={len(self.registry.rooms.get(task_id, {}))}, buffered={buffered_count})"
         )
 
-        # Replay buffered messages once a client rejoins.
-        if buffered_count:
+        # 连接级（按 client）重放已在 registry.connect 内完成；仅在无 client
+        # 重放缓冲时才走房间级兜底重放（离线期间无任何客户端在线的消息）。
+        if not getattr(connection, "initial_client_replayed", False) and buffered_count:
             replay_payloads = list(self.pending_payloads[task_id])
             for payload in replay_payloads:
                 if not connection.submit_text(payload):

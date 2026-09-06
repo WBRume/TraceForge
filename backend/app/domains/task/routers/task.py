@@ -659,14 +659,17 @@ async def initialize_task(
             prompt += _diagnosis_prompt_suffix(task)
 
             init_reason_text = (body.reason or "").strip()
-            task_service.save_chat_message(
-                db,
-                task_id,
-                ws_id,
-                current_user.id,
-                role="system",
-                content=init_reason_text,
-                message_type="init_reason",
+            # 同步落库 off-loop（线程内自建 session，含通知生成）
+            await run_db_txn(
+                lambda db: task_service.save_chat_message(
+                    db,
+                    task_id,
+                    ws_id,
+                    current_user.id,
+                    role="system",
+                    content=init_reason_text,
+                    message_type="init_reason",
+                )
             )
             created = await task_session_service.create_task_chat_turn(
                 task_id=task_id,
