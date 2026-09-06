@@ -1249,23 +1249,39 @@ def get_task_history(
             "logs_has_more": False,
         }
 
-    messages_all = db.query(ChatMessage).filter(
-        ChatMessage.task_id == task_id
-    ).all()
-    messages_all = sort_chat_messages(messages_all)
-    total = len(messages_all)
-
+    # 分页与统计全部下推 SQL，避免聊天全量 .all() 后内存切片。
     # 第 1 页返回“最新一页”，块内仍按真实落库顺序正序；
     # 后续页向前翻，方便前端“向上加载更早消息”直接 prepend。
     page = max(1, int(page or 1))
     page_size = max(1, int(page_size or 50))
-    end = total - (page - 1) * page_size
-    start = 0
-    if end > 0:
-        start = max(0, end - page_size)
-        msg_query = messages_all[start:end]
-    else:
-        msg_query = []
+    offset_from_end = (page - 1) * page_size
+
+    # 排序键与 sort_chat_messages 保持一致：created_at -> 写入序号 -> id 兜底。
+    # order_index 存于 metadata_json（JSON 列），用可移植的 JSON 下标提取，
+    # 缺失时 coalesce 0，与 _message_order_index 的兜底一致。
+    order_index_expr = sqlfunc.coalesce(
+        ChatMessage.metadata_json["order_index"].as_integer(),
+        0,
+    )
+    total = (
+        db.query(sqlfunc.count(ChatMessage.id))
+        .filter(ChatMessage.task_id == task_id)
+        .scalar()
+        or 0
+    )
+    rows_desc = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.task_id == task_id)
+        .order_by(
+            ChatMessage.created_at.desc(),
+            order_index_expr.desc(),
+            ChatMessage.id.desc(),
+        )
+        .offset(offset_from_end)
+        .limit(page_size)
+        .all()
+    )
+    msg_query = list(reversed(rows_desc))
     creator_ids = sorted({str(msg.creator_id or "") for msg in msg_query if str(msg.creator_id or "").strip()})
     message_ids = [msg.id for msg in msg_query]
     creators_by_id = {
@@ -1327,7 +1343,7 @@ def get_task_history(
             ),
         })
 
-    has_more = start > 0
+    has_more = offset_from_end + len(msg_query) < total
 
     # 终端历史只返回可回放的结构化事件。provider debug、assistant 文本副本等
     # 已在文件日志/聊天消息中有权威来源，不应放大 CLI 历史响应。

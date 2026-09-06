@@ -1,10 +1,10 @@
-from datetime import datetime
-from typing import Any, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy import exists, func, or_
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.domains.task.models.task import SddTask, SddTaskFollower
+from app.domains.asset.models.asset import AssetType, SddAsset
+from app.domains.task.models.task import SddPlanNode, SddTask, SddTaskFollower
 from app.domains.task.models.chat import ChatMessage, MessageRole
 from app.domains.task.models.pre_input import SddTaskPreInput
 from app.domains.workspace_asset.models.workspace_asset import (
@@ -24,20 +24,109 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 from app.domains.workspace_asset.services.workspace_asset_service import _task_summary, _enum_value
 
 
-def _task_sort_key(task: SddTask, sort_by: str) -> Any:
+def _task_count_subqueries() -> Dict[str, Any]:
+    """requirement_count / evidence_count 的相关标量子查询，供 SQL 排序使用。"""
+    requirement_count = (
+        select(func.count(SddTaskRequirement.id))
+        .where(SddTaskRequirement.task_id == SddTask.id)
+        .correlate(SddTask)
+        .scalar_subquery()
+    )
+    evidence_count = (
+        select(func.count(SddEvidence.id))
+        .where(SddEvidence.task_id == SddTask.id)
+        .correlate(SddTask)
+        .scalar_subquery()
+    )
+    return {"requirement_count": requirement_count, "evidence_count": evidence_count}
+
+
+def _task_sort_expressions(sort_by: str) -> List[Any]:
+    """排序白名单 -> SQL 表达式（与旧内存排序键等价）。"""
+    count_sq = _task_count_subqueries()
     if sort_by == "name":
-        return (task.name or "").lower()
+        return [func.lower(SddTask.name)]
     if sort_by == "status":
-        return _enum_value(task.status)
+        return [SddTask.status]
     if sort_by == "current_phase":
-        return task.current_phase or ""
+        return [func.coalesce(SddTask.current_phase, "")]
     if sort_by == "updated_at":
-        return task.updated_at or task.created_at or datetime.min
+        return [func.coalesce(SddTask.updated_at, SddTask.created_at)]
     if sort_by == "requirement_count":
-        return len(task.requirement_links or [])
+        return [count_sq["requirement_count"]]
     if sort_by == "evidence_count":
-        return len(task.evidence_items or [])
-    return task.created_at or datetime.min
+        return [count_sq["evidence_count"]]
+    return [SddTask.created_at]
+
+
+def _requirement_title_exists(pattern: str):
+    return exists().where(
+        SddTaskRequirement.task_id == SddTask.id,
+        SddTaskRequirement.requirement_id == SddRequirement.id,
+        SddRequirement.title.ilike(pattern),
+    )
+
+
+def _load_page_items(db: Session, page_ids: List[str]) -> List[SddTask]:
+    """按当前页 id 加载完整实体（含列表卡片所需的全部关联）。"""
+    loaded = (
+        db.query(SddTask)
+        .options(
+            selectinload(SddTask.requirement_links),
+            selectinload(SddTask.ai_jobs),
+            selectinload(SddTask.human_reviews),
+            selectinload(SddTask.human_deltas).selectinload(SddHumanDelta.decisions),
+            selectinload(SddTask.evidence_items),
+            selectinload(SddTask.decisions),
+            selectinload(SddTask.clarifications),
+        )
+        .filter(SddTask.id.in_(page_ids))
+        .all()
+    )
+    by_id = {task.id: task for task in loaded}
+    return [by_id[task_id] for task_id in page_ids if task_id in by_id]
+
+
+def _page_asset_counts(
+    db: Session,
+    workspace_id: str,
+    page_ids: List[str],
+) -> tuple:
+    """当前页任务的 spec / plan 资产与 plan 节点计数，2 条 GROUP BY 汇总。"""
+    spec_counts: Dict[str, int] = {}
+    plan_asset_counts: Dict[str, int] = {}
+    plan_node_counts: Dict[str, int] = {}
+    if not page_ids:
+        return spec_counts, plan_asset_counts, plan_node_counts
+
+    asset_count_rows = (
+        db.query(SddAsset.task_id, SddAsset.asset_type, func.count(SddAsset.id))
+        .filter(
+            SddAsset.workspace_id == workspace_id,
+            SddAsset.task_id.in_(page_ids),
+            SddAsset.asset_type.in_([AssetType.SPEC, AssetType.PLAN]),
+        )
+        .group_by(SddAsset.task_id, SddAsset.asset_type)
+        .all()
+    )
+    for row_task_id, row_asset_type, row_count in asset_count_rows:
+        type_value = _enum_value(row_asset_type)
+        if type_value == AssetType.SPEC.value:
+            spec_counts[str(row_task_id)] = int(row_count)
+        elif type_value == AssetType.PLAN.value:
+            plan_asset_counts[str(row_task_id)] = int(row_count)
+
+    plan_node_rows = (
+        db.query(SddPlanNode.task_id, func.count(SddPlanNode.id))
+        .filter(
+            SddPlanNode.workspace_id == workspace_id,
+            SddPlanNode.task_id.in_(page_ids),
+        )
+        .group_by(SddPlanNode.task_id)
+        .all()
+    )
+    plan_node_counts = {str(row[0]): int(row[1]) for row in plan_node_rows}
+    return spec_counts, plan_asset_counts, plan_node_counts
 
 
 def list_tasks(
@@ -67,41 +156,24 @@ def list_tasks(
     page_value = max(1, int(page or 1))
     page_size_value = max(1, min(200, int(page_size or 50)))
 
-    query = (
-        db.query(SddTask)
-        .options(
-            selectinload(SddTask.requirement_links),
-            selectinload(SddTask.ai_jobs),
-            selectinload(SddTask.human_reviews),
-            selectinload(SddTask.human_deltas).selectinload(SddHumanDelta.decisions),
-            selectinload(SddTask.evidence_items),
-            selectinload(SddTask.decisions),
-            selectinload(SddTask.clarifications),
-        )
-        .filter(SddTask.workspace_id == workspace_id)
-    )
+    # 过滤查询只负责筛 id；实体加载（selectinload）推迟到拿到分页 id 之后，
+    # 避免为排序/分页把整个 workspace 的任务和关联全量拉进内存。
+    query = db.query(SddTask).filter(SddTask.workspace_id == workspace_id)
 
+    # 搜索用 EXISTS 子查询而非 outerjoin，避免关联行膨胀，也无需再去重。
     search = str(q or "").strip()
-    if search or requirement_q:
-        query = query.outerjoin(SddTaskRequirement, SddTask.id == SddTaskRequirement.task_id)
-        query = query.outerjoin(SddRequirement, SddTaskRequirement.requirement_id == SddRequirement.id)
-
-        filters = []
-        if search:
-            like = f"%{search}%"
-            filters.append(
-                or_(
-                    SddTask.name.ilike(like),
-                    SddTask.description.ilike(like),
-                    SddRequirement.title.ilike(like)
-                )
+    if search:
+        like = f"%{search}%"
+        query = query.filter(
+            or_(
+                SddTask.name.ilike(like),
+                SddTask.description.ilike(like),
+                _requirement_title_exists(like),
             )
-        if requirement_q:
-            req_like = f"%{str(requirement_q).strip()}%"
-            filters.append(SddRequirement.title.ilike(req_like))
-        
-        for f in filters:
-            query = query.filter(f)
+        )
+    if requirement_q:
+        req_like = f"%{str(requirement_q).strip()}%"
+        query = query.filter(_requirement_title_exists(req_like))
 
     if status:
         query = query.filter(SddTask.status == status)
@@ -151,30 +223,27 @@ def list_tasks(
         if relation_filters:
             query = query.filter(or_(*relation_filters))
 
-    # Note: query.all() is still fine for in-memory sort if total task rows < 10000, 
-    # but grouping/counting for stats is better done via subqueries to be efficient.
-    # However, since we load everything anyway for stats calculation based on complex 
-    # nested relations, we compute stats in python to ensure exact match with UI status mapping.
-    
-    tasks = query.all()
-    
-    # Deduplicate in case outer joins returned multiple identical tasks
-    task_map = {t.id: t for t in tasks}
-    tasks = list(task_map.values())
-    
+    # 排序与分页下推 SQL，只取当前页的任务 id。
     reverse = sort_order != "asc"
-    tasks = sorted(tasks, key=lambda item: _task_sort_key(item, sort_value), reverse=reverse)
-    
-    total = len(tasks)
-    offset = (page_value - 1) * page_size_value
-    page_items = tasks[offset:offset + page_size_value]
+    order_by = [
+        expr.desc() if reverse else expr.asc()
+        for expr in _task_sort_expressions(sort_value)
+    ]
+    order_by.append(SddTask.id.desc() if reverse else SddTask.id.asc())
 
-    # Calculate summary stats based on ALL filtered tasks (or unfiltered if you prefer, but usually it matches current list view)
-    # The requirement specifically mentions calculating the stats for the workspace. 
-    # If it's for the whole workspace regardless of filters, we should query DB separately.
-    # The wording "汇总功能区当前错位不可用" implies we need the true workspace-wide stats.
-    # Let's run separate count queries for the whole workspace.
-    
+    total = query.with_entities(func.count(SddTask.id)).scalar() or 0
+    offset = (page_value - 1) * page_size_value
+    page_ids = [
+        row[0]
+        for row in query.with_entities(SddTask.id)
+        .order_by(*order_by)
+        .offset(offset)
+        .limit(page_size_value)
+        .all()
+    ]
+    page_items = _load_page_items(db, page_ids) if page_ids else []
+
+    # 汇总统计均为独立 count/EXISTS 查询，覆盖整个 workspace（不受列表过滤影响）。
     review_pending_count = (
         db.query(func.count(SddTask.id.distinct()))
         .join(SddHumanReview, SddTask.id == SddHumanReview.task_id)
@@ -209,23 +278,20 @@ def list_tasks(
         .scalar() or 0
     )
 
-    # waiting_evidence means there are no confirmed evidence items. 
-    # We can calculate this by counting tasks that have requirement_links but no CONFIRMED evidence
-    # It's easier to compute using the in-memory tasks if the number is small, but for workspace-wide:
-    evidence_missing_count = 0
-    workspace_tasks_query = (
-        db.query(SddTask)
-        .options(
-            selectinload(SddTask.requirement_links),
-            selectinload(SddTask.evidence_items)
+    # “待补证据”= 有需求关联但没有任何已确认证据的任务数；
+    # 用 EXISTS / NOT EXISTS 下推 SQL，替代原来的全量加载 + Python 循环。
+    evidence_missing_count = (
+        db.query(func.count(SddTask.id))
+        .filter(
+            SddTask.workspace_id == workspace_id,
+            exists().where(SddTaskRequirement.task_id == SddTask.id),
+            ~exists().where(
+                SddEvidence.task_id == SddTask.id,
+                SddEvidence.status == EvidenceStatus.CONFIRMED,
+            ),
         )
-        .filter(SddTask.workspace_id == workspace_id)
+        .scalar() or 0
     )
-    for t in workspace_tasks_query.all():
-        if len(t.requirement_links) > 0:
-            confirmed = [e for e in t.evidence_items if _enum_value(e.status) == EvidenceStatus.CONFIRMED.value]
-            if not confirmed:
-                evidence_missing_count += 1
 
     stats = TaskListSummaryStats(
         review_pending_count=review_pending_count,
@@ -235,19 +301,35 @@ def list_tasks(
     )
 
     following_ids = set()
-    if current_user_id and page_items:
+    if current_user_id and page_ids:
         following_ids = {
             str(task_id)
             for (task_id,) in db.query(SddTaskFollower.task_id).filter(
                 SddTaskFollower.workspace_id == workspace_id,
                 SddTaskFollower.user_id == str(current_user_id),
-                SddTaskFollower.task_id.in_([item.id for item in page_items]),
+                SddTaskFollower.task_id.in_(page_ids),
             ).all()
         }
 
+    spec_counts, plan_asset_counts, plan_node_counts = _page_asset_counts(
+        db, workspace_id, page_ids
+    )
+
     return WorkspaceAssetsTasksResponse(
         workspace_id=workspace_id,
-        items=[_task_summary(db, item, is_following=item.id in following_ids) for item in page_items],
+        items=[
+            _task_summary(
+                db,
+                item,
+                is_following=item.id in following_ids,
+                counts={
+                    "spec_count": spec_counts.get(item.id, 0),
+                    "plan_asset_count": plan_asset_counts.get(item.id, 0),
+                    "plan_node_count": plan_node_counts.get(item.id, 0),
+                },
+            )
+            for item in page_items
+        ],
         total=total,
         page=page_value,
         page_size=page_size_value,

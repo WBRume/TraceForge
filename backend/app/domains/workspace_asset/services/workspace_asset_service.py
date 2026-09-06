@@ -521,12 +521,25 @@ def _knowledge_asset_response(asset: SddKnowledgeAsset) -> KnowledgeAssetRespons
     )
 
 
-def _task_summary(db: Session, task: SddTask, *, is_following: bool = False) -> TaskSummary:
+def _task_summary(
+    db: Session,
+    task: SddTask,
+    *,
+    is_following: bool = False,
+    counts: Optional[Dict[str, int]] = None,
+) -> TaskSummary:
     evidence_items = list(task.evidence_items or [])
     requirement_count = len(task.requirement_links or [])
-    spec_count = _count(db, SddAsset, task.workspace_id, task_id=task.id, asset_type=AssetType.SPEC)
-    plan_asset_count = _count(db, SddAsset, task.workspace_id, task_id=task.id, asset_type=AssetType.PLAN)
-    plan_node_count = _count(db, SddPlanNode, task.workspace_id, task_id=task.id)
+    # counts 由列表查询用 2 条 GROUP BY 批量预算（消除逐任务 count 的 N+1）；
+    # 单任务详情路径不传 counts，仍走逐条 count。
+    if counts is not None and "spec_count" in counts:
+        spec_count = int(counts.get("spec_count") or 0)
+        plan_asset_count = int(counts.get("plan_asset_count") or 0)
+        plan_node_count = int(counts.get("plan_node_count") or 0)
+    else:
+        spec_count = _count(db, SddAsset, task.workspace_id, task_id=task.id, asset_type=AssetType.SPEC)
+        plan_asset_count = _count(db, SddAsset, task.workspace_id, task_id=task.id, asset_type=AssetType.PLAN)
+        plan_node_count = _count(db, SddPlanNode, task.workspace_id, task_id=task.id)
     return TaskSummary(
         id=task.id,
         workspace_id=task.workspace_id,
