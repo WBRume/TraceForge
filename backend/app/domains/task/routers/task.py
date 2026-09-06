@@ -537,12 +537,17 @@ async def start_task(
             if existing_engine and not existing_engine.running:
                 await existing_engine.stop()
 
-            if start_req and start_req.prompt:
-                prompt = start_req.prompt
+            requested_prompt = str(start_req.prompt or "").strip() if start_req else ""
+            if requested_prompt:
+                user_display = requested_prompt
             elif task.description:
-                prompt = task.description
+                user_display = task.description.strip()
             else:
-                prompt = f"Please start task '{task.name}'."
+                user_display = f"Please start task '{task.name}'."
+
+            # Keep the user's visible input separate from internal execution
+            # guidance so the transcript shows exactly what started the task.
+            prompt = user_display
 
             if task.spec_doc_path:
                 abs_path = os.path.abspath(task.spec_doc_path)
@@ -561,6 +566,21 @@ async def start_task(
             task.interrupted_at = None
             db.commit()
 
+            initial_message = task_service.save_chat_message(
+                db,
+                task_id=task.id,
+                workspace_id=ws_id,
+                creator_id=current_user.id,
+                role="user",
+                content=user_display,
+                message_type="text",
+                metadata_json={
+                    "source": "task_start",
+                    "fresh_session": True,
+                    "initial_prompt": True,
+                },
+            )
+
             job = ai_job_service.create_task_chat_job(
                 db,
                 workspace_id=ws_id,
@@ -568,6 +588,7 @@ async def start_task(
                 creator_id=current_user.id,
                 prompt_text=prompt,
                 context_json={"source": "task_start", "fresh_session": True},
+                chat_message_id=initial_message.id,
             )
             await ai_job_service.enqueue_task_chat_job(job.id)
 
@@ -682,6 +703,7 @@ async def initialize_task(
                     "initialize_reason": init_reason_text,
                 },
                 fresh_session=True,
+                skip_checkpoint=True,
             )
             await ai_job_service.enqueue_task_chat_job(created.job_id)
             job_payload = await run_db_txn(

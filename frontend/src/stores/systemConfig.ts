@@ -6,7 +6,7 @@ import api from '@/utils/api'
  * 系统配置（DB 支撑的功能开关）。
  * - projectProductManagementEnabled：新建工作区时是否启用“项目管理/产品管理”选择功能。
  *   开启：按既有流程选择项目与产品。
- *   关闭（默认）：屏蔽项目管理/产品管理页面；新建工作区直接填写项目与产品名称并手动选择仓库分支。
+ *   关闭（默认）：屏蔽项目管理/产品管理页面；新建工作区直接填写项目与产品名称，并可选仓库与分支。
  */
 export const useSystemConfigStore = defineStore('systemConfig', () => {
   const projectProductManagementEnabled = ref(false)

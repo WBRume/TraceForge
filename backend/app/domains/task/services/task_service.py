@@ -1312,6 +1312,7 @@ def get_task_history(
         for (turn_id,) in db.query(TaskSessionTurn.id).filter(
             TaskSessionTurn.id.in_(turn_ids),
             TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
+            TaskSessionTurn.checkpoint_path.isnot(None),
         ).all()
     } if turn_ids else set()
 
