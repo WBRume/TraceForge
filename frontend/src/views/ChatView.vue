@@ -54,6 +54,17 @@ const preInputMode = ref(false)
 const chatInputRef = ref<any>(null)
 const pendingUndoMessage = ref<Record<string, any> | null>(null)
 const taskAdvancedDrawerOpen = ref(false)
+const showBootstrapConfirm = ref(false)
+
+const confirmBootstrapBuild = async () => {
+  if (rawVm.specBootstrapTriggering.value) return
+  showBootstrapConfirm.value = false
+  try {
+    await rawVm.triggerSpecBootstrap()
+  } catch {
+    // triggerSpecBootstrap owns user-facing error handling
+  }
+}
 
 const handleUndoRequest = (message: Record<string, any>) => {
   if (rawVm.isUndoing.value || !rawVm.canUndoMessage(message)) return
@@ -369,7 +380,7 @@ const statusModelText = (card: any): string => {
               v-if="vm.canTriggerSpecBootstrap"
               class="btn-secondary bootstrap-trigger-btn"
               :disabled="vm.specBootstrapTriggering"
-              @click="vm.triggerSpecBootstrap"
+              @click="showBootstrapConfirm = true"
             >
               {{ $t('chat.spec_bootstrap_action_build') }}
             </button>
@@ -901,6 +912,18 @@ const statusModelText = (card: any): string => {
       :loading="vm.startingTask"
       @cancel="vm.showStartConfirm = false"
       @confirm="vm.startTask"
+    />
+
+    <ConfirmActionModal
+      :show="showBootstrapConfirm"
+      :title="$t('chat.spec_bootstrap_build_confirm_title')"
+      :message="$t('chat.spec_bootstrap_build_confirm_message')"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('chat.spec_bootstrap_action_build')"
+      tone="primary"
+      :loading="vm.specBootstrapTriggering"
+      @cancel="showBootstrapConfirm = false"
+      @confirm="confirmBootstrapBuild"
     />
 
     <ConfirmActionModal

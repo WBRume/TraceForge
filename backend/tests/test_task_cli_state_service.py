@@ -249,3 +249,4 @@ def test_ensure_bootstrap_ready_or_start_failed_requires_manual_retry(monkeypatc
         service.ensure_bootstrap_ready_or_start(db, workspace_id="ws-1", task_id="task-1")
 
     assert scheduled == []
+
