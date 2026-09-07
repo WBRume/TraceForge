@@ -67,3 +67,5 @@ Thumbs.db
 backend/_backup_*.json
 codebuddy-sdk-doc.txt
 /.workbuddy/
+/.playwright-cli/
+/output/

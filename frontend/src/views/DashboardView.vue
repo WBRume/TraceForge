@@ -141,7 +141,14 @@ const loadDashboardData = async () => {
           return `${p.name}<br/>${p.seriesName}: <b>${p.value}</b> ${t('dashboard.phases.UNIT_MIN')}`
         }
       },
-      grid: { left: '3%', right: '4%', bottom: '8%', containLabel: true, top: '15%' },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '8%',
+        top: '15%',
+        outerBoundsMode: 'same',
+        outerBoundsContain: 'axisLabel'
+      },
       xAxis: { 
         type: 'category', 
         data: normalizedDuration.map((i: any) => t(`dashboard.phases.${i.phase}`)),

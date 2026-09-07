@@ -79,6 +79,7 @@ class CliBridgeBase(ABC):
         env_overrides: Optional[Dict[str, str]] = None,
         fork_session: bool = False,
         permission_mode: str = "default",
+        on_process_started: Optional[Callable[[Any], Any]] = None,
     ) -> str:
         """
         启动 CLI 会话。
@@ -194,6 +195,7 @@ class SubprocessCliBridge(CliBridgeBase):
         env_overrides: Optional[Dict[str, str]] = None,
         fork_session: bool = False,
         permission_mode: str = "default",
+        on_process_started: Optional[Callable[[Any], Any]] = None,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -239,6 +241,7 @@ class SubprocessCliBridge(CliBridgeBase):
                 env=env,
                 run_token=str(env.get("TRACEFORGE_RUN_TOKEN") or "") or None,
                 worker_boot_id=str(env.get("WORKER_BOOT_ID") or "") or None,
+                on_process_started=on_process_started,
             )
             self.process = self._managed_process.process
 
@@ -413,10 +416,18 @@ class MockCliBridge(CliBridgeBase):
         env_overrides: Optional[Dict[str, str]] = None,
         fork_session: bool = False,
         permission_mode: str = "default",
+        on_process_started: Optional[Callable[[Any], Any]] = None,
     ) -> str:
         self._running = True
         self._event_cb = event_callback
         self._session_id = session_id or str(uuid.uuid4())
+
+        if on_process_started is not None:
+            accepted = on_process_started({"containment_id": "mock"})
+            if asyncio.iscoroutine(accepted):
+                accepted = await accepted
+            if not accepted:
+                raise RuntimeError("Mock Agent process could not be attached to the current job attempt")
 
         logger.info(f"[Mock CLI] Session {self._session_id} | prompt_length: {len(prompt)}")
 

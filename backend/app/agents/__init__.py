@@ -11,6 +11,7 @@ Agent 适配层。
 
 from app.agents.contract import (
     AgentAttemptContext,
+    AgentProcessIdentity,
     AgentBackend,
     AgentCapabilities,
     AgentRunRequest,
@@ -34,6 +35,7 @@ from app.agents.errors import (
 __all__ = [
     "AgentBackend",
     "AgentAttemptContext",
+    "AgentProcessIdentity",
     "AgentCapabilities",
     "AgentEvent",
     "AgentEventSink",

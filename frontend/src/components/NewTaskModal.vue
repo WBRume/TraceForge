@@ -9,6 +9,7 @@ import {
   Sparkles,
   Globe,
   FolderOpen,
+  GitBranch,
   GitFork,
   Hammer,
   Stethoscope,

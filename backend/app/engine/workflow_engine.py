@@ -7,6 +7,7 @@
 import asyncio
 import os
 import time
+import uuid
 from typing import Optional, Dict, Any, Callable, Awaitable, List, Tuple
 from sqlalchemy.orm import Session
 
@@ -49,7 +50,6 @@ from app.domains.ai.schemas.websocket import (
     WSToolUsePayload,
     WSToolResultPayload,
     WSResultPayload,
-    WSHitlRequest,
 )
 
 logger = get_logger(__name__, category="task_execution")
@@ -339,6 +339,7 @@ class WorkflowEngine:
         self._draining_segments = False
         self._thinking_dirty = False
         self._pending_snapshot_update: Dict[str, Any] = {}
+        self._pending_confirmations: Dict[str, str] = {}
         self._segment_failures = 0
         # 事件门禁与回合级缓存（run() 时加载）
         self._gate: Optional[SessionGate] = None
@@ -355,6 +356,19 @@ class WorkflowEngine:
         from app.agents.selection import create_agent_backend_by_name
 
         return create_agent_backend_by_name(self.backend_name)
+
+    async def _on_process_started(self, identity: Any) -> bool:
+        """Attach a local process before its stdout/stderr readers are created."""
+        if getattr(identity, "pid", None) is None or self.attempt is None:
+            return True
+        from app.domains.ai.services import ai_job_service
+
+        return await run_db(
+            ai_job_service._persist_process_identity_sync,
+            self.attempt.job_id,
+            self.attempt.run_token,
+            identity,
+        )
 
     async def _emit_hook(self, callback: Optional[Callable], *args):
         if not callback:
@@ -470,13 +484,17 @@ class WorkflowEngine:
 
     async def _flush_execution_logs_after_delay(self) -> None:
         current_task = asyncio.current_task()
+        cancelled = False
         try:
             await asyncio.sleep(EXECUTION_LOG_FLUSH_INTERVAL_SECONDS)
             await self._flush_execution_logs()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             if self._execution_log_flush_task is current_task:
                 self._execution_log_flush_task = None
-            if self._execution_log_buffer and not self._draining_execution_logs:
+            if self._execution_log_buffer and not self._draining_execution_logs and not cancelled:
                 self._execution_log_flush_task = asyncio.create_task(self._flush_execution_logs_after_delay())
 
     async def _flush_execution_logs(self) -> None:
@@ -610,17 +628,21 @@ class WorkflowEngine:
 
     async def _flush_segments_after_delay(self, immediate: bool = False) -> None:
         current_task = asyncio.current_task()
+        cancelled = False
         try:
             if not immediate:
                 interval = float(getattr(settings, "SEGMENT_FLUSH_INTERVAL_SECONDS", 0.2))
                 if interval > 0:
                     await asyncio.sleep(interval)
             await self._flush_segments()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         finally:
             if self._segment_flush_task is current_task:
                 self._segment_flush_task = None
             if (self._segment_buffer or self._thinking_dirty or self._pending_snapshot_update) \
-                    and not self._draining_segments:
+                    and not self._draining_segments and not cancelled:
                 self._segment_flush_task = asyncio.create_task(self._flush_segments_after_delay())
 
     async def _flush_segments(self) -> None:
@@ -748,7 +770,14 @@ class WorkflowEngine:
         msg = WSMessage(type=msg_type, payload=payload)
         await ws_manager.send_message_to_room(self.task_id, msg)
 
-    async def _push_chat(self, role: str, content: str):
+    async def _push_chat(
+        self,
+        role: str,
+        content: str,
+        *,
+        metadata: Optional[dict] = None,
+        message_type: str = "text",
+    ):
         """推送自然语言对话消息到前端气泡区（先落库后广播，DB 全程 off-loop）"""
         if not content.strip():
             return
@@ -756,7 +785,13 @@ class WorkflowEngine:
             return
 
         try:
-            payload = await run_db(self._persist_chat_message_sync, role, content)
+            payload = await run_db(
+                self._persist_chat_message_sync,
+                role,
+                content,
+                metadata,
+                message_type,
+            )
         except Exception as exc:
             logger.exception(f"Persist chat message failed: {exc}")
             return
@@ -765,7 +800,13 @@ class WorkflowEngine:
 
         await self._ws_push("chat_message", payload)
 
-    def _persist_chat_message_sync(self, role: str, content: str) -> Optional[dict]:
+    def _persist_chat_message_sync(
+        self,
+        role: str,
+        content: str,
+        metadata: Optional[dict] = None,
+        message_type: str = "text",
+    ) -> Optional[dict]:
         """线程内执行：消息落库（含每条即时通知）+ context 归因 + WS payload 组装。"""
         db = SessionLocal()
         try:
@@ -783,7 +824,8 @@ class WorkflowEngine:
                 db, self.task_id, self.ws_id, self.user_id,
                 role=role,
                 content=content,
-                message_type="text",
+                message_type=message_type,
+                metadata_json=metadata,
                 session_turn_id=self.session_turn_id,
                 session_generation=generation,
             )
@@ -812,6 +854,8 @@ class WorkflowEngine:
                 task_id=self.task_id,
                 role=role,
                 content=content,
+                message_type=message_type,
+                metadata=metadata,
                 id=saved_message.id,
                 creator_id=self.user_id,
                 creator_display_name=creator.display_name if creator else None,
@@ -976,26 +1020,55 @@ class WorkflowEngine:
             task_id=self.task_id, status=status, message=message, job_id=self.current_job_id, **kwargs,
         ).model_dump())
 
-    async def _push_hitl(self, prompt: str, hitl_type: str = "text",
-                         options: list = None, context: str = None):
-        """推送 HITL 交互请求到前端"""
+    async def _push_hitl(
+        self,
+        prompt: str,
+        hitl_type: str = "text",
+        options: list = None,
+        context: str = None,
+        provider_request_id: Optional[str] = None,
+    ):
+        """Persist a visible confirmation message and register its private provider locator."""
         if not self._event_is_current():
             return
+        interaction_id = str(uuid.uuid4())
+        normalized_kind = "boolean" if hitl_type in {"boolean", "approval"} else (
+            "select" if options else "text"
+        )
+        confirmation = {
+            "interaction_id": interaction_id,
+            "kind": normalized_kind,
+            "options": list(options or []),
+            "allow_custom_input": normalized_kind != "select",
+            "job_id": self.current_job_id,
+        }
+        self._pending_confirmations[interaction_id] = str(
+            provider_request_id or interaction_id
+        )
         self._record_context_segment(
-            "hitl",
+            "confirmation",
             workspace_id=self.ws_id,
             task_id=self.task_id,
             ai_job_id=self.current_job_id,
             session_id=self.session_id,
             prompt=prompt,
-            source_kind="hitl_prompt",
+            source_kind="confirmation_prompt",
+            interaction_id=interaction_id,
         )
-        # 先持久化再广播：HITL 前强制排空 segment/snapshot 缓冲
+        # 先持久化再广播：确认消息必须先进入历史，再由前端从 metadata 派生对话框
         await self._flush_segments()
-        await self._ws_push("hitl_request", WSHitlRequest(
-            task_id=self.task_id, hitl_type=hitl_type,
-            prompt=prompt, job_id=self.current_job_id, options=options, context=context,
-        ).model_dump())
+        payload = await run_db(
+            self._persist_chat_message_sync,
+            "assistant",
+            prompt,
+            {
+                "confirmation": confirmation,
+                "context": context or "",
+            },
+            "text",
+        )
+        if payload:
+            await self._ws_push("chat_message", payload)
         await self._emit_hook(
             self.on_hitl,
             prompt,
@@ -1004,6 +1077,29 @@ class WorkflowEngine:
             context,
             self.current_job_id or "",
         )
+
+    def can_deliver_confirmation(self, interaction_id: str) -> bool:
+        return bool(
+            interaction_id in self._pending_confirmations
+            and "long_connection" in getattr(
+                getattr(self.cli, "capabilities", None), "hitl_modes", []
+            )
+            and self.running
+        )
+
+    async def deliver_confirmation_response(
+        self,
+        interaction_id: str,
+        response: str,
+    ) -> bool:
+        if not self.can_deliver_confirmation(interaction_id):
+            return False
+        provider_request_id = self._pending_confirmations.get(interaction_id)
+        if not provider_request_id:
+            return False
+        await self.cli.respond_to_ask_user(provider_request_id, response)
+        self._pending_confirmations.pop(interaction_id, None)
+        return True
 
     async def _push_result(self, success: bool, result: str,
                            duration_ms: int = None, cost_usd: float = None):
@@ -1093,7 +1189,11 @@ class WorkflowEngine:
                 if tool_name == "AskUserQuestion":
                     question = str(payload.get("question") or tool_input.get("question") or str(tool_input))
                     self._hitl_requested_in_turn = True
-                    await self._push_hitl(prompt=question, hitl_type="text")
+                    await self._push_hitl(
+                        prompt=question,
+                        hitl_type="text",
+                        provider_request_id=tool_id,
+                    )
             elif event_type == "tool_result":
                 import json
                 tool_use_id = str(payload.get("tool_use_id") or "")
@@ -1129,7 +1229,13 @@ class WorkflowEngine:
                 options = payload.get("options") or None
                 context = payload.get("context") or None
                 self._hitl_requested_in_turn = True
-                await self._push_hitl(prompt=question, hitl_type="text", options=options, context=str(context) if context is not None else None)
+                await self._push_hitl(
+                    prompt=question,
+                    hitl_type=str(payload.get("kind") or "text"),
+                    options=options,
+                    context=str(context) if context is not None else None,
+                    provider_request_id=str(payload.get("ask_user_id") or "") or None,
+                )
             elif event_type == "usage":
                 self._update_context_snapshot(usage=payload, raw_usage_json=payload.get("raw_usage"), status="RUNNING")
             elif event_type == "context_compacted":
@@ -1220,18 +1326,17 @@ class WorkflowEngine:
                 self.current_job_id or "",
             )
         else:
-            waiting_hitl = finish_reason == "awaiting_user" or self._hitl_requested_in_turn
             self._update_context_snapshot(
                 usage=usage,
                 raw_usage_json=(usage or {}).get("raw_usage"),
-                status="WAITING_HITL" if waiting_hitl else "SUCCESS",
+                status="SUCCESS",
                 duration_ms=duration,
                 total_cost_usd=cost,
             )
             logger.info(f"Agent execution succeeded in {duration}ms, cost: {cost}")
             await self._update_task_metrics(cost, duration)
             await self._push_result(True, result_text[:500], duration, cost)
-            self.last_result_success = not waiting_hitl
+            self.last_result_success = True
             self.last_result_text = result_text
             await self._emit_hook(
                 self.on_result,
@@ -1310,6 +1415,7 @@ class WorkflowEngine:
                     await self._push_hitl(
                         prompt=question,
                         hitl_type="text",
+                        provider_request_id=tool_id,
                     )
 
             elif block_type == "tool_result":
@@ -1437,14 +1543,14 @@ class WorkflowEngine:
             self._update_context_snapshot(
                 usage=usage,
                 raw_usage_json=usage.get("raw_usage") if usage else None,
-                status="SUCCESS" if not self._hitl_requested_in_turn else "WAITING_HITL",
+                status="SUCCESS",
                 duration_ms=duration,
                 total_cost_usd=cost,
             )
             logger.info(f"CLI execution succeeded in {duration}ms, cost: {cost}")
             await self._update_task_metrics(cost, duration)
             await self._push_result(True, result_text[:500], duration, cost)
-            self.last_result_success = not self._hitl_requested_in_turn
+            self.last_result_success = True
             self.last_result_text = result_text
             await self._emit_hook(
                 self.on_result,
@@ -1621,6 +1727,7 @@ class WorkflowEngine:
             self.last_result_interrupted = False
             self.last_termination_confirmed_dead = None
             self._hitl_requested_in_turn = False
+            self._pending_confirmations.clear()
             self._thinking_buffer = ""
             self._thinking_seq = 0
             self._thinking_unsent = ""
@@ -1676,6 +1783,7 @@ class WorkflowEngine:
                             "worker_boot_id": attempt.worker_boot_id if attempt else None,
                             "attempt_count": attempt.attempt_count if attempt else None,
                         },
+                        on_process_started=self._on_process_started,
                     )
                     result = await run_agent_backend_with_logging(
                         self.cli,
