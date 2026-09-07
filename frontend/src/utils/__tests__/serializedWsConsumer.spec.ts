@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { clearWsCursorMemory, getWsCursor } from '@/utils/wsCursor'
+import { clearWsCursorMemory, getWsCursor, sendResyncComplete } from '@/utils/wsCursor'
 import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 
 const socket = () => ({
@@ -63,5 +63,48 @@ describe('serialized WebSocket consumer', () => {
     await tick()
     expect(failures).toBe(0)
     expect(getWsCursor('task:generation')?.lastAppliedSequence).toBe(1)
+  })
+
+  it('resyncs from a stored cursor and consumes deferred events without reconnecting', async () => {
+    window.sessionStorage.setItem('traceforge.ws.cursors', JSON.stringify({
+      'task:resync': {
+        epoch: 'epoch-resync',
+        lastAppliedSequence: 10,
+        recentEventIds: ['event-10'],
+      },
+    }))
+    clearWsCursorMemory()
+
+    const applied: number[] = []
+    let failures = 0
+    const consumer = createSerializedWsConsumer({
+      room: 'task:resync',
+      onEvent: async (event) => { applied.push(event.sequence) },
+      onResync: async (frame, _reason, context) => {
+        // The REST snapshot completes before the barrier acknowledgement.
+        sendResyncComplete(context.socket, frame, 'task:resync')
+      },
+      onFailure: () => { failures += 1 },
+    })
+    const generation = consumer.resetForConnection(socket())
+    consumer.enqueue({
+      type: 'resync_required', epoch: 'epoch-resync', barrier_sequence: 100,
+    }, generation)
+    consumer.enqueue({
+      type: 'event', epoch: 'epoch-resync', sequence: 101, event_id: 'event-101',
+      event_type: 'status', payload: {},
+    }, generation)
+    consumer.enqueue({
+      type: 'resync_ok', epoch: 'epoch-resync', to_sequence: 101,
+    }, generation)
+    await tick()
+    await tick()
+    await tick()
+
+    expect(failures).toBe(0)
+    expect(applied).toEqual([101])
+    expect(getWsCursor('task:resync')).toMatchObject({
+      epoch: 'epoch-resync', lastAppliedSequence: 101,
+    })
   })
 })

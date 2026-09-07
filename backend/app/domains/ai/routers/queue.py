@@ -10,7 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db, require_admin
-from app.core.offload import run_db_txn
+from app.core.logging import audit_log
+from app.core.offload import run_db, run_db_txn
+from app.agents.process_supervisor import process_supervisor
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.queue import (
     QueueActionValue,
@@ -24,6 +26,9 @@ from app.domains.ai.schemas.queue import (
     OrphanedJobListResponse,
     OrphanedJobProtectionRequest,
     OrphanedJobProtectionResponse,
+    OrphanedJobRetryTerminationRequest,
+    OrphanedJobCleanupConfirmationRequest,
+    OrphanedJobRecoveryResponse,
 )
 from app.domains.ai.services import queue_service
 
@@ -102,6 +107,169 @@ def protect_orphaned_queue_job(
     return OrphanedJobProtectionResponse(
         job_id=job_id,
         message="Orphaned job protected for manual recovery",
+    )
+
+
+async def _recover_orphaned_job(
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: Optional[str],
+    confirm_cleanup: bool,
+) -> OrphanedJobRecoveryResponse:
+    from app.domains.ai.services import ai_job_service
+
+    try:
+        if confirm_cleanup:
+            adopted = await run_db_txn(
+                lambda db: queue_service.begin_orphaned_cleanup_confirmation(
+                    db,
+                    job_id=job_id,
+                    operator_id=operator_id,
+                    reason=reason,
+                    evidence=str(evidence or ""),
+                )
+            )
+        else:
+            adopted = await run_db_txn(
+                lambda db: queue_service.begin_orphaned_retry_termination(
+                    db,
+                    job_id=job_id,
+                    operator_id=operator_id,
+                    reason=reason,
+                )
+            )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    result = None
+    if confirm_cleanup:
+        result = await process_supervisor.verify_persisted_cleanup(
+            adopted.get("process_pid"),
+            adopted.get("process_started_at"),
+            adopted.get("process_group_id"),
+        )
+    else:
+        previous_token = str(adopted.get("previous_run_token") or "")
+        # Persisted identity validation is mandatory for an administrator
+        # retry.  An in-memory attempt is only a fallback for rows that have
+        # no persisted PID or when the first attempt did not settle the tree.
+        if adopted.get("process_pid"):
+            result = await process_supervisor.stop_persisted(
+                adopted.get("process_pid"),
+                adopted.get("process_started_at"),
+                reason,
+                process_group_id=adopted.get("process_group_id"),
+            )
+        if previous_token and (result is None or not result.confirmed_dead):
+            managed_result = await process_supervisor.stop_attempt(previous_token, reason)
+            if managed_result is not None and (
+                result is None or managed_result.confirmed_dead
+            ):
+                result = managed_result
+
+    confirmed_dead = bool(result is not None and result.confirmed_dead)
+    payload = await run_db(
+        ai_job_service._finish_termination_sync,
+        adopted["job_id"],
+        adopted["run_token"],
+        confirmed_dead=confirmed_dead,
+        reason=(result.error_message if result and result.error_message else reason),
+        failure_code=(
+            result.error_code
+            if result and result.error_code
+            else (
+                "MANUAL_CLEANUP_UNVERIFIED"
+                if confirm_cleanup
+                else "MANUAL_TERMINATION_UNCONFIRMED"
+            )
+        ),
+    )
+    if payload:
+        status = str(payload.get("status") or "")
+        await ai_job_service._broadcast_job_payload(
+            payload,
+            final=status in {item.value for item in ai_job_service.FINAL_STATUSES},
+        )
+        if status == ai_job_service.AiJobStatus.PENDING.value:
+            ai_job_service.schedule_queue(str(payload.get("queue_key") or ""))
+    audit_log(
+        action=(
+            "orphaned_job_cleanup_confirmed"
+            if confirm_cleanup
+            else "orphaned_job_retry_termination"
+        ),
+        outcome="success" if confirmed_dead and payload else "failed",
+        resource_type="ai_job",
+        resource_id=adopted["job_id"],
+        operator_id=operator_id,
+        workspace_id=adopted.get("workspace_id"),
+        task_id=adopted.get("task_id"),
+        reason=reason,
+        evidence=evidence,
+        failure_code=(result.error_code if result else None),
+    )
+    if not payload:
+        raise HTTPException(status_code=409, detail="Orphaned job recovery lost its state fence")
+    if not confirmed_dead:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Process cleanup could not be verified; job remains ORPHANED",
+                "status": payload.get("status"),
+                "error_code": result.error_code if result else None,
+            },
+        )
+    return OrphanedJobRecoveryResponse(
+        job_id=adopted["job_id"],
+        status=str(payload.get("status") or ""),
+        confirmed_dead=True,
+        message=(
+            "External cleanup confirmed and orphaned job converged"
+            if confirm_cleanup
+            else "Termination confirmed and orphaned job converged"
+        ),
+    )
+
+
+@router.post(
+    "/orphaned/{job_id}/retry-termination",
+    response_model=OrphanedJobRecoveryResponse,
+)
+async def retry_orphaned_queue_job_termination(
+    job_id: str,
+    request: OrphanedJobRetryTerminationRequest,
+    current_user: User = Depends(require_admin),
+):
+    return await _recover_orphaned_job(
+        job_id=job_id,
+        operator_id=current_user.id,
+        reason=request.reason,
+        evidence=None,
+        confirm_cleanup=False,
+    )
+
+
+@router.post(
+    "/orphaned/{job_id}/confirm-cleanup",
+    response_model=OrphanedJobRecoveryResponse,
+)
+async def confirm_orphaned_queue_job_cleanup(
+    job_id: str,
+    request: OrphanedJobCleanupConfirmationRequest,
+    current_user: User = Depends(require_admin),
+):
+    return await _recover_orphaned_job(
+        job_id=job_id,
+        operator_id=current_user.id,
+        reason=request.reason,
+        evidence=request.evidence,
+        confirm_cleanup=True,
     )
 
 

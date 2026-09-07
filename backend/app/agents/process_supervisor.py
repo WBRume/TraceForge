@@ -896,6 +896,137 @@ class ProcessSupervisor:
                 error_message=str(exc),
             )
 
+    @staticmethod
+    def _persisted_group_has_live_processes(
+        process_group_id: Optional[int],
+        *,
+        ignored_pids: Optional[set[int]] = None,
+    ) -> bool:
+        """Return whether a persisted POSIX process group still has members.
+
+        The check is intentionally conservative for manual cleanup: seeing a
+        live member means the original ownership cannot be proven gone.  A
+        reused root PID may be ignored because its create time has already
+        proven that it is a different process and must never be terminated.
+        """
+        if os.name == "nt" or not process_group_id or psutil is None:
+            return False
+        ignored = ignored_pids or set()
+        group_id = int(process_group_id)
+        try:
+            os.killpg(group_id, 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+        for item in psutil.process_iter(["pid", "status"]):
+            try:
+                pid = int(item.pid)
+                if pid in ignored or item.status() == psutil.STATUS_ZOMBIE:
+                    continue
+                if os.getpgid(pid) == group_id:
+                    return True
+            except (psutil.Error, OSError, ValueError):
+                continue
+        return False
+
+    async def verify_persisted_cleanup(
+        self,
+        pid: Optional[int],
+        process_started_at: Optional[datetime],
+        process_group_id: Optional[int] = None,
+    ) -> TerminationResult:
+        """Verify external cleanup without sending a signal.
+
+        This is separate from ``stop_persisted`` so the confirm-cleanup API
+        cannot accidentally terminate a PID that has since been reused.
+        """
+        started = time.monotonic()
+        if not pid or process_started_at is None:
+            return TerminationResult(
+                False,
+                None,
+                elapsed_ms=0,
+                error_code="PROCESS_IDENTITY_INCOMPLETE",
+                error_message="Persisted PID and create time are required",
+            )
+        if psutil is None:
+            return TerminationResult(
+                False,
+                None,
+                elapsed_ms=0,
+                error_code="PROCESS_INSPECTION_UNAVAILABLE",
+                error_message="psutil is required to verify persisted process cleanup",
+            )
+        try:
+            proc = psutil.Process(int(pid))
+            actual_started = float(proc.create_time())
+            expected_started = process_started_at
+            if expected_started.tzinfo is None:
+                expected_started = expected_started.replace(tzinfo=timezone.utc)
+            if abs(actual_started - expected_started.timestamp()) > 2.0:
+                group_alive = self._persisted_group_has_live_processes(
+                    process_group_id,
+                    ignored_pids={int(pid)},
+                )
+                if group_alive:
+                    return TerminationResult(
+                        False,
+                        None,
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                        error_code="PROCESS_GROUP_STILL_ALIVE",
+                        error_message="Persisted process group still has live members",
+                        root_identity_matches=False,
+                    )
+                return TerminationResult(
+                    True,
+                    None,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error_code="PID_REUSED",
+                    root_identity_matches=False,
+                )
+
+            if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
+                group_alive = self._persisted_group_has_live_processes(
+                    process_group_id,
+                    ignored_pids={int(pid)},
+                )
+                if not group_alive:
+                    return TerminationResult(
+                        True,
+                        None,
+                        elapsed_ms=int((time.monotonic() - started) * 1000),
+                        root_identity_matches=True,
+                    )
+            return TerminationResult(
+                False,
+                None,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error_code="PROCESS_TREE_STILL_ALIVE",
+                error_message=f"Persisted process tree {pid} is still alive",
+                root_identity_matches=True,
+            )
+        except psutil.NoSuchProcess:
+            if self._persisted_group_has_live_processes(process_group_id):
+                return TerminationResult(
+                    False,
+                    None,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error_code="PROCESS_GROUP_STILL_ALIVE",
+                    error_message="Persisted process group still has live members",
+                )
+            return TerminationResult(
+                True,
+                None,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+        except Exception as exc:
+            return TerminationResult(
+                False,
+                None,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error_code="PERSISTED_VERIFICATION_EXCEPTION",
+                error_message=str(exc),
+            )
+
     async def stop_all(self, reason: str = "worker_shutdown") -> list[TerminationResult]:
         processes = list(self._processes)
         results = await asyncio.gather(

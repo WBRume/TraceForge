@@ -89,6 +89,15 @@ const commitCursor = (room: string, cursor: WsCursor, persist = true): WsCursor 
   hydrateCursorMemory()
   const normalized = cloneCursor(cursor)
   const existing = cursorMemory.get(room)
+  const staged = pendingResync.get(room)
+  // An epoch transition is valid only while the matching resync barrier is
+  // staged.  This prevents a late callback from an older connection
+  // generation from replacing a cursor that has already been finalized for a
+  // newer epoch.
+  if (existing && existing.epoch !== normalized.epoch
+    && staged?.epoch !== normalized.epoch) {
+    return cloneCursor(existing)
+  }
   // A late completion from an older handler must never move an applied cursor
   // backwards. Epoch changes are allowed only through an explicit resync.
   if (existing && existing.epoch === normalized.epoch
@@ -126,13 +135,15 @@ export const finalizeWsResync = (room: string, frame: any): WsCursor | null => {
   hydrateCursorMemory()
   const staged = pendingResync.get(room)
   if (!staged) return null
+  if (String(frame?.epoch || '') !== staged.epoch) return null
   const sequence = Number(frame?.high_watermark ?? frame?.to_sequence ?? staged.lastAppliedSequence)
   const finalized = {
     ...staged,
     lastAppliedSequence: Math.max(staged.lastAppliedSequence, Number.isFinite(sequence) ? sequence : 0),
   }
+  const committed = commitCursor(room, finalized)
   pendingResync.delete(room)
-  return commitCursor(room, finalized)
+  return committed
 }
 
 export const discardWsResync = (room: string) => {
@@ -159,10 +170,10 @@ export const prepareWsFrame = (room: string, frame: any): WsFrameResult => {
 
   const stored = getWsCursor(room)
   const staged = pendingResync.get(room)
-  const cursor = stored && stored.epoch === epoch
-    ? stored
-    : staged && staged.epoch === epoch
-      ? cloneCursor(staged)
+  const cursor = staged && staged.epoch === epoch
+    ? cloneCursor(staged)
+    : stored && stored.epoch === epoch
+      ? stored
       : stored
   if (cursor && cursor.epoch !== epoch) {
     return { kind: 'resync', reason: 'epoch_changed', frame }

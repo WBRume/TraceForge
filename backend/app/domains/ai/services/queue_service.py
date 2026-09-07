@@ -5,7 +5,8 @@ Unified background queue aggregation and management service.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
@@ -110,6 +111,140 @@ def protect_orphaned_job(
         evidence=normalized_evidence,
     )
     return job
+
+
+def _append_orphan_recovery_history(
+    job: SddAiJob,
+    *,
+    action: str,
+    operator_id: str,
+    reason: str,
+    evidence: Optional[str] = None,
+) -> None:
+    context = dict(job.context_json) if isinstance(job.context_json, dict) else {}
+    history = list(context.get("orphan_recovery_history") or [])
+    history.append({
+        "action": action,
+        "operator_id": str(operator_id),
+        "reason": reason,
+        "evidence": evidence,
+        "at": datetime.utcnow().isoformat() + "Z",
+    })
+    context["orphan_recovery_history"] = history[-50:]
+    job.context_json = context
+
+
+def _adopt_orphaned_job_for_manual_action(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: Optional[str],
+    action: str,
+) -> Dict[str, Any]:
+    """CAS an ORPHANED job into a single administrator-owned termination."""
+    if not _is_admin(db, operator_id):
+        raise PermissionError("Only platform administrators can recover orphaned jobs")
+    normalized_reason = str(reason or "").strip()
+    normalized_evidence = str(evidence or "").strip() or None
+    if not normalized_reason:
+        raise ValueError("reason is required")
+    normalized_job_id = str(job_id or "").strip()
+    job = (
+        db.query(SddAiJob)
+        .filter(SddAiJob.id == normalized_job_id)
+        .with_for_update()
+        .first()
+    )
+    if not job:
+        raise LookupError("Queue job not found")
+    if job.status != AiJobStatus.ORPHANED:
+        raise ValueError(
+            f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})"
+        )
+
+    from app.domains.ai.services import ai_job_service
+
+    previous_run_token = str(job.run_token or "") or None
+    adopted_run_token = str(uuid.uuid4())
+    _append_orphan_recovery_history(
+        job,
+        action=action,
+        operator_id=operator_id,
+        reason=normalized_reason,
+        evidence=normalized_evidence,
+    )
+    job.status = AiJobStatus.TERMINATING
+    job.worker_id = ai_job_service.WORKER_ID
+    job.worker_boot_id = ai_job_service.WORKER_BOOT_ID
+    job.run_token = adopted_run_token
+    job.termination_attempts = int(job.termination_attempts or 0) + 1
+    job.terminal_reason = normalized_reason
+    job.failure_code = "MANUAL_ORPHAN_RECOVERY"
+    now = datetime.utcnow()
+    job.last_reap_attempt_at = now
+    # Keep the automatic reaper from adopting this fresh manual fence while
+    # the administrator is validating/stopping the external process.
+    manual_lease_seconds = max(5, int(getattr(settings, "AI_JOB_LEASE_SECONDS", 45) or 45))
+    job.lease_expires_at = now + timedelta(seconds=manual_lease_seconds)
+    job.next_reap_at = now + timedelta(seconds=manual_lease_seconds)
+    job.manual_intervention_required = False
+    job.manual_intervention_operator_id = None
+    job.manual_intervention_reason = None
+    job.manual_intervention_evidence = None
+    db.flush()
+    return {
+        "job_id": str(job.id),
+        "run_token": adopted_run_token,
+        "previous_run_token": previous_run_token,
+        "process_pid": job.process_pid,
+        "process_started_at": job.process_started_at,
+        "process_group_id": job.process_group_id,
+        "queue_key": str(job.queue_key or ""),
+        "reason": normalized_reason,
+        "action": action,
+        "workspace_id": job.workspace_id,
+        "task_id": job.task_id,
+    }
+
+
+def begin_orphaned_retry_termination(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+) -> Dict[str, Any]:
+    return _adopt_orphaned_job_for_manual_action(
+        db,
+        job_id=job_id,
+        operator_id=operator_id,
+        reason=reason,
+        evidence=None,
+        action="retry_termination",
+    )
+
+
+def begin_orphaned_cleanup_confirmation(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: str,
+) -> Dict[str, Any]:
+    normalized_evidence = str(evidence or "").strip()
+    if not normalized_evidence:
+        raise ValueError("evidence is required")
+    return _adopt_orphaned_job_for_manual_action(
+        db,
+        job_id=job_id,
+        operator_id=operator_id,
+        reason=reason,
+        evidence=normalized_evidence,
+        action="confirm_cleanup",
+    )
 
 
 def _enum_text(value: Any) -> str:

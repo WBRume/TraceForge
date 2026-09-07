@@ -147,6 +147,13 @@ class Settings(BaseSettings):
     AI_JOB_WORKER_FAILURE_ALERT_THRESHOLD: int = 3
     AI_JOB_WORKER_MAX_BACKOFF_SECONDS: int = 60
     AI_JOB_WORKER_JITTER_SECONDS: float = 0.5
+    # Readiness must fail when a durable worker is alive but has not completed
+    # an iteration recently.  The operation timeout is a watchdog only; the
+    # underlying sync DB future is allowed to finish before another iteration
+    # is started so scans never overlap.
+    AI_JOB_REAPER_STALE_SECONDS: float = 60.0
+    AI_JOB_DISPATCHER_STALE_SECONDS: float = 60.0
+    AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS: float = 30.0
     WORKER_SERVICE_NAME: str = "traceforge-api"
     WORKER_INDEX: str = "0"
     AGENT_TERMINATION_TIMEOUT_SECONDS: float = 30.0
