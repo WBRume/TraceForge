@@ -192,6 +192,33 @@ async def run_db_txn(body: Callable[[Any], T]) -> T:
     return await run_db(_run)
 
 
+async def run_db_txn_with_bind(bind: Any, body: Callable[[Any], T]) -> T:
+    """Run a short transaction against an explicitly supplied SQLAlchemy bind.
+
+    Request-scoped dependency sessions may point at an application-specific
+    engine (notably tests and tenant-bound deployments).  Capture only the
+    bind before an async boundary, then create the worker-thread session from
+    that bind; the request ``Session`` itself never crosses threads.
+    """
+    from sqlalchemy.orm import sessionmaker
+
+    session_factory = sessionmaker(bind=bind, expire_on_commit=False)
+
+    def _run() -> T:
+        db = session_factory()
+        try:
+            result = body(db)
+            db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    return await run_db(_run)
+
+
 def shutdown_offload_executors(wait: bool = False, timeout: float = 10.0) -> None:
     """应用关闭时释放线程池。
 

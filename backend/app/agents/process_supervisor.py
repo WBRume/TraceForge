@@ -102,6 +102,14 @@ class TerminationResult:
     root_identity_matches: Optional[bool] = None
 
 
+@dataclass(frozen=True)
+class ProcessWaitResult:
+    """Result of waiting for a root process and its complete process tree."""
+
+    root_return_code: Optional[int]
+    termination: TerminationResult
+
+
 def _windows_job_object() -> Optional[int]:
     """Create a kill-on-close Windows Job Object when available."""
     if os.name != "nt":
@@ -527,12 +535,24 @@ class ManagedAgentProcess:
             pids.add(self.pid)
         return tuple(sorted(pids))
 
-    async def wait(self) -> int:
+    async def wait(self) -> ProcessWaitResult:
         try:
-            result = await self.process.wait()
+            root_return_code = await self.process.wait()
+            termination = TerminationResult(
+                confirmed_dead=not self._tree_has_live_processes(),
+                root_return_code=root_return_code,
+                root_identity_matches=self._root_identity_matches(),
+                remaining_pids=self._remaining_pids(),
+            )
             if self._tree_has_live_processes():
-                await self.close(reason="root_exit_with_descendants")
-            return result
+                # The root's exit is not the end of the attempt.  Preserve the
+                # actual tree-cleanup result so callers cannot report SUCCESS
+                # while descendants are still alive.
+                termination = await self.close(reason="root_exit_with_descendants")
+            return ProcessWaitResult(
+                root_return_code=root_return_code,
+                termination=termination,
+            )
         finally:
             self.stop_monitor = True
             if self.monitor_task is not None:
@@ -903,4 +923,10 @@ class ProcessSupervisor:
 process_supervisor = ProcessSupervisor()
 
 
-__all__ = ["ManagedAgentProcess", "ProcessSupervisor", "TerminationResult", "process_supervisor"]
+__all__ = [
+    "ManagedAgentProcess",
+    "ProcessSupervisor",
+    "ProcessWaitResult",
+    "TerminationResult",
+    "process_supervisor",
+]

@@ -71,6 +71,7 @@ class ClaudeCodeAdapter(AgentBackend):
         self._cancelled = False
         self._legacy_run_task: Optional[asyncio.Task] = None
         self._legacy_session_id: Optional[str] = None
+        self.last_termination = None
 
     async def _handle_raw_event(self, event: dict[str, Any], on_event: AgentEventSink) -> None:
         for agent_event in map_claude_event(event):
@@ -97,6 +98,7 @@ class ClaudeCodeAdapter(AgentBackend):
         self._validate_request(request)
         self._cancelled = False
         self._last_result_payload = {}
+        self.last_termination = None
 
         program = self._bridge
 
@@ -126,8 +128,17 @@ class ClaudeCodeAdapter(AgentBackend):
             )
             try:
                 await watchdog.wait(program.wait())
+                termination = program.last_termination
+                self.last_termination = termination
+                if termination is not None and not termination.confirmed_dead:
+                    error = AgentError(
+                        "Claude Code process tree could not be confirmed dead"
+                    )
+                    error.termination_confirmed_dead = False
+                    raise error
             except AgentTimeoutError as timeout_error:
                 termination = await program.cancel()
+                self.last_termination = termination
                 if termination is not None:
                     timeout_error.termination_confirmed_dead = bool(
                         termination.confirmed_dead
@@ -163,18 +174,25 @@ class ClaudeCodeAdapter(AgentBackend):
             cost_usd=payload.get("cost_usd"),
             duration_ms=payload.get("duration_ms"),
             return_code=getattr(program.process, "returncode", None),
+            termination_confirmed_dead=(
+                program.last_termination.confirmed_dead
+                if program.last_termination is not None
+                else None
+            ),
             raw_trace=None,
         )
 
     async def interrupt(self, run_id: str | None = None):
         self._cancelled = True
         termination = await self._bridge.interrupt()
+        self.last_termination = termination
         await self._await_legacy_task_exit()
         return termination
 
     async def cancel(self, run_id: str | None = None):
         self._cancelled = True
         termination = await self._bridge.cancel()
+        self.last_termination = termination
         await self._await_legacy_task_exit()
         return termination
 
@@ -335,10 +353,23 @@ class ClaudeCodeAdapter(AgentBackend):
 
         self._legacy_run_task = asyncio.create_task(_run())
         if started_future is not None:
-            accepted = await asyncio.wait_for(
-                asyncio.shield(started_future),
-                timeout=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
-            )
+            try:
+                accepted = await asyncio.wait_for(
+                    asyncio.shield(started_future),
+                    timeout=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
+                )
+            except BaseException as startup_error:
+                if not started_future.done():
+                    started_future.cancel()
+                # Supervisor cleanup must happen before the Python run task is
+                # cancelled; otherwise a late spawn can outlive the caller.
+                termination = await asyncio.shield(self._bridge.cancel())
+                await self._await_legacy_task_exit()
+                if termination is not None:
+                    startup_error.termination_confirmed_dead = bool(
+                        termination.confirmed_dead
+                    )
+                raise
             if not accepted:
                 raise AgentError("Claude process was rejected by the current job attempt")
         return request.session_id or ""

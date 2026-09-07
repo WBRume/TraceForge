@@ -4,13 +4,13 @@ Asset API routes.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.core.offload import run_db_txn
+from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.dependencies import get_current_user, get_db
 from app.domains.asset.models.asset import (
     AssetResolutionProposalStatus,
@@ -54,6 +54,18 @@ from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_ma
 
 router = APIRouter(prefix="/workspaces/{ws_id}/assets", tags=["Assets"])
 logger = get_logger(__name__, category="ai_session")
+
+
+async def _run_asset_route_db_txn(db: Session, db_bind: Any, body):
+    """Use a worker-thread transaction without carrying the request Session."""
+    if db_bind is None:
+        return body(db)
+    return await run_db_txn_with_bind(db_bind, body)
+
+
+def _get_db_bind(db: Session) -> Any:
+    getter = getattr(db, "get_bind", None)
+    return getter() if callable(getter) else None
 
 
 def _verify_asset_access(ws_id: str, user: User, db: Session) -> None:
@@ -135,6 +147,124 @@ def _serialize_message(message) -> AssetThreadMessageResponse:
         metadata_json=message.metadata_json,
         created_at=message.created_at,
     )
+
+
+def _create_asset_thread_ai_job_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    asset_id: str,
+    thread_id: str,
+    creator_id: str,
+    prompt_text: str,
+) -> dict:
+    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id)
+    if not asset or not thread:
+        raise HTTPException(status_code=404, detail="Asset thread not found")
+    _ensure_thread_open(thread)
+    if not thread.task_id:
+        raise HTTPException(status_code=400, detail="Thread task is required")
+    task_cli_state_service.ensure_bootstrap_ready_or_start(
+        db, workspace_id=ws_id, task_id=thread.task_id
+    )
+    message_payload = None
+    if prompt_text:
+        message = asset_discussion_service.add_thread_message(
+            db,
+            thread=thread,
+            role=AssetThreadMessageRole.USER,
+            content=prompt_text,
+            creator_id=creator_id,
+            metadata_json={"source": "@AI", "kind": "manual_ai_job"},
+        )
+        # The AI job creation commits this message in the same short DB phase.
+        message_payload = _serialize_message(message).model_dump(mode="json")
+    job = ai_job_service.create_asset_thread_job(
+        db,
+        workspace_id=ws_id,
+        task_id=thread.task_id,
+        asset_id=asset.id,
+        thread_id=thread.id,
+        creator_id=creator_id,
+        prompt_text=prompt_text or None,
+        job_kind=ai_job_service.JOB_KIND_THREAD_AI_REPLY,
+    )
+    return {"payload": ai_job_service.serialize_job(job), "message": message_payload}
+
+
+def _create_asset_resolution_job_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    asset_id: str,
+    thread_id: str,
+    creator_id: str,
+    job_kind: str,
+    context_json: dict,
+    overwrite_existing_draft: bool = False,
+) -> dict:
+    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id)
+    if not asset or not thread:
+        raise HTTPException(status_code=404, detail="Asset thread not found")
+    _ensure_thread_open(thread)
+    if not thread.task_id:
+        raise HTTPException(status_code=400, detail="Thread task is required")
+    context_version_id = str(context_json.get("context_version_id") or "").strip() or None
+    _ensure_latest_context_version_for_mutation(
+        asset, context_version_id or asset.active_version_id
+    )
+    proposal_id = str(context_json.get("proposal_id") or "").strip() or None
+    if job_kind == ai_job_service.JOB_KIND_RESOLUTION_REWRITE:
+        proposal = (
+            db.query(SddAssetResolutionProposal)
+            .filter(
+                SddAssetResolutionProposal.id == proposal_id,
+                SddAssetResolutionProposal.thread_id == thread.id,
+            )
+            .first()
+        )
+        if not proposal:
+            raise HTTPException(status_code=404, detail="Resolution proposal not found")
+        if proposal.status != AssetResolutionProposalStatus.DRAFT:
+            raise HTTPException(status_code=409, detail="Only draft proposals can be rewritten")
+    task_cli_state_service.ensure_bootstrap_ready_or_start(
+        db, workspace_id=ws_id, task_id=thread.task_id
+    )
+    if job_kind == ai_job_service.JOB_KIND_RESOLUTION_PROPOSAL:
+        existing_draft = (
+            db.query(SddAssetResolutionProposal)
+            .filter(
+                SddAssetResolutionProposal.thread_id == thread.id,
+                SddAssetResolutionProposal.status == AssetResolutionProposalStatus.DRAFT,
+            )
+            .order_by(
+                SddAssetResolutionProposal.updated_at.desc(),
+                SddAssetResolutionProposal.created_at.desc(),
+            )
+            .first()
+        )
+        if existing_draft and not overwrite_existing_draft:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": "Draft proposal already exists",
+                    "existing_draft_id": existing_draft.id,
+                },
+            )
+    job = ai_job_service.create_asset_thread_job(
+        db,
+        workspace_id=ws_id,
+        task_id=thread.task_id,
+        asset_id=asset.id,
+        thread_id=thread.id,
+        creator_id=creator_id,
+        prompt_text=None,
+        job_kind=job_kind,
+        context_json=context_json,
+    )
+    return {"payload": ai_job_service.serialize_job(job)}
 
 
 def _serialize_proposal(proposal) -> AssetResolutionProposalResponse:
@@ -600,13 +730,16 @@ async def create_asset_thread_message(
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread.id)
     created = next((item for item in (thread.messages or []) if item.id == message.id), None)
     response = _serialize_message(created or message)
+    broadcast_asset_id = str(asset.id)
+    broadcast_thread_id = str(thread.id)
+    db.close()
 
     await asset_discussion_ws_manager.broadcast(
-        asset.id,
+        broadcast_asset_id,
         {
             "type": "message_created",
-            "asset_id": asset.id,
-            "thread_id": thread.id,
+            "asset_id": broadcast_asset_id,
+            "thread_id": broadcast_thread_id,
             "message": response.model_dump(mode="json"),
         },
     )
@@ -632,57 +765,47 @@ async def create_asset_thread_ai_job(
     _ensure_thread_open(thread)
     if not thread.task_id:
         raise HTTPException(status_code=400, detail="Thread task is required")
+    resolved_task_id = str(thread.task_id)
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
-        task_cli_state_service.ensure_bootstrap_ready_or_start(
-            db,
-            workspace_id=ws_id,
-            task_id=thread.task_id,
-        )
         await task_cli_state_service.ensure_thread_session(
-            thread.id,
+            thread_id,
             require_ready=True,
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
-        await task_cli_state_service.publish_bootstrap_snapshot(thread.task_id)
+        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
         raise HTTPException(status_code=409, detail=str(exc))
 
     prompt_text = (data.prompt or "").strip()
-    if prompt_text:
-        user_message = asset_discussion_service.add_thread_message(
-            db,
-            thread=thread,
-            role=AssetThreadMessageRole.USER,
-            content=prompt_text,
-            creator_id=current_user.id,
-            metadata_json={"source": "@AI", "kind": "manual_ai_job"},
+    try:
+        created = await _run_asset_route_db_txn(
+            db, db_bind,
+            lambda session: _create_asset_thread_ai_job_sync(
+                session,
+                ws_id=ws_id,
+                asset_id=asset_id,
+                thread_id=thread_id,
+                creator_id=current_user.id,
+                prompt_text=prompt_text,
+            ),
         )
-        db.commit()
-        thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread.id)
-        created = next((item for item in (thread.messages or []) if item.id == user_message.id), None)
-        if created:
-            await asset_discussion_ws_manager.broadcast(
-                asset.id,
-                {
-                    "type": "message_created",
-                    "asset_id": asset.id,
-                    "thread_id": thread.id,
-                    "message": _serialize_message(created).model_dump(mode="json"),
-                },
-            )
-
-    job = ai_job_service.create_asset_thread_job(
-        db,
-        workspace_id=ws_id,
-        task_id=thread.task_id,
-        asset_id=asset.id,
-        thread_id=thread.id,
-        creator_id=current_user.id,
-        prompt_text=prompt_text or None,
-        job_kind=ai_job_service.JOB_KIND_THREAD_AI_REPLY,
-    )
-    payload = ai_job_service.serialize_job(job)
-    await ai_job_service.enqueue_asset_thread_job(job.id)
+    except task_cli_state_service.BootstrapNotReadyError as exc:
+        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
+        raise HTTPException(status_code=409, detail=str(exc))
+    if created["message"]:
+        await asset_discussion_ws_manager.broadcast(
+            asset_id,
+            {
+                "type": "message_created",
+                "asset_id": asset_id,
+                "thread_id": thread_id,
+                "message": created["message"],
+            },
+        )
+    payload = created["payload"]
+    await ai_job_service.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
 
 
@@ -736,55 +859,40 @@ async def create_thread_resolution_proposal(
     context_version_id = str(request_data.context_version_id or "").strip() or None
     _ensure_latest_context_version_for_mutation(asset, context_version_id or asset.active_version_id)
 
-    existing_draft = (
-        db.query(SddAssetResolutionProposal)
-        .filter(
-            SddAssetResolutionProposal.thread_id == thread.id,
-            SddAssetResolutionProposal.status == AssetResolutionProposalStatus.DRAFT,
-        )
-        .order_by(SddAssetResolutionProposal.updated_at.desc(), SddAssetResolutionProposal.created_at.desc())
-        .first()
-    )
-    if existing_draft and not overwrite_existing_draft:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Draft proposal already exists",
-                "existing_draft_id": existing_draft.id,
-            },
-        )
-
+    resolved_task_id = str(thread.task_id)
+    db_bind = _get_db_bind(db)
+    db.close()
     try:
-        task_cli_state_service.ensure_bootstrap_ready_or_start(
-            db,
-            workspace_id=ws_id,
-            task_id=thread.task_id,
-        )
         await task_cli_state_service.ensure_thread_session(
-            thread.id,
+            thread_id,
             require_ready=True,
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
-        await task_cli_state_service.publish_bootstrap_snapshot(thread.task_id)
+        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
         raise HTTPException(status_code=409, detail=str(exc))
 
-    job = ai_job_service.create_asset_thread_job(
-        db,
-        workspace_id=ws_id,
-        task_id=thread.task_id,
-        asset_id=asset.id,
-        thread_id=thread.id,
-        creator_id=current_user.id,
-        prompt_text=None,
-        job_kind=ai_job_service.JOB_KIND_RESOLUTION_PROPOSAL,
-        context_json={
-            "overwrite_existing_draft": overwrite_existing_draft,
-            "existing_draft_id": existing_draft.id if existing_draft else None,
-            "context_version_id": context_version_id or asset.active_version_id,
-        },
-    )
-    payload = ai_job_service.serialize_job(job)
-    await ai_job_service.enqueue_asset_thread_job(job.id)
+    try:
+        created = await _run_asset_route_db_txn(
+            db, db_bind,
+            lambda session: _create_asset_resolution_job_sync(
+                session,
+                ws_id=ws_id,
+                asset_id=asset_id,
+                thread_id=thread_id,
+                creator_id=current_user.id,
+                job_kind=ai_job_service.JOB_KIND_RESOLUTION_PROPOSAL,
+                overwrite_existing_draft=overwrite_existing_draft,
+                context_json={
+                    "overwrite_existing_draft": overwrite_existing_draft,
+                    "context_version_id": context_version_id,
+                },
+            ),
+        )
+    except task_cli_state_service.BootstrapNotReadyError as exc:
+        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
+        raise HTTPException(status_code=409, detail=str(exc))
+    payload = created["payload"]
+    await ai_job_service.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
 
 
@@ -903,40 +1011,43 @@ async def rewrite_thread_resolution_proposal(
     _ensure_latest_context_version_for_mutation(asset, context_version_id)
 
     relocated_anchor = data.relocated_anchor if isinstance(data.relocated_anchor, dict) else None
+    resolved_task_id = str(thread.task_id)
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
-        task_cli_state_service.ensure_bootstrap_ready_or_start(
-            db,
-            workspace_id=ws_id,
-            task_id=thread.task_id,
-        )
         await task_cli_state_service.ensure_thread_session(
-            thread.id,
+            thread_id,
             require_ready=True,
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
-        await task_cli_state_service.publish_bootstrap_snapshot(thread.task_id)
+        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
         raise HTTPException(status_code=409, detail=str(exc))
 
-    job = ai_job_service.create_asset_thread_job(
-        db,
-        workspace_id=ws_id,
-        task_id=thread.task_id,
-        asset_id=asset.id,
-        thread_id=thread.id,
-        creator_id=current_user.id,
-        prompt_text=None,
-        job_kind=ai_job_service.JOB_KIND_RESOLUTION_REWRITE,
-        context_json={
-            "proposal_id": proposal.id,
-            "proposal_text": proposal_text,
-            "rewrite_scope": rewrite_scope,
-            "context_version_id": context_version_id,
-            "relocated_anchor": relocated_anchor,
-        },
-    )
-    payload = ai_job_service.serialize_job(job)
-    await ai_job_service.enqueue_asset_thread_job(job.id)
+    try:
+        created = await _run_asset_route_db_txn(
+            db, db_bind,
+            lambda session: _create_asset_resolution_job_sync(
+                session,
+                ws_id=ws_id,
+                asset_id=asset_id,
+                thread_id=thread_id,
+                creator_id=current_user.id,
+                job_kind=ai_job_service.JOB_KIND_RESOLUTION_REWRITE,
+                context_json={
+                    "proposal_id": proposal_id,
+                    "proposal_text": proposal_text,
+                    "rewrite_scope": rewrite_scope,
+                    "context_version_id": context_version_id,
+                    "relocated_anchor": relocated_anchor,
+                },
+            ),
+        )
+    except task_cli_state_service.BootstrapNotReadyError as exc:
+        await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
+        raise HTTPException(status_code=409, detail=str(exc))
+    payload = created["payload"]
+    await ai_job_service.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
 
 

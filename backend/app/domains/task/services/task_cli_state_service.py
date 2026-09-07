@@ -522,7 +522,9 @@ async def _run_bootstrap(
     *,
     run_token: Optional[str] = None,
     expected_input_revision: Optional[str] = None,
-) -> None:
+    env_overrides: Optional[Dict[str, str]] = None,
+    on_process_started: Optional[Any] = None,
+) -> Optional[bool]:
     lock = _get_bootstrap_lock(task_id)
     try:
         async with queue_bootstrap_jobs(queue_tag="task_cli_bootstrap"):
@@ -556,6 +558,7 @@ async def _run_bootstrap(
                         bridge = None
                         failure_message: Optional[str] = None
                         cleanup_confirmed = True
+                        termination_confirmed_dead: Optional[bool] = None
                         try:
                             await run_db(_refresh_task_skill_context, task_id)
                             await _update_bootstrap_state(
@@ -643,6 +646,8 @@ async def _run_bootstrap(
                                 project_path=os.path.abspath(baseline_dir),
                                 event_callback=on_event,
                                 session_id=resume_session_id,
+                                env_overrides=env_overrides,
+                                on_process_started=on_process_started,
                             )
                             timeout_sec = max(
                                 300,
@@ -650,6 +655,14 @@ async def _run_bootstrap(
                             )
                             if hasattr(bridge, "wait"):
                                 await asyncio.wait_for(bridge.wait(), timeout=timeout_sec)
+
+                            termination = getattr(bridge, "last_termination", None)
+                            if termination is not None:
+                                termination_confirmed_dead = bool(termination.confirmed_dead)
+                                if not termination_confirmed_dead:
+                                    raise BootstrapStateError(
+                                        "Baseline CLI process tree could not be confirmed dead"
+                                    )
 
                             process = getattr(bridge, "process", None)
                             return_code = getattr(process, "returncode", None)
@@ -708,6 +721,7 @@ async def _run_bootstrap(
                                 agent_backend=agent_backend,
                                 error_message=None,
                             )
+                            return termination_confirmed_dead
                         except Exception as exc:
                             logger.exception(f"Task CLI bootstrap failed: task={task_id}, err={exc}")
                             failure_message = str(exc)
@@ -716,11 +730,24 @@ async def _run_bootstrap(
                             # CLI tree is gone before the bootstrap is reported
                             # failed.  The bridge is a compatibility facade, but
                             # its underlying local process is supervisor-owned.
-                            if bridge is not None and getattr(bridge, "is_running", lambda: False)():
+                            has_local_process = bool(
+                                bridge is not None and getattr(bridge, "process", None) is not None
+                            )
+                            if bridge is not None and (
+                                getattr(bridge, "is_running", lambda: False)()
+                                or (
+                                    has_local_process
+                                    and getattr(bridge, "last_termination", None) is not None
+                                    and not bridge.last_termination.confirmed_dead
+                                )
+                            ):
                                 try:
                                     termination = await asyncio.shield(bridge.cancel())
                                     if termination is not None:
                                         cleanup_confirmed = bool(termination.confirmed_dead)
+                                        termination_confirmed_dead = cleanup_confirmed
+                                    elif has_local_process:
+                                        cleanup_confirmed = False
                                 except Exception as cleanup_exc:
                                     cleanup_confirmed = False
                                     logger.exception(
@@ -776,18 +803,28 @@ async def run_bootstrap_for_job(
     *,
     run_token: Optional[str] = None,
     expected_input_revision: Optional[str] = None,
+    env_overrides: Optional[Dict[str, str]] = None,
+    on_process_started: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Execute a durable baseline job through the existing bridge lifecycle."""
-    await _run_bootstrap(
+    termination_confirmed_dead = await _run_bootstrap(
         task_id,
         run_token=run_token,
         expected_input_revision=expected_input_revision,
+        env_overrides=env_overrides,
+        on_process_started=on_process_started,
     )
     payload = await run_db(_get_bootstrap_status_sync, task_id)
     if not payload:
         raise BootstrapNotReadyError("Specification baseline record disappeared")
+    if expected_input_revision and str(payload.get("spec_version_id") or "missing") != str(expected_input_revision):
+        raise BootstrapStateError("Specification changed while baseline was running; rebuild is required")
     if payload.get("status") != TaskCliBootstrapStatus.READY.value:
         raise BootstrapStateError(str(payload.get("error_message") or "Baseline bootstrap failed"))
+    payload = {
+        **payload,
+        "termination_confirmed_dead": termination_confirmed_dead,
+    }
     return payload
 
 

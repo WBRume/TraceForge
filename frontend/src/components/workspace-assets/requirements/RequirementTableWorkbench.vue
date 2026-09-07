@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, watch, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { ElTable } from 'element-plus'
+import type { TableInstance } from 'element-plus'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementListQuery, RequirementSummary } from '@/types/workspaceAssets'
 
@@ -22,7 +22,7 @@ const emit = defineEmits<{
   split: [requirement: RequirementSummary]
 }>()
 
-const tableRef = ref<InstanceType<typeof ElTable>>()
+const tableRef = ref<TableInstance>()
 
 const { t } = useI18n()
 

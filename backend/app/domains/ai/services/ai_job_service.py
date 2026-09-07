@@ -325,6 +325,23 @@ def _persist_process_identity_sync(
         db.close()
 
 
+def _clear_process_ownership(job: SddAiJob) -> None:
+    """Clear the live owner fence after complete process-tree death."""
+    job.heartbeat_at = None
+    job.lease_expires_at = None
+    job.process_pid = None
+    job.process_started_at = None
+    job.process_group_id = None
+    job.run_token = None
+    job.worker_id = None
+    job.worker_boot_id = None
+
+
+def _has_active_process_ownership(job: SddAiJob) -> bool:
+    """Whether the durable row still claims a locally attached process."""
+    return job.process_pid is not None or job.process_group_id is not None
+
+
 def _normalize_job_kind(value: Optional[str]) -> str:
     normalized = str(value or "").strip().upper()
     if normalized == JOB_KIND_TASK_BASELINE:
@@ -553,6 +570,7 @@ def _update_job_state_sync(
     agent_backend: Optional[str] = None,
     finalize: bool = False,
     run_token: Optional[str] = None,
+    termination_confirmed_dead: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     """状态更新 DB 段（线程内执行，由 run_db 包装）。
 
@@ -579,6 +597,21 @@ def _update_job_state_sync(
                 # An undo or a newer session generation has fenced this worker.
                 # Do not let a late callback resurrect the old job state.
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
+        if (
+            _has_active_process_ownership(job)
+            and (finalize or status in FINAL_STATUSES)
+            and termination_confirmed_dead is not True
+        ):
+            job.status = AiJobStatus.ORPHANED
+            job.message = "Agent process could not be confirmed dead"
+            job.error_message = "Agent process tree remained alive after finalization"
+            job.failure_code = "PROCESS_TREE_STILL_ALIVE"
+            job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
+            job.lease_expires_at = datetime.utcnow()
+            job.orphaned_at = job.orphaned_at or datetime.utcnow()
+            db.commit()
+            db.refresh(job)
+            return {"payload": serialize_job(job), "broadcast": True, "is_final": False}
         current_status = job.status
         requested_status = status
         if current_status in FINAL_STATUSES:
@@ -605,11 +638,7 @@ def _update_job_state_sync(
         if finalize or (status in FINAL_STATUSES):
             job.finished_at = datetime.utcnow()
         if status in FINAL_STATUSES:
-            job.heartbeat_at = None
-            job.lease_expires_at = None
-            job.process_pid = None
-            job.process_started_at = None
-            job.process_group_id = None
+            _clear_process_ownership(job)
         db.commit()
         db.refresh(job)
         payload = serialize_job(job)
@@ -632,6 +661,7 @@ async def _update_job_state(
     agent_backend: Optional[str] = None,
     finalize: bool = False,
     run_token: Optional[str] = None,
+    termination_confirmed_dead: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     attempt = current_agent_attempt()
     effective_run_token = run_token or (attempt.run_token if attempt else None)
@@ -648,6 +678,7 @@ async def _update_job_state(
         agent_backend=agent_backend,
         finalize=finalize,
         run_token=effective_run_token,
+        termination_confirmed_dead=termination_confirmed_dead,
     )
     if result is None:
         return None
@@ -1436,7 +1467,7 @@ async def shutdown_runtime_workers() -> None:
                 "WORKER_SHUTDOWN",
                 process_group_id=row.get("process_group_id"),
             )
-        confirmed_dead = result is None or result.confirmed_dead
+        confirmed_dead = bool(result is not None and result.confirmed_dead)
         payload = await run_db(
             _finish_termination_sync,
             row["job_id"],
@@ -1710,7 +1741,9 @@ def _finish_termination_sync(
                 SddAiJob.id == job_id,
                 SddAiJob.run_token == run_token,
                 SddAiJob.worker_boot_id == WORKER_BOOT_ID,
+                SddAiJob.status.in_([AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]),
             )
+            .with_for_update()
             .first()
         )
         if not job:
@@ -1751,11 +1784,7 @@ def _finish_termination_sync(
             job.progress = 0
             job.message = "Agent interrupted; preview queued for retry"
             job.error_message = reason
-            job.run_token = None
-            job.worker_id = None
-            job.worker_boot_id = None
-            job.heartbeat_at = None
-            job.lease_expires_at = None
+            _clear_process_ownership(job)
         elif job.cancel_requested_at is not None:
             job.status = AiJobStatus.CANCELLED
             job.progress = 100
@@ -1784,11 +1813,7 @@ def _finish_termination_sync(
             job.message = "AI execution failed during termination"
             job.finished_at = datetime.utcnow()
             job.error_message = reason
-        job.heartbeat_at = None
-        job.lease_expires_at = None
-        job.process_pid = None
-        job.process_started_at = None
-        job.process_group_id = None
+        _clear_process_ownership(job)
         job.failure_code = failure_code
         job.terminal_reason = reason
         job.last_reap_verified_at = datetime.utcnow()
@@ -1801,9 +1826,14 @@ def _finish_termination_sync(
 
 
 async def _terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
-    await run_db(_begin_termination_sync, attempt.job_id, attempt.run_token, reason)
+    begun = await run_db(_begin_termination_sync, attempt.job_id, attempt.run_token, reason)
     result = await process_supervisor.stop_attempt(attempt.run_token, reason)
-    confirmed_dead = result is None or result.confirmed_dead
+    # A failed begin CAS means this token no longer owns the durable attempt.
+    # We may still stop an in-memory process for safety, but must not let its
+    # late termination result mutate the current/new attempt.
+    if not begun:
+        return
+    confirmed_dead = bool(result is not None and result.confirmed_dead)
     payload = await finalize_attempt_termination(
         attempt.job_id,
         attempt.run_token,
@@ -2132,7 +2162,7 @@ async def run_cli_single_turn(
     fork_session: bool = False,
     permission_mode: str = "default",
     run_token: Optional[str] = None,
-) -> Dict[str, Optional[str]]:
+) -> Dict[str, Any]:
     attempts = max(1, int(max_attempts or 1))
     next_session_id = session_id
     last_error: Optional[Exception] = None
@@ -2146,6 +2176,7 @@ async def run_cli_single_turn(
         result_text = ""
         result_is_error = False
         cancelled = False
+        session_started = False
 
         async def on_event(event: dict):
             nonlocal result_text, result_is_error
@@ -2188,32 +2219,33 @@ async def run_cli_single_turn(
                 identity,
             )
 
-        resumed_session_id = await bridge.start_session(
-            prompt=prompt,
-            project_path=project_path,
-            event_callback=on_event,
-            session_id=next_session_id,
-            env_overrides=env_overrides or None,
-            fork_session=fork_session and attempt == 1,
-            permission_mode=permission_mode,
-            on_process_started=on_process_started,
-        )
         monitor_task: Optional[asyncio.Task] = None
-        if should_cancel:
-            async def _cancel_monitor() -> None:
-                nonlocal cancelled
-                while True:
-                    if should_cancel():
-                        cancelled = True
-                        await bridge.cancel()
-                        return
-                    await asyncio.sleep(0.2)
-
-            monitor_task = asyncio.create_task(_cancel_monitor())
-
-        # 文档讨论是异步作业，允许更长执行时长，避免误超时。
-        wait_seconds = max(600, int(settings.AGENT_MAX_RUNTIME_SECONDS or 7200))
         try:
+            resumed_session_id = await bridge.start_session(
+                prompt=prompt,
+                project_path=project_path,
+                event_callback=on_event,
+                session_id=next_session_id,
+                env_overrides=env_overrides or None,
+                fork_session=fork_session and attempt == 1,
+                permission_mode=permission_mode,
+                on_process_started=on_process_started,
+            )
+            session_started = True
+            if should_cancel:
+                async def _cancel_monitor() -> None:
+                    nonlocal cancelled
+                    while True:
+                        if should_cancel():
+                            cancelled = True
+                            await bridge.cancel()
+                            return
+                        await asyncio.sleep(0.2)
+
+                monitor_task = asyncio.create_task(_cancel_monitor())
+
+            # 文档讨论是异步作业，允许更长执行时长，避免误超时。
+            wait_seconds = max(600, int(settings.AGENT_MAX_RUNTIME_SECONDS or 7200))
             if hasattr(bridge, "wait"):
                 await asyncio.wait_for(bridge.wait(), timeout=wait_seconds)
         except asyncio.TimeoutError as exc:
@@ -2235,7 +2267,7 @@ async def run_cli_single_turn(
             if monitor_task:
                 monitor_task.cancel()
                 await asyncio.gather(monitor_task, return_exceptions=True)
-            if getattr(bridge, "is_running", lambda: False)():
+            if not session_started or getattr(bridge, "is_running", lambda: False)():
                 await asyncio.shield(bridge.cancel())
 
         if cancelled:
@@ -2258,7 +2290,14 @@ async def run_cli_single_turn(
                 continue
             raise last_error
 
-        return {"text": final_text, "session_id": final_session_id}
+        termination = getattr(bridge, "last_termination", None)
+        return {
+            "text": final_text,
+            "session_id": final_session_id,
+            "termination_confirmed_dead": (
+                bool(termination.confirmed_dead) if termination is not None else None
+            ),
+        }
 
     if last_error:
         raise last_error
@@ -2859,6 +2898,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     session_id=final_session_id or None,
                     agent_backend=thread_backend,
                     finalize=True,
+                    termination_confirmed_dead=result.get("termination_confirmed_dead"),
                 )
                 return
 
@@ -2933,6 +2973,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     session_id=final_session_id or None,
                     agent_backend=thread_backend,
                     finalize=True,
+                    termination_confirmed_dead=result.get("termination_confirmed_dead"),
                 )
                 return
 
@@ -2995,6 +3036,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 session_id=final_session_id or None,
                 agent_backend=thread_backend,
                 finalize=True,
+                termination_confirmed_dead=result.get("termination_confirmed_dead"),
             )
     except AgentAttemptFencedError:
         logger.info("Discarded fenced asset attempt: job={}", job_id)
@@ -3161,15 +3203,38 @@ def _mark_task_chat_job_interrupted_sync(
     run_token: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """中断标记 DB 段（线程内执行，由 run_db_txn 包装）。"""
-    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+    token = str(run_token or "").strip()
+    query = db.query(SddAiJob).filter(
+        SddAiJob.id == job_id,
+        SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        SddAiJob.status == AiJobStatus.RUNNING,
+        SddAiJob.cancel_requested_at.is_(None),
+    )
+    if token:
+        query = query.filter(
+            SddAiJob.run_token == token,
+            SddAiJob.worker_boot_id == WORKER_BOOT_ID,
+        )
+    else:
+        # Direct/unit callers can execute the legacy path before the durable
+        # queue has claimed an attempt.  It is safe only for an entirely
+        # unowned RUNNING row; any claimed attempt still requires its token.
+        query = query.filter(
+            SddAiJob.run_token.is_(None),
+            SddAiJob.worker_boot_id.is_(None),
+        )
+    job = query.with_for_update().first()
     if (
         not job
-        or job.channel != AiJobChannel.TASK_CHAT
-        or job.status in FINAL_STATUSES
-        or job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}
     ):
         return None
     task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
+    if (
+        task
+        and job.session_revision is not None
+        and int(task.session_revision or -1) != int(job.session_revision)
+    ):
+        return None
     return _apply_task_chat_job_interrupted(
         db,
         job,
@@ -3693,6 +3758,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             session_id=str(result.get("session_id") or "") or None,
             agent_backend=task_backend,
             finalize=True,
+            termination_confirmed_dead=result.get("termination_confirmed_dead"),
         )
 
 
@@ -3813,13 +3879,17 @@ def _finalize_task_chat_job_sync(
         and int(task.session_revision or -1) != int(job.session_revision)
     ):
         return None
-    if termination_confirmed_dead is False:
+    if (
+        _has_active_process_ownership(job)
+        and termination_confirmed_dead is not True
+    ):
         job.status = AiJobStatus.ORPHANED
         job.message = "Agent process could not be confirmed dead"
         job.error_message = "Agent process tree remained alive after timeout"
         job.failure_code = "PROCESS_TREE_STILL_ALIVE"
         job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
         job.lease_expires_at = datetime.utcnow()
+        job.orphaned_at = job.orphaned_at or datetime.utcnow()
         db.commit()
         db.refresh(job)
         return serialize_job(job)
@@ -3830,6 +3900,7 @@ def _finalize_task_chat_job_sync(
         payload = _merge_json(job.result_json, {"result_preview": (last_result_text or "")[:1600]})
         job.result_json = payload
         job.finished_at = datetime.utcnow()
+        _clear_process_ownership(job)
         db.commit()
         db.refresh(job)
         return serialize_job(job)
@@ -3931,10 +4002,32 @@ async def _execute_task_baseline_job(job_id: str, task_id: str) -> None:
         raise ValueError("Baseline job has no task")
     attempt = current_agent_attempt()
     dispatch = await run_db(_load_job_dispatch_context_sync, job_id)
+    env_overrides: Dict[str, str] = {}
+    if attempt is not None:
+        env_overrides = {
+            "TRACEFORGE_RUN_TOKEN": attempt.run_token,
+            "AI_JOB_ID": attempt.job_id,
+            "WORKER_BOOT_ID": attempt.worker_boot_id,
+        }
+
+    async def on_process_started(identity: AgentProcessIdentity) -> bool:
+        if getattr(identity, "pid", None) is None:
+            return True
+        if attempt is None:
+            return False
+        return await run_db(
+            _persist_process_identity_sync,
+            attempt.job_id,
+            attempt.run_token,
+            identity,
+        )
+
     payload = await task_cli_state_service.run_bootstrap_for_job(
         task_id,
         run_token=attempt.run_token if attempt else None,
         expected_input_revision=(dispatch or {}).get("input_revision") or None,
+        env_overrides=env_overrides or None,
+        on_process_started=on_process_started,
     )
     await _update_job_state(
         job_id,
@@ -3948,6 +4041,7 @@ async def _execute_task_baseline_job(job_id: str, task_id: str) -> None:
         },
         finalize=True,
         run_token=attempt.run_token if attempt else None,
+        termination_confirmed_dead=payload.get("termination_confirmed_dead"),
     )
 
 
@@ -4006,6 +4100,11 @@ async def _execute_job(job_id: str) -> None:
                     job_id,
                     str(exc),
                     message="AI 执行异常，可继续发送消息恢复",
+                    run_token=(
+                        current_agent_attempt().run_token
+                        if current_agent_attempt()
+                        else None
+                    ),
                 )
             else:
                 await _update_job_state(
@@ -4227,6 +4326,11 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
             job_id,
             str(exc),
             message="Failed to resume job after HITL",
+            run_token=(
+                current_agent_attempt().run_token
+                if current_agent_attempt()
+                else None
+            ),
         )
 
 

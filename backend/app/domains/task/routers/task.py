@@ -5,7 +5,7 @@ Task API routes.
 import asyncio
 from contextlib import AsyncExitStack
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -18,7 +18,7 @@ from app.core.distributed_lock import (
     queue_change_proposal_jobs,
 )
 from app.core.logging import audit_log, bind_task_context, get_logger
-from app.core.offload import run_db_txn
+from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.dependencies import get_current_user, get_db
 from app.engine.workflow_engine import get_engine
 from app.domains.task.models.task import TaskStatus
@@ -130,6 +130,19 @@ def _raise_change_proposal_queue_conflict(exc: LockAcquireTimeout) -> None:
     raise HTTPException(status_code=busy.status_code, detail=str(busy))
 
 
+async def _run_route_db_txn(db: Session, db_bind: Any, body):
+    """Run route DB work on the dependency's bind without carrying its Session."""
+    if db_bind is None:
+        # Lightweight endpoint test doubles do not expose a SQLAlchemy bind.
+        return body(db)
+    return await run_db_txn_with_bind(db_bind, body)
+
+
+def _get_db_bind(db: Session) -> Any:
+    getter = getattr(db, "get_bind", None)
+    return getter() if callable(getter) else None
+
+
 def _raise_session_control_error(exc: task_session_control_service.TaskSessionControlError) -> None:
     raise HTTPException(status_code=int(exc.status_code), detail=str(exc))
 
@@ -156,6 +169,248 @@ def _serialize_asset(asset) -> AssetResponse:
 def _diagnosis_prompt_suffix(task) -> str:
     """问题定位任务：把任务性质与工作契约注入 AI 会话 prompt（见 diagnosis_result_service）。"""
     return diagnosis_result_service.build_diagnosis_prompt_suffix(task)
+
+
+def _load_start_task_context_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    requested_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    if task.status == TaskStatus.PROVISIONING:
+        raise HTTPException(
+            status_code=409,
+            detail="Task is still being provisioned. Please wait until the workspace is ready.",
+        )
+    if task.status == TaskStatus.CODING:
+        raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
+    if task.status == TaskStatus.INTERRUPTED:
+        raise HTTPException(status_code=409, detail=_TASK_INTERRUPTED_MSG)
+    if ai_job_service.find_active_summary_job(db, task.id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="一键总结问题案例进行中，请等待完成或停止后再启动会话",
+        )
+    requested = str(requested_prompt or "").strip()
+    user_display = requested or (task.description or "").strip() or f"Please start task '{task.name}'."
+    prompt = user_display
+    if task.spec_doc_path:
+        abs_path = os.path.abspath(task.spec_doc_path)
+        prompt += (
+            "\n\nPlease read and strictly implement all requirements in the specification file. "
+            f"Absolute path: {abs_path}"
+        )
+    prompt += _diagnosis_prompt_suffix(task)
+    return {
+        "task_id": task.id,
+        "task_name": task.name,
+        "task_description": task.description,
+        "task_spec_doc_path": task.spec_doc_path,
+        "prompt": prompt,
+        "user_display": user_display,
+    }
+
+
+def _start_task_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    prompt: str,
+    user_display: str,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    task.session_id = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
+
+    initial_message = task_service.save_chat_message(
+        db,
+        task_id=task.id,
+        workspace_id=ws_id,
+        creator_id=creator_id,
+        role="user",
+        content=user_display,
+        message_type="text",
+        metadata_json={
+            "source": "task_start",
+            "fresh_session": True,
+            "initial_prompt": True,
+        },
+    )
+    job = ai_job_service.create_task_chat_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=creator_id,
+        prompt_text=prompt,
+        context_json={"source": "task_start", "fresh_session": True},
+        chat_message_id=initial_message.id,
+    )
+    return {
+        "task_id": task.id,
+        "job_id": job.id,
+        "job": ai_job_service.serialize_job(job),
+    }
+
+
+def _create_task_change_proposal_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    summary: Optional[str],
+    risk_notes: Optional[str],
+) -> ChangeProposalResponse:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    workspace = db.query(Workspace).filter(Workspace.id == ws_id).first()
+    proposal = change_proposal_service.create_change_proposal(
+        db,
+        task=task,
+        workspace=workspace,
+        creator_id=creator_id,
+        summary=summary,
+        risk_notes=risk_notes,
+    )
+    # Touch the relationship while this short transaction is active so the
+    # response is a detached DTO, never an ORM instance crossing an await.
+    _ = proposal.repositories
+    return ChangeProposalResponse.model_validate(proposal)
+
+
+def _load_task_change_proposal_context_sync(
+    db: Session, *, ws_id: str, task_id: str
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    return {"task_id": task.id}
+
+
+def _prepare_initialize_sync(
+    db: Session, *, ws_id: str, task_id: str
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    if task.status == TaskStatus.PROVISIONING:
+        raise HTTPException(
+            status_code=409,
+            detail="Task is still being provisioned. Please wait until the workspace is ready.",
+        )
+    if str(task.current_phase or "").strip().upper() == "PREPARE_FAILED":
+        raise HTTPException(
+            status_code=409,
+            detail="Task preparation failed and cannot be initialized. Please create a new task.",
+        )
+    cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+        db,
+        workspace_id=ws_id,
+        task_id=task_id,
+        message="Task initialized with a fresh session",
+    )
+    return {"task_id": task.id, "cancelled_job_ids": cancelled_job_ids}
+
+
+def _apply_initialize_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    skill_ids: Optional[list[str]],
+    keep_deleted_runtime_skills: bool,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    if skill_ids is not None:
+        task_service.replace_task_skills_for_initialize(
+            db,
+            task,
+            workspace_id=ws_id,
+            skill_ids=skill_ids,
+            keep_deleted_runtime_skills=keep_deleted_runtime_skills,
+        )
+    task.retry_count += 1
+    task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    task.session_id = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
+    db.commit()
+    return {
+        "task_id": task.id,
+        "task_name": task.name,
+        "task_description": task.description,
+        "task_spec_doc_path": task.spec_doc_path,
+    }
+
+
+def _load_task_control_context_sync(
+    db: Session, *, ws_id: str, task_id: str
+) -> Dict[str, str]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    return {"task_id": task.id, "workspace_id": task.workspace_id}
+
+
+def _create_diagnosis_doc_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    file_name: Optional[str],
+    file_content: bytes,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        raise HTTPException(
+            status_code=403,
+            detail="Only diagnosis tasks support diagnosis documents",
+        )
+    asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
+        db,
+        task,
+        creator_id=creator_id,
+        file_name=file_name,
+        file_content=file_content,
+        change_note="Uploaded diagnosis document",
+    )
+    db.commit()
+    return {
+        "status": "success",
+        "path": cli_path,
+        "filename": file_name,
+        "asset_id": asset.id,
+        "version_id": version.id,
+    }
 
 
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
@@ -416,46 +671,51 @@ async def create_task_change_proposal(
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to create change proposals",
     )
+    db_bind = _get_db_bind(db)
+    # Permission checks are complete; no dependency Session is allowed to
+    # remain open while distributed locks are awaited.
+    db.close()
 
     try:
         async with queue_change_proposal_jobs(workspace_id=ws_id):
-            async with AsyncExitStack() as stack:
-                try:
-                    await stack.enter_async_context(lock_workspace_repo(ws_id))
-                except LockAcquireTimeout as exc:
-                    _raise_workspace_lock_conflict(exc)
-                try:
-                    await stack.enter_async_context(lock_task(task_id))
-                except LockAcquireTimeout as exc:
-                    _raise_task_lock_conflict(exc)
-
-                task = task_service.get_task(db, task_id, ws_id)
-                if not task:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                _ensure_task_not_baselined(task)
-                engine = get_engine(task.id)
-                if engine and engine.running:
-                    raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-
-                workspace = db.query(Workspace).filter(Workspace.id == ws_id).first()
-                proposal = change_proposal_service.create_change_proposal(
-                    db,
-                    task=task,
-                    workspace=workspace,
-                    creator_id=current_user.id,
-                    summary=data.summary,
-                    risk_notes=data.risk_notes,
-                )
-                audit_log(
-                    action="create_change_proposal",
-                    outcome="success",
-                    resource_type="task_change_proposal",
-                    resource_id=proposal.id,
-                    user_id=current_user.id,
-                    workspace_id=ws_id,
-                    task_id=task.id,
-                )
-                return proposal
+            try:
+                async with lock_workspace_repo(ws_id):
+                    try:
+                        async with lock_task(task_id):
+                            state = await _run_route_db_txn(
+                                db, db_bind,
+                                lambda db: _load_task_change_proposal_context_sync(
+                                    db, ws_id=ws_id, task_id=task_id
+                                )
+                            )
+                            engine = get_engine(state["task_id"])
+                            if engine and engine.running:
+                                raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
+                            proposal = await _run_route_db_txn(
+                                db, db_bind,
+                                lambda db: _create_task_change_proposal_sync(
+                                    db,
+                                    ws_id=ws_id,
+                                    task_id=task_id,
+                                    creator_id=current_user.id,
+                                    summary=data.summary,
+                                    risk_notes=data.risk_notes,
+                                )
+                            )
+                            audit_log(
+                                action="create_change_proposal",
+                                outcome="success",
+                                resource_type="task_change_proposal",
+                                resource_id=proposal.id,
+                                user_id=current_user.id,
+                                workspace_id=ws_id,
+                                task_id=task_id,
+                            )
+                            return proposal
+                    except LockAcquireTimeout as exc:
+                        _raise_task_lock_conflict(exc)
+            except LockAcquireTimeout as exc:
+                _raise_workspace_lock_conflict(exc)
     except LockAcquireTimeout as exc:
         _raise_change_proposal_queue_conflict(exc)
     except (change_proposal_service.ChangeProposalError, git_patch_service.GitPatchError, ValueError) as exc:
@@ -511,88 +771,41 @@ async def start_task(
         WorkspacePermission.START_TASK,
         "No permission to start tasks",
     )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
-
-            existing_engine = get_engine(task.id)
+            requested_prompt = str(start_req.prompt or "").strip() if start_req else ""
+            state = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _load_start_task_context_sync(
+                    db,
+                    ws_id=ws_id,
+                    task_id=task_id,
+                    requested_prompt=requested_prompt,
+                )
+            )
+            existing_engine = get_engine(state["task_id"])
             if existing_engine and existing_engine.running:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-            if task.status == TaskStatus.PROVISIONING:
-                raise HTTPException(status_code=409, detail="Task is still being provisioned. Please wait until the workspace is ready.")
-            if task.status == TaskStatus.CODING:
-                raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-            if task.status == TaskStatus.INTERRUPTED:
-                raise HTTPException(status_code=409, detail=_TASK_INTERRUPTED_MSG)
-            # 会话/总结互斥：总结进行中禁止启动会话
-            if ai_job_service.find_active_summary_job(db, task.id) is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="一键总结问题案例进行中，请等待完成或停止后再启动会话",
-                )
             if existing_engine and not existing_engine.running:
                 await existing_engine.stop()
 
-            requested_prompt = str(start_req.prompt or "").strip() if start_req else ""
-            if requested_prompt:
-                user_display = requested_prompt
-            elif task.description:
-                user_display = task.description.strip()
-            else:
-                user_display = f"Please start task '{task.name}'."
-
-            # Keep the user's visible input separate from internal execution
-            # guidance so the transcript shows exactly what started the task.
-            prompt = user_display
-
-            if task.spec_doc_path:
-                abs_path = os.path.abspath(task.spec_doc_path)
-                prompt += (
-                    "\n\nPlease read and strictly implement all requirements in the specification file. "
-                    f"Absolute path: {abs_path}"
+            result = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _start_task_sync(
+                    db,
+                    ws_id=ws_id,
+                    task_id=task_id,
+                    creator_id=current_user.id,
+                    prompt=state["prompt"],
+                    user_display=state["user_display"],
                 )
-
-            prompt += _diagnosis_prompt_suffix(task)
-
-            task.status = TaskStatus.CODING
-            task.error_message = None
-            task.session_id = None
-            task.interrupt_reason = None
-            task.interrupted_by_id = None
-            task.interrupted_at = None
-            db.commit()
-
-            initial_message = task_service.save_chat_message(
-                db,
-                task_id=task.id,
-                workspace_id=ws_id,
-                creator_id=current_user.id,
-                role="user",
-                content=user_display,
-                message_type="text",
-                metadata_json={
-                    "source": "task_start",
-                    "fresh_session": True,
-                    "initial_prompt": True,
-                },
             )
+            await ai_job_service.enqueue_task_chat_job(result["job_id"])
 
-            job = ai_job_service.create_task_chat_job(
-                db,
-                workspace_id=ws_id,
-                task_id=task.id,
-                creator_id=current_user.id,
-                prompt_text=prompt,
-                context_json={"source": "task_start", "fresh_session": True},
-                chat_message_id=initial_message.id,
-            )
-            await ai_job_service.enqueue_task_chat_job(job.id)
-
-            return {"msg": "Task started", "task_id": task.id, "job": ai_job_service.serialize_job(job)}
+            return {"msg": "Task started", "task_id": result["task_id"], "job": result["job"]}
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -612,77 +825,56 @@ async def initialize_task(
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to initialize tasks",
     )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
-            if task.status == TaskStatus.PROVISIONING:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Task is still being provisioned. Please wait until the workspace is ready.",
-                )
-            # 准备失败的任务不可初始化（历史遗留的 PREPARE_FAILED 记录已无可用工作目录）
-            if str(task.current_phase or "").strip().upper() == "PREPARE_FAILED":
-                raise HTTPException(
-                    status_code=409,
-                    detail="Task preparation failed and cannot be initialized. Please create a new task.",
-                )
-
-            cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
-                db,
-                workspace_id=ws_id,
-                task_id=task_id,
-                message="Task initialized with a fresh session",
+            prepared = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _prepare_initialize_sync(db, ws_id=ws_id, task_id=task_id)
             )
             engine = get_engine(task_id)
             if engine:
                 await engine.stop()
-            for old_job_id in cancelled_job_ids:
+            for old_job_id in prepared["cancelled_job_ids"]:
                 await ai_job_service.publish_job(old_job_id, final=True)
 
-            if body.skill_ids is not None:
-                try:
-                    task_service.replace_task_skills_for_initialize(
+            try:
+                state = await _run_route_db_txn(
+                    db, db_bind,
+                    lambda db: _apply_initialize_sync(
                         db,
-                        task,
-                        workspace_id=ws_id,
+                        ws_id=ws_id,
+                        task_id=task_id,
                         skill_ids=body.skill_ids,
                         keep_deleted_runtime_skills=body.keep_deleted_runtime_skills is not False,
                     )
-                    db.refresh(task)
-                except ValueError as exc:
-                    raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
-
-            task.retry_count += 1
-            task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
-            task.status = TaskStatus.CODING
-            task.error_message = None
-            task.session_id = None
-            task.interrupt_reason = None
-            task.interrupted_by_id = None
-            task.interrupted_at = None
-            db.commit()
-            db.refresh(task)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
 
             # 会话窗口只展示用户输入部分；规格文件指引/诊断后缀等内置提示词只随作业发给 agent
             requested_prompt = str(body.prompt or "").strip()
-            user_display = requested_prompt or (task.description or "").strip() or f"Please start task '{task.name}'."
+            user_display = requested_prompt or (state["task_description"] or "").strip() or f"Please start task '{state['task_name']}'."
             prompt = user_display
-            if task.spec_doc_path:
-                abs_path = os.path.abspath(task.spec_doc_path)
+            if state["task_spec_doc_path"]:
+                abs_path = os.path.abspath(state["task_spec_doc_path"])
                 prompt += (
                     "\n\nPlease read and strictly implement all requirements in the specification file. "
                     f"Absolute path: {abs_path}"
                 )
-
-            prompt += _diagnosis_prompt_suffix(task)
+            # The task DTO is reconstructed inside the short transaction so
+            # the prompt still uses the task-specific diagnosis contract.
+            prompt += await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _diagnosis_prompt_suffix(task_service.get_task(db, task_id, ws_id))
+            )
 
             init_reason_text = (body.reason or "").strip()
             # 同步落库 off-loop（线程内自建 session，含通知生成）
-            await run_db_txn(
+            await _run_route_db_txn(
+                db, db_bind,
                 lambda db: task_service.save_chat_message(
                     db,
                     task_id,
@@ -707,8 +899,11 @@ async def initialize_task(
                 skip_checkpoint=True,
             )
             await ai_job_service.enqueue_task_chat_job(created.job_id)
-            job_payload = await run_db_txn(
-                lambda db: ai_job_service.serialize_job(db.get(ai_job_service.SddAiJob, created.job_id))
+            job_payload = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: ai_job_service.serialize_job(
+                    db.get(ai_job_service.SddAiJob, created.job_id)
+                )
             )
 
             return {"msg": "Task initialized", "job": job_payload}
@@ -901,16 +1096,21 @@ async def interrupt_task(
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to interrupt tasks",
     )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
+            state = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _load_task_control_context_sync(
+                    db, ws_id=ws_id, task_id=task_id
+                )
+            )
             return await task_session_control_service.interrupt_task(
                 db,
-                task=task,
+                task_id=state["task_id"],
+                workspace_id=state["workspace_id"],
                 actor_user_id=current_user.id,
                 reason=body.reason,
             )
@@ -935,13 +1135,17 @@ async def resume_interrupted_task(
         WorkspacePermission.START_TASK,
         "No permission to resume tasks",
     )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
+            await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _load_task_control_context_sync(
+                    db, ws_id=ws_id, task_id=task_id
+                )
+            )
             return await task_session_control_service.resume_interrupted_task(
                 task_id=task_id,
                 actor_user_id=current_user.id,
@@ -1416,36 +1620,26 @@ async def upload_task_diagnosis_doc(
         WorkspacePermission.UPLOAD_TASK_SPEC,
         "No permission to upload diagnosis documents",
     )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
+            content = await file.read()
+            if len(content) > 20 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
             async with lock_task(task_id):
-                task = task_service.get_task(db, task_id, ws_id)
-                if not task:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                _ensure_task_not_baselined(task)
-                if getattr(task, "task_type", None) != "DIAGNOSIS":
-                    raise HTTPException(status_code=403, detail="Only diagnosis tasks support diagnosis documents")
-                content = await file.read()
-                if len(content) > 20 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
-                asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
-                    db,
-                    task,
-                    creator_id=current_user.id,
-                    file_name=file.filename,
-                    file_content=content,
-                    change_note="Uploaded diagnosis document",
+                return await _run_route_db_txn(
+                    db, db_bind,
+                    lambda session: _create_diagnosis_doc_sync(
+                        session,
+                        ws_id=ws_id,
+                        task_id=task_id,
+                        creator_id=current_user.id,
+                        file_name=file.filename,
+                        file_content=content,
+                    )
                 )
-                db.commit()
-                db.refresh(asset)
-                return {
-                    "status": "success",
-                    "path": cli_path,
-                    "filename": file.filename,
-                    "asset_id": asset.id,
-                    "version_id": version.id,
-                }
         except LockAcquireTimeout as exc:
             _raise_task_lock_conflict(exc)
         except HTTPException:

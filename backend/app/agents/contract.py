@@ -115,6 +115,9 @@ class AgentRunResult:
     duration_ms: int | None = None
     return_code: int | None = None
     raw_trace: str | None = None
+    # For locally supervised processes this is the supervisor's authoritative
+    # process-tree death result.  Server backends leave it unset.
+    termination_confirmed_dead: bool | None = None
     # Provider-specific identifiers/checkpoint facts.  Values must be
     # metadata only; prompt/result text belongs to the normal job/message rows.
     metadata: dict[str, Any] = field(default_factory=dict)

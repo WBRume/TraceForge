@@ -17,11 +17,14 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "agent_events"
 
 from app.agents import AgentEvent, AgentRunRequest
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
+from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
 from app.agents.adapters.dsh.event_mapper import map_dsh_event
 from app.agents.adapters.mock.mock_adapter import MockAdapter
 from app.agents.adapters.opencode.event_mapper import map_opencode_event
 from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.registry import create_agent_backend
+from app.agents.process_supervisor import TerminationResult
+from app.config import settings
 
 
 class MockAdapterTest(unittest.IsolatedAsyncioTestCase):
@@ -56,6 +59,117 @@ class MockAdapterTest(unittest.IsolatedAsyncioTestCase):
         await adapter.run(AgentRunRequest(prompt="x", project_path=os.getcwd()), sink)
 
         self.assertFalse(any(e.type == "text_delta" for e in events))
+
+
+class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
+    async def _start_with_never_ready_callback(self, *, cancel_call=True):
+        adapter = ClaudeCodeAdapter()
+        bridge = MagicMock()
+        bridge.cancel = AsyncMock(
+            return_value=TerminationResult(confirmed_dead=True, root_return_code=None)
+        )
+        bridge.is_running.return_value = True
+        adapter._bridge = bridge
+        captured = {}
+        active = [True]
+
+        async def fake_run(_backend, request, _sink):
+            captured["request"] = request
+            await asyncio.sleep(60)
+
+        async def on_started(_identity):
+            return active[0]
+
+        with patch("app.agents.run_logging.run_agent_backend_with_logging", new=fake_run), \
+             patch.object(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 0.01), \
+             patch.object(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 0.01):
+            with self.assertRaises(asyncio.TimeoutError):
+                await adapter.start_session(
+                    prompt="hello",
+                    project_path=os.getcwd(),
+                    event_callback=AsyncMock(),
+                    on_process_started=on_started,
+                )
+
+        if cancel_call:
+            bridge.cancel.assert_awaited_once()
+        self.assertIsNone(adapter._legacy_run_task)
+        return adapter, bridge, captured, active
+
+    async def test_start_callback_timeout_cancels_bridge_and_legacy_task(self):
+        await self._start_with_never_ready_callback()
+
+    async def test_start_callback_cancellation_cleans_process_tree(self):
+        adapter = ClaudeCodeAdapter()
+        bridge = MagicMock()
+        bridge.cancel = AsyncMock(
+            return_value=TerminationResult(confirmed_dead=True, root_return_code=None)
+        )
+        bridge.is_running.return_value = True
+        adapter._bridge = bridge
+
+        async def fake_run(_backend, _request, _sink):
+            await asyncio.sleep(60)
+
+        with patch("app.agents.run_logging.run_agent_backend_with_logging", new=fake_run), \
+             patch.object(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 0.01):
+            task = asyncio.create_task(
+                adapter.start_session(
+                    prompt="hello",
+                    project_path=os.getcwd(),
+                    event_callback=AsyncMock(),
+                    on_process_started=lambda _identity: True,
+                )
+            )
+            await asyncio.sleep(0.01)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        bridge.cancel.assert_awaited_once()
+        self.assertIsNone(adapter._legacy_run_task)
+
+    async def test_start_callback_late_success_cannot_revive_attempt(self):
+        active = True
+        adapter, _bridge, captured, active = await self._start_with_never_ready_callback()
+        request = captured["request"]
+        active[0] = False
+        accepted = await request.on_process_started(object())
+        self.assertFalse(accepted)
+        self.assertIsNone(adapter._legacy_run_task)
+
+    async def test_run_cli_single_turn_cleans_up_when_start_session_raises(self):
+        from app.domains.ai.services import ai_job_service
+
+        class FailingBridge:
+            def __init__(self):
+                self.cancelled = False
+                self.last_termination = None
+
+            async def start_session(self, **_kwargs):
+                self.cancelled = False
+                raise RuntimeError("startup failed")
+
+            async def cancel(self):
+                self.cancelled = True
+                self.last_termination = TerminationResult(
+                    confirmed_dead=True,
+                    root_return_code=None,
+                )
+                return self.last_termination
+
+            def is_running(self):
+                return not self.cancelled
+
+        bridge = FailingBridge()
+        with patch.object(ai_job_service, "create_cli_bridge", return_value=bridge):
+            with self.assertRaises(RuntimeError):
+                await ai_job_service.run_cli_single_turn(
+                    "hello",
+                    os.getcwd(),
+                    max_attempts=1,
+                )
+        self.assertTrue(bridge.cancelled)
 
 
 class ClaudeEventMapperTest(unittest.TestCase):
