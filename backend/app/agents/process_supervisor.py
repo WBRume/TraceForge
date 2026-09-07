@@ -14,10 +14,12 @@ import ctypes.wintypes
 import os
 import signal
 import subprocess
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -27,6 +29,8 @@ except ImportError:  # pragma: no cover - packaging/runtime guard
 from app.core.logging import get_logger
 from app.agents.contract import (
     AgentProcessIdentity,
+    AgentStopResult,
+    EXECUTION_KIND_LOCAL_PROCESS,
     record_attempt_process_started,
     record_attempt_termination,
 )
@@ -177,6 +181,117 @@ class ProcessWaitResult:
     termination: TerminationResult
 
 
+def agent_stop_result_from_termination(
+    termination: Optional[TerminationResult],
+) -> AgentStopResult:
+    """Convert a local supervisor termination result to the unified stop protocol.
+
+    ``None`` 表示没有可停止的本地进程（从未启动）：stop_acknowledged=True 仅
+    表示停止流程已执行；终态判定仍取决于 death 证据（此处为 None）。
+    """
+    if termination is None:
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+            stop_acknowledged=True,
+            local_process_started=False,
+            local_process_confirmed_dead=None,
+        )
+    confirmed = getattr(termination, "confirmed_dead", None)
+    return AgentStopResult(
+        execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+        stop_acknowledged=True,
+        local_process_started=True,
+        local_process_confirmed_dead=None if confirmed is None else bool(confirmed),
+        failure_code=getattr(termination, "error_code", None),
+        error_message=getattr(termination, "error_message", None),
+        remaining_pids=tuple(getattr(termination, "remaining_pids", ()) or ()),
+    )
+
+
+@dataclass(frozen=True)
+class ProcessTreeSnapshot:
+    """One off-loop process-tree inspection sample (doc §12)."""
+
+    live_descendant_pids: tuple[int, ...] = ()
+    root_return_code: Optional[int] = None
+    error: bool = False
+
+
+# 独立的小型 inspection executor：高频 psutil 树扫描绝不运行在主事件循环
+# 中，也不复用 DB executor（doc §12.2）。
+_INSPECTION_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_INSPECTION_EXECUTOR_LOCK = threading.Lock()
+
+
+def _monitor_interval_seconds() -> float:
+    try:
+        from app.config import settings
+
+        return max(
+            0.05,
+            float(getattr(settings, "AGENT_PROCESS_MONITOR_INTERVAL_SECONDS", 0.25) or 0.25),
+        )
+    except Exception:
+        return 0.25
+
+
+def _inspection_executor() -> ThreadPoolExecutor:
+    global _INSPECTION_EXECUTOR
+    with _INSPECTION_EXECUTOR_LOCK:
+        if _INSPECTION_EXECUTOR is None:
+            try:
+                from app.config import settings
+
+                workers = max(1, int(getattr(settings, "AGENT_PROCESS_INSPECTION_WORKERS", 2) or 2))
+            except Exception:
+                workers = 2
+            _INSPECTION_EXECUTOR = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="agent-process-inspection",
+            )
+    return _INSPECTION_EXECUTOR
+
+
+def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTreeSnapshot:
+    """Pure synchronous psutil snapshot; never call directly from the event loop."""
+    root_return_code = getattr(managed.process, "returncode", None)
+    if psutil is None:
+        return ProcessTreeSnapshot(root_return_code=root_return_code)
+    live: set[int] = set()
+    try:
+        root = psutil.Process(managed.pid)
+        for child in root.children(recursive=True):
+            live.add(int(child.pid))
+    except (psutil.Error, OSError, ValueError):
+        pass
+    for pid in managed.known_descendant_pids:
+        if pid in live:
+            continue
+        try:
+            proc = psutil.Process(int(pid))
+            if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                live.add(int(pid))
+        except (psutil.Error, OSError, ValueError):
+            continue
+    return ProcessTreeSnapshot(
+        live_descendant_pids=tuple(sorted(live)),
+        root_return_code=root_return_code,
+    )
+
+
+async def run_process_inspection(
+    fn: Callable[["ManagedAgentProcess"], ProcessTreeSnapshot],
+    managed: "ManagedAgentProcess",
+) -> ProcessTreeSnapshot:
+    """Run one tree inspection in the bounded executor (never on the loop).
+
+    The monitor awaits the result, so a single managed process can never have
+    more than one outstanding inspection and samples do not queue up.
+    """
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_inspection_executor(), fn, managed)
+
+
 def _windows_job_object() -> Optional[int]:
     """Create a kill-on-close Windows Job Object when available."""
     if os.name != "nt":
@@ -265,10 +380,30 @@ class ManagedAgentProcess:
     # 重复 close/interrupt 直接返回权威死亡证明（doc 4.4）。
     _termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _last_termination: Optional[TerminationResult] = None
+    _monitor_wake: Optional[asyncio.Event] = None
 
     @property
     def pid(self) -> int:
         return int(self.process.pid)
+
+    @property
+    def monitor_wake_event(self) -> asyncio.Event:
+        """Lazily-created wake event (must be created inside the loop)."""
+        if self._monitor_wake is None:
+            self._monitor_wake = asyncio.Event()
+        return self._monitor_wake
+
+    def request_immediate_inspection(self) -> None:
+        """Ask the monitor for an out-of-band tree inspection (termination flow)."""
+        if self._monitor_wake is not None:
+            self._monitor_wake.set()
+
+    def apply_snapshot(self, snapshot: ProcessTreeSnapshot) -> None:
+        """Merge one executor-produced tree sample into tracked descendants."""
+        if snapshot is None or snapshot.error:
+            # A failed sample must never erase known descendants.
+            return
+        self.known_descendant_pids = set(snapshot.live_descendant_pids)
 
     @property
     def process_started_at(self) -> Optional[float]:
@@ -550,6 +685,8 @@ class ManagedAgentProcess:
         tree_kill_used = False
         error_code: Optional[str] = None
         error_message: Optional[str] = None
+        # 终止流程立即触发一次树采样，不必等待普通监控周期（doc §12.2）。
+        self.request_immediate_inspection()
         try:
             root_alive = self.process.returncode is None
             tree_alive = self._tree_has_live_processes()
@@ -943,21 +1080,35 @@ class ProcessSupervisor:
 
     @staticmethod
     async def _monitor_tree(managed: ManagedAgentProcess) -> None:
+        """Periodic tree sampling in the bounded inspection executor.
+
+        psutil 的 recursive children / pid_exists 扫描绝不在事件循环上执行；
+        每个受管进程同一时刻最多一个在飞 inspection，上一次采样未结束时不
+        排队累积下一次（doc §12）。
+        """
+        interval = _monitor_interval_seconds()
         try:
             while not managed.stop_monitor:
                 try:
-                    root = psutil.Process(managed.pid) if psutil is not None else None
-                    if root is not None:
-                        for child in root.children(recursive=True):
-                            managed.known_descendant_pids.add(int(child.pid))
-                    managed.known_descendant_pids = {
-                        pid for pid in managed.known_descendant_pids if psutil.pid_exists(pid)
-                    }
-                    if managed.process.returncode is not None and not managed.known_descendant_pids:
-                        return
+                    snapshot = await run_process_inspection(
+                        inspect_process_tree_snapshot, managed
+                    )
+                except asyncio.CancelledError:
+                    raise
                 except Exception:
+                    snapshot = ProcessTreeSnapshot(error=True)
+                managed.apply_snapshot(snapshot)
+                if (
+                    getattr(managed.process, "returncode", None) is not None
+                    and not managed.known_descendant_pids
+                ):
+                    return
+                wake = managed.monitor_wake_event
+                try:
+                    await asyncio.wait_for(wake.wait(), timeout=interval)
+                    wake.clear()
+                except asyncio.TimeoutError:
                     pass
-                await asyncio.sleep(0.05)
         except asyncio.CancelledError:
             raise
 
@@ -1480,9 +1631,13 @@ process_supervisor = ProcessSupervisor()
 __all__ = [
     "ManagedAgentProcess",
     "ProcessSupervisor",
+    "ProcessTreeSnapshot",
     "ProcessWaitResult",
     "TerminationResult",
+    "agent_stop_result_from_termination",
     "containment_capability",
     "containment_id_for_run_token",
+    "inspect_process_tree_snapshot",
     "process_supervisor",
+    "run_process_inspection",
 ]

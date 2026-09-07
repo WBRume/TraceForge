@@ -660,7 +660,9 @@ class DshServerAdapter(AgentBackend):
             except AgentTimeoutError:
                 prompt_task.cancel()
                 consume_task.cancel()
-                await self.cancel(session_id=session_id)
+                from app.agents.contract import record_attempt_remote_stop
+
+                record_attempt_remote_stop(await self.cancel(session_id=session_id))
                 await asyncio.gather(prompt_task, consume_task, return_exceptions=True)
                 raise
             except asyncio.CancelledError as exc:
@@ -703,21 +705,64 @@ class DshServerAdapter(AgentBackend):
         finally:
             self._running = False
 
-    async def interrupt(self, run_id: str | None = None) -> None:
-        if self._session_id:
-            try:
-                await self._rpc("session.cancel", {"sessionId": self._session_id})
-            except AgentError:
-                pass
+    async def interrupt(self, run_id: str | None = None) -> "AgentStopResult":
+        """Remote interrupt: only a successful ``session.cancel`` RPC response
+        counts as acknowledged (doc §5.2); errors/timeouts/disconnects are
+        returned as structured failures, never swallowed."""
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
-    async def cancel(self, run_id: str | None = None, *, session_id: str | None = None) -> None:
+        if not self._session_id:
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="no active DSH session to cancel",
+            )
+        try:
+            await self._rpc("session.cancel", {"sessionId": self._session_id})
+        except Exception as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="DSH_CANCEL_RPC_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
+
+    async def cancel(
+        self, run_id: str | None = None, *, session_id: str | None = None
+    ) -> "AgentStopResult":
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+
         sid = session_id or self._session_id
-        if sid:
-            try:
-                await self._rpc("session.cancel", {"sessionId": sid})
-            except AgentError:
-                pass
         self._running = False
+        if not sid:
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="no active DSH session to cancel",
+            )
+        try:
+            await self._rpc("session.cancel", {"sessionId": sid})
+        except Exception as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="DSH_CANCEL_RPC_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
 
     async def unload_session(self, session_id: str | None = None) -> None:
         """Dispose the DSH Web Host's in-memory Agent for a cold disk restore.

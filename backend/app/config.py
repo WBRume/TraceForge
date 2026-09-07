@@ -164,6 +164,10 @@ class Settings(BaseSettings):
     WORKER_SERVICE_NAME: str = "traceforge-api"
     WORKER_INDEX: str = "0"
     AGENT_TERMINATION_TIMEOUT_SECONDS: float = 30.0
+    # 进程树监控采样运行在独立的小型 executor 中，绝不阻塞主事件循环
+    # （doc §12.2）。
+    AGENT_PROCESS_INSPECTION_WORKERS: int = 2
+    AGENT_PROCESS_MONITOR_INTERVAL_SECONDS: float = 0.25
 
     # WebSocket graceful shutdown budget.  A disconnected peer must not hold
     # application shutdown indefinitely.

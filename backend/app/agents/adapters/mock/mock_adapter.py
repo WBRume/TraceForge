@@ -11,6 +11,8 @@ from app.agents.contract import (
     AgentRunRequest,
     AgentRunResult,
     AgentEventSink,
+    AgentStopResult,
+    EXECUTION_KIND_REMOTE_SESSION,
 )
 from app.agents.events import AgentEvent
 
@@ -98,11 +100,20 @@ class MockAdapter(AgentBackend):
     async def probe(self) -> str:
         return "Mock backend is available"
 
-    async def interrupt(self, run_id: str | None = None) -> None:
+    async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         self._running = False
+        # mock 无本地受监管进程，也没有真实服务端回合：停止流程必然完成。
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
 
-    async def cancel(self, run_id: str | None = None) -> None:
+    async def cancel(self, run_id: str | None = None) -> AgentStopResult:
         self._running = False
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

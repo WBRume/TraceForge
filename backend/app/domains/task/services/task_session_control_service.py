@@ -286,10 +286,39 @@ async def interrupt_task(
         termination_reason = termination_error or str(
             getattr(termination, "error_message", "") or reason_text
         )
-        confirmed_dead = termination_error is None and (
-            (termination is None and not run_token)
-            or bool(termination is not None and getattr(termination, "confirmed_dead", False))
+        # 统一停止结果协议（doc §5）：REMOTE_SESSION 以 stop_acknowledged 为
+        # 准；LOCAL_PROCESS 以 local_process_confirmed_dead 为准。旧 bridge 的
+        # TerminationResult 仍兼容（confirmed_dead 字段）。
+        from app.agents.contract import AgentStopResult
+        from app.domains.ai.services.ai_job_convergence_service import (
+            evidence_from_stop_result,
         )
+
+        if isinstance(termination, AgentStopResult):
+            if termination.execution_kind == "REMOTE_SESSION":
+                evidence = evidence_from_stop_result(
+                    termination,
+                    remote_session_started=bool(engine.session_id),
+                    execution_kind="REMOTE_SESSION",
+                )
+            else:
+                evidence = evidence_from_stop_result(termination, execution_kind="LOCAL_PROCESS")
+            confirmed_dead = termination_error is None and (
+                (
+                    termination.execution_kind == "REMOTE_SESSION"
+                    and termination.stop_acknowledged is True
+                )
+                or (
+                    termination.execution_kind == "LOCAL_PROCESS"
+                    and bool(termination.local_process_confirmed_dead)
+                )
+            )
+        else:
+            confirmed_dead = termination_error is None and (
+                (termination is None and not run_token)
+                or bool(termination is not None and getattr(termination, "confirmed_dead", False))
+            )
+            evidence = None
         if run_token:
             await ai_job_service.finalize_attempt_termination(
                 prepared["job_id"],
@@ -301,6 +330,7 @@ async def interrupt_task(
                         "USER_INTERRUPT" if confirmed_dead else "PROCESS_TREE_UNKNOWN"
                     )
                 ),
+                evidence=evidence,
             )
         else:
             await run_interrupt_txn(
@@ -318,15 +348,7 @@ async def interrupt_task(
             )
         )
 
-        await ai_job_service.publish_job(
-            prepared["job_id"],
-            final=bool(
-                state["job"]
-                and state["job"].get("status") in {
-                    item.value for item in ai_job_service.FINAL_STATUSES
-                }
-            ),
-        )
+        await ai_job_service.publish_job(prepared["job_id"])
         if task is not None:
             await _broadcast_task_event("task_interrupted", task, state["job"])
         else:
@@ -348,10 +370,8 @@ async def interrupt_task(
         )
     )
     for job_id in state["cancelled_ids"]:
-        await ai_job_service.publish_job(
-            job_id,
-            final=True,
-        )
+        # final 判定由 publish_job 依据 payload 状态计算（doc §9.2）。
+        await ai_job_service.publish_job(job_id)
     if task is not None:
         await _broadcast_task_event("task_interrupted", task, state["job"])
     else:
@@ -514,7 +534,7 @@ async def resume_interrupted_task(
 
     finalized = await run_db_txn(_finalize_resume_sync)
 
-    await ai_job_service.publish_job(prepared["old_job_id"], final=True)
+    await ai_job_service.publish_job(prepared["old_job_id"])
     await task_ws_manager.send_message_to_room(
         task_id,
         WSMessage(type="task_resumed", payload=finalized["task_payload"]),

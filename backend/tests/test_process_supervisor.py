@@ -597,3 +597,89 @@ def test_stop_attempt_handles_all_processes_under_run_token():
             await process_supervisor.drain_cleanup_tasks(timeout=5.0)
 
     asyncio.run(_run())
+
+
+# ────────────────────── doc §14.6 事件循环延迟 ──────────────────────
+
+
+class _FakeManaged:
+    """Monitor-loop double that routes psutil sampling through the executor."""
+
+    def __init__(self, pid: int):
+        self.process = SimpleNamespace(returncode=None)
+        self.pid = pid
+        self.known_descendant_pids: set[int] = set()
+        self.stop_monitor = False
+        self._wake = None
+        self.snapshots = 0
+
+    @property
+    def monitor_wake_event(self):
+        if self._wake is None:
+            self._wake = asyncio.Event()
+        return self._wake
+
+    def request_immediate_inspection(self):
+        if self._wake is not None:
+            self._wake.set()
+
+    def apply_snapshot(self, snapshot):
+        self.snapshots += 1
+        self.known_descendant_pids = set(snapshot.live_descendant_pids)
+
+
+def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
+    """3-5 个受管进程持续采样时 heartbeat 延迟必须保持在阈值内。"""
+    from app.agents import process_supervisor as ps
+
+    if ps.psutil is None:
+        pytest.skip("psutil is required for the event-loop lag test")
+
+    async def _run():
+        child = await asyncio.create_subprocess_exec(
+            sys.executable, "-c", "import time; time.sleep(30)",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        managed_items = [_FakeManaged(child.pid)]
+        # 其余使用不存在的 PID：psutil 快速失败路径同样走 executor。
+        for index in range(1, 5):
+            managed_items.append(_FakeManaged(999999 - index))
+        tasks = [
+            asyncio.create_task(ps.ProcessSupervisor._monitor_tree(item))
+            for item in managed_items
+        ]
+        max_gap = 0.0
+        last_beat = asyncio.get_running_loop().time()
+        deadline = last_beat + 0.8
+        try:
+            while asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.02)
+                now = asyncio.get_running_loop().time()
+                max_gap = max(max_gap, now - last_beat)
+                last_beat = now
+            # inspection executor 队列不得随时间增长（worker 数为上界）。
+            executor = ps._inspection_executor()
+            queue_size = executor._work_queue.qsize()
+            assert queue_size <= ps._inspection_executor()._max_workers + 1
+        finally:
+            for item in managed_items:
+                item.stop_monitor = True
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            child.kill()
+            await child.wait()
+        # monitor cancel 后不得遗留 inspection future：所有采样任务结束，
+        # 且受管进程都收到过采样（executor 真实执行过）。
+        assert all(task.done() for task in tasks)
+        assert all(item.snapshots > 0 for item in managed_items)
+        return max_gap
+
+    monkeypatch.setattr(
+        "app.config.settings.AGENT_PROCESS_MONITOR_INTERVAL_SECONDS", 0.05
+    )
+    max_gap = asyncio.run(_run())
+    # 主事件循环 heartbeat 延迟阈值：远小于采样周期 * 受管进程数。
+    assert max_gap < 0.35, f"event loop stalled: max heartbeat gap={max_gap:.3f}s"

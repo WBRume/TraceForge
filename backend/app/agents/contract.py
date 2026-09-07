@@ -28,6 +28,12 @@ class AgentProcessIdentity:
     containment_id: str | None = None
 
 
+ExecutionKind = Literal["LOCAL_PROCESS", "REMOTE_SESSION"]
+
+EXECUTION_KIND_LOCAL_PROCESS: ExecutionKind = "LOCAL_PROCESS"
+EXECUTION_KIND_REMOTE_SESSION: ExecutionKind = "REMOTE_SESSION"
+
+
 @dataclass(frozen=True)
 class AgentAttemptContext:
     """不可变的执行 attempt 归属，作为所有 Agent 回调的 fence。"""
@@ -39,6 +45,50 @@ class AgentAttemptContext:
     worker_id: str
     worker_boot_id: str
     attempt_count: int
+    # 显式执行类别（doc 6.3/C4）：必须来自 durable job 行声明的
+    # process_execution_kind，禁止通过“PID 是否为空”推断。
+    execution_kind: ExecutionKind = EXECUTION_KIND_LOCAL_PROCESS
+
+
+@dataclass(frozen=True)
+class AgentStopResult:
+    """唯一停止结果协议（doc 5）。
+
+    - LOCAL_PROCESS：``stop_acknowledged`` 仅表示停止流程已执行；能否终态
+      取决于 ``local_process_confirmed_dead``。
+    - REMOTE_SESSION：``stop_acknowledged=True`` 必须来自服务端明确成功
+      响应；禁止把方法未抛异常或返回 ``None`` 推断为成功。
+    - 所有失败必须返回结构化结果；adapter 禁止吞掉异常后返回 ``None``。
+    """
+
+    execution_kind: ExecutionKind
+    stop_acknowledged: bool
+    local_process_started: bool = False
+    local_process_confirmed_dead: bool | None = None
+    failure_code: str | None = None
+    error_message: str | None = None
+    remaining_pids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class AttemptFinalizerEvidence:
+    """唯一收敛输入（doc 6.1）：所有 finalizer 只接收该对象。
+
+    ``termination_confirmed_dead`` 只对 LOCAL_PROCESS 有意义；
+    ``remote_stop_acknowledged`` 只对 REMOTE_SESSION 有意义。
+    failure code / remaining PIDs 仅作诊断，不得反向改变死亡状态。
+    """
+
+    execution_kind: ExecutionKind
+    process_started: bool
+    termination_confirmed_dead: bool | None
+    remote_stop_acknowledged: bool | None
+    failure_code: str | None
+    error_message: str | None
+    remaining_pids: tuple[int, ...]
+    source: str
+    remote_session_started: bool = False
+    provider_outcome_seen: bool = False
 
 
 _CURRENT_ATTEMPT: ContextVar[AgentAttemptContext | None] = ContextVar(
@@ -131,6 +181,24 @@ class AgentAttemptRuntimeState:
     # 才会把它计入 process_started；孤立的终止结果不得伪造“启动过进程”。
     unidentified: ProcessTerminationEvidence | None = None
     _unidentified_started: bool = False
+    # REMOTE_SESSION 停止证据（attempt-local，唯一槽位，最新覆盖）。
+    remote_stop_result: "AgentStopResult | None" = None
+    # 远程会话是否已经建立（session_started 已发生）；用于把“从未建立远程
+    # 会话”的取消与“会话存在但停止未被确认”区分开。
+    remote_session_started: bool = False
+
+    def record_remote_stop(self, stop_result: "AgentStopResult | None") -> None:
+        """Record the attempt's remote stop acknowledgement (latest wins)."""
+        if stop_result is None:
+            return
+        self.remote_stop_result = stop_result
+
+    @property
+    def remote_stop_acknowledged(self) -> bool | None:
+        stop = self.remote_stop_result
+        if stop is None:
+            return None
+        return bool(stop.stop_acknowledged)
 
     def record_process_started(
         self, identity: "AgentProcessIdentity | None" = None
@@ -214,6 +282,15 @@ class AgentAttemptRuntimeState:
         evidence.error = evidence.error or error
         if not evidence.remaining_pids and remaining_pids:
             evidence.remaining_pids = tuple(remaining_pids)
+
+    @property
+    def has_process_evidence(self) -> bool:
+        """Whether this runtime carries any process/stop evidence at all.
+
+        不能仅通过 ``process_started`` 判断：兼容 bridge 可能只有停止证据
+        （孤立 termination 记录）而没有 STARTED 登记。
+        """
+        return bool(self.processes) or self.unidentified is not None
 
     @property
     def process_started(self) -> bool:
@@ -338,6 +415,26 @@ def record_attempt_termination(
     )
 
 
+def record_attempt_remote_stop(stop_result: "AgentStopResult | None") -> None:
+    """Record a REMOTE_SESSION stop acknowledgement into the bound attempt.
+
+    Only a structured ``AgentStopResult`` is accepted: a bare ``None`` (the
+    old "cancel returned nothing" shape) must never be read as success.
+    """
+    if stop_result is None:
+        return
+    state = _CURRENT_ATTEMPT_RUNTIME.get()
+    if state is not None:
+        state.record_remote_stop(stop_result)
+
+
+def record_attempt_remote_session_started() -> None:
+    """Mark that the remote session for this attempt has been established."""
+    state = _CURRENT_ATTEMPT_RUNTIME.get()
+    if state is not None:
+        state.remote_session_started = True
+
+
 @dataclass
 class SkillRef:
     """平台 Skill 引用。materialize_to 只是 hint，由 adapter 决定实际布局。"""
@@ -371,6 +468,9 @@ class AgentRunRequest:
     permission_mode: str = "default"
     metadata: dict[str, Any] = field(default_factory=dict)
     on_process_started: AgentProcessStartedCallback | None = None
+    # 显式执行类别（doc 7 数据流链路）：与 backend capability 声明一致，
+    # 由 bridge/engine 填充；不得通过“是否有本地 PID”推断。
+    execution_kind: ExecutionKind = EXECUTION_KIND_LOCAL_PROCESS
 
 
 @dataclass
@@ -442,13 +542,13 @@ class AgentBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def interrupt(self, run_id: str | None = None) -> None:
-        """中断当前回合，尽量保留会话。"""
+    async def interrupt(self, run_id: str | None = None) -> "AgentStopResult":
+        """中断当前回合，尽量保留会话；必须返回唯一停止结果。"""
         raise NotImplementedError
 
     @abstractmethod
-    async def cancel(self, run_id: str | None = None) -> None:
-        """取消当前回合。"""
+    async def cancel(self, run_id: str | None = None) -> "AgentStopResult":
+        """取消当前回合；必须返回唯一停止结果（doc 5）。"""
         raise NotImplementedError
 
     @abstractmethod

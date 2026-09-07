@@ -31,6 +31,7 @@ from app.agents import (
     AgentEvent,
     AgentRunRequest,
     AgentRunResult,
+    AgentStopResult,
     AgentTimeoutError,
 )
 from app.agents.run_logging import run_agent_backend_with_logging
@@ -1157,6 +1158,11 @@ class WorkflowEngine:
             if event_type != "session_started":
                 await self._handle_model_observation(payload.get("model"))
             if event_type == "session_started":
+                # 远程会话建立标记：供取消/收尾区分“从未建立会话”与
+                # “会话存在但停止未被确认”（doc §8.3 REMOTE 分支）。
+                from app.agents.contract import record_attempt_remote_session_started
+
+                record_attempt_remote_session_started()
                 sid = str(payload.get("provider_session_id") or "")
                 if sid:
                     if self.session_id and self.session_id != sid:
@@ -1764,6 +1770,13 @@ class WorkflowEngine:
                         project_path=project_path,
                         session_id=self.session_id,
                         env=env_overrides,
+                        # 显式执行类别（doc §7 数据流）：与 backend capability
+                        # 声明一致，不得通过“是否有本地 PID”推断。
+                        execution_kind=getattr(
+                            getattr(self.cli, "capabilities", None),
+                            "execution_kind",
+                            "LOCAL_PROCESS",
+                        ) or "LOCAL_PROCESS",
                         timeout_seconds=float(
                             getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
                         ),
@@ -1895,7 +1908,11 @@ class WorkflowEngine:
             await self.run(prompt)
 
     async def interrupt(self):
-        """临时中断当前 CLI 进程，保留会话和引擎注册表用于恢复。"""
+        """临时中断当前 CLI 进程，保留会话和引擎注册表用于恢复。
+
+        返回统一停止结果（AgentStopResult）或旧 bridge 的 TerminationResult；
+        远程停止结果同时写入 attempt runtime 供 runner 收敛消费。
+        """
         with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
             job_id=self.current_job_id,
             task_id=self.task_id,
@@ -1909,6 +1926,10 @@ class WorkflowEngine:
             termination = None
             if self.cli:
                 termination = await self.cli.interrupt()
+                if isinstance(termination, AgentStopResult):
+                    from app.agents.contract import record_attempt_remote_stop
+
+                    record_attempt_remote_stop(termination)
             self.running = False
             logger.info(f"WorkflowEngine interrupted: {self.task_id}")
             return termination
@@ -1922,7 +1943,11 @@ class WorkflowEngine:
             event_type="engine_stop",
         ):
             if self.cli:
-                await self.cli.cancel()
+                stop_result = await self.cli.cancel()
+                if isinstance(stop_result, AgentStopResult):
+                    from app.agents.contract import record_attempt_remote_stop
+
+                    record_attempt_remote_stop(stop_result)
             self.running = False
             run_task = self._run_task
             if run_task is not None and run_task is not asyncio.current_task():
