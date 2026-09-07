@@ -20,6 +20,7 @@ from app.config import settings
 from app.core.logging import get_logger
 from app.agents.process_supervisor import (
     ManagedAgentProcess,
+    ProcessWaitResult,
     TerminationResult,
     process_supervisor,
 )
@@ -199,6 +200,7 @@ class SubprocessCliBridge(CliBridgeBase):
     ) -> str:
         self._event_cb = event_callback
         self._running = True
+        self.last_termination = None
 
         # 构建命令行参数。Windows 的 npm .cmd shim 会经由 cmd.exe 解析参数，
         # prompt 中的 "|" 等字符会被当作 shell 运算符；这里直接解析到真实入口。
@@ -318,14 +320,29 @@ class SubprocessCliBridge(CliBridgeBase):
         except Exception as e:
             logger.exception(f"Stderr read error: {e}")
 
-    async def wait(self):
+    async def wait(self) -> Optional[ProcessWaitResult]:
         """等待 CLI 进程结束"""
         if self._managed_process:
-            await self._managed_process.wait()
-            process_supervisor.forget(self._managed_process)
+            wait_result = await self._managed_process.wait()
+            self.last_termination = wait_result.termination
+            if wait_result.termination.confirmed_dead:
+                process_supervisor.forget(self._managed_process)
         elif self.process:
-            await self.process.wait()
+            return_code = await self.process.wait()
+            self.last_termination = TerminationResult(
+                confirmed_dead=True,
+                root_return_code=return_code,
+            )
         self._running = False
+        if self._managed_process:
+            return ProcessWaitResult(
+                root_return_code=self._managed_process.process.returncode,
+                termination=self.last_termination or TerminationResult(
+                    confirmed_dead=False,
+                    root_return_code=self._managed_process.process.returncode,
+                ),
+            )
+        return None
 
     async def _taskkill_tree(self) -> None:
         """兼容旧调用方的进程树终止入口。"""

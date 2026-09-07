@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -240,3 +241,71 @@ def test_ensure_bootstrap_ready_or_start_failed_requires_manual_retry():
 
     with pytest.raises(service.BootstrapNotReadyError):
         service.ensure_bootstrap_ready_or_start(db, workspace_id="ws-1", task_id="task-1")
+
+
+def test_run_bootstrap_for_job_passes_attempt_identity_to_bridge(monkeypatch):
+    captured = {}
+    callback = object()
+
+    async def fake_run(task_id, **kwargs):
+        captured["task_id"] = task_id
+        captured.update(kwargs)
+        return True
+
+    async def fake_run_db(_fn, *_args, **_kwargs):
+        return {
+            "status": TaskCliBootstrapStatus.READY.value,
+            "spec_version_id": "spec-v1",
+        }
+
+    monkeypatch.setattr(service, "_run_bootstrap", fake_run)
+    monkeypatch.setattr(service, "run_db", fake_run_db)
+
+    payload = asyncio.run(
+        service.run_bootstrap_for_job(
+            "task-1",
+            run_token="run-1",
+            expected_input_revision="spec-v1",
+            env_overrides={
+                "TRACEFORGE_RUN_TOKEN": "run-1",
+                "AI_JOB_ID": "job-1",
+                "WORKER_BOOT_ID": "boot-1",
+            },
+            on_process_started=callback,
+        )
+    )
+
+    assert captured == {
+        "task_id": "task-1",
+        "run_token": "run-1",
+        "expected_input_revision": "spec-v1",
+        "env_overrides": {
+            "TRACEFORGE_RUN_TOKEN": "run-1",
+            "AI_JOB_ID": "job-1",
+            "WORKER_BOOT_ID": "boot-1",
+        },
+        "on_process_started": callback,
+    }
+    assert payload["termination_confirmed_dead"] is True
+
+
+def test_run_bootstrap_for_job_rejects_changed_revision(monkeypatch):
+    async def fake_run(*_args, **_kwargs):
+        return True
+
+    async def fake_run_db(_fn, *_args, **_kwargs):
+        return {
+            "status": TaskCliBootstrapStatus.READY.value,
+            "spec_version_id": "spec-v2",
+        }
+
+    monkeypatch.setattr(service, "_run_bootstrap", fake_run)
+    monkeypatch.setattr(service, "run_db", fake_run_db)
+
+    with pytest.raises(service.BootstrapStateError, match="Specification changed"):
+        asyncio.run(
+            service.run_bootstrap_for_job(
+                "task-1",
+                expected_input_revision="spec-v1",
+            )
+        )

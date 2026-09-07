@@ -1790,6 +1790,9 @@ class WorkflowEngine:
                         request,
                         self.handle_agent_event,
                     )
+                    self.last_termination_confirmed_dead = getattr(
+                        result, "termination_confirmed_dead", None
+                    )
                     if result.session_id:
                         self.session_id = result.session_id
                     await run_db(self._persist_provider_state, result)
@@ -1820,6 +1823,10 @@ class WorkflowEngine:
                 await self._update_task_status(TaskStatus.INTERRUPTED, str(e))
                 await self._push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
             except Exception as e:
+                if hasattr(e, "termination_confirmed_dead"):
+                    self.last_termination_confirmed_dead = getattr(
+                        e, "termination_confirmed_dead"
+                    )
                 error_text = str(e)
                 timeout_markers = ("timed out", "timeout", "etimedout", "请求超时", "连接超时")
                 is_timeout = any(marker in error_text.lower() for marker in timeout_markers)

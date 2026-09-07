@@ -91,6 +91,176 @@ def test_cancel_running_job_is_not_reported_as_finished(monkeypatch):
     assert result.finished_at is None
 
 
+def _owned_job(db, *, status=AiJobStatus.TERMINATING, token="run-1"):
+    job = _job(
+        db,
+        status=status,
+        run_token=token,
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    job.process_pid = 4242
+    job.process_started_at = datetime.utcnow()
+    job.process_group_id = 4242
+    db.commit()
+    return job
+
+
+def test_late_termination_cannot_overwrite_success(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.SUCCESS)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._finish_termination_sync(
+        "reliability-job",
+        "run-1",
+        confirmed_dead=True,
+        reason="late callback",
+        failure_code="LATE_CALLBACK",
+    )
+
+    assert result is None
+    assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.SUCCESS
+
+
+def test_late_termination_cannot_overwrite_cancelled(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.CANCELLED)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._finish_termination_sync(
+        "reliability-job",
+        "run-1",
+        confirmed_dead=True,
+        reason="late callback",
+        failure_code="LATE_CALLBACK",
+    )
+
+    assert result is None
+    assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.CANCELLED
+
+
+def test_old_run_token_cannot_interrupt_current_attempt(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.RUNNING,
+        run_token="current-run",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    result = ai_job_service._mark_task_chat_job_interrupted_sync(
+        db,
+        job_id="reliability-job",
+        reason="old attempt",
+        message=None,
+        session_id=None,
+        context_patch=None,
+        result_patch=None,
+        run_token="old-run",
+    )
+
+    assert result is None
+    assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.RUNNING
+
+
+def test_terminating_job_cannot_be_downgraded_by_engine_error(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.TERMINATING)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "reliability-job",
+        status=AiJobStatus.FAILED,
+        finalize=True,
+        run_token="run-1",
+        termination_confirmed_dead=True,
+        error_message="late engine error",
+    )
+
+    assert result["broadcast"] is False
+    assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.TERMINATING
+
+
+def test_task_chat_success_clears_active_process_ownership(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.RUNNING)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "reliability-job",
+        status=AiJobStatus.SUCCESS,
+        finalize=True,
+        run_token="run-1",
+        termination_confirmed_dead=True,
+    )
+
+    assert result["payload"]["status"] == AiJobStatus.SUCCESS.value
+    saved = db.get(SddAiJob, "reliability-job")
+    assert saved.process_pid is None
+    assert saved.process_started_at is None
+    assert saved.process_group_id is None
+    assert saved.run_token is None
+
+
+def test_interrupted_job_clears_ownership_only_after_confirmed_death(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.TERMINATING)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    orphaned = ai_job_service._finish_termination_sync(
+        "reliability-job",
+        "run-1",
+        confirmed_dead=False,
+        reason="tree still alive",
+        failure_code="PROCESS_TREE_STILL_ALIVE",
+    )
+    saved = db.get(SddAiJob, "reliability-job")
+    assert orphaned["status"] == AiJobStatus.ORPHANED.value
+    assert saved.process_pid == 4242
+    assert saved.run_token == "run-1"
+
+    interrupted = ai_job_service._finish_termination_sync(
+        "reliability-job",
+        "run-1",
+        confirmed_dead=True,
+        reason="tree dead",
+        failure_code="OK",
+    )
+    saved = db.get(SddAiJob, "reliability-job")
+    db.refresh(saved)
+    assert interrupted["status"] == AiJobStatus.INTERRUPTED.value
+    assert saved.process_pid is None
+    assert saved.run_token is None
+
+
+def test_orphaned_job_retains_process_identity(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.TERMINATING)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._finish_termination_sync(
+        "reliability-job",
+        "run-1",
+        confirmed_dead=False,
+        reason="cannot inspect tree",
+        failure_code="PROCESS_TREE_UNKNOWN",
+    )
+
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["status"] == AiJobStatus.ORPHANED.value
+    assert saved.process_pid == 4242
+    assert saved.process_group_id == 4242
+
+
 def test_runtime_worker_survives_one_iteration_failure_and_honors_cancel(monkeypatch):
     calls = 0
     holder = {}
