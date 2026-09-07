@@ -158,6 +158,10 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
     job.session_revision = 1
     db.add_all([message, turn])
     db.commit()
+    task_id = str(task.id)
+    job_id = str(job.id)
+    message_id = str(message.id)
+    turn_id = str(turn.id)
 
     @asynccontextmanager
     async def _fake_task_lock(*_args, **_kwargs):
@@ -183,7 +187,7 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
         task_session_service.undo_task_message(
             db,
             task=task,
-            message_id=message.id,
+            message_id=message_id,
             actor_user_id="user-1",
             operation_id="undo-operation-1",
         )
@@ -193,12 +197,12 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
     assert payload["status"] == TaskSessionTurnStatus.REVERTED.value
     check_db = SessionLocal()
     try:
-        assert check_db.query(ChatMessage).filter(ChatMessage.id == "message-1").first() is None
-        stored_job = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
+        assert check_db.query(ChatMessage).filter(ChatMessage.id == message_id).first() is None
+        stored_job = check_db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
         assert stored_job.prompt_text is None
         assert stored_job.result_json == {"redacted": True, "reason": "session_undo"}
-        assert check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn.id).one().status == TaskSessionTurnStatus.REVERTED
-        assert check_db.query(SddTask).filter(SddTask.id == task.id).one().status == TaskStatus.CODING
+        assert check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn_id).one().status == TaskSessionTurnStatus.REVERTED
+        assert check_db.query(SddTask).filter(SddTask.id == task_id).one().status == TaskStatus.CODING
     finally:
         check_db.close()
 

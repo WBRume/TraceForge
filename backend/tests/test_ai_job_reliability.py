@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
@@ -290,6 +291,112 @@ def test_runtime_worker_survives_one_iteration_failure_and_honors_cancel(monkeyp
     assert health["last_success_at"]
     assert health["iteration_duration_ms"] >= 0
     assert health["last_scan_count"] == 0
+
+
+def test_runtime_worker_health_rejects_stale_last_success(monkeypatch):
+    class _LiveTask:
+        def done(self):
+            return False
+
+    now = time.monotonic()
+    monkeypatch.setattr(ai_job_service, "_REAPER_TASK", _LiveTask())
+    monkeypatch.setattr(ai_job_service, "_DISPATCHER_TASK", _LiveTask())
+    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {
+        "reaper": {
+            "state": "healthy",
+            "failure_count": 0,
+            "last_success_monotonic": now - 10,
+        },
+        "dispatcher": {
+            "state": "healthy",
+            "failure_count": 0,
+            "last_success_monotonic": now,
+        },
+    })
+    monkeypatch.setattr(ai_job_service.settings, "AI_JOB_REAPER_STALE_SECONDS", 1)
+
+    health = ai_job_service.runtime_worker_health()
+
+    assert health["reaper"]["healthy"] is False
+    assert health["reaper"]["alive"] is True
+    assert health["healthy"] is False
+
+
+def test_runtime_worker_reports_stalled_live_task(monkeypatch):
+    class _LiveTask:
+        def done(self):
+            return False
+
+    now = time.monotonic()
+    monkeypatch.setattr(ai_job_service, "_REAPER_TASK", _LiveTask())
+    monkeypatch.setattr(ai_job_service, "_DISPATCHER_TASK", _LiveTask())
+    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {
+        "reaper": {
+            "state": "running",
+            "failure_count": 0,
+            "last_success_monotonic": now,
+            "iteration_started_monotonic": now - 10,
+        },
+        "dispatcher": {
+            "state": "healthy",
+            "failure_count": 0,
+            "last_success_monotonic": now,
+        },
+    })
+    monkeypatch.setattr(ai_job_service.settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 1)
+
+    health = ai_job_service.runtime_worker_health()
+
+    assert health["reaper"]["state"] == "stalled"
+    assert health["reaper"]["healthy"] is False
+    assert health["reaper"]["alive"] is True
+    assert health["reaper"]["current_iteration_age_seconds"] >= 10
+    assert health["reaper"]["last_error_type"] == "WorkerOperationTimeout"
+
+
+def test_stalled_operation_does_not_spawn_overlapping_iterations(monkeypatch):
+    calls = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def operation():
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return 1
+
+    async def run():
+        worker = asyncio.create_task(ai_job_service._run_runtime_worker_loop("reaper", operation, 1))
+        monkeypatch.setattr(ai_job_service, "_REAPER_TASK", worker)
+        await started.wait()
+        await asyncio.sleep(0.2)
+        assert calls == 1
+        stalled = ai_job_service.runtime_worker_health()
+        assert stalled["reaper"]["healthy"] is False
+        assert stalled["reaper"]["state"] == "stalled"
+
+        release.set()
+        await asyncio.sleep(0.05)
+        recovered = ai_job_service.runtime_worker_health()
+        assert recovered["reaper"]["healthy"] is True
+        assert calls == 1
+        worker.cancel()
+        try:
+            await worker
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(ai_job_service, "_SHUTTING_DOWN", False)
+    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {
+        "dispatcher": {
+            "state": "healthy",
+            "failure_count": 0,
+            "last_success_monotonic": time.monotonic(),
+        },
+    })
+    monkeypatch.setattr(ai_job_service.settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 0.1)
+    asyncio.run(run())
 
 
 def test_start_runtime_workers_is_idempotent(monkeypatch):

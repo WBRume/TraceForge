@@ -99,6 +99,20 @@ def verify_workspace_permission(
         raise HTTPException(status_code=403, detail=detail)
 
 
+def _verify_workspace_permission_by_id(
+    ws_id: str,
+    user_id: str,
+    db: Session,
+    permission: WorkspacePermission,
+    detail: str,
+) -> None:
+    member = workspace_service.get_workspace_member(db, ws_id, user_id)
+    if not member:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+    if not workspace_service.user_has_permission(db, ws_id, user_id, permission):
+        raise HTTPException(status_code=403, detail=detail)
+
+
 def _workspace_uses_git_worktree(db: Session, ws_id: str) -> bool:
     from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
 
@@ -150,6 +164,27 @@ def _raise_session_control_error(exc: task_session_control_service.TaskSessionCo
 def _ensure_task_not_baselined(task) -> None:
     if task.status == TaskStatus.BASELINED:
         raise HTTPException(status_code=403, detail="Task is BASELINED and locked for changes")
+
+
+def _prepare_task_undo_context_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    user_id: str,
+) -> Dict[str, str]:
+    _verify_workspace_permission_by_id(
+        ws_id,
+        user_id,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to undo task messages",
+    )
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    return {"task_id": str(task.id)}
 
 
 def _serialize_asset(asset) -> AssetResponse:
@@ -365,6 +400,11 @@ def _apply_initialize_sync(
         "task_description": task.description,
         "task_spec_doc_path": task.spec_doc_path,
     }
+
+
+def _serialize_job_by_id_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
+    job = db.get(ai_job_service.SddAiJob, job_id)
+    return ai_job_service.serialize_job(job) if job else None
 
 
 def _load_task_control_context_sync(
@@ -664,14 +704,18 @@ async def create_task_change_proposal(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to create change proposals",
-    )
     db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to create change proposals",
+        ),
+    )
     # Permission checks are complete; no dependency Session is allowed to
     # remain open while distributed locks are awaited.
     db.close()
@@ -764,14 +808,18 @@ async def start_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.START_TASK,
-        "No permission to start tasks",
-    )
     db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.START_TASK,
+            "No permission to start tasks",
+        ),
+    )
     db.close()
 
     try:
@@ -818,14 +866,18 @@ async def initialize_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to initialize tasks",
-    )
     db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to initialize tasks",
+        ),
+    )
     db.close()
 
     try:
@@ -901,9 +953,7 @@ async def initialize_task(
             await ai_job_service.enqueue_task_chat_job(created.job_id)
             job_payload = await _run_route_db_txn(
                 db, db_bind,
-                lambda db: ai_job_service.serialize_job(
-                    db.get(ai_job_service.SddAiJob, created.job_id)
-                )
+                lambda db: _serialize_job_by_id_sync(db, created.job_id)
             )
 
             return {"msg": "Task initialized", "job": job_payload}
@@ -1089,14 +1139,18 @@ async def interrupt_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to interrupt tasks",
-    )
     db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to interrupt tasks",
+        ),
+    )
     db.close()
 
     try:
@@ -1278,21 +1332,22 @@ async def undo_task_message(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
+    db_bind = _get_db_bind(db)
+    context = await _run_route_db_txn(
         db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to undo task messages",
+        db_bind,
+        lambda session: _prepare_task_undo_context_sync(
+            session,
+            ws_id=ws_id,
+            task_id=task_id,
+            user_id=current_user.id,
+        ),
     )
-    task = task_service.get_task(db, task_id, ws_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    _ensure_task_not_baselined(task)
+    db.close()
     try:
         return await task_session_service.undo_task_message(
             db,
-            task=task,
+            task_id=context["task_id"],
             message_id=message_id,
             actor_user_id=current_user.id,
             operation_id=body.operation_id,
@@ -1604,6 +1659,66 @@ def _require_diagnosis_task(db: Session, task_id: str, ws_id: str):
     return task
 
 
+def _prepare_diagnosis_summary_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    current_user_id: str,
+) -> Dict[str, Any]:
+    """Authorize, guard, and create the summary job in one DB transaction."""
+    _verify_workspace_permission_by_id(
+        ws_id,
+        current_user_id,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to summarize diagnosis cases",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+    existing_case = (
+        db.query(SddCase)
+        .filter(
+            SddCase.workspace_id == ws_id,
+            SddCase.source_task_id == task.id,
+        )
+        .first()
+    )
+    diagnosis_result = getattr(task, "diagnosis_result", None)
+    if existing_case is not None or (
+        diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Case already adopted, diagnosis summarization is not allowed",
+        )
+
+    active_summary = ai_job_service.find_active_summary_job(db, task.id)
+    if active_summary is not None:
+        return {
+            "job_id": active_summary.id,
+            "status": ai_job_service.serialize_job(active_summary).get("status"),
+            "task_id": task.id,
+            "created": False,
+        }
+    if ai_job_service.find_active_chat_job(db, task.id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="会话进行中，请等待完成或停止后再一键总结问题案例",
+        )
+    job = ai_job_service.create_diagnosis_summary_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=current_user_id,
+    )
+    return {
+        "job_id": job.id,
+        "status": "PENDING",
+        "task_id": task.id,
+        "created": True,
+    }
+
+
 @router.post("/{task_id}/upload-diagnosis-doc", response_model=dict)
 async def upload_task_diagnosis_doc(
     ws_id: str,
@@ -1613,14 +1728,18 @@ async def upload_task_diagnosis_doc(
     db: Session = Depends(get_db),
 ):
     """问题定位任务：上传需求/日志等辅助文档（供 AI 会话与诊断文档抽屉使用）。"""
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to upload diagnosis documents",
-    )
     db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.UPLOAD_TASK_SPEC,
+            "No permission to upload diagnosis documents",
+        ),
+    )
     db.close()
 
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
@@ -1747,69 +1866,46 @@ async def trigger_diagnosis_summary(
     JSON 契约生成结构化结果，完成后原位刷新「定位结果」卡片并广播到任务房间。
     同任务已有进行中的总结任务时直接返回既有任务（幂等）。
     """
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to summarize diagnosis cases",
-    )
-    task = _require_diagnosis_task(db, task_id, ws_id)
-
-    # 案例被采纳（已生成案例草案 / 定位结果已 CONFIRMED）后，禁止再次一键总结
-    existing_case = (
-        db.query(SddCase)
-        .filter(
-            SddCase.workspace_id == ws_id,
-            SddCase.source_task_id == task.id,
-        )
-        .first()
-    )
-    diagnosis_result = getattr(task, "diagnosis_result", None)
-    if existing_case is not None or (diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"):
-        raise HTTPException(
-            status_code=409,
-            detail="Case already adopted, diagnosis summarization is not allowed",
-        )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
-        async with lock_task(task.id):
-            # 幂等：已有进行中的总结任务直接返回
-            active_summary = ai_job_service.find_active_summary_job(db, task.id)
-            if active_summary is not None:
-                return {
-                    "job_id": active_summary.id,
-                    "status": ai_job_service.serialize_job(active_summary).get("status"),
-                    "task_id": task.id,
-                }
-            # 会话/总结互斥：会话进行中（含排队、HITL 挂起）禁止发起总结。
-            # 守卫与创建都在 lock_task 内，和聊天创建路径串行化，杜绝双活跃竞态。
-            if ai_job_service.find_active_chat_job(db, task.id) is not None:
-                raise HTTPException(
-                    status_code=409,
-                    detail="会话进行中，请等待完成或停止后再一键总结问题案例",
-                )
-
-            job = ai_job_service.create_diagnosis_summary_job(
+        async with lock_task(task_id):
+            prepared = await _run_route_db_txn(
                 db,
-                workspace_id=ws_id,
-                task_id=task.id,
-                creator_id=current_user.id,
+                db_bind,
+                lambda session: _prepare_diagnosis_summary_sync(
+                    session,
+                    ws_id=ws_id,
+                    task_id=task_id,
+                    current_user_id=current_user.id,
+                ),
             )
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
+
+    if not prepared["created"]:
+        return {
+            "job_id": prepared["job_id"],
+            "status": prepared["status"],
+            "task_id": prepared["task_id"],
+        }
 
     audit_log(
         action="diagnosis_summary_triggered",
         outcome="success",
         resource_type="ai_job",
-        resource_id=job.id,
+        resource_id=prepared["job_id"],
         user_id=current_user.id,
         workspace_id=ws_id,
-        task_id=task.id,
+        task_id=prepared["task_id"],
     )
-    await ai_job_service.enqueue_task_chat_job(job.id)
-    return {"job_id": job.id, "status": "PENDING", "task_id": task.id}
+    await ai_job_service.enqueue_task_chat_job(prepared["job_id"])
+    return {
+        "job_id": prepared["job_id"],
+        "status": prepared["status"],
+        "task_id": prepared["task_id"],
+    }
 
 
 @router.get("/{task_id}/diagnosis-summary/{job_id}", response_model=dict)

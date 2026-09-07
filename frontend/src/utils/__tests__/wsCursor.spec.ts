@@ -72,4 +72,54 @@ describe('ws cursor protocol', () => {
       epoch: 'epoch-2', lastAppliedSequence: 9,
     })
   })
+
+  it('uses the staged cursor before the stored cursor for the same epoch', () => {
+    const stored = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'epoch-3', sequence: 10, event_id: 'event-10',
+    })
+    if (stored.kind === 'event') stored.commit()
+
+    const sent: string[] = []
+    const socket = { send: (value: string) => sent.push(value) } as unknown as WebSocket
+    sendResyncComplete(socket, {
+      type: 'resync_required', epoch: 'epoch-3', barrier_sequence: 100,
+    }, 'task:one')
+
+    const deferred = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'epoch-3', sequence: 101, event_id: 'event-101',
+    })
+    expect(deferred.kind).toBe('event')
+    if (deferred.kind === 'event') deferred.commit()
+    expect(getWsCursor('task:one')?.lastAppliedSequence).toBe(10)
+    expect(finalizeWsResync('task:one', {
+      type: 'resync_ok', epoch: 'epoch-3', to_sequence: 101,
+    })?.lastAppliedSequence).toBe(101)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('ignores resync_ok from a different epoch', () => {
+    sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
+      type: 'resync_required', epoch: 'epoch-4', barrier_sequence: 100,
+    }, 'task:one')
+
+    expect(finalizeWsResync('task:one', {
+      type: 'resync_ok', epoch: 'other-epoch', to_sequence: 200,
+    })).toBeNull()
+    expect(getWsCursor('task:one')).toBeNull()
+  })
+
+  it('does not let a late commit move the cursor backwards after resync', () => {
+    const oldEvent = prepareWsFrame('task:one', {
+      type: 'event', epoch: 'epoch-5', sequence: 11, event_id: 'event-11',
+    })
+    sendResyncComplete({ send: () => undefined } as unknown as WebSocket, {
+      type: 'resync_required', epoch: 'epoch-5', barrier_sequence: 100,
+    }, 'task:one')
+    finalizeWsResync('task:one', {
+      type: 'resync_ok', epoch: 'epoch-5', to_sequence: 100,
+    })
+
+    if (oldEvent.kind === 'event') oldEvent.commit()
+    expect(getWsCursor('task:one')?.lastAppliedSequence).toBe(100)
+  })
 })

@@ -103,3 +103,20 @@ class OrphanedJobProtectionResponse(BaseModel):
     ok: bool = True
     job_id: str
     message: str
+
+
+class OrphanedJobRetryTerminationRequest(BaseModel):
+    reason: str
+
+
+class OrphanedJobCleanupConfirmationRequest(BaseModel):
+    reason: str
+    evidence: str
+
+
+class OrphanedJobRecoveryResponse(BaseModel):
+    ok: bool = True
+    job_id: str
+    status: str
+    confirmed_dead: bool
+    message: str
