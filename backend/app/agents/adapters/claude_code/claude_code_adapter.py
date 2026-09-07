@@ -18,6 +18,7 @@ from app.agents.contract import (
     AgentEventSink,
     AgentRunRequest,
     AgentRunResult,
+    AgentStopResult,
     TokenUsage,
 )
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
@@ -28,6 +29,7 @@ from app.agents.errors import (
     AgentTimeoutError,
     SessionForkError,
 )
+from app.agents.process_supervisor import agent_stop_result_from_termination
 from app.config import settings
 from app.engine.claude_bridge import SubprocessCliBridge
 
@@ -211,19 +213,21 @@ class ClaudeCodeAdapter(AgentBackend):
             raw_trace=None,
         )
 
-    async def interrupt(self, run_id: str | None = None):
+    async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         self._cancelled = True
         termination = await self._bridge.interrupt()
         self.last_termination = termination
         await self._await_legacy_task_exit()
-        return termination
+        # 本地进程：细粒度身份证据继续写入 AgentAttemptRuntimeState
+        # （由 supervisor 完成）；这里只负责统一停止结果协议。
+        return agent_stop_result_from_termination(termination)
 
-    async def cancel(self, run_id: str | None = None):
+    async def cancel(self, run_id: str | None = None) -> AgentStopResult:
         self._cancelled = True
         termination = await self._bridge.cancel()
         self.last_termination = termination
         await self._await_legacy_task_exit()
-        return termination
+        return agent_stop_result_from_termination(termination)
 
     async def _await_legacy_task_exit(self) -> None:
         task = self._legacy_run_task

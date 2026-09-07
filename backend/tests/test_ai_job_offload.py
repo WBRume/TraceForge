@@ -60,8 +60,8 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
         broadcasted = []
         scheduled = []
 
-        async def _broadcast(payload, *, final):
-            broadcasted.append((payload["id"], final))
+        async def _broadcast(payload):
+            broadcasted.append(payload["id"])
 
         with (
             mock.patch.object(ai_job_service, "SessionLocal", SessionLocal),
@@ -74,7 +74,7 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(payload)
         self.assertEqual(payload["status"], AiJobStatus.RUNNING.value)
-        self.assertEqual(broadcasted, [("job-1", False)])
+        self.assertEqual(broadcasted, ["job-1"])
 
         check = SessionLocal()
         try:
@@ -91,20 +91,23 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
         broadcasted = []
         scheduled = []
 
-        async def _broadcast(payload, *, final):
-            broadcasted.append((payload["id"], final))
+        async def _broadcast(payload):
+            broadcasted.append(payload["id"])
 
         with (
             mock.patch.object(ai_job_service, "SessionLocal", SessionLocal),
             mock.patch.object(ai_job_service, "_broadcast_job_payload", _broadcast),
             mock.patch.object(ai_job_service, "schedule_queue", lambda key: scheduled.append(key)),
         ):
+            await ai_job_service._update_job_state(
+                "job-1", status=AiJobStatus.RUNNING, progress=30,
+            )
             payload = await ai_job_service._update_job_state(
                 "job-1", status=AiJobStatus.SUCCESS, progress=100, finalize=True,
             )
 
         self.assertEqual(payload["status"], AiJobStatus.SUCCESS.value)
-        self.assertEqual(broadcasted, [("job-1", True)])
+        self.assertEqual(broadcasted, ["job-1", "job-1"])
         self.assertEqual(scheduled, [f"{AiJobChannel.TASK_CHAT.value}:task-1"])
 
     async def test_update_job_state_fence_blocks_stale_revision(self):

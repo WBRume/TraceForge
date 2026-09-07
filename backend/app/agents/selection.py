@@ -18,6 +18,13 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.agents.contract import (
+    EXECUTION_KIND_REMOTE_SESSION,
+    AgentRunRequest,
+    AgentStopResult,
+    record_attempt_remote_session_started,
+    record_attempt_remote_stop,
+)
 from app.agents.run_logging import run_agent_backend_with_logging
 from app.config import settings
 from app.core.logging import get_logger
@@ -242,6 +249,10 @@ class LegacyBridgeShim:
             project_path=project_path,
             session_id=resume_id,
             env=dict(env_overrides or {}),
+            # 显式执行类别（doc §7 数据流）：与 backend capability 声明一致。
+            execution_kind=getattr(
+                self.backend.capabilities, "execution_kind", "LOCAL_PROCESS"
+            ) or "LOCAL_PROCESS",
             metadata={
                 "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
                 "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
@@ -265,6 +276,10 @@ class LegacyBridgeShim:
         )
 
         async def _on_event(agent_event) -> None:
+            # 远程会话建立标记：供取消/收尾路径区分“从未建立会话”与
+            # “会话存在但停止未被确认”（doc §8.3 REMOTE 分支）。
+            if getattr(agent_event, "type", "") == "session_started":
+                record_attempt_remote_session_started()
             legacy = agent_event_to_legacy_payload(agent_event)
             if legacy is None:
                 return
@@ -297,19 +312,68 @@ class LegacyBridgeShim:
         # server 模式无本地进程，返回 None 即可。
         return None
 
-    async def cancel(self) -> None:
+    def _execution_kind(self) -> str:
+        declared = str(
+            getattr(self.backend.capabilities, "execution_kind", "") or ""
+        ).strip()
+        return declared if declared in ("LOCAL_PROCESS", "REMOTE_SESSION") else EXECUTION_KIND_REMOTE_SESSION
+
+    @staticmethod
+    def _unacknowledged_stop(kind: str, *, failure_code: str, error_message: str) -> AgentStopResult:
+        return AgentStopResult(
+            execution_kind=kind,
+            stop_acknowledged=False,
+            failure_code=failure_code,
+            error_message=error_message,
+        )
+
+    async def cancel(self) -> AgentStopResult:
+        """取消当前回合；必须返回结构化停止结果，禁止吞掉远程取消错误。
+
+        服务端明确成功响应才返回 stop_acknowledged=True；方法未抛异常或
+        返回 None 一律视为未确认（doc §5.1/§5.2）。
+        """
+        kind = self._execution_kind()
         if self._run_task is not None and not self._run_task.done():
             self._run_task.cancel()
         try:
-            await self.backend.cancel()
-        except Exception:
-            logger.warning("agent backend {} cancel failed", self.backend_name)
+            result = await self.backend.cancel()
+        except Exception as exc:
+            logger.warning("agent backend {} cancel failed: {}", self.backend_name, exc)
+            result = self._unacknowledged_stop(
+                kind,
+                failure_code="REMOTE_CANCEL_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        if not isinstance(result, AgentStopResult):
+            result = self._unacknowledged_stop(
+                str(getattr(result, "execution_kind", "") or kind),
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="backend cancel returned no structured acknowledgement",
+            )
+        record_attempt_remote_stop(result)
+        return result
 
-    async def interrupt(self) -> None:
+    async def interrupt(self) -> AgentStopResult:
+        """中断当前回合（保留会话）；停止结果必须显式可见。"""
+        kind = self._execution_kind()
         try:
-            await self.backend.interrupt()
-        except Exception:
-            logger.warning("agent backend {} interrupt failed", self.backend_name)
+            result = await self.backend.interrupt()
+        except Exception as exc:
+            logger.warning("agent backend {} interrupt failed: {}", self.backend_name, exc)
+            result = self._unacknowledged_stop(
+                kind,
+                failure_code="REMOTE_INTERRUPT_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        if not isinstance(result, AgentStopResult):
+            result = self._unacknowledged_stop(
+                str(getattr(result, "execution_kind", "") or kind),
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="backend interrupt returned no structured acknowledgement",
+            )
+        record_attempt_remote_stop(result)
+        return result
 
     async def close(self) -> None:
         await self.backend.close()

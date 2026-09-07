@@ -86,8 +86,8 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     published = []
     events = []
 
-    async def _publish_job(job_id, *, final=False):
-        published.append((job_id, final))
+    async def _publish_job(job_id):
+        published.append(job_id)
 
     async def _broadcast(event_type, event_task, job_payload):
         events.append((event_type, event_task.id, job_payload["id"]))
@@ -113,7 +113,7 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     assert task.interrupt_reason == "pause for edits"
     assert job.status == AiJobStatus.INTERRUPTED
     assert job.session_id == "session-1"
-    assert published == [("job-1", False)]
+    assert published == ["job-1"]
     assert events == [("task_interrupted", "task-1", "job-1")]
     assert payload["status"] == TaskStatus.INTERRUPTED.value
 
@@ -243,8 +243,8 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     published = []
     events = []
 
-    async def _publish_job(job_id, *, final=False):
-        published.append((job_id, final))
+    async def _publish_job(job_id):
+        published.append(job_id)
 
     async def _broadcast(event_type, event_task, job_payload):
         events.append((event_type, event_task.id, job_payload["id"]))
@@ -267,7 +267,7 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     assert job.status == AiJobStatus.CANCELLED
     assert job.message == "stop before start"
     assert task.status == TaskStatus.CODING
-    assert published == [("job-1", True)]
+    assert published == ["job-1"]
     assert events == [("task_interrupted", "task-1", "job-1")]
     assert payload["job"]["status"] == AiJobStatus.CANCELLED.value
 
@@ -303,8 +303,8 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     events = []
     enqueued = []
 
-    async def _publish_job(job_id, *, final=False):
-        published.append((job_id, final))
+    async def _publish_job(job_id):
+        published.append(job_id)
 
     async def _broadcast_event(event_type, payload):
         events.append((event_type, payload["task_id"], payload["job"]["id"]))
@@ -352,7 +352,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     assert resume_job.context_json["resumed_from_job_id"] == job.id
     assert resume_job.context_json["client_message_id"] == "client-resume-1"
     assert db.query(ChatMessage).filter(ChatMessage.task_id == task.id).count() == 1
-    assert published == [("job-1", True)]
+    assert published == ["job-1"]
     assert events == [("task_resumed", "task-1", resume_job.id)]
     assert enqueued == [resume_job.id]
     assert payload["status"] == TaskStatus.CODING.value
@@ -662,8 +662,8 @@ def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
     broadcasted = []
     scheduled = []
 
-    async def _broadcast(payload, *, final):
-        broadcasted.append((payload["id"], final))
+    async def _broadcast(payload):
+        broadcasted.append(payload["id"])
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
@@ -686,7 +686,7 @@ def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
     finally:
         check_db.close()
 
-    assert broadcasted == [("job-1", False)]
+    assert broadcasted == ["job-1"]
     assert scheduled == []
 
 
@@ -706,8 +706,8 @@ def test_finalize_auto_failure_marks_task_and_job_interrupted(monkeypatch):
     broadcasted = []
     scheduled = []
 
-    async def _broadcast(payload, *, final):
-        broadcasted.append((payload["id"], final))
+    async def _broadcast(payload):
+        broadcasted.append(payload["id"])
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
@@ -731,7 +731,7 @@ def test_finalize_auto_failure_marks_task_and_job_interrupted(monkeypatch):
     finally:
         check_db.close()
 
-    assert broadcasted == [("job-1", False)]
+    assert broadcasted == ["job-1"]
     assert scheduled == []
 
 

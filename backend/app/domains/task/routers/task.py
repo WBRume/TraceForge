@@ -890,7 +890,7 @@ async def initialize_task(
             if engine:
                 await engine.stop()
             for old_job_id in prepared["cancelled_job_ids"]:
-                await ai_job_service.publish_job(old_job_id, final=True)
+                await ai_job_service.publish_job(old_job_id)
 
             try:
                 state = await _run_route_db_txn(

@@ -675,7 +675,10 @@ class OpenCodeAdapter(AgentBackend):
             try:
                 consumed, seen_types = await watchdog.wait(consume_task)
             except AgentTimeoutError:
-                await self.interrupt(session_id=session_id)
+                stop = await self.interrupt(session_id=session_id)
+                from app.agents.contract import record_attempt_remote_stop
+
+                record_attempt_remote_stop(stop)
                 consume_task.cancel()
                 await asyncio.gather(consume_task, return_exceptions=True)
                 final = await self._fetch_final_message(session_id)
@@ -733,34 +736,74 @@ class OpenCodeAdapter(AgentBackend):
             self._running = False
             self._run_id = None
 
-    async def _abort_session(self, sid: str) -> None:
-        """中止 OpenCode 当前正在运行的回合。
+    async def _abort_session(self, sid: str) -> "AgentStopResult":
+        """中止 OpenCode 当前正在运行的回合（唯一停止结果协议，doc §5.2）。
 
         OpenCode Server 没有 /interrupt 接口，只有 v1 /abort：
         POST /session/{id}/abort（已实测 4097 端口返回 true）。
+        只有约定的成功状态码才算停止被确认；其他状态码与网络错误必须
+        以结构化结果返回，不得静默吞掉。
         """
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+
         if self._client is None:
-            return
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="OpenCode client is closed; abort not sent",
+            )
         try:
             response = await self._client.post(f"{self.server_url}/session/{sid}/abort")
-        except Exception:
-            return
+        except Exception as exc:
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="OPENCODE_ABORT_NETWORK_ERROR",
+                error_message=str(exc) or type(exc).__name__,
+            )
         if response.status_code in (200, 202, 204):
-            return
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=True,
+            )
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=False,
+            failure_code="OPENCODE_ABORT_REJECTED",
+            error_message=f"OpenCode abort returned HTTP {response.status_code}",
+        )
 
-    async def interrupt(self, run_id: str | None = None, *, session_id: str | None = None) -> None:
+    async def interrupt(
+        self, run_id: str | None = None, *, session_id: str | None = None
+    ) -> "AgentStopResult":
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+
         sid = session_id or self._session_id
         if not sid:
-            return
-        await self._abort_session(sid)
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="no active OpenCode session to abort",
+            )
         self._interrupted = True
+        return await self._abort_session(sid)
 
-    async def cancel(self, run_id: str | None = None) -> None:
+    async def cancel(self, run_id: str | None = None) -> "AgentStopResult":
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+
         sid = self._session_id
-        if sid:
-            await self._abort_session(sid)
         self._interrupted = True
         self._running = False
+        if not sid:
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="no active OpenCode session to abort",
+            )
+        return await self._abort_session(sid)
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

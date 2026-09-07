@@ -98,7 +98,10 @@ from app.domains.ai.services.ai_job_service import (
     run_cli_single_turn,
     schedule_queue,
 )
-from app.agents import current_agent_attempt
+from app.domains.ai.services.ai_job_convergence_service import (
+    converge_job_attempt_sync,
+)
+from app.agents import current_agent_attempt, current_agent_attempt_runtime
 from app.agents.selection import resolve_workspace_backend
 
 logger = get_logger(__name__, category="workspace_asset")
@@ -1576,27 +1579,46 @@ def _update_preview_job_state(
         return
     finalizing = status in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}
     if finalizing:
-        # 统一 ownership 收敛：死亡已证明 → 清空归属；未证明 → ORPHANED 保留
-        # 归属交给 reaper（与 ai_job_service._update_job_state_sync 同一不变量）。
-        from app.domains.ai.services.ai_job_service import (
-            _attempt_termination_evidence,
-            _clear_process_ownership,
+        # 统一 ownership 收敛（doc §11）：终态写入与死亡证据决策全部转交
+        # 唯一 convergence 事务；attempt runtime 是权威证据。
+        from app.domains.ai.services.ai_job_convergence_service import (
+            AttemptConvergenceRequest,
+            ConvergenceIntent,
+            resolve_attempt_evidence,
         )
 
-        dead = _attempt_termination_evidence()
-        ownership_alive = job.process_pid is not None or job.process_group_id is not None
-        if dead is False or (ownership_alive and dead is not True):
-            job.status = AiJobStatus.ORPHANED
-            job.message = message or "Agent process could not be confirmed dead"
-            job.error_message = error
-            job.failure_code = "PROCESS_TREE_STILL_ALIVE"
-            job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
-            job.lease_expires_at = datetime.utcnow()
-            job.orphaned_at = job.orphaned_at or datetime.utcnow()
-            db.commit()
-            db.refresh(job)
+        evidence = resolve_attempt_evidence(
+            execution_kind=str(
+                getattr(job, "process_execution_kind", None) or ""
+            ).strip() or "LOCAL_PROCESS",
+            runtime=current_agent_attempt_runtime(),
+        )
+        request = AttemptConvergenceRequest(
+            job_id=str(job.id),
+            run_token=str(effective_token or ""),
+            worker_boot_id=str(
+                getattr(attempt, "worker_boot_id", None) if attempt else WORKER_BOOT_ID
+            ),
+            requested_status=status,
+            reason=str(error or ""),
+            evidence=evidence,
+            message=message,
+            error_message=error,
+            result_patch=result,
+            context_patch=context_patch,
+            intent=ConvergenceIntent.NORMAL_FINALIZE,
+        )
+        convergence_result = converge_job_attempt_sync(db, request)
+        if not convergence_result.changed:
+            logger.warning(
+                "Requirement preview convergence fenced: job_id={}, status={}",
+                job.id,
+                convergence_result.status,
+            )
             return
-        _clear_process_ownership(job)
+        db.expire(job)
+        db.refresh(job)
+        return
     if status is not None:
         job.status = status
         if status == AiJobStatus.RUNNING and job.started_at is None:
