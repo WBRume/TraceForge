@@ -292,7 +292,28 @@ def test_run_bootstrap_for_job_passes_attempt_identity_to_bridge(monkeypatch):
         },
         "on_process_started": callback,
     }
+    assert payload["process_started"] is True
     assert payload["termination_confirmed_dead"] is True
+
+
+def test_merge_same_process_death_converges_false_to_true():
+    """同一进程：先 UNCONFIRMED 后 CONFIRMED_DEAD 必须收敛（doc 9.3）。
+
+    与被废止的 `_merge_dead_evidence(False > True)` 不同，baseline 的
+    两次清理属于同一个本地进程，后续 True 不得被先前的 False 永久压制。
+    """
+    from app.domains.task.services.task_cli_state_service import (
+        _merge_same_process_death,
+    )
+
+    assert _merge_same_process_death(None, None) is None
+    assert _merge_same_process_death(None, False) is False
+    assert _merge_same_process_death(None, True) is True
+    # 第一次 cleanup False、第二次 cleanup True（同一 identity）=> 已死亡。
+    assert _merge_same_process_death(False, True) is True
+    # 已证明死亡后，迟到的旧 False 不能恢复成未确认。
+    assert _merge_same_process_death(True, False) is True
+    assert _merge_same_process_death(True, None) is True
 
 
 def test_run_bootstrap_for_job_rejects_changed_revision(monkeypatch):

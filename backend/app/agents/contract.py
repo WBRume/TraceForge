@@ -7,7 +7,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Awaitable, Callable, Literal
 
 from app.agents.events import AgentEvent
@@ -58,55 +59,228 @@ def reset_agent_attempt(token) -> None:
     _CURRENT_ATTEMPT.reset(token)
 
 
+class ProcessDeathState(str, Enum):
+    """单个本地进程的生命周期状态（按不可变身份独立记录）。
+
+    迁移约束（doc 4.2）：
+    - 不存在 -> STARTED
+    - STARTED -> UNCONFIRMED
+    - STARTED -> CONFIRMED_DEAD
+    - UNCONFIRMED -> CONFIRMED_DEAD
+    - CONFIRMED_DEAD -> CONFIRMED_DEAD（死亡是不可逆事实）
+
+    禁止：CONFIRMED_DEAD -> UNCONFIRMED；不同身份的证据不得互相覆盖。
+    """
+
+    STARTED = "STARTED"
+    UNCONFIRMED = "UNCONFIRMED"
+    CONFIRMED_DEAD = "CONFIRMED_DEAD"
+
+
+def agent_process_identity_key(identity: "AgentProcessIdentity | None") -> str:
+    """Immutable identity key; must never be the PID alone.
+
+    The computation is total: any malformed identity object degrades to a
+    stable object-identity key instead of losing termination evidence.
+    """
+    if identity is None:
+        return "unidentified"
+    try:
+        started_at = identity.started_at
+        if started_at is None:
+            started_ts = "0"
+        else:
+            started_ts = f"{float(started_at.timestamp()):.6f}"
+        return (
+            f"{int(identity.pid)}:{started_ts}:"
+            f"{identity.process_group_id}:{identity.containment_id}"
+        )
+    except Exception:
+        return f"identity-object:{id(identity)}"
+
+
+@dataclass
+class ProcessTerminationEvidence:
+    """Evidence for one local process identified by an immutable identity."""
+
+    identity: "AgentProcessIdentity | None" = None
+    state: ProcessDeathState = ProcessDeathState.STARTED
+    failure_code: str | None = None
+    error: str | None = None
+    remaining_pids: tuple[int, ...] = ()
+
+
 @dataclass
 class AgentAttemptRuntimeState:
     """本次 attempt 的进程生命周期证据（attempt-local，随 AgentAttemptContext 绑定）。
 
-    语义约定（三态）：
-    - True  : 本地进程树已由 supervisor 确认全部死亡。
-    - False : 已确认无法证明进程树死亡，或仍有存活进程。
-    - None  : 尚未取得任何终止证据（无本地进程，或证据丢失）。
+    证据按不可变进程身份（pid/started_at/pgid/containment）逐个保存，
+    聚合语义（doc 4.1）：
+    - True  : 所有已登记身份均为 CONFIRMED_DEAD。
+    - False : 任一身份处于 UNCONFIRMED（无法证明死亡或仍有存活进程）。
+    - None  : 无身份死亡未确认但有 STARTED 未决，或 attempt 无本地进程。
 
-    多次记录时 False 优先级高于 True；未知结果不得覆盖已有明确结果。
     同一 worker 内不同作业并发运行，因此该状态必须是 attempt-local，
     禁止使用进程级全局“最后一次 termination”变量。
     """
 
-    process_started: bool = False
-    termination_confirmed_dead: bool | None = None
-    termination_failure_code: str | None = None
-    termination_error: str | None = None
-    remaining_pids: tuple[int, ...] = ()
+    processes: dict[str, ProcessTerminationEvidence] = field(default_factory=dict)
+    # 非 supervisor 登记进程（stub/legacy bridge）的证据槽：这类来源无法
+    # 提供不可变进程身份，且单进程语义下 STARTED -> UNCONFIRMED ->
+    # CONFIRMED_DEAD 的迁移仍然适用。只有显式 record_process_started(None)
+    # 才会把它计入 process_started；孤立的终止结果不得伪造“启动过进程”。
+    unidentified: ProcessTerminationEvidence | None = None
+    _unidentified_started: bool = False
 
-    def record_process_started(self) -> None:
-        self.process_started = True
+    def record_process_started(
+        self, identity: "AgentProcessIdentity | None" = None
+    ) -> None:
+        if identity is None:
+            self._unidentified_started = True
+            if self.unidentified is None:
+                self.unidentified = ProcessTerminationEvidence(
+                    identity=None,
+                    state=ProcessDeathState.STARTED,
+                )
+            return
+        key = agent_process_identity_key(identity)
+        existing = self.processes.get(key)
+        if existing is None:
+            self.processes[key] = ProcessTerminationEvidence(
+                identity=identity,
+                state=ProcessDeathState.STARTED,
+            )
+        # STARTED/UNCONFIRMED/CONFIRMED_DEAD 均保持既有状态（幂等登记）。
 
     def record_termination(
         self,
         *,
         confirmed_dead: bool | None,
+        identity: "AgentProcessIdentity | None" = None,
         failure_code: str | None = None,
         error: str | None = None,
         remaining_pids: tuple[int, ...] = (),
     ) -> None:
+        key = agent_process_identity_key(identity)
+        evidence = self.processes.get(key) if identity is not None else self.unidentified
+        if evidence is None:
+            if identity is None:
+                # 未登记进程的孤立证据：单独保存，不得伪造 process_started。
+                self.unidentified = ProcessTerminationEvidence(
+                    identity=None,
+                    state=(
+                        ProcessDeathState.CONFIRMED_DEAD
+                        if confirmed_dead is True
+                        else ProcessDeathState.UNCONFIRMED
+                        if confirmed_dead is False
+                        else ProcessDeathState.STARTED
+                    ),
+                    failure_code=failure_code,
+                    error=error,
+                    remaining_pids=tuple(remaining_pids) if remaining_pids else (),
+                )
+                return
+            if confirmed_dead is None:
+                # 未知结果不得为未知身份制造证据。
+                return
+            evidence = ProcessTerminationEvidence(
+                identity=identity,
+                state=ProcessDeathState.STARTED,
+            )
+            self.processes[key] = evidence
         if confirmed_dead is None:
-            # 未知结果不得覆盖已有明确结果。
+            # 未知结果不得覆盖已有明确结果；STARTED -> UNCONFIRMED 允许。
+            if evidence.state == ProcessDeathState.STARTED:
+                evidence.state = ProcessDeathState.UNCONFIRMED
+                evidence.failure_code = failure_code or evidence.failure_code
+                evidence.error = error or evidence.error
+                if remaining_pids:
+                    evidence.remaining_pids = tuple(remaining_pids)
             return
         if confirmed_dead is False:
-            self.termination_confirmed_dead = False
-            self.termination_failure_code = failure_code or self.termination_failure_code
-            self.termination_error = error or self.termination_error
+            if evidence.state == ProcessDeathState.CONFIRMED_DEAD:
+                # 死亡是不可逆事实；迟到的旧回调不能恢复成未确认状态。
+                return
+            evidence.state = ProcessDeathState.UNCONFIRMED
+            evidence.failure_code = failure_code or evidence.failure_code
+            evidence.error = error or evidence.error
             if remaining_pids:
-                self.remaining_pids = tuple(remaining_pids)
+                evidence.remaining_pids = tuple(remaining_pids)
             return
-        if self.termination_confirmed_dead is False:
-            # False 更保守，不能被后续成功证据降级。
-            return
-        self.termination_confirmed_dead = True
-        self.termination_failure_code = self.termination_failure_code or failure_code
-        self.termination_error = self.termination_error or error
-        if not self.remaining_pids and remaining_pids:
-            self.remaining_pids = tuple(remaining_pids)
+        # confirmed_dead is True：同一身份后续 True 收敛先前的
+        # STARTED/UNCONFIRMED（doc 情况 A），并保持 CONFIRMED_DEAD 幂等。
+        evidence.state = ProcessDeathState.CONFIRMED_DEAD
+        evidence.failure_code = evidence.failure_code or failure_code
+        evidence.error = evidence.error or error
+        if not evidence.remaining_pids and remaining_pids:
+            evidence.remaining_pids = tuple(remaining_pids)
+
+    @property
+    def process_started(self) -> bool:
+        return bool(self.processes) or self._unidentified_started
+
+    @property
+    def termination_confirmed_dead(self) -> bool | None:
+        states = [item.state for item in self.processes.values()]
+        if self.unidentified is not None:
+            states.append(self.unidentified.state)
+        if not states:
+            return None
+        if all(state == ProcessDeathState.CONFIRMED_DEAD for state in states):
+            return True
+        if any(state == ProcessDeathState.UNCONFIRMED for state in states):
+            return False
+        return None
+
+    @property
+    def termination_failure_code(self) -> str | None:
+        """Failure code of the first identity that blocks a clean death proof."""
+        candidates = list(self.processes.values())
+        if self.unidentified is not None:
+            candidates.append(self.unidentified)
+        for evidence in candidates:
+            if evidence.state == ProcessDeathState.UNCONFIRMED and evidence.failure_code:
+                return evidence.failure_code
+        for evidence in candidates:
+            if evidence.failure_code:
+                return evidence.failure_code
+        return None
+
+    @property
+    def termination_error(self) -> str | None:
+        candidates = list(self.processes.values())
+        if self.unidentified is not None:
+            candidates.append(self.unidentified)
+        for evidence in candidates:
+            if evidence.state == ProcessDeathState.UNCONFIRMED and evidence.error:
+                return evidence.error
+        for evidence in candidates:
+            if evidence.error:
+                return evidence.error
+        return None
+
+    @property
+    def remaining_pids(self) -> tuple[int, ...]:
+        pids: list[int] = []
+        candidates = list(self.processes.values())
+        if self.unidentified is not None:
+            candidates.append(self.unidentified)
+        for evidence in candidates:
+            if evidence.state != ProcessDeathState.CONFIRMED_DEAD:
+                pids.extend(evidence.remaining_pids)
+        return tuple(sorted(set(pids)))
+
+    @property
+    def unconfirmed_identities(self) -> list[ProcessTerminationEvidence]:
+        """Identities whose death has not been confirmed (for diagnostics)."""
+        candidates = list(self.processes.values())
+        if self.unidentified is not None:
+            candidates.append(self.unidentified)
+        return [
+            evidence
+            for evidence in candidates
+            if evidence.state != ProcessDeathState.CONFIRMED_DEAD
+        ]
 
 
 _CURRENT_ATTEMPT_RUNTIME: ContextVar[AgentAttemptRuntimeState | None] = ContextVar(
@@ -127,25 +301,37 @@ def reset_agent_attempt_runtime(token) -> None:
     _CURRENT_ATTEMPT_RUNTIME.reset(token)
 
 
-def record_attempt_process_started() -> None:
-    """Mark that a local Agent process has started within the bound attempt."""
+def record_attempt_process_started(identity: "AgentProcessIdentity | None" = None) -> None:
+    """Mark that a local Agent process has started within the bound attempt.
+
+    The identity is mandatory for supervisor-owned processes: evidence is
+    keyed by the immutable process identity, never by the attempt alone.
+    """
     state = _CURRENT_ATTEMPT_RUNTIME.get()
     if state is not None:
-        state.record_process_started()
+        state.record_process_started(identity)
 
 
-def record_attempt_termination(termination: Any) -> None:
-    """Record a TerminationResult-like object into the bound attempt state."""
+def record_attempt_termination(
+    termination: Any,
+    identity: "AgentProcessIdentity | None" = None,
+) -> None:
+    """Record a TerminationResult-like object into the bound attempt state.
+
+    The evidence is written for ``identity`` exactly; callers must not let a
+    "last bridge" field guess which process a result belongs to.
+    """
     if termination is None:
         return
     confirmed_dead = getattr(termination, "confirmed_dead", None)
-    if confirmed_dead is None:
-        return
+    if confirmed_dead is not None:
+        confirmed_dead = bool(confirmed_dead)
     state = _CURRENT_ATTEMPT_RUNTIME.get()
     if state is None:
         return
     state.record_termination(
-        confirmed_dead=bool(confirmed_dead),
+        confirmed_dead=confirmed_dead,
+        identity=identity,
         failure_code=getattr(termination, "error_code", None),
         error=getattr(termination, "error_message", None),
         remaining_pids=tuple(getattr(termination, "remaining_pids", ()) or ()),
@@ -178,6 +364,10 @@ class AgentRunRequest:
     timeout_seconds: float = 7200.0
     startup_timeout_seconds: float = 60.0
     idle_timeout_seconds: float = 600.0
+    # Supervisor-side attach timeout for on_process_started (covers the real
+    # DB attach, not just a bridge-forwarded future).  None keeps the legacy
+    # behaviour where only the adapter's outer startup watchdog applies.
+    process_attach_timeout_seconds: float | None = None
     permission_mode: str = "default"
     metadata: dict[str, Any] = field(default_factory=dict)
     on_process_started: AgentProcessStartedCallback | None = None
@@ -230,6 +420,10 @@ class AgentCapabilities:
     supports_usage: bool = True
     skill_layouts: list[str] = field(default_factory=list)
     preferred_mode: Literal["subprocess", "server", "sdk", "acp"] = "subprocess"
+    # 执行类别声明（doc 6.3）：本地会创建受监管子进程的 backend 必须声明
+    # LOCAL_PROCESS；服务端/远程会话 backend 必须显式声明 REMOTE_SESSION，
+    # 不得通过“PID 为空”被推断。
+    execution_kind: Literal["LOCAL_PROCESS", "REMOTE_SESSION"] = "LOCAL_PROCESS"
 
 
 class AgentBackend(ABC):

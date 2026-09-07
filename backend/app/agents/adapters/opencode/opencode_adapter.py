@@ -45,6 +45,8 @@ class OpenCodeAdapter(AgentBackend):
         supports_usage=True,
         skill_layouts=["opencode"],
         preferred_mode="server",
+        # 服务端执行：不创建本地受监管子进程，必须显式声明（doc 6.3）。
+        execution_kind="REMOTE_SESSION",
     )
 
     def __init__(self, server_url: str = "http://127.0.0.1:4097") -> None:

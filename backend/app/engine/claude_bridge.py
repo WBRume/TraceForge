@@ -198,6 +198,7 @@ class SubprocessCliBridge(CliBridgeBase):
         fork_session: bool = False,
         permission_mode: str = "default",
         on_process_started: Optional[Callable[[Any], Any]] = None,
+        process_attach_timeout_seconds: Optional[float] = None,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -245,6 +246,7 @@ class SubprocessCliBridge(CliBridgeBase):
                 run_token=str(env.get("TRACEFORGE_RUN_TOKEN") or "") or None,
                 worker_boot_id=str(env.get("WORKER_BOOT_ID") or "") or None,
                 on_process_started=on_process_started,
+                process_attach_timeout_seconds=process_attach_timeout_seconds,
             )
             self.process = self._managed_process.process
 
@@ -321,6 +323,22 @@ class SubprocessCliBridge(CliBridgeBase):
         except Exception as e:
             logger.exception(f"Stderr read error: {e}")
 
+    def _record_termination(self, termination: Optional[TerminationResult]) -> None:
+        """Record a termination result under its exact process identity.
+
+        The evidence key comes from the supervisor-owned managed process;
+        the bridge never lets a "last result" guess which process it belongs
+        to (doc 4.3).
+        """
+        if termination is None:
+            return
+        identity = (
+            self._managed_process.process_identity
+            if self._managed_process is not None
+            else None
+        )
+        record_attempt_termination(termination, identity)
+
     async def wait(self) -> Optional[ProcessWaitResult]:
         """等待 CLI 进程结束"""
         if self._managed_process:
@@ -334,7 +352,7 @@ class SubprocessCliBridge(CliBridgeBase):
                 confirmed_dead=True,
                 root_return_code=return_code,
             )
-        record_attempt_termination(self.last_termination)
+        self._record_termination(self.last_termination)
         self._running = False
         if self._managed_process:
             return ProcessWaitResult(
@@ -371,6 +389,7 @@ class SubprocessCliBridge(CliBridgeBase):
             self.last_termination = await asyncio.shield(
                 self._managed_process.close(reason=reason)
             )
+            self._record_termination(self.last_termination)
             process_supervisor.forget(self._managed_process)
             return
 
@@ -395,7 +414,7 @@ class SubprocessCliBridge(CliBridgeBase):
             process_supervisor.forget(self._managed_process)
         elif self.process and self.process.returncode is None:
             await self.process.wait()
-        record_attempt_termination(self.last_termination)
+        self._record_termination(self.last_termination)
         return self.last_termination
 
     async def interrupt(self) -> Optional[TerminationResult]:
@@ -407,7 +426,7 @@ class SubprocessCliBridge(CliBridgeBase):
             process_supervisor.forget(self._managed_process)
         elif self.process and self.process.returncode is None:
             await self.process.wait()
-        record_attempt_termination(self.last_termination)
+        self._record_termination(self.last_termination)
         return self.last_termination
 
     def is_running(self) -> bool:

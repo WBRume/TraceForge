@@ -255,6 +255,11 @@ class LegacyBridgeShim:
             idle_timeout_seconds=float(
                 getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
             ),
+            # Supervisor-side attach timeout (real DB attach) so the outer
+            # startup watchdog is not the only ownership guarantee.
+            process_attach_timeout_seconds=float(
+                getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
+            ) or None,
             permission_mode=permission_mode,
             on_process_started=on_process_started,
         )

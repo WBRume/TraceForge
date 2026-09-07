@@ -122,6 +122,13 @@ class SddAiJob(Base):
     process_pid = Column(BigInteger, nullable=True)
     process_started_at = Column(DateTime, nullable=True)
     process_group_id = Column(BigInteger, nullable=True)
+    # Attempt containment identity, derived from the durable run token and
+    # persisted at claim time so the reaper can re-locate and drain the whole
+    # attempt after a worker restart even when the PID was never attached.
+    process_containment_id = Column(String(120), nullable=True)
+    # Explicit execution kind (LOCAL_PROCESS | REMOTE_SESSION); never infer it
+    # from an empty PID column.
+    process_execution_kind = Column(String(20), nullable=True)
     termination_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     failure_code = Column(String(64), nullable=True)
     terminal_reason = Column(Text, nullable=True)

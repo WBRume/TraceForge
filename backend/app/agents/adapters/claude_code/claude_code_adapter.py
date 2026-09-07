@@ -130,6 +130,7 @@ class ClaudeCodeAdapter(AgentBackend):
                 fork_session=bool(request.provider_options.get("fork_session")),
                 permission_mode=request.permission_mode,
                 on_process_started=request.on_process_started,
+                process_attach_timeout_seconds=request.process_attach_timeout_seconds,
             )
             try:
                 await watchdog.wait(program.wait())
@@ -159,6 +160,19 @@ class ClaudeCodeAdapter(AgentBackend):
                     ),
                     process_started=True,
                 ) from timeout_error
+        except AgentTimeoutError:
+            raise
+        except TimeoutError as startup_timeout_error:
+            # Supervisor-side attach timeout: the (uncancellable) cleanup has
+            # already finished inside the supervisor and its death proof is
+            # recorded in the attempt-local runtime state.  Convert to the
+            # typed startup timeout so callers see one error vocabulary.
+            raise AgentTimeoutError(
+                "Claude Code process attach timed out during startup",
+                phase="startup",
+                limit_seconds=request.process_attach_timeout_seconds,
+                process_started=True,
+            ) from startup_timeout_error
         except AgentError:
             raise
         except Exception as exc:
@@ -324,6 +338,11 @@ class ClaudeCodeAdapter(AgentBackend):
             idle_timeout_seconds=float(
                 getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
             ),
+            # The supervisor enforces the real attach timeout (DB attach), so
+            # the outer startup watchdog is only a secondary safety net.
+            process_attach_timeout_seconds=float(
+                getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
+            ) or None,
             permission_mode=permission_mode,
         )
         if fork_session:

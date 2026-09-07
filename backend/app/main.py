@@ -610,8 +610,13 @@ def health_check():
 @app.get("/health/ready")
 def readiness_check():
     worker_health = ai_job_service.runtime_worker_health()
+    containment = ai_job_service.process_containment_readiness()
     runtime_ready = bool(getattr(app.state, "ai_runtime_ready", False))
-    ready = runtime_ready and bool(worker_health.get("healthy", False))
+    ready = (
+        runtime_ready
+        and bool(worker_health.get("healthy", False))
+        and bool(containment.get("ok", True))
+    )
     status = "ready" if ready else ("degraded" if runtime_ready else "starting")
     return JSONResponse(
         status_code=200 if ready else 503,
@@ -620,6 +625,7 @@ def readiness_check():
             "ready": ready,
             "app": settings.APP_NAME,
             "workers": worker_health,
+            "process_containment": containment,
         },
     )
 
