@@ -59,6 +59,100 @@ def reset_agent_attempt(token) -> None:
 
 
 @dataclass
+class AgentAttemptRuntimeState:
+    """本次 attempt 的进程生命周期证据（attempt-local，随 AgentAttemptContext 绑定）。
+
+    语义约定（三态）：
+    - True  : 本地进程树已由 supervisor 确认全部死亡。
+    - False : 已确认无法证明进程树死亡，或仍有存活进程。
+    - None  : 尚未取得任何终止证据（无本地进程，或证据丢失）。
+
+    多次记录时 False 优先级高于 True；未知结果不得覆盖已有明确结果。
+    同一 worker 内不同作业并发运行，因此该状态必须是 attempt-local，
+    禁止使用进程级全局“最后一次 termination”变量。
+    """
+
+    process_started: bool = False
+    termination_confirmed_dead: bool | None = None
+    termination_failure_code: str | None = None
+    termination_error: str | None = None
+    remaining_pids: tuple[int, ...] = ()
+
+    def record_process_started(self) -> None:
+        self.process_started = True
+
+    def record_termination(
+        self,
+        *,
+        confirmed_dead: bool | None,
+        failure_code: str | None = None,
+        error: str | None = None,
+        remaining_pids: tuple[int, ...] = (),
+    ) -> None:
+        if confirmed_dead is None:
+            # 未知结果不得覆盖已有明确结果。
+            return
+        if confirmed_dead is False:
+            self.termination_confirmed_dead = False
+            self.termination_failure_code = failure_code or self.termination_failure_code
+            self.termination_error = error or self.termination_error
+            if remaining_pids:
+                self.remaining_pids = tuple(remaining_pids)
+            return
+        if self.termination_confirmed_dead is False:
+            # False 更保守，不能被后续成功证据降级。
+            return
+        self.termination_confirmed_dead = True
+        self.termination_failure_code = self.termination_failure_code or failure_code
+        self.termination_error = self.termination_error or error
+        if not self.remaining_pids and remaining_pids:
+            self.remaining_pids = tuple(remaining_pids)
+
+
+_CURRENT_ATTEMPT_RUNTIME: ContextVar[AgentAttemptRuntimeState | None] = ContextVar(
+    "traceforge_current_agent_attempt_runtime", default=None
+)
+
+
+def current_agent_attempt_runtime() -> AgentAttemptRuntimeState | None:
+    return _CURRENT_ATTEMPT_RUNTIME.get()
+
+
+def bind_agent_attempt_runtime(state: AgentAttemptRuntimeState):
+    """Bind attempt-local runtime evidence; caller resets the token."""
+    return _CURRENT_ATTEMPT_RUNTIME.set(state)
+
+
+def reset_agent_attempt_runtime(token) -> None:
+    _CURRENT_ATTEMPT_RUNTIME.reset(token)
+
+
+def record_attempt_process_started() -> None:
+    """Mark that a local Agent process has started within the bound attempt."""
+    state = _CURRENT_ATTEMPT_RUNTIME.get()
+    if state is not None:
+        state.record_process_started()
+
+
+def record_attempt_termination(termination: Any) -> None:
+    """Record a TerminationResult-like object into the bound attempt state."""
+    if termination is None:
+        return
+    confirmed_dead = getattr(termination, "confirmed_dead", None)
+    if confirmed_dead is None:
+        return
+    state = _CURRENT_ATTEMPT_RUNTIME.get()
+    if state is None:
+        return
+    state.record_termination(
+        confirmed_dead=bool(confirmed_dead),
+        failure_code=getattr(termination, "error_code", None),
+        error=getattr(termination, "error_message", None),
+        remaining_pids=tuple(getattr(termination, "remaining_pids", ()) or ()),
+    )
+
+
+@dataclass
 class SkillRef:
     """平台 Skill 引用。materialize_to 只是 hint，由 adapter 决定实际布局。"""
 

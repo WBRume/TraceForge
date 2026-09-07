@@ -1574,11 +1574,34 @@ def _update_preview_job_state(
     ):
         logger.warning("Dropped fenced requirement preview write: job_id={}", job.id)
         return
+    finalizing = status in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}
+    if finalizing:
+        # 统一 ownership 收敛：死亡已证明 → 清空归属；未证明 → ORPHANED 保留
+        # 归属交给 reaper（与 ai_job_service._update_job_state_sync 同一不变量）。
+        from app.domains.ai.services.ai_job_service import (
+            _attempt_termination_evidence,
+            _clear_process_ownership,
+        )
+
+        dead = _attempt_termination_evidence()
+        ownership_alive = job.process_pid is not None or job.process_group_id is not None
+        if dead is False or (ownership_alive and dead is not True):
+            job.status = AiJobStatus.ORPHANED
+            job.message = message or "Agent process could not be confirmed dead"
+            job.error_message = error
+            job.failure_code = "PROCESS_TREE_STILL_ALIVE"
+            job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
+            job.lease_expires_at = datetime.utcnow()
+            job.orphaned_at = job.orphaned_at or datetime.utcnow()
+            db.commit()
+            db.refresh(job)
+            return
+        _clear_process_ownership(job)
     if status is not None:
         job.status = status
         if status == AiJobStatus.RUNNING and job.started_at is None:
             job.started_at = datetime.utcnow()
-        if status in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
+        if finalizing:
             job.finished_at = datetime.utcnow()
     if progress is not None:
         job.progress = max(0, min(100, int(progress)))

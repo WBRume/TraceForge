@@ -250,7 +250,13 @@ def test_run_bootstrap_for_job_passes_attempt_identity_to_bridge(monkeypatch):
     async def fake_run(task_id, **kwargs):
         captured["task_id"] = task_id
         captured.update(kwargs)
-        return True
+        return {
+            "status": TaskCliBootstrapStatus.READY.value,
+            "error_message": None,
+            "failure_code": None,
+            "process_started": True,
+            "termination_confirmed_dead": True,
+        }
 
     async def fake_run_db(_fn, *_args, **_kwargs):
         return {
@@ -291,7 +297,13 @@ def test_run_bootstrap_for_job_passes_attempt_identity_to_bridge(monkeypatch):
 
 def test_run_bootstrap_for_job_rejects_changed_revision(monkeypatch):
     async def fake_run(*_args, **_kwargs):
-        return True
+        return {
+            "status": TaskCliBootstrapStatus.READY.value,
+            "error_message": None,
+            "failure_code": None,
+            "process_started": False,
+            "termination_confirmed_dead": None,
+        }
 
     async def fake_run_db(_fn, *_args, **_kwargs):
         return {
