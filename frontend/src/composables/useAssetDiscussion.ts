@@ -1,5 +1,6 @@
 import { computed, onBeforeUnmount, ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
@@ -159,11 +160,11 @@ type ThreadJobKind = 'THREAD_AI_REPLY' | 'RESOLUTION_PROPOSAL' | 'RESOLUTION_REW
 type UseAssetDiscussionOptions = {
   wsId: MaybeRefOrGetter<string>
   assetId: MaybeRefOrGetter<string | null | undefined>
-  userId: MaybeRefOrGetter<string | null | undefined>
 }
 
 export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
   const { t } = useI18n()
+  const authStore = useAuthStore()
   const documentData = ref<AssetDocumentPayload | null>(null)
   const versions = ref<AssetVersion[]>([])
   const threads = ref<AssetThread[]>([])
@@ -189,11 +190,6 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     const val = toValue(options.assetId)
     return val ? String(val) : ''
   })
-  const userIdRef = computed(() => {
-    const val = toValue(options.userId)
-    return val ? String(val) : 'anonymous'
-  })
-
   const activeVersionId = computed(() => documentData.value?.active_version?.id || '')
   const markersByBlock = computed<Record<string, AssetThreadMarker[]>>(() => {
     const map: Record<string, AssetThreadMarker[]> = {}
@@ -653,9 +649,9 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     }
   }
 
-  const buildWsUrl = (assetId: string, userId: string): string => {
+  const buildWsUrl = (assetId: string, token: string): string => {
     return buildBackendWsUrl(`/ws/assets/${assetId}/discussion`, {
-      userId: userId || 'anonymous',
+      token,
       ...buildWsCursorQuery(`asset:${assetId}`),
     })
   }
@@ -770,7 +766,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       ws.value = null
     }
 
-    const socket = new WebSocket(buildWsUrl(assetId, userIdRef.value))
+    const socket = new WebSocket(buildWsUrl(assetId, authStore.token || ''))
     ws.value = socket
     const consumer = createSerializedWsConsumer({
       room: `asset:${assetId}`,

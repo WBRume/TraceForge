@@ -387,6 +387,45 @@ export function useChatViewModel() {
     messages.value.push(item)
   }
 
+  const syncConfirmationCardsFromMessages = () => {
+    const confirmations = messages.value.filter((message) => (
+      message?.role === 'assistant'
+      && message?.metadata?.confirmation?.interaction_id
+    ))
+    const confirmationIds = new Set(confirmations.map(message => (
+      String(message.metadata.confirmation.interaction_id)
+    )))
+    pinnedCards.value = pinnedCards.value.filter(card => (
+      card.type !== 'hitl' || confirmationIds.has(String(card.interaction_id || ''))
+    ))
+    for (const message of confirmations) {
+      const confirmation = message.metadata.confirmation
+      const interactionId = String(confirmation.interaction_id)
+      const answer = messages.value.find((candidate) => (
+        candidate?.role === 'user'
+        && String(candidate?.metadata?.interaction_id || '') === interactionId
+      ))
+      const existing = pinnedCards.value.find(card => card.type === 'hitl' && card.interaction_id === interactionId)
+      const nextCard = {
+        id: `confirmation-${message.id}`,
+        type: 'hitl',
+        interaction_id: interactionId,
+        message_id: String(message.id),
+        hitl_type: String(confirmation.kind || 'text'),
+        prompt: String(message.content || ''),
+        options: Array.isArray(confirmation.options) ? confirmation.options : [],
+        context: String(message.metadata.context || ''),
+        job_id: String(message.metadata.job_id || ''),
+        answered: Boolean(answer),
+        answer: answer?.content || '',
+        tempInput: '',
+        created_at: message.created_at || new Date().toISOString(),
+      }
+      if (existing) Object.assign(existing, nextCard)
+      else pinnedCards.value.push(nextCard)
+    }
+  }
+
   const isMessageFromCurrentUser = (msg: any): boolean => {
     const creatorId = String(msg?.creator_id || '').trim()
     const currentUserId = String(authStore.user?.id || '').trim()
@@ -584,35 +623,8 @@ export function useChatViewModel() {
   }
   
   const upsertHitlCardFromJob = (job: ChatAiJob) => {
-    const pending = job.context_json?.pending_hitl
-    if (!pending || typeof pending !== 'object') return
-    const cardId = `job-hitl-${job.id}`
-    const existing = pinnedCards.value.find(card => card.id === cardId)
-    const hitlType = String(pending.hitl_type || 'text')
-    const options = Array.isArray(pending.options) ? pending.options : []
-    if (existing) {
-      existing.hitl_type = hitlType
-      existing.prompt = String(pending.prompt || '')
-      existing.options = options
-      existing.context = String(pending.context || '')
-      existing.answered = false
-      existing.job_id = job.id
-      existing.created_at = existing.created_at || new Date().toISOString()
-      return
-    }
-    pinnedCards.value.push({
-      id: cardId,
-      type: 'hitl',
-      hitl_type: hitlType,
-      prompt: String(pending.prompt || ''),
-      options,
-      context: String(pending.context || ''),
-      answered: false,
-      answer: '',
-      tempInput: '',
-      job_id: job.id,
-      created_at: new Date().toISOString(),
-    })
+    void job
+    syncConfirmationCardsFromMessages()
   }
   
   const markHitlCardAnswered = (jobId: string, answer: string) => {
@@ -631,9 +643,7 @@ export function useChatViewModel() {
       delete nextJobs[job.id]
     }
     activeChatJobs.value = nextJobs
-    if (job.status === 'WAITING_HITL') {
-      upsertHitlCardFromJob(job)
-    } else {
+    if (job.status !== 'WAITING_HITL') {
       const pendingCard = pinnedCards.value.find(item => item.type === 'hitl' && item.job_id === job.id && !item.answered)
       if (pendingCard) {
         pendingCard.answered = true
@@ -1831,6 +1841,7 @@ export function useChatViewModel() {
   
       if (reset) {
         messages.value = dedupeMessages(mapped)
+        syncConfirmationCardsFromMessages()
         // 还原终端日志（仅首次加载�?
         terminalLogs.value = hLogs.map((l: any) => {
           const createdAt = l.created_at || new Date().toISOString()
@@ -2515,6 +2526,7 @@ export function useChatViewModel() {
           can_undo: payload.can_undo,
           delivery_status: 'sent',
         })
+        syncConfirmationCardsFromMessages()
         scrollToBottom('chat')
         scheduleContextWindowRefresh()
         break
@@ -2558,6 +2570,7 @@ export function useChatViewModel() {
           } else if (messagePatch.content) {
             upsertChatMessage(messagePatch)
           }
+          syncConfirmationCardsFromMessages()
         }
         if (status === 'failed' || status === 'conflict') {
           ElMessage.error(payload.message || 'Message was not sent. Please retry.')
@@ -2672,42 +2685,6 @@ export function useChatViewModel() {
           timestamp: new Date(createdAt).toLocaleTimeString(),
         })
         scrollToBottom('terminal')
-        break
-      }
-  
-      case 'hitl_request': {
-        // HITL 交互 �?置顶富文本卡�?(不进入对话流)
-        const jobId = String(payload.job_id || '')
-        if (jobId) {
-          upsertHitlCardFromJob({
-            id: jobId,
-            task_id: payload.task_id,
-            status: 'WAITING_HITL',
-            progress: 60,
-            context_json: {
-              pending_hitl: {
-                prompt: payload.prompt,
-                hitl_type: payload.hitl_type,
-                options: payload.options,
-                context: payload.context,
-              },
-            },
-          })
-        } else {
-          pinnedCards.value.push({
-            id: Date.now().toString(),
-            type: 'hitl',
-            hitl_type: payload.hitl_type,
-            prompt: payload.prompt,
-            options: payload.options,
-            context: payload.context,
-            answered: false,
-            answer: '',
-            tempInput: '',
-            job_id: '',
-            created_at: new Date().toISOString(),
-          })
-        }
         break
       }
   
@@ -2837,33 +2814,28 @@ export function useChatViewModel() {
   }
   
   // ─── HITL 回复 ───
-  const submitHitl = (cardId: string, response: string) => {
+  const submitHitl = async (cardId: string, response: string) => {
     if (!response || isUndoing.value) return
     const card = pinnedCards.value.find(c => c.id === cardId)
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      if (currentTask.value?.id) connectWebSocket(currentTask.value.id)
-      return
-    }
-    ws.send(JSON.stringify({
-      type: 'hitl_response',
-      payload: {
-        response,
+    const sent = await sendChatContent(response, {
+      displayContent: response,
+      metadata: {
+        reply_to_message_id: card?.message_id,
+        interaction_id: card?.interaction_id,
+        confirmation_value: response,
         job_id: card?.job_id || undefined,
-      }
-    }))
-    if (card) {
+      },
+    })
+    if (sent && card) {
       card.answered = true
       card.answer = response
-    }
-    if (card?.job_id) {
-      markHitlCardAnswered(card.job_id, response)
     }
   }
   
   // ─── 用户发送消�?───
   const sendChatContent = async (
     content: string,
-    options: { displayContent?: string } = {},
+    options: { displayContent?: string; metadata?: Record<string, any> } = {},
   ): Promise<boolean> => {
     if (isTaskPreStart.value) {
       ElMessage.warning(t('chat.start_before_chat'))
@@ -2890,6 +2862,7 @@ export function useChatViewModel() {
           client_message_id: clientMessageId,
           delivery_status: 'sent',
           ...localUserMessageMeta(),
+          metadata: options.metadata || null,
         })
         applyTaskSessionPayload(payload)
         engineRunning.value = true
@@ -2919,13 +2892,19 @@ export function useChatViewModel() {
       client_message_id: clientMessageId,
       delivery_status: 'sending',
       ...localUserMessageMeta(),
+      metadata: options.metadata || null,
     })
   
     // 通过 WebSocket 发送给后端 �?CLI 引擎
     try {
       ws.send(JSON.stringify({
         type: 'chat_message',
-        payload: { role: 'user', content: normalized, client_message_id: clientMessageId }
+        payload: {
+          role: 'user',
+          content: normalized,
+          client_message_id: clientMessageId,
+          metadata: options.metadata || undefined,
+        }
       }))
       engineRunning.value = true
       scrollToBottom('chat')

@@ -407,10 +407,10 @@ const closeSocket = () => {
 const connectCollab = () => {
   closeSocket()
   if (!project.value?.id) return
-  const userId = authStore.user?.id || 'anonymous'
+  const token = authStore.token || ''
   const room = `api-mock:${project.value.id}`
   const url = buildBackendWsUrl(`/ws/api-mock/${project.value.id}`, {
-    userId,
+    token,
     ...buildWsCursorQuery(room),
   })
   const socket = new WebSocket(url)

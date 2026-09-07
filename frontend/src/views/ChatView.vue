@@ -157,6 +157,22 @@ const statusModelText = (card: any): string => {
   const match = String(card?.message || '').match(/\(model:\s*([^)]+)\)/i)
   return match?.[1]?.trim() || ''
 }
+
+const hitlOptionValue = (option: unknown): string => {
+  if (option && typeof option === 'object') {
+    const item = option as Record<string, unknown>
+    return String(item.value ?? item.label ?? '').trim()
+  }
+  return String(option ?? '').trim()
+}
+
+const hitlOptionLabel = (option: unknown): string => {
+  if (option && typeof option === 'object') {
+    const item = option as Record<string, unknown>
+    return String(item.label ?? item.value ?? '').trim()
+  }
+  return String(option ?? '').trim()
+}
 </script>
 <template>
   <div class="chat-layout">
@@ -493,6 +509,16 @@ const statusModelText = (card: any): string => {
             <template v-if="card.hitl_type === 'boolean'">
               <button class="btn-success" @click="vm.submitHitl(card.id, 'y')">{{ $t('common.confirm') }} (Y)</button>
               <button class="btn-danger" @click="vm.submitHitl(card.id, 'n')">{{ $t('common.cancel') }} (N)</button>
+            </template>
+            <template v-else-if="card.hitl_type === 'select' && card.options?.length">
+              <button
+                v-for="(option, index) in card.options"
+                :key="`${card.id}-option-${index}`"
+                class="btn-primary"
+                @click="vm.submitHitl(card.id, hitlOptionValue(option))"
+              >
+                {{ hitlOptionLabel(option) }}
+              </button>
             </template>
             <template v-else>
               <input

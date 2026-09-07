@@ -122,6 +122,7 @@ class ClaudeCodeAdapter(AgentBackend):
                 env_overrides=request.env or None,
                 fork_session=bool(request.provider_options.get("fork_session")),
                 permission_mode=request.permission_mode,
+                on_process_started=request.on_process_started,
             )
             try:
                 await watchdog.wait(program.wait())
@@ -258,6 +259,7 @@ class ClaudeCodeAdapter(AgentBackend):
         env_overrides: dict[str, str] | None = None,
         fork_session: bool = False,
         permission_mode: str = "default",
+        on_process_started=None,
     ) -> str:
         """旧 CliBridgeBase 入口：统一走 AgentBackend.run() + 底层日志/trace。"""
         from app.agents.run_logging import run_agent_backend_with_logging
@@ -309,12 +311,36 @@ class ClaudeCodeAdapter(AgentBackend):
             if asyncio.iscoroutine(result):
                 await result
 
+        started_future = asyncio.get_running_loop().create_future() if on_process_started else None
+
+        async def _started(identity) -> bool:
+            accepted = on_process_started(identity) if on_process_started else True
+            if asyncio.iscoroutine(accepted):
+                accepted = await accepted
+            if started_future is not None and not started_future.done():
+                started_future.set_result(bool(accepted))
+            return bool(accepted)
+
+        request.on_process_started = _started if on_process_started else None
+
         async def _run() -> None:
-            result = await run_agent_backend_with_logging(self, request, _on_event)
-            if result and result.session_id:
-                self._legacy_session_id = result.session_id
+            try:
+                result = await run_agent_backend_with_logging(self, request, _on_event)
+                if result and result.session_id:
+                    self._legacy_session_id = result.session_id
+            except BaseException as exc:
+                if started_future is not None and not started_future.done():
+                    started_future.set_exception(exc)
+                raise
 
         self._legacy_run_task = asyncio.create_task(_run())
+        if started_future is not None:
+            accepted = await asyncio.wait_for(
+                asyncio.shield(started_future),
+                timeout=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
+            )
+            if not accepted:
+                raise AgentError("Claude process was rejected by the current job attempt")
         return request.session_id or ""
 
     async def wait(self) -> None:

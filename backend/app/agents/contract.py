@@ -7,12 +7,24 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Literal
 
 from app.agents.events import AgentEvent
 from app.agents.errors import AgentError, AgentConfigurationError
 
 AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
+AgentProcessStartedCallback = Callable[["AgentProcessIdentity"], Awaitable[bool] | bool]
+
+
+@dataclass(frozen=True)
+class AgentProcessIdentity:
+    """Immutable identity captured before an Agent process can emit events."""
+
+    pid: int
+    started_at: datetime
+    process_group_id: int | None = None
+    containment_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +86,7 @@ class AgentRunRequest:
     idle_timeout_seconds: float = 600.0
     permission_mode: str = "default"
     metadata: dict[str, Any] = field(default_factory=dict)
+    on_process_started: AgentProcessStartedCallback | None = None
 
 
 @dataclass

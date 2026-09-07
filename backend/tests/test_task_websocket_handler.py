@@ -221,7 +221,7 @@ async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_hitl_response_resumes_waiting_job(monkeypatch):
+async def test_deprecated_hitl_response_is_ignored(monkeypatch):
     resume_job = AsyncMock(return_value=True)
     monkeypatch.setattr(
         task_handler.ai_job_service,
@@ -236,11 +236,7 @@ async def test_hitl_response_resumes_waiting_job(monkeypatch):
         }
     )
 
-    resume_job.assert_awaited_once_with(
-        task_id="task-1",
-        response="approved",
-        job_id="42",
-    )
+    resume_job.assert_not_awaited()
 
 
 @pytest.mark.asyncio

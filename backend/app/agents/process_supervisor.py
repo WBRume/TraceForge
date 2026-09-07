@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - packaging/runtime guard
     psutil = None  # type: ignore[assignment]
 
 from app.core.logging import get_logger
+from app.agents.contract import AgentProcessIdentity
 
 logger = get_logger(__name__, category="agent_process")
 
@@ -97,6 +98,8 @@ class TerminationResult:
     elapsed_ms: int = 0
     error_code: Optional[str] = None
     error_message: Optional[str] = None
+    remaining_pids: tuple[int, ...] = ()
+    root_identity_matches: Optional[bool] = None
 
 
 def _windows_job_object() -> Optional[int]:
@@ -179,6 +182,8 @@ class ManagedAgentProcess:
     monitor_task: Optional[asyncio.Task] = None
     stop_monitor: bool = False
     _closed: bool = False
+    process_start_time: Optional[float] = None
+    process_group_id: Optional[int] = None
 
     @property
     def pid(self) -> int:
@@ -186,12 +191,26 @@ class ManagedAgentProcess:
 
     @property
     def process_started_at(self) -> Optional[float]:
+        if self.process_start_time is not None:
+            return self.process_start_time
         if psutil is None:
             return self.created_at
         try:
             return float(psutil.Process(self.pid).create_time())
         except (psutil.Error, OSError, ValueError):
             return self.created_at
+
+    @property
+    def process_identity(self) -> AgentProcessIdentity:
+        started = self.process_started_at or self.created_at
+        group_id = self.process_group_id if os.name != "nt" else None
+        containment_id = f"job:{self.job_handle:x}" if self.job_handle else None
+        return AgentProcessIdentity(
+            pid=self.pid,
+            started_at=datetime.fromtimestamp(started, tz=timezone.utc),
+            process_group_id=group_id,
+            containment_id=containment_id,
+        )
 
     def add_reader_task(self, task: asyncio.Task) -> None:
         self.reader_tasks.append(task)
@@ -203,6 +222,9 @@ class ManagedAgentProcess:
             proc = psutil.Process(self.pid)
             if proc.status() == psutil.STATUS_ZOMBIE:
                 return False
+            if self.process_start_time is not None:
+                if abs(float(proc.create_time()) - self.process_start_time) > 2.0:
+                    return False
             return proc.is_running()
         except (psutil.Error, OSError, ValueError):
             return False
@@ -238,7 +260,9 @@ class ManagedAgentProcess:
             return True
         if psutil is None:
             return self.process.returncode is None
-        if any(psutil.pid_exists(pid) for pid in self.known_descendant_pids):
+        if any(self._pid_is_live(pid) for pid in self.known_descendant_pids):
+            return True
+        if os.name != "nt" and self._posix_group_has_live_processes():
             return True
         try:
             root = psutil.Process(self.pid)
@@ -252,6 +276,42 @@ class ManagedAgentProcess:
                 except (ProcessLookupError, PermissionError, OSError):
                     pass
             return self._root_matches()
+
+    @staticmethod
+    def _pid_is_live(pid: int) -> bool:
+        if psutil is None:
+            return False
+        try:
+            proc = psutil.Process(int(pid))
+            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+        except (psutil.Error, OSError, ValueError):
+            return False
+
+    def _posix_group_pids(self) -> set[int]:
+        if os.name == "nt" or not self.process_group_id:
+            return set()
+        try:
+            os.killpg(int(self.process_group_id), 0)
+        except (ProcessLookupError, PermissionError, OSError):
+            return set()
+        if psutil is None:
+            return {self.pid}
+        pids: set[int] = set()
+        try:
+            for proc in psutil.process_iter(["pid", "status"]):
+                try:
+                    if proc.status() == psutil.STATUS_ZOMBIE:
+                        continue
+                    if os.getpgid(proc.pid) == int(self.process_group_id):
+                        pids.add(int(proc.pid))
+                except (psutil.Error, OSError, ValueError):
+                    continue
+        except (psutil.Error, OSError, ValueError):
+            return {self.pid}
+        return pids
+
+    def _posix_group_has_live_processes(self) -> bool:
+        return bool(self._posix_group_pids())
 
     async def _wait_for_exit(self, timeout: float) -> bool:
         if self.process.returncode is None:
@@ -271,11 +331,12 @@ class ManagedAgentProcess:
         try:
             # start_new_session=True makes the root PID the process-group ID;
             # retaining it also lets us kill descendants after the root exits.
-            pgid = self.pid
-            try:
-                pgid = os.getpgid(self.pid)
-            except ProcessLookupError:
-                pass
+            pgid = self.process_group_id or self.pid
+            if not self.process_group_id:
+                try:
+                    pgid = os.getpgid(self.pid)
+                except ProcessLookupError:
+                    pass
             os.killpg(pgid, sig)
             return True
         except ProcessLookupError:
@@ -336,21 +397,38 @@ class ManagedAgentProcess:
 
     async def close(self, reason: str = "close") -> TerminationResult:
         result = await self._terminate(reason=reason, graceful=True)
-        self.stop_monitor = True
-        if self.monitor_task is not None:
-            self.monitor_task.cancel()
-            await asyncio.gather(self.monitor_task, return_exceptions=True)
-            self.monitor_task = None
-        await self._reap_readers()
-        _close_windows_handle(self.job_handle)
-        self.job_handle = None
-        self._closed = True
+        await self._reap_readers(timeout=2.0)
+        if result.confirmed_dead:
+            self.stop_monitor = True
+            if self.monitor_task is not None:
+                self.monitor_task.cancel()
+                await asyncio.gather(self.monitor_task, return_exceptions=True)
+                self.monitor_task = None
+            _close_windows_handle(self.job_handle)
+            self.job_handle = None
+            self._closed = True
+        else:
+            logger.error(
+                "Keeping unsafely terminated Agent process tracked: pid={}, remaining_pids={}",
+                self.pid,
+                result.remaining_pids,
+            )
         return result
 
-    async def _reap_readers(self) -> None:
+    async def _reap_readers(self, timeout: float = 2.0) -> None:
         if not self.reader_tasks:
             return
-        await asyncio.gather(*self.reader_tasks, return_exceptions=True)
+        tasks = list(self.reader_tasks)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=max(0.1, timeout),
+            )
+        except asyncio.TimeoutError:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         self.reader_tasks.clear()
 
     async def _terminate(self, *, reason: str, graceful: bool) -> TerminationResult:
@@ -427,7 +505,27 @@ class ManagedAgentProcess:
             elapsed_ms=int((time.monotonic() - started) * 1000),
             error_code=error_code,
             error_message=error_message,
+            remaining_pids=self._remaining_pids(),
+            root_identity_matches=self._root_identity_matches(),
         )
+
+    def _root_identity_matches(self) -> Optional[bool]:
+        if psutil is None:
+            return None
+        try:
+            proc = psutil.Process(self.pid)
+            if self.process_start_time is None:
+                return True
+            return abs(float(proc.create_time()) - self.process_start_time) <= 2.0
+        except (psutil.Error, OSError, ValueError):
+            return False
+
+    def _remaining_pids(self) -> tuple[int, ...]:
+        pids = {pid for pid in self.known_descendant_pids if self._pid_is_live(pid)}
+        pids.update(self._posix_group_pids())
+        if self._root_matches():
+            pids.add(self.pid)
+        return tuple(sorted(pids))
 
     async def wait(self) -> int:
         try:
@@ -441,7 +539,7 @@ class ManagedAgentProcess:
                 self.monitor_task.cancel()
                 await asyncio.gather(self.monitor_task, return_exceptions=True)
                 self.monitor_task = None
-            await self._reap_readers()
+            await self._reap_readers(timeout=2.0)
 
     async def __aenter__(self) -> "ManagedAgentProcess":
         return self
@@ -468,6 +566,7 @@ class ProcessSupervisor:
         env: dict[str, str],
         run_token: Optional[str] = None,
         worker_boot_id: Optional[str] = None,
+        on_process_started: Optional[Any] = None,
     ) -> ManagedAgentProcess:
         kwargs: dict[str, Any] = {
             "stdin": asyncio.subprocess.DEVNULL,
@@ -490,6 +589,12 @@ class ProcessSupervisor:
             worker_boot_id=worker_boot_id,
             job_handle=_windows_job_object() if os.name == "nt" else None,
         )
+        managed.process_start_time = managed.process_started_at
+        if os.name != "nt":
+            try:
+                managed.process_group_id = os.getpgid(process.pid)
+            except (ProcessLookupError, OSError):
+                managed.process_group_id = process.pid
         if os.name == "nt":
             try:
                 if not managed.job_handle:
@@ -529,6 +634,24 @@ class ProcessSupervisor:
         self._processes.add(managed)
         if psutil is not None:
             managed.monitor_task = asyncio.create_task(self._monitor_tree(managed))
+        if on_process_started is not None:
+            try:
+                accepted = on_process_started(managed.process_identity)
+                if asyncio.iscoroutine(accepted):
+                    accepted = await accepted
+            except Exception:
+                # A failed durable attach is indistinguishable from a
+                # rejected attempt: close the tree before propagating the
+                # callback error, while retaining it if death is unconfirmed.
+                result = await managed.close(reason="attempt_fence_callback_failed")
+                if result.confirmed_dead:
+                    self._processes.discard(managed)
+                raise
+            if not accepted:
+                result = await managed.close(reason="attempt_fence_rejected")
+                if result.confirmed_dead:
+                    self._processes.discard(managed)
+                raise RuntimeError("Agent process could not be attached to the current job attempt")
         return managed
 
     @staticmethod
@@ -588,22 +711,68 @@ class ProcessSupervisor:
         except (psutil.Error, OSError, ValueError):
             return False
 
+    @staticmethod
+    async def _wait_persisted_tree_gone(
+        pid: int,
+        process_group_id: Optional[int],
+        timeout: float = 5.0,
+    ) -> bool:
+        """Wait for the persisted root and its POSIX process group to exit.
+
+        The root can disappear before a wrapper-spawned child.  A PID-only
+        check would therefore incorrectly report a successful reclaim while
+        the agent still owns live descendants.
+        """
+        if os.name == "nt" or not process_group_id:
+            return await ProcessSupervisor._wait_persisted_pid_gone(pid, timeout)
+
+        deadline = time.monotonic() + max(0.1, timeout)
+        group_id = int(process_group_id)
+        while time.monotonic() < deadline:
+            root_gone = await ProcessSupervisor._wait_persisted_pid_gone(pid, timeout=0.1)
+            group_alive = False
+            try:
+                os.killpg(group_id, 0)
+                if psutil is not None:
+                    for proc in psutil.process_iter(["pid", "status"]):
+                        try:
+                            if proc.status() == psutil.STATUS_ZOMBIE:
+                                continue
+                            if os.getpgid(proc.pid) == group_id:
+                                group_alive = True
+                                break
+                        except (psutil.Error, OSError, ValueError):
+                            continue
+                else:
+                    group_alive = True
+            except (ProcessLookupError, PermissionError, OSError):
+                group_alive = False
+            if root_gone and not group_alive:
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
     async def stop_attempt(self, run_token: str, reason: str) -> Optional[TerminationResult]:
         matches = [item for item in self._processes if item.run_token == run_token]
         if not matches:
             return None
         result = await matches[0].close(reason=reason)
-        self._processes.discard(matches[0])
+        if result.confirmed_dead or result.error_code == "PID_REUSED":
+            self._processes.discard(matches[0])
         return result
 
     def forget(self, managed: ManagedAgentProcess) -> None:
-        self._processes.discard(managed)
+        if managed._closed or (
+            managed.process.returncode is not None and not managed._tree_has_live_processes()
+        ):
+            self._processes.discard(managed)
 
     async def stop_persisted(
         self,
         pid: Optional[int],
         process_started_at: Optional[datetime],
         reason: str,
+        process_group_id: Optional[int] = None,
     ) -> TerminationResult:
         """Stop a process from a previous boot only after ownership checks."""
         started = time.monotonic()
@@ -659,21 +828,24 @@ class ProcessSupervisor:
                         error_message=f"Persisted process tree {pid} is still alive",
                     )
             else:
-                children = proc.children(recursive=True)
-                for child in children:
+                group_id = int(process_group_id or pid)
+                try:
+                    os.killpg(group_id, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.terminate()
+                if not await self._wait_persisted_tree_gone(
+                    int(pid), group_id, timeout=3.0
+                ):
                     try:
-                        child.terminate()
-                    except psutil.Error:
-                        pass
-                proc.terminate()
-                _, alive = psutil.wait_procs([proc, *children], timeout=3.0)
-                for child in alive:
-                    try:
-                        child.kill()
-                    except psutil.Error:
-                        pass
-                if alive:
-                    _, alive = psutil.wait_procs(alive, timeout=5.0)
+                        os.killpg(group_id, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        try:
+                            proc.kill()
+                        except psutil.Error:
+                            pass
+                alive = [] if await self._wait_persisted_tree_gone(
+                    int(pid), group_id, timeout=5.0
+                ) else [proc]
                 if alive:
                     return TerminationResult(
                         False, None, signals_sent=("SIGTERM", "SIGKILL"),
@@ -682,11 +854,9 @@ class ProcessSupervisor:
                         error_code="PROCESS_TREE_STILL_ALIVE",
                         error_message=f"Persisted process tree {pid} is still alive",
                     )
-            try:
-                psutil.Process(int(pid))
-                confirmed = False
-            except psutil.NoSuchProcess:
-                confirmed = True
+            confirmed = await self._wait_persisted_tree_gone(
+                int(pid), process_group_id, timeout=0.1
+            )
             return TerminationResult(
                 confirmed,
                 None,
@@ -712,11 +882,12 @@ class ProcessSupervisor:
             *(item.close(reason=reason) for item in processes),
             return_exceptions=True,
         )
-        self._processes.clear()
         output: list[TerminationResult] = []
-        for result in results:
+        for managed, result in zip(processes, results):
             if isinstance(result, TerminationResult):
                 output.append(result)
+                if result.confirmed_dead:
+                    self._processes.discard(managed)
             else:
                 output.append(
                     TerminationResult(

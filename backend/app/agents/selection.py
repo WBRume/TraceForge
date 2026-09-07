@@ -206,6 +206,7 @@ class LegacyBridgeShim:
         env_overrides: Optional[Dict[str, str]] = None,
         fork_session: bool = False,
         permission_mode: str = "default",
+        on_process_started=None,
     ) -> str:
         from app.agents.contract import AgentRunRequest
         from app.agents.errors import AgentError
@@ -255,6 +256,7 @@ class LegacyBridgeShim:
                 getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
             ),
             permission_mode=permission_mode,
+            on_process_started=on_process_started,
         )
 
         async def _on_event(agent_event) -> None:

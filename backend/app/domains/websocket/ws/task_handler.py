@@ -2,23 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
-from app.agents.selection import resolve_task_backend
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service, chat_message_idempotency_service
 from app.domains.ai.services.chat_message_idempotency_service import ChatMessageClaim
-from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import (
     pre_input_service,
@@ -48,6 +45,7 @@ class TaskWebSocketUser:
 class _ChatMessageRequest:
     content: str
     client_message_id: str
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class TaskWebSocketHandler:
@@ -116,7 +114,7 @@ class TaskWebSocketHandler:
         if message_type == "chat_message":
             await self._handle_chat_message(message)
         elif message_type == "hitl_response":
-            await self._handle_hitl_response(message)
+            task_logger.warning("Ignored deprecated hitl_response frame for task %s", self._task_id)
         elif isinstance(message_type, str) and message_type.startswith("pre_input_"):
             await self._handle_pre_input(message_type, self._payload(message))
         elif message_type == "resync_complete":
@@ -147,7 +145,12 @@ class TaskWebSocketHandler:
             or message.get("client_message_id")
             or uuid.uuid4()
         ).strip()
-        return _ChatMessageRequest(content=content, client_message_id=client_message_id)
+        metadata = payload.get("metadata")
+        return _ChatMessageRequest(
+            content=content,
+            client_message_id=client_message_id,
+            metadata=metadata if isinstance(metadata, dict) else {},
+        )
 
     async def _handle_chat_message(self, message: dict[str, Any]) -> None:
         request = self._parse_chat_message(message)
@@ -169,6 +172,17 @@ class TaskWebSocketHandler:
         if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
             await self._resume_interrupted_task(request, claim)
             return
+        interaction_id = str(request.metadata.get("interaction_id") or "").strip()
+        reply_to_message_id = str(request.metadata.get("reply_to_message_id") or "").strip()
+        if interaction_id and reply_to_message_id:
+            live_delivery = await ai_job_service.confirmation_delivery_available(
+                task_id=self._task_id,
+                interaction_id=interaction_id,
+                job_id=str(request.metadata.get("job_id") or "") or None,
+            )
+            if live_delivery:
+                await self._persist_confirmation_reply(request, claim)
+                return
         created = await self._persist_chat_message(request, claim)
 
         if created is not None:
@@ -237,7 +251,10 @@ class TaskWebSocketHandler:
                     task_id=self._task_id,
                     actor_user_id=self._user.id,
                     content=request.content,
-                    context_json={"client_message_id": request.client_message_id},
+                    context_json={
+                        "client_message_id": request.client_message_id,
+                        **request.metadata,
+                    },
                     client_message_id=request.client_message_id,
                 )
             await chat_message_idempotency_service.mark_message_done(
@@ -305,6 +322,80 @@ class TaskWebSocketHandler:
                 f"Failed to clear chat idempotency claim for task {self._task_id}"
             )
 
+    async def _persist_confirmation_reply(
+        self,
+        request: _ChatMessageRequest,
+        claim: ChatMessageClaim,
+    ) -> None:
+        try:
+            async with lock_task(self._task_id):
+                created = await task_session_service.create_confirmation_reply_message(
+                    task_id=self._task_id,
+                    actor_user_id=self._user.id,
+                    content=request.content,
+                    client_message_id=request.client_message_id,
+                    interaction_id=str(request.metadata.get("interaction_id") or ""),
+                    reply_to_message_id=str(request.metadata.get("reply_to_message_id") or ""),
+                    confirmation_value=request.metadata.get("confirmation_value"),
+                )
+            await chat_message_idempotency_service.mark_message_done(
+                claim,
+                chat_message_id=created.message_id,
+                ai_job_id=None,
+            )
+            created_at = created.created_at.isoformat() if created.created_at else None
+            await self._send_chat_ack(
+                request,
+                status="accepted",
+                chat_message_id=created.message_id,
+                created_at=created_at,
+                session_generation=created.session_generation,
+            )
+            await self._manager.send_message_to_room(
+                self._task_id,
+                WSMessage(
+                    type="chat_message",
+                    payload=WSChatPayload(
+                        task_id=self._task_id,
+                        role="user",
+                        content=request.content,
+                        metadata=request.metadata,
+                        message_type="text",
+                        id=created.message_id,
+                        client_message_id=request.client_message_id,
+                        creator_id=self._user.id,
+                        creator_display_name=self._user.display_name,
+                        creator_is_workspace_expert=self._user.is_workspace_expert,
+                        creator_avatar_url=self._user.avatar_url,
+                        creator_avatar_svg=self._user.avatar_svg,
+                        created_at=created_at,
+                        session_generation=created.session_generation,
+                    ).model_dump(),
+                ),
+            )
+            delivered = await ai_job_service.deliver_confirmation_response(
+                task_id=self._task_id,
+                interaction_id=str(request.metadata.get("interaction_id") or ""),
+                response=request.content,
+                job_id=str(request.metadata.get("job_id") or "") or None,
+            )
+            if not delivered:
+                task_logger.warning(
+                    "Confirmation reply persisted but provider delivery was lost: task=%s",
+                    self._task_id,
+                )
+        except (
+            task_session_service.TaskSessionUndoError,
+            task_session_control_service.TaskSessionControlError,
+            LockAcquireTimeout,
+        ) as exc:
+            await self._mark_chat_claim_failed(claim)
+            await self._send_chat_ack(
+                request,
+                status="failed",
+                message="Task is busy; please retry." if isinstance(exc, LockAcquireTimeout) else str(exc),
+            )
+
     async def _publish_chat_message(
         self,
         request: _ChatMessageRequest,
@@ -330,6 +421,7 @@ class TaskWebSocketHandler:
                         task_id=self._task_id,
                         role="user",
                         content=request.content,
+                        metadata=request.metadata,
                         message_type="text",
                         id=created.message_id,
                         client_message_id=request.client_message_id,
@@ -372,6 +464,7 @@ class TaskWebSocketHandler:
             "ai_job_id": ai_job_id,
             "role": "user",
             "content": request.content,
+            "metadata": request.metadata,
             "message_type": "text",
             "creator_id": self._user.id,
             "creator_display_name": self._user.display_name,
@@ -383,77 +476,6 @@ class TaskWebSocketHandler:
             "message": message,
         }
         self._send_to_self({"type": "chat_message_ack", "payload": payload})
-
-    async def _handle_hitl_response(self, message: dict[str, Any]) -> None:
-        payload = self._payload(message)
-        response = str(payload.get("response") or "")
-        job_id = payload.get("job_id")
-        if not response.strip():
-            return
-
-        task_logger.info(
-            f"HITL response for task {self._task_id}: message_length={len(response)}"
-        )
-        try:
-            resumed = await ai_job_service.resume_waiting_hitl_job(
-                task_id=self._task_id,
-                response=response.strip(),
-                job_id=str(job_id) if job_id else None,
-            )
-        except ai_job_service.AiJobConflictError as exc:
-            # 会话/总结互斥：总结进行中拒绝恢复会话（不能让 WS 连接断开）
-            task_logger.warning(f"HITL response rejected for task {self._task_id}: {exc}")
-            self._send_to_self(
-                {
-                    "type": "hitl_rejected",
-                    "payload": {"task_id": self._task_id, "message": str(exc)},
-                }
-            )
-            return
-        if resumed:
-            return
-
-        engine = self._engine_getter(self._task_id)
-        if engine:
-            asyncio.create_task(engine.send_message(response))
-            return
-
-        await self._rebuild_engine_for_hitl(response)
-
-    async def _rebuild_engine_for_hitl(self, response: str) -> None:
-        task_meta = await run_db(self._load_hitl_task_meta_sync)
-        if not task_meta:
-            task_logger.warning(
-                f"No engine and task not found for HITL task {self._task_id}, "
-                "response ignored"
-            )
-            return
-        task_logger.warning(
-            f"No engine for HITL task {self._task_id}, "
-            "rebuilding engine from DB and running response"
-        )
-        recovered_engine = self._engine_factory(
-            task_id=task_meta["id"],
-            ws_id=task_meta["workspace_id"],
-            user_id=self._user.id,
-            backend_name=task_meta["agent_backend"],
-        )
-        asyncio.create_task(recovered_engine.run(response))
-
-    def _load_hitl_task_meta_sync(self) -> dict | None:
-        """HITL 重建所需的任务元数据（线程内执行：含 resolve_task_backend 的查询/提交）。"""
-        db = self._session_factory()
-        try:
-            task = db.query(SddTask).filter(SddTask.id == self._task_id).first()
-            if not task:
-                return None
-            return {
-                "id": task.id,
-                "workspace_id": task.workspace_id,
-                "agent_backend": resolve_task_backend(db, task.id),
-            }
-        finally:
-            db.close()
 
     async def _handle_pre_input(
         self,

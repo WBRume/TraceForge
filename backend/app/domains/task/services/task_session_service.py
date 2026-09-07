@@ -124,6 +124,15 @@ class CreatedChatTurn:
     can_undo: bool = True
 
 
+@dataclass(frozen=True)
+class CreatedConfirmationReply:
+    task_id: str
+    workspace_id: str
+    message_id: str
+    created_at: Optional[datetime]
+    session_generation: Optional[int]
+
+
 def _prepare_chat_turn_sync(
     db: Session,
     *,
@@ -348,6 +357,95 @@ async def create_task_chat_turn(
                     str(cleanup_exc),
                 )
         raise
+
+
+def _persist_confirmation_reply_sync(
+    db: Session,
+    *,
+    task_id: str,
+    actor_user_id: str,
+    content: str,
+    client_message_id: str,
+    interaction_id: str,
+    reply_to_message_id: str,
+    confirmation_value: Any,
+) -> CreatedConfirmationReply:
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    if not task:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    parent = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.id == reply_to_message_id, ChatMessage.task_id == task_id)
+        .first()
+    )
+    parent_metadata = parent.metadata_json if parent and isinstance(parent.metadata_json, dict) else {}
+    confirmation = parent_metadata.get("confirmation") if isinstance(parent_metadata, dict) else None
+    if not parent or parent.role != "assistant" or not isinstance(confirmation, dict):
+        raise TaskSessionUndoError("Confirmation message not found", code="CONFIRMATION_NOT_FOUND", status_code=409)
+    if str(confirmation.get("interaction_id") or "") != str(interaction_id):
+        raise TaskSessionUndoError("Confirmation interaction does not match", code="CONFIRMATION_MISMATCH", status_code=409)
+    for existing in db.query(ChatMessage).filter(
+        ChatMessage.task_id == task_id,
+        ChatMessage.role == "user",
+    ).all():
+        metadata = existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
+        if str(metadata.get("interaction_id") or "") == str(interaction_id):
+            return CreatedConfirmationReply(
+                task_id=task_id,
+                workspace_id=str(task.workspace_id),
+                message_id=str(existing.id),
+                created_at=existing.created_at,
+                session_generation=existing.session_generation,
+            )
+    message = _new_chat_message(
+        db,
+        task_id=task_id,
+        workspace_id=str(task.workspace_id),
+        actor_user_id=actor_user_id,
+        content=content,
+        metadata_json={
+            "client_message_id": client_message_id,
+            "reply_to_message_id": reply_to_message_id,
+            "interaction_id": interaction_id,
+            "confirmation_value": confirmation_value,
+        },
+        session_generation=int(getattr(task, "session_generation", 0) or 0),
+    )
+    db.commit()
+    db.refresh(message)
+    return CreatedConfirmationReply(
+        task_id=task_id,
+        workspace_id=str(task.workspace_id),
+        message_id=str(message.id),
+        created_at=message.created_at,
+        session_generation=message.session_generation,
+    )
+
+
+async def create_confirmation_reply_message(
+    *,
+    task_id: str,
+    actor_user_id: str,
+    content: str,
+    client_message_id: str,
+    interaction_id: str,
+    reply_to_message_id: str,
+    confirmation_value: Any,
+) -> CreatedConfirmationReply:
+    if not str(content or "").strip():
+        raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
+    return await run_db_txn(
+        lambda db: _persist_confirmation_reply_sync(
+            db,
+            task_id=task_id,
+            actor_user_id=actor_user_id,
+            content=content,
+            client_message_id=client_message_id,
+            interaction_id=interaction_id,
+            reply_to_message_id=reply_to_message_id,
+            confirmation_value=confirmation_value,
+        )
+    )
 
 
 def _load_turn_target(db: Session, task: SddTask, message_id: str) -> tuple[TaskSessionTurn, ChatMessage]:

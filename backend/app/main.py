@@ -25,9 +25,10 @@ logger = get_logger(__name__)
 api_mock_logger = get_logger(__name__, category="api_mock")
 
 from app.database import SessionLocal
-from app.domains.api_mock.models.api_mock import ApiMockCollabEventType
+from app.domains.api_mock.models.api_mock import ApiMockCollabEventType, SddApiMockProject
 from app.domains.task.models.task import SddTask
 from app.domains.auth.models.user import User, WorkspaceMember
+from app.domains.asset.models.asset import SddAsset
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.domains.ai.routers import agent
 from app.domains.auth.routers import auth, oauth
@@ -254,6 +255,60 @@ async def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
     return await run_db(_load)
 
 
+async def _authenticate_resource_ws(
+    websocket: WebSocket,
+    *,
+    resource_kind: str,
+    resource_id: str,
+) -> dict | None:
+    """Authenticate resource sockets before any manager can accept them.
+
+    The token subject is authoritative.  The resource-to-workspace membership
+    check is deliberately a single synchronous DB query executed off-loop.
+    """
+    token = str(websocket.query_params.get("token") or "").strip()
+    if not token:
+        return None
+    try:
+        payload = auth_service.decode_token(token, expected_type="access")
+    except JWTError:
+        return None
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        return None
+
+    def _load() -> dict | None:
+        db = SessionLocal()
+        try:
+            resource_model = {
+                "api_mock": SddApiMockProject,
+                "asset": SddAsset,
+            }.get(resource_kind)
+            if resource_model is None:
+                return None
+            row = (
+                db.query(User.id, User.display_name, WorkspaceMember.is_expert)
+                .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
+                .join(resource_model, resource_model.workspace_id == WorkspaceMember.workspace_id)
+                .filter(
+                    User.id == user_id,
+                    resource_model.id == resource_id,
+                )
+                .first()
+            )
+            if not row:
+                return None
+            return {
+                "user_id": str(row[0]),
+                "display_name": row[1],
+                "is_workspace_expert": bool(row[2]),
+            }
+        finally:
+            db.close()
+
+    return await run_db(_load)
+
+
 def _ws_resume_query(websocket: WebSocket) -> tuple[str | None, str | None, int | None]:
     """Read a tab-scoped cursor; never substitute user_id for client_id."""
     client_id = str(websocket.query_params.get("client_id") or "").strip() or None
@@ -375,7 +430,15 @@ async def notification_websocket_endpoint(websocket: WebSocket):
 
 @app.websocket("/ws/api-mock/{project_id}")
 async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
-    user_id = websocket.query_params.get("userId", "anonymous")
+    ws_context = await _authenticate_resource_ws(
+        websocket,
+        resource_kind="api_mock",
+        resource_id=project_id,
+    )
+    if not ws_context:
+        await websocket.close(code=1008, reason="Unauthorized API mock websocket")
+        return
+    user_id = str(ws_context["user_id"])
     client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(project_id=project_id, user_id=user_id):
         await api_mock_ws_manager.connect(
@@ -457,7 +520,15 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
 
 @app.websocket("/ws/assets/{asset_id}/discussion")
 async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: str):
-    user_id = websocket.query_params.get("userId", "anonymous")
+    ws_context = await _authenticate_resource_ws(
+        websocket,
+        resource_kind="asset",
+        resource_id=asset_id,
+    )
+    if not ws_context:
+        await websocket.close(code=1008, reason="Unauthorized asset discussion websocket")
+        return
+    user_id = str(ws_context["user_id"])
     client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(asset_id=asset_id, user_id=user_id):
         await asset_discussion_ws_manager.connect(

@@ -100,7 +100,18 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
             events.append("flush")
 
         with (
-            patch("app.engine.workflow_engine.run_db", AsyncMock()),
+            patch(
+                "app.engine.workflow_engine.run_db",
+                AsyncMock(
+                    return_value={
+                        "role": "assistant",
+                        "content": "需要确认",
+                        "metadata": {
+                            "confirmation": {"interaction_id": "interaction-1"}
+                        },
+                    }
+                ),
+            ),
             patch.object(engine, "_flush_segments", _capture_flush),
         ):
             await engine._push_hitl(prompt="需要确认", hitl_type="text")
@@ -108,7 +119,11 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
         # 强制 flush 发生在 WS 广播之前
         self.assertEqual(events, ["flush"])
         engine._ws_push.assert_awaited_once()
-        self.assertEqual(engine._ws_push.await_args.args[0], "hitl_request")
+        self.assertEqual(engine._ws_push.await_args.args[0], "chat_message")
+        payload = engine._ws_push.await_args.args[1]
+        self.assertEqual(payload["role"], "assistant")
+        self.assertIn("confirmation", payload["metadata"])
+        self.assertTrue(payload["metadata"]["confirmation"]["interaction_id"])
 
         with patch("app.engine.workflow_engine.run_db", AsyncMock()):
             await engine._drain_buffers()

@@ -36,6 +36,7 @@ from app.agents.selection import (
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 from app.agents import (
     AgentAttemptContext,
+    AgentProcessIdentity,
     bind_agent_attempt,
     current_agent_attempt,
     reset_agent_attempt,
@@ -280,14 +281,13 @@ def _looks_like_timeout_text(text: str) -> bool:
 def _persist_process_identity_sync(
     job_id: str,
     run_token: str,
-    pid: int,
-    process_started_at: Optional[float],
+    identity: AgentProcessIdentity,
 ) -> bool:
     if not job_id or not run_token:
         return False
     db = SessionLocal()
     try:
-        affected = (
+        job = (
             db.query(SddAiJob)
             .filter(
                 SddAiJob.id == job_id,
@@ -295,21 +295,32 @@ def _persist_process_identity_sync(
                 SddAiJob.run_token == run_token,
                 SddAiJob.worker_boot_id == WORKER_BOOT_ID,
             )
-            .update(
-                {
-                    SddAiJob.process_pid: int(pid),
-                    SddAiJob.process_started_at: (
-                        datetime.utcfromtimestamp(float(process_started_at))
-                        if process_started_at
-                        else datetime.utcnow()
-                    ),
-                    SddAiJob.process_group_id: int(pid) if os.name != "nt" else None,
-                },
-                synchronize_session=False,
-            )
+            # Serialize the process-start attach with cancellation/finalizer
+            # updates.  The status/run-token predicates are the attempt CAS;
+            # the row lock prevents a late callback from attaching after the
+            # attempt has been terminalized.
+            .with_for_update()
+            .first()
+        )
+        if job is None:
+            db.rollback()
+            return False
+        job.process_pid = int(identity.pid)
+        job.process_started_at = identity.started_at.replace(tzinfo=None)
+        job.process_group_id = identity.process_group_id
+        job.context_json = _merge_json(
+            job.context_json,
+            {
+                "process_identity": {
+                    "pid": identity.pid,
+                    "started_at": identity.started_at.isoformat(),
+                    "process_group_id": identity.process_group_id,
+                    "containment_id": identity.containment_id,
+                }
+            },
         )
         db.commit()
-        return int(affected or 0) == 1
+        return True
     finally:
         db.close()
 
@@ -1184,6 +1195,7 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
                     "expected_run_token": str(job.run_token or "") or None,
                     "process_pid": job.process_pid,
                     "process_started_at": job.process_started_at,
+                    "process_group_id": job.process_group_id,
                     "queue_key": str(job.queue_key or ""),
                     "reason": "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED",
                     "attempt_count": int(job.attempt_count or 0),
@@ -1258,7 +1270,10 @@ async def reap_stale_jobs() -> int:
         result = await process_supervisor.stop_attempt(token, row["reason"])
         if result is None and row.get("process_pid"):
             result = await process_supervisor.stop_persisted(
-                row["process_pid"], row.get("process_started_at"), row["reason"]
+                row["process_pid"],
+                row.get("process_started_at"),
+                row["reason"],
+                process_group_id=row.get("process_group_id"),
             )
         # A previous boot without a persisted PID cannot prove that the
         # spawn window was empty.  Keep the queue blocked as ORPHANED rather
@@ -1376,6 +1391,7 @@ def _mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
                     "run_token": str(job.run_token or ""),
                     "process_pid": job.process_pid,
                     "process_started_at": job.process_started_at,
+                    "process_group_id": job.process_group_id,
                     "reason": reason,
                 }
             )
@@ -1415,7 +1431,10 @@ async def shutdown_runtime_workers() -> None:
         result = await process_supervisor.stop_attempt(token, "WORKER_SHUTDOWN") if token else None
         if result is None and row.get("process_pid"):
             result = await process_supervisor.stop_persisted(
-                row["process_pid"], row.get("process_started_at"), "WORKER_SHUTDOWN"
+                row["process_pid"],
+                row.get("process_started_at"),
+                "WORKER_SHUTDOWN",
+                process_group_id=row.get("process_group_id"),
             )
         confirmed_dead = result is None or result.confirmed_dead
         payload = await run_db(
@@ -2159,6 +2178,16 @@ async def run_cli_single_turn(
                     "WORKER_BOOT_ID": current_attempt.worker_boot_id if current_attempt else WORKER_BOOT_ID,
                 }
             )
+        async def on_process_started(identity: AgentProcessIdentity) -> bool:
+            if getattr(identity, "pid", None) is None:
+                return True
+            return await run_db(
+                _persist_process_identity_sync,
+                current_attempt.job_id if current_attempt else "",
+                effective_run_token or "",
+                identity,
+            )
+
         resumed_session_id = await bridge.start_session(
             prompt=prompt,
             project_path=project_path,
@@ -2167,25 +2196,8 @@ async def run_cli_single_turn(
             env_overrides=env_overrides or None,
             fork_session=fork_session and attempt == 1,
             permission_mode=permission_mode,
+            on_process_started=on_process_started,
         )
-        if effective_run_token and getattr(bridge, "process", None) is not None:
-            managed = getattr(bridge, "_managed_process", None)
-            process_started_at = getattr(managed, "process_started_at", None)
-            persisted = await run_db(
-                _persist_process_identity_sync,
-                current_attempt.job_id if current_attempt else "",
-                effective_run_token,
-                int(bridge.process.pid),
-                process_started_at,
-            )
-            if not persisted:
-                # The durable fence may have been revoked while spawn was in
-                # flight (cancel, lease loss, or shutdown).  Do not leave an
-                # unowned CLI tree behind.
-                await asyncio.shield(bridge.cancel())
-                raise AgentAttemptFencedError(
-                    "Agent process could not be attached to the current job attempt"
-                )
         monitor_task: Optional[asyncio.Task] = None
         if should_cancel:
             async def _cancel_monitor() -> None:
@@ -3071,13 +3083,12 @@ async def _on_engine_hitl(
         return
     await _update_job_state(
         job_id,
-        status=AiJobStatus.WAITING_HITL,
         progress=58,
-        message="Waiting for human input",
+        message="Waiting for confirmation input",
         context_patch={
-            "pending_hitl": {
+            "pending_confirmation": {
                 "prompt": prompt,
-                "hitl_type": hitl_type,
+                "kind": hitl_type,
                 "options": options or [],
                 "context": context or "",
                 "requested_at": datetime.utcnow().isoformat() + "Z",
@@ -3251,36 +3262,54 @@ async def _on_engine_result(
         success=success,
         run_token=run_token,
     )
+
+
     if not proceed:
         return
 
-    if success:
-        # 问题定位卡片只在用户点击「一键总结问题案例」时生成；
-        # 普通 AI 会话结束不再自动反填定位结果卡片。
-        await _update_job_state(
-            job_id,
-            status=AiJobStatus.SUCCESS,
-            progress=100,
-            message="AI reply completed",
-            result_patch={
-                "result_preview": str(result or "")[:1600],
-                "duration_ms": duration_ms,
-                "cost_usd": cost_usd,
-            },
-            finalize=True,
-        )
-        return
-
-    await _mark_task_chat_job_interrupted(
+    await _update_job_state(
         job_id,
-        str(result or "AI execution failed"),
-        message="AI 执行异常，可继续发送消息恢复",
+        progress=90,
+        message="Agent result received; finalizing process lifecycle",
         result_patch={
+            "candidate_success": bool(success),
+            "candidate_result": str(result or "")[:1600],
             "duration_ms": duration_ms,
             "cost_usd": cost_usd,
         },
         run_token=run_token,
     )
+
+
+async def confirmation_delivery_available(
+    *,
+    task_id: str,
+    interaction_id: str,
+    job_id: Optional[str] = None,
+) -> bool:
+    """Return whether the current long-connection engine owns this confirmation."""
+    engine = get_engine(task_id)
+    if engine is None:
+        return False
+    if job_id and str(engine.current_job_id or "") != str(job_id):
+        return False
+    return bool(engine.can_deliver_confirmation(interaction_id))
+
+
+async def deliver_confirmation_response(
+    *,
+    task_id: str,
+    interaction_id: str,
+    response: str,
+    job_id: Optional[str] = None,
+) -> bool:
+    """Wake the already-running provider through the service boundary."""
+    engine = get_engine(task_id)
+    if engine is None:
+        return False
+    if job_id and str(engine.current_job_id or "") != str(job_id):
+        return False
+    return await engine.deliver_confirmation_response(interaction_id, response)
 
 
 async def _on_engine_error(error_text: str, job_id: str) -> None:

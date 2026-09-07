@@ -4,7 +4,6 @@ import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
 import { ChevronDown, FileText, Clock } from "lucide-vue-next";
 import api from "@/utils/api";
-import { useAuthStore } from "@/stores/auth";
 import { formatApiError } from "@/utils/error";
 import {
   useAssetDiscussion,
@@ -33,7 +32,6 @@ const props = defineProps<{
   readonly?: boolean;
 }>();
 
-const authStore = useAuthStore();
 const loadingAssets = ref(false);
 const loadAssetsError = ref("");
 const assets = ref<AssetSummary[]>([]);
@@ -86,7 +84,6 @@ const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 const discussion = useAssetDiscussion({
   wsId: computed(() => props.wsId),
   assetId: selectedAssetId,
-  userId: computed(() => authStore.user?.id || null),
 });
 const {
   documentData,
