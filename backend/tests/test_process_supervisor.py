@@ -233,5 +233,85 @@ def test_agent_result_cannot_be_success_when_tree_death_is_unconfirmed():
             )
 
         assert exc_info.value.termination_confirmed_dead is False
+        assert exc_info.value.process_started is True
+        assert exc_info.value.failure_code == "PROCESS_TREE_STILL_ALIVE"
+
+    asyncio.run(_run())
+
+
+def test_bridge_records_termination_evidence_into_attempt_runtime():
+    """SubprocessCliBridge must feed wait/cancel results into the attempt state."""
+    import app.agents as agents_pkg
+
+    async def _run():
+        bridge = SubprocessCliBridge()
+        process = SimpleNamespace(returncode=0)
+        managed = MagicMock()
+        managed.process = process
+        managed.wait = AsyncMock(
+            return_value=ProcessWaitResult(
+                root_return_code=0,
+                termination=TerminationResult(
+                    confirmed_dead=False,
+                    root_return_code=0,
+                    error_code="PROCESS_TREE_STILL_ALIVE",
+                    error_message="descendant survived",
+                    remaining_pids=(4242,),
+                ),
+            )
+        )
+        bridge.process = process
+        bridge._managed_process = managed
+        bridge._running = True
+
+        runtime = agents_pkg.AgentAttemptRuntimeState()
+        token = agents_pkg.bind_agent_attempt_runtime(runtime)
+        try:
+            await bridge.wait()
+            assert runtime.process_started is False
+            assert runtime.termination_confirmed_dead is False
+            assert runtime.termination_failure_code == "PROCESS_TREE_STILL_ALIVE"
+            assert runtime.remaining_pids == (4242,)
+
+            # False outranks a later True from another wait/cancel cycle.
+            managed.close = AsyncMock(
+                return_value=TerminationResult(confirmed_dead=True, root_return_code=0)
+            )
+            await bridge.cancel()
+            assert runtime.termination_confirmed_dead is False
+
+            agents_pkg.reset_agent_attempt_runtime(token)
+            runtime = agents_pkg.AgentAttemptRuntimeState()
+            token = agents_pkg.bind_agent_attempt_runtime(runtime)
+            managed.close = AsyncMock(
+                return_value=TerminationResult(confirmed_dead=True, root_return_code=0)
+            )
+            await bridge.cancel()
+            assert runtime.termination_confirmed_dead is True
+        finally:
+            agents_pkg.reset_agent_attempt_runtime(token)
+
+    asyncio.run(_run())
+
+
+def test_bridge_cancel_records_evidence_when_unbound_context_is_safe():
+    """Recording must be a no-op when no attempt runtime state is bound."""
+    import app.agents as agents_pkg
+
+    async def _run():
+        bridge = SubprocessCliBridge()
+        process = SimpleNamespace(returncode=0)
+        managed = MagicMock()
+        managed.process = process
+        managed.close = AsyncMock(
+            return_value=TerminationResult(confirmed_dead=True, root_return_code=0)
+        )
+        bridge.process = process
+        bridge._managed_process = managed
+        bridge._running = True
+
+        assert agents_pkg.current_agent_attempt_runtime() is None
+        result = await bridge.cancel()
+        assert result is not None and result.confirmed_dead is True
 
     asyncio.run(_run())

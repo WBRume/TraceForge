@@ -120,6 +120,13 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         error_message=None,
     )
     monkeypatch.setattr(task_router, "verify_workspace_permission", lambda *args, **kwargs: None)
+    # start_task now goes through the by-id permission helper; the fixture
+    # must cover the current call point so the route reaches the lock section.
+    monkeypatch.setattr(
+        task_router,
+        "_verify_workspace_permission_by_id",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(task_router.task_service, "get_task", lambda db, task_id, ws_id: fake_task)
     monkeypatch.setattr(task_router, "get_engine", lambda task_id: None)
     monkeypatch.setattr(

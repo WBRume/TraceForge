@@ -22,7 +22,12 @@ from app.agents.contract import (
 )
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
 from app.agents.activity_watchdog import AgentActivityWatchdog
-from app.agents.errors import AgentCancelledError, AgentError, AgentTimeoutError, SessionForkError
+from app.agents.errors import (
+    AgentCancelledError,
+    AgentError,
+    AgentTimeoutError,
+    SessionForkError,
+)
 from app.config import settings
 from app.engine.claude_bridge import SubprocessCliBridge
 
@@ -131,19 +136,29 @@ class ClaudeCodeAdapter(AgentBackend):
                 termination = program.last_termination
                 self.last_termination = termination
                 if termination is not None and not termination.confirmed_dead:
-                    error = AgentError(
-                        "Claude Code process tree could not be confirmed dead"
+                    raise AgentError(
+                        "Claude Code process tree could not be confirmed dead",
+                        termination_confirmed_dead=False,
+                        process_started=True,
+                        failure_code=(
+                            getattr(termination, "error_code", None)
+                            or "PROCESS_TREE_STILL_ALIVE"
+                        ),
                     )
-                    error.termination_confirmed_dead = False
-                    raise error
             except AgentTimeoutError as timeout_error:
                 termination = await program.cancel()
                 self.last_termination = termination
-                if termination is not None:
-                    timeout_error.termination_confirmed_dead = bool(
-                        termination.confirmed_dead
-                    )
-                raise
+                # Re-raise as a typed exception carrying fresh termination
+                # evidence; dynamic attribute mutation is not allowed.
+                raise AgentTimeoutError(
+                    str(timeout_error),
+                    phase=timeout_error.phase,
+                    limit_seconds=timeout_error.limit_seconds,
+                    termination_confirmed_dead=(
+                        bool(termination.confirmed_dead) if termination is not None else None
+                    ),
+                    process_started=True,
+                ) from timeout_error
         except AgentError:
             raise
         except Exception as exc:
@@ -363,12 +378,13 @@ class ClaudeCodeAdapter(AgentBackend):
                     started_future.cancel()
                 # Supervisor cleanup must happen before the Python run task is
                 # cancelled; otherwise a late spawn can outlive the caller.
-                termination = await asyncio.shield(self._bridge.cancel())
+                await asyncio.shield(self._bridge.cancel())
                 await self._await_legacy_task_exit()
-                if termination is not None:
-                    startup_error.termination_confirmed_dead = bool(
-                        termination.confirmed_dead
-                    )
+                # Preserve the original exception identity (TimeoutError /
+                # CancelledError / fence rejection).  The termination result of
+                # the cleanup above is durably recorded in the attempt-local
+                # runtime state, so the finalizer still gets the death proof
+                # without mutating the raised exception object.
                 raise
             if not accepted:
                 raise AgentError("Claude process was rejected by the current job attempt")

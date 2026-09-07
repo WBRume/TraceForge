@@ -18,6 +18,7 @@ from typing import Optional, Callable, Any, Dict
 
 from app.config import settings
 from app.core.logging import get_logger
+from app.agents.contract import record_attempt_termination
 from app.agents.process_supervisor import (
     ManagedAgentProcess,
     ProcessWaitResult,
@@ -333,6 +334,7 @@ class SubprocessCliBridge(CliBridgeBase):
                 confirmed_dead=True,
                 root_return_code=return_code,
             )
+        record_attempt_termination(self.last_termination)
         self._running = False
         if self._managed_process:
             return ProcessWaitResult(
@@ -393,6 +395,7 @@ class SubprocessCliBridge(CliBridgeBase):
             process_supervisor.forget(self._managed_process)
         elif self.process and self.process.returncode is None:
             await self.process.wait()
+        record_attempt_termination(self.last_termination)
         return self.last_termination
 
     async def interrupt(self) -> Optional[TerminationResult]:
@@ -404,6 +407,7 @@ class SubprocessCliBridge(CliBridgeBase):
             process_supervisor.forget(self._managed_process)
         elif self.process and self.process.returncode is None:
             await self.process.wait()
+        record_attempt_termination(self.last_termination)
         return self.last_termination
 
     def is_running(self) -> bool:

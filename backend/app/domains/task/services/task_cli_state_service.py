@@ -56,7 +56,24 @@ _RUNNING_STALE_MINUTES = 30
 
 
 class BootstrapStateError(RuntimeError):
-    pass
+    """Baseline 状态机失败。
+
+    必须保留 attempt 级终止证据，`_execute_job` 收尾时据此决定 FAILED
+    （清 ownership）或 ORPHANED（保留 ownership 交给 reaper）。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        process_started: Optional[bool] = None,
+        termination_confirmed_dead: Optional[bool] = None,
+        failure_code: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.process_started = process_started
+        self.termination_confirmed_dead = termination_confirmed_dead
+        self.failure_code = failure_code
 
 
 class BootstrapNotReadyError(BootstrapStateError):
@@ -517,6 +534,25 @@ def _load_bootstrap_run_context_sync(task_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
+def _merge_dead_evidence(*values: Optional[bool]) -> Optional[bool]:
+    """False > True > None：更保守的证据不得被降级。"""
+    if any(value is False for value in values):
+        return False
+    if any(value is True for value in values):
+        return True
+    return None
+
+
+def _bootstrap_attempt_evidence() -> tuple[bool, Optional[bool]]:
+    """Read attempt-local process evidence recorded by the supervisor/bridge."""
+    from app.agents.contract import current_agent_attempt_runtime
+
+    runtime = current_agent_attempt_runtime()
+    if runtime is None:
+        return (False, None)
+    return (bool(runtime.process_started), runtime.termination_confirmed_dead)
+
+
 async def _run_bootstrap(
     task_id: str,
     *,
@@ -524,7 +560,20 @@ async def _run_bootstrap(
     expected_input_revision: Optional[str] = None,
     env_overrides: Optional[Dict[str, str]] = None,
     on_process_started: Optional[Any] = None,
-) -> Optional[bool]:
+) -> Dict[str, Any]:
+    """Run the baseline CLI attempt and return a structured outcome.
+
+    失败不再通过数据库状态隐式返回：outcome 携带
+    status / error_message / failure_code / process_started /
+    termination_confirmed_dead，供 `_execute_job` 收敛 job 状态。
+    """
+    outcome: Dict[str, Any] = {
+        "status": None,
+        "error_message": None,
+        "failure_code": None,
+        "process_started": False,
+        "termination_confirmed_dead": None,
+    }
     lock = _get_bootstrap_lock(task_id)
     try:
         async with queue_bootstrap_jobs(queue_tag="task_cli_bootstrap"):
@@ -532,12 +581,12 @@ async def _run_bootstrap(
                 async with lock:
                     context = await run_db(_load_bootstrap_run_context_sync, task_id)
                     if not context:
-                        return
+                        return outcome
                     current_input_revision = str(context.get("spec_version_id") or "missing")
                     if expected_input_revision and str(expected_input_revision) != current_input_revision:
                         # The durable job was created for an older revision;
                         # do not even start a CLI for the newer one.
-                        return
+                        return outcome
                     task_spec_doc_path = context["task_spec_doc_path"]
                     version_original_path = context["version_original_path"]
                     baseline_dir = context["baseline_dir"]
@@ -649,6 +698,9 @@ async def _run_bootstrap(
                                 env_overrides=env_overrides,
                                 on_process_started=on_process_started,
                             )
+                            # start_session returned: the fence accepted the
+                            # spawned CLI process for this attempt.
+                            outcome["process_started"] = True
                             timeout_sec = max(
                                 300,
                                 int(settings.CLI_BOOTSTRAP_TIMEOUT or settings.CLAUDE_CLI_TIMEOUT or 300),
@@ -661,7 +713,13 @@ async def _run_bootstrap(
                                 termination_confirmed_dead = bool(termination.confirmed_dead)
                                 if not termination_confirmed_dead:
                                     raise BootstrapStateError(
-                                        "Baseline CLI process tree could not be confirmed dead"
+                                        "Baseline CLI process tree could not be confirmed dead",
+                                        process_started=True,
+                                        termination_confirmed_dead=False,
+                                        failure_code=(
+                                            getattr(termination, "error_code", None)
+                                            or "PROCESS_TREE_STILL_ALIVE"
+                                        ),
                                     )
 
                             process = getattr(bridge, "process", None)
@@ -721,10 +779,26 @@ async def _run_bootstrap(
                                 agent_backend=agent_backend,
                                 error_message=None,
                             )
-                            return termination_confirmed_dead
+                            outcome["status"] = TaskCliBootstrapStatus.READY.value
+                            outcome["termination_confirmed_dead"] = _merge_dead_evidence(
+                                outcome["termination_confirmed_dead"],
+                                termination_confirmed_dead,
+                            )
+                            return outcome
                         except Exception as exc:
                             logger.exception(f"Task CLI bootstrap failed: task={task_id}, err={exc}")
                             failure_message = str(exc)
+                            outcome["failure_code"] = (
+                                getattr(exc, "failure_code", None) or "BASELINE_BOOTSTRAP_FAILED"
+                            )
+                            outcome["process_started"] = bool(
+                                outcome["process_started"]
+                                or getattr(exc, "process_started", None)
+                            )
+                            outcome["termination_confirmed_dead"] = _merge_dead_evidence(
+                                outcome["termination_confirmed_dead"],
+                                getattr(exc, "termination_confirmed_dead", None),
+                            )
                         finally:
                             # Timeout/cancellation must prove that the complete
                             # CLI tree is gone before the bootstrap is reported
@@ -755,8 +829,24 @@ async def _run_bootstrap(
                                         task_id,
                                         cleanup_exc,
                                     )
+                            # Attempt-local runtime evidence is the final
+                            # authority for this baseline attempt's death
+                            # proof; merge it with the direct bridge result.
+                            runtime_started, runtime_dead = _bootstrap_attempt_evidence()
+                            outcome["process_started"] = bool(
+                                outcome["process_started"] or runtime_started
+                            )
+                            termination_confirmed_dead = _merge_dead_evidence(
+                                termination_confirmed_dead, runtime_dead
+                            )
+                            outcome["termination_confirmed_dead"] = _merge_dead_evidence(
+                                outcome["termination_confirmed_dead"],
+                                termination_confirmed_dead,
+                            )
                             if failure_message is not None:
                                 if cleanup_confirmed:
+                                    outcome["status"] = TaskCliBootstrapStatus.FAILED.value
+                                    outcome["error_message"] = failure_message
                                     await _update_bootstrap_state(
                                         task_id,
                                         expected_input_revision=expected_input_revision,
@@ -766,6 +856,16 @@ async def _run_bootstrap(
                                         error_message=failure_message,
                                     )
                                 else:
+                                    outcome["status"] = TaskCliBootstrapStatus.STALE.value
+                                    outcome["error_message"] = (
+                                        f"{failure_message}; CLI process tree could not be confirmed dead"
+                                    )
+                                    if outcome["termination_confirmed_dead"] is not True:
+                                        outcome["failure_code"] = (
+                                            "PROCESS_TREE_STILL_ALIVE"
+                                            if outcome["process_started"]
+                                            else outcome["failure_code"]
+                                        )
                                     await _update_bootstrap_state(
                                         task_id,
                                         expected_input_revision=expected_input_revision,
@@ -776,6 +876,10 @@ async def _run_bootstrap(
                                             f"{failure_message}; CLI process tree could not be confirmed dead"
                                         ),
                                     )
+                            elif outcome["status"] is None:
+                                # No explicit failure and no READY: the
+                                # attempt was skipped (revision fenced).
+                                outcome["status"] = None
     except LockAcquireTimeout as exc:
         err = "Bootstrap queue is busy. Please retry later."
         logger.warning(
@@ -794,6 +898,13 @@ async def _run_bootstrap(
             message="Baseline bootstrap failed",
             error_message=err,
         )
+        outcome.update(
+            status=TaskCliBootstrapStatus.FAILED.value,
+            error_message=err,
+            failure_code="BOOTSTRAP_QUEUE_BUSY",
+            process_started=False,
+        )
+    return outcome
 def _get_bootstrap_status_sync(task_id: str) -> Optional[Dict[str, Any]]:
     return _load_bootstrap_snapshot_sync(task_id)
 
@@ -807,7 +918,7 @@ async def run_bootstrap_for_job(
     on_process_started: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Execute a durable baseline job through the existing bridge lifecycle."""
-    termination_confirmed_dead = await _run_bootstrap(
+    outcome = await _run_bootstrap(
         task_id,
         run_token=run_token,
         expected_input_revision=expected_input_revision,
@@ -820,10 +931,18 @@ async def run_bootstrap_for_job(
     if expected_input_revision and str(payload.get("spec_version_id") or "missing") != str(expected_input_revision):
         raise BootstrapStateError("Specification changed while baseline was running; rebuild is required")
     if payload.get("status") != TaskCliBootstrapStatus.READY.value:
-        raise BootstrapStateError(str(payload.get("error_message") or "Baseline bootstrap failed"))
+        # The typed exception carries the attempt's termination evidence so
+        # the job finalizer can distinguish FAILED (confirmed dead / never
+        # started) from ORPHANED (unconfirmed tree).
+        raise BootstrapStateError(
+            str(payload.get("error_message") or "Baseline bootstrap failed"),
+            process_started=outcome.get("process_started"),
+            termination_confirmed_dead=outcome.get("termination_confirmed_dead"),
+            failure_code=outcome.get("failure_code"),
+        )
     payload = {
         **payload,
-        "termination_confirmed_dead": termination_confirmed_dead,
+        "termination_confirmed_dead": outcome.get("termination_confirmed_dead"),
     }
     return payload
 

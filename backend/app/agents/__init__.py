@@ -11,6 +11,7 @@ Agent 适配层。
 
 from app.agents.contract import (
     AgentAttemptContext,
+    AgentAttemptRuntimeState,
     AgentProcessIdentity,
     AgentBackend,
     AgentCapabilities,
@@ -22,6 +23,11 @@ from app.agents.contract import (
     current_agent_attempt,
     bind_agent_attempt,
     reset_agent_attempt,
+    current_agent_attempt_runtime,
+    bind_agent_attempt_runtime,
+    reset_agent_attempt_runtime,
+    record_attempt_process_started,
+    record_attempt_termination,
 )
 from app.agents.events import AgentEvent
 from app.agents.errors import (
@@ -29,12 +35,14 @@ from app.agents.errors import (
     AgentConfigurationError,
     AgentError,
     AgentProtocolError,
+    AgentProviderError,
     AgentTimeoutError,
 )
 
 __all__ = [
     "AgentBackend",
     "AgentAttemptContext",
+    "AgentAttemptRuntimeState",
     "AgentProcessIdentity",
     "AgentCapabilities",
     "AgentEvent",
@@ -42,12 +50,18 @@ __all__ = [
     "current_agent_attempt",
     "bind_agent_attempt",
     "reset_agent_attempt",
+    "current_agent_attempt_runtime",
+    "bind_agent_attempt_runtime",
+    "reset_agent_attempt_runtime",
+    "record_attempt_process_started",
+    "record_attempt_termination",
     "AgentRunRequest",
     "AgentRunResult",
     "AgentCancelledError",
     "AgentConfigurationError",
     "AgentError",
     "AgentProtocolError",
+    "AgentProviderError",
     "AgentTimeoutError",
     "SkillRef",
     "TokenUsage",

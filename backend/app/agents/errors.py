@@ -1,8 +1,35 @@
-"""Agent 适配层统一异常。"""
+"""Agent 适配层统一异常。
+
+typed 异常是跨 service 边界的兜底：任何包装/重试/回调都不得丢失
+attempt 级终止证据（``termination_confirmed_dead`` / ``process_started``）。
+attempt-local runtime state（见 contract.AgentAttemptRuntimeState）仍是最终权威。
+"""
 
 
-class AgentError(Exception):
-    """Agent 适配层基础异常。"""
+class AgentError(RuntimeError):
+    """Agent 适配层基础异常。
+
+    继承 RuntimeError 以保持既有 `except RuntimeError` 调用点的兼容
+    （typed 异常替代裸 RuntimeError/TimeoutError 时不得破坏捕获语义）。
+
+    只读终止证据字段：
+    - termination_confirmed_dead: 进程树死亡证明（True/False/None 三态）。
+    - process_started: 本地进程是否已启动（None 表示未知/无本地进程）。
+    - failure_code: 结构化失败码；禁止通过 error message 字符串推断。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        termination_confirmed_dead: bool | None = None,
+        process_started: bool | None = None,
+        failure_code: str | None = None,
+    ):
+        super().__init__(message)
+        self.termination_confirmed_dead = termination_confirmed_dead
+        self.process_started = process_started
+        self.failure_code = failure_code
 
 
 class AgentTimeoutError(AgentError):
@@ -15,20 +42,28 @@ class AgentTimeoutError(AgentError):
         phase: str | None = None,
         limit_seconds: float | None = None,
         termination_confirmed_dead: bool | None = None,
+        process_started: bool | None = None,
     ):
-        super().__init__(message)
+        super().__init__(
+            message,
+            termination_confirmed_dead=termination_confirmed_dead,
+            process_started=process_started,
+            failure_code={
+                "startup": "STARTUP_TIMEOUT",
+                "idle": "IDLE_TIMEOUT",
+                "hard": "HARD_TIMEOUT",
+            }.get(str(phase or "").lower(), "AGENT_TIMEOUT"),
+        )
         self.phase = phase
         self.limit_seconds = limit_seconds
-        self.termination_confirmed_dead = termination_confirmed_dead
-        self.failure_code = {
-            "startup": "STARTUP_TIMEOUT",
-            "idle": "IDLE_TIMEOUT",
-            "hard": "HARD_TIMEOUT",
-        }.get(str(phase or "").lower(), "AGENT_TIMEOUT")
 
 
 class AgentCancelledError(AgentError):
     """Agent 回合被取消。"""
+
+
+class AgentProviderError(AgentError):
+    """Agent provider 返回错误结果 / 非零退出（区别于超时与取消）。"""
 
 
 class AgentConfigurationError(AgentError):

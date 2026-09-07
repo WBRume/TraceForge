@@ -19,6 +19,7 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import and_, or_
 
 from app.config import settings
 from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
@@ -36,10 +37,20 @@ from app.agents.selection import (
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 from app.agents import (
     AgentAttemptContext,
+    AgentAttemptRuntimeState,
     AgentProcessIdentity,
     bind_agent_attempt,
+    bind_agent_attempt_runtime,
     current_agent_attempt,
+    current_agent_attempt_runtime,
     reset_agent_attempt,
+    reset_agent_attempt_runtime,
+)
+from app.agents.errors import (
+    AgentCancelledError,
+    AgentError,
+    AgentProviderError,
+    AgentTimeoutError,
 )
 from app.agents.process_supervisor import process_supervisor
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -148,6 +159,7 @@ def _attempt_is_current_sync(
     job_id: str,
     run_token: Optional[str],
     allow_waiting_hitl: bool = False,
+    allowed_statuses: Optional[set] = None,
 ) -> bool:
     """Check the durable attempt fence inside the same DB transaction as a write."""
     if not run_token:
@@ -155,15 +167,49 @@ def _attempt_is_current_sync(
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
     if not job:
         return False
-    allowed_statuses = {AiJobStatus.RUNNING}
-    if allow_waiting_hitl:
-        allowed_statuses.add(AiJobStatus.WAITING_HITL)
+    if allowed_statuses is not None:
+        allowed = set(allowed_statuses)
+    else:
+        allowed = {AiJobStatus.RUNNING}
+        if allow_waiting_hitl:
+            allowed.add(AiJobStatus.WAITING_HITL)
     return bool(
-        job.status in allowed_statuses
+        job.status in allowed
         and str(job.run_token or "") == str(run_token)
         and str(job.worker_boot_id or "") == WORKER_BOOT_ID
         and job.cancel_requested_at is None
     )
+
+
+def _merge_termination_evidence(*values: Optional[bool]) -> Optional[bool]:
+    """False > True > None：任一路径拿到更保守的证据时不得被降级。"""
+    if any(value is False for value in values):
+        return False
+    if any(value is True for value in values):
+        return True
+    return None
+
+
+def _attempt_termination_evidence(exc: Optional[BaseException] = None) -> Optional[bool]:
+    """Read the authoritative attempt-local death proof (with typed-exception fallback)."""
+    dead: Optional[bool] = None
+    if exc is not None:
+        dead = getattr(exc, "termination_confirmed_dead", None)
+        if dead is not None:
+            dead = bool(dead)
+    runtime = current_agent_attempt_runtime()
+    if runtime is not None:
+        dead = _merge_termination_evidence(dead, runtime.termination_confirmed_dead)
+    return dead
+
+
+def _bridge_termination_dead(bridge: Any) -> Optional[bool]:
+    """Death proof carried by this attempt's own bridge (last termination)."""
+    termination = getattr(bridge, "last_termination", None)
+    if termination is None:
+        return None
+    confirmed = getattr(termination, "confirmed_dead", None)
+    return None if confirmed is None else bool(confirmed)
 
 
 def _queue_key_for_task(task_id: str) -> str:
@@ -598,9 +644,17 @@ def _update_job_state_sync(
                 # Do not let a late callback resurrect the old job state.
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         if (
-            _has_active_process_ownership(job)
-            and (finalize or status in FINAL_STATUSES)
-            and termination_confirmed_dead is not True
+            finalize or status in FINAL_STATUSES
+        ) and (
+            # An explicitly unconfirmed tree must never degrade to a terminal
+            # state, even when the PID persistence callback failed and the
+            # durable row temporarily carries no PID.  The reaper can still
+            # locate the process via the current worker's run token.
+            termination_confirmed_dead is False
+            or (
+                _has_active_process_ownership(job)
+                and termination_confirmed_dead is not True
+            )
         ):
             job.status = AiJobStatus.ORPHANED
             job.message = "Agent process could not be confirmed dead"
@@ -1311,6 +1365,33 @@ def schedule_queue(queue_key: str) -> None:
     runner.add_done_callback(lambda task: _reap_queue_runner(queue_key, task))
 
 
+_DIRTY_INTERRUPTED_OWNERSHIP_PREDICATE = lambda: or_(
+    SddAiJob.run_token.isnot(None),
+    SddAiJob.worker_boot_id.isnot(None),
+    SddAiJob.process_pid.isnot(None),
+    SddAiJob.process_group_id.isnot(None),
+    SddAiJob.lease_expires_at.isnot(None),
+)
+
+
+def _row_has_leaked_interrupted_ownership(job: SddAiJob) -> bool:
+    """Pre-upgrade dirty INTERRUPTED rows that still claim process ownership.
+
+    These rows must first converge back to ORPHANED and then run the existing
+    stop/verify/backoff flow: the process may still be alive, so the fields
+    must never be cleared directly.
+    """
+    if job.status != AiJobStatus.INTERRUPTED:
+        return False
+    return bool(
+        job.run_token is not None
+        or job.worker_boot_id is not None
+        or job.process_pid is not None
+        or job.process_group_id is not None
+        or job.lease_expires_at is not None
+    )
+
+
 def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:
@@ -1318,22 +1399,40 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
         rows = (
             db.query(SddAiJob)
             .filter(
-                SddAiJob.status.in_([
-                    AiJobStatus.RUNNING,
-                    AiJobStatus.TERMINATING,
-                    AiJobStatus.ORPHANED,
-                ]),
-                SddAiJob.manual_intervention_required.isnot(True),
-                (SddAiJob.next_reap_at.is_(None) | (SddAiJob.next_reap_at <= now)),
+                or_(
+                    and_(
+                        SddAiJob.status.in_([
+                            AiJobStatus.RUNNING,
+                            AiJobStatus.TERMINATING,
+                            AiJobStatus.ORPHANED,
+                        ]),
+                        SddAiJob.manual_intervention_required.isnot(True),
+                        (SddAiJob.next_reap_at.is_(None) | (SddAiJob.next_reap_at <= now)),
+                    ),
+                    # Compatibility scan for dirty INTERRUPTED rows written by
+                    # earlier releases: adopt them through the reaper instead
+                    # of exposing a resumable session with a possibly live CLI.
+                    and_(
+                        SddAiJob.status == AiJobStatus.INTERRUPTED,
+                        _DIRTY_INTERRUPTED_OWNERSHIP_PREDICATE(),
+                        SddAiJob.manual_intervention_required.isnot(True),
+                    ),
+                )
             )
             .all()
         )
         result: List[Dict[str, Any]] = []
         for job in rows:
-            owner_gone = str(job.worker_boot_id or "") != WORKER_BOOT_ID
-            lease_expired = bool(job.lease_expires_at and job.lease_expires_at <= now)
-            if not owner_gone and not lease_expired:
-                continue
+            if _row_has_leaked_interrupted_ownership(job):
+                # The attempt already stopped writing; a leaked ownership row
+                # is reclaimed immediately instead of waiting for its lease.
+                reason = "INTERRUPTED_OWNERSHIP_LEAK"
+            else:
+                owner_gone = str(job.worker_boot_id or "") != WORKER_BOOT_ID
+                lease_expired = bool(job.lease_expires_at and job.lease_expires_at <= now)
+                if not owner_gone and not lease_expired:
+                    continue
+                reason = "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED"
             result.append(
                 {
                     "job_id": str(job.id),
@@ -1343,7 +1442,7 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
                     "process_started_at": job.process_started_at,
                     "process_group_id": job.process_group_id,
                     "queue_key": str(job.queue_key or ""),
-                    "reason": "WORKER_RESTART" if owner_gone else "LEASE_EXPIRED",
+                    "reason": reason,
                     "attempt_count": int(job.attempt_count or 0),
                     "worker_boot_id": job.worker_boot_id,
                     "reap_failure_count": int(job.reap_failure_count or 0),
@@ -1370,11 +1469,17 @@ def _adopt_reclaimable_job_sync(
         )
         affected = (
             query.filter(
-                SddAiJob.status.in_([
-                    AiJobStatus.RUNNING,
-                    AiJobStatus.TERMINATING,
-                    AiJobStatus.ORPHANED,
-                ]),
+                or_(
+                    SddAiJob.status.in_([
+                        AiJobStatus.RUNNING,
+                        AiJobStatus.TERMINATING,
+                        AiJobStatus.ORPHANED,
+                    ]),
+                    and_(
+                        SddAiJob.status == AiJobStatus.INTERRUPTED,
+                        _DIRTY_INTERRUPTED_OWNERSHIP_PREDICATE(),
+                    ),
+                ),
                 SddAiJob.manual_intervention_required.isnot(True),
             )
             .update(
@@ -2022,6 +2127,10 @@ async def _run_queue(queue_key: str) -> None:
                 logger.warning("Claimed AI job has no current attempt context: {}", job_id)
                 return
             context_token = bind_agent_attempt(attempt)
+            # Attempt-local process evidence is bound with the same lifecycle
+            # so wait/cancel/interrupt results can never leak across jobs.
+            runtime_state = AgentAttemptRuntimeState()
+            runtime_token = bind_agent_attempt_runtime(runtime_state)
             heartbeat_task = asyncio.create_task(_job_heartbeat_loop(attempt))
             _JOB_HEARTBEAT_TASKS[job_id] = heartbeat_task
             try:
@@ -2031,6 +2140,7 @@ async def _run_queue(queue_key: str) -> None:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
                 _JOB_HEARTBEAT_TASKS.pop(job_id, None)
+                reset_agent_attempt_runtime(runtime_token)
                 reset_agent_attempt(context_token)
             status = await _get_job_status(job_id)
             if status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}:
@@ -2366,17 +2476,46 @@ async def run_cli_single_turn(
             if hasattr(bridge, "wait"):
                 await asyncio.wait_for(bridge.wait(), timeout=wait_seconds)
         except asyncio.TimeoutError as exc:
+            # Cancel must finish first so its termination result becomes the
+            # authoritative evidence before any retry decision.
             await bridge.cancel()
-            termination = getattr(bridge, "last_termination", None)
-            if termination is not None and not termination.confirmed_dead:
-                raise RuntimeError("Agent process tree could not be confirmed dead") from exc
-            last_error = TimeoutError("AI reply timed out")
+            runtime = current_agent_attempt_runtime()
+            bridge_dead = _bridge_termination_dead(bridge)
+            if runtime is not None:
+                process_started = bool(runtime.process_started)
+            else:
+                # Direct/unit callers: fall back to what this bridge itself
+                # observed (a real bridge records its last termination).
+                process_started = bridge_dead is not None or session_started
+            dead = _merge_termination_evidence(
+                _attempt_termination_evidence(), bridge_dead
+            )
+            if dead is False:
+                raise AgentError(
+                    "Agent process tree could not be confirmed dead",
+                    termination_confirmed_dead=False,
+                    process_started=process_started or True,
+                    failure_code=(
+                        getattr(bridge.last_termination, "error_code", None)
+                        or getattr(runtime, "termination_failure_code", None)
+                        or "PROCESS_TREE_STILL_ALIVE"
+                    ),
+                ) from exc
+            last_error = AgentTimeoutError(
+                "AI reply timed out",
+                phase="hard",
+                limit_seconds=float(wait_seconds),
+                termination_confirmed_dead=dead,
+                process_started=process_started,
+            )
             logger.warning(
                 "Asset AI single-turn wait timeout (attempt {}/{})",
                 attempt,
                 attempts,
             )
-            if attempt < attempts:
+            # Retry only after the previous tree is proven dead, or when this
+            # attempt never started a local process at all.
+            if attempt < attempts and (dead is True or not process_started):
                 next_session_id = None
                 continue
             raise last_error from exc
@@ -2388,21 +2527,60 @@ async def run_cli_single_turn(
                 await asyncio.shield(bridge.cancel())
 
         if cancelled:
-            raise RuntimeError("AI job cancelled by user")
+            # 用户取消：取消后的终止结果必须随 typed 异常携带，交由上层
+            # termination finalizer 收敛（确认死亡 → 可恢复/取消态）。
+            runtime = current_agent_attempt_runtime()
+            raise AgentCancelledError(
+                "AI job cancelled by user",
+                termination_confirmed_dead=_merge_termination_evidence(
+                    _attempt_termination_evidence(),
+                    _bridge_termination_dead(bridge),
+                ),
+                process_started=bool(runtime.process_started) if runtime is not None else True,
+                failure_code="USER_CANCELLED",
+            )
 
         merged = "\n\n".join(part for part in text_parts if part.strip()).strip()
         final_text = merged or result_text or "AI 暂时没有返回有效内容，请稍后重试。"
         final_session_id = getattr(bridge, "session_id", None) or resumed_session_id
 
+        runtime = current_agent_attempt_runtime()
+        bridge_dead = _bridge_termination_dead(bridge)
+        if runtime is not None:
+            process_started = bool(runtime.process_started)
+        else:
+            process_started = bridge_dead is not None or session_started
+        dead = _merge_termination_evidence(_attempt_termination_evidence(), bridge_dead)
+        if dead is False:
+            # CLI 已退出但进程树死亡未被证明：禁止重试启动下一进程，
+            # 立即抛出携带证据的 typed 异常，由收尾路径转 ORPHANED。
+            raise AgentError(
+                "Agent process tree could not be confirmed dead",
+                termination_confirmed_dead=False,
+                process_started=process_started or True,
+                failure_code=(
+                    getattr(bridge.last_termination, "error_code", None)
+                    or "PROCESS_TREE_STILL_ALIVE"
+                ),
+            )
+
         if result_is_error or _looks_like_timeout_text(final_text):
-            last_error = RuntimeError(final_text or "AI provider returned timeout/error")
+            last_error = AgentProviderError(
+                final_text or "AI provider returned timeout/error",
+                termination_confirmed_dead=dead,
+                process_started=process_started,
+                failure_code="PROVIDER_ERROR",
+            )
             logger.warning(
                 "Asset AI single-turn got timeout/error text (attempt {}/{}): {}",
                 attempt,
                 attempts,
                 final_text[:160],
             )
-            if attempt < attempts:
+            # Retry only after the previous tree is proven dead, or when this
+            # attempt never started a local process at all.
+            if attempt < attempts and (dead is True or not process_started):
+                # 上一进程树必须已确认死亡才会走到这里（dead is not False）。
                 next_session_id = None
                 continue
             raise last_error
@@ -2413,12 +2591,14 @@ async def run_cli_single_turn(
             "session_id": final_session_id,
             "termination_confirmed_dead": (
                 bool(termination.confirmed_dead) if termination is not None else None
-            ),
+            )
+            if dead is None
+            else dead,
         }
 
     if last_error:
         raise last_error
-    raise RuntimeError("AI reply failed with unknown reason")
+    raise AgentError("AI reply failed with unknown reason", failure_code="AGENT_UNKNOWN_FAILURE")
 
 
 def _prepare_asset_thread_context_sync(
@@ -3165,6 +3345,8 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             return
         logger.exception(f"Asset AI job failed: {exc}")
         failed_message = "Resolution proposal failed" if job_kind == JOB_KIND_RESOLUTION_PROPOSAL else "AI reply failed"
+        # 失败也必须携带 attempt 级终止证据：已证明死亡的作业直接 FAILED 并
+        # 清 ownership；未证明的转 ORPHANED 保留归属。
         await _update_job_state(
             job_id,
             status=AiJobStatus.FAILED,
@@ -3172,6 +3354,8 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             message=failed_message,
             error_message=str(exc),
             finalize=True,
+            run_token=run_token,
+            termination_confirmed_dead=_attempt_termination_evidence(exc),
         )
         if job_kind in {JOB_KIND_RESOLUTION_PROPOSAL, JOB_KIND_RESOLUTION_REWRITE}:
             return
@@ -3267,10 +3451,14 @@ def _apply_task_chat_job_interrupted(
     context_patch: Optional[Dict[str, Any]] = None,
     result_patch: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """把 TASK_CHAT 作业和所属任务标记为可恢复的 INTERRUPTED。
+    """把 TASK_CHAT 作业和所属任务标记为可恢复的 INTERRUPTED（纯字段赋值 helper）。
 
     自动失败（底层 API 报错、超时、欠费、网络抖动等）不应进入终态 FAILED；
     FAILED 只允许用户通过失败复盘/关闭流程显式标记。
+
+    该 helper 不再承担状态判断职责：调用方必须先完成进程树死亡判定
+    （confirmed_dead=True 或从未启动本地进程），因此这里总是清空全部
+    ownership 字段，保证 INTERRUPTED 是干净的“当前 attempt 已停止，允许恢复”。
     """
     now = datetime.utcnow()
     resolved_session_id = str(
@@ -3300,6 +3488,7 @@ def _apply_task_chat_job_interrupted(
         task.interrupt_reason = reason_text
         task.interrupted_by_id = None
         task.interrupted_at = now
+    _clear_process_ownership(job)
     _clear_cancel_event(job.id)
     db.commit()
     db.refresh(job)
@@ -3318,8 +3507,14 @@ def _mark_task_chat_job_interrupted_sync(
     context_patch: Optional[Dict[str, Any]],
     result_patch: Optional[Dict[str, Any]],
     run_token: Optional[str] = None,
+    termination_confirmed_dead: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
-    """中断标记 DB 段（线程内执行，由 run_db_txn 包装）。"""
+    """中断标记 DB 段（线程内执行，由 run_db_txn 包装）。
+
+    兼容入口：普通异常回调不得再使用本函数收敛 job。仅允许“确认无活进程
+    之后的内部操作”；若行上仍保留进程归属且死亡未被证明，一律转 ORPHANED
+    保留 ownership，交给 reaper。
+    """
     token = str(run_token or "").strip()
     query = db.query(SddAiJob).filter(
         SddAiJob.id == job_id,
@@ -3352,6 +3547,18 @@ def _mark_task_chat_job_interrupted_sync(
         and int(task.session_revision or -1) != int(job.session_revision)
     ):
         return None
+    if _has_active_process_ownership(job) and termination_confirmed_dead is not True:
+        now = datetime.utcnow()
+        job.status = AiJobStatus.ORPHANED
+        job.message = "Agent process could not be confirmed dead"
+        job.error_message = str(reason or "")[:500]
+        job.failure_code = "PROCESS_TREE_STILL_ALIVE"
+        job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
+        job.lease_expires_at = now
+        job.orphaned_at = job.orphaned_at or now
+        db.commit()
+        db.refresh(job)
+        return serialize_job(job)
     return _apply_task_chat_job_interrupted(
         db,
         job,
@@ -3497,12 +3704,16 @@ async def deliver_confirmation_response(
 async def _on_engine_error(error_text: str, job_id: str) -> None:
     if not job_id:
         return
-    attempt = current_agent_attempt()
-    await _mark_task_chat_job_interrupted(
+    # P0: the error callback must never converge the durable job.  Writing
+    # INTERRUPTED here would bypass process-tree death confirmation and let a
+    # user resume the session while the previous CLI tree is still alive.
+    # The engine keeps last_result_* / last_termination_confirmed_dead in
+    # memory and `_finalize_task_chat_job_from_engine` performs the single
+    # persisted convergence after engine.run() returns.
+    logger.warning(
+        "Agent engine error recorded (non-terminal; finalizer decides): job={}, error={}",
         job_id,
-        str(error_text or "AI execution failed"),
-        message="AI 执行异常，可继续发送消息恢复",
-        run_token=attempt.run_token if attempt else None,
+        str(error_text or "")[:500],
     )
 
 
@@ -3973,21 +4184,46 @@ def _finalize_task_chat_job_sync(
     run_token: Optional[str] = None,
     termination_confirmed_dead: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
-    """finalize DB 段（线程内执行，由 run_db 包装）；返回 None 表示无需收尾。"""
-    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-    if (
-        not job
-        or job.status in FINAL_STATUSES
-        or job.status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}
-    ):
+    """finalize DB 段（线程内执行，由 run_db 包装）；返回 None 表示无需收尾。
+
+    判定顺序（doc 4.2）：
+    1. 查询并锁定 job 行；
+    2. 真正终态 / WAITING_HITL 返回 no-op；
+    3. TERMINATING/ORPHANED 交给 termination finalizer / reaper，不覆盖；
+    4. 验证 run_token + worker_boot_id + session_revision + cancel_requested_at；
+    5. 读取本次 attempt 的进程启动事实和死亡证明；
+    6. 按 finalizer 决策表计算目标状态；
+    7. 同一事务更新 job / task / ownership；
+    8. 广播由调用方在事务提交之后执行。
+    """
+    now = datetime.utcnow()
+    job = (
+        db.query(SddAiJob)
+        .filter(SddAiJob.id == job_id)
+        .with_for_update()
+        .first()
+    )
+    if job is None or job.channel != AiJobChannel.TASK_CHAT:
         return None
-    if not _attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
+    if job.status in FINAL_STATUSES or job.status == AiJobStatus.WAITING_HITL:
+        # 迟到的收尾不得改写终态或等待人工输入的作业。
         return None
-    if run_token and (
-        str(job.run_token or "") != run_token
-        or job.worker_boot_id != WORKER_BOOT_ID
-        or job.cancel_requested_at is not None
-    ):
+    if job.status not in {AiJobStatus.RUNNING, AiJobStatus.INTERRUPTED}:
+        # TERMINATING/ORPHANED 由 termination finalizer / reaper 收敛。
+        return None
+
+    # Attempt fence：对 RUNNING 与携带本 attempt 归属的脏 INTERRUPTED 行都生效。
+    if run_token:
+        if (
+            str(job.run_token or "") != str(run_token)
+            or str(job.worker_boot_id or "") != WORKER_BOOT_ID
+        ):
+            return None
+    else:
+        # 无 durable token 的直接调用方只能收敛完全无归属的行。
+        if job.run_token is not None or job.worker_boot_id is not None:
+            return None
+    if job.cancel_requested_at is not None:
         return None
     task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
     if (
@@ -3996,31 +4232,69 @@ def _finalize_task_chat_job_sync(
         and int(task.session_revision or -1) != int(job.session_revision)
     ):
         return None
-    if (
-        _has_active_process_ownership(job)
-        and termination_confirmed_dead is not True
-    ):
+
+    dirty_interrupted = job.status == AiJobStatus.INTERRUPTED
+    ownership_alive = _has_active_process_ownership(job)
+    if dirty_interrupted and not _row_has_leaked_interrupted_ownership(job):
+        # 已经是干净的 INTERRUPTED：收尾已完成，无需重复处理。
+        return None
+
+    dead = termination_confirmed_dead
+
+    if ownership_alive and dead is not True:
+        # 本地进程死亡未被证明：必须进入 ORPHANED 并保留 ownership，
+        # 阻塞同队列后继作业，等待 reaper 的 stop/verify/backoff。
         job.status = AiJobStatus.ORPHANED
         job.message = "Agent process could not be confirmed dead"
-        job.error_message = "Agent process tree remained alive after timeout"
+        job.error_message = (
+            "Agent process tree remained alive after finalization"
+            if dead is not False
+            else str(last_result_text or "")[:500] or "Agent process tree remained alive after finalization"
+        )
         job.failure_code = "PROCESS_TREE_STILL_ALIVE"
         job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
-        job.lease_expires_at = datetime.utcnow()
-        job.orphaned_at = job.orphaned_at or datetime.utcnow()
+        job.lease_expires_at = now
+        job.orphaned_at = job.orphaned_at or now
         db.commit()
         db.refresh(job)
         return serialize_job(job)
-    if last_result_success is True:
-        job.status = AiJobStatus.SUCCESS
-        job.progress = 100
-        job.message = "AI reply completed"
-        payload = _merge_json(job.result_json, {"result_preview": (last_result_text or "")[:1600]})
-        job.result_json = payload
-        job.finished_at = datetime.utcnow()
+    if dead is False:
+        # 即使 PID 持久化回调失败、数据库暂时没有 PID，False 也必须收敛为
+        # ORPHANED：reaper 仍可按当前 worker 的 run token 查找 supervisor
+        # 中登记的进程。
+        job.status = AiJobStatus.ORPHANED
+        job.message = "Agent process could not be confirmed dead"
+        job.error_message = str(last_result_text or "")[:500]
+        job.failure_code = "PROCESS_TREE_STILL_ALIVE"
+        job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
+        job.lease_expires_at = now
+        job.orphaned_at = job.orphaned_at or now
+        db.commit()
+        db.refresh(job)
+        return serialize_job(job)
+
+    if dirty_interrupted:
+        # 脏 INTERRUPTED + ownership 尚在 + 死亡已证明：补齐清理，使其成为
+        # 干净的可恢复状态。
         _clear_process_ownership(job)
         db.commit()
         db.refresh(job)
         return serialize_job(job)
+
+    if last_result_success is True:
+        job.status = AiJobStatus.SUCCESS
+        job.progress = 100
+        job.message = "AI reply completed"
+        job.error_message = None
+        job.result_json = _merge_json(
+            job.result_json, {"result_preview": (last_result_text or "")[:1600]}
+        )
+        job.finished_at = now
+        _clear_process_ownership(job)
+        db.commit()
+        db.refresh(job)
+        return serialize_job(job)
+
     session_id = str(
         engine_session_id or job.session_id or (getattr(task, "session_id", None) or "")
     ).strip() or None
@@ -4055,6 +4329,13 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
     )
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
+    # Attempt-local runtime evidence is authoritative (it survives CLI exits
+    # followed by parse/persist failures); engine attributes are the fallback.
+    runtime = current_agent_attempt_runtime()
+    dead = _merge_termination_evidence(
+        getattr(engine, "last_termination_confirmed_dead", None),
+        runtime.termination_confirmed_dead if runtime is not None else None,
+    )
     payload = await run_db_txn(
         lambda db: _finalize_task_chat_job_sync(
             db,
@@ -4064,9 +4345,7 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             is_timeout_interrupted=is_timeout_interrupted,
             engine_session_id=getattr(engine, "session_id", None),
             run_token=run_token,
-            termination_confirmed_dead=getattr(
-                engine, "last_termination_confirmed_dead", None
-            ),
+            termination_confirmed_dead=dead,
         )
     )
     if payload is None:
@@ -4078,6 +4357,46 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
     queue_key = str(payload.get("queue_key") or "")
     if queue_key:
         schedule_queue(queue_key)
+
+
+async def _finalize_task_chat_job_failure(
+    job_id: str,
+    reason: str,
+    *,
+    is_timeout_interrupted: bool = False,
+    engine_session_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """统一 TASK_CHAT 失败收尾（引擎外围异常/恢复失败共用）。
+
+    不得回退到 `_mark_task_chat_job_interrupted()`：本函数与
+    `_finalize_task_chat_job_from_engine` 共享同一个 finalizer 决策表，
+    由 attempt-local 证据决定 ORPHANED 或干净的 INTERRUPTED。
+    """
+    if not job_id:
+        return None
+    attempt = current_agent_attempt()
+    runtime = current_agent_attempt_runtime()
+    payload = await run_db_txn(
+        lambda db: _finalize_task_chat_job_sync(
+            db,
+            job_id=job_id,
+            last_result_success=False,
+            last_result_text=str(reason or "AI execution failed"),
+            is_timeout_interrupted=is_timeout_interrupted,
+            engine_session_id=engine_session_id,
+            run_token=attempt.run_token if attempt else None,
+            termination_confirmed_dead=(
+                runtime.termination_confirmed_dead if runtime is not None else None
+            ),
+        )
+    )
+    if payload is None:
+        return None
+    await _broadcast_job_payload(
+        payload,
+        final=str(payload.get("status") or "") == AiJobStatus.SUCCESS.value,
+    )
+    return payload
 
 
 def _load_job_dispatch_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
@@ -4213,17 +4532,17 @@ async def _execute_job(job_id: str) -> None:
                 job_channel == AiJobChannel.TASK_CHAT
                 and job_kind not in {JOB_KIND_DIAGNOSIS_SUMMARY, JOB_KIND_TASK_BASELINE}
             ):
-                await _mark_task_chat_job_interrupted(
+                # 引擎外围异常也必须走同一个 TASK_CHAT failure finalizer，
+                # 由 attempt 证据决定 ORPHANED 或干净的 INTERRUPTED。
+                await _finalize_task_chat_job_failure(
                     job_id,
                     str(exc),
-                    message="AI 执行异常，可继续发送消息恢复",
-                    run_token=(
-                        current_agent_attempt().run_token
-                        if current_agent_attempt()
-                        else None
-                    ),
+                    is_timeout_interrupted=_looks_like_timeout_text(str(exc)),
                 )
             else:
+                # 非 TASK_CHAT：attempt-local 死亡证据必须随失败写入，
+                # 已证明死亡的作业直接 FAILED；未证明的转 ORPHANED。
+                attempt = current_agent_attempt()
                 await _update_job_state(
                     job_id,
                     status=AiJobStatus.FAILED,
@@ -4231,6 +4550,8 @@ async def _execute_job(job_id: str) -> None:
                     message="AI execution failed",
                     error_message=str(exc),
                     finalize=True,
+                    run_token=attempt.run_token if attempt else None,
+                    termination_confirmed_dead=_attempt_termination_evidence(exc),
                 )
 
 
@@ -4377,6 +4698,7 @@ def _load_hitl_resume_state_sync(db: Session, *, job_id: str, response: str) -> 
 
 
 async def _resume_task_chat_job(job_id: str, response: str) -> None:
+    engine: Optional[WorkflowEngine] = None
     try:
         state = await run_db_txn(
             lambda db: _load_hitl_resume_state_sync(db, job_id=job_id, response=response)
@@ -4439,15 +4761,13 @@ async def _resume_task_chat_job(job_id: str, response: str) -> None:
             await _finalize_task_chat_job_from_engine(job_id, engine)
     except Exception as exc:
         logger.exception(f"Failed to resume HITL AI job {job_id}: {exc}")
-        await _mark_task_chat_job_interrupted(
+        # HITL 恢复失败同样必须走统一 finalizer：由 attempt 证据决定
+        # ORPHANED 或干净的 INTERRUPTED，不得绕过进程死亡确认。
+        await _finalize_task_chat_job_failure(
             job_id,
             str(exc),
-            message="Failed to resume job after HITL",
-            run_token=(
-                current_agent_attempt().run_token
-                if current_agent_attempt()
-                else None
-            ),
+            is_timeout_interrupted=_looks_like_timeout_text(str(exc)),
+            engine_session_id=getattr(engine, "session_id", None),
         )
 
 

@@ -25,7 +25,11 @@ except ImportError:  # pragma: no cover - packaging/runtime guard
     psutil = None  # type: ignore[assignment]
 
 from app.core.logging import get_logger
-from app.agents.contract import AgentProcessIdentity
+from app.agents.contract import (
+    AgentProcessIdentity,
+    record_attempt_process_started,
+    record_attempt_termination,
+)
 
 logger = get_logger(__name__, category="agent_process")
 
@@ -603,6 +607,10 @@ class ProcessSupervisor:
         else:
             kwargs["start_new_session"] = True
         process = await asyncio.create_subprocess_exec(*args, cwd=cwd, env=env, **kwargs)
+        # A local process now exists (or existed) for this attempt regardless
+        # of whether the fence below accepts it.  Record the fact eagerly so
+        # late failures cannot lose the "was started" evidence.
+        record_attempt_process_started()
         managed = ManagedAgentProcess(
             process=process,
             run_token=run_token,
@@ -664,11 +672,13 @@ class ProcessSupervisor:
                 # rejected attempt: close the tree before propagating the
                 # callback error, while retaining it if death is unconfirmed.
                 result = await managed.close(reason="attempt_fence_callback_failed")
+                record_attempt_termination(result)
                 if result.confirmed_dead:
                     self._processes.discard(managed)
                 raise
             if not accepted:
                 result = await managed.close(reason="attempt_fence_rejected")
+                record_attempt_termination(result)
                 if result.confirmed_dead:
                     self._processes.discard(managed)
                 raise RuntimeError("Agent process could not be attached to the current job attempt")
