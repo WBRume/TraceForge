@@ -199,6 +199,8 @@ export function useChatViewModel() {
   // Engine state
   const engineRunning = ref(false)
   const showInitReasonModal = ref(false)
+  const startPrompt = ref('')
+  const initPrompt = ref('')
   const initReason = ref('')
   const initSkillOptionsLoading = ref(false)
   const initSkillOptions = ref<any[]>([])
@@ -2168,6 +2170,14 @@ export function useChatViewModel() {
   const confirmInterrupt = async () => {
     await interruptTaskNow()
   }
+
+  const defaultInitialPromptForTask = (task: any): string => {
+    const description = String(task?.description || '').trim()
+    if (description) return description
+    return t('chat.start_default_prompt', {
+      taskName: String(task?.name || ''),
+    })
+  }
   
   const handleInitialize = async () => {
     if (!currentTask.value) return
@@ -2177,6 +2187,7 @@ export function useChatViewModel() {
     }
     if (!canInitializeAction.value) return
     initReason.value = ''
+    initPrompt.value = defaultInitialPromptForTask(currentTask.value)
     const fallbackSkillIds = Array.isArray(currentTask.value?.skill_ids)
       ? currentTask.value.skill_ids.map((value: string) => String(value || '').trim()).filter(Boolean)
       : []
@@ -2191,6 +2202,7 @@ export function useChatViewModel() {
   
   const initializeTaskWithReason = async (
     reason?: string,
+    prompt?: string,
     skillIds?: string[],
     options?: { keepDeletedRuntimeSkills?: boolean },
   ): Promise<boolean> => {
@@ -2201,6 +2213,7 @@ export function useChatViewModel() {
     }
 
     const reasonText = String(reason ?? initReason.value).trim()
+    const promptText = String(prompt ?? initPrompt.value).trim()
     const hasSkillSelectionArg = Array.isArray(skillIds)
     const optionIds = activeInitSkillOptionIds.value
     const normalizedSkillIds = hasSkillSelectionArg
@@ -2223,6 +2236,7 @@ export function useChatViewModel() {
     try {
       const payload: Record<string, unknown> = {
         reason: reasonText || undefined,
+        prompt: promptText || undefined,
       }
       if (hasSkillSelectionArg) {
         payload.skill_ids = normalizedSkillIds
@@ -2268,6 +2282,7 @@ export function useChatViewModel() {
     showInitReasonModal.value = false
     await initializeTaskWithReason(
       initReason.value,
+      initPrompt.value,
       initSelectedSkillIds.value,
       { keepDeletedRuntimeSkills: true },
     )
@@ -2283,6 +2298,7 @@ export function useChatViewModel() {
     showInitReasonModal.value = false
     await initializeTaskWithReason(
       initReason.value,
+      initPrompt.value,
       initSelectedSkillIds.value,
       { keepDeletedRuntimeSkills },
     )
@@ -3149,10 +3165,7 @@ export function useChatViewModel() {
     if (startingTask.value) return false
     startingTask.value = true
   
-    // 使用任务描述作为初始 prompt
-    const prompt = currentTask.value.description || t('chat.start_default_prompt', {
-      taskName: currentTask.value.name || '',
-    })
+    const prompt = String(startPrompt.value || defaultInitialPromptForTask(currentTask.value)).trim()
   
     try {
       await api.post(
@@ -3191,6 +3204,7 @@ export function useChatViewModel() {
       return
     }
     if (startingTask.value) return
+    startPrompt.value = defaultInitialPromptForTask(currentTask.value)
     showStartConfirm.value = true
   }
   
@@ -3299,6 +3313,7 @@ export function useChatViewModel() {
     hasTaskSpecDoc,
     hasTaskSpecification,
     initializeTaskWithReason,
+    initPrompt,
     initSelectedSkillIds,
     initSkillOptions,
     initSkillOptionsLoading,
@@ -3432,6 +3447,7 @@ export function useChatViewModel() {
     specDrawerLevel,
     specDrawerTab,
     startingTask,
+    startPrompt,
     startTask,
     statusCards,
     submitHitl,

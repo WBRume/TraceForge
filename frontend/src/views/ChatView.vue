@@ -938,7 +938,22 @@ const hitlOptionLabel = (option: unknown): string => {
       :loading="vm.startingTask"
       @cancel="vm.showStartConfirm = false"
       @confirm="vm.startTask"
-    />
+    >
+      <template #content>
+        <div class="modal-form">
+          <div class="form-group">
+            <label for="start-initial-prompt">{{ $t('chat.initial_prompt_label') }}</label>
+            <textarea
+              id="start-initial-prompt"
+              v-model="vm.startPrompt"
+              class="input-field textarea-field"
+              rows="5"
+              :placeholder="$t('chat.initial_prompt_placeholder')"
+            ></textarea>
+          </div>
+        </div>
+      </template>
+    </ConfirmActionModal>
 
     <ConfirmActionModal
       :show="showBootstrapConfirm"
@@ -977,6 +992,16 @@ const hitlOptionLabel = (option: unknown): string => {
           <span>{{ $t('chat.init_reason_title') }}</span>
         </div>
         <div class="modal-form">
+          <div class="form-group">
+            <label for="initialize-initial-prompt">{{ $t('chat.initial_prompt_label') }}</label>
+            <textarea
+              id="initialize-initial-prompt"
+              v-model="vm.initPrompt"
+              class="input-field textarea-field"
+              rows="5"
+              :placeholder="$t('chat.initial_prompt_placeholder')"
+            ></textarea>
+          </div>
           <div class="form-group">
             <label>{{ $t('chat.init_reason_label') }}</label>
             <input
