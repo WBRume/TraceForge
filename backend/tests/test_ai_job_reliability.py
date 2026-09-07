@@ -463,7 +463,15 @@ def _owned_running_job(db, *, token="run-1", pid=5151):
     return job
 
 
-def _finalize(db, *, success=False, dead=None, token="run-1", timeout_interrupted=False):
+def _finalize(
+    db,
+    *,
+    success=False,
+    dead=None,
+    token="run-1",
+    timeout_interrupted=False,
+    process_started=None,
+):
     return ai_job_service._finalize_task_chat_job_sync(
         db,
         job_id="reliability-job",
@@ -472,6 +480,7 @@ def _finalize(db, *, success=False, dead=None, token="run-1", timeout_interrupte
         is_timeout_interrupted=timeout_interrupted,
         engine_session_id=None,
         run_token=token,
+        process_started=process_started,
         termination_confirmed_dead=dead,
     )
 
@@ -538,6 +547,53 @@ def test_task_chat_unconfirmed_tree_without_persisted_pid_becomes_orphaned(monke
     assert result["status"] == AiJobStatus.ORPHANED.value
     assert saved.status == AiJobStatus.ORPHANED
     assert saved.run_token == "run-1"
+
+
+def test_task_chat_started_without_death_proof_orphans_without_pid(monkeypatch):
+    """doc 11.3: started=True + dead=None + DB PID=None => ORPHANED。
+
+    PID 没有入库也不能把 process_started=True 当成“没有本地进程”；
+    该行必须保留 run_token 阻塞同队列后继作业。
+    """
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.RUNNING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = _finalize(db, dead=None, process_started=True)
+
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["status"] == AiJobStatus.ORPHANED.value
+    assert saved.status == AiJobStatus.ORPHANED
+    assert saved.run_token == "run-1"
+    assert saved.worker_boot_id == ai_job_service.WORKER_BOOT_ID
+    assert saved.process_pid is None
+    assert saved.failure_code == "PROCESS_TREE_STILL_ALIVE"
+
+
+def test_task_chat_never_started_allows_clean_interrupted(monkeypatch):
+    """doc 11.3: started=False + dead=None + 无 ownership => 业务失败终态。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.RUNNING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = _finalize(db, success=False, dead=None, process_started=False)
+
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["status"] == AiJobStatus.INTERRUPTED.value
+    assert saved.status == AiJobStatus.INTERRUPTED
+    _assert_no_ownership(saved)
 
 
 def test_task_chat_confirmed_dead_error_becomes_clean_interrupted():
@@ -774,6 +830,146 @@ def test_unconfirmed_failure_with_missing_pid_writes_orphaned():
     assert saved.failure_code == "PROCESS_TREE_STILL_ALIVE"
 
 
+def test_update_job_state_started_without_death_proof_orphans_without_pid():
+    """doc 11.3: 非本地 PID 入库路径的同一决策表（started=True, dead=None）。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.RUNNING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    import pytest as _pytest
+
+    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "reliability-job",
+        status=AiJobStatus.FAILED,
+        finalize=True,
+        run_token="run-1",
+        process_started=True,
+        termination_confirmed_dead=None,
+        error_message="spawn callback cancelled before PID attach",
+    )
+
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["payload"]["status"] == AiJobStatus.ORPHANED.value
+    assert saved.status == AiJobStatus.ORPHANED
+    assert saved.run_token == "run-1"
+    assert saved.worker_boot_id == ai_job_service.WORKER_BOOT_ID
+
+
+def test_update_job_state_confirmed_dead_allows_terminal_and_clears_ownership():
+    """doc 11.3: started=True + dead=True + DB PID=None => 终态 + 清 ownership。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.RUNNING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    import pytest as _pytest
+
+    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "reliability-job",
+        status=AiJobStatus.FAILED,
+        finalize=True,
+        run_token="run-1",
+        process_started=True,
+        termination_confirmed_dead=True,
+        error_message="provider error after clean exit",
+    )
+
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["payload"]["status"] == AiJobStatus.FAILED.value
+    assert saved.status == AiJobStatus.FAILED
+    _assert_no_ownership(saved)
+
+
+def test_update_job_state_never_started_allows_business_failure():
+    """doc 11.3: 无本地进程（started=False/None, dead=None, 无 ownership）=> 业务失败。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.RUNNING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+    )
+    import pytest as _pytest
+
+    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "reliability-job",
+        status=AiJobStatus.FAILED,
+        finalize=True,
+        run_token="run-1",
+        process_started=False,
+        termination_confirmed_dead=None,
+        error_message="remote provider rejected the request",
+    )
+
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["payload"]["status"] == AiJobStatus.FAILED.value
+    assert saved.status == AiJobStatus.FAILED
+    _assert_no_ownership(saved)
+
+
+def test_update_job_state_orphaned_retains_containment_and_ownership():
+    """ORPHANED 行必须保留恢复信息（containment / ownership / run token）。"""
+    factory = _session_factory()
+    db = factory()
+    _owned_running_job(db)
+    job = db.get(SddAiJob, "reliability-job")
+    job.process_containment_id = "runtoken:run-1"
+    job.process_execution_kind = "LOCAL_PROCESS"
+    db.commit()
+    import pytest as _pytest
+
+    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "reliability-job",
+        status=AiJobStatus.FAILED,
+        finalize=True,
+        run_token="run-1",
+        process_started=True,
+        termination_confirmed_dead=False,
+        failure_code="PROCESS_TREE_STILL_ALIVE",
+        remaining_pids=(4242,),
+        error_message="descendant survived",
+    )
+
+    db.expire_all()
+    saved = db.get(SddAiJob, "reliability-job")
+    assert result["payload"]["status"] == AiJobStatus.ORPHANED.value
+    assert saved.process_pid == 5151
+    assert saved.run_token == "run-1"
+    assert saved.process_containment_id == "runtoken:run-1"
+    assert saved.process_execution_kind == "LOCAL_PROCESS"
+    context = saved.context_json if isinstance(saved.context_json, dict) else {}
+    assert context.get("unconfirmed_process_pids") == [4242]
+
+
+def test_claim_persists_containment_id_derived_from_run_token(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _job(db)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    job_id = ai_job_service._take_next_pending_job_id_sync("TASK_CHAT:task-1")
+    assert job_id == "reliability-job"
+    claimed = db.get(SddAiJob, "reliability-job")
+    assert claimed.run_token
+    assert claimed.process_containment_id == f"runtoken:{claimed.run_token}"
+
+
 def test_runtime_evidence_survives_cli_exit_then_outer_failure(monkeypatch):
     """CLI confirmed dead, later parse/persist failure must still see True."""
     import app.agents as agents_pkg
@@ -897,17 +1093,124 @@ def test_concurrent_jobs_runtime_evidence_not_shared():
     assert agents_pkg.current_agent_attempt_runtime() is None
 
 
-def test_termination_evidence_false_outranks_true():
-    from app.agents.contract import AgentAttemptRuntimeState
+def test_identity_aware_evidence_state_machine():
+    """Identity-aware evidence matrix (doc 11.1).
 
+    废止 attempt 级 `False > True > None`：死亡证明按不可变进程身份记录，
+    同一身份的后续 True 收敛先前 False；不同身份的证据互不覆盖。
+    """
+    from datetime import datetime, timezone
+
+    from app.agents.contract import (
+        AgentAttemptRuntimeState,
+        AgentProcessIdentity,
+        ProcessDeathState,
+    )
+
+    def _identity(pid: int) -> AgentProcessIdentity:
+        return AgentProcessIdentity(
+            pid=pid,
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            process_group_id=pid,
+            containment_id=f"runtoken:tok-{pid}",
+        )
+
+    identity_a = _identity(101)
+    identity_b = _identity(202)
+
+    # A: STARTED -> False -> True  => attempt True（同一进程后续确认死亡）
+    state = AgentAttemptRuntimeState()
+    state.record_process_started(identity_a)
+    assert state.termination_confirmed_dead is None
+    state.record_termination(confirmed_dead=False, identity=identity_a)
+    assert state.termination_confirmed_dead is False
+    state.record_termination(confirmed_dead=True, identity=identity_a)
+    assert state.termination_confirmed_dead is True
+
+    # A: True -> late False  => attempt True（死亡不可逆，旧回调不能恢复）
+    state.record_termination(
+        confirmed_dead=False,
+        identity=identity_a,
+        failure_code="LATE_CALLBACK",
+    )
+    assert state.termination_confirmed_dead is True
+
+    # A: False, B: True  => attempt False（B 的死亡不能覆盖 A 的未确认）
+    state = AgentAttemptRuntimeState()
+    state.record_process_started(identity_a)
+    state.record_process_started(identity_b)
+    state.record_termination(confirmed_dead=False, identity=identity_a)
+    state.record_termination(confirmed_dead=True, identity=identity_b)
+    assert state.termination_confirmed_dead is False
+
+    # A: True, B: STARTED  => attempt None（B 的死亡证据尚未决出）
+    state = AgentAttemptRuntimeState()
+    state.record_process_started(identity_a)
+    state.record_process_started(identity_b)
+    state.record_termination(confirmed_dead=True, identity=identity_a)
+    assert state.termination_confirmed_dead is None
+    assert state.process_started is True
+
+    # A: True, B: False  => attempt False
+    state.record_termination(confirmed_dead=False, identity=identity_b)
+    assert state.termination_confirmed_dead is False
+
+    # 无本地进程  => process_started False, dead None
+    state = AgentAttemptRuntimeState()
+    assert state.process_started is False
+    assert state.termination_confirmed_dead is None
+
+    # 孤立的终止证据（stub bridge）不得伪造 process_started
     state = AgentAttemptRuntimeState()
     state.record_termination(confirmed_dead=True)
+    assert state.process_started is False
     assert state.termination_confirmed_dead is True
-    state.record_termination(confirmed_dead=False, failure_code="PROCESS_TREE_STILL_ALIVE")
-    assert state.termination_confirmed_dead is False
-    state.record_termination(confirmed_dead=True)
-    # False must not be degraded by later True results.
-    assert state.termination_confirmed_dead is False
+
+    # 未确认 identity 的诊断信息保持可读
+    state = AgentAttemptRuntimeState()
+    state.record_process_started(identity_a)
+    state.record_termination(
+        confirmed_dead=False,
+        identity=identity_a,
+        failure_code="PROCESS_TREE_STILL_ALIVE",
+        remaining_pids=(5151,),
+    )
+    assert state.termination_failure_code == "PROCESS_TREE_STILL_ALIVE"
+    assert state.remaining_pids == (5151,)
+    unconfirmed = state.unconfirmed_identities
+    assert len(unconfirmed) == 1
+    assert unconfirmed[0].state == ProcessDeathState.UNCONFIRMED
+    assert unconfirmed[0].identity == identity_a
+
+
+def test_concurrent_attempt_states_do_not_share_identity_evidence():
+    """两个并发 job 的 evidence 不串线（doc 11.1）。"""
+    from datetime import datetime, timezone
+
+    from app.agents.contract import (
+        AgentAttemptRuntimeState,
+        AgentProcessIdentity,
+    )
+
+    def _identity(pid: int) -> AgentProcessIdentity:
+        return AgentProcessIdentity(
+            pid=pid,
+            started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            containment_id=f"runtoken:tok-{pid}",
+        )
+
+    first = AgentAttemptRuntimeState()
+    first.record_process_started(_identity(111))
+    first.record_termination(confirmed_dead=True, identity=_identity(111))
+
+    second = AgentAttemptRuntimeState()
+    second.record_process_started(_identity(222))
+    second.record_termination(confirmed_dead=False, identity=_identity(222))
+
+    assert first.termination_confirmed_dead is True
+    assert second.termination_confirmed_dead is False
+    assert first.process_started is True
+    assert second.process_started is True
 
 
 def test_typed_agent_errors_carry_termination_evidence():

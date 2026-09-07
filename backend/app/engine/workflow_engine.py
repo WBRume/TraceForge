@@ -1773,6 +1773,11 @@ class WorkflowEngine:
                         idle_timeout_seconds=float(
                             getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
                         ),
+                        # Supervisor-side attach timeout (real DB attach); the
+                        # engine watchdog stays a secondary outer guard only.
+                        process_attach_timeout_seconds=float(
+                            getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
+                        ) or None,
                         metadata={
                             "task_id": self.task_id,
                             "workspace_id": self.ws_id,

@@ -17,7 +17,7 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -32,6 +32,69 @@ from app.agents.contract import (
 )
 
 logger = get_logger(__name__, category="agent_process")
+
+RUN_TOKEN_ENV_VAR = "TRACEFORGE_RUN_TOKEN"
+
+# 命令标记：用于 run-token 发现结果的补充身份校验（doc 7.3.4）。
+_TOKEN_PROCESS_COMMAND_MARKERS = ("claude", "node", "traceforge")
+
+
+def containment_id_for_run_token(run_token: Optional[str]) -> Optional[str]:
+    """Stable attempt containment id derived from the durable run token.
+
+    The id is available before the child PID exists so it can be persisted at
+    job claim time and re-located by the reaper after a worker restart.
+    """
+    token = str(run_token or "").strip()
+    return f"runtoken:{token}" if token else None
+
+
+def containment_capability() -> Dict[str, Any]:
+    """Report this platform's attempt-containment capability (doc 7.4).
+
+    Production Linux relies on run-token /proc discovery until a dedicated
+    cgroup provider is deployed; Windows development uses kill-on-close Job
+    Objects.  ``available=False`` must make readiness fail instead of
+    starting unprotected local CLI processes.
+    """
+    if os.name == "nt":
+        return {
+            "platform": "windows",
+            "mode": "windows_job_object",
+            "available": True,
+            "reason": None,
+        }
+    if psutil is None:
+        return {
+            "platform": "posix",
+            "mode": "proc_token_discovery",
+            "available": False,
+            "reason": "psutil is required for /proc run-token discovery",
+        }
+    return {
+        "platform": "posix",
+        "mode": "proc_token_discovery",
+        "available": True,
+        "reason": None,
+    }
+
+
+def _require_containment_ready() -> None:
+    """Refuse to spawn local Agent processes without containment when required."""
+    try:
+        from app.config import settings
+
+        required = bool(getattr(settings, "AGENT_REQUIRE_PROCESS_CONTAINMENT", False))
+    except Exception:
+        required = False
+    if not required:
+        return
+    capability = containment_capability()
+    if not capability.get("available"):
+        raise RuntimeError(
+            "Process containment is required but unavailable on this platform: "
+            f"{capability.get('reason')}"
+        )
 
 
 def _windows_kernel32():
@@ -196,6 +259,12 @@ class ManagedAgentProcess:
     _closed: bool = False
     process_start_time: Optional[float] = None
     process_group_id: Optional[int] = None
+    containment_id: Optional[str] = None
+    _identity: Optional[AgentProcessIdentity] = None
+    # 同一进程的终止操作必须串行化；已确认死亡的结果会被缓存，
+    # 重复 close/interrupt 直接返回权威死亡证明（doc 4.4）。
+    _termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    _last_termination: Optional[TerminationResult] = None
 
     @property
     def pid(self) -> int:
@@ -214,15 +283,20 @@ class ManagedAgentProcess:
 
     @property
     def process_identity(self) -> AgentProcessIdentity:
-        started = self.process_started_at or self.created_at
-        group_id = self.process_group_id if os.name != "nt" else None
-        containment_id = f"job:{self.job_handle:x}" if self.job_handle else None
-        return AgentProcessIdentity(
-            pid=self.pid,
-            started_at=datetime.fromtimestamp(started, tz=timezone.utc),
-            process_group_id=group_id,
-            containment_id=containment_id,
-        )
+        """Immutable process identity; computed once so the evidence key is stable."""
+        if self._identity is None:
+            started = self.process_started_at or self.created_at
+            group_id = self.process_group_id if os.name != "nt" else None
+            containment = self.containment_id or (
+                f"job:{self.job_handle:x}" if self.job_handle else None
+            )
+            self._identity = AgentProcessIdentity(
+                pid=self.pid,
+                started_at=datetime.fromtimestamp(started, tz=timezone.utc),
+                process_group_id=group_id,
+                containment_id=containment,
+            )
+        return self._identity
 
     def add_reader_task(self, task: asyncio.Task) -> None:
         self.reader_tasks.append(task)
@@ -408,9 +482,17 @@ class ManagedAgentProcess:
         return await self._terminate(reason=reason, graceful=False)
 
     async def close(self, reason: str = "close") -> TerminationResult:
+        if (
+            self._closed
+            and self._last_termination is not None
+            and self._last_termination.confirmed_dead
+        ):
+            # Already-authoritative death proof for this identity: repeated
+            # close calls must be idempotent and cheap.
+            return self._last_termination
         result = await self._terminate(reason=reason, graceful=True)
-        await self._reap_readers(timeout=2.0)
         if result.confirmed_dead:
+            await self._reap_readers(timeout=2.0)
             self.stop_monitor = True
             if self.monitor_task is not None:
                 self.monitor_task.cancel()
@@ -444,6 +526,25 @@ class ManagedAgentProcess:
         self.reader_tasks.clear()
 
     async def _terminate(self, *, reason: str, graceful: bool) -> TerminationResult:
+        """Serialize every termination check for this one process (doc 4.4).
+
+        - Concurrent wait/close/interrupt/terminate calls never mutate the
+          cached evidence concurrently.
+        - A confirmed death is cached and returned directly by later calls.
+        - An unconfirmed result allows a later kill/verify to run again; a
+          later True converges the identity to CONFIRMED_DEAD.
+        - A late unconfirmed completion can never overwrite an authoritative
+          death proof (the early return guarantees that).
+        """
+        async with self._termination_lock:
+            cached = self._last_termination
+            if cached is not None and cached.confirmed_dead:
+                return cached
+            result = await self._terminate_locked(reason=reason, graceful=graceful)
+            self._last_termination = result
+            return result
+
+    async def _terminate_locked(self, *, reason: str, graceful: bool) -> TerminationResult:
         started = time.monotonic()
         signals: list[str] = []
         tree_kill_used = False
@@ -553,6 +654,13 @@ class ManagedAgentProcess:
                 # actual tree-cleanup result so callers cannot report SUCCESS
                 # while descendants are still alive.
                 termination = await self.close(reason="root_exit_with_descendants")
+            elif termination.confirmed_dead:
+                # Cache the authoritative proof under the same serialization
+                # rules as close()/terminate().
+                async with self._termination_lock:
+                    cached = self._last_termination
+                    if cached is None or not cached.confirmed_dead:
+                        self._last_termination = termination
             return ProcessWaitResult(
                 root_return_code=root_return_code,
                 termination=termination,
@@ -577,6 +685,9 @@ class ProcessSupervisor:
 
     def __init__(self) -> None:
         self._processes: set[ManagedAgentProcess] = set()
+        # Strong references for uncancellable cleanup tasks: they must not be
+        # garbage-collected while a caller cancellation storm is in progress.
+        self._cleanup_tasks: set[asyncio.Task] = set()
 
     @property
     def active_count(self) -> int:
@@ -591,7 +702,13 @@ class ProcessSupervisor:
         run_token: Optional[str] = None,
         worker_boot_id: Optional[str] = None,
         on_process_started: Optional[Any] = None,
+        containment_id: Optional[str] = None,
+        process_attach_timeout_seconds: Optional[float] = None,
     ) -> ManagedAgentProcess:
+        # Doc 7.4: when the deployment requires attempt containment, a
+        # missing provider must refuse new local Agent jobs instead of
+        # starting an unprotected CLI.
+        _require_containment_ready()
         kwargs: dict[str, Any] = {
             "stdin": asyncio.subprocess.DEVNULL,
             "stdout": asyncio.subprocess.PIPE,
@@ -607,15 +724,18 @@ class ProcessSupervisor:
         else:
             kwargs["start_new_session"] = True
         process = await asyncio.create_subprocess_exec(*args, cwd=cwd, env=env, **kwargs)
-        # A local process now exists (or existed) for this attempt regardless
-        # of whether the fence below accepts it.  Record the fact eagerly so
-        # late failures cannot lose the "was started" evidence.
-        record_attempt_process_started()
+        # I1 (doc 3): the process is owned by the supervisor from this instant.
+        # Construct + register the managed handle before any cancellable
+        # callback await so no unowned window can exist.
         managed = ManagedAgentProcess(
             process=process,
             run_token=run_token,
             worker_boot_id=worker_boot_id,
             job_handle=_windows_job_object() if os.name == "nt" else None,
+            containment_id=(
+                containment_id
+                or (containment_id_for_run_token(run_token) if os.name != "nt" else None)
+            ),
         )
         managed.process_start_time = managed.process_started_at
         if os.name != "nt":
@@ -660,29 +780,150 @@ class ProcessSupervisor:
                 managed.job_handle = None
                 raise RuntimeError(f"Could not establish Windows process supervision: {exc}") from exc
         self._processes.add(managed)
+        # The identity is frozen once here: every evidence record for this
+        # process uses the same immutable key.
+        identity = managed.process_identity
+        record_attempt_process_started(identity)
         if psutil is not None:
             managed.monitor_task = asyncio.create_task(self._monitor_tree(managed))
         if on_process_started is not None:
+            attach_error: Optional[BaseException] = None
+            accepted = False
             try:
-                accepted = on_process_started(managed.process_identity)
-                if asyncio.iscoroutine(accepted):
-                    accepted = await accepted
-            except Exception:
-                # A failed durable attach is indistinguishable from a
-                # rejected attempt: close the tree before propagating the
-                # callback error, while retaining it if death is unconfirmed.
-                result = await managed.close(reason="attempt_fence_callback_failed")
-                record_attempt_termination(result)
-                if result.confirmed_dead:
-                    self._processes.discard(managed)
-                raise
-            if not accepted:
-                result = await managed.close(reason="attempt_fence_rejected")
-                record_attempt_termination(result)
-                if result.confirmed_dead:
-                    self._processes.discard(managed)
-                raise RuntimeError("Agent process could not be attached to the current job attempt")
+                accepted = await self._invoke_attach_callback(
+                    managed,
+                    on_process_started,
+                    process_attach_timeout_seconds,
+                )
+            except BaseException as exc:  # cancellation must also clean up (I1)
+                attach_error = exc
+            if attach_error is not None or not accepted:
+                if attach_error is None:
+                    reason = "attempt_fence_rejected"
+                elif isinstance(attach_error, asyncio.CancelledError):
+                    reason = "process_attach_cancelled"
+                elif isinstance(attach_error, asyncio.TimeoutError):
+                    reason = "process_attach_timeout"
+                else:
+                    reason = "attempt_fence_callback_failed"
+                # Cleanup is executed inside an uncancellable task; only after
+                # it finished (or was reliably handed to the background task)
+                # does the original exception propagate.
+                result = await self._cleanup_before_reraise(managed, reason=reason)
+                if attach_error is None:
+                    raise RuntimeError(
+                        "Agent process could not be attached to the current job attempt"
+                    ) from None
+                if isinstance(attach_error, asyncio.TimeoutError):
+                    raise TimeoutError(
+                        f"Agent process attach did not finish within "
+                        f"{float(process_attach_timeout_seconds or 0):.1f}s; "
+                        f"process tree cleanup confirmed_dead={result.confirmed_dead}"
+                    ) from attach_error
+                raise attach_error
         return managed
+
+    @staticmethod
+    async def _invoke_attach_callback(
+        managed: ManagedAgentProcess,
+        callback: Any,
+        timeout_seconds: Optional[float],
+    ) -> bool:
+        """Invoke the attach callback, bounded by the supervisor-side timeout.
+
+        The timeout covers the real DB attach work, not a bridge-forwarded
+        future; the adapter watchdog remains an additional outer guard only.
+        """
+
+        async def _invoke() -> bool:
+            accepted = callback(managed.process_identity)
+            if asyncio.iscoroutine(accepted):
+                accepted = await accepted
+            return bool(accepted)
+
+        effective_timeout = float(timeout_seconds) if timeout_seconds else 0.0
+        if effective_timeout > 0:
+            return bool(await asyncio.wait_for(_invoke(), timeout=effective_timeout))
+        return bool(await _invoke())
+
+    async def _cleanup_before_reraise(
+        self,
+        managed: ManagedAgentProcess,
+        *,
+        reason: str,
+    ) -> TerminationResult:
+        """Close the spawned tree without being interrupted by cancellation.
+
+        The cleanup task is strongly referenced and never cancelled by the
+        caller; repeated caller cancellations keep it running.  The original
+        CancelledError still propagates from the spawn caller afterwards.
+        """
+        async def _safe_close() -> TerminationResult:
+            try:
+                return await managed.close(reason=reason)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Cleanup failures must become structured evidence, never a
+                # lost death proof.
+                logger.exception("Supervised cleanup failed: pid={}, reason={}", managed.pid, reason)
+                return TerminationResult(
+                    confirmed_dead=False,
+                    root_return_code=getattr(managed.process, "returncode", None),
+                    error_code="TERMINATION_EXCEPTION",
+                    error_message=str(exc),
+                )
+
+        cleanup_task = asyncio.create_task(_safe_close())
+        self._cleanup_tasks.add(cleanup_task)
+        cleanup_task.add_done_callback(self._cleanup_tasks.discard)
+
+        while True:
+            try:
+                await asyncio.shield(cleanup_task)
+                break
+            except asyncio.CancelledError:
+                # Preserve the cancellation request but never cancel the
+                # cleanup task itself.
+                if cleanup_task.done():
+                    break
+                continue
+
+        if cleanup_task.cancelled():
+            result = TerminationResult(
+                confirmed_dead=False,
+                root_return_code=getattr(managed.process, "returncode", None),
+                error_code="CLEANUP_CANCELLED",
+                error_message="Cleanup task was cancelled before confirming process death",
+            )
+        else:
+            cleanup_exc = cleanup_task.exception()
+            if cleanup_exc is not None:
+                result = TerminationResult(
+                    confirmed_dead=False,
+                    root_return_code=getattr(managed.process, "returncode", None),
+                    error_code="TERMINATION_EXCEPTION",
+                    error_message=str(cleanup_exc),
+                )
+            else:
+                result = cleanup_task.result()
+        record_attempt_termination(result, managed.process_identity)
+        if result.confirmed_dead:
+            self._processes.discard(managed)
+        return result
+
+    async def drain_cleanup_tasks(self, timeout: float = 10.0) -> None:
+        """Wait for background cleanup tasks (used during graceful shutdown)."""
+        tasks = [task for task in list(self._cleanup_tasks) if not task.done()]
+        if not tasks:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=max(0.1, timeout),
+            )
+        except asyncio.TimeoutError:
+            pass
 
     @staticmethod
     def _windows_process_handles(process: asyncio.subprocess.Process) -> tuple[Optional[int], Optional[int]]:
@@ -783,13 +1024,37 @@ class ProcessSupervisor:
         return False
 
     async def stop_attempt(self, run_token: str, reason: str) -> Optional[TerminationResult]:
+        """Stop every process registered under this run token (doc 10).
+
+        Must not stop only the first match: a retry or a spawn race can leave
+        more than one live tree under the same durable token.
+        """
         matches = [item for item in self._processes if item.run_token == run_token]
         if not matches:
             return None
-        result = await matches[0].close(reason=reason)
-        if result.confirmed_dead or result.error_code == "PID_REUSED":
-            self._processes.discard(matches[0])
-        return result
+        results: list[TerminationResult] = []
+        for managed in matches:
+            result = await managed.close(reason=reason)
+            record_attempt_termination(result, managed.process_identity)
+            if result.confirmed_dead or result.error_code == "PID_REUSED":
+                self._processes.discard(managed)
+            results.append(result)
+        if len(results) == 1:
+            return results[0]
+        failed = next((item for item in results if not item.confirmed_dead), None)
+        if failed is not None:
+            return failed
+        return TerminationResult(
+            confirmed_dead=True,
+            root_return_code=next(
+                (item.root_return_code for item in results if item.root_return_code is not None),
+                None,
+            ),
+            signals_sent=tuple(
+                signal for item in results for signal in item.signals_sent
+            ),
+            tree_kill_used=any(item.tree_kill_used for item in results),
+        )
 
     def forget(self, managed: ManagedAgentProcess) -> None:
         if managed._closed or (
@@ -1037,6 +1302,153 @@ class ProcessSupervisor:
                 error_message=str(exc),
             )
 
+    def _iter_token_processes(self, run_token: str) -> list["psutil.Process"]:
+        """Constrained /proc discovery of processes carrying the exact run token.
+
+        Linux fallback when no in-memory registration or persisted PID exists
+        (doc 7.3).  Constraints enforced here:
+        - same-UID processes only;
+        - exact NUL-separated environ match of TRACEFORGE_RUN_TOKEN — never a
+          cmdline substring match;
+        - our own worker process is always excluded.
+        """
+        if os.name == "nt" or psutil is None:
+            return []
+        token = str(run_token or "").strip()
+        if not token:
+            return []
+        try:
+            current_uid = os.getuid()
+        except AttributeError:
+            current_uid = None
+        matches: list["psutil.Process"] = []
+        for proc in psutil.process_iter(["pid"]):
+            try:
+                if int(proc.pid) == os.getpid():
+                    continue
+                if current_uid is not None:
+                    try:
+                        if proc.uids().real != current_uid:
+                            continue
+                    except (psutil.Error, OSError):
+                        continue
+                environ = proc.environ()
+                if environ.get(RUN_TOKEN_ENV_VAR) != token:
+                    continue
+                matches.append(proc)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.Error, OSError, ValueError):
+                continue
+        return matches
+
+    @staticmethod
+    def _token_process_identity_ok(proc: "psutil.Process", *, not_before, not_after) -> bool:
+        """Validate create-time window and command markers for a discovered process."""
+        try:
+            create_time = float(proc.create_time())
+        except (psutil.Error, OSError, ValueError):
+            return False
+        if not_before is not None:
+            expected = not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
+            if create_time < expected.timestamp() - 2.0:
+                return False
+        if not_after is not None:
+            expected = not_after if not_after.tzinfo else not_after.replace(tzinfo=timezone.utc)
+            if create_time > expected.timestamp() + 2.0:
+                return False
+        try:
+            command = " ".join(proc.cmdline()).lower()
+        except (psutil.Error, OSError, ValueError):
+            return False
+        return any(marker in command for marker in _TOKEN_PROCESS_COMMAND_MARKERS)
+
+    async def stop_by_run_token_discovery(
+        self,
+        run_token: str,
+        reason: str,
+        *,
+        not_before: Optional[datetime] = None,
+        not_after: Optional[datetime] = None,
+    ) -> Optional[TerminationResult]:
+        """Reclaim a previous boot's tree via run-token discovery (doc 8.5).
+
+        Returns ``None`` only when discovery is unavailable on this platform
+        so callers keep the attempt ORPHANED.  An empty double scan is the
+        authoritative "no token-carrying process exists" proof: every local
+        CLI and its descendants inherit the exact token at spawn time.
+        Identity conflicts (unknown command, out-of-window create time) keep
+        the attempt unconfirmed instead of blindly killing.
+        """
+        if os.name == "nt" or psutil is None:
+            return None
+        started = time.monotonic()
+
+        def _scan() -> list["psutil.Process"]:
+            return self._iter_token_processes(run_token)
+
+        matches = _scan()
+        if not matches:
+            # Re-scan once after a short grace period to absorb the fork/exec
+            # window before confirming "nothing carries the token".
+            await asyncio.sleep(0.5)
+            matches = _scan()
+            if not matches:
+                return TerminationResult(
+                    confirmed_dead=True,
+                    root_return_code=None,
+                    signals_sent=(),
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+        conflicts = [
+            proc
+            for proc in matches
+            if not self._token_process_identity_ok(proc, not_before=not_before, not_after=not_after)
+        ]
+        if conflicts:
+            return TerminationResult(
+                confirmed_dead=False,
+                root_return_code=None,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
+                error_message=(
+                    f"{len(conflicts)} run-token process(es) failed identity validation; "
+                    "manual handling required"
+                ),
+                remaining_pids=tuple(sorted(int(proc.pid) for proc in conflicts)),
+            )
+        signals: list[str] = []
+        for proc in matches:
+            try:
+                pgid = os.getpgid(int(proc.pid))
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.kill()
+                except (psutil.Error, OSError, ValueError):
+                    continue
+            signals.append("SIGKILL")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not _scan():
+                return TerminationResult(
+                    confirmed_dead=True,
+                    root_return_code=None,
+                    signals_sent=tuple(signals),
+                    tree_kill_used=True,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+            await asyncio.sleep(0.1)
+        remaining = tuple(sorted(int(proc.pid) for proc in _scan()))
+        return TerminationResult(
+            confirmed_dead=False,
+            root_return_code=None,
+            signals_sent=tuple(signals),
+            tree_kill_used=True,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+            error_code="PROCESS_TREE_STILL_ALIVE",
+            error_message=f"Run-token process tree survived after {reason}",
+            remaining_pids=remaining,
+        )
+
     async def stop_all(self, reason: str = "worker_shutdown") -> list[TerminationResult]:
         processes = list(self._processes)
         results = await asyncio.gather(
@@ -1046,6 +1458,7 @@ class ProcessSupervisor:
         output: list[TerminationResult] = []
         for managed, result in zip(processes, results):
             if isinstance(result, TerminationResult):
+                record_attempt_termination(result, managed.process_identity)
                 output.append(result)
                 if result.confirmed_dead:
                     self._processes.discard(managed)
@@ -1069,5 +1482,7 @@ __all__ = [
     "ProcessSupervisor",
     "ProcessWaitResult",
     "TerminationResult",
+    "containment_capability",
+    "containment_id_for_run_token",
     "process_supervisor",
 ]

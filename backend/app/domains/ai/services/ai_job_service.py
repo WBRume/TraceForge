@@ -52,7 +52,11 @@ from app.agents.errors import (
     AgentProviderError,
     AgentTimeoutError,
 )
-from app.agents.process_supervisor import process_supervisor
+from app.agents.process_supervisor import (
+    containment_capability,
+    containment_id_for_run_token,
+    process_supervisor,
+)
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.asset.models.asset import (
     AssetThreadMessageRole,
@@ -182,7 +186,12 @@ def _attempt_is_current_sync(
 
 
 def _merge_termination_evidence(*values: Optional[bool]) -> Optional[bool]:
-    """False > True > None：任一路径拿到更保守的证据时不得被降级。"""
+    """False > True > None：任一路径拿到更保守的证据时不得被降级。
+
+    注意：该合并只允许用于同一 attempt 的不同证据通道（runtime 聚合、
+    typed 异常、bridge last result 描述的是同一批进程）；进程身份级别的
+    合并由 AgentAttemptRuntimeState 内部完成，禁止在 attempt 级绕过。
+    """
     if any(value is False for value in values):
         return False
     if any(value is True for value in values):
@@ -190,17 +199,32 @@ def _merge_termination_evidence(*values: Optional[bool]) -> Optional[bool]:
     return None
 
 
+def _attempt_evidence(exc: Optional[BaseException] = None) -> tuple[bool, Optional[bool]]:
+    """Return (process_started, dead) from the attempt runtime + typed exception.
+
+    The identity-aware runtime aggregate is authoritative; the typed exception
+    attributes are a compatibility channel for the same processes.
+    """
+    runtime = current_agent_attempt_runtime()
+    started = bool(runtime.process_started) if runtime is not None else False
+    dead = runtime.termination_confirmed_dead if runtime is not None else None
+    if exc is not None:
+        exc_started = getattr(exc, "process_started", None)
+        if exc_started is not None:
+            started = started or bool(exc_started)
+        exc_dead = getattr(exc, "termination_confirmed_dead", None)
+        if exc_dead is not None:
+            dead = _merge_termination_evidence(dead, bool(exc_dead))
+    return (started, dead)
+
+
+def _attempt_process_started(exc: Optional[BaseException] = None) -> bool:
+    return _attempt_evidence(exc)[0]
+
+
 def _attempt_termination_evidence(exc: Optional[BaseException] = None) -> Optional[bool]:
     """Read the authoritative attempt-local death proof (with typed-exception fallback)."""
-    dead: Optional[bool] = None
-    if exc is not None:
-        dead = getattr(exc, "termination_confirmed_dead", None)
-        if dead is not None:
-            dead = bool(dead)
-    runtime = current_agent_attempt_runtime()
-    if runtime is not None:
-        dead = _merge_termination_evidence(dead, runtime.termination_confirmed_dead)
-    return dead
+    return _attempt_evidence(exc)[1]
 
 
 def _bridge_termination_dead(bridge: Any) -> Optional[bool]:
@@ -210,6 +234,23 @@ def _bridge_termination_dead(bridge: Any) -> Optional[bool]:
         return None
     confirmed = getattr(termination, "confirmed_dead", None)
     return None if confirmed is None else bool(confirmed)
+
+
+def process_containment_readiness() -> Dict[str, Any]:
+    """Attempt-containment readiness for local Agent jobs (doc 7.4).
+
+    When the deployment requires containment, an unavailable provider must
+    make readiness fail and refuse new local CLI attempts; ordinary
+    REST/read-only endpoints may keep serving per the existing readiness
+    layering.
+    """
+    capability = containment_capability()
+    required = bool(getattr(settings, "AGENT_REQUIRE_PROCESS_CONTAINMENT", False))
+    return {
+        **capability,
+        "required": required,
+        "ok": (not required) or bool(capability.get("available")),
+    }
 
 
 def _queue_key_for_task(task_id: str) -> str:
@@ -354,6 +395,12 @@ def _persist_process_identity_sync(
         job.process_pid = int(identity.pid)
         job.process_started_at = identity.started_at.replace(tzinfo=None)
         job.process_group_id = identity.process_group_id
+        job.process_containment_id = identity.containment_id
+        # Explicit execution-kind declaration (doc 6.3): a backend that
+        # attaches a local process identity is by definition LOCAL_PROCESS;
+        # remote backends never reach this path and must declare
+        # REMOTE_SESSION via capabilities instead of being inferred.
+        job.process_execution_kind = "LOCAL_PROCESS"
         job.context_json = _merge_json(
             job.context_json,
             {
@@ -378,6 +425,7 @@ def _clear_process_ownership(job: SddAiJob) -> None:
     job.process_pid = None
     job.process_started_at = None
     job.process_group_id = None
+    job.process_containment_id = None
     job.run_token = None
     job.worker_id = None
     job.worker_boot_id = None
@@ -498,6 +546,8 @@ def serialize_job(job: SddAiJob) -> Dict[str, Any]:
         "process_pid": job.process_pid,
         "process_started_at": job.process_started_at.isoformat() if job.process_started_at else None,
         "process_group_id": job.process_group_id,
+        "process_containment_id": job.process_containment_id,
+        "process_execution_kind": job.process_execution_kind,
         "termination_attempts": int(job.termination_attempts or 0),
         "failure_code": job.failure_code,
         "terminal_reason": job.terminal_reason,
@@ -603,6 +653,31 @@ async def _publish_job_state(job_id: str, *, final: bool = False) -> None:
     await _broadcast_job_payload(payload, final=final)
 
 
+def _unresolved_local_process_evidence(
+    process_started: Optional[bool],
+    termination_confirmed_dead: Optional[bool],
+    job: SddAiJob,
+) -> bool:
+    """Finalizer 决策表（doc 6.2）的唯一判定入口。
+
+    TASK_CHAT 与非 TASK_CHAT finalizer 都必须经过该函数：
+    - dead=False 本身就是“无法证明死亡/仍有存活进程”的权威证据，即使
+      process_started 未知、DB 没有 PID 也不得进入终态；
+    - process_started=True 的本地进程必须以死亡证明换取终态，DB 没有 PID
+      也不能把启动过进程当成“没有本地进程”；
+    - DB 已有进程归属时同样要求死亡证明。
+    """
+    unresolved_local_process = (
+        (process_started is True or termination_confirmed_dead is False)
+        and termination_confirmed_dead is not True
+    )
+    unresolved_persisted_owner = (
+        _has_active_process_ownership(job)
+        and termination_confirmed_dead is not True
+    )
+    return bool(unresolved_local_process or unresolved_persisted_owner)
+
+
 def _update_job_state_sync(
     job_id: str,
     *,
@@ -616,12 +691,19 @@ def _update_job_state_sync(
     agent_backend: Optional[str] = None,
     finalize: bool = False,
     run_token: Optional[str] = None,
+    process_started: Optional[bool] = None,
     termination_confirmed_dead: Optional[bool] = None,
+    failure_code: Optional[str] = None,
+    remaining_pids: tuple = (),
 ) -> Optional[Dict[str, Any]]:
     """状态更新 DB 段（线程内执行，由 run_db 包装）。
 
     返回 {"payload": ..., "broadcast": bool, "is_final": bool}；
     broadcast=False 表示被 fence/终态幂等拦下，仅回读当前 payload。
+
+    finalize 决策表（doc 6.2）需要完整输入：process_started、
+    termination_confirmed_dead、failure_code、remaining_pids；
+    调用方不得只传 termination_confirmed_dead。
     """
     db = SessionLocal()
     try:
@@ -643,29 +725,31 @@ def _update_job_state_sync(
                 # An undo or a newer session generation has fenced this worker.
                 # Do not let a late callback resurrect the old job state.
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
-        if (
-            finalize or status in FINAL_STATUSES
-        ) and (
-            # An explicitly unconfirmed tree must never degrade to a terminal
-            # state, even when the PID persistence callback failed and the
-            # durable row temporarily carries no PID.  The reaper can still
-            # locate the process via the current worker's run token.
-            termination_confirmed_dead is False
-            or (
-                _has_active_process_ownership(job)
-                and termination_confirmed_dead is not True
-            )
-        ):
-            job.status = AiJobStatus.ORPHANED
-            job.message = "Agent process could not be confirmed dead"
-            job.error_message = "Agent process tree remained alive after finalization"
-            job.failure_code = "PROCESS_TREE_STILL_ALIVE"
-            job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
-            job.lease_expires_at = datetime.utcnow()
-            job.orphaned_at = job.orphaned_at or datetime.utcnow()
-            db.commit()
-            db.refresh(job)
-            return {"payload": serialize_job(job), "broadcast": True, "is_final": False}
+        if finalize or status in FINAL_STATUSES:
+            if _unresolved_local_process_evidence(
+                process_started, termination_confirmed_dead, job
+            ):
+                # process_started=True 的本地进程必须以死亡证明换取终态；
+                # DB 没有 PID 也不能把 process_started 当成“没有本地进程”。
+                job.status = AiJobStatus.ORPHANED
+                job.message = "Agent process could not be confirmed dead"
+                job.error_message = "Agent process tree remained alive after finalization"
+                job.failure_code = failure_code or "PROCESS_TREE_STILL_ALIVE"
+                job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
+                job.lease_expires_at = datetime.utcnow()
+                job.orphaned_at = job.orphaned_at or datetime.utcnow()
+                if remaining_pids:
+                    job.context_json = _merge_json(
+                        job.context_json,
+                        {
+                            "unconfirmed_process_pids": [int(pid) for pid in remaining_pids],
+                            "unconfirmed_failure_code": failure_code
+                            or "PROCESS_TREE_STILL_ALIVE",
+                        },
+                    )
+                db.commit()
+                db.refresh(job)
+                return {"payload": serialize_job(job), "broadcast": True, "is_final": False}
         current_status = job.status
         requested_status = status
         if current_status in FINAL_STATUSES:
@@ -715,10 +799,17 @@ async def _update_job_state(
     agent_backend: Optional[str] = None,
     finalize: bool = False,
     run_token: Optional[str] = None,
+    process_started: Optional[bool] = None,
     termination_confirmed_dead: Optional[bool] = None,
+    failure_code: Optional[str] = None,
+    remaining_pids: tuple = (),
 ) -> Optional[Dict[str, Any]]:
     attempt = current_agent_attempt()
     effective_run_token = run_token or (attempt.run_token if attempt else None)
+    if process_started is None:
+        runtime = current_agent_attempt_runtime()
+        if runtime is not None:
+            process_started = bool(runtime.process_started)
     result = await run_db(
         _update_job_state_sync,
         job_id,
@@ -732,7 +823,10 @@ async def _update_job_state(
         agent_backend=agent_backend,
         finalize=finalize,
         run_token=effective_run_token,
+        process_started=process_started,
         termination_confirmed_dead=termination_confirmed_dead,
+        failure_code=failure_code,
+        remaining_pids=remaining_pids,
     )
     if result is None:
         return None
@@ -1441,6 +1535,8 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
                     "process_pid": job.process_pid,
                     "process_started_at": job.process_started_at,
                     "process_group_id": job.process_group_id,
+                    "process_containment_id": job.process_containment_id,
+                    "job_started_at": job.started_at,
                     "queue_key": str(job.queue_key or ""),
                     "reason": reason,
                     "attempt_count": int(job.attempt_count or 0),
@@ -1502,6 +1598,51 @@ def _adopt_reclaimable_job_sync(
         db.close()
 
 
+def _reap_stop_reason(row: Dict[str, Any], result: Any) -> str:
+    if result is not None and getattr(result, "error_message", None):
+        return str(result.error_message)
+    return str(row.get("reason") or "REAP")
+
+
+def _reap_failure_code(row: Dict[str, Any], result: Any) -> str:
+    if result is not None and getattr(result, "error_code", None):
+        return str(result.error_code)
+    return str(row.get("reason") or "REAP")
+
+
+async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
+    """Run the fixed reaper order (doc 8) for one adopted attempt.
+
+    1. in-memory registration under the current run token;
+    2. persisted PID identity (stop_persisted);
+    3. run-token /proc discovery fallback for a previous boot whose PID was
+       never attached; the exact token match is the containment equivalent
+       until a dedicated cgroup provider is deployed.
+    A missing PID alone is never treated as proof of death: when discovery is
+    unavailable the attempt stays ORPHANED.
+    """
+    result = await process_supervisor.stop_attempt(token, str(row.get("reason") or "REAP"))
+    if result is None and row.get("process_pid"):
+        result = await process_supervisor.stop_persisted(
+            row["process_pid"],
+            row.get("process_started_at"),
+            row.get("reason") or "REAP",
+            process_group_id=row.get("process_group_id"),
+        )
+    persisted_token = str(row.get("run_token") or "")
+    if result is None and token and token == persisted_token:
+        # Only scan for the token that was actually issued to this attempt's
+        # environment.  A freshly invented adoption token was never attached
+        # to any process, so an empty scan for it would be a manufactured
+        # death proof, not evidence (doc 8: 没有找到 PID/新 token ≠ 已死亡).
+        result = await process_supervisor.stop_by_run_token_discovery(
+            token,
+            str(row.get("reason") or "REAP"),
+            not_before=row.get("job_started_at"),
+        )
+    return result
+
+
 async def reap_stale_jobs() -> int:
     """Reclaim attempts whose owner disappeared or whose lease expired."""
     rows = await run_db(_list_reclaimable_jobs_sync)
@@ -1516,28 +1657,18 @@ async def reap_stale_jobs() -> int:
             row["reason"],
         ):
             continue
-        # A process owned by this worker can be found by run_token.  A process
-        # from a previous boot is deliberately not guessed at: until PID
-        # create-time/command verification succeeds it remains ORPHANED.
-        result = await process_supervisor.stop_attempt(token, row["reason"])
-        if result is None and row.get("process_pid"):
-            result = await process_supervisor.stop_persisted(
-                row["process_pid"],
-                row.get("process_started_at"),
-                row["reason"],
-                process_group_id=row.get("process_group_id"),
-            )
-        # A previous boot without a persisted PID cannot prove that the
-        # spawn window was empty.  Keep the queue blocked as ORPHANED rather
-        # than manufacturing a terminal state from missing evidence.
+        result = await _stop_attempt_processes(row, token)
+        # Only a verified-empty tree/containment may clear ownership; an
+        # unproven attempt keeps ORPHANED with backoff and a structured
+        # failure reason (doc 8.7/8.8).
         confirmed_dead = bool(result is not None and result.confirmed_dead)
         payload = await run_db(
             _finish_termination_sync,
             row["job_id"],
             token,
             confirmed_dead=confirmed_dead,
-            reason=(result.error_message if result and result.error_message else row["reason"]),
-            failure_code=(result.error_code if result and result.error_code else row["reason"]),
+            reason=_reap_stop_reason(row, result),
+            failure_code=_reap_failure_code(row, result),
         )
         if payload:
             reclaimed += 1
@@ -1645,6 +1776,8 @@ def _mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
                     "process_pid": job.process_pid,
                     "process_started_at": job.process_started_at,
                     "process_group_id": job.process_group_id,
+                    "process_containment_id": job.process_containment_id,
+                    "job_started_at": job.started_at,
                     "reason": reason,
                 }
             )
@@ -1688,6 +1821,12 @@ async def shutdown_runtime_workers() -> None:
                 row.get("process_started_at"),
                 "WORKER_SHUTDOWN",
                 process_group_id=row.get("process_group_id"),
+            )
+        if result is None and token:
+            result = await process_supervisor.stop_by_run_token_discovery(
+                token,
+                "WORKER_SHUTDOWN",
+                not_before=row.get("job_started_at"),
             )
         confirmed_dead = bool(result is not None and result.confirmed_dead)
         payload = await run_db(
@@ -1823,6 +1962,12 @@ def _take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
                     SddAiJob.process_pid: None,
                     SddAiJob.process_started_at: None,
                     SddAiJob.process_group_id: None,
+                    # Attempt containment id derived from the run token: it is
+                    # durable before any child PID exists, so a worker that is
+                    # SIGKILLed before PID attach can still be reclaimed by
+                    # containment id / run token (doc 7.1/7.3).
+                    SddAiJob.process_containment_id: containment_id_for_run_token(run_token),
+                    SddAiJob.process_execution_kind: None,
                     SddAiJob.termination_attempts: 0,
                     SddAiJob.failure_code: None,
                     SddAiJob.terminal_reason: None,
@@ -2589,6 +2734,7 @@ async def run_cli_single_turn(
         return {
             "text": final_text,
             "session_id": final_session_id,
+            "process_started": process_started,
             "termination_confirmed_dead": (
                 bool(termination.confirmed_dead) if termination is not None else None
             )
@@ -3195,6 +3341,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     session_id=final_session_id or None,
                     agent_backend=thread_backend,
                     finalize=True,
+                    process_started=result.get("process_started"),
                     termination_confirmed_dead=result.get("termination_confirmed_dead"),
                 )
                 return
@@ -3270,6 +3417,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     session_id=final_session_id or None,
                     agent_backend=thread_backend,
                     finalize=True,
+                    process_started=result.get("process_started"),
                     termination_confirmed_dead=result.get("termination_confirmed_dead"),
                 )
                 return
@@ -3333,6 +3481,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 session_id=final_session_id or None,
                 agent_backend=thread_backend,
                 finalize=True,
+                process_started=result.get("process_started"),
                 termination_confirmed_dead=result.get("termination_confirmed_dead"),
             )
     except AgentAttemptFencedError:
@@ -3355,6 +3504,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             error_message=str(exc),
             finalize=True,
             run_token=run_token,
+            process_started=_attempt_process_started(exc),
             termination_confirmed_dead=_attempt_termination_evidence(exc),
         )
         if job_kind in {JOB_KIND_RESOLUTION_PROPOSAL, JOB_KIND_RESOLUTION_REWRITE}:
@@ -4086,6 +4236,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             session_id=str(result.get("session_id") or "") or None,
             agent_backend=task_backend,
             finalize=True,
+            process_started=result.get("process_started"),
             termination_confirmed_dead=result.get("termination_confirmed_dead"),
         )
 
@@ -4182,7 +4333,10 @@ def _finalize_task_chat_job_sync(
     is_timeout_interrupted: bool,
     engine_session_id: Optional[str],
     run_token: Optional[str] = None,
+    process_started: Optional[bool] = None,
     termination_confirmed_dead: Optional[bool] = None,
+    failure_code: Optional[str] = None,
+    remaining_pids: tuple = (),
 ) -> Optional[Dict[str, Any]]:
     """finalize DB 段（线程内执行，由 run_db 包装）；返回 None 表示无需收尾。
 
@@ -4234,41 +4388,37 @@ def _finalize_task_chat_job_sync(
         return None
 
     dirty_interrupted = job.status == AiJobStatus.INTERRUPTED
-    ownership_alive = _has_active_process_ownership(job)
     if dirty_interrupted and not _row_has_leaked_interrupted_ownership(job):
         # 已经是干净的 INTERRUPTED：收尾已完成，无需重复处理。
         return None
 
     dead = termination_confirmed_dead
 
-    if ownership_alive and dead is not True:
-        # 本地进程死亡未被证明：必须进入 ORPHANED 并保留 ownership，
-        # 阻塞同队列后继作业，等待 reaper 的 stop/verify/backoff。
+    if _unresolved_local_process_evidence(process_started, dead, job):
+        # 本地进程死亡未被证明（含 dead=False、started 但无证据、DB 归属未
+        # 清空）：必须进入 ORPHANED 并保留 ownership，阻塞同队列后继作业，
+        # 等待 reaper 的 stop/verify/backoff。即使 PID 持久化回调失败、
+        # 数据库暂时没有 PID，也不得把启动过进程当成“无本地进程”。
         job.status = AiJobStatus.ORPHANED
         job.message = "Agent process could not be confirmed dead"
-        job.error_message = (
-            "Agent process tree remained alive after finalization"
-            if dead is not False
-            else str(last_result_text or "")[:500] or "Agent process tree remained alive after finalization"
-        )
-        job.failure_code = "PROCESS_TREE_STILL_ALIVE"
+        if dead is False:
+            job.error_message = (
+                str(last_result_text or "")[:500]
+                or "Agent process tree remained alive after finalization"
+            )
+        else:
+            job.error_message = "Agent process tree remained alive after finalization"
+        job.failure_code = failure_code or "PROCESS_TREE_STILL_ALIVE"
         job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
         job.lease_expires_at = now
         job.orphaned_at = job.orphaned_at or now
-        db.commit()
-        db.refresh(job)
-        return serialize_job(job)
-    if dead is False:
-        # 即使 PID 持久化回调失败、数据库暂时没有 PID，False 也必须收敛为
-        # ORPHANED：reaper 仍可按当前 worker 的 run token 查找 supervisor
-        # 中登记的进程。
-        job.status = AiJobStatus.ORPHANED
-        job.message = "Agent process could not be confirmed dead"
-        job.error_message = str(last_result_text or "")[:500]
-        job.failure_code = "PROCESS_TREE_STILL_ALIVE"
-        job.terminal_reason = "PROCESS_TREE_STILL_ALIVE"
-        job.lease_expires_at = now
-        job.orphaned_at = job.orphaned_at or now
+        if remaining_pids:
+            job.context_json = _merge_json(
+                job.context_json,
+                {
+                    "unconfirmed_process_pids": [int(pid) for pid in remaining_pids],
+                },
+            )
         db.commit()
         db.refresh(job)
         return serialize_job(job)
@@ -4331,11 +4481,12 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
     run_token = attempt.run_token if attempt else None
     # Attempt-local runtime evidence is authoritative (it survives CLI exits
     # followed by parse/persist failures); engine attributes are the fallback.
-    runtime = current_agent_attempt_runtime()
+    started, dead = _attempt_evidence()
     dead = _merge_termination_evidence(
+        dead,
         getattr(engine, "last_termination_confirmed_dead", None),
-        runtime.termination_confirmed_dead if runtime is not None else None,
     )
+    runtime = current_agent_attempt_runtime()
     payload = await run_db_txn(
         lambda db: _finalize_task_chat_job_sync(
             db,
@@ -4345,7 +4496,10 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
             is_timeout_interrupted=is_timeout_interrupted,
             engine_session_id=getattr(engine, "session_id", None),
             run_token=run_token,
+            process_started=started,
             termination_confirmed_dead=dead,
+            failure_code=runtime.termination_failure_code if runtime is not None else None,
+            remaining_pids=runtime.remaining_pids if runtime is not None else (),
         )
     )
     if payload is None:
@@ -4375,6 +4529,7 @@ async def _finalize_task_chat_job_failure(
     if not job_id:
         return None
     attempt = current_agent_attempt()
+    started, dead = _attempt_evidence()
     runtime = current_agent_attempt_runtime()
     payload = await run_db_txn(
         lambda db: _finalize_task_chat_job_sync(
@@ -4385,9 +4540,10 @@ async def _finalize_task_chat_job_failure(
             is_timeout_interrupted=is_timeout_interrupted,
             engine_session_id=engine_session_id,
             run_token=attempt.run_token if attempt else None,
-            termination_confirmed_dead=(
-                runtime.termination_confirmed_dead if runtime is not None else None
-            ),
+            process_started=started,
+            termination_confirmed_dead=dead,
+            failure_code=runtime.termination_failure_code if runtime is not None else None,
+            remaining_pids=runtime.remaining_pids if runtime is not None else (),
         )
     )
     if payload is None:
@@ -4477,6 +4633,7 @@ async def _execute_task_baseline_job(job_id: str, task_id: str) -> None:
         },
         finalize=True,
         run_token=attempt.run_token if attempt else None,
+        process_started=payload.get("process_started"),
         termination_confirmed_dead=payload.get("termination_confirmed_dead"),
     )
 
@@ -4551,7 +4708,8 @@ async def _execute_job(job_id: str) -> None:
                     error_message=str(exc),
                     finalize=True,
                     run_token=attempt.run_token if attempt else None,
-                    termination_confirmed_dead=_attempt_termination_evidence(exc),
+                    process_started=_attempt_process_started(exc),
+            termination_confirmed_dead=_attempt_termination_evidence(exc),
                 )
 
 

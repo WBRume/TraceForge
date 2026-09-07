@@ -534,13 +534,22 @@ def _load_bootstrap_run_context_sync(task_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
-def _merge_dead_evidence(*values: Optional[bool]) -> Optional[bool]:
-    """False > True > None：更保守的证据不得被降级。"""
-    if any(value is False for value in values):
-        return False
-    if any(value is True for value in values):
+def _merge_same_process_death(
+    previous: Optional[bool], latest: Optional[bool]
+) -> Optional[bool]:
+    """同一进程的先后终止结果合并（doc 情况 A）。
+
+    与被废止的 attempt 级 ``False > True`` 合并不同：这里的输入是同一个
+    本地进程的顺序终止检查结果，CONFIRMED_DEAD 是不可逆事实，后续 True
+    必须把先前 UNCONFIRMED 收敛为已死亡；后到的旧 False 不能把已证明的
+    死亡恢复成未确认。跨进程/跨身份的聚合一律由
+    ``AgentAttemptRuntimeState``（identity-aware）完成。
+    """
+    if previous is True:
         return True
-    return None
+    if latest is not None:
+        return bool(latest)
+    return previous
 
 
 def _bootstrap_attempt_evidence() -> tuple[bool, Optional[bool]]:
@@ -780,7 +789,7 @@ async def _run_bootstrap(
                                 error_message=None,
                             )
                             outcome["status"] = TaskCliBootstrapStatus.READY.value
-                            outcome["termination_confirmed_dead"] = _merge_dead_evidence(
+                            outcome["termination_confirmed_dead"] = _merge_same_process_death(
                                 outcome["termination_confirmed_dead"],
                                 termination_confirmed_dead,
                             )
@@ -795,10 +804,12 @@ async def _run_bootstrap(
                                 outcome["process_started"]
                                 or getattr(exc, "process_started", None)
                             )
-                            outcome["termination_confirmed_dead"] = _merge_dead_evidence(
-                                outcome["termination_confirmed_dead"],
-                                getattr(exc, "termination_confirmed_dead", None),
-                            )
+                            exc_dead = getattr(exc, "termination_confirmed_dead", None)
+                            if exc_dead is not None:
+                                termination_confirmed_dead = _merge_same_process_death(
+                                    termination_confirmed_dead,
+                                    bool(exc_dead),
+                                )
                         finally:
                             # Timeout/cancellation must prove that the complete
                             # CLI tree is gone before the bootstrap is reported
@@ -831,18 +842,20 @@ async def _run_bootstrap(
                                     )
                             # Attempt-local runtime evidence is the final
                             # authority for this baseline attempt's death
-                            # proof; merge it with the direct bridge result.
+                            # proof.  Its identity-aware aggregate already
+                            # converged same-process False->True sequences
+                            # (first cleanup False, second cleanup True).
                             runtime_started, runtime_dead = _bootstrap_attempt_evidence()
                             outcome["process_started"] = bool(
                                 outcome["process_started"] or runtime_started
                             )
-                            termination_confirmed_dead = _merge_dead_evidence(
-                                termination_confirmed_dead, runtime_dead
+                            if runtime_dead is not None:
+                                termination_confirmed_dead = runtime_dead
+                            cleanup_confirmed = bool(
+                                cleanup_confirmed
+                                and termination_confirmed_dead is not False
                             )
-                            outcome["termination_confirmed_dead"] = _merge_dead_evidence(
-                                outcome["termination_confirmed_dead"],
-                                termination_confirmed_dead,
-                            )
+                            outcome["termination_confirmed_dead"] = termination_confirmed_dead
                             if failure_message is not None:
                                 if cleanup_confirmed:
                                     outcome["status"] = TaskCliBootstrapStatus.FAILED.value
@@ -942,6 +955,7 @@ async def run_bootstrap_for_job(
         )
     payload = {
         **payload,
+        "process_started": bool(outcome.get("process_started")),
         "termination_confirmed_dead": outcome.get("termination_confirmed_dead"),
     }
     return payload
