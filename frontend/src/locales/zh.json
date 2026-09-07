@@ -330,6 +330,8 @@
     "start_confirm_title": "启动引擎并锁定文档",
     "start_confirm_message": "启动后需求文档将切换为只读模式，不能继续修改。",
     "start_confirm_description": "请先在独立需求文档页面完成浏览与编辑。确认启动后，将进入会话协作并改为抽屉浏览。",
+    "initial_prompt_label": "初始提示词",
+    "initial_prompt_placeholder": "编辑本次发送给 AI 引擎的初始提示词...",
     "thinking": "AI 思考中...",
     "agent_session_started": "Agent 会话已启动",
     "ai_job_running": "AI 作业进行中",

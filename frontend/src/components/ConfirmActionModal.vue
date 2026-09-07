@@ -75,7 +75,7 @@ onBeforeUnmount(() => {
       @pointerleave.self="cancelOverlayClose"
       @pointercancel.self="cancelOverlayClose"
     >
-      <div class="modal glass-panel" :class="toneClass">
+      <div class="modal" :class="toneClass">
         <div class="modal-header" :class="toneClass">
           <slot name="icon">
             <AlertTriangle class="w-6 h-6 flex-shrink-0" />

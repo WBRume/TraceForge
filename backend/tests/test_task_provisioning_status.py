@@ -7,6 +7,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -125,5 +126,56 @@ def test_start_task_persists_user_initial_prompt_and_links_job(tmp_path, monkeyp
             assert message.metadata_json["source"] == "task_start"
             assert job.prompt_text.startswith("用户真正提交的启动提示")
             assert job.context_json["source"] == "task_start"
+    finally:
+        engine.dispose()
+
+
+def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_workspace(db, workspace_id="ws-init-prompt", task_id="task-init-prompt")
+            task.project_path = str(tmp_path)
+            task.description = "task description fallback"
+            db.commit()
+            ws_id, task_id = workspace.id, task.id
+
+        captured = {}
+
+        async def _run_db_txn(fn):
+            with _session(SessionLocal) as db:
+                return fn(db)
+
+        async def _create_task_chat_turn(**kwargs):
+            captured.update(kwargs)
+            with _session(SessionLocal) as db:
+                job = task_router.ai_job_service.create_task_chat_job(
+                    db,
+                    workspace_id=workspace.id,
+                    task_id=task_id,
+                    creator_id=user.id,
+                    prompt_text=kwargs["prompt_text"],
+                    context_json=kwargs["context_json"],
+                )
+                return SimpleNamespace(job_id=job.id)
+
+        async def _enqueue(_job_id):
+            return None
+
+        monkeypatch.setattr(task_router, "run_db_txn", _run_db_txn)
+        monkeypatch.setattr(task_router.task_session_service, "create_task_chat_turn", _create_task_chat_turn)
+        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", _enqueue)
+        monkeypatch.setattr(task_router, "get_engine", lambda _task_id: None)
+        client = TestClient(_build_app(SessionLocal, user))
+
+        resp = client.post(
+            f"/api/workspaces/{ws_id}/tasks/{task_id}/initialize",
+            json={"prompt": "用户编辑后的初始化提示", "reason": "重新开始"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert captured["content"] == "用户编辑后的初始化提示"
+        assert captured["prompt_text"] == "用户编辑后的初始化提示"
+        assert captured["context_json"]["initialize_reason"] == "重新开始"
     finally:
         engine.dispose()

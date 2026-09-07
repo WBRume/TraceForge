@@ -123,6 +123,7 @@ class TaskUndoMessageRequest(BaseModel):
 
 class InitializeRequest(BaseModel):
     """初始化任务时的参数"""
+    prompt: Optional[str] = None
     reason: Optional[str] = None
     skill_ids: Optional[List[str]] = None
     keep_deleted_runtime_skills: Optional[bool] = True

@@ -8,6 +8,8 @@ const chatMessageBubbleSource = source('../../components/chat/ChatMessageBubble.
 const diagnosisResultCardSource = source('../../components/chat/DiagnosisResultCard.vue')
 const chatExecutionInputSource = source('../../components/chat/ChatExecutionInput.vue')
 const chatViewSource = source('../ChatView.vue')
+const chatViewModelSource = source('../../composables/useChatViewModel.ts')
+const confirmActionModalSource = source('../../components/ConfirmActionModal.vue')
 
 function declarations(source: string, selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -99,5 +101,19 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(confirmBlock.indexOf('pendingUndoMessage.value = null')).toBeLessThan(
       confirmBlock.indexOf('await rawVm.undoMessage(message)'),
     )
+  })
+
+  it('allows editing the initial prompt before starting or initializing a task', () => {
+    expect(chatViewSource).toContain('v-model="vm.startPrompt"')
+    expect(chatViewSource).toContain('v-model="vm.initPrompt"')
+    expect(chatViewModelSource).toContain("const startPrompt = ref('')")
+    expect(chatViewModelSource).toContain("const initPrompt = ref('')")
+    expect(chatViewModelSource).toContain('prompt: promptText || undefined')
+    expect(chatViewModelSource).toContain('startPrompt.value = defaultInitialPromptForTask(currentTask.value)')
+  })
+
+  it('keeps confirmation modal hover from changing the dialog background', () => {
+    expect(confirmActionModalSource).toContain('<div class="modal" :class="toneClass">')
+    expect(confirmActionModalSource).not.toContain('class="modal glass-panel"')
   })
 })
