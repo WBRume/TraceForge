@@ -356,7 +356,9 @@ def test_runner_convergence_consumes_runtime_before_reset(monkeypatch):
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(attempt, runtime, None)
+            await ai_job_service._converge_runner_exit(
+                attempt, runtime, ai_job_service.JobExecutionOutcome(requested_status=None)
+            )
         finally:
             reset_agent_attempt_runtime(runtime_token)
             reset_agent_attempt(attempt_token)
@@ -400,7 +402,9 @@ def test_runner_convergence_unconfirmed_cancel_becomes_orphaned(monkeypatch):
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(attempt, runtime, None)
+            await ai_job_service._converge_runner_exit(
+                attempt, runtime, ai_job_service.JobExecutionOutcome(requested_status=None)
+            )
         finally:
             reset_agent_attempt_runtime(runtime_token)
             reset_agent_attempt(attempt_token)
@@ -440,7 +444,12 @@ def test_runner_convergence_leaves_running_job_safe_terminal(monkeypatch):
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
             await ai_job_service._converge_runner_exit(
-                attempt, runtime, RuntimeError("no finalizer ran")
+                attempt,
+                runtime,
+                ai_job_service.JobExecutionOutcome(
+                    requested_status=None,
+                    error=RuntimeError("no finalizer ran"),
+                ),
             )
         finally:
             reset_agent_attempt_runtime(runtime_token)
@@ -1182,3 +1191,578 @@ def test_legacy_shim_cancel_none_return_is_unacknowledged():
     # 远程 cancel 的 None 返回值绝不能被视作成功（doc §17）。
     assert result.stop_acknowledged is False
     assert result.failure_code == REMOTE_STOP_UNCONFIRMED
+
+
+# ────────────── P0-1：CAS 写入 fail-closed（doc §4.5.3） ──────────────
+
+
+def _seed_owned_running(db, *, token="run-1", status=AiJobStatus.RUNNING, cancel_requested=False):
+    job = _job(
+        db,
+        status=status,
+        run_token=token,
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        pid=5151,
+        cancel_requested=cancel_requested,
+    )
+    return job
+
+
+def test_active_state_write_without_run_token_is_rejected(monkeypatch):
+    """无 token 的迟到状态写必须 fail-closed：不得把已取消 job 写回 RUNNING（doc §4.3）。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_owned_running(db)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    cancelled = ai_job_service.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
+    assert cancelled.status == AiJobStatus.TERMINATING
+
+    result = ai_job_service._update_job_state_sync(
+        "convergence-job",
+        status=AiJobStatus.RUNNING,
+        progress=33,
+        message="late writer",
+    )
+
+    assert result["broadcast"] is False
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.status == AiJobStatus.TERMINATING
+    assert saved.progress != 33
+    assert saved.message != "late writer"
+
+
+def test_late_progress_after_cancel_affects_zero_rows(monkeypatch):
+    """取消提交后，迟到 progress/context callback 必须是 fenced no-op。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_owned_running(db, cancel_requested=True)
+    original_context = dict(
+        db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first().context_json or {}
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "convergence-job",
+        progress=80,
+        message="late progress",
+        context_patch={"late": True},
+        run_token="run-1",
+    )
+
+    assert result["broadcast"] is False
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.progress != 80
+    assert saved.message != "late progress"
+    assert (saved.context_json or {}).get("late") is not True
+
+
+def test_old_token_cannot_modify_new_attempt(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _seed_owned_running(db, token="run-2")
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "convergence-job",
+        progress=10,
+        run_token="run-1",
+    )
+
+    assert result["broadcast"] is False
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.progress != 10
+
+
+def test_cas_progress_write_succeeds_for_current_owner(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _seed_owned_running(db)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    result = ai_job_service._update_job_state_sync(
+        "convergence-job",
+        progress=42,
+        run_token="run-1",
+    )
+
+    assert result["broadcast"] is True
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.progress == 42
+    assert saved.run_token == "run-1"
+
+
+# ────────────── P1-3：JobExecutionOutcome（doc §8） ──────────────
+
+
+def _remote_attempt():
+    return AgentAttemptContext(
+        job_id="convergence-job",
+        task_id="task-1",
+        queue_key="TASK_CHAT:task-1",
+        run_token="run-1",
+        worker_id="w",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        attempt_count=1,
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+    )
+
+
+def test_remote_runner_exit_nack_with_swallowed_error_stays_orphaned(monkeypatch):
+    """remote stop NACK + _execute_job 内部处理异常：必须 ORPHANED 并保留 ownership。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.TERMINATING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        pid=None,
+        cancel_requested=True,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    async def _run():
+        attempt = _remote_attempt()
+        attempt_token = bind_agent_attempt(attempt)
+        runtime = AgentAttemptRuntimeState()
+        runtime.remote_session_started = True
+        runtime.record_remote_stop(
+            AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code=REMOTE_STOP_UNCONFIRMED,
+                error_message="remote cancel failed",
+            )
+        )
+        runtime_token = bind_agent_attempt_runtime(runtime)
+        try:
+            await ai_job_service._converge_runner_exit(
+                attempt,
+                runtime,
+                ai_job_service.JobExecutionOutcome(
+                    requested_status=None,
+                    error=RuntimeError("swallowed engine exception"),
+                    provider_outcome_seen=False,
+                ),
+            )
+        finally:
+            reset_agent_attempt_runtime(runtime_token)
+            reset_agent_attempt(attempt_token)
+
+    asyncio.run(_run())
+
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.status == AiJobStatus.ORPHANED
+    assert saved.run_token == "run-1"
+    assert saved.failure_code == REMOTE_STOP_UNCONFIRMED
+
+
+def test_remote_runner_exit_ack_converges_and_clears_ownership(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.TERMINATING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        pid=None,
+        cancel_requested=True,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    async def _run():
+        attempt = _remote_attempt()
+        attempt_token = bind_agent_attempt(attempt)
+        runtime = AgentAttemptRuntimeState()
+        runtime.remote_session_started = True
+        runtime.record_remote_stop(
+            AgentStopResult(execution_kind=EXECUTION_KIND_REMOTE_SESSION, stop_acknowledged=True)
+        )
+        runtime_token = bind_agent_attempt_runtime(runtime)
+        try:
+            await ai_job_service._converge_runner_exit(
+                attempt,
+                runtime,
+                ai_job_service.JobExecutionOutcome(requested_status=None),
+            )
+        finally:
+            reset_agent_attempt_runtime(runtime_token)
+            reset_agent_attempt(attempt_token)
+
+    asyncio.run(_run())
+
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.status == AiJobStatus.CANCELLED
+    assert saved.run_token is None
+
+
+def test_remote_runner_exit_nack_with_provider_outcome_allows_terminal(monkeypatch):
+    """provider 明确自然结束（结果先于取消确认到达）：允许业务终态。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.TERMINATING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        pid=None,
+        cancel_requested=True,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    async def _run():
+        attempt = _remote_attempt()
+        attempt_token = bind_agent_attempt(attempt)
+        runtime = AgentAttemptRuntimeState()
+        runtime.remote_session_started = True
+        runtime.record_remote_stop(
+            AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code=REMOTE_STOP_UNCONFIRMED,
+            )
+        )
+        runtime_token = bind_agent_attempt_runtime(runtime)
+        try:
+            await ai_job_service._converge_runner_exit(
+                attempt,
+                runtime,
+                ai_job_service.JobExecutionOutcome(
+                    requested_status=None,
+                    provider_outcome_seen=True,
+                ),
+            )
+        finally:
+            reset_agent_attempt_runtime(runtime_token)
+            reset_agent_attempt(attempt_token)
+
+    asyncio.run(_run())
+
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.status == AiJobStatus.CANCELLED
+
+
+# ────────────── P1-2：preview fence 回滚业务副作用（doc §7） ──────────────
+
+
+def _seed_preview_job(db, *, token="run-1", cancel_requested=False):
+    job = SddAiJob(
+        id="preview-job",
+        workspace_id="ws-1",
+        channel=AiJobChannel.ASSET_THREAD,
+        queue_key="REQUIREMENT_PREVIEW:ws-1",
+        status=AiJobStatus.RUNNING,
+        creator_id="user-1",
+        run_token=token,
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        process_execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+        cancel_requested_at=datetime.utcnow() if cancel_requested else None,
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+def test_requirement_preview_fence_rolls_back_batch_and_items(monkeypatch):
+    """fence 命中时 finalizer 必须抛出专用异常，外层事务整体 rollback。"""
+    from types import SimpleNamespace
+
+    from app.domains.ai.services.ai_job_convergence_service import AttemptFencedError
+    from app.domains.workspace_asset.models.workspace_asset import (
+        SddRequirementAuditLog,
+        SddRequirementImportBatch,
+        SddRequirementImportItem,
+    )
+    from app.domains.workspace_asset.services import workspace_asset_service as was
+
+    factory = _session_factory()
+    db = factory()
+    _seed_preview_job(db, cancel_requested=True)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    async def _run():
+        await ai_job_service.run_db_txn(
+            lambda session: was._finalize_requirement_import_sync(
+                session,
+                job_id="preview-job",
+                file_name="requirements.md",
+                markdown="# md",
+                source_kind="document",
+                source_uri=None,
+                source_ref=None,
+                items=[{"title": "Item 1", "body": "b"}],
+                metadata={},
+                run_token="run-1",
+                worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+            )
+        )
+
+    with pytest.raises(AttemptFencedError):
+        asyncio.run(_run())
+
+    # 外层事务 rollback：batch/items/audit 全部不存在。
+    assert db.query(SddRequirementImportBatch).count() == 0
+    assert db.query(SddRequirementImportItem).count() == 0
+    assert db.query(SddRequirementAuditLog).count() == 0
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "preview-job").first()
+    assert saved.status == AiJobStatus.RUNNING
+
+
+def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
+    """SUCCESS 与 batch/items/audit 必须同事务提交（doc §7.4）。"""
+    from app.domains.workspace_asset.models.workspace_asset import (
+        SddRequirementAuditLog,
+        SddRequirementImportBatch,
+        SddRequirementImportItem,
+    )
+    from app.domains.workspace_asset.services import workspace_asset_service as was
+
+    factory = _session_factory()
+    db = factory()
+    _seed_preview_job(db)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    evidence = convergence.AttemptFinalizerEvidence(
+        execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+        process_started=True,
+        termination_confirmed_dead=True,
+        remote_stop_acknowledged=None,
+        failure_code=None,
+        error_message=None,
+        remaining_pids=(),
+        source="runtime",
+    )
+
+    async def _run():
+        return await ai_job_service.run_db_txn(
+            lambda session: was._finalize_requirement_import_sync(
+                session,
+                job_id="preview-job",
+                file_name="requirements.md",
+                markdown="# md",
+                source_kind="document",
+                source_uri=None,
+                source_ref=None,
+                items=[{"title": "Item 1", "body": "b"}],
+                metadata={},
+                run_token="run-1",
+                worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+                evidence=evidence,
+            )
+        )
+
+    result = asyncio.run(_run())
+    assert result["item_count"] == 1
+    assert db.query(SddRequirementImportBatch).count() == 1
+    assert db.query(SddRequirementImportItem).count() == 1
+    assert db.query(SddRequirementAuditLog).count() == 1
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "preview-job").first()
+    assert saved.status == AiJobStatus.SUCCESS
+    assert saved.run_token is None
+
+
+def test_unknown_death_evidence_converges_orphaned_and_keeps_ownership(monkeypatch):
+    """P0-2 验收：UNKNOWN 探测必须落 ORPHANED 且不清 ownership（doc §5.6）。"""
+    factory = _session_factory()
+    db = factory()
+    _job(
+        db,
+        status=AiJobStatus.TERMINATING,
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        pid=5151,
+        cancel_requested=True,
+    )
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    async def _run():
+        attempt = _make_attempt()
+        attempt_token = bind_agent_attempt(attempt)
+        runtime = AgentAttemptRuntimeState()
+        runtime.record_process_started(_identity(5151))
+        runtime.record_termination(
+            confirmed_dead=None,
+            identity=_identity(5151),
+            failure_code="PROCESS_TREE_UNKNOWN",
+            remaining_pids=(5151,),
+        )
+        runtime_token = bind_agent_attempt_runtime(runtime)
+        try:
+            await ai_job_service._converge_runner_exit(
+                attempt,
+                runtime,
+                ai_job_service.JobExecutionOutcome(requested_status=None),
+            )
+        finally:
+            reset_agent_attempt_runtime(runtime_token)
+            reset_agent_attempt(attempt_token)
+
+    asyncio.run(_run())
+
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.status == AiJobStatus.ORPHANED
+    assert saved.process_pid == 5151
+    assert saved.run_token == "run-1"
+
+
+# ────────────── P1-5：远程 reaper 使用持久化 stop locator（doc §10） ──────────────
+
+
+def _seed_orphaned_remote_job(db, *, token="run-remote", backend="dsh", session_id="persisted-session-1"):
+    job = SddAiJob(
+        id="remote-reap-job",
+        workspace_id="ws-1",
+        task_id="task-1",
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=f"{AiJobChannel.TASK_CHAT.value}:task-1",
+        status=AiJobStatus.ORPHANED,
+        creator_id="user-1",
+        run_token=token,
+        worker_boot_id="old-worker-boot",
+        process_execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        agent_backend=backend,
+        session_id=session_id,
+        orphaned_at=datetime.utcnow() - timedelta(minutes=5),
+        first_failure_at=datetime.utcnow() - timedelta(minutes=5),
+        lease_expires_at=datetime.utcnow() - timedelta(minutes=5),
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+class _FakeRemoteBackend:
+    def __init__(self, *, acknowledged=True, failure_code=None):
+        self.calls: list[str] = []
+        self._acknowledged = acknowledged
+        self._failure_code = failure_code
+
+    async def cancel(self, run_id=None, **kwargs):
+        self.calls.append(str(run_id or ""))
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=self._acknowledged,
+            failure_code=self._failure_code,
+            error_message=None if self._acknowledged else "cancel rejected",
+        )
+
+
+def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _seed_orphaned_remote_job(db)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    fake_backend = _FakeRemoteBackend(acknowledged=True)
+    monkeypatch.setattr(
+        "app.agents.selection.create_agent_backend_by_name",
+        lambda name: fake_backend,
+    )
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    reclaimed = asyncio.run(ai_job_service.reap_stale_jobs())
+    assert reclaimed == 1
+    # 调用参数来自持久化行，而不是内存 runtime（doc §10.4.2）。
+    assert fake_backend.calls == ["persisted-session-1"]
+
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "remote-reap-job").first()
+    assert saved.status == AiJobStatus.INTERRUPTED
+    assert saved.run_token is None
+    # ACK 后不再反复进入 reaper。
+    rows = ai_job_service._list_reclaimable_jobs_sync()
+    assert all(row["job_id"] != "remote-reap-job" for row in rows)
+
+
+def test_remote_reaper_nack_remains_orphaned(monkeypatch):
+    factory = _session_factory()
+    db = factory()
+    _seed_orphaned_remote_job(db)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    fake_backend = _FakeRemoteBackend(acknowledged=False, failure_code=REMOTE_STOP_UNCONFIRMED)
+    monkeypatch.setattr(
+        "app.agents.selection.create_agent_backend_by_name",
+        lambda name: fake_backend,
+    )
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    reclaimed = asyncio.run(ai_job_service.reap_stale_jobs())
+    # NACK 也算完成一轮收割 bookkeeping，但 job 保持 ORPHANED。
+    assert reclaimed == 1
+
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "remote-reap-job").first()
+    assert saved.status == AiJobStatus.ORPHANED
+    # ownership 必须保留（doc §10.4.3）。
+    assert saved.run_token is not None
+    assert saved.next_reap_at is not None
+
+
+def test_remote_reaper_missing_locator_never_claims_remote_death(monkeypatch):
+    """缺少持久化 backend/session id 时必须 NACK，不得声称远程 session 已停止。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_orphaned_remote_job(db, backend=None, session_id=None)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    async def _no_broadcast(payload):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+
+    row = {
+        "job_id": "remote-reap-job",
+        "run_token": "run-remote",
+        "reason": "WORKER_RESTART",
+        "execution_kind": EXECUTION_KIND_REMOTE_SESSION,
+        "agent_backend": None,
+        "session_id": None,
+    }
+    result = asyncio.run(ai_job_service._stop_attempt_processes(row, "run-remote"))
+    assert isinstance(result, AgentStopResult)
+    assert result.stop_acknowledged is False
+    assert result.failure_code == "REMOTE_STOP_LOCATOR_MISSING"
