@@ -45,7 +45,6 @@ const diagnosisExtractedFromAi = computed(() => {
 })
 
 const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
-const isFromCurrentUser = computed(() => Boolean(props.vm?.isMessageFromCurrentUser?.(props.msg)))
 const memberColor = computed(() => props.vm?.messageAuthorColor?.(props.msg) || '#0EA5E9')
 
 const metadata = computed(() => {
@@ -92,13 +91,10 @@ const segmentTitle = (seg: any) => (
     : String(seg.created_by_name || '')
 )
 
-// 头像内联在“时间+姓名”元信息行内：他人消息行首、本人/协作消息行尾；assistant 用原小图标
-const showLeadingAvatar = computed(() => (
-  msgRole.value === 'user' && !isFromCurrentUser.value && !isCollabPreInput.value
-))
+// 头像内联在“时间+姓名”元信息行内：用户消息一律行尾；assistant 用原小图标
 const showTrailingAvatar = computed(() => (
-  msgRole.value === 'user' && !isCollabPreInput.value && isFromCurrentUser.value
-) || isCollabPreInput.value)
+  msgRole.value === 'user' || isCollabPreInput.value
+))
 
 function handleOpenPopover() {
   isPopoverOpen.value = true
@@ -216,17 +212,7 @@ function openDiagnosisCase(caseId: string) {
   >
     <div class="message-stack">
       <div class="message-meta">
-        <UserAvatar
-          v-if="showLeadingAvatar"
-          class="meta-avatar"
-          :display-name="msg.creator_display_name"
-          :user-id="msg.creator_id"
-          :avatar-svg="msg.creator_avatar_svg"
-          :avatar-url="msg.creator_avatar_url"
-          size="xs"
-          :accent-color="memberColor"
-        />
-        <Bot v-else-if="msgRole === 'assistant' || msgRole === 'system'" class="w-3 h-3 message-role-icon" />
+        <Bot v-if="msgRole === 'assistant' || msgRole === 'system'" class="w-3 h-3 message-role-icon" />
         <time class="message-time">{{ vm.formatMessageTime(msg.created_at) }}</time>
         <span
           v-if="isCollabPreInput"
@@ -391,11 +377,10 @@ function openDiagnosisCase(caseId: string) {
 .message-wrapper.is-diagnosis-result .message-stack {
   width: 100%;
 }
-/* 多人会话：仅本人消息右对齐，其他成员与 assistant 一律左对齐 */
-.role-user.from-current-user {
+/* 用户消息一律右对齐；assistant/system 左对齐 */
+.role-user {
   align-self: flex-end;
 }
-.role-user:not(.from-current-user),
 .role-system,
 .role-assistant {
   align-self: flex-start;
@@ -412,11 +397,10 @@ function openDiagnosisCase(caseId: string) {
   min-width: 0;
 }
 
-.role-user.from-current-user .message-stack {
+.role-user .message-stack {
   align-items: flex-end;
 }
 
-.role-user:not(.from-current-user) .message-stack,
 .role-system .message-stack,
 .role-assistant .message-stack {
   align-items: flex-start;
@@ -433,11 +417,10 @@ function openDiagnosisCase(caseId: string) {
   flex-wrap: wrap;
 }
 
-.role-user.from-current-user .message-meta {
+.role-user .message-meta {
   justify-content: flex-end;
 }
 
-.role-user:not(.from-current-user) .message-meta,
 .role-system .message-meta,
 .role-assistant .message-meta {
   justify-content: flex-start;
@@ -513,16 +496,10 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
 
-.role-user.from-current-user .message-bubble {
+.role-user .message-bubble {
   border-top-right-radius: 14px;
   border-color: var(--member-color, #0EA5E9);
   background: #ffffff;
-}
-
-.role-user:not(.from-current-user) .message-bubble {
-  border-top-left-radius: 14px;
-  background: #F8FAFC;
-  border-color: #E2E8F0;
 }
 
 .role-system .message-bubble,
@@ -541,7 +518,7 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 10px 24px rgba(22, 101, 52, 0.08);
 }
 
-.role-user.from-current-user.from-workspace-expert .message-bubble {
+.role-user.from-workspace-expert .message-bubble {
   border-color: #166534;
 }
 
@@ -612,8 +589,7 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .role-assistant .message-actions-row,
-.role-system .message-actions-row,
-.role-user:not(.from-current-user) .message-actions-row {
+.role-system .message-actions-row {
   justify-content: flex-start;
 }
 
