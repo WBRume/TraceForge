@@ -20,6 +20,26 @@ from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 from app.agents.errors import SessionForkError
 
 
+def _guaranteed_absent_pid() -> int:
+    """PID 一定大于内核 pid_max：os.getpgid 必然 ESRCH。
+
+    FakeProcess 会流经真实的 ``process_supervisor.spawn``：在 Linux 上
+    supervisor 会 ``os.getpgid(pid)`` 并在收尾时对整组发信号。使用可被
+    复用的真实 PID（如 4242）或 PID 1 会在测试窗口内撞上真实进程组，
+    ``killpg`` 会误杀系统/工具进程（Windows 上不设 pgid 因此从未暴露，
+    见 doc 修复方案 §12.1 的“测试异常退出后无残留”要求）。
+    """
+    try:
+        with open("/proc/sys/kernel/pid_max", "r", encoding="utf-8") as f:
+            pid_max = int(f.read().strip())
+    except (OSError, ValueError):
+        pid_max = 4194304
+    return pid_max + 1024
+
+
+SAFE_ABSENT_PID = _guaranteed_absent_pid()
+
+
 class _EnvHomeMixin:
     """把 CLAUDE/DSH 的家目录隔离到临时目录，避免污染真实 ~/.claude / ~/.dsh。"""
 
@@ -239,7 +259,7 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
                 return b""
 
         class FakeProcess:
-            pid = 4242
+            pid = SAFE_ABSENT_PID
             returncode = 0
             stdout = FakeStdout(ndjson)
             stderr = FakeStderr(b"")
@@ -287,7 +307,7 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
                 return b""
 
         class FakeProcess:
-            pid = 1
+            pid = SAFE_ABSENT_PID
             returncode = 0
             stdout = FakeStdout()
             stderr = FakeStdout()

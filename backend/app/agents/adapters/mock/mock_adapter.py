@@ -115,6 +115,15 @@ class MockAdapter(AgentBackend):
             stop_acknowledged=True,
         )
 
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+        # 按显式 session id 记录目标，不用宽松 **kwargs 掩盖签名错误。
+        self._running = False
+        self._last_persisted_cancel = str(session_id or "").strip()
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
+
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running
 

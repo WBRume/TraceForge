@@ -1281,6 +1281,9 @@ class _StubBridge:
 
     async def wait(self):
         self.wait_calls += 1
+        # 真实 bridge 的 wait() 一定有 await 点；yield 一次让 cancel monitor
+        # 获得首次轮询机会（Python 3.12+ 的 wait_for 不再为协程创建 task）。
+        await asyncio.sleep(0)
         if self.raise_timeout:
             raise asyncio.TimeoutError()
         if self.error_result:

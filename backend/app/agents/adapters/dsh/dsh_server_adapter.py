@@ -764,6 +764,38 @@ class DshServerAdapter(AgentBackend):
             stop_acknowledged=True,
         )
 
+    async def cancel_persisted_session(self, session_id: str) -> "AgentStopResult":
+        """Reaper durable stop：目标必须是显式传入的持久化 session id。
+
+        禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
+        session 必然为空；doc 修复方案 §9.3 的 P1-3 修复）。
+        """
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+
+        sid = str(session_id or "").strip()
+        if not sid:
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_LOCATOR_MISSING",
+                error_message="persisted DSH session id is required",
+            )
+        try:
+            await self._rpc("session.cancel", {"sessionId": sid})
+        except Exception as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="DSH_CANCEL_RPC_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
+
     async def unload_session(self, session_id: str | None = None) -> None:
         """Dispose the DSH Web Host's in-memory Agent for a cold disk restore.
 
