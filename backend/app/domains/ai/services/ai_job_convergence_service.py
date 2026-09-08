@@ -572,9 +572,19 @@ def _decide_final_status(
     reason = str(request.reason or "")
     if intent == ConvergenceIntent.NORMAL_FINALIZE:
         if execution_kind == EXECUTION_KIND_REMOTE_SESSION:
-            # 远程会话：正常 provider outcome 即可进入业务终态；不存在
-            # 本地进程死亡证明要求。
-            return request.requested_status or AiJobStatus.FAILED, REMOTE_STOP_UNCONFIRMED
+            # 远程会话的证据底线（doc 修复方案 §8.3）：业务终态必须以
+            # provider outcome、明确 stop ACK 或“会话从未建立”三者之一为
+            # 依据。异常断线（无 outcome、无 ACK）绝不允许清 ownership。
+            if evidence.provider_outcome_seen:
+                return request.requested_status or AiJobStatus.FAILED, REMOTE_STOP_UNCONFIRMED
+            if evidence.remote_session_started is False and evidence.remote_stop_acknowledged is None:
+                # 从未建立远程会话：没有需要停止的服务端回合。
+                return request.requested_status or AiJobStatus.FAILED, REMOTE_STOP_UNCONFIRMED
+            if evidence.remote_stop_acknowledged is True:
+                return request.requested_status or AiJobStatus.FAILED, REMOTE_STOP_UNCONFIRMED
+            # 会话已建立但既无 outcome 也无 ACK（含 stop NACK）：
+            # ORPHANED，保留 ownership / durable locator 给 reaper。
+            return AiJobStatus.ORPHANED, evidence.failure_code or REMOTE_STOP_UNCONFIRMED
         unresolved_local = (
             (evidence.process_started is True or evidence.termination_confirmed_dead is False)
             and evidence.termination_confirmed_dead is not True

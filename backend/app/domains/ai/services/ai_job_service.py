@@ -1780,9 +1780,13 @@ async def _stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
     """Stop a remote provider session from durable reaper metadata (doc §10.4.2).
 
     - 使用持久化 backend/session id，不依赖内存 runtime；
+    - 必须走 ``cancel_persisted_session(session_id)`` durable 契约：真实
+      DSH/OpenCode adapter 忽略 ``cancel(run_id=...)`` 的 run_id（doc 修复
+      方案 §9.3 的 P1-3），持久化 locator 绝不能被静默丢弃；
     - 只有服务端明确成功响应才 ``stop_acknowledged=True``；
     - timeout / 断线 / 找不到 backend / 缺少 session id 一律返回结构化
-      NACK/UNKNOWN，绝不因为本地没有 PID 而声称远程 session 已停止。
+      NACK/UNKNOWN，绝不因为本地没有 PID 而声称远程 session 已停止；
+    - ACK / NACK / 异常三条路径都必须释放 adapter 资源（``close()``）。
     """
     reason = str(row.get("reason") or "REAP")
     backend_name = str(row.get("agent_backend") or "").strip()
@@ -1809,23 +1813,35 @@ async def _stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
             error_message=str(exc) or type(exc).__name__,
         )
     try:
-        # dsh/opencode adapter 支持按持久化 session 精确取消。
-        result = await backend.cancel(run_id=session_id)
+        result = await backend.cancel_persisted_session(session_id)
+        if not isinstance(result, AgentStopResult):
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code=REMOTE_STOP_UNCONFIRMED,
+                error_message="backend cancel returned no structured acknowledgement",
+            )
+        return result
     except Exception as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            raise
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
             stop_acknowledged=False,
             failure_code="REMOTE_CANCEL_FAILED",
             error_message=str(exc) or type(exc).__name__,
         )
-    if not isinstance(result, AgentStopResult):
-        return AgentStopResult(
-            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-            stop_acknowledged=False,
-            failure_code=REMOTE_STOP_UNCONFIRMED,
-            error_message="backend cancel returned no structured acknowledgement",
-        )
-    return result
+    finally:
+        try:
+            await backend.close()
+        except asyncio.CancelledError:
+            raise
+        except Exception as close_exc:
+            logger.warning(
+                "Remote backend close failed during reaper stop: backend={}, error={}",
+                backend_name,
+                close_exc,
+            )
 
 
 async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
@@ -1855,11 +1871,16 @@ async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
         )
     result = await process_supervisor.stop_attempt(token, str(row.get("reason") or "REAP"))
     if result is None and row.get("process_pid"):
+        # root PID 已消失不代表进程组已消失：stop_persisted 会对 PGID 继续
+        # 发送信号，并在提供持久化 run token 时执行完整 token discovery
+        # 兜底（doc 修复方案 §5.4）。
         result = await process_supervisor.stop_persisted(
             row["process_pid"],
             row.get("process_started_at"),
             row.get("reason") or "REAP",
             process_group_id=row.get("process_group_id"),
+            run_token=str(row.get("run_token") or "") or None,
+            not_before=row.get("job_started_at"),
         )
     persisted_token = str(row.get("run_token") or "")
     if result is None and token and token == persisted_token:
@@ -2090,6 +2111,8 @@ async def shutdown_runtime_workers() -> None:
                 row.get("process_started_at"),
                 "WORKER_SHUTDOWN",
                 process_group_id=row.get("process_group_id"),
+                run_token=token or None,
+                not_before=row.get("job_started_at"),
             )
         if result is None and token:
             result = await process_supervisor.stop_by_run_token_discovery(
@@ -2656,6 +2679,10 @@ async def _converge_runner_exit(
         runtime=runtime_state,
         typed_error=outcome.error,
     )
+    if outcome.provider_outcome_seen:
+        # 真实 provider result 产生后必须显式传递 outcome；runner 兜底
+        # 绝不从 requested status 推断 provider 已结束（doc 修复方案 §8.3）。
+        evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
     queue_key = attempt.queue_key or ""
     is_task_chat = queue_key.startswith(f"{AiJobChannel.TASK_CHAT.value}:")
     if is_task_chat and not queue_key.startswith("TASK_BASELINE:"):

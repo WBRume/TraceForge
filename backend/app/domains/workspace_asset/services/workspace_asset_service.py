@@ -1981,6 +1981,13 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
     run_token = run_token or (attempt.run_token if attempt else None)
     worker_boot_id = str(attempt.worker_boot_id) if attempt else WORKER_BOOT_ID
     provider_outcome_seen = False
+    # attempt-local 证据（doc 修复方案 §10.4）：只能在绑定 attempt runtime
+    # 的事件循环 task 中解析；异常分支必须把已捕获证据显式传入 DB finalizer，
+    # 绝不在 DB executor 线程重新读取 ContextVar。
+    attempt_evidence: Optional[Any] = None
+    resolved_execution_kind = (
+        str(getattr(attempt, "execution_kind", None) or "").strip() or "LOCAL_PROCESS"
+    )
     try:
         context = await run_db_txn(
             lambda db: _load_requirement_import_context_sync(db, job_id=job_id)
@@ -2012,12 +2019,11 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
         )
         # 证据必须在事件循环线程解析：DB executor 线程读取不到 attempt
         # ContextVar（doc §6.1）。
-        evidence = resolve_attempt_evidence(
-            execution_kind=str(
-                getattr(attempt, "execution_kind", None) or ""
-            ).strip() or "LOCAL_PROCESS",
+        attempt_evidence = resolve_attempt_evidence(
+            execution_kind=resolved_execution_kind,
             runtime=current_agent_attempt_runtime(),
         )
+        evidence = attempt_evidence
         provider_outcome_seen = bool(str(ai_result.get("text") or "").strip())
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
@@ -2057,11 +2063,24 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
         )
         return provider_outcome_seen
     except Exception as exc:
+        # 异常分支在事件循环线程补齐证据后显式传入 DB transaction；CLI 已
+        # 确认退出的确定性解析失败必须落 FAILED，不得错误进入 ORPHANED
+        # 重试（doc 修复方案 §10.2/§10.4）。
+        if attempt_evidence is None:
+            try:
+                attempt_evidence = resolve_attempt_evidence(
+                    execution_kind=resolved_execution_kind,
+                    runtime=current_agent_attempt_runtime(),
+                    typed_error=exc,
+                )
+            except Exception:
+                logger.exception("Failed to resolve attempt evidence for preview failure")
         try:
             await run_db_txn(
                 lambda db: _fail_requirement_preview_sync(
                     db, job_id=job_id, message="Requirement AI preview failed", error=str(exc), run_token=run_token,
                     worker_boot_id=worker_boot_id,
+                    evidence=attempt_evidence,
                 )
             )
         except Exception:
@@ -2078,6 +2097,12 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
     run_token = run_token or (attempt.run_token if attempt else None)
     worker_boot_id = str(attempt.worker_boot_id) if attempt else WORKER_BOOT_ID
     provider_outcome_seen = False
+    # attempt-local 证据（doc 修复方案 §10.4）：与 import preview 使用相同
+    # helper，避免一条路径再次漏传。
+    attempt_evidence: Optional[Any] = None
+    resolved_execution_kind = (
+        str(getattr(attempt, "execution_kind", None) or "").strip() or "LOCAL_PROCESS"
+    )
     try:
         prepared = await run_db_txn(
             lambda db: _prepare_requirement_split_sync(db, job_id=job_id, run_token=run_token, worker_boot_id=worker_boot_id)
@@ -2094,12 +2119,11 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
             **({"run_token": run_token} if run_token else {}),
         )
         # 证据必须在事件循环线程解析（doc §6.1）。
-        evidence = resolve_attempt_evidence(
-            execution_kind=str(
-                getattr(attempt, "execution_kind", None) or ""
-            ).strip() or "LOCAL_PROCESS",
+        attempt_evidence = resolve_attempt_evidence(
+            execution_kind=resolved_execution_kind,
             runtime=current_agent_attempt_runtime(),
         )
+        evidence = attempt_evidence
         provider_outcome_seen = bool(str(ai_result.get("text") or "").strip())
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
@@ -2120,11 +2144,24 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
         )
         return provider_outcome_seen
     except Exception as exc:
+        # 异常分支在事件循环线程补齐证据后显式传入 DB transaction（doc
+        # 修复方案 §10.4）：已确认退出的解析失败 → FAILED；死亡未证实的
+        # 失败 → ORPHANED 保留 ownership。
+        if attempt_evidence is None:
+            try:
+                attempt_evidence = resolve_attempt_evidence(
+                    execution_kind=resolved_execution_kind,
+                    runtime=current_agent_attempt_runtime(),
+                    typed_error=exc,
+                )
+            except Exception:
+                logger.exception("Failed to resolve attempt evidence for preview failure")
         try:
             await run_db_txn(
                 lambda db: _fail_requirement_preview_sync(
                     db, job_id=job_id, message="Requirement split preview failed", error=str(exc), run_token=run_token,
                     worker_boot_id=worker_boot_id,
+                    evidence=attempt_evidence,
                 )
             )
         except Exception:
