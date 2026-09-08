@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import ctypes.wintypes
+import enum
 import os
 import signal
 import subprocess
@@ -19,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -162,7 +163,17 @@ def _resume_windows_process(process_handle: int) -> None:
 
 @dataclass(frozen=True)
 class TerminationResult:
-    confirmed_dead: bool
+    """终止结果（doc §5.4.4）。
+
+    ``confirmed_dead`` 三态语义：
+    - ``True``  ：根进程明确退出 + 所有已登记 identity 明确不存在 +
+      containment 明确为空 + 本轮没有 UNKNOWN 探测；
+    - ``False`` ：存在明确存活进程；
+    - ``None``  ：无法确认（探测错误/未知），failure code 使用
+      ``PROCESS_TREE_UNKNOWN`` 或具体探测错误码。禁止把 None 当成死亡证明。
+    """
+
+    confirmed_dead: Optional[bool]
     root_return_code: Optional[int]
     signals_sent: tuple[str, ...] = ()
     tree_kill_used: bool = False
@@ -208,13 +219,32 @@ def agent_stop_result_from_termination(
     )
 
 
+class ProcessProbeState(str, enum.Enum):
+    """三态进程探测结果（doc §5.4.1）。
+
+    禁止让调用方通过“空 PID 集”或 ``False`` 自行推断死亡；所有检查异常
+    必须映射为 ``UNKNOWN``，而不是制造假死亡证明。
+    """
+
+    LIVE = "LIVE"
+    CONFIRMED_DEAD = "CONFIRMED_DEAD"
+    UNKNOWN = "UNKNOWN"
+
+
+PROCESS_TREE_UNKNOWN = "PROCESS_TREE_UNKNOWN"
+
+
 @dataclass(frozen=True)
 class ProcessTreeSnapshot:
-    """One off-loop process-tree inspection sample (doc §12)."""
+    """One off-loop process-tree inspection sample (doc §5.4.1/§12)."""
 
-    live_descendant_pids: tuple[int, ...] = ()
+    state: ProcessProbeState = ProcessProbeState.UNKNOWN
+    live_descendant_pids: Tuple[int, ...] = ()
     root_return_code: Optional[int] = None
-    error: bool = False
+    root_identity_matches: Optional[bool] = None
+    remaining_pids: Tuple[int, ...] = ()
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
 
 
 # 独立的小型 inspection executor：高频 psutil 树扫描绝不运行在主事件循环
@@ -252,30 +282,198 @@ def _inspection_executor() -> ThreadPoolExecutor:
     return _INSPECTION_EXECUTOR
 
 
-def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTreeSnapshot:
-    """Pure synchronous psutil snapshot; never call directly from the event loop."""
-    root_return_code = getattr(managed.process, "returncode", None)
-    if psutil is None:
-        return ProcessTreeSnapshot(root_return_code=root_return_code)
-    live: set[int] = set()
+def _windows_job_probe(managed: "ManagedAgentProcess") -> Tuple[ProcessProbeState, set]:
+    """Probe Windows Job Object containment (executor-side only).
+
+    - 查询成功且为空集合：该 containment 的明确空证据（CONFIRMED_DEAD）；
+    - 查询失败：UNKNOWN，绝不返回 False（doc §5.4.2）；
+    - 没有 Job Object：无 containment 可查，返回 CONFIRMED_DEAD（空证据，
+      死亡证明由 root returncode + known identities + group probe 决定）。
+    """
+    if os.name != "nt" or not managed.job_handle:
+        return (ProcessProbeState.CONFIRMED_DEAD, set())
     try:
-        root = psutil.Process(managed.pid)
-        for child in root.children(recursive=True):
-            live.add(int(child.pid))
+        # JOB_OBJECT_BASIC_PROCESS_ID_LIST stores ULONG_PTR PIDs.  A
+        # DWORD array truncates handles/PIDs on 64-bit Windows.
+        capacity = 256
+        buffer_size = ctypes.sizeof(_WindowsJobProcessIdList) + ctypes.sizeof(_ULONG_PTR) * capacity
+        buffer = (ctypes.c_byte * buffer_size)()
+        returned = ctypes.wintypes.DWORD()
+        ok = _windows_kernel32().QueryInformationJobObject(
+            ctypes.wintypes.HANDLE(managed.job_handle),
+            3,
+            ctypes.byref(buffer),
+            buffer_size,
+            ctypes.byref(returned),
+        )
+        if not ok:
+            return (ProcessProbeState.UNKNOWN, set())
+        header = _WindowsJobProcessIdList.from_buffer(buffer)
+        count = min(int(header.NumberOfProcessIdsInList), capacity)
+        ids = (_ULONG_PTR * capacity).from_buffer(buffer, ctypes.sizeof(_WindowsJobProcessIdList))
+        pids = {int(ids[index]) for index in range(count)}
+        pids.discard(int(managed.pid))
+        return (ProcessProbeState.LIVE, pids) if pids else (ProcessProbeState.CONFIRMED_DEAD, set())
+    except Exception:
+        return (ProcessProbeState.UNKNOWN, set())
+
+
+def _posix_group_probe(managed: "ManagedAgentProcess") -> Tuple[ProcessProbeState, set]:
+    """Probe the POSIX process group containment (executor-side only)."""
+    if os.name == "nt" or not managed.process_group_id:
+        return (ProcessProbeState.CONFIRMED_DEAD, set())
+    group_id = int(managed.process_group_id)
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return (ProcessProbeState.CONFIRMED_DEAD, set())
+    except (PermissionError, OSError, ValueError):
+        # The group may still exist; a permission failure is never a death proof.
+        return (ProcessProbeState.UNKNOWN, set())
+    if psutil is None:
+        return (ProcessProbeState.LIVE, {group_id})
+    pids: set = set()
+    try:
+        for proc in psutil.process_iter(["pid", "status"]):
+            try:
+                if proc.status() == psutil.STATUS_ZOMBIE:
+                    continue
+                if os.getpgid(proc.pid) == group_id:
+                    pids.add(int(proc.pid))
+            except (psutil.Error, OSError, ValueError):
+                continue
     except (psutil.Error, OSError, ValueError):
-        pass
-    for pid in managed.known_descendant_pids:
-        if pid in live:
-            continue
+        return (ProcessProbeState.UNKNOWN, set())
+    return (ProcessProbeState.LIVE, pids)
+
+
+def _probe_known_pid(pid: int) -> ProcessProbeState:
+    """Three-state probe of one known immutable identity (doc §5.4.2)."""
+    if psutil is None:
+        return ProcessProbeState.UNKNOWN
+    try:
+        proc = psutil.Process(int(pid))
+    except psutil.NoSuchProcess:
+        # 该特定 identity 明确不存在。
+        return ProcessProbeState.CONFIRMED_DEAD
+    except psutil.ZombieProcess:
+        # 明确的已退出语义（doc §5.4.2）。
+        return ProcessProbeState.CONFIRMED_DEAD
+    except psutil.AccessDenied:
+        return ProcessProbeState.UNKNOWN
+    except (psutil.Error, OSError, ValueError):
+        return ProcessProbeState.UNKNOWN
+    try:
+        if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+            return ProcessProbeState.LIVE
+        return ProcessProbeState.CONFIRMED_DEAD
+    except psutil.ZombieProcess:
+        return ProcessProbeState.CONFIRMED_DEAD
+    except (psutil.Error, OSError, ValueError):
+        return ProcessProbeState.UNKNOWN
+
+
+def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTreeSnapshot:
+    """Pure synchronous psutil snapshot; never call directly from the event loop.
+
+    三态聚合规则（doc §5.4.3）：
+    - 任一 identity 明确存活 -> LIVE；
+    - 无存活但存在 UNKNOWN（探测异常/Job Object 查询失败/无 psutil 能力）
+      -> UNKNOWN，known_descendant_pids 必须全部保留；
+    - 仅当 root 明确退出、所有已登记 identity 明确不存在且 containment
+      明确为空时 -> CONFIRMED_DEAD。
+    """
+    root_return_code = getattr(managed.process, "returncode", None)
+    root_alive = root_return_code is None
+    root_pid = int(managed.pid)
+    live: set = set()
+    unknown: set = set()
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
+    root_identity_matches: Optional[bool] = None
+
+    if psutil is None:
+        if root_alive:
+            return ProcessTreeSnapshot(
+                state=ProcessProbeState.LIVE,
+                root_return_code=None,
+                remaining_pids=(root_pid,),
+            )
+        return ProcessTreeSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            root_return_code=root_return_code,
+            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
+            error_message="psutil is unavailable; descendant death cannot be confirmed",
+        )
+
+    # 1. Windows Job Object containment。
+    job_state, job_pids = _windows_job_probe(managed)
+    if job_state == ProcessProbeState.LIVE:
+        live.update(job_pids)
+    elif job_state == ProcessProbeState.UNKNOWN:
+        failure_code = failure_code or "JOB_OBJECT_QUERY_FAILED"
+        error_message = error_message or "Windows Job Object query failed; containment unknown"
+
+    # 2. POSIX process group containment。
+    group_state, group_pids = _posix_group_probe(managed)
+    if group_state == ProcessProbeState.LIVE:
+        live.update(group_pids)
+    elif group_state == ProcessProbeState.UNKNOWN:
+        failure_code = failure_code or "PROCESS_GROUP_UNKNOWN"
+        error_message = error_message or "POSIX process group probe failed; containment unknown"
+
+    # 3. Root liveness（asyncio returncode 是 root 存活/退出的权威来源）。
+    if root_alive:
+        live.add(root_pid)
         try:
-            proc = psutil.Process(int(pid))
-            if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
-                live.add(int(pid))
+            proc = psutil.Process(root_pid)
+            if managed.process_start_time is not None:
+                root_identity_matches = (
+                    abs(float(proc.create_time()) - managed.process_start_time) <= 2.0
+                )
+            else:
+                root_identity_matches = True
         except (psutil.Error, OSError, ValueError):
+            root_identity_matches = None
+
+    # 4. 已登记 immutable identities。
+    for pid in list(managed.known_descendant_pids):
+        if pid == root_pid or pid in live:
             continue
+        probe = _probe_known_pid(int(pid))
+        if probe == ProcessProbeState.LIVE:
+            live.add(int(pid))
+        elif probe == ProcessProbeState.UNKNOWN:
+            unknown.add(int(pid))
+            failure_code = failure_code or "PROCESS_TREE_UNKNOWN"
+            error_message = error_message or f"Descendant pid {int(pid)} could not be probed"
+
+    # 5. Root 存活时枚举后代（root 已退出时无法枚举，包含关系由上面两项决定）。
+    if root_alive:
+        try:
+            root = psutil.Process(root_pid)
+            for child in root.children(recursive=True):
+                live.add(int(child.pid))
+        except psutil.NoSuchProcess:
+            pass
+        except (psutil.Error, OSError, ValueError):
+            failure_code = failure_code or "PROCESS_TREE_UNKNOWN"
+            error_message = error_message or "Root child enumeration failed"
+
+    if live:
+        state = ProcessProbeState.LIVE
+    elif unknown:
+        state = ProcessProbeState.UNKNOWN
+    else:
+        state = ProcessProbeState.CONFIRMED_DEAD
     return ProcessTreeSnapshot(
-        live_descendant_pids=tuple(sorted(live)),
+        state=state,
+        live_descendant_pids=tuple(sorted(p for p in live if p != root_pid)),
         root_return_code=root_return_code,
+        root_identity_matches=root_identity_matches,
+        remaining_pids=tuple(sorted(live)),
+        failure_code=failure_code if state != ProcessProbeState.CONFIRMED_DEAD else None,
+        error_message=error_message if state != ProcessProbeState.CONFIRMED_DEAD else None,
     )
 
 
@@ -379,6 +577,8 @@ class ManagedAgentProcess:
     # 同一进程的终止操作必须串行化；已确认死亡的结果会被缓存，
     # 重复 close/interrupt 直接返回权威死亡证明（doc 4.4）。
     _termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # 同一进程同一时刻最多一个在飞树采样（doc §9.4 有界 gate）。
+    _inspection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _last_termination: Optional[TerminationResult] = None
     _monitor_wake: Optional[asyncio.Event] = None
 
@@ -398,12 +598,30 @@ class ManagedAgentProcess:
         if self._monitor_wake is not None:
             self._monitor_wake.set()
 
-    def apply_snapshot(self, snapshot: ProcessTreeSnapshot) -> None:
-        """Merge one executor-produced tree sample into tracked descendants."""
-        if snapshot is None or snapshot.error:
-            # A failed sample must never erase known descendants.
+    def apply_snapshot(self, snapshot: Optional[ProcessTreeSnapshot]) -> None:
+        """Merge one executor-produced tree sample into tracked descendants.
+
+        合并规则（doc §5.4.3）：
+        - LIVE        ：更新已知 PID 集合；
+        - CONFIRMED_DEAD：identity 明确不存在后才移除；
+        - UNKNOWN     ：保留全部 known_descendant_pids，只更新错误诊断。
+        """
+        if snapshot is None or snapshot.state == ProcessProbeState.UNKNOWN:
+            # An unknown sample must never erase known descendants.
             return
         self.known_descendant_pids = set(snapshot.live_descendant_pids)
+
+    async def inspect_tree(self) -> ProcessTreeSnapshot:
+        """唯一异步树检查入口（doc §9.4）。
+
+        所有 psutil / Job Object / 进程 identity 检查只在 inspection
+        executor 中执行；同一 managed process 同时最多一个在飞采样，取消
+        等待不会排队新的采样。
+        """
+        async with self._inspection_lock:
+            snapshot = await run_process_inspection(inspect_process_tree_snapshot, self)
+            self.apply_snapshot(snapshot)
+            return snapshot
 
     @property
     def process_started_at(self) -> Optional[float]:
@@ -436,105 +654,8 @@ class ManagedAgentProcess:
     def add_reader_task(self, task: asyncio.Task) -> None:
         self.reader_tasks.append(task)
 
-    def _root_matches(self) -> bool:
-        if psutil is None:
-            return self.process.returncode is None
-        try:
-            proc = psutil.Process(self.pid)
-            if proc.status() == psutil.STATUS_ZOMBIE:
-                return False
-            if self.process_start_time is not None:
-                if abs(float(proc.create_time()) - self.process_start_time) > 2.0:
-                    return False
-            return proc.is_running()
-        except (psutil.Error, OSError, ValueError):
-            return False
-
-    def _windows_job_has_processes(self) -> bool:
-        if os.name != "nt" or not self.job_handle:
-            return False
-        try:
-            # JOB_OBJECT_BASIC_PROCESS_ID_LIST stores ULONG_PTR PIDs.  A
-            # DWORD array truncates handles/PIDs on 64-bit Windows.
-            capacity = 256
-            buffer_size = ctypes.sizeof(_WindowsJobProcessIdList) + ctypes.sizeof(_ULONG_PTR) * capacity
-            buffer = (ctypes.c_byte * buffer_size)()
-            returned = ctypes.wintypes.DWORD()
-            ok = _windows_kernel32().QueryInformationJobObject(
-                ctypes.wintypes.HANDLE(self.job_handle),
-                3,
-                ctypes.byref(buffer),
-                buffer_size,
-                ctypes.byref(returned),
-            )
-            if not ok:
-                return False
-            header = _WindowsJobProcessIdList.from_buffer(buffer)
-            count = min(int(header.NumberOfProcessIdsInList), capacity)
-            ids = (_ULONG_PTR * capacity).from_buffer(buffer, ctypes.sizeof(_WindowsJobProcessIdList))
-            return any(int(ids[index]) != self.pid for index in range(count))
-        except Exception:
-            return False
-
-    def _tree_has_live_processes(self) -> bool:
-        if self._windows_job_has_processes():
-            return True
-        if psutil is None:
-            return self.process.returncode is None
-        if any(self._pid_is_live(pid) for pid in self.known_descendant_pids):
-            return True
-        if os.name != "nt" and self._posix_group_has_live_processes():
-            return True
-        try:
-            root = psutil.Process(self.pid)
-            descendants = root.children(recursive=True)
-            return any(child.is_running() and child.status() != psutil.STATUS_ZOMBIE for child in descendants)
-        except (psutil.Error, OSError, ValueError):
-            if os.name != "nt":
-                try:
-                    os.killpg(self.pid, 0)
-                    return True
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-            return self._root_matches()
-
-    @staticmethod
-    def _pid_is_live(pid: int) -> bool:
-        if psutil is None:
-            return False
-        try:
-            proc = psutil.Process(int(pid))
-            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
-        except (psutil.Error, OSError, ValueError):
-            return False
-
-    def _posix_group_pids(self) -> set[int]:
-        if os.name == "nt" or not self.process_group_id:
-            return set()
-        try:
-            os.killpg(int(self.process_group_id), 0)
-        except (ProcessLookupError, PermissionError, OSError):
-            return set()
-        if psutil is None:
-            return {self.pid}
-        pids: set[int] = set()
-        try:
-            for proc in psutil.process_iter(["pid", "status"]):
-                try:
-                    if proc.status() == psutil.STATUS_ZOMBIE:
-                        continue
-                    if os.getpgid(proc.pid) == int(self.process_group_id):
-                        pids.add(int(proc.pid))
-                except (psutil.Error, OSError, ValueError):
-                    continue
-        except (psutil.Error, OSError, ValueError):
-            return {self.pid}
-        return pids
-
-    def _posix_group_has_live_processes(self) -> bool:
-        return bool(self._posix_group_pids())
-
     async def _wait_for_exit(self, timeout: float) -> bool:
+        """等待根进程退出，并通过 inspect_tree() 获得三态树快照（doc §9.4）。"""
         if self.process.returncode is None:
             try:
                 await asyncio.wait_for(asyncio.shield(self.process.wait()), timeout=max(0.01, timeout))
@@ -543,10 +664,8 @@ class ManagedAgentProcess:
             except ProcessLookupError:
                 pass
         # A wrapper may have exited while a descendant is still alive.
-        if self._tree_has_live_processes():
-            await asyncio.sleep(0)
-            return False
-        return True
+        snapshot = await self.inspect_tree()
+        return snapshot.state == ProcessProbeState.CONFIRMED_DEAD
 
     def _send_posix_group(self, sig: signal.Signals) -> bool:
         try:
@@ -688,9 +807,9 @@ class ManagedAgentProcess:
         # 终止流程立即触发一次树采样，不必等待普通监控周期（doc §12.2）。
         self.request_immediate_inspection()
         try:
+            snapshot = await self.inspect_tree()
             root_alive = self.process.returncode is None
-            tree_alive = self._tree_has_live_processes()
-            if root_alive or tree_alive:
+            if root_alive or snapshot.state != ProcessProbeState.CONFIRMED_DEAD:
                 if graceful and root_alive:
                     if os.name == "nt":
                         ctrl_break = getattr(signal, "CTRL_BREAK_EVENT", None)
@@ -700,7 +819,7 @@ class ManagedAgentProcess:
                     elif self._send_posix_group(signal.SIGINT):
                         signals.append("SIGINT")
                     if await self._wait_for_exit(3.0):
-                        return self._result(signals, tree_kill_used, started)
+                        return await self._result(signals, tree_kill_used, started)
 
                 if os.name == "nt":
                     tree_kill_used = True
@@ -708,88 +827,94 @@ class ManagedAgentProcess:
                 elif self._send_posix_group(signal.SIGTERM):
                     signals.append("SIGTERM")
                 if await self._wait_for_exit(3.0):
-                    return self._result(signals, tree_kill_used, started)
+                    return await self._result(signals, tree_kill_used, started)
 
                 tree_kill_used = tree_kill_used or os.name == "nt"
                 await self._force_kill(signals)
                 if not await self._wait_for_exit(5.0):
                     error_code = "PROCESS_TREE_STILL_ALIVE"
                     error_message = f"Agent process tree did not exit after {reason}"
-            confirmed_dead = not self._tree_has_live_processes() and self.process.returncode is not None
-            return self._result(
+                snapshot = await self.inspect_tree()
+            confirmed_dead = (
+                snapshot.state == ProcessProbeState.CONFIRMED_DEAD
+                and self.process.returncode is not None
+            )
+            return await self._result(
                 signals,
                 tree_kill_used,
                 started,
+                snapshot=snapshot,
                 confirmed_dead=confirmed_dead,
                 error_code=error_code if not confirmed_dead else None,
                 error_message=error_message if not confirmed_dead else None,
             )
         except Exception as exc:
             logger.exception("Agent process termination failed: pid={}, reason={}", self.pid, reason)
-            return self._result(
+            # 终止流程自身的异常是 UNKNOWN，不是存活证明，也绝不是死亡证明。
+            return await self._result(
                 signals,
                 tree_kill_used,
                 started,
-                confirmed_dead=False,
+                confirmed_dead=None,
                 error_code="TERMINATION_EXCEPTION",
                 error_message=str(exc),
             )
 
-    def _result(
+    async def _result(
         self,
         signals: Iterable[str],
         tree_kill_used: bool,
         started: float,
         *,
+        snapshot: Optional[ProcessTreeSnapshot] = None,
         confirmed_dead: Optional[bool] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> TerminationResult:
+        """Build the termination result from the last completed tri-state snapshot.
+
+        本方法绝不再次同步扫描进程树（doc §9.4）；没有快照时先通过
+        inspection executor 取一次三态采样。
+        """
+        if snapshot is None:
+            snapshot = await self.inspect_tree()
         if confirmed_dead is None:
-            confirmed_dead = not self._tree_has_live_processes() and self.process.returncode is not None
+            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
+                confirmed_dead = True
+            elif snapshot.state == ProcessProbeState.LIVE:
+                confirmed_dead = False
+            else:
+                confirmed_dead = None
+                error_code = error_code or snapshot.failure_code or PROCESS_TREE_UNKNOWN
         return TerminationResult(
-            confirmed_dead=bool(confirmed_dead),
+            confirmed_dead=confirmed_dead,
             root_return_code=self.process.returncode,
             signals_sent=tuple(signals),
             tree_kill_used=tree_kill_used,
             elapsed_ms=int((time.monotonic() - started) * 1000),
             error_code=error_code,
             error_message=error_message,
-            remaining_pids=self._remaining_pids(),
-            root_identity_matches=self._root_identity_matches(),
+            remaining_pids=snapshot.remaining_pids,
+            root_identity_matches=snapshot.root_identity_matches,
         )
-
-    def _root_identity_matches(self) -> Optional[bool]:
-        if psutil is None:
-            return None
-        try:
-            proc = psutil.Process(self.pid)
-            if self.process_start_time is None:
-                return True
-            return abs(float(proc.create_time()) - self.process_start_time) <= 2.0
-        except (psutil.Error, OSError, ValueError):
-            return False
-
-    def _remaining_pids(self) -> tuple[int, ...]:
-        pids = {pid for pid in self.known_descendant_pids if self._pid_is_live(pid)}
-        pids.update(self._posix_group_pids())
-        if self._root_matches():
-            pids.add(self.pid)
-        return tuple(sorted(pids))
 
     async def wait(self) -> ProcessWaitResult:
         try:
             root_return_code = await self.process.wait()
+            snapshot = await self.inspect_tree()
+            confirmed_dead = snapshot.state == ProcessProbeState.CONFIRMED_DEAD
             termination = TerminationResult(
-                confirmed_dead=not self._tree_has_live_processes(),
+                confirmed_dead=confirmed_dead,
                 root_return_code=root_return_code,
-                root_identity_matches=self._root_identity_matches(),
-                remaining_pids=self._remaining_pids(),
+                root_identity_matches=snapshot.root_identity_matches,
+                remaining_pids=snapshot.remaining_pids,
+                error_code=None if confirmed_dead else snapshot.failure_code,
+                error_message=None if confirmed_dead else snapshot.error_message,
             )
-            if self._tree_has_live_processes():
+            if snapshot.state != ProcessProbeState.CONFIRMED_DEAD:
                 # The root's exit is not the end of the attempt.  Preserve the
                 # actual tree-cleanup result so callers cannot report SUCCESS
-                # while descendants are still alive.
+                # while descendants are still alive (or their state unknown).
                 termination = await self.close(reason="root_exit_with_descendants")
             elif termination.confirmed_dead:
                 # Cache the authoritative proof under the same serialization
@@ -828,7 +953,24 @@ class ProcessSupervisor:
 
     @property
     def active_count(self) -> int:
-        return sum(1 for item in self._processes if item.process.returncode is None or item._tree_has_live_processes())
+        """Approximate active count from cached state (never scans the tree on-loop).
+
+        树检查只能在 inspection executor 中执行；本计数以 asyncio returncode
+        与缓存的已知后代为准，仅供诊断展示。
+        """
+        return sum(
+            1
+            for item in self._processes
+            if item.process.returncode is None or item.known_descendant_pids
+        )
+
+    def forget(self, managed: ManagedAgentProcess) -> None:
+        cached = managed._last_termination
+        if managed._closed or (
+            managed.process.returncode is not None
+            and bool(cached is not None and cached.confirmed_dead)
+        ):
+            self._processes.discard(managed)
 
     async def spawn(
         self,
@@ -1002,10 +1144,10 @@ class ProcessSupervisor:
                 raise
             except Exception as exc:
                 # Cleanup failures must become structured evidence, never a
-                # lost death proof.
+                # lost death proof (UNKNOWN, not a manufactured death).
                 logger.exception("Supervised cleanup failed: pid={}, reason={}", managed.pid, reason)
                 return TerminationResult(
-                    confirmed_dead=False,
+                    confirmed_dead=None,
                     root_return_code=getattr(managed.process, "returncode", None),
                     error_code="TERMINATION_EXCEPTION",
                     error_message=str(exc),
@@ -1028,7 +1170,7 @@ class ProcessSupervisor:
 
         if cleanup_task.cancelled():
             result = TerminationResult(
-                confirmed_dead=False,
+                confirmed_dead=None,
                 root_return_code=getattr(managed.process, "returncode", None),
                 error_code="CLEANUP_CANCELLED",
                 error_message="Cleanup task was cancelled before confirming process death",
@@ -1037,7 +1179,7 @@ class ProcessSupervisor:
             cleanup_exc = cleanup_task.exception()
             if cleanup_exc is not None:
                 result = TerminationResult(
-                    confirmed_dead=False,
+                    confirmed_dead=None,
                     root_return_code=getattr(managed.process, "returncode", None),
                     error_code="TERMINATION_EXCEPTION",
                     error_message=str(cleanup_exc),
@@ -1096,7 +1238,11 @@ class ProcessSupervisor:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    snapshot = ProcessTreeSnapshot(error=True)
+                    snapshot = ProcessTreeSnapshot(
+                        state=ProcessProbeState.UNKNOWN,
+                        failure_code=PROCESS_TREE_UNKNOWN,
+                        error_message="Periodic tree inspection raised an unexpected error",
+                    )
                 managed.apply_snapshot(snapshot)
                 if (
                     getattr(managed.process, "returncode", None) is not None
@@ -1208,8 +1354,10 @@ class ProcessSupervisor:
         )
 
     def forget(self, managed: ManagedAgentProcess) -> None:
+        cached = managed._last_termination
         if managed._closed or (
-            managed.process.returncode is not None and not managed._tree_has_live_processes()
+            managed.process.returncode is not None
+            and bool(cached is not None and cached.confirmed_dead)
         ):
             self._processes.discard(managed)
 
@@ -1630,9 +1778,11 @@ process_supervisor = ProcessSupervisor()
 
 __all__ = [
     "ManagedAgentProcess",
+    "ProcessProbeState",
     "ProcessSupervisor",
     "ProcessTreeSnapshot",
     "ProcessWaitResult",
+    "PROCESS_TREE_UNKNOWN",
     "TerminationResult",
     "agent_stop_result_from_termination",
     "containment_capability",

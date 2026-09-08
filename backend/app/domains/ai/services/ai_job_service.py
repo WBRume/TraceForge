@@ -15,6 +15,7 @@ import time
 import uuid
 import inspect
 from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from typing import Any, Callable, Dict, List, Optional
@@ -69,6 +70,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     PROCESS_TREE_STILL_ALIVE,
     REMOTE_STOP_UNCONFIRMED,
     AttemptFinalizerEvidence as _FinalizerEvidence,
+    evidence_from_stop_result,
     resolve_attempt_evidence,
 )
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
@@ -169,6 +171,29 @@ class AiJobConflictError(Exception):
 
 class AgentAttemptFencedError(RuntimeError):
     """Raised when a late attempt is no longer allowed to write business data."""
+
+
+@dataclass(frozen=True)
+class JobExecutionOutcome:
+    """一次 ``_execute_job`` 的明确执行结果（doc §8.3）。
+
+    规则：
+    - 只有收到 ``AgentRunResult`` 或明确的 provider terminal/result event，
+      才允许 ``provider_outcome_seen=True``；
+    - “函数正常返回”“异常没有逃出”“failure finalizer 已执行”都不能推断
+      provider outcome；
+    - ``_execute_job()`` 的所有分支都必须返回本对象；内部捕获的异常必须
+      写入 ``error``，不得丢失。
+    """
+
+    requested_status: Optional[AiJobStatus] = None
+    message: Optional[str] = None
+    result_patch: Optional[Dict[str, Any]] = None
+    context_patch: Optional[Dict[str, Any]] = None
+    provider_result: Optional[AgentRunResult] = None
+    stop_result: Optional[AgentStopResult] = None
+    error: Optional[BaseException] = None
+    provider_outcome_seen: bool = False
 
 
 def _attempt_is_current_sync(
@@ -834,41 +859,71 @@ def _update_job_state_sync(
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
             return {"payload": result.payload, "broadcast": True, "is_final": result.is_final}
         if run_token:
-            if (
-                str(job.run_token or "") != str(run_token)
-                or str(job.worker_boot_id or "") != WORKER_BOOT_ID
-                or job.status in FINAL_STATUSES
-                or job.status in {AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}
-                or job.cancel_requested_at is not None
-            ):
-                return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
+            token_text = str(run_token)
+        else:
+            # 活动状态写入必须 fail-closed（doc §4.5.3）：无 durable run token
+            # 的调用方不允许改写活动 attempt 状态（迟到的 callback 可能因
+            # 缺少 fence 把已取消的 job 写回 RUNNING）。终态写入已统一走
+            # convergence 事务，本分支只剩普通运行态写入。
+            return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         if job.channel == AiJobChannel.TASK_CHAT and job.task_id and job.session_revision is not None:
             task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
             if not task or int(task.session_revision or -1) != int(job.session_revision):
                 # An undo or a newer session generation has fenced this worker.
                 # Do not let a late callback resurrect the old job state.
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
+        writable_statuses = {
+            AiJobStatus.PENDING,
+            AiJobStatus.RUNNING,
+            AiJobStatus.WAITING_HITL,
+            AiJobStatus.INTERRUPTED,
+        }
+        values: Dict[str, Any] = {}
         if status is not None:
-            job.status = status
+            values["status"] = status
         if progress is not None:
-            job.progress = max(0, min(100, int(progress)))
+            values["progress"] = max(0, min(100, int(progress)))
         if message is not None:
-            job.message = message
-        if context_patch:
-            job.context_json = _merge_json(job.context_json, context_patch)
-        if result_patch:
-            job.result_json = _merge_json(job.result_json, result_patch)
+            values["message"] = message
         if error_message is not None:
-            job.error_message = error_message
+            values["error_message"] = error_message
         if session_id is not None:
-            job.session_id = session_id
+            values["session_id"] = session_id
         if agent_backend is not None:
-            job.agent_backend = agent_backend
+            values["agent_backend"] = agent_backend
+        if context_patch:
+            values["context_json"] = _merge_json(job.context_json, context_patch)
+        if result_patch:
+            values["result_json"] = _merge_json(job.result_json, result_patch)
         if status == AiJobStatus.RUNNING and job.started_at is None:
-            job.started_at = datetime.utcnow()
+            values["started_at"] = datetime.utcnow()
+        # 单条 affected-row CAS（doc §4.5.3）：token/boot/状态/取消位全部在
+        # UPDATE 谓词中判定，消除 SELECT 与 UPDATE 之间的窗口。affected != 1
+        # 时按 fenced no-op 处理，不得广播调用方准备的旧 payload。
+        affected = (
+            db.query(SddAiJob)
+            .filter(
+                SddAiJob.id == job_id,
+                SddAiJob.run_token == token_text,
+                SddAiJob.worker_boot_id == WORKER_BOOT_ID,
+                SddAiJob.status.in_(writable_statuses),
+                SddAiJob.cancel_requested_at.is_(None),
+            )
+            .update(values, synchronize_session=False)
+        )
         db.commit()
-        db.refresh(job)
-        payload = serialize_job(job)
+        # synchronize_session=False 不会同步 identity map；expire 后重读，
+        # 保证返回的 payload 反映 CAS 后的真实行状态。
+        db.expire_all()
+        if int(affected or 0) != 1:
+            refreshed = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+            return {
+                "payload": serialize_job(refreshed) if refreshed else serialize_job(job),
+                "broadcast": False,
+                "is_final": False,
+            }
+        refreshed = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        payload = serialize_job(refreshed) if refreshed else serialize_job(job)
         return {"payload": payload, "broadcast": True, "is_final": False}
     finally:
         db.close()
@@ -1642,6 +1697,12 @@ def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
                     "attempt_count": int(job.attempt_count or 0),
                     "worker_boot_id": job.worker_boot_id,
                     "reap_failure_count": int(job.reap_failure_count or 0),
+                    # durable remote stop locator（doc §10.4.1）：reaper 在
+                    # worker 重启后必须能凭持久化行定位并停止远程 provider
+                    # session，而不是只做本地进程检查。
+                    "execution_kind": str(job.process_execution_kind or "").strip() or None,
+                    "agent_backend": str(job.agent_backend or "").strip() or None,
+                    "session_id": str(job.session_id or "").strip() or None,
                 }
             )
         return result
@@ -1705,14 +1766,72 @@ def _reap_stop_reason(row: Dict[str, Any], result: Any) -> str:
 
 
 def _reap_failure_code(row: Dict[str, Any], result: Any) -> str:
-    if result is not None and getattr(result, "error_code", None):
-        return str(result.error_code)
+    if result is not None and (
+        getattr(result, "error_code", None) or getattr(result, "failure_code", None)
+    ):
+        return str(
+            getattr(result, "error_code", None)
+            or getattr(result, "failure_code", None)
+        )
     return str(row.get("reason") or "REAP")
 
 
-async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
-    """Run the fixed reaper order (doc 8) for one adopted attempt.
+async def _stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
+    """Stop a remote provider session from durable reaper metadata (doc §10.4.2).
 
+    - 使用持久化 backend/session id，不依赖内存 runtime；
+    - 只有服务端明确成功响应才 ``stop_acknowledged=True``；
+    - timeout / 断线 / 找不到 backend / 缺少 session id 一律返回结构化
+      NACK/UNKNOWN，绝不因为本地没有 PID 而声称远程 session 已停止。
+    """
+    reason = str(row.get("reason") or "REAP")
+    backend_name = str(row.get("agent_backend") or "").strip()
+    session_id = str(row.get("session_id") or "").strip()
+    if not backend_name or not session_id:
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=False,
+            failure_code="REMOTE_STOP_LOCATOR_MISSING",
+            error_message=(
+                f"Persisted remote stop locator is incomplete: backend={backend_name or '-'}, "
+                f"session_id={session_id or '-'}"
+            ),
+        )
+    from app.agents.selection import create_agent_backend_by_name
+
+    try:
+        backend = create_agent_backend_by_name(backend_name)
+    except Exception as exc:
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=False,
+            failure_code="REMOTE_BACKEND_UNAVAILABLE",
+            error_message=str(exc) or type(exc).__name__,
+        )
+    try:
+        # dsh/opencode adapter 支持按持久化 session 精确取消。
+        result = await backend.cancel(run_id=session_id)
+    except Exception as exc:
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=False,
+            failure_code="REMOTE_CANCEL_FAILED",
+            error_message=str(exc) or type(exc).__name__,
+        )
+    if not isinstance(result, AgentStopResult):
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=False,
+            failure_code=REMOTE_STOP_UNCONFIRMED,
+            error_message="backend cancel returned no structured acknowledgement",
+        )
+    return result
+
+
+async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
+    """Run the fixed reaper order (doc 8 / §10.4.2) for one adopted attempt.
+
+    0. REMOTE_SESSION 行按持久化 locator 分派 provider stop（durable stop）；
     1. in-memory registration under the current run token;
     2. persisted PID identity (stop_persisted);
     3. run-token /proc discovery fallback for a previous boot whose PID was
@@ -1721,6 +1840,19 @@ async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
     A missing PID alone is never treated as proof of death: when discovery is
     unavailable the attempt stays ORPHANED.
     """
+    if str(row.get("execution_kind") or "") == EXECUTION_KIND_REMOTE_SESSION:
+        remote_result = await _stop_remote_session(row)
+        # 结构化 NACK/UNKNOWN 保留给 convergence 决策（ORPHANED）。
+        if not remote_result.stop_acknowledged:
+            return remote_result
+        # ACK：仍核对本地是否残留受管进程（同 token 的本地孤儿树）。
+        local = await process_supervisor.stop_attempt(token, str(row.get("reason") or "REAP"))
+        if local is not None and not local.confirmed_dead:
+            return local
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
     result = await process_supervisor.stop_attempt(token, str(row.get("reason") or "REAP"))
     if result is None and row.get("process_pid"):
         result = await process_supervisor.stop_persisted(
@@ -1758,18 +1890,35 @@ async def reap_stale_jobs() -> int:
         ):
             continue
         result = await _stop_attempt_processes(row, token)
-        # Only a verified-empty tree/containment may clear ownership; an
-        # unproven attempt keeps ORPHANED with backoff and a structured
-        # failure reason (doc 8.7/8.8).
-        confirmed_dead = bool(result is not None and result.confirmed_dead)
-        payload = await run_db(
-            _finish_termination_sync,
-            row["job_id"],
-            token,
-            confirmed_dead=confirmed_dead,
-            reason=_reap_stop_reason(row, result),
-            failure_code=_reap_failure_code(row, result),
-        )
+        if isinstance(result, AgentStopResult):
+            # 远程 reaper：ACK 才允许业务终态并清 ownership；NACK/UNKNOWN
+            # 落 ORPHANED 并更新 backoff（doc §10.4.3）。
+            payload = await run_db(
+                _finish_termination_sync,
+                row["job_id"],
+                token,
+                confirmed_dead=bool(result.stop_acknowledged),
+                reason=_reap_stop_reason(row, result),
+                failure_code=_reap_failure_code(row, result),
+                evidence=evidence_from_stop_result(
+                    result,
+                    remote_session_started=True,
+                    execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                ),
+            )
+        else:
+            # Only a verified-empty tree/containment may clear ownership; an
+            # unproven attempt keeps ORPHANED with backoff and a structured
+            # failure reason (doc 8.7/8.8).
+            confirmed_dead = bool(result is not None and result.confirmed_dead)
+            payload = await run_db(
+                _finish_termination_sync,
+                row["job_id"],
+                token,
+                confirmed_dead=confirmed_dead,
+                reason=_reap_stop_reason(row, result),
+                failure_code=_reap_failure_code(row, result),
+            )
         if payload:
             reclaimed += 1
             await _broadcast_job_payload(payload)
@@ -1844,28 +1993,51 @@ async def start_runtime_workers() -> int:
 
 
 def _mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
-    """Durably fence attempts before their in-process owners are stopped."""
+    """Durably fence attempts before their in-process owners are stopped.
+
+    所有 RUNNING -> TERMINATING 写入都走唯一 termination request 事务
+    （doc §4.5.2）；本函数只负责收集 reaper/stop 需要的行元数据。
+    """
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest,
+        request_attempt_termination_in_txn,
+    )
+
     db = SessionLocal()
     try:
-        rows = (
-            db.query(SddAiJob)
-            .filter(
-                SddAiJob.worker_boot_id == WORKER_BOOT_ID,
-                SddAiJob.status.in_([
-                    AiJobStatus.RUNNING,
-                    AiJobStatus.TERMINATING,
-                    AiJobStatus.ORPHANED,
-                ]),
+        candidate_ids = [
+            str(row[0])
+            for row in (
+                db.query(SddAiJob.id)
+                .filter(
+                    SddAiJob.worker_boot_id == WORKER_BOOT_ID,
+                    SddAiJob.status.in_([
+                        AiJobStatus.RUNNING,
+                        AiJobStatus.TERMINATING,
+                        AiJobStatus.ORPHANED,
+                    ]),
+                )
+                .all()
             )
-            .all()
-        )
+        ]
         result: List[Dict[str, Any]] = []
-        for job in rows:
-            if job.status == AiJobStatus.RUNNING:
-                job.status = AiJobStatus.TERMINATING
-                job.terminal_reason = reason
-                job.failure_code = reason
-                job.termination_attempts = int(job.termination_attempts or 0) + 1
+        changed = False
+        for job_id in sorted(candidate_ids):
+            termination = request_attempt_termination_in_txn(
+                db,
+                AttemptTerminationRequest(
+                    job_id=job_id,
+                    reason=reason,
+                    mode="WORKER_SHUTDOWN",
+                ),
+            )
+            job = (
+                db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+            )
+            if job is None:
+                continue
+            if termination.changed:
+                changed = True
             result.append(
                 {
                     "job_id": str(job.id),
@@ -1878,7 +2050,7 @@ def _mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
                     "reason": reason,
                 }
             )
-        if rows:
+        if changed:
             db.commit()
         return result
     finally:
@@ -2294,22 +2466,25 @@ def _finish_termination_sync(
     confirmed_dead: bool,
     reason: str,
     failure_code: str,
+    evidence: Optional[_FinalizerEvidence] = None,
 ) -> Optional[Dict[str, Any]]:
     """Compatibility wrapper: reaper/worker-shutdown terminal writes.
 
     兼容入口保留旧签名；终态写入与决策全部转交统一 convergence 事务。
+    远程 reaper 结果必须通过 ``evidence`` 传入结构化 stop 证据。
     """
-    db = SessionLocal()
-    try:
-        row = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-    finally:
-        db.close()
-    evidence = _termination_evidence_for_row(
-        row,
-        confirmed_dead=bool(confirmed_dead),
-        failure_code=str(failure_code or "") or None,
-        reason=str(reason or ""),
-    )
+    if evidence is None:
+        db = SessionLocal()
+        try:
+            row = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
+        finally:
+            db.close()
+        evidence = _termination_evidence_for_row(
+            row,
+            confirmed_dead=bool(confirmed_dead),
+            failure_code=str(failure_code or "") or None,
+            reason=str(reason or ""),
+        )
     return _converge_termination_sync(
         job_id,
         run_token,
@@ -2416,9 +2591,9 @@ async def _job_heartbeat_loop(attempt: AgentAttemptContext) -> None:
 async def _converge_runner_exit(
     attempt: AgentAttemptContext,
     runtime_state: AgentAttemptRuntimeState,
-    execution_error: Optional[BaseException],
+    outcome: JobExecutionOutcome,
 ) -> None:
-    """唯一 runner 收尾点（doc §10.2）。
+    """唯一 runner 收尾点（doc §10.2 / §8.3）。
 
     在释放 attempt runtime 之前消费本次 attempt 的运行/停止证据：
     - 真正终态 / WAITING_HITL：幂等返回；
@@ -2427,6 +2602,9 @@ async def _converge_runner_exit(
       或 ORPHANED，绝不等待默认 lease 到期；
     - RUNNING：业务执行路径漏掉 finalizer，兜底写安全终态，不得静默离开
       RUNNING。
+
+    provider outcome 只能来自 :class:`JobExecutionOutcome` 的明确字段；
+    “异常没有逃出 _execute_job”绝不构成 provider outcome（doc §8.3）。
     """
     job_id = attempt.job_id
     status = await _get_job_status(job_id)
@@ -2449,11 +2627,12 @@ async def _converge_runner_exit(
             runtime=runtime_state,
             stop_result=stop_result,
         )
-        if execution_error is None:
+        if outcome.provider_outcome_seen:
             # 远程回合在取消请求到达前已自然结束：正常 provider outcome。
             evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
         reason = str(
             (stop_result.error_message if stop_result else None)
+            or outcome.message
             or evidence.error_message
             or "USER_CANCEL"
         )
@@ -2475,7 +2654,7 @@ async def _converge_runner_exit(
     evidence = _resolve_attempt_evidence(
         execution_kind=attempt.execution_kind,
         runtime=runtime_state,
-        typed_error=execution_error,
+        typed_error=outcome.error,
     )
     queue_key = attempt.queue_key or ""
     is_task_chat = queue_key.startswith(f"{AiJobChannel.TASK_CHAT.value}:")
@@ -2484,9 +2663,11 @@ async def _converge_runner_exit(
         job_kind = str((context or {}).get("job_kind") or "")
         is_task_chat = job_kind not in {JOB_KIND_DIAGNOSIS_SUMMARY, JOB_KIND_TASK_BASELINE}
     requested_status = (
-        AiJobStatus.INTERRUPTED if is_task_chat else AiJobStatus.FAILED
+        outcome.requested_status
+        if outcome.requested_status is not None
+        else (AiJobStatus.INTERRUPTED if is_task_chat else AiJobStatus.FAILED)
     )
-    reason = str(execution_error) if execution_error is not None else (
+    reason = str(outcome.error) if outcome.error is not None else (
         "Runner exited without a business finalizer"
     )
     payload = await run_db(
@@ -2571,14 +2752,19 @@ async def _run_queue(queue_key: str) -> None:
             runtime_token = bind_agent_attempt_runtime(runtime_state)
             heartbeat_task = asyncio.create_task(_job_heartbeat_loop(attempt))
             _JOB_HEARTBEAT_TASKS[job_id] = heartbeat_task
-            execution_error: Optional[BaseException] = None
+            # 明确的执行 outcome 哨兵：executor 未产出 outcome / 异常逃逸时，
+            # 收尾依据的是哨兵 error 而不是“正常完成”推断（doc §8.3）。
+            outcome = JobExecutionOutcome(
+                requested_status=None,
+                error=RuntimeError("executor did not produce an outcome"),
+            )
             try:
                 await _publish_job_state(job_id)
                 try:
-                    await _execute_job(job_id)
+                    outcome = await _execute_job(job_id)
                 except BaseException as exc:
                     # 保留异常供 runner 收敛使用；继续向上传播保持原语义。
-                    execution_error = exc
+                    outcome = dataclasses.replace(outcome, error=exc)
                     raise
             finally:
                 # doc §10.1：stop heartbeat -> runner convergence（runtime 仍
@@ -2588,7 +2774,7 @@ async def _run_queue(queue_key: str) -> None:
                 _JOB_HEARTBEAT_TASKS.pop(job_id, None)
                 if not _runtime_shutdown_in_progress():
                     try:
-                        await _converge_runner_exit(attempt, runtime_state, execution_error)
+                        await _converge_runner_exit(attempt, runtime_state, outcome)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -3521,16 +3707,17 @@ def _persist_asset_failure_message_sync(
     }
 
 
-async def _execute_asset_thread_job(job_id: str) -> None:
+async def _execute_asset_thread_job(job_id: str) -> Optional[bool]:
     job_kind = JOB_KIND_THREAD_AI_REPLY
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
+    provider_seen = False
     try:
         base = await run_db_txn(
             lambda db: _prepare_asset_thread_context_sync(db, job_id, run_token)
         )
         if base is None:
-            return
+            return None
         job_kind = base["job_kind"]
         with ExitStack() as context_stack:
             context_stack.enter_context(
@@ -3599,6 +3786,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     backend_name=thread_backend,
                     fork_session=fork_first_turn,
                 )
+                provider_seen = bool(str(result.get("text") or "").strip())
                 if fork_first_turn:
                     await task_cli_state_service.record_thread_session_id_async(
                         base["thread_id"], str(result.get("session_id") or "")
@@ -3640,7 +3828,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     process_started=result.get("process_started"),
                     termination_confirmed_dead=result.get("termination_confirmed_dead"),
                 )
-                return
+                return provider_seen
 
             if job_kind == JOB_KIND_RESOLUTION_REWRITE:
                 await _update_job_state(
@@ -3666,6 +3854,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     backend_name=thread_backend,
                     fork_session=fork_first_turn,
                 )
+                provider_seen = provider_seen or bool(str(result.get("text") or "").strip())
                 if fork_first_turn:
                     await task_cli_state_service.record_thread_session_id_async(
                         base["thread_id"], str(result.get("session_id") or "")
@@ -3716,7 +3905,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     process_started=result.get("process_started"),
                     termination_confirmed_dead=result.get("termination_confirmed_dead"),
                 )
-                return
+                return provider_seen
 
             await _update_job_state(job_id, progress=24, message="Preparing AI prompt")
 
@@ -3742,6 +3931,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 backend_name=thread_backend,
                 fork_session=fork_first_turn,
             )
+            provider_seen = provider_seen or bool(str(result.get("text") or "").strip())
             if fork_first_turn:
                 await task_cli_state_service.record_thread_session_id_async(
                     base["thread_id"], str(result.get("session_id") or "")
@@ -3780,14 +3970,15 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                 process_started=result.get("process_started"),
                 termination_confirmed_dead=result.get("termination_confirmed_dead"),
             )
+            return provider_seen
     except AgentAttemptFencedError:
         logger.info("Discarded fenced asset attempt: job={}", job_id)
-        return
+        return None
     except Exception as exc:
         status_after_error = await _get_job_status(job_id)
         if _is_cancel_requested(job_id) or status_after_error == AiJobStatus.CANCELLED:
             _clear_cancel_event(job_id)
-            return
+            return None
         logger.exception(f"Asset AI job failed: {exc}")
         failed_message = "Resolution proposal failed" if job_kind == JOB_KIND_RESOLUTION_PROPOSAL else "AI reply failed"
         # 失败也必须携带 attempt 级终止证据：已证明死亡的作业直接 FAILED 并
@@ -3804,7 +3995,7 @@ async def _execute_asset_thread_job(job_id: str) -> None:
             typed_error=exc,
         )
         if job_kind in {JOB_KIND_RESOLUTION_PROPOSAL, JOB_KIND_RESOLUTION_REWRITE}:
-            return
+            return None
         try:
             failure_state = await run_db_txn(
                 lambda db: _persist_asset_failure_message_sync(
@@ -3820,12 +4011,13 @@ async def _execute_asset_thread_job(job_id: str) -> None:
                     {
                         "type": "message_created",
                         "asset_id": failure_state["asset_id"],
-                        "thread_id": failure_state["message"]["thread_id"],
+                        "thread_id": failure_state["thread_id"],
                         "message": failure_state["message"],
                     },
                 )
         except Exception as msg_exc:
             logger.warning(f"Failed to append asset AI failure message: {msg_exc}")
+        return None
 def _sync_engine_session_sync(
     db: Session,
     job_id: str,
@@ -4164,9 +4356,9 @@ async def _on_engine_error(error_text: str, job_id: str) -> None:
     )
 
 
-async def _execute_task_chat_job(job_id: str) -> None:
+async def _execute_task_chat_job(job_id: str) -> Optional[bool]:
     try:
-        await _execute_task_chat_job_inner(job_id)
+        return await _execute_task_chat_job_inner(job_id)
     finally:
         # 取消事件在执行结束（含取消/异常/超时）后统一回收，避免泄漏；
         # 置位后不能立刻清除（见 mark_task_chat_jobs_cancelled）。
@@ -4212,10 +4404,10 @@ def _load_task_chat_job_dispatch_sync(job_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
-async def _execute_task_chat_job_inner(job_id: str) -> None:
+async def _execute_task_chat_job_inner(job_id: str) -> Optional[bool]:
     state = await run_db(_load_task_chat_job_dispatch_sync, job_id)
     if state is None:
-        return
+        return None
     if state.get("job_kind") == "diagnosis_summary":
         # 问题定位任务「一键总结问题案例」：一次性总结任务，不写会话气泡，走独立执行器
         return await _execute_diagnosis_summary_job(job_id)
@@ -4241,7 +4433,7 @@ async def _execute_task_chat_job_inner(job_id: str) -> None:
             context_patch={"source": "task_chat_user_input"},
         )
 
-        await _run_task_chat_turn(job_id, prompt)
+        return await _run_task_chat_turn(job_id, prompt)
 
 
 def _collect_diagnosis_transcript(task_id: str, max_chars: int = 60000) -> str:
@@ -4382,7 +4574,7 @@ def _collect_diagnosis_transcript(task_id: str, max_chars: int = 60000) -> str:
         db.close()
 
 
-async def _execute_diagnosis_summary_job(job_id: str) -> None:
+async def _execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
     """问题定位任务「一键总结问题案例」执行器。
 
     汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并广播。
@@ -4395,7 +4587,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
         lambda db: _prepare_diagnosis_summary_sync(db, job_id, run_token)
     )
     if prepared is None:
-        return
+        return None
     task_id = prepared["task_id"]
     creator_id = prepared["creator_id"]
     source_session_id = prepared["source_session_id"]
@@ -4477,13 +4669,13 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
         except RuntimeError as exc:
             if await _is_job_cancelled_or_final(job_id):
                 logger.info("Diagnosis summary run cancelled; discard result: job={}", job_id)
-                return
+                return False
             raise
 
         # 用户已停止（或任务已终态）时丢弃结果：不能反填定位结果卡片、不能广播
         if await _is_job_cancelled_or_final(job_id):
             logger.info("Diagnosis summary cancelled after run; discard result: job={}", job_id)
-            return
+            return True
 
         summary_text = str(result.get("text") or "").strip()
         if not summary_text:
@@ -4536,6 +4728,7 @@ async def _execute_diagnosis_summary_job(job_id: str) -> None:
             process_started=result.get("process_started"),
             termination_confirmed_dead=result.get("termination_confirmed_dead"),
         )
+        return True
 
 
 def _load_task_chat_turn_state_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
@@ -4559,10 +4752,10 @@ def _load_task_chat_turn_state_sync(db: Session, job_id: str) -> Optional[Dict[s
     }
 
 
-async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
+async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
     state = await run_db_txn(lambda db: _load_task_chat_turn_state_sync(db, job_id))
     if state is None:
-        return
+        return None
     fresh_session = state["fresh_session"]
     task_backend = state["task_backend"]
     engine = get_engine(state["task_id"])
@@ -4619,6 +4812,9 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> None:
             await engine.run(prompt)
 
         await _finalize_task_chat_job_from_engine(job_id, engine)
+        # provider outcome 只能来自引擎收到的明确 result event；
+        # “run/send_message 正常返回”本身不构成 provider outcome。
+        return getattr(engine, "last_result_success", None) is not None
 
 
 def _finalize_task_chat_job_sync(
@@ -4640,7 +4836,8 @@ def _finalize_task_chat_job_sync(
 
     本函数不再拥有独立的死亡证据决策表（doc §11）：只负责把引擎结果和
     attempt 证据构造成统一 convergence 请求，终态由
-    ``converge_job_attempt_sync()`` 的唯一决策表计算。
+    ``converge_job_attempt_in_txn()`` 的唯一决策表计算；提交由最外层
+    run_db_txn 负责。
     """
     if evidence is None:
         evidence = resolve_attempt_evidence(
@@ -4685,7 +4882,9 @@ def _finalize_task_chat_job_sync(
         interrupt_session_id=engine_session_id,
         intent=ConvergenceIntent.NORMAL_FINALIZE,
     )
-    result = convergence.converge_job_attempt_sync(db, request)
+    # 本函数运行在外层 run_db_txn 中：必须使用事务内核心，禁止内部提交
+    # （doc §7.3.1），否则会把外层业务副作用提前提交。
+    result = convergence.converge_job_attempt_in_txn(db, request)
     if not result.changed or not result.payload:
         return None
     return result.payload
@@ -4797,7 +4996,7 @@ def _load_job_failure_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
-async def _execute_task_baseline_job(job_id: str, task_id: str) -> None:
+async def _execute_task_baseline_job(job_id: str, task_id: str) -> Optional[bool]:
     if not task_id:
         raise ValueError("Baseline job has no task")
     attempt = current_agent_attempt()
@@ -4844,12 +5043,19 @@ async def _execute_task_baseline_job(job_id: str, task_id: str) -> None:
         process_started=payload.get("process_started"),
         termination_confirmed_dead=payload.get("termination_confirmed_dead"),
     )
+    # bootstrap 完成返回即代表 CLI 回合产出了明确结果。
+    return bool(payload)
 
 
-async def _execute_job(job_id: str) -> None:
+async def _execute_job(job_id: str) -> JobExecutionOutcome:
+    """执行一个 job；必须返回明确的 :class:`JobExecutionOutcome`（doc §8.3）。
+
+    所有分支都不得通过“是否抛异常”推断 provider outcome；内部捕获的异常
+    必须写入 ``outcome.error``。
+    """
     dispatch = await run_db(_load_job_dispatch_context_sync, job_id)
     if dispatch is None:
-        return
+        return JobExecutionOutcome(requested_status=None)
     channel = dispatch.get("channel")
     queue_key = str(dispatch.get("queue_key") or "")
     job_kind = str(dispatch.get("job_kind") or "")
@@ -4867,30 +5073,43 @@ async def _execute_job(job_id: str) -> None:
                     else workspace_asset_service.run_requirement_import_preview_job
                 )
                 if attempt and "run_token" in inspect.signature(runner).parameters:
-                    await runner(job_id, run_token=attempt.run_token)
+                    provider_seen = bool(await runner(job_id, run_token=attempt.run_token))
                 else:
                     # Keep direct/unit callers and older extension runners
                     # compatible while production runners receive the fence.
-                    await runner(job_id)
-                return
+                    provider_seen = bool(await runner(job_id))
+                return JobExecutionOutcome(
+                    requested_status=None,
+                    provider_outcome_seen=provider_seen,
+                )
             if queue_key.startswith("TASK_BASELINE:") or job_kind == JOB_KIND_TASK_BASELINE:
-                await _execute_task_baseline_job(
+                provider_seen = await _execute_task_baseline_job(
                     job_id,
                     str(dispatch.get("task_id") or ""),
                 )
-                return
+                return JobExecutionOutcome(
+                    requested_status=None,
+                    provider_outcome_seen=bool(provider_seen),
+                )
             if channel == AiJobChannel.ASSET_THREAD:
-                await _execute_asset_thread_job(job_id)
-                return
+                provider_seen = await _execute_asset_thread_job(job_id)
+                return JobExecutionOutcome(
+                    requested_status=None,
+                    provider_outcome_seen=bool(provider_seen),
+                )
             if channel == AiJobChannel.TASK_CHAT:
-                await _execute_task_chat_job(job_id)
-                return
+                provider_seen = await _execute_task_chat_job(job_id)
+                return JobExecutionOutcome(
+                    requested_status=None,
+                    provider_outcome_seen=bool(provider_seen),
+                )
             raise ValueError(f"Unsupported AI job channel: {channel}")
         except Exception as exc:
             logger.exception(f"AI job execution failed: job={job_id}, error={exc}")
             failure_context = await run_db(_load_job_failure_context_sync, job_id)
             if failure_context is None:
-                return
+                # 异常已被内部处理：必须保留在 outcome 中，绝不丢失。
+                return JobExecutionOutcome(requested_status=None, error=exc)
             job_channel = failure_context["channel"]
             job_kind = failure_context["job_kind"]
             if (
@@ -4919,6 +5138,7 @@ async def _execute_job(job_id: str) -> None:
                     run_token=attempt.run_token if attempt else None,
                     typed_error=exc,
                 )
+            return JobExecutionOutcome(requested_status=None, error=exc)
 
 
 def _load_enqueue_state_sync(job_id: str, expected_channel: Optional[AiJobChannel]) -> Optional[Dict[str, Any]]:
@@ -4979,39 +5199,46 @@ def mark_task_chat_jobs_cancelled(
     task_id: str,
     message: str = "Task execution stopped",
 ) -> List[str]:
-    jobs = (
-        db.query(SddAiJob)
-        .filter(
-            SddAiJob.workspace_id == workspace_id,
-            SddAiJob.task_id == task_id,
-            SddAiJob.channel == AiJobChannel.TASK_CHAT,
-            SddAiJob.status.notin_(list(FINAL_STATUSES)),
-        )
-        .all()
+    """批量取消请求（doc §4.5.2）：候选 id -> 排序 -> 逐个唯一 termination 事务。
+
+    本函数不再直接写 job 状态：所有 TERMINATING/CANCELLED 写入都通过
+    :func:`request_attempt_termination_in_txn`（与业务 finalizer 共享行锁）。
+    cancel signal 在最外层 commit 之后才触发。
+    """
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest,
+        request_attempt_termination_in_txn,
     )
-    now = datetime.utcnow()
+
+    candidate_ids = [
+        str(row[0])
+        for row in (
+            db.query(SddAiJob.id)
+            .filter(
+                SddAiJob.workspace_id == workspace_id,
+                SddAiJob.task_id == task_id,
+                SddAiJob.channel == AiJobChannel.TASK_CHAT,
+                SddAiJob.status.notin_(list(FINAL_STATUSES)),
+            )
+            .all()
+        )
+    ]
+    # 排序保证多行加锁顺序一致，避免与其它批量路径互相死锁。
     job_ids: List[str] = []
-    for job in jobs:
-        job.cancel_requested_at = now
-        if job.status == AiJobStatus.PENDING:
-            job.status = AiJobStatus.CANCELLED
-            job.progress = 100
-            job.message = message
-            job.error_message = None
-            job.finished_at = now
-        elif job.status in {AiJobStatus.RUNNING, AiJobStatus.TERMINATING, AiJobStatus.ORPHANED}:
-            job.status = AiJobStatus.TERMINATING
-            job.message = "Job cancellation requested"
-            job.terminal_reason = message
-            job.failure_code = "CANCEL_REQUESTED"
-        elif job.status == AiJobStatus.WAITING_HITL:
-            # WAITING_HITL has no local CLI by contract; it can converge
-            # immediately because there is no process to wait for.
-            job.status = AiJobStatus.CANCELLED
-            job.progress = 100
-            job.message = message
-            job.finished_at = now
-        job_ids.append(job.id)
+    for job_id in sorted(candidate_ids):
+        result = request_attempt_termination_in_txn(
+            db,
+            AttemptTerminationRequest(
+                job_id=job_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+                reason=str(message or "USER_CANCEL").strip() or "USER_CANCEL",
+                mode="CANCEL",
+                message=message,
+            ),
+        )
+        if result.changed:
+            job_ids.append(job_id)
     if job_ids:
         db.commit()
         # commit 之后才触发 runner 的 cancellation signal（doc §9.1）。
@@ -5239,44 +5466,42 @@ def cancel_job(
     workspace_id: str,
     job_id: str,
 ) -> Optional[SddAiJob]:
-    """取消请求事务（doc §9.1）：行锁内重新检查状态。
+    """取消请求事务（doc §9.1 / §4.5.1）：唯一 termination request 入口。
 
     与 finalizer 共享同一 job 行锁，因此两种锁顺序只能得到：
     - cancel 先获得锁 -> finalizer 看到 TERMINATING 并转 termination convergence；
     - finalizer 先获得锁 -> cancel 看到真正终态并幂等返回。
     取消信号在 commit 之后才触发当前 runner。
     """
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest,
+        request_attempt_termination_in_txn,
+    )
+
+    result = request_attempt_termination_in_txn(
+        db,
+        AttemptTerminationRequest(
+            job_id=job_id,
+            workspace_id=workspace_id,
+            reason="USER_CANCEL",
+            mode="CANCEL",
+        ),
+    )
+    if not result.changed:
+        job = (
+            db.query(SddAiJob)
+            .filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id)
+            .first()
+        )
+        return job
+    db.commit()
     job = (
         db.query(SddAiJob)
-        .filter(
-            SddAiJob.id == job_id,
-            SddAiJob.workspace_id == workspace_id,
-        )
-        .with_for_update()
+        .filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id)
         .first()
     )
-    if not job:
+    if job is None:
         return None
-    if job.status in FINAL_STATUSES:
-        return job
-    now = datetime.utcnow()
-    job.cancel_requested_at = now
-    if (
-        job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL}
-        and not _has_active_process_ownership(job)
-    ):
-        job.status = AiJobStatus.CANCELLED
-        job.progress = 100
-        job.message = "Job cancelled by user"
-        job.error_message = None
-        job.finished_at = now
-    else:
-        job.status = AiJobStatus.TERMINATING
-        job.message = "Job cancellation requested"
-        job.terminal_reason = "USER_CANCEL"
-        job.failure_code = "CANCEL_REQUESTED"
-    db.commit()
-    db.refresh(job)
     # commit 后才触发当前 runner 的 cancellation signal（doc §9.1 第 5 步）。
     _request_job_cancel(job.id)
     return job

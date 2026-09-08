@@ -12,6 +12,12 @@ if BACKEND_ROOT not in sys.path:
 
 import app.domains.ai.models.ai_job  # noqa: F401,E402
 import app.domains.task.models.test_result  # noqa: F401,E402
+from app.agents import (  # noqa: E402
+    AgentAttemptContext,
+    EXECUTION_KIND_LOCAL_PROCESS,
+    bind_agent_attempt,
+    reset_agent_attempt,
+)
 from app.database import Base  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
@@ -45,11 +51,33 @@ def _seed(SessionLocal):
             queue_key=f"{AiJobChannel.TASK_CHAT.value}:task-1",
             status=AiJobStatus.PENDING, prompt_text="hi", creator_id="user-1",
             session_revision=3,
+            # 生产 claim 事务会写入 durable run token（CAS fence 前提）。
+            run_token="run-1",
+            worker_boot_id=ai_job_service.WORKER_BOOT_ID,
         )
         db.add_all([user, workspace, task, job])
         db.commit()
     finally:
         db.close()
+
+
+def _bound_attempt():
+    """Bind the attempt context the way the production queue runner does.
+
+    无 run token 的活动状态写入已被 fail-closed 禁止（doc §4.5.3），因此
+    测试必须与生产一致：runner 先绑定 attempt ContextVar。
+    """
+    attempt = AgentAttemptContext(
+        job_id="job-1",
+        task_id="task-1",
+        queue_key=f"{AiJobChannel.TASK_CHAT.value}:task-1",
+        run_token="run-1",
+        worker_id="w",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        attempt_count=1,
+        execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+    )
+    return bind_agent_attempt(attempt)
 
 
 class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
@@ -68,9 +96,13 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(ai_job_service, "_broadcast_job_payload", _broadcast),
             mock.patch.object(ai_job_service, "schedule_queue", lambda key: scheduled.append(key)),
         ):
-            payload = await ai_job_service._update_job_state(
-                "job-1", status=AiJobStatus.RUNNING, progress=30,
-            )
+            attempt_token = _bound_attempt()
+            try:
+                payload = await ai_job_service._update_job_state(
+                    "job-1", status=AiJobStatus.RUNNING, progress=30,
+                )
+            finally:
+                reset_agent_attempt(attempt_token)
 
         self.assertIsNotNone(payload)
         self.assertEqual(payload["status"], AiJobStatus.RUNNING.value)
@@ -99,12 +131,16 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(ai_job_service, "_broadcast_job_payload", _broadcast),
             mock.patch.object(ai_job_service, "schedule_queue", lambda key: scheduled.append(key)),
         ):
-            await ai_job_service._update_job_state(
-                "job-1", status=AiJobStatus.RUNNING, progress=30,
-            )
-            payload = await ai_job_service._update_job_state(
-                "job-1", status=AiJobStatus.SUCCESS, progress=100, finalize=True,
-            )
+            attempt_token = _bound_attempt()
+            try:
+                await ai_job_service._update_job_state(
+                    "job-1", status=AiJobStatus.RUNNING, progress=30,
+                )
+                payload = await ai_job_service._update_job_state(
+                    "job-1", status=AiJobStatus.SUCCESS, progress=100, finalize=True,
+                )
+            finally:
+                reset_agent_attempt(attempt_token)
 
         self.assertEqual(payload["status"], AiJobStatus.SUCCESS.value)
         self.assertEqual(broadcasted, ["job-1", "job-1"])

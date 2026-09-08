@@ -108,55 +108,61 @@ def _prepare_interrupt_sync(
     reason: Optional[str],
     engine_job_id: Optional[str],
 ) -> Dict[str, Any]:
+    """中断准备段（单事务）：job/task 加锁 + 唯一 termination request（doc §4.5.1）。
+
+    不再直接把 job 写成 TERMINATING：行锁与写路径全部由
+    ``request_attempt_termination_in_txn`` 提供，与业务 finalizer 共享同一
+    锁协议，杜绝“普通 SELECT 读到 RUNNING 后覆盖已提交终态”的交错。
+    """
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest,
+        request_attempt_termination_in_txn,
+    )
+
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
-    query = db.query(SddAiJob).filter(
+    query = db.query(SddAiJob.id).filter(
         SddAiJob.task_id == task_id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
         SddAiJob.status == AiJobStatus.RUNNING,
     )
     if engine_job_id:
         query = query.filter(SddAiJob.id == engine_job_id)
-    job = query.order_by(SddAiJob.created_at.desc()).first()
-    if not job:
+    candidate = query.order_by(SddAiJob.created_at.desc()).first()
+    if not candidate:
         raise TaskSessionControlError("No running AI job to interrupt", status_code=409)
+    job_id = str(candidate[0])
 
     now = datetime.utcnow()
     reason_text = str(reason or "User temporarily interrupted the AI session").strip()
-    session_id = str(job.session_id or task.session_id or "").strip() or None
-    task.status = TaskStatus.INTERRUPTED
-    task.session_id = session_id
-    task.error_message = None
-    task.interrupt_reason = reason_text
-    task.interrupted_by_id = actor_user_id
-    task.interrupted_at = now
-    job.status = AiJobStatus.TERMINATING
-    job.message = "AI session interrupted by user"
-    job.error_message = None
-    job.session_id = session_id
-    job.interrupt_reason = reason_text
-    job.interrupted_by_id = actor_user_id
-    job.interrupted_at = now
-    job.finished_at = None
-    job.termination_attempts = int(job.termination_attempts or 0) + 1
-    job.terminal_reason = reason_text
-    job.failure_code = "USER_INTERRUPT"
-    job.context_json = _merge_json(
-        job.context_json,
-        {
-            "interrupted": True,
-            "interrupted_at": now.isoformat() + "Z",
-            "interrupted_by_id": actor_user_id,
-        },
+    result = request_attempt_termination_in_txn(
+        db,
+        AttemptTerminationRequest(
+            job_id=job_id,
+            task_id=task_id,
+            actor_user_id=actor_user_id,
+            reason=reason_text,
+            mode="INTERRUPT",
+            message="AI session interrupted by user",
+            failure_code="USER_INTERRUPT",
+            interrupt_context_patch={
+                "interrupted": True,
+                "interrupted_at": now.isoformat() + "Z",
+                "interrupted_by_id": actor_user_id,
+            },
+            mark_task_interrupted=True,
+        ),
     )
+    if not result.changed:
+        # 行锁内重读发现已被 finalizer/取消收敛：幂等退出，不得覆盖。
+        raise TaskSessionControlError("AI job is no longer interruptible", status_code=409)
     db.commit()
     return {
-        "task_id": task.id,
-        "workspace_id": task.workspace_id,
-        "job_id": job.id,
-        "run_token": str(job.run_token or "").strip() or None,
-        "session_id": session_id,
+        "task_id": task_id,
+        "job_id": job_id,
+        "run_token": result.run_token,
+        "session_id": result.session_id,
     }
 
 

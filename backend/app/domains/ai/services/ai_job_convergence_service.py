@@ -19,7 +19,7 @@ import random
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
@@ -42,8 +42,18 @@ logger = get_logger(__name__, category="ai_session")
 PROCESS_TREE_STILL_ALIVE = "PROCESS_TREE_STILL_ALIVE"
 REMOTE_STOP_UNCONFIRMED = "REMOTE_STOP_UNCONFIRMED"
 EVIDENCE_CONFLICT = "EVIDENCE_CONFLICT"
+CANCEL_REQUESTED = "CANCEL_REQUESTED"
+USER_INTERRUPT = "USER_INTERRUPT"
 
 EXECUTION_KINDS = (EXECUTION_KIND_LOCAL_PROCESS, EXECUTION_KIND_REMOTE_SESSION)
+
+
+class AttemptFencedError(RuntimeError):
+    """Raised when a fenced attempt must abort its whole business transaction.
+
+    外层事务（run_db_txn / route transaction）必须将该异常视作幂等退出，
+    但必须先执行 rollback：被 fence 的调用方不得提交任何业务副作用。
+    """
 
 
 class ConvergenceIntent(str, Enum):
@@ -598,16 +608,19 @@ def _decide_final_status(
     return AiJobStatus.ORPHANED, evidence.failure_code or PROCESS_TREE_STILL_ALIVE
 
 
-def converge_job_attempt_sync(
+def converge_job_attempt_in_txn(
     db: Session,
     request: AttemptConvergenceRequest,
 ) -> ConvergenceResult:
-    """唯一 job 终态事务（doc §8.2）。
+    """唯一 job 终态事务核心（doc §8.2 / 修复方案 §7.3.1）。
 
     事务顺序固定：行锁 SELECT FOR UPDATE -> 幂等检查 -> run token / worker
     boot id 校验 -> TASK_CHAT session revision 校验 -> 按 intent 校验来源
     状态 -> 读取显式 execution kind -> 决策表 -> 同事务写 job/task/patch/
-    ownership -> 返回（广播由调用方在 commit 后执行）。
+    ownership -> 返回。
+
+    本核心不 commit、不 refresh：任何已经处在 ``run_db_txn()`` 或 route
+    transaction 中的调用方必须使用本函数，提交所有权归最外层事务。
     """
     now = datetime.utcnow()
     job = (
@@ -700,8 +713,6 @@ def converge_job_attempt_sync(
             str(request.reason or ""),
             now,
         )
-    db.commit()
-    db.refresh(job)
     payload = _serialize_converged_job(job)
     is_final = final_status in {
         AiJobStatus.SUCCESS,
@@ -717,6 +728,197 @@ def converge_job_attempt_sync(
         broadcast=True,
         is_final=is_final,
     )
+
+
+def converge_job_attempt_sync(
+    db: Session,
+    request: AttemptConvergenceRequest,
+) -> ConvergenceResult:
+    """拥有 commit 的终态 wrapper（doc §7.3.1）。
+
+    仅当调用方自己拥有独立事务（自建 Session / 独立 ``SessionLocal()``）时
+    使用本入口；嵌套在 ``run_db_txn()`` 中的调用方必须改用
+    :func:`converge_job_attempt_in_txn`，否则会把业务副作用提前提交。
+    """
+    result = converge_job_attempt_in_txn(db, request)
+    if not result.changed:
+        return result
+    db.commit()
+    refreshed = (
+        db.query(SddAiJob).filter(SddAiJob.id == request.job_id).first()
+    )
+    if refreshed is not None:
+        result.payload = _serialize_converged_job(refreshed)
+    return result
+
+
+# ────────────────────────── 唯一取消/中断请求事务 ──────────────────────────
+
+
+TerminationMode = Literal["CANCEL", "INTERRUPT", "WORKER_SHUTDOWN"]
+
+
+@dataclass(frozen=True)
+class AttemptTerminationRequest:
+    """唯一取消/中断请求（doc §4.5.1）。
+
+    所有取消路径（单任务取消、批量取消、任务中断、worker shutdown）都必须
+    通过 :func:`request_attempt_termination_in_txn` 写入 job 状态；禁止任何
+    生产路径直接把活动 job 写成 TERMINATING/CANCELLED。
+    """
+
+    job_id: str
+    workspace_id: Optional[str] = None
+    task_id: Optional[str] = None
+    actor_user_id: Optional[str] = None
+    reason: str = ""
+    mode: TerminationMode = "CANCEL"
+    expected_run_token: Optional[str] = None
+    message: Optional[str] = None
+    failure_code: Optional[str] = None
+    interrupt_session_id: Optional[str] = None
+    interrupt_context_patch: Optional[Dict[str, Any]] = None
+    mark_task_interrupted: bool = False
+
+
+@dataclass
+class TerminationRequestResult:
+    """唯一取消/中断请求结果；``changed=False`` 表示幂等/被 fence 拦下。"""
+
+    job_id: str
+    status: str
+    changed: bool
+    run_token: Optional[str] = None
+    session_id: Optional[str] = None
+    worker_boot_id: Optional[str] = None
+
+
+def _job_active_ownership(job: SddAiJob) -> bool:
+    return job.process_pid is not None or job.process_group_id is not None
+
+
+def request_attempt_termination_in_txn(
+    db: Session,
+    request: AttemptTerminationRequest,
+) -> TerminationRequestResult:
+    """唯一取消/中断请求事务核心（doc §4.5.1）。
+
+    规则：
+    1. 使用 ``with_for_update()`` 锁定 job 行（与业务 finalizer 共享行锁）；
+    2. 持锁后重新读取 status / run token / worker boot id；
+    3. 已是业务终态时幂等返回，绝不恢复为非终态；
+    4. ``PENDING/WAITING_HITL`` 且无活动 ownership 时可直接写 ``CANCELLED``；
+    5. ``RUNNING/TERMINATING/ORPHANED`` 统一写 ``TERMINATING``；
+    6. 同一事务内写 ``cancel_requested_at``、interrupt metadata 和必要的
+       task 状态；
+    7. 不广播、不触发内存 cancel event —— 由最外层事务提交成功后执行。
+    """
+    now = datetime.utcnow()
+    reason = str(request.reason or request.mode).strip() or request.mode
+    job_query = db.query(SddAiJob).filter(SddAiJob.id == request.job_id)
+    if request.workspace_id:
+        job_query = job_query.filter(SddAiJob.workspace_id == request.workspace_id)
+    if request.expected_run_token:
+        job_query = job_query.filter(SddAiJob.run_token == request.expected_run_token)
+    job = job_query.with_for_update().first()
+    if job is None:
+        return TerminationRequestResult(
+            job_id=request.job_id, status="", changed=False
+        )
+
+    def _result(changed: bool) -> TerminationRequestResult:
+        return TerminationRequestResult(
+            job_id=str(job.id),
+            status=str(
+                job.status.value if hasattr(job.status, "value") else job.status
+            ),
+            changed=changed,
+            run_token=str(job.run_token or "") or None,
+            session_id=str(job.session_id or "") or None,
+            worker_boot_id=str(job.worker_boot_id or "") or None,
+        )
+
+    if job.status in {
+        AiJobStatus.SUCCESS,
+        AiJobStatus.FAILED,
+        AiJobStatus.CANCELLED,
+        AiJobStatus.REVERTED,
+    }:
+        # 幂等：终态永不回退（doc §4.5.1 规则 3）。
+        return _result(False)
+
+    resolved_session_id = str(
+        request.interrupt_session_id or (job.session_id or "")
+    ).strip() or None
+
+    if job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL} and (
+        request.mode != "WORKER_SHUTDOWN"
+        and not _job_active_ownership(job)
+    ):
+        # 无活动归属的排队/HITL 作业：直接落 CANCELLED 终态。
+        job.cancel_requested_at = now
+        job.status = AiJobStatus.CANCELLED
+        job.progress = 100
+        job.message = request.message or "Job cancelled by user"
+        job.error_message = None
+        job.finished_at = now
+        if request.mode == "INTERRUPT":
+            job.interrupt_reason = reason
+            job.interrupted_by_id = request.actor_user_id
+            job.interrupted_at = now
+            if request.interrupt_context_patch:
+                job.context_json = _merge_json(
+                    job.context_json, request.interrupt_context_patch
+                )
+        return _result(True)
+
+    job.cancel_requested_at = now
+    job.status = AiJobStatus.TERMINATING
+    if request.mode == "INTERRUPT":
+        job.message = request.message or "AI session interrupted by user"
+    else:
+        job.message = request.message or "Job cancellation requested"
+    job.terminal_reason = reason
+    job.failure_code = (
+        request.failure_code
+        or (CANCEL_REQUESTED if request.mode == "CANCEL" else reason)
+    )
+    job.termination_attempts = int(job.termination_attempts or 0) + 1
+    job.finished_at = None
+    if request.mode == "INTERRUPT":
+        job.error_message = None
+        job.session_id = resolved_session_id
+        job.interrupt_reason = reason
+        job.interrupted_by_id = request.actor_user_id
+        job.interrupted_at = now
+        patch: Dict[str, Any] = {
+            "interrupted": True,
+            "interrupted_at": now.isoformat() + "Z",
+        }
+        if request.actor_user_id:
+            patch["interrupted_by_id"] = request.actor_user_id
+        if request.interrupt_context_patch:
+            patch.update(request.interrupt_context_patch)
+        job.context_json = _merge_json(job.context_json, patch)
+        if request.mark_task_interrupted and job.task_id:
+            task = (
+                db.query(SddTask).filter(SddTask.id == job.task_id).first()
+            )
+            if task is not None and task.status not in {
+                TaskStatus.DONE,
+                TaskStatus.FAILED,
+                TaskStatus.BASELINED,
+            }:
+                task_session_id = resolved_session_id or str(
+                    getattr(task, "session_id", None) or ""
+                ).strip() or None
+                task.status = TaskStatus.INTERRUPTED
+                task.session_id = task_session_id
+                task.error_message = None
+                task.interrupt_reason = reason
+                task.interrupted_by_id = request.actor_user_id
+                task.interrupted_at = now
+    return _result(True)
 
 
 def _serialize_converged_job(job: SddAiJob) -> Dict[str, Any]:
@@ -785,10 +987,16 @@ __all__ = [
     "ConvergenceIntent",
     "AttemptConvergenceRequest",
     "ConvergenceResult",
+    "AttemptFencedError",
+    "AttemptTerminationRequest",
+    "TerminationRequestResult",
+    "TerminationMode",
     "EVIDENCE_CONFLICT",
     "REMOTE_STOP_UNCONFIRMED",
     "PROCESS_TREE_STILL_ALIVE",
     "resolve_attempt_evidence",
     "evidence_from_stop_result",
+    "converge_job_attempt_in_txn",
     "converge_job_attempt_sync",
+    "request_attempt_termination_in_txn",
 ]
