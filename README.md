@@ -407,12 +407,13 @@ cp .env.example .env
 alembic upgrade head
 
 # 6. 启动 FastAPI 服务
-uvicorn app.main:app
+# --host 0.0.0.0：在 Linux 服务器上启动时监听所有网络接口，允许远程客户端访问
+uvicorn app.main:app --host 0.0.0.0
 ```
 
 > **注意**：启动时**不要加 `--reload` 参数**，避免开发服务器自动重载引起的异常。
 
-后端默认运行在 `http://localhost:8000`，可通过 `http://localhost:8000/docs` 访问 API 文档。
+本地访问默认运行在 `http://localhost:8000`（API 文档：`http://localhost:8000/docs`）；添加 `--host 0.0.0.0` 后，服务将监听所有网络接口，在 Linux 服务器上启动后，远程客户端可通过 `http://<服务器IP>:8000` 访问，API 文档地址为 `http://<服务器IP>:8000/docs`。
 
 ## 前端启动
 
@@ -499,7 +500,7 @@ npm run test:run     # 单次运行测试
 
 ```bash
 cd backend
-uvicorn app.main:app              # 启动开发服务器（不要加 --reload）
+uvicorn app.main:app --host 0.0.0.0   # 启动开发服务器（不要加 --reload）
 alembic upgrade head              # 运行数据库迁移
 alembic revision --autogenerate -m "message"  # 创建迁移
 ```
