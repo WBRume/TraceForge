@@ -6,7 +6,13 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
+    PIP_TRUSTED_HOST=mirrors.cloud.tencent.com \
     APP_HOME=/app
+
+# 腾讯云镜像加速
+RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list 2>/dev/null || true
 
 # 运行时依赖：
 #  - git     : 工作区仓库 clone / worktree / skill 的 git 集成
@@ -20,7 +26,8 @@ RUN apt-get update \
 # Claude CLI（Agent 编排要 spawn 本地子进程）
 # 内网构建无外网时可加 --build-arg INSTALL_CLAUDE_CLI=false，改为运行时挂载
 ARG INSTALL_CLAUDE_CLI=true
-RUN if [ "$INSTALL_CLAUDE_CLI" = "true" ]; then \
+RUN npm config set registry https://registry.npmmirror.com && \
+    if [ "$INSTALL_CLAUDE_CLI" = "true" ]; then \
         npm install -g @anthropic-ai/claude-code \
         && npm cache clean --force ; \
     else echo "skip claude cli" ; fi
