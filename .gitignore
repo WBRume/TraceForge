@@ -69,7 +69,3 @@ codebuddy-sdk-doc.txt
 /.workbuddy/
 /.playwright-cli/
 /output/
-
-# Docker deploy: runtime volumes and local env must never be committed
-deploy/docker/volumes/
-deploy/docker/api.env
