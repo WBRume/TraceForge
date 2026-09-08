@@ -1,0 +1,102 @@
+# TraceForge 内部部署编排
+# 用法：
+#   cp api.env.example api.env && 修改其中的密钥 / 域名
+#   docker compose up -d --build
+#
+# 拓扑：mysql + redis + api(单副本) + web(nginx) + migrate(一次性)
+# 注意：api 严禁扩副本 —— 依赖进程内运行态与 CLI 会话状态。
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: traceforge-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sdd_platform}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./volumes/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-change-me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: traceforge-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./volumes/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # 一次性数据库迁移（alembic upgrade head），跑完即退出
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    container_name: traceforge-migrate
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app
+    env_file:
+      - api.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    container_name: traceforge-api
+    restart: unless-stopped
+    env_file:
+      - api.env
+    volumes:
+      # 运行态与资产卷：这些目录丢了 = 会话断 / 资产丢，必须持久化
+      - ./volumes/storage:/app/storage
+      - ./volumes/uploads:/app/uploads
+      - ./volumes/tmp:/app/tmp
+      - ./volumes/logs:/app/logs
+      # Claude CLI 登录态。若改用 API Key，删除此挂载并在 api.env 配 ANTHROPIC_API_KEY
+      - ./volumes/claude:/root/.claude
+      # git 凭据（工作区 clone / skill 导入需要）：SSH 方式用下面这行
+      # - ./volumes/ssh:/root/.ssh:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      replicas: 1      # 硬约束，勿改
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/frontend.Dockerfile
+    container_name: traceforge-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
