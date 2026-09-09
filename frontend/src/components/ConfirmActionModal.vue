@@ -15,12 +15,19 @@ const props = withDefaults(defineProps<{
   confirmText: string
   tone?: Tone
   loading?: boolean
+  // 叠放层级：默认 120；嵌套在其他弹窗（如 z-index:200 的创建流程弹窗）之上时需传入更大的值
+  zIndex?: number
+  // 是否 Teleport 到 body（默认 true）。嵌套在另一个弹窗内部使用时应关闭，
+  // 使其作为宿主弹窗的子元素渲染，天然叠在宿主内容之上，不受外部层叠上下文影响。
+  teleport?: boolean
 }>(), {
   description: '',
   emphasisLabel: '',
   emphasisValue: '',
   tone: 'danger',
   loading: false,
+  zIndex: 120,
+  teleport: true,
 })
 
 const emit = defineEmits<{
@@ -66,10 +73,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport to="body" :disabled="!props.teleport">
     <div
       v-if="show"
       class="modal-overlay"
+      :style="{ zIndex }"
       @pointerdown.self="armOverlayClose"
       @pointerup.self="finishOverlayClose"
       @pointerleave.self="cancelOverlayClose"
