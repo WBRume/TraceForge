@@ -1,5 +1,9 @@
 <!-- Workspace creation workflow: step 1 basic info. -->
 <script setup lang="ts">
+import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { isPathWithinBase, joinWorkspacePath, slugifyWorkspaceDirName } from '@/utils/workspacePath'
+
 export interface WorkspaceBasicInfo {
   name: string
   description: string
@@ -12,18 +16,41 @@ export interface WorkspaceBasicInfo {
 const props = defineProps<{
   modelValue: WorkspaceBasicInfo
   standalone?: boolean
+  // 工作区根目录配置存在时的允许基准目录（根目录/workspace）；为空表示未启用根目录约束
+  workspaceBase?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: WorkspaceBasicInfo): void
 }>()
 
+const { t } = useI18n()
+
+// 根目录配置存在时，路径默认跟随工作区名称自动生成；用户手动改过路径后不再自动覆盖
+const pathManuallyEdited = ref(false)
+
+const pathScopeError = computed(() => {
+  const base = (props.workspaceBase || '').trim()
+  if (!base) return ''
+  const path = props.modelValue.project_path.trim()
+  if (!path) return ''
+  return isPathWithinBase(path, base) ? '' : t('workspace_create.root_path_scope_error', { base })
+})
+
 const update = (patch: Partial<WorkspaceBasicInfo>) => {
   emit('update:modelValue', { ...props.modelValue, ...patch })
 }
 
 const onNameInput = (event: Event) => {
-  update({ name: (event.target as HTMLInputElement).value })
+  const name = (event.target as HTMLInputElement).value
+  const patch: Partial<WorkspaceBasicInfo> = { name }
+  if ((props.workspaceBase || '').trim() && !pathManuallyEdited.value) {
+    patch.project_path = joinWorkspacePath(
+      props.workspaceBase || '',
+      slugifyWorkspaceDirName(name)
+    )
+  }
+  update(patch)
 }
 
 const onDescriptionInput = (event: Event) => {
@@ -31,6 +58,7 @@ const onDescriptionInput = (event: Event) => {
 }
 
 const onPathInput = (event: Event) => {
+  pathManuallyEdited.value = true
   update({ project_path: (event.target as HTMLInputElement).value })
 }
 
@@ -98,10 +126,14 @@ const onProductNameInput = (event: Event) => {
         :value="modelValue.project_path"
         type="text"
         class="mgmt-input"
-        placeholder="C:\\workspace\\billing-v8r21"
+        :placeholder="workspaceBase || 'C:\\workspace\\billing-v8r21'"
         @input="onPathInput"
       />
-      <span class="mgmt-hint">{{ $t('workspace_create.root_path_hint') }}</span>
+      <span v-if="pathScopeError" class="wf-path-error">{{ pathScopeError }}</span>
+      <span v-else-if="workspaceBase" class="mgmt-hint">
+        {{ $t('workspace_create.root_path_hint_fixed', { base: workspaceBase }) }}
+      </span>
+      <span v-else class="mgmt-hint">{{ $t('workspace_create.root_path_hint') }}</span>
     </div>
   </div>
 </template>
@@ -118,5 +150,11 @@ const onProductNameInput = (event: Event) => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.9rem;
+}
+
+.wf-path-error {
+  margin-top: 0.3rem;
+  font-size: 0.8rem;
+  color: #b91c1c;
 }
 </style>

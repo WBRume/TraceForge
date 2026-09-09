@@ -30,10 +30,18 @@ def update_system_config(
     db: Session = Depends(get_db),
 ):
     try:
+        if system_config_service.is_string_config(key):
+            if not isinstance(data.value, str):
+                raise HTTPException(status_code=400, detail="config value must be a string")
+            raw_value = data.value
+        else:
+            if not isinstance(data.value, bool):
+                raise HTTPException(status_code=400, detail="config value must be a boolean")
+            raw_value = "true" if data.value else "false"
         system_config_service.set_config_value(
             db,
             key,
-            "true" if data.value else "false",
+            raw_value,
             updated_by=current_user.id,
         )
     except system_config_service.SystemConfigError as exc:

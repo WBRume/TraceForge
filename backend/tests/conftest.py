@@ -148,6 +148,15 @@ def _stub_disabled_in_tests(monkeypatch):
     monkeypatch.setattr(settings, "OAUTH_STUB_ENABLED", False)
 
 
+@pytest.fixture(autouse=True)
+def _workspace_root_dir_default_empty(monkeypatch):
+    """工作区根目录的 env 默认值恒定为空，避免 backend/.env 的 WORKSPACE_ROOT_DIR 泄漏进用例。
+
+    需要验证 env 默认值链路的用例（test_workspace_root_dir_config.py）显式 monkeypatch 该值。
+    """
+    monkeypatch.setattr(settings, "WORKSPACE_ROOT_DIR", "")
+
+
 # ══════════════════ FastAPI app / TestClient ══════════════════
 
 @pytest.fixture()

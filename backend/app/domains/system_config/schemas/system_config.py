@@ -3,7 +3,7 @@
 """
 
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -20,4 +20,5 @@ class SystemConfigListResponse(BaseModel):
 
 
 class SystemConfigUpdate(BaseModel):
-    value: bool
+    # bool：开关型配置；str：字符串型配置（如工作区根目录，空字符串表示清空配置）
+    value: Union[bool, str]

@@ -181,6 +181,9 @@ class Settings(BaseSettings):
     MAX_RETRY_COUNT: int = 3
     SKILLS_STORAGE_ROOT: str = "storage/skills"
     SKILL_MAX_TEXT_FILE_SIZE_BYTES: int = 10 * 1024 * 1024
+    # 工作区根目录默认值（env 层）。留空 = 未启用；
+    # 系统配置表（界面保存）非空时覆盖该值，系统配置清空后回退到该 env 默认值。
+    WORKSPACE_ROOT_DIR: str = ""
 
     # ── Task document scanning ──
     # 计划/规格 Markdown 扫描根目录（相对 task.project_path，逗号分隔；"." 表示项目根）
@@ -346,6 +349,12 @@ class Settings(BaseSettings):
             self.TASK_SESSION_SNAPSHOT_ROOT,
             fallback="tmp/task_session_snapshots",
         )
+        if str(self.WORKSPACE_ROOT_DIR or "").strip():
+            # 相对路径按 backend 根目录解析为绝对路径，避免受进程 CWD 影响
+            self.WORKSPACE_ROOT_DIR = _resolve_backend_path(
+                self.WORKSPACE_ROOT_DIR,
+                fallback=self.WORKSPACE_ROOT_DIR,
+            )
         return self
 
 

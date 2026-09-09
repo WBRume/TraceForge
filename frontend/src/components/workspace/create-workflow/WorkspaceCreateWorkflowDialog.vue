@@ -7,9 +7,15 @@ import { ElMessage } from 'element-plus'
 import { Briefcase, Check, FolderGit2 } from 'lucide-vue-next'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import { getProject, getProjectRepoSet, getRepoGroupTree, listProjects, listRepositories } from '@/services/managementApi'
 import type { Project, ProjectProduct, ProjectRepoSetItem, RepoGroupTreeNode, Repository } from '@/types/management'
 import { useSystemConfigStore } from '@/stores/systemConfig'
+import {
+  WORKSPACE_BASE_SEGMENT,
+  isPathWithinBase,
+  joinWorkspacePath,
+} from '@/utils/workspacePath'
 import BasicInfoStep, { type WorkspaceBasicInfo } from './BasicInfoStep.vue'
 import ProjectSelectStep from './ProjectSelectStep.vue'
 import ProductSelectStep from './ProductSelectStep.vue'
@@ -32,6 +38,12 @@ const systemConfigStore = useSystemConfigStore()
 const mgmtSelectionEnabled = computed(() => systemConfigStore.projectProductManagementEnabled)
 const standalone = computed(() => !mgmtSelectionEnabled.value)
 
+// 配置项：工作区根目录。非空时路径默认为 根目录/workspace/工作区名称，且仅允许位于该目录之内。
+const workspaceRootDir = computed(() => (systemConfigStore.workspaceRootDir || '').trim())
+const workspaceBase = computed(() =>
+  workspaceRootDir.value ? joinWorkspacePath(workspaceRootDir.value, WORKSPACE_BASE_SEGMENT) : ''
+)
+
 const ALL_STEPS = [
   { key: 'basic', label: () => t('workspace_create.step_basic') },
   { key: 'project', label: () => t('workspace_create.step_project') },
@@ -50,6 +62,8 @@ const currentKey = computed(() => steps.value[currentStep.value]?.key ?? 'basic'
 const isLastStep = computed(() => currentStep.value >= steps.value.length - 1)
 
 const creating = ref(false)
+// 基本信息步“下一步”触发冲突预检时的进行中标记（防止重复点击/重复弹窗）
+const preflighting = ref(false)
 const projectsLoading = ref(false)
 const productsLoading = ref(false)
 const reposLoading = ref(false)
@@ -71,8 +85,15 @@ const basicInfo = ref<WorkspaceBasicInfo>({
 const selectedProjectId = ref<string | null>(null)
 const selectedProductId = ref<string | null>(null)
 
+const pathScopeValid = computed(() => {
+  const base = workspaceBase.value
+  if (!base) return true
+  return isPathWithinBase(basicInfo.value.project_path.trim(), base)
+})
+
 const basicValid = computed(() => {
   const base = Boolean(basicInfo.value.name.trim() && basicInfo.value.project_path.trim())
+  if (!pathScopeValid.value) return false
   if (!standalone.value) return base
   return (
     base &&
@@ -181,14 +202,39 @@ const loadRepoGroupTree = async () => {
   }
 }
 
+const enterStepAfterBasic = async () => {
+  currentStep.value += 1
+  if (standalone.value) {
+    await Promise.all([loadAllRepositories(), loadRepoGroupTree()])
+  } else {
+    await loadProjects()
+  }
+}
+
 const goNext = async () => {
-  if (!canNext.value) return
+  if (!canNext.value || preflighting.value) return
   if (currentKey.value === 'basic') {
-    currentStep.value += 1
-    if (standalone.value) {
-      await Promise.all([loadAllRepositories(), loadRepoGroupTree()])
-    } else {
-      await loadProjects()
+    // 名称与根目录在基本信息步即已确定：进入下一步前先做冲突预检，
+    // 命中时弹窗由用户决策是否继续（确认后进入下一步，结果缓存供提交时复用）。
+    preflighting.value = true
+    try {
+      const conflicts = await getCreateConflicts(
+        basicInfo.value.name.trim(),
+        basicInfo.value.project_path.trim()
+      )
+      if (conflicts) {
+        conflictDetails.value = conflicts
+        conflictAction.value = 'next'
+        pendingConflictKey = conflictKeyOf(
+          basicInfo.value.name.trim(),
+          basicInfo.value.project_path.trim()
+        )
+        showConflictConfirm.value = true
+        return
+      }
+      await enterStepAfterBasic()
+    } finally {
+      preflighting.value = false
     }
     return
   }
@@ -210,6 +256,32 @@ const goBack = () => {
   }
 }
 
+interface WorkspaceConflictBrief {
+  id: string
+  name: string
+  owner_name?: string
+  project_path?: string
+}
+
+interface WorkspaceConflictDetails {
+  nameConflicts: WorkspaceConflictBrief[]
+  pathConflicts: WorkspaceConflictBrief[]
+}
+
+const showConflictConfirm = ref(false)
+const conflictDetails = ref<WorkspaceConflictDetails | null>(null)
+// 冲突确认后的下一步动作：'next' = 基本信息步继续进入下一步；'create' = 最终提交创建
+const conflictAction = ref<'next' | 'create'>('next')
+// 预检缓存（key = name|path）：基本信息“下一步”已预检过的组合，提交时不再重复请求
+const preflightCache = new Map<string, WorkspaceConflictDetails | null>()
+// 用户已在弹窗中确认继续的冲突组合（key = name|path）：提交时不再二次弹窗
+const confirmedConflictKeys = new Set<string>()
+// 当前弹窗对应的冲突组合 key
+let pendingConflictKey = ''
+let pendingCreatePayload: Record<string, unknown> | null = null
+
+const conflictKeyOf = (name: string, path: string) => `${name}\n${path}`
+
 const resetState = () => {
   currentStep.value = 0
   creating.value = false
@@ -223,6 +295,89 @@ const resetState = () => {
   selectedProductId.value = null
   basicInfo.value = { name: '', description: '', project_path: '' }
   selectedProjectId.value = null
+  showConflictConfirm.value = false
+  conflictDetails.value = null
+  conflictAction.value = 'next'
+  preflightCache.clear()
+  confirmedConflictKeys.clear()
+  pendingConflictKey = ''
+  pendingCreatePayload = null
+}
+
+const buildCreatePayload = (): Record<string, unknown> => {
+  const payload: Record<string, unknown> = {
+    name: basicInfo.value.name.trim(),
+    description: basicInfo.value.description.trim() || undefined,
+    project_path: basicInfo.value.project_path.trim(),
+  }
+  if (standalone.value) {
+    // 独立模式：手动填写项目/产品名称（不与项目管理/产品管理数据绑定），逐仓指定分支
+    payload.project_name = (basicInfo.value.project_name || '').trim()
+    payload.product_name = (basicInfo.value.product_name || '').trim()
+    payload.repositories = selectedRepoIds.value.map((id) => ({
+      repository_id: id,
+      branch_name: (standaloneBranches.value[id] || '').trim(),
+    }))
+  } else if (selectedProjectId.value) {
+    payload.project_id = selectedProjectId.value
+    payload.product_ids = selectedProductId.value ? [selectedProductId.value] : []
+    const selectedRepos = repos.value.filter((item) =>
+      selectedRepoIds.value.includes(item.repository_id)
+    )
+    payload.repositories = selectedRepos.map((item) => ({
+      repository_id: item.repository_id,
+      branch_name: item.ref_name,
+    }))
+  }
+  return payload
+}
+
+const doCreate = async (payload: Record<string, unknown>) => {
+  const res = await api.post('/workspaces', payload)
+  const jobId = String(res.data?.job_id || '').trim()
+  if (!jobId) {
+    throw new Error(t('provisioning.invalid_job_id'))
+  }
+  resetState()
+  emit('created', jobId)
+}
+
+const fetchCreateConflicts = async (
+  name: string,
+  projectPath: string,
+): Promise<WorkspaceConflictDetails | null> => {
+  try {
+    const res = await api.post('/workspaces/preflight', {
+      name,
+      project_path: projectPath || undefined,
+    })
+    const data: any = res.data || {}
+    const nameConflicts: WorkspaceConflictBrief[] = Array.isArray(data.name_conflict_workspaces)
+      ? data.name_conflict_workspaces
+      : []
+    const pathConflicts: WorkspaceConflictBrief[] = Array.isArray(data.path_conflict_workspaces)
+      ? data.path_conflict_workspaces
+      : []
+    if (nameConflicts.length === 0 && pathConflicts.length === 0) return null
+    return { nameConflicts, pathConflicts }
+  } catch (error) {
+    // 预检失败不阻塞创建（保持原有行为），仅在控制台记录
+    console.warn('workspace create preflight failed', error)
+    return null
+  }
+}
+
+const getCreateConflicts = async (
+  name: string,
+  projectPath: string,
+): Promise<WorkspaceConflictDetails | null> => {
+  const key = conflictKeyOf(name, projectPath)
+  if (preflightCache.has(key)) {
+    return preflightCache.get(key) ?? null
+  }
+  const result = await fetchCreateConflicts(name, projectPath)
+  preflightCache.set(key, result)
+  return result
 }
 
 const submit = async () => {
@@ -233,42 +388,63 @@ const submit = async () => {
   }
   creating.value = true
   try {
-    const payload: Record<string, unknown> = {
-      name: basicInfo.value.name.trim(),
-      description: basicInfo.value.description.trim() || undefined,
-      project_path: basicInfo.value.project_path.trim(),
+    const payload = buildCreatePayload()
+    const name = String(payload.name || '')
+    const path = String(payload.project_path || '')
+    // 基本信息步“下一步”已预检过相同名称/路径时直接复用结果；
+    // 用户已确认过该组合的冲突时不再二次弹窗，直接创建
+    const conflicts = await getCreateConflicts(name, path)
+    if (conflicts && !confirmedConflictKeys.has(conflictKeyOf(name, path))) {
+      // 重名 / 目录被引用：弹窗让用户决策是否继续创建
+      conflictDetails.value = conflicts
+      conflictAction.value = 'create'
+      pendingConflictKey = conflictKeyOf(name, path)
+      pendingCreatePayload = payload
+      showConflictConfirm.value = true
+      return
     }
-    if (standalone.value) {
-      // 独立模式：手动填写项目/产品名称（不与项目管理/产品管理数据绑定），逐仓指定分支
-      payload.project_name = (basicInfo.value.project_name || '').trim()
-      payload.product_name = (basicInfo.value.product_name || '').trim()
-      payload.repositories = selectedRepoIds.value.map((id) => ({
-        repository_id: id,
-        branch_name: (standaloneBranches.value[id] || '').trim(),
-      }))
-    } else if (selectedProjectId.value) {
-      payload.project_id = selectedProjectId.value
-      payload.product_ids = selectedProductId.value ? [selectedProductId.value] : []
-      const selectedRepos = repos.value.filter((item) =>
-        selectedRepoIds.value.includes(item.repository_id)
-      )
-      payload.repositories = selectedRepos.map((item) => ({
-        repository_id: item.repository_id,
-        branch_name: item.ref_name,
-      }))
-    }
-    const res = await api.post('/workspaces', payload)
-    const jobId = String(res.data?.job_id || '').trim()
-    if (!jobId) {
-      throw new Error(t('provisioning.invalid_job_id'))
-    }
-    resetState()
-    emit('created', jobId)
+    await doCreate(payload)
   } catch (error) {
     ElMessage.error(formatApiError(error, t('workspaces.errors.create_failed'), t))
   } finally {
     creating.value = false
   }
+}
+
+const onConflictConfirm = async () => {
+  const action = conflictAction.value
+  const payload = pendingCreatePayload
+  showConflictConfirm.value = false
+  pendingCreatePayload = null
+  conflictDetails.value = null
+  if (pendingConflictKey) {
+    confirmedConflictKeys.add(pendingConflictKey)
+    pendingConflictKey = ''
+  }
+  if (action === 'next') {
+    // 基本信息步确认冲突后继续进入下一步（预检结果已缓存，提交时不再重复弹窗）
+    try {
+      await enterStepAfterBasic()
+    } catch (error) {
+      ElMessage.error(formatApiError(error, t('management.common.operation_failed'), t))
+    }
+    return
+  }
+  if (!payload) return
+  creating.value = true
+  try {
+    await doCreate(payload)
+  } catch (error) {
+    ElMessage.error(formatApiError(error, t('workspaces.errors.create_failed'), t))
+  } finally {
+    creating.value = false
+  }
+}
+
+const onConflictCancel = () => {
+  showConflictConfirm.value = false
+  pendingCreatePayload = null
+  conflictDetails.value = null
 }
 
 watch(
@@ -318,6 +494,7 @@ watch(
           v-if="currentKey === 'basic'"
           v-model="basicInfo"
           :standalone="standalone"
+          :workspace-base="workspaceBase"
         />
         <ProjectSelectStep
           v-else-if="currentKey === 'project'"
@@ -358,7 +535,7 @@ watch(
           {{ $t('common.cancel') }}
         </button>
 
-        <button v-if="!isLastStep" type="button" class="btn-primary" :disabled="!canNext" @click="goNext">
+        <button v-if="!isLastStep" type="button" class="btn-primary" :disabled="!canNext || preflighting" @click="goNext">
           {{ $t('workspace_create.next') }}
         </button>
         <button v-else type="button" class="btn-primary" :disabled="creating || !reposValid" @click="submit">
@@ -367,6 +544,41 @@ watch(
         </button>
       </footer>
     </section>
+
+    <!-- 重名 / 目录被引用冲突确认：由用户决策是否继续创建。
+         teleport 关闭：作为创建弹窗 overlay 的子元素渲染，天然叠在弹窗内容之上，
+         不受外部层叠上下文（祖先 z-index/transform 等）影响。 -->
+    <ConfirmActionModal
+      :show="showConflictConfirm"
+      :title="t('workspace_create.conflict_title')"
+      :message="t('workspace_create.conflict_message')"
+      :cancel-text="t('workspace_create.conflict_cancel')"
+      :confirm-text="conflictAction === 'next'
+        ? t('workspace_create.conflict_continue_next')
+        : t('workspace_create.conflict_continue')"
+      tone="primary"
+      :teleport="false"
+      :z-index="400"
+      @cancel="onConflictCancel"
+      @confirm="onConflictConfirm"
+    >
+      <template #content>
+        <ul class="wf-conflict-list">
+          <li
+            v-for="item in conflictDetails?.nameConflicts || []"
+            :key="`name-${item.id}`"
+          >
+            {{ t('workspace_create.conflict_name_item', { name: item.name }) }}
+          </li>
+          <li
+            v-for="item in conflictDetails?.pathConflicts || []"
+            :key="`path-${item.id}`"
+          >
+            {{ t('workspace_create.conflict_path_item', { path: item.project_path, name: item.name }) }}
+          </li>
+        </ul>
+      </template>
+    </ConfirmActionModal>
   </div>
 </template>
 
@@ -460,5 +672,14 @@ watch(
 
 .wf-body {
   min-height: 220px;
+}
+
+.wf-conflict-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  color: #475569;
+  line-height: 1.8;
+  word-break: break-all;
 }
 </style>
