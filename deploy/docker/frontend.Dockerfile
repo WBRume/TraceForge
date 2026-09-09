@@ -1,7 +1,7 @@
 # TraceForge 前端（Web 模式）镜像：Vite 构建 + Nginx 静态托管
 # build context 必须是仓库根目录：
 #   docker build -f deploy/docker/frontend.Dockerfile -t traceforge-web .
-FROM node:22-alpine AS build
+FROM node:22 AS build
 
 ENV ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
     ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ \
