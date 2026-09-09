@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import OAuthProviderButtons from '@/components/auth/OAuthProviderButtons.vue'
 
+const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
 const authStore = useAuthStore()
@@ -34,6 +35,19 @@ const toggleMode = () => {
   errorMessage.value = ''
 }
 
+const redirectAfterAuth = () => {
+  // 支持登录后回到原页面（如 /join/:token 链接邀请流程）
+  const redirect = sanitizeInternalPath(typeof route.query.redirect === 'string' ? route.query.redirect : null)
+  router.push(redirect ?? '/workspaces')
+}
+
+const sanitizeInternalPath = (value: string | null) => {
+  if (!value) return null
+  if (!value.startsWith('/')) return null
+  if (value.startsWith('//')) return null
+  return value
+}
+
 const handleSubmit = async () => {
   loading.value = true
   errorMessage.value = ''
@@ -49,7 +63,7 @@ const handleSubmit = async () => {
       authStore.setToken(res.data.access_token)
       await authStore.fetchCurrentUser()
       rememberLoginEmail()
-      router.push('/workspaces')
+      redirectAfterAuth()
       
     } else {
       // Register
@@ -66,7 +80,7 @@ const handleSubmit = async () => {
       authStore.setToken(res.data.access_token)
       await authStore.fetchCurrentUser()
       rememberLoginEmail()
-      router.push('/workspaces')
+      redirectAfterAuth()
     }
   } catch (error: unknown) {
     errorMessage.value = formatApiError(error, t('auth.errors.auth_failed'), t)

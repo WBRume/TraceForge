@@ -132,3 +132,4 @@ class WorkspaceMember(Base):
 # that create_all / autogenerate always see the complete schema.
 from app.domains.management.models import management as _management_models  # noqa: E402,F401
 from app.domains.workspace.models import workspace_repository as _workspace_repo_models  # noqa: E402,F401
+from app.domains.workspace.models import invite_link as _workspace_invite_link_models  # noqa: E402,F401

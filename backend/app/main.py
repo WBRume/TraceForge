@@ -34,6 +34,7 @@ from app.domains.ai.routers import agent
 from app.domains.auth.routers import auth, oauth
 from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
 from app.domains.workspace.routers import workspace
+from app.domains.workspace.routers import invite_join
 from app.domains.task.routers import task
 from app.domains.dashboard.routers import dashboard
 from app.domains.asset.routers import asset
@@ -150,6 +151,7 @@ async def _on_shutdown() -> None:
 app.include_router(auth.router, prefix="/api")
 app.include_router(oauth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
+app.include_router(invite_join.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(task_closeout.router, prefix="/api")
 app.include_router(case_center_router.router, prefix="/api")

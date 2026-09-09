@@ -4,9 +4,12 @@ Workspace service.
 
 import json
 import os
-from typing import Dict, List, Optional, Set, Tuple
+import re
+import secrets
+import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.domains.auth.models.user import (
@@ -302,6 +305,120 @@ def _normalize_optional(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def slugify_workspace_dir_name(name: str) -> str:
+    """将工作区名称转换为文件系统安全的目录名；无法转换时回退为 workspace。"""
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "-", str(name or "")).strip()
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-. ")
+    return cleaned or "workspace"
+
+
+def _is_path_within(path: str, base: str) -> bool:
+    """判断 path 是否位于 base 之内（允许等于 base）。
+
+    使用 normcase 兼容 Windows 大小写不敏感的路径比较；
+    跨盘符等无法求公共前缀的情形一律视为不在 base 内。
+    """
+    try:
+        path_abs = os.path.normcase(os.path.abspath(os.path.expanduser(str(path or ""))))
+        base_abs = os.path.normcase(os.path.abspath(os.path.expanduser(str(base or ""))))
+        if not base_abs:
+            return True
+        return os.path.commonpath([path_abs, base_abs]) == base_abs
+    except ValueError:
+        return False
+
+
+def apply_workspace_root_dir_policy(
+    db: Session,
+    name: str,
+    project_path: Optional[str],
+) -> Optional[str]:
+    """应用“工作区根目录”系统配置项。
+
+    - 配置为空：保持原有逻辑，直接返回调用方传入的路径；
+    - 配置非空：路径默认回退为 根目录/workspace/工作区名称，
+      且传入路径仅允许位于 根目录/workspace 之内。
+    """
+    from app.domains.system_config.services import system_config_service
+
+    root_dir = system_config_service.get_config_str(
+        db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR
+    )
+    if not root_dir:
+        return project_path
+    workspace_base = os.path.join(root_dir, system_config_service.WORKSPACE_BASE_SEGMENT)
+    if not project_path:
+        return os.path.join(workspace_base, slugify_workspace_dir_name(name))
+    if not _is_path_within(project_path, workspace_base):
+        raise git_worktree_service.GitWorktreeError(
+            f"project_path must be located under the workspace base directory: {workspace_base}",
+            status_code=400,
+        )
+    return project_path
+
+
+def preflight_workspace_conflicts(
+    db: Session,
+    name: Optional[str] = None,
+    project_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """创建工作区前的冲突预检（仅供参考，不阻断创建）。
+
+    - 工作区重名：已存在同名工作区；
+    - 目录被引用：目标目录与已有工作区目录重叠（相同或互为父子目录）。
+    """
+    normalized_name = str(name or "").strip()
+    normalized_path = _normalize_optional(project_path)
+
+    name_rows: List[Workspace] = []
+    if normalized_name:
+        # 全局校验（不限当前用户）：防止用户 B 创建与用户 A 已建工作区同名的场景；
+        # 名称按大小写不敏感比较，保证 MySQL（ci 排序规则）与 SQLite 行为一致。
+        name_rows = (
+            db.query(Workspace)
+            .filter(func.lower(Workspace.name) == normalized_name.lower())
+            .all()
+        )
+
+    path_rows: List[Workspace] = []
+    if normalized_path:
+        candidates = (
+            db.query(Workspace)
+            .options(joinedload(Workspace.owner))
+            .filter(Workspace.project_path.isnot(None))
+            .all()
+        )
+        for row in candidates:
+            other = str(row.project_path or "").strip()
+            if not other:
+                continue
+            if _is_path_within(normalized_path, other) or _is_path_within(other, normalized_path):
+                path_rows.append(row)
+
+    def _brief(row: Workspace, with_path: bool = False) -> Dict[str, str]:
+        owner = row.owner
+        owner_name = ""
+        if owner is not None:
+            owner_name = str(
+                getattr(owner, "display_name", "") or getattr(owner, "email", "") or ""
+            )
+        info: Dict[str, str] = {
+            "id": row.id,
+            "name": row.name,
+            "owner_name": owner_name,
+        }
+        if with_path:
+            info["project_path"] = str(row.project_path or "")
+        return info
+
+    return {
+        "name_conflict": bool(name_rows),
+        "name_conflict_workspaces": [_brief(row) for row in name_rows],
+        "path_conflict": bool(path_rows),
+        "path_conflict_workspaces": [_brief(row, with_path=True) for row in path_rows],
+    }
+
+
 def create_workspace(
     db: Session,
     user: User,
@@ -329,6 +446,11 @@ def create_workspace(
     normalized_git_repo_url = _normalize_optional(git_repo_url)
     normalized_project_name = _normalize_optional(project_name)
     normalized_product_name = _normalize_optional(product_name)
+
+    # 工作区根目录配置项：为空保持原有逻辑；非空时填充默认路径并限制在 根目录/workspace 之内
+    normalized_project_path = apply_workspace_root_dir_policy(
+        db, name, normalized_project_path
+    )
 
     def _slugify_unique(slug: str, seen: set) -> str:
         candidate = slug
@@ -813,3 +935,190 @@ def delete_workspace(db: Session, workspace_id: str) -> bool:
                 ) from rollback_exc
         raise RuntimeError("Workspace deletion failed after archive migration") from exc
     return True
+
+
+# ---------------------------------------------------------------------------
+# 链接邀请（Invite Links）
+# ---------------------------------------------------------------------------
+
+INVITE_LINK_TOKEN_BYTES = 24
+DEFAULT_INVITE_VALID_DAYS = 7
+
+INVITE_STATUS_ACTIVE = "ACTIVE"
+INVITE_STATUS_EXPIRED = "EXPIRED"
+INVITE_STATUS_REVOKED = "REVOKED"
+INVITE_STATUS_EXHAUSTED = "EXHAUSTED"
+
+
+def _utcnow() -> datetime.datetime:
+    """DateTime 列存 naive UTC（与 server_default=now() 的 UTC 语义保持一致）。"""
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
+def create_invite_link(
+    db: Session,
+    workspace_id: str,
+    creator_user_id: str,
+    role: str,
+    permissions_flags: Optional[Dict[str, bool]] = None,
+    is_expert: bool = False,
+    valid_days: Optional[int] = None,
+    max_uses: Optional[int] = None,
+) -> "WorkspaceInviteLink":
+    from app.domains.workspace.models.invite_link import TOKEN_LENGTH, WorkspaceInviteLink
+
+    normalized_role = _normalize_role(role)
+    if normalized_role == WorkspaceRole.OWNER:
+        raise ValueError("Invite links cannot grant the owner role")
+    if valid_days is not None and valid_days <= 0:
+        raise ValueError("valid_days must be positive")
+    if max_uses is not None and max_uses <= 0:
+        raise ValueError("max_uses must be positive")
+
+    if permissions_flags is None:
+        permissions = default_permissions_for_role(normalized_role)
+    else:
+        permissions = _flags_to_permission_set(permissions_flags, normalized_role)
+
+    expires_at = None
+    if valid_days is not None:
+        expires_at = _utcnow() + datetime.timedelta(days=valid_days)
+
+    link = WorkspaceInviteLink(
+        workspace_id=workspace_id,
+        token=secrets.token_hex(TOKEN_LENGTH // 2),
+        role=normalized_role,
+        permissions_json=_permission_set_to_json(permissions),
+        is_expert=bool(is_expert),
+        max_uses=max_uses,
+        expires_at=expires_at,
+        created_by=creator_user_id,
+    )
+    db.add(link)
+    db.commit()
+    db.refresh(link)
+    return link
+
+
+def get_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    return (
+        db.query(WorkspaceInviteLink)
+        .filter(
+            WorkspaceInviteLink.id == link_id,
+            WorkspaceInviteLink.workspace_id == workspace_id,
+        )
+        .first()
+    )
+
+
+def list_invite_links(db: Session, workspace_id: str) -> List["WorkspaceInviteLink"]:
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    return (
+        db.query(WorkspaceInviteLink)
+        .filter(WorkspaceInviteLink.workspace_id == workspace_id)
+        .order_by(WorkspaceInviteLink.created_at.desc(), WorkspaceInviteLink.id.desc())
+        .all()
+    )
+
+
+def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
+    link = get_invite_link(db, workspace_id, link_id)
+    if not link:
+        return None
+    if not link.revoked_at:
+        link.revoked_at = _utcnow()
+        db.commit()
+        db.refresh(link)
+    return link
+
+
+def invite_link_status(link: "WorkspaceInviteLink", now: Optional[datetime.datetime] = None) -> str:
+    current = now or _utcnow()
+    if link.revoked_at:
+        return INVITE_STATUS_REVOKED
+    if link.expires_at is not None and link.expires_at <= current:
+        return INVITE_STATUS_EXPIRED
+    if link.max_uses is not None and link.used_count >= link.max_uses:
+        return INVITE_STATUS_EXHAUSTED
+    return INVITE_STATUS_ACTIVE
+
+
+def serialize_invite_link(link: "WorkspaceInviteLink") -> Dict[str, object]:
+    status = invite_link_status(link)
+    remaining_uses = None
+    if link.max_uses is not None:
+        remaining_uses = max(0, link.max_uses - link.used_count)
+    permissions = _permission_set_from_json(link.permissions_json, link.role)
+    creator_name = link.creator.display_name if link.creator else ""
+    return {
+        "id": link.id,
+        "workspace_id": link.workspace_id,
+        "token": link.token,
+        "role": link.role.value if hasattr(link.role, "value") else str(link.role),
+        "permissions": permissions_to_flags(permissions),
+        "is_expert": bool(link.is_expert),
+        "max_uses": link.max_uses,
+        "used_count": int(link.used_count or 0),
+        "remaining_uses": remaining_uses,
+        "expires_at": link.expires_at,
+        "created_at": link.created_at,
+        "status": status,
+        "created_by_name": creator_name,
+    }
+
+
+def get_invite_for_preview(db: Session, token: str) -> Optional[Tuple["WorkspaceInviteLink", Workspace, Dict[str, object]]]:
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    link = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.token == token).first()
+    if not link:
+        return None
+    workspace = db.query(Workspace).filter(Workspace.id == link.workspace_id).first()
+    if not workspace:
+        return None
+    return link, workspace, serialize_invite_link(link)
+
+
+def accept_invite_link(
+    db: Session,
+    token: str,
+    user: User,
+) -> Tuple[WorkspaceMember, "WorkspaceInviteLink", bool]:
+    """接受邀请：返回 (member, link, already_member)。链接无效/失效时抛 ValueError。"""
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    link = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.token == token).first()
+    if not link:
+        raise ValueError("Invite link not found")
+
+    existing = (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.workspace_id == link.workspace_id,
+            WorkspaceMember.user_id == user.id,
+        )
+        .first()
+    )
+    if existing:
+        # 已是成员：无论链接当前是否有效，直接幂等放行
+        return existing, link, True
+
+    if invite_link_status(link) != INVITE_STATUS_ACTIVE:
+        raise ValueError(f"Invite link is {invite_link_status(link).lower()}")
+
+    member = WorkspaceMember(
+        workspace_id=link.workspace_id,
+        user_id=user.id,
+        role=link.role,
+        permissions_json=link.permissions_json,
+        is_expert=bool(link.is_expert),
+    )
+    db.add(member)
+    link.used_count = int(link.used_count or 0) + 1
+    db.commit()
+    db.refresh(member)
+    db.refresh(link)
+    return member, link, False
