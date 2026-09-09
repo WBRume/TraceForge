@@ -19,6 +19,7 @@ from app.agents.contract import (
     AgentRunRequest,
     AgentRunResult,
     AgentStopResult,
+    EXECUTION_KIND_LOCAL_PROCESS,
     TokenUsage,
 )
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
@@ -228,6 +229,19 @@ class ClaudeCodeAdapter(AgentBackend):
         self.last_termination = termination
         await self._await_legacy_task_exit()
         return agent_stop_result_from_termination(termination)
+
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+        # 本地执行类别不会被远程 reaper 调用；若被调用必须返回结构化
+        # capability 错误而不是 ACK（doc 修复方案 §9.3）。
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+            stop_acknowledged=False,
+            failure_code="CAPABILITY_UNSUPPORTED",
+            error_message=(
+                "claude-code is a local-process backend; persisted remote "
+                "session stop does not apply"
+            ),
+        )
 
     async def _await_legacy_task_exit(self) -> None:
         task = self._legacy_run_task

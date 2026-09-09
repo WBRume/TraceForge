@@ -46,6 +46,9 @@ class _OutcomeBackend(AgentBackend):
     async def cancel(self, run_id=None) -> None:
         return None
 
+    async def cancel_persisted_session(self, session_id: str) -> None:
+        return None
+
     def is_running(self, run_id=None) -> bool:
         return False
 

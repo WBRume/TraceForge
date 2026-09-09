@@ -552,6 +552,18 @@ class AgentBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def cancel_persisted_session(self, session_id: str) -> "AgentStopResult":
+        """按持久化 provider session id 停止远程会话（doc 修复方案 §9.3）。
+
+        供 reaper 等无内存 runtime 的调用方使用：目标必须是显式传入的
+        durable session id，禁止用 attempt ``run_id`` 或 adapter 内存的
+        ``self._session_id`` 混淆。只有服务端明确成功响应才算
+        ``stop_acknowledged=True``；本地执行类别（claude-code）不应被远程
+        reaper 调用，若被调用必须返回结构化 capability 错误而不是 ACK。
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def is_running(self, run_id: str | None = None) -> bool:
         """当前是否有未结束的回合。"""
         raise NotImplementedError

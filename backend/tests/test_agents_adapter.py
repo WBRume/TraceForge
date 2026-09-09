@@ -656,5 +656,151 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(dsh.capabilities.preferred_mode, "server")
 
 
+class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
+    """durable remote stop 契约（doc 修复方案 §9.3）。
+
+    reaper 每次新建 adapter（内存 session 为空），持久化 session id 必须
+    通过显式参数到达 provider stop API；测试 fake 的方法签名与正式
+    contract 一致，不用宽松 **kwargs 掩盖签名错误。
+    """
+
+    async def test_dsh_persisted_cancel_uses_explicit_session(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter()
+        rpc = AsyncMock()
+        with patch.object(adapter, "_rpc", rpc):
+            result = await adapter.cancel_persisted_session("persisted-session-1")
+
+        self.assertTrue(result.stop_acknowledged)
+        rpc.assert_awaited_once_with(
+            "session.cancel", {"sessionId": "persisted-session-1"}
+        )
+
+    async def test_dsh_persisted_cancel_requires_explicit_session_id(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter()
+        rpc = AsyncMock()
+        with patch.object(adapter, "_rpc", rpc):
+            result = await adapter.cancel_persisted_session("")
+
+        self.assertFalse(result.stop_acknowledged)
+        self.assertEqual(result.failure_code, "REMOTE_STOP_LOCATOR_MISSING")
+        rpc.assert_not_awaited()
+
+    async def test_dsh_persisted_cancel_rpc_failure_is_structured_nack(self):
+        from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+        adapter = DshServerAdapter()
+        rpc = AsyncMock(side_effect=RuntimeError("rpc down"))
+        with patch.object(adapter, "_rpc", rpc):
+            result = await adapter.cancel_persisted_session("persisted-session-1")
+
+        self.assertFalse(result.stop_acknowledged)
+        self.assertEqual(result.failure_code, "DSH_CANCEL_RPC_FAILED")
+
+    async def test_opencode_persisted_cancel_uses_explicit_session(self):
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+        from app.agents.contract import (
+            EXECUTION_KIND_REMOTE_SESSION,
+            AgentStopResult,
+        )
+
+        adapter = OpenCodeAdapter()
+        abort = AsyncMock(
+            return_value=AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=True,
+            )
+        )
+        with patch.object(adapter, "_abort_session", abort):
+            result = await adapter.cancel_persisted_session("persisted-session-1")
+
+        abort.assert_awaited_once_with("persisted-session-1")
+        self.assertTrue(result.stop_acknowledged)
+
+    async def test_opencode_persisted_cancel_requires_explicit_session_id(self):
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+        adapter = OpenCodeAdapter()
+        abort = AsyncMock()
+        with patch.object(adapter, "_abort_session", abort):
+            result = await adapter.cancel_persisted_session("")
+
+        self.assertFalse(result.stop_acknowledged)
+        self.assertEqual(result.failure_code, "REMOTE_STOP_LOCATOR_MISSING")
+        abort.assert_not_awaited()
+
+    async def test_claude_code_persisted_cancel_is_capability_error(self):
+        adapter = ClaudeCodeAdapter()
+
+        result = await adapter.cancel_persisted_session("persisted-session-1")
+
+        # 本地执行类别不应被远程 reaper 调用；调用时必须返回结构化
+        # capability 错误而不是 ACK。
+        self.assertFalse(result.stop_acknowledged)
+        self.assertEqual(result.failure_code, "CAPABILITY_UNSUPPORTED")
+
+    async def test_mock_persisted_cancel_records_explicit_session(self):
+        adapter = MockAdapter()
+
+        result = await adapter.cancel_persisted_session("persisted-session-1")
+
+        self.assertTrue(result.stop_acknowledged)
+        self.assertEqual(getattr(adapter, "_last_persisted_cancel", None), "persisted-session-1")
+
+    async def test_reaper_stop_closes_backend_on_ack_nack_and_error(self):
+        """_stop_remote_session 的 ACK/NACK/异常三条路径都必须 close adapter。"""
+        from app.agents.contract import (
+            EXECUTION_KIND_REMOTE_SESSION,
+            AgentStopResult,
+        )
+        from app.domains.ai.services import ai_job_service
+
+        class _CloseTrackingBackend:
+            def __init__(self, *, acknowledged: bool, raise_error: bool = False):
+                self.close_calls = 0
+                self._acknowledged = acknowledged
+                self._raise_error = raise_error
+
+            async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+                if self._raise_error:
+                    raise RuntimeError("remote stop failed")
+                return AgentStopResult(
+                    execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                    stop_acknowledged=self._acknowledged,
+                    failure_code=None if self._acknowledged else "REMOTE_STOP_UNCONFIRMED",
+                )
+
+            async def close(self) -> None:
+                self.close_calls += 1
+
+        row = {
+            "reason": "REAP",
+            "agent_backend": "dsh",
+            "session_id": "persisted-session-1",
+        }
+        backend = _CloseTrackingBackend(acknowledged=True)
+        with patch(
+            "app.agents.selection.create_agent_backend_by_name",
+            lambda name: backend,
+        ):
+            ack = await ai_job_service._stop_remote_session(dict(row))
+            self.assertTrue(ack.stop_acknowledged)
+            self.assertEqual(backend.close_calls, 1)
+
+            backend = _CloseTrackingBackend(acknowledged=False)
+            nack = await ai_job_service._stop_remote_session(dict(row))
+            self.assertFalse(nack.stop_acknowledged)
+            self.assertEqual(backend.close_calls, 1)
+
+            backend = _CloseTrackingBackend(acknowledged=False, raise_error=True)
+            error = await ai_job_service._stop_remote_session(dict(row))
+            self.assertFalse(error.stop_acknowledged)
+            self.assertEqual(error.failure_code, "REMOTE_CANCEL_FAILED")
+            self.assertEqual(backend.close_calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

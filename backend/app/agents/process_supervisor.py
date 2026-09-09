@@ -12,15 +12,17 @@ import asyncio
 import ctypes
 import ctypes.wintypes
 import enum
+import functools
 import os
 import signal
 import subprocess
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -39,6 +41,18 @@ from app.agents.contract import (
 logger = get_logger(__name__, category="agent_process")
 
 RUN_TOKEN_ENV_VAR = "TRACEFORGE_RUN_TOKEN"
+
+# P0-3：per-spawn 谱系 token 环境变量。每次 spawn 生成 uuid4 注入子进程
+# env（后代继承），把“脱组后代”精确归属到单个 managed 进程；attempt 级
+# run token 仍然同时注入，供 reaper 的 token discovery 覆盖全部后代。
+SPAWN_TOKEN_ENV_VAR = "TRACEFORGE_SPAWN_TOKEN"
+
+# P0-1：同一进程两次身份探测的 create time 匹配容差。/proc starttime 对
+# 同一进程是稳定值；PID 复用后的新进程 create time 必然不同。
+_IDENTITY_MATCH_TOLERANCE = 0.5
+
+# P0-3：全树完成检查无法收敛时的结构化 failure code。
+DETACHED_DESCENDANTS_UNRESOLVED = "DETACHED_DESCENDANTS_UNRESOLVED"
 
 # 命令标记：用于 run-token 发现结果的补充身份校验（doc 7.3.4）。
 _TOKEN_PROCESS_COMMAND_MARKERS = ("claude", "node", "traceforge")
@@ -240,6 +254,9 @@ class ProcessTreeSnapshot:
 
     state: ProcessProbeState = ProcessProbeState.UNKNOWN
     live_descendant_pids: Tuple[int, ...] = ()
+    # 身份无法核实（UNKNOWN）的后代：apply_snapshot 必须保留这些 PID，
+    # 绝不能因同一样本中的 LIVE 集合而被遗忘（doc 审计 P0-3A）。
+    unknown_descendant_pids: Tuple[int, ...] = ()
     root_return_code: Optional[int] = None
     root_identity_matches: Optional[bool] = None
     remaining_pids: Tuple[int, ...] = ()
@@ -388,6 +405,9 @@ def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTree
     root_pid = int(managed.pid)
     live: set = set()
     unknown: set = set()
+    # containment（Job Object / POSIX 进程组）探测不确定：即使没有可填写
+    # 的 UNKNOWN PID 也必须保持 UNKNOWN 状态（doc 审计 P0-3A）。
+    containment_unknown = False
     failure_code: Optional[str] = None
     error_message: Optional[str] = None
     root_identity_matches: Optional[bool] = None
@@ -411,6 +431,7 @@ def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTree
     if job_state == ProcessProbeState.LIVE:
         live.update(job_pids)
     elif job_state == ProcessProbeState.UNKNOWN:
+        containment_unknown = True
         failure_code = failure_code or "JOB_OBJECT_QUERY_FAILED"
         error_message = error_message or "Windows Job Object query failed; containment unknown"
 
@@ -419,6 +440,7 @@ def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTree
     if group_state == ProcessProbeState.LIVE:
         live.update(group_pids)
     elif group_state == ProcessProbeState.UNKNOWN:
+        containment_unknown = True
         failure_code = failure_code or "PROCESS_GROUP_UNKNOWN"
         error_message = error_message or "POSIX process group probe failed; containment unknown"
 
@@ -462,13 +484,16 @@ def inspect_process_tree_snapshot(managed: "ManagedAgentProcess") -> ProcessTree
 
     if live:
         state = ProcessProbeState.LIVE
-    elif unknown:
+    elif unknown or containment_unknown:
+        # 任一存活 -> LIVE；没有存活但存在 UNKNOWN（探测异常或 containment
+        # 无法核实）-> UNKNOWN；只有全部来源明确死亡才允许 CONFIRMED_DEAD。
         state = ProcessProbeState.UNKNOWN
     else:
         state = ProcessProbeState.CONFIRMED_DEAD
     return ProcessTreeSnapshot(
         state=state,
         live_descendant_pids=tuple(sorted(p for p in live if p != root_pid)),
+        unknown_descendant_pids=tuple(sorted(unknown)),
         root_return_code=root_return_code,
         root_identity_matches=root_identity_matches,
         remaining_pids=tuple(sorted(live)),
@@ -486,8 +511,733 @@ async def run_process_inspection(
     The monitor awaits the result, so a single managed process can never have
     more than one outstanding inspection and samples do not queue up.
     """
+    return await run_process_probe(fn, managed)
+
+
+PROCESS_GROUP_UNKNOWN = "PROCESS_GROUP_UNKNOWN"
+TOKEN_DISCOVERY_UNKNOWN = "TOKEN_DISCOVERY_UNKNOWN"
+
+
+class InspectionQueueSaturated(RuntimeError):
+    """The bounded inspection queue is full; callers must degrade to UNKNOWN.
+
+    有界 gate（doc 修复方案 §7.4）：探测请求饱和时立刻拒绝并把调用方降级为
+    UNKNOWN 稍后重试，而不是在进程表压力下继续无界排队拖垮 inspection
+    worker。
+    """
+
+
+# 一次探测 = 一个工作项；提交前必须取得许可，探测完成后在 executor 内释放。
+# 队列深度因此有硬上界，饱和提交直接失败（绝不静默排队）。
+_INSPECTION_QUEUE_MAX_PENDING = 64
+_INSPECTION_QUEUE_PERMITS = threading.BoundedSemaphore(_INSPECTION_QUEUE_MAX_PENDING)
+
+
+def _submit_process_probe(fn: Callable[..., Any], *args: Any):
+    """Acquire one inspection permit and submit the work item (sync, non-blocking).
+
+    许可所有权（doc 审计 P1-2）：成功 ``submit`` 之后，许可的唯一释放者是
+    原始 ``concurrent.futures.Future`` 的完成回调——排队期取消、运行期取消、
+    函数异常、正常完成都恰好释放一次。asyncio 层的取消绝不能提前释放许可
+    （底层线程可能仍在执行）；``submit`` 抛错时工作项从未入队，由提交方
+    释放。
+    """
+    if not _INSPECTION_QUEUE_PERMITS.acquire(blocking=False):
+        raise InspectionQueueSaturated(
+            "process inspection queue is saturated; retry later"
+        )
+    executor = _inspection_executor()
+    try:
+        raw_future = executor.submit(fn, *args)
+    except Exception:
+        # The work item was never queued (executor shutdown race): release
+        # here, otherwise the permit would leak and shrink the queue forever.
+        _INSPECTION_QUEUE_PERMITS.release()
+        raise
+    raw_future.add_done_callback(
+        lambda _future: _INSPECTION_QUEUE_PERMITS.release()
+    )
+    return raw_future
+
+
+async def run_process_probe(fn: Callable[..., Any], *args: Any) -> Any:
+    """Run one synchronous process probe in the bounded inspection executor.
+
+    所有 psutil / ``/proc`` / cmdline / environ / 进程组成员访问都必须经本
+    入口 offload；事件循环上只做信号发送与三态结果聚合（doc 修复方案
+    §7.4）。队列饱和时抛出 :class:`InspectionQueueSaturated`，由调用方转成
+    UNKNOWN 快照稍后重试。
+
+    注意：本入口返回纯快照（不持有系统资源）。返回句柄（pidfd）的探测
+    必须走 :class:`ProcessSupervisor` 的身份探测入口，其取消路径负责回收
+    迟到结果并释放资源（doc 审计 P1-2）。
+    """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_inspection_executor(), fn, managed)
+    return await asyncio.futures.wrap_future(
+        _submit_process_probe(fn, *args), loop=loop
+    )
+
+
+# 迟到身份探测结果的回收任务强引用集（doc 审计 P1-2）：取消的等待方离开
+# 后，工作线程仍会完成并交回打开的 pidfd；必须有人接收结果并恰好关闭
+# 一次，否则 fd 泄漏会耗尽 inspection worker 的文件描述符。
+_LATE_IDENTITY_REAPER_TASKS: set = set()
+
+
+async def _reap_late_identity_result(wrapped: "asyncio.Future") -> None:
+    """Await a late identity-probe result and close its pidfd exactly once."""
+    try:
+        identity = await wrapped
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        logger.warning("Late identity probe result failed: {}", exc)
+        return
+    _close_pidfd(getattr(identity, "pidfd", None))
+
+
+def _schedule_late_identity_reaper(wrapped: "asyncio.Future") -> None:
+    """Keep a strong reference to the recovery task; never GC mid-recovery."""
+    try:
+        task = asyncio.create_task(_reap_late_identity_result(wrapped))
+    except RuntimeError:  # loop closing; nothing more can be done
+        return
+    _LATE_IDENTITY_REAPER_TASKS.add(task)
+    task.add_done_callback(_LATE_IDENTITY_REAPER_TASKS.discard)
+
+
+@dataclass(frozen=True)
+class PersistedProcessSnapshot:
+    """One tri-state probe of a persisted root / POSIX process group.
+
+    聚合规则（doc 修复方案 §5.4）：任一来源 LIVE -> LIVE；没有 LIVE 但任一
+    来源 UNKNOWN -> UNKNOWN；所有必需来源 CONFIRMED_DEAD -> CONFIRMED_DEAD。
+    权限/系统错误只能产生 UNKNOWN，绝不允许被折叠成“组为空”。
+    """
+
+    state: ProcessProbeState = ProcessProbeState.UNKNOWN
+    live_pids: Tuple[int, ...] = ()
+    root_identity_matches: Optional[bool] = None
+    # 当前占用该 PID 的进程 create time（PID_REUSED 时是新占用者的身份
+    # 边界，供复用组逐成员验证使用；doc 审计 P0-1）。
+    pid_create_time: Optional[float] = None
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class DiscoveredTokenProcess:
+    """Identity captured at scan time for one exact-token process match."""
+
+    pid: int
+    process_group_id: Optional[int] = None
+    create_time: Optional[float] = None
+    command: str = ""
+    command_readable: bool = False
+
+
+@dataclass(frozen=True)
+class TokenDiscoverySnapshot:
+    """One complete run-token /proc discovery sample (doc 修复方案 §6.4).
+
+    ``matches`` 只包含 environ 精确命中且仍在扫描时存活的进程；任何无法
+    检查（权限/IO 错误）的 PID 记录在 ``unknown_pids`` 并把整个快照降级为
+    UNKNOWN。空 ``matches`` 只有在没有任何 UNKNOWN 时才是死亡证明。
+    """
+
+    state: ProcessProbeState = ProcessProbeState.UNKNOWN
+    matches: Tuple[DiscoveredTokenProcess, ...] = ()
+    unknown_pids: Tuple[int, ...] = ()
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+def _expected_started_timestamp(
+    process_started_at: Optional[datetime],
+) -> Optional[float]:
+    if process_started_at is None:
+        return None
+    expected = process_started_at
+    if expected.tzinfo is None:
+        expected = expected.replace(tzinfo=timezone.utc)
+    return float(expected.timestamp())
+
+
+def _probe_persisted_root_sync(
+    pid: int,
+    process_started_at: Optional[datetime],
+    *,
+    check_command_marker: bool = False,
+) -> PersistedProcessSnapshot:
+    """Single executor-side probe of one persisted root identity.
+
+    - PID 已消失/僵尸 -> 该 root identity 的 CONFIRMED_DEAD 证据；
+    - PID 存活但 create time 与持久化身份不符 -> PID_REUSED：原身份已不在
+      该 PID 上（绝不对此 PID 发信号），原树是否存在由 group/token 探测回答；
+    - 存活且身份匹配 -> LIVE（``check_command_marker`` 时要求可识别的
+      TraceForge Agent 命令行，防止对身份相近的无关进程发信号）；
+    - 存活但 create time 不可读 -> LIVE 但身份未证实（不得发信号）；
+    - AccessDenied / 其他 psutil 或系统错误 -> UNKNOWN。
+    """
+    if psutil is None:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
+            error_message="psutil is unavailable",
+        )
+    pid = int(pid)
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    except psutil.AccessDenied as exc:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=PROCESS_TREE_UNKNOWN,
+            error_message=str(exc) or f"pid {pid} access denied",
+        )
+    except (psutil.Error, OSError, ValueError) as exc:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=PROCESS_TREE_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    identity_matches: Optional[bool] = None
+    identity_required = _expected_started_timestamp(process_started_at) is not None
+    occupant_create_time: Optional[float] = None
+    try:
+        create_time = float(proc.create_time())
+        occupant_create_time = create_time
+        expected = _expected_started_timestamp(process_started_at)
+        if expected is not None:
+            identity_matches = abs(create_time - expected) <= 2.0
+            if not identity_matches:
+                # PID 被复用：绝不能对该 PID 发信号；原树的生死由
+                # process-group / run-token 探测独立回答（doc §5.4）。
+                return PersistedProcessSnapshot(
+                    state=ProcessProbeState.CONFIRMED_DEAD,
+                    root_identity_matches=False,
+                    pid_create_time=create_time,
+                    failure_code="PID_REUSED",
+                    error_message=(
+                        f"PID {pid} create time does not match persisted owner"
+                    ),
+                )
+    except (psutil.Error, OSError, ValueError):
+        identity_matches = None
+    try:
+        alive = proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except psutil.ZombieProcess:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.CONFIRMED_DEAD,
+            root_identity_matches=identity_matches,
+        )
+    except (psutil.Error, OSError, ValueError) as exc:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=PROCESS_TREE_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    if alive:
+        if identity_required and identity_matches is not True:
+            # create time 不可读：存活 PID 的身份未证实，绝不发信号。
+            return PersistedProcessSnapshot(
+                state=ProcessProbeState.LIVE,
+                live_pids=(pid,),
+                root_identity_matches=None,
+                failure_code=PROCESS_TREE_UNKNOWN,
+                error_message=(
+                    f"PID {pid} is alive but its create time could not be verified"
+                ),
+            )
+        if check_command_marker:
+            try:
+                command = " ".join(proc.cmdline()).lower()
+            except (psutil.Error, OSError, ValueError) as exc:
+                # 命令行不可读：无法核实该存活 PID 属于 TraceForge，禁止发信号。
+                return PersistedProcessSnapshot(
+                    state=ProcessProbeState.LIVE,
+                    live_pids=(pid,),
+                    root_identity_matches=identity_matches,
+                    failure_code=PROCESS_TREE_UNKNOWN,
+                    error_message=str(exc) or "persisted root cmdline is unreadable",
+                )
+            if not any(marker in command for marker in _TOKEN_PROCESS_COMMAND_MARKERS):
+                return PersistedProcessSnapshot(
+                    state=ProcessProbeState.LIVE,
+                    live_pids=(pid,),
+                    root_identity_matches=identity_matches,
+                    failure_code="PID_OWNERSHIP_UNVERIFIED",
+                    error_message=(
+                        f"PID {pid} is not an identifiable TraceForge Agent process"
+                    ),
+                )
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.LIVE,
+            live_pids=(pid,),
+            root_identity_matches=identity_matches,
+            pid_create_time=occupant_create_time,
+        )
+    return PersistedProcessSnapshot(
+        state=ProcessProbeState.CONFIRMED_DEAD,
+        root_identity_matches=identity_matches,
+        pid_create_time=occupant_create_time,
+    )
+
+
+def _probe_persisted_group_sync(
+    process_group_id: Optional[int],
+    *,
+    ignored_pids: Optional[set[int]] = None,
+) -> PersistedProcessSnapshot:
+    """Single executor-side tri-state probe of one POSIX process group.
+
+    - ``os.killpg`` ProcessLookupError -> 组明确不存在的直接证据；
+    - PermissionError / 其他 OSError -> UNKNOWN（组可能仍然存在）；
+    - 成员枚举中单个 PID 不可检查 -> 记入 unknown 并降级 UNKNOWN；
+    - 有存活成员 -> LIVE（剩余 PID 包含 live 与 unknown，供保留追踪）。
+    """
+    if os.name == "nt" or not process_group_id:
+        # Windows 没有进程组 containment；无 PGID 时组来源无事可证。
+        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    if psutil is None:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
+            error_message="psutil is required for process-group inspection",
+        )
+    group_id = int(process_group_id)
+    ignored = set(ignored_pids or ())
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    except (PermissionError, OSError, ValueError) as exc:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=PROCESS_GROUP_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    live: set = set()
+    unknown: set = set()
+    error_message: Optional[str] = None
+    try:
+        for proc in psutil.process_iter(["pid", "status"]):
+            try:
+                pid = int(proc.pid)
+            except (psutil.Error, ValueError):
+                continue
+            try:
+                if pid in ignored:
+                    continue
+                try:
+                    status = proc.status()
+                except psutil.NoSuchProcess:
+                    continue
+                except (psutil.AccessDenied, psutil.Error, OSError) as exc:
+                    unknown.add(pid)
+                    error_message = error_message or (str(exc) or type(exc).__name__)
+                    continue
+                if status == psutil.STATUS_ZOMBIE:
+                    continue
+                try:
+                    if os.getpgid(pid) == group_id:
+                        live.add(pid)
+                except ProcessLookupError:
+                    continue
+                except (PermissionError, OSError, ValueError) as exc:
+                    unknown.add(pid)
+                    error_message = error_message or (str(exc) or type(exc).__name__)
+            except psutil.NoSuchProcess:
+                continue
+    except (psutil.Error, OSError) as exc:
+        # process_iter 本身失败：整次扫描不完整，绝不能当作组为空。
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=PROCESS_GROUP_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    if live:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.LIVE,
+            live_pids=tuple(sorted(live | unknown)),
+            failure_code=PROCESS_GROUP_UNKNOWN if unknown else None,
+            error_message=error_message,
+        )
+    if unknown:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            live_pids=tuple(sorted(unknown)),
+            failure_code=PROCESS_GROUP_UNKNOWN,
+            error_message=error_message
+            or f"{len(unknown)} group member(s) could not be inspected",
+        )
+    return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+
+
+def _candidate_predates_attempt(
+    proc: Any,
+    not_before: Optional[datetime],
+) -> bool:
+    """Narrow, verifiable exclusion for environ-unreadable candidates (P0-2).
+
+    只有``not_before`` 可信且候选 create time 可读、且严格早于 attempt 边界
+    时，才能证明该进程不可能继承本 attempt 的 token；命令名不是归属证据，
+    任何无法证明的候选都必须保留为 UNKNOWN。
+    """
+    if not_before is None:
+        return False
+    try:
+        expected = (
+            not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
+        )
+        create_time = float(proc.create_time())
+    except (psutil.Error, OSError, ValueError, AttributeError, TypeError):
+        return False
+    return create_time < expected.timestamp() - 2.0
+
+
+def _scan_token_processes_sync(
+    run_token: str,
+    not_before: Optional[datetime] = None,
+    *,
+    env_var: str = RUN_TOKEN_ENV_VAR,
+) -> TokenDiscoverySnapshot:
+    """One complete same-UID exact-token /proc scan (executor-side only).
+
+    约束与旧 ``_iter_token_processes`` 一致：仅同 UID 进程、environ 精确
+    NUL 分隔匹配（``env_var``；默认 attempt 级 run token，spawn 谱系扫描
+    传 :data:`SPAWN_TOKEN_ENV_VAR`）、排除自身。异常语义（doc 修复方案
+    §6.4 + 审计 P0-2）：
+    - 单个 PID NoSuchProcess / zombie -> 该 PID 已消失，继续扫描；
+    - environ 不可读的候选：命令名不是归属证据（普通工具子进程同样继承
+      token），只有``_candidate_predates_attempt`` 的可验证排除成立时才
+      跳过；否则记入 ``unknown_pids``，快照 UNKNOWN（正确性优先于收敛，
+      绝不静默丢弃可能携带 token 的目标）；
+    - ``process_iter`` 本身失败 -> 整个快照 UNKNOWN。
+    """
+    if os.name == "nt":
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code="TOKEN_DISCOVERY_UNAVAILABLE",
+            error_message="run-token discovery requires Linux /proc",
+        )
+    if psutil is None:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
+            error_message="psutil is required for run-token discovery",
+        )
+    token = str(run_token or "").strip()
+    if not token:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=TOKEN_DISCOVERY_UNKNOWN,
+            error_message="run token is empty; discovery cannot be performed",
+        )
+    try:
+        current_uid = os.getuid()
+    except AttributeError:
+        current_uid = None
+    matches: list[DiscoveredTokenProcess] = []
+    unknown: list[int] = []
+    error_message: Optional[str] = None
+
+    def _record_unknown(pid: int, exc: BaseException) -> None:
+        nonlocal error_message
+        unknown.append(int(pid))
+        error_message = error_message or (str(exc) or type(exc).__name__)
+
+    try:
+        iterator = psutil.process_iter(["pid"])
+    except (psutil.Error, OSError) as exc:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=TOKEN_DISCOVERY_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    try:
+        for proc in iterator:
+            try:
+                pid = int(proc.pid)
+            except (psutil.Error, ValueError):
+                continue
+            try:
+                if pid == os.getpid():
+                    continue
+            except OSError:
+                pass
+            if current_uid is not None:
+                try:
+                    if proc.uids().real != current_uid:
+                        continue
+                except psutil.NoSuchProcess:
+                    continue
+                except (psutil.AccessDenied, psutil.Error, OSError) as exc:
+                    _record_unknown(pid, exc)
+                    continue
+            # P0-2：不再按命令名预过滤。普通工具子进程（sleep/bash/python/
+            # git…）与 CLI 一样继承 token，也可能脱离原 PGID；可读取 environ
+            # 的同 UID 候选一律执行精确 token 匹配。
+            try:
+                environ = proc.environ()
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            except (psutil.AccessDenied, psutil.Error, OSError) as exc:
+                # 僵尸进程正在退出：environ 不可读属于退出语义，不是存活
+                # token 目标（与模块内“zombie == 明确退出”语义一致）。
+                try:
+                    if proc.status() == psutil.STATUS_ZOMBIE:
+                        continue
+                except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                    continue
+                except (psutil.AccessDenied, psutil.Error, OSError, AttributeError):
+                    # status 不可读（无法核实退出状态）：继续走排除规则。
+                    pass
+                # environ 不可读：只有“启动时间早于本 attempt”的可验证证据
+                # 才允许排除；无法证明时保留 UNKNOWN（不能牺牲正确性换取
+                # 收敛）。
+                if _candidate_predates_attempt(proc, not_before):
+                    continue
+                _record_unknown(pid, exc)
+                continue
+            if environ.get(env_var) != token:
+                continue
+            pgid: Optional[int] = None
+            try:
+                pgid = os.getpgid(pid)
+            except ProcessLookupError:
+                # 精确命中却在身份捕获前消失：正常消失，继续扫描。
+                continue
+            except (PermissionError, OSError):
+                pgid = None
+            create_time: Optional[float] = None
+            try:
+                create_time = float(proc.create_time())
+            except (psutil.Error, OSError, ValueError):
+                create_time = None
+            command = ""
+            command_readable = False
+            try:
+                command = " ".join(proc.cmdline()).lower()
+                command_readable = True
+            except (psutil.Error, OSError, ValueError):
+                command_readable = False
+            matches.append(
+                DiscoveredTokenProcess(
+                    pid=pid,
+                    process_group_id=pgid,
+                    create_time=create_time,
+                    command=command,
+                    command_readable=command_readable,
+                )
+            )
+    except (psutil.Error, OSError) as exc:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=TOKEN_DISCOVERY_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    if matches:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.LIVE,
+            matches=tuple(matches),
+            unknown_pids=tuple(sorted(unknown)),
+            failure_code=TOKEN_DISCOVERY_UNKNOWN if unknown else None,
+            error_message=error_message,
+        )
+    if unknown:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            unknown_pids=tuple(sorted(unknown)),
+            failure_code=TOKEN_DISCOVERY_UNKNOWN,
+            error_message=error_message
+            or f"{len(unknown)} process(es) could not be inspected",
+        )
+    return TokenDiscoverySnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+
+
+def _scan_spawn_token_processes_sync(
+    spawn_token: str,
+    not_before: Optional[datetime] = None,
+) -> TokenDiscoverySnapshot:
+    """Spawn-lineage scan: identical rules, keyed on the per-spawn token.
+
+    P0-3：``TRACEFORGE_SPAWN_TOKEN`` 由 spawn 时注入且 uuid4 不可预测，
+    任何携带者都可证明属于该次 spawn 的后代树。
+    """
+    return _scan_token_processes_sync(
+        spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
+    )
+
+
+def _aggregate_persisted_snapshots(
+    *snapshots: PersistedProcessSnapshot,
+) -> Tuple[ProcessProbeState, Optional[str], Optional[str], Tuple[int, ...]]:
+    """Fixed tri-state aggregation across probe sources (doc 修复方案 §5.4).
+
+    任一来源 LIVE -> LIVE；没有 LIVE 但存在 UNKNOWN -> UNKNOWN（UNKNOWN
+    快照携带的未确认 PID 一并保留在 live_pids 中，绝不因聚合丢弃身份，
+    doc 审计 P0-3B）；全部来源明确死亡 -> CONFIRMED_DEAD。
+    """
+    live: list[int] = []
+    unconfirmed: list[int] = []
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
+    unknown = False
+    for snapshot in snapshots:
+        if snapshot.state == ProcessProbeState.LIVE:
+            live.extend(int(p) for p in snapshot.live_pids)
+        elif snapshot.state == ProcessProbeState.UNKNOWN:
+            unknown = True
+            unconfirmed.extend(int(p) for p in snapshot.live_pids)
+        if snapshot.failure_code and failure_code is None:
+            failure_code = snapshot.failure_code
+            error_message = snapshot.error_message
+    if live:
+        return (
+            ProcessProbeState.LIVE,
+            failure_code,
+            error_message,
+            tuple(sorted(set(live) | set(unconfirmed))),
+        )
+    if unknown:
+        return (
+            ProcessProbeState.UNKNOWN,
+            failure_code or PROCESS_TREE_UNKNOWN,
+            error_message,
+            tuple(sorted(set(unconfirmed))),
+        )
+    return (ProcessProbeState.CONFIRMED_DEAD, None, None, ())
+
+
+def _combine_persisted_snapshots(
+    *snapshots: PersistedProcessSnapshot,
+) -> PersistedProcessSnapshot:
+    state, code, message, live_pids = _aggregate_persisted_snapshots(*snapshots)
+    root_identity_matches: Optional[bool] = None
+    for snapshot in snapshots:
+        if snapshot.root_identity_matches is not None:
+            root_identity_matches = snapshot.root_identity_matches
+            break
+    return PersistedProcessSnapshot(
+        state=state,
+        live_pids=live_pids,
+        root_identity_matches=root_identity_matches,
+        failure_code=code,
+        error_message=message,
+    )
+
+
+@dataclass(frozen=True)
+class _MemberIdentity:
+    """One executor-side identity probe of a candidate group member (P0-1)."""
+
+    gone: bool = False
+    create_time: Optional[float] = None
+    pidfd: Optional[int] = None
+
+
+def _probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> _MemberIdentity:
+    """Probe one candidate group member's identity off the loop.
+
+    - NoSuchProcess / zombie -> ``gone=True``（明确的该身份死亡证据）；
+    - create time 不可读 / 其他错误 -> 身份无法核实（归属不明），并且
+      不打开任何句柄（没有可验证的绑定对象，doc 审计 P0-1）；
+    - ``want_pidfd`` 时同时返回 ``pidfd_open`` 稳定句柄：发送路径用它消除
+      身份验证到信号发送之间的 PID 复用窗口（doc 审计 P0-1/P1-2）。句柄
+      在同一探测流程内取得并做绑定校验：打开后立即重读 create time，
+      两次读取不一致说明探测期间 PID 已被复用，句柄无法证明绑定到已
+      验证身份 → 关闭句柄并按“归属不明”返回。调用方负责在发送完成后
+      关闭句柄。
+    """
+    pid = int(pid)
+    if psutil is None:
+        return _MemberIdentity()
+    try:
+        proc = psutil.Process(pid)
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return _MemberIdentity(gone=True)
+    except (psutil.Error, OSError, ValueError):
+        return _MemberIdentity()
+    create_time: Optional[float] = None
+    try:
+        create_time = float(proc.create_time())
+    except (psutil.Error, OSError, ValueError):
+        create_time = None
+    if create_time is None:
+        # 身份不可读：调用方绝不能凭此发送；也不交出未绑定句柄。
+        return _MemberIdentity(gone=False, create_time=None, pidfd=None)
+    pidfd: Optional[int] = None
+    if want_pidfd and hasattr(os, "pidfd_open"):
+        try:
+            pidfd = os.pidfd_open(pid)
+        except (OSError, ValueError):
+            pidfd = None
+        if pidfd is not None:
+            try:
+                rebinding = float(psutil.Process(pid).create_time())
+            except (psutil.Error, OSError, ValueError):
+                rebinding = None
+            if (
+                rebinding is None
+                or abs(rebinding - create_time) > _IDENTITY_MATCH_TOLERANCE
+            ):
+                # 探测期间 PID 被复用：句柄不能证明绑定到已验证身份。
+                _close_pidfd(pidfd)
+                return _MemberIdentity(gone=False, create_time=create_time, pidfd=None)
+    return _MemberIdentity(gone=False, create_time=create_time, pidfd=pidfd)
+
+
+def _close_pidfd(pidfd: Optional[int]) -> None:
+    """Close one pidfd exactly once; tolerate already-closed descriptors."""
+    if pidfd is None:
+        return
+    try:
+        os.close(int(pidfd))
+    except (OSError, ValueError):
+        pass
+
+
+async def _signal_after_identity_recheck(
+    pid: int,
+    expected_create_time: Optional[float],
+    sig: int,
+    signals: list[str],
+    signal_name: str,
+) -> str:
+    """P0-1/P0-2 共用的唯一安全发送入口：发送前重新验证目标身份。
+
+    - 重新探测目标身份并在同一流程内取得绑定句柄（pidfd 指向已验证的
+      进程实例，消除验证到发送之间的 PID 复用窗口）；
+    - ``expected_create_time`` 为 None（原身份从未验证）、重探身份不可读、
+      或与原身份不符时，绝不发送，返回 ``"unverified"`` 交上层保留
+      ownership；
+    - 返回 ``"dead"``（目标已消失或发送时已退出）/ ``"sent"`` /
+      ``"unverified"``。
+    """
+    identity = await ProcessSupervisor._probe_member_identity(
+        int(pid), want_pidfd=True
+    )
+    if identity.gone:
+        _close_pidfd(identity.pidfd)
+        return "dead"
+    if (
+        expected_create_time is None
+        or identity.create_time is None
+        or abs(float(identity.create_time) - float(expected_create_time))
+        > _IDENTITY_MATCH_TOLERANCE
+    ):
+        # 身份无法在发送前重新确认（不可读或不符）：绝不发送。
+        _close_pidfd(identity.pidfd)
+        return "unverified"
+    if ProcessSupervisor._signal_verified_member(int(pid), identity.pidfd, sig):
+        if signal_name not in signals:
+            signals.append(signal_name)
+        return "sent"
+    # 发送失败（权限拒绝等）：绝不折叠成死亡证据，按未确认处理，由
+    # 重扫/重探收敛。
+    return "unverified"
 
 
 def _windows_job_object() -> Optional[int]:
@@ -573,6 +1323,10 @@ class ManagedAgentProcess:
     process_start_time: Optional[float] = None
     process_group_id: Optional[int] = None
     containment_id: Optional[str] = None
+    # P0-3：本 spawn 专属谱系 token（uuid4，spawn 时注入子进程 env）。任何
+    # 携带者都可证明属于本 spawn 的后代树；wait/close 的全树完成检查用它
+    # 精确归属脱组后代，绝不误伤同 attempt 其他 managed 的进程。
+    spawn_token: Optional[str] = None
     _identity: Optional[AgentProcessIdentity] = None
     # 同一进程的终止操作必须串行化；已确认死亡的结果会被缓存，
     # 重复 close/interrupt 直接返回权威死亡证明（doc 4.4）。
@@ -601,15 +1355,19 @@ class ManagedAgentProcess:
     def apply_snapshot(self, snapshot: Optional[ProcessTreeSnapshot]) -> None:
         """Merge one executor-produced tree sample into tracked descendants.
 
-        合并规则（doc §5.4.3）：
-        - LIVE        ：更新已知 PID 集合；
+        合并规则（doc §5.4.3 + 审计 P0-3A）：
+        - LIVE        ：已知集合 = 本次 LIVE 身份 ∪ 本次 UNKNOWN 身份；
+                        混合 LIVE/UNKNOWN 后代不能因 LIVE 替换被遗忘；
         - CONFIRMED_DEAD：identity 明确不存在后才移除；
         - UNKNOWN     ：保留全部 known_descendant_pids，只更新错误诊断。
         """
         if snapshot is None or snapshot.state == ProcessProbeState.UNKNOWN:
             # An unknown sample must never erase known descendants.
             return
-        self.known_descendant_pids = set(snapshot.live_descendant_pids)
+        merged = set(snapshot.live_descendant_pids) | set(
+            getattr(snapshot, "unknown_descendant_pids", ()) or ()
+        )
+        self.known_descendant_pids = merged
 
     async def inspect_tree(self) -> ProcessTreeSnapshot:
         """唯一异步树检查入口（doc §9.4）。
@@ -860,6 +1618,55 @@ class ManagedAgentProcess:
                 error_message=str(exc),
             )
 
+    async def _settle_detached_descendants(
+        self,
+        signals: list[str],
+        *,
+        max_wait: float = 5.0,
+    ) -> bool:
+        """P0-3：出具全树死亡证明前的脱组后代最终检查（spawn 谱系 containment）。
+
+        本地快照（root returncode + 原组 + 已采样后代）无法覆盖在一次采样
+        间隔内启动并 ``setsid`` 脱组的后代。spawn 时注入的
+        ``TRACEFORGE_SPAWN_TOKEN`` 是本 spawn 专属谱系标记（uuid4 仅注入
+        本次子进程 env）：任何携带者都可证明属于本 spawn 的后代，因此可以
+        复用 P0-1/P0-2 的安全身份发送路径逐个终止后重扫；attempt 级 run
+        token 仍由 reaper 的 token discovery 统一覆盖。语义：
+        - 扫描确认无携带者 -> ``True``（全树完成证据闭合）；
+        - 携带者经身份验证后终止、重扫为空 -> ``True``；
+        - 扫描 UNKNOWN / 携带者身份冲突（create time 不可读或早于 spawn）
+          / 超时未收敛 -> ``False``（调用方必须保持 ownership，绝不出具
+          不可撤销的 confirmed_dead=True）。
+        Windows（Job Object containment）或无 spawn token 时无事可查，
+        返回 ``True`` 保持原语义。
+        """
+        if os.name == "nt" or psutil is None or not self.spawn_token:
+            return True
+        not_before = datetime.fromtimestamp(
+            max(0.0, float(self.created_at) - 2.0), tz=timezone.utc
+        )
+        deadline = time.monotonic() + max(0.1, max_wait)
+        while True:
+            snapshot = await ProcessSupervisor._token_snapshot(
+                self.spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
+            )
+            if snapshot.state == ProcessProbeState.UNKNOWN:
+                # 扫描不完整：UNKNOWN 保留 ownership（doc 审计 P0-3）。
+                return False
+            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
+                return True
+            good, conflicts = ProcessSupervisor._partition_token_matches(
+                snapshot.matches, not_before=not_before, not_after=None
+            )
+            if conflicts:
+                # 携带者身份无法核实（不可读/早于 spawn）：不盲杀，保持未确认。
+                return False
+            if good:
+                await ProcessSupervisor._kill_token_matches(good, signals)
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+
     async def _result(
         self,
         signals: Iterable[str],
@@ -874,7 +1681,9 @@ class ManagedAgentProcess:
         """Build the termination result from the last completed tri-state snapshot.
 
         本方法绝不再次同步扫描进程树（doc §9.4）；没有快照时先通过
-        inspection executor 取一次三态采样。
+        inspection executor 取一次三态采样。confirmed_dead=True 之前必须
+        先闭合 P0-3 的脱组后代 containment 检查：正常返回、异常、取消、
+        重启后的清理路径共用同一“全树完成”标准。
         """
         if snapshot is None:
             snapshot = await self.inspect_tree()
@@ -886,10 +1695,21 @@ class ManagedAgentProcess:
             else:
                 confirmed_dead = None
                 error_code = error_code or snapshot.failure_code or PROCESS_TREE_UNKNOWN
+        signal_list = list(signals)
+        if confirmed_dead is True and not await self._settle_detached_descendants(
+            signal_list
+        ):
+            # P0-3：本地快照死亡 ≠ 全树完成；存在未解决的 spawn 谱系后代
+            # （或扫描 UNKNOWN）时保留 ownership，绝不出具不可撤销死亡证明。
+            confirmed_dead = None
+            error_code = error_code or DETACHED_DESCENDANTS_UNRESOLVED
+            error_message = error_message or (
+                "Spawn-token containment unresolved after local tree termination"
+            )
         return TerminationResult(
             confirmed_dead=confirmed_dead,
             root_return_code=self.process.returncode,
-            signals_sent=tuple(signals),
+            signals_sent=tuple(signal_list),
             tree_kill_used=tree_kill_used,
             elapsed_ms=int((time.monotonic() - started) * 1000),
             error_code=error_code,
@@ -903,20 +1723,52 @@ class ManagedAgentProcess:
             root_return_code = await self.process.wait()
             snapshot = await self.inspect_tree()
             confirmed_dead = snapshot.state == ProcessProbeState.CONFIRMED_DEAD
+            signals: list[str] = []
+            if confirmed_dead and not await self._settle_detached_descendants(signals):
+                # P0-3：root 退出不是全树死亡证明。存在携带本 spawn 谱系
+                # token 的脱组后代（或扫描 UNKNOWN）时，绝不缓存/返回不可
+                # 撤销的 confirmed_dead=True——后续缓存/归属释放都依赖该
+                # 证明的完整性。携带者已由安全身份路径终止；仍未收敛时
+                # 交由 close() 的终止流程继续处理。
+                confirmed_dead = None
             termination = TerminationResult(
                 confirmed_dead=confirmed_dead,
                 root_return_code=root_return_code,
                 root_identity_matches=snapshot.root_identity_matches,
                 remaining_pids=snapshot.remaining_pids,
-                error_code=None if confirmed_dead else snapshot.failure_code,
-                error_message=None if confirmed_dead else snapshot.error_message,
+                signals_sent=tuple(signals),
+                tree_kill_used=bool(signals),
+                error_code=(
+                    None
+                    if confirmed_dead
+                    else (
+                        snapshot.failure_code
+                        or (
+                            DETACHED_DESCENDANTS_UNRESOLVED
+                            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD
+                            else PROCESS_TREE_UNKNOWN
+                        )
+                    )
+                ),
+                error_message=(
+                    None
+                    if confirmed_dead
+                    else (
+                        snapshot.error_message
+                        or (
+                            "Spawn-token containment unresolved after root exit"
+                            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD
+                            else "Process tree not fully confirmed dead after root exit"
+                        )
+                    )
+                ),
             )
-            if snapshot.state != ProcessProbeState.CONFIRMED_DEAD:
+            if confirmed_dead is not True:
                 # The root's exit is not the end of the attempt.  Preserve the
                 # actual tree-cleanup result so callers cannot report SUCCESS
                 # while descendants are still alive (or their state unknown).
                 termination = await self.close(reason="root_exit_with_descendants")
-            elif termination.confirmed_dead:
+            else:
                 # Cache the authoritative proof under the same serialization
                 # rules as close()/terminate().
                 async with self._termination_lock:
@@ -993,6 +1845,18 @@ class ProcessSupervisor:
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
         }
+        child_env = dict(env)
+        spawn_token: Optional[str] = None
+        if os.name != "nt":
+            # P0-3：per-spawn 谱系 token —— uuid4 仅注入本次子进程 env，后代
+            # 继承，使 wait/close 能把脱组后代精确归属到本 spawn。attempt 级
+            # run token 同时注入，保证 reaper 的 token discovery 覆盖全部后代
+            # （doc：every local CLI and its descendants inherit the exact token
+            # at spawn time）。
+            spawn_token = uuid.uuid4().hex
+            child_env[SPAWN_TOKEN_ENV_VAR] = spawn_token
+            if run_token:
+                child_env[RUN_TOKEN_ENV_VAR] = str(run_token)
         if os.name == "nt":
             # Keep the process suspended until it is assigned to the
             # kill-on-close Job Object.  This closes the spawn escape window.
@@ -1002,7 +1866,7 @@ class ProcessSupervisor:
             )
         else:
             kwargs["start_new_session"] = True
-        process = await asyncio.create_subprocess_exec(*args, cwd=cwd, env=env, **kwargs)
+        process = await asyncio.create_subprocess_exec(*args, cwd=cwd, env=child_env, **kwargs)
         # I1 (doc 3): the process is owned by the supervisor from this instant.
         # Construct + register the managed handle before any cancellable
         # callback await so no unowned window can exist.
@@ -1015,6 +1879,7 @@ class ProcessSupervisor:
                 containment_id
                 or (containment_id_for_run_token(run_token) if os.name != "nt" else None)
             ),
+            spawn_token=spawn_token,
         )
         managed.process_start_time = managed.process_started_at
         if os.name != "nt":
@@ -1259,66 +2124,324 @@ class ProcessSupervisor:
             raise
 
     @staticmethod
-    async def _wait_persisted_pid_gone(pid: int, timeout: float = 5.0) -> bool:
-        deadline = time.monotonic() + max(0.1, timeout)
-        while time.monotonic() < deadline:
-            try:
-                proc = psutil.Process(pid) if psutil is not None else None
-                if proc is None or not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
-                    return True
-            except (psutil.NoSuchProcess, psutil.ZombieProcess):
-                return True
-            except (psutil.Error, OSError, ValueError):
-                pass
-            await asyncio.sleep(0.1)
+    async def _persisted_root_snapshot(
+        pid: int,
+        process_started_at: Optional[datetime],
+        *,
+        check_command_marker: bool = False,
+    ) -> PersistedProcessSnapshot:
+        """One root identity probe off the loop (UNKNOWN on queue saturation)."""
         try:
-            proc = psutil.Process(pid)
-            return not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE
-        except (psutil.NoSuchProcess, psutil.ZombieProcess):
-            return True
-        except (psutil.Error, OSError, ValueError):
-            return False
+            return await run_process_probe(
+                functools.partial(
+                    _probe_persisted_root_sync,
+                    int(pid),
+                    process_started_at,
+                    check_command_marker=check_command_marker,
+                )
+            )
+        except InspectionQueueSaturated as exc:
+            return PersistedProcessSnapshot(
+                state=ProcessProbeState.UNKNOWN,
+                failure_code="INSPECTION_QUEUE_SATURATED",
+                error_message=str(exc),
+            )
 
     @staticmethod
-    async def _wait_persisted_tree_gone(
-        pid: int,
+    async def _persisted_group_snapshot(
         process_group_id: Optional[int],
-        timeout: float = 5.0,
-    ) -> bool:
-        """Wait for the persisted root and its POSIX process group to exit.
+        *,
+        ignored_pids: Optional[set[int]] = None,
+    ) -> PersistedProcessSnapshot:
+        """One process-group probe off the loop (UNKNOWN on queue saturation)."""
+        try:
+            return await run_process_probe(
+                functools.partial(
+                    _probe_persisted_group_sync,
+                    process_group_id,
+                    ignored_pids=ignored_pids,
+                )
+            )
+        except InspectionQueueSaturated as exc:
+            return PersistedProcessSnapshot(
+                state=ProcessProbeState.UNKNOWN,
+                failure_code="INSPECTION_QUEUE_SATURATED",
+                error_message=str(exc),
+            )
 
-        The root can disappear before a wrapper-spawned child.  A PID-only
-        check would therefore incorrectly report a successful reclaim while
-        the agent still owns live descendants.
+    @staticmethod
+    async def _token_snapshot(
+        run_token: str,
+        not_before: Optional[datetime] = None,
+        *,
+        env_var: str = RUN_TOKEN_ENV_VAR,
+    ) -> TokenDiscoverySnapshot:
+        """One complete token scan off the loop (UNKNOWN on queue saturation)."""
+        fn = (
+            _scan_token_processes_sync
+            if env_var == RUN_TOKEN_ENV_VAR
+            else _scan_spawn_token_processes_sync
+        )
+        try:
+            return await run_process_probe(fn, run_token, not_before)
+        except InspectionQueueSaturated as exc:
+            return TokenDiscoverySnapshot(
+                state=ProcessProbeState.UNKNOWN,
+                failure_code="INSPECTION_QUEUE_SATURATED",
+                error_message=str(exc),
+            )
+
+    @staticmethod
+    async def _wait_persisted_snapshot_gone(
+        probe: Callable[[], Any],
+        timeout: float,
+        *,
+        poll_interval: float = 0.1,
+    ) -> PersistedProcessSnapshot:
+        """Poll a tri-state probe until CONFIRMED_DEAD or the deadline.
+
+        UNKNOWN 快照会继续重试直到超时；返回最后一次快照，由调用方聚合
+        （UNKNOWN 永远不会被压成死亡证明，doc 修复方案 §7.4）。
         """
-        if os.name == "nt" or not process_group_id:
-            return await ProcessSupervisor._wait_persisted_pid_gone(pid, timeout)
+        deadline = time.monotonic() + max(0.05, timeout)
+        last = await probe()
+        while (
+            last.state != ProcessProbeState.CONFIRMED_DEAD
+            and time.monotonic() < deadline
+        ):
+            await asyncio.sleep(poll_interval)
+            last = await probe()
+        return last
 
-        deadline = time.monotonic() + max(0.1, timeout)
-        group_id = int(process_group_id)
-        while time.monotonic() < deadline:
-            root_gone = await ProcessSupervisor._wait_persisted_pid_gone(pid, timeout=0.1)
-            group_alive = False
+    async def _wait_persisted_root_gone(
+        self,
+        pid: int,
+        process_started_at: Optional[datetime],
+        timeout: float,
+    ) -> PersistedProcessSnapshot:
+        async def probe() -> PersistedProcessSnapshot:
+            return await self._persisted_root_snapshot(pid, process_started_at)
+
+        return await ProcessSupervisor._wait_persisted_snapshot_gone(probe, timeout)
+
+    async def _wait_persisted_group_gone(
+        self,
+        process_group_id: Optional[int],
+        timeout: float,
+        *,
+        ignored_pids: Optional[set[int]] = None,
+    ) -> PersistedProcessSnapshot:
+        async def probe() -> PersistedProcessSnapshot:
+            return await self._persisted_group_snapshot(
+                process_group_id, ignored_pids=ignored_pids
+            )
+
+        return await ProcessSupervisor._wait_persisted_snapshot_gone(probe, timeout)
+
+    async def _wait_persisted_tree_gone(
+        self,
+        pid: int,
+        process_started_at: Optional[datetime],
+        process_group_id: Optional[int],
+        timeout: float,
+        *,
+        ignored_pids: Optional[set[int]] = None,
+    ) -> PersistedProcessSnapshot:
+        """Wait until the persisted root and its group tri-state converge.
+
+        root 消失只代表 root 已死亡，不代表 containment 为空（doc 修复方案
+        §5.4）；组合快照在所有必需来源 CONFIRMED_DEAD 之前绝不返回死亡。
+        """
+        async def probe() -> PersistedProcessSnapshot:
+            root = await self._persisted_root_snapshot(pid, process_started_at)
+            group = await self._persisted_group_snapshot(
+                process_group_id, ignored_pids=ignored_pids
+            )
+            return _combine_persisted_snapshots(root, group)
+
+        return await ProcessSupervisor._wait_persisted_snapshot_gone(probe, timeout)
+
+    @staticmethod
+    async def _probe_member_identity(
+        pid: int,
+        *,
+        want_pidfd: bool = False,
+    ) -> _MemberIdentity:
+        """One member-identity probe off the loop (UNKNOWN on queue saturation).
+
+        P1-2：``want_pidfd=True`` 的探测在工作线程中打开 pidfd 并把句柄作为
+        结果移交事件循环。若等待方在工作线程已启动后取消，线程仍会完成并
+        打开句柄——取消路径必须安排强引用的回收任务接收迟到结果并恰好
+        关闭一次句柄，绝不能假设 semaphore 释放就代表资源已释放。
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            raw_future = _submit_process_probe(
+                functools.partial(
+                    _probe_member_identity_sync, int(pid), want_pidfd=want_pidfd
+                )
+            )
+        except InspectionQueueSaturated:
+            # 队列饱和：身份无法核实，按“归属不明”处理，绝不发信号。
+            return _MemberIdentity()
+        wrapped = asyncio.futures.wrap_future(raw_future, loop=loop)
+        try:
+            # shield：调用方取消时绝不把取消传播到 wrapped future——
+            # 底层线程的完成结果（可能持有 pidfd）必须仍可被回收任务接收。
+            return await asyncio.shield(wrapped)
+        except asyncio.CancelledError:
+            _schedule_late_identity_reaper(wrapped)
+            raise
+
+    @staticmethod
+    def _signal_verified_member(
+        member_pid: int,
+        pidfd: Optional[int],
+        sig: int,
+    ) -> bool:
+        """Send one signal to a verified identity; pidfd preferred (P0-1).
+
+        pidfd 句柄在探测时打开、发送后立即关闭：即使 PID 在探测与发送之间
+        被复用，句柄仍指向原进程，内核会以 ESRCH 拒绝，不会误杀新进程。
+        """
+        if pidfd is not None:
+            send = getattr(signal, "pidfd_send_signal", None)
+            if send is not None:
+                try:
+                    send(pidfd, sig)
+                    return True
+                except (ProcessLookupError, PermissionError, OSError):
+                    return False
+                finally:
+                    try:
+                        os.close(pidfd)
+                    except OSError:
+                        pass
             try:
-                os.killpg(group_id, 0)
-                if psutil is not None:
-                    for proc in psutil.process_iter(["pid", "status"]):
-                        try:
-                            if proc.status() == psutil.STATUS_ZOMBIE:
-                                continue
-                            if os.getpgid(proc.pid) == group_id:
-                                group_alive = True
-                                break
-                        except (psutil.Error, OSError, ValueError):
-                            continue
-                else:
-                    group_alive = True
-            except (ProcessLookupError, PermissionError, OSError):
-                group_alive = False
-            if root_gone and not group_alive:
-                return True
+                os.close(pidfd)
+            except OSError:
+                pass
+            # 平台没有 pidfd_send_signal：退回数字 PID（与既有 os.kill
+            # 语义一致；发送目标已经过 create-time 身份验证）。
+        try:
+            os.kill(int(member_pid), sig)
+            return True
+        except (ProcessLookupError, PermissionError, OSError):
+            return False
+
+    async def _terminate_verified_members(
+        self,
+        member_identities: Dict[int, Optional[float]],
+        signals: list[str],
+        *,
+        term_wait: float = 3.0,
+        kill_wait: float = 5.0,
+    ) -> set[int]:
+        """SIGTERM → wait → SIGKILL per verified identity (never whole-group).
+
+        保存 immutable identity（PID -> 已验证 create time）而不是 PID 集合；
+        每次发送前都重新探测目标身份并比较原身份（doc 审计 P0-1）：身份
+        不可读、与原身份不符时绝不发送。返回“未确认死亡”的成员集合
+        （仍存活、身份变化或身份不可读）。
+        """
+        pending = {
+            int(pid): (None if create_time is None else float(create_time))
+            for pid, create_time in (member_identities or {}).items()
+        }
+        if not pending:
+            return set()
+        unresolved: set[int] = set()
+
+        async def _prune_dead() -> None:
+            for member_pid in sorted(pending):
+                identity = await self._probe_member_identity(member_pid)
+                if identity.gone:
+                    pending.pop(member_pid, None)
+
+        for member_pid in sorted(pending):
+            outcome = await _signal_after_identity_recheck(
+                member_pid, pending[member_pid], signal.SIGTERM, signals, "SIGTERM"
+            )
+            if outcome == "sent":
+                # 已发送：保留在 pending 中等待退出，未退出则升级 SIGKILL。
+                continue
+            pending.pop(member_pid, None)
+            if outcome == "unverified":
+                unresolved.add(member_pid)
+        deadline = time.monotonic() + max(0.05, term_wait)
+        while pending and time.monotonic() < deadline:
+            await _prune_dead()
+            if not pending:
+                return unresolved
             await asyncio.sleep(0.1)
-        return False
+        for member_pid in sorted(pending):
+            outcome = await _signal_after_identity_recheck(
+                member_pid, pending[member_pid], signal.SIGKILL, signals, "SIGKILL"
+            )
+            if outcome == "sent":
+                continue
+            pending.pop(member_pid, None)
+            if outcome == "unverified":
+                unresolved.add(member_pid)
+        deadline = time.monotonic() + max(0.05, kill_wait)
+        while pending and time.monotonic() < deadline:
+            await _prune_dead()
+            if not pending:
+                return unresolved
+            await asyncio.sleep(0.1)
+        return unresolved | set(pending)
+
+    async def _stop_reused_group_members(
+        self,
+        member_pids: Tuple[int, ...],
+        *,
+        old_root_started_at: Optional[datetime],
+        reused_create_time: Optional[float],
+        signals: list[str],
+    ) -> PersistedProcessSnapshot:
+        """P0-1: reused/unverifiable-root case — never signal the numeric PGID.
+
+        root PID 复用后，持久化 PGID（通常等于旧 root PID）可能被新进程组
+        重新占用：旧组成员与新组成员共存于同一数字组。整组 ``killpg`` 会
+        误杀。规则：
+        - 身份可验证（create time 落在 [旧 root 起点, PID 复用时刻) 区间）
+          的成员是原 attempt 的残留目标，允许用稳定句柄逐个发信号，且
+          发送前必须重新比较原身份；
+        - 其余成员（create time 不可读 / 落在复用之后 / 早于旧 root）归属
+          不明，绝不发信号，聚合为 UNKNOWN 交上层保留 ownership。root
+          探测 UNKNOWN（复用与否无法证明）时没有可信上界，同样不允许
+          对任何成员发信号。
+        """
+        expected_root_start = _expected_started_timestamp(old_root_started_at)
+        verified: Dict[int, Optional[float]] = {}
+        ambiguous: set[int] = set()
+        for member in member_pids:
+            identity = await self._probe_member_identity(int(member))
+            if identity.gone:
+                continue
+            ok_bounds = (
+                expected_root_start is not None
+                and reused_create_time is not None
+                and identity.create_time is not None
+                and identity.create_time >= expected_root_start - 2.0
+                and identity.create_time < reused_create_time
+            )
+            if ok_bounds:
+                verified[int(member)] = float(identity.create_time)
+            else:
+                ambiguous.add(int(member))
+        unresolved = await self._terminate_verified_members(verified, signals)
+        if ambiguous or unresolved:
+            return PersistedProcessSnapshot(
+                state=ProcessProbeState.UNKNOWN,
+                live_pids=tuple(sorted(ambiguous | unresolved)),
+                failure_code="PROCESS_GROUP_OWNERSHIP_UNVERIFIED",
+                error_message=(
+                    "Reused PGID group contains member(s) whose ownership could "
+                    "not be verified; whole-group signaling is forbidden"
+                ),
+            )
+        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
 
     async def stop_attempt(self, run_token: str, reason: str) -> Optional[TerminationResult]:
         """Stop every process registered under this run token (doc 10).
@@ -1367,8 +2490,27 @@ class ProcessSupervisor:
         process_started_at: Optional[datetime],
         reason: str,
         process_group_id: Optional[int] = None,
+        run_token: Optional[str] = None,
+        not_before: Optional[datetime] = None,
     ) -> TerminationResult:
-        """Stop a process from a previous boot only after ownership checks."""
+        """Stop a process from a previous boot only after ownership checks.
+
+        Linux 顺序（doc 修复方案 §5.4 + 审计 P0-1/P0-3）：
+        1. 探测 root identity；root 不存在只表示 root 已死亡，不代表
+           containment 为空（P0-1）；
+        2. root 身份未复用时，PGID 仍存活即使 root 已消失也发送
+           SIGTERM/SIGKILL；
+        3. root 身份已被复用（或探测 UNKNOWN/存活但身份无法核实）时，数字
+           PGID 不可信：逐成员验证归属，只对验证过的残留目标用稳定句柄
+           单独发信号（发送前重新比较原身份）；归属不明/混合归属组绝不
+           整组发信号，保持 UNKNOWN（doc 审计 P0-1）；
+        4. 等待 root 与 PGID 的聚合三态快照收敛；
+        5. 提供持久化 run token 时执行完整 token discovery，捕获脱离原
+           PGID 的后代；token 的存活/未知证据参与最终 state（P0-3B）；
+        6. 只有 group 与 token discovery 都明确为空才允许
+           ``confirmed_dead=True``；任一探测 UNKNOWN 返回 ``None`` 并保留
+           结构化 failure code。
+        """
         started = time.monotonic()
         if not pid:
             return TerminationResult(True, None, elapsed_ms=0)
@@ -1378,129 +2520,452 @@ class ProcessSupervisor:
                 error_code="PROCESS_INSPECTION_UNAVAILABLE",
                 error_message="psutil is required to reclaim persisted process ownership",
             )
-        try:
-            proc = psutil.Process(int(pid))
-            actual_started = float(proc.create_time())
-            if process_started_at is not None:
-                expected_started = process_started_at
-                if expected_started.tzinfo is None:
-                    expected_started = expected_started.replace(tzinfo=timezone.utc)
-                if abs(actual_started - expected_started.timestamp()) > 2.0:
-                    return TerminationResult(
-                        False, None, elapsed_ms=int((time.monotonic() - started) * 1000),
-                        error_code="PID_REUSED",
-                        error_message=f"PID {pid} create time does not match persisted owner",
-                    )
-            command = " ".join(proc.cmdline()).lower()
-            if not any(marker in command for marker in ("claude", "node", "traceforge")):
-                return TerminationResult(
-                    False, None, elapsed_ms=int((time.monotonic() - started) * 1000),
-                    error_code="PID_OWNERSHIP_UNVERIFIED",
-                    error_message=f"PID {pid} is not an identifiable TraceForge Agent process",
-                )
-            if os.name == "nt":
-                signals = ["TASKKILL_TREE"]
-                try:
-                    taskkill = await asyncio.create_subprocess_exec(
-                        "taskkill", "/PID", str(pid), "/T", "/F",
-                        stdin=asyncio.subprocess.DEVNULL,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await asyncio.wait_for(asyncio.shield(taskkill.wait()), timeout=5.0)
-                except Exception as exc:
-                    return TerminationResult(
-                        False, None, signals_sent=tuple(signals), tree_kill_used=True,
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
-                        error_code="TASKKILL_FAILED", error_message=str(exc),
-                    )
-                if not await self._wait_persisted_pid_gone(int(pid)):
-                    return TerminationResult(
-                        False, None, signals_sent=tuple(signals), tree_kill_used=True,
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
-                        error_code="PROCESS_TREE_STILL_ALIVE",
-                        error_message=f"Persisted process tree {pid} is still alive",
-                    )
-            else:
-                group_id = int(process_group_id or pid)
+        pid = int(pid)
+
+        def _result(
+            confirmed_dead: Optional[bool],
+            *,
+            error_code: Optional[str] = None,
+            error_message: Optional[str] = None,
+            signals: Tuple[str, ...] = (),
+            tree_kill_used: bool = False,
+            remaining_pids: Tuple[int, ...] = (),
+            root_identity_matches: Optional[bool] = None,
+        ) -> TerminationResult:
+            return TerminationResult(
+                confirmed_dead,
+                None,
+                signals_sent=tuple(signals),
+                tree_kill_used=tree_kill_used,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error_code=error_code,
+                error_message=error_message,
+                remaining_pids=tuple(remaining_pids),
+                root_identity_matches=root_identity_matches,
+            )
+
+        if os.name == "nt":
+            return await self._stop_persisted_windows(
+                pid, process_started_at, _result
+            )
+
+        # ── 1. root identity probe（单次快照，不阻塞事件循环）──
+        root = await self._persisted_root_snapshot(
+            pid, process_started_at, check_command_marker=True
+        )
+        pid_reused = root.failure_code == "PID_REUSED"
+        # 身份无法核实的存活 root（无关命令行/命令行不可读/创建时间不可读）
+        # 绝不发信号（与旧行为一致，只是不再把探测错误折叠成 False）。
+        may_signal_root = (
+            root.state == ProcessProbeState.LIVE and root.failure_code is None
+        )
+        signals: list[str] = []
+        if root.state == ProcessProbeState.CONFIRMED_DEAD and pid_reused:
+            # root 身份已被另一个进程占用：禁止把复用 PID 当作 PGID。
+            group_id = int(process_group_id) if process_group_id else None
+        else:
+            group_id = int(process_group_id) if process_group_id else pid
+
+        # ── 2/3. 进程组信号与等待（root 已消失时仍处理 PGID）──
+        group = await self._persisted_group_snapshot(
+            group_id,
+            ignored_pids={pid} if pid_reused else None,
+        )
+        need_signal = may_signal_root or group.state == ProcessProbeState.LIVE
+        root_unverified_live = root.state == ProcessProbeState.LIVE and not may_signal_root
+        # P0-1：root 探测 UNKNOWN（探测异常/身份完全不可读）与 LIVE-unverified
+        # 同属“身份无法核实”——root 是否被复用无法证明，数字 PGID 不能凭
+        # “组非空”获得整组发送资格，必须走逐成员归属验证分支。
+        root_unverifiable = root_unverified_live or (
+            root.state == ProcessProbeState.UNKNOWN
+        )
+        if (pid_reused or root_unverifiable) and group.state == ProcessProbeState.LIVE:
+            # P0-1：root 身份已被复用（或存活但身份无法核实/探测 UNKNOWN）——
+            # 数字 PGID 不能单凭“组非空”获得整组发送资格：复用后的组可能混入
+            # 无关新进程组成员。逐成员验证归属，只对验证过的残留目标用稳定
+            # 句柄单独发信号（发送前再次比较原身份）；归属不明/混合归属组
+            # 绝不发信号，保持 UNKNOWN 交上层保留 ownership/ORPHANED。root
+            # 明确消失（未被复用占用）时不受此限：pgid 数字无人占用，killpg
+            # 只会命中原组残留成员（正常清理路径，doc §5.4）。
+            group = await self._stop_reused_group_members(
+                tuple(group.live_pids),
+                old_root_started_at=process_started_at,
+                reused_create_time=(
+                    getattr(root, "pid_create_time", None) if pid_reused else None
+                ),
+                signals=signals,
+            )
+        elif need_signal:
+            sent_group = False
+            if group_id is not None:
                 try:
                     os.killpg(group_id, signal.SIGTERM)
+                    sent_group = True
                 except (ProcessLookupError, PermissionError, OSError):
-                    proc.terminate()
-                if not await self._wait_persisted_tree_gone(
-                    int(pid), group_id, timeout=3.0
-                ):
+                    sent_group = False
+            if sent_group:
+                signals.append("SIGTERM")
+            elif may_signal_root:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    signals.append("SIGTERM")
+                except (ProcessLookupError, OSError):
+                    pass
+            group = await self._wait_persisted_group_gone(
+                group_id,
+                3.0,
+                ignored_pids={pid} if pid_reused else None,
+            )
+            if group.state != ProcessProbeState.CONFIRMED_DEAD or may_signal_root:
+                # may_signal_root 时即使组已空也必须升级到 SIGKILL：
+                # root 的 pgid 可能与持久化 PGID 不一致（陈旧行），组空不代表
+                # root 已退出（doc 修复方案 §5.4 的等待/升级语义）。
+                if group_id is not None:
                     try:
                         os.killpg(group_id, signal.SIGKILL)
+                        signals.append("SIGKILL")
                     except (ProcessLookupError, PermissionError, OSError):
-                        try:
-                            proc.kill()
-                        except psutil.Error:
-                            pass
-                alive = [] if await self._wait_persisted_tree_gone(
-                    int(pid), group_id, timeout=5.0
-                ) else [proc]
-                if alive:
-                    return TerminationResult(
-                        False, None, signals_sent=("SIGTERM", "SIGKILL"),
-                        tree_kill_used=True,
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
-                        error_code="PROCESS_TREE_STILL_ALIVE",
-                        error_message=f"Persisted process tree {pid} is still alive",
-                    )
-            confirmed = await self._wait_persisted_tree_gone(
-                int(pid), process_group_id, timeout=0.1
+                        pass
+                if may_signal_root:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        if "SIGKILL" not in signals:
+                            signals.append("SIGKILL")
+                    except (ProcessLookupError, OSError):
+                        pass
+                group = await self._wait_persisted_group_gone(
+                    group_id,
+                    5.0,
+                    ignored_pids={pid} if pid_reused else None,
+                )
+        else:
+            # 没有任何可证实的存活目标：取一次最终快照作为聚合证据。
+            group = await self._persisted_group_snapshot(
+                group_id,
+                ignored_pids={pid} if pid_reused else None,
             )
-            return TerminationResult(
-                confirmed,
+        if may_signal_root:
+            # root 在信号前是存活的：必须重新探测获得最终死亡/存活证据，
+            # 绝不能把信号前的过期 LIVE 快照当作聚合输入。
+            final_root = await self._persisted_root_snapshot(pid, process_started_at)
+        else:
+            final_root = root
+
+        # ── 4/5. 持久化 run token 的完整 discovery 兜底 ──
+        token_unknown: Optional[TokenDiscoverySnapshot] = None
+        token_live_pids: Tuple[int, ...] = ()
+        if run_token:
+            token_result, token_unknown = await self._run_token_containment(
+                run_token,
+                not_before=not_before,
+                not_after=None,
+                signals=signals,
+            )
+            if isinstance(token_result, TerminationResult):
+                # token 命中但身份冲突：保持未确认，不做盲杀。
+                return token_result
+            if token_unknown is None:
+                token_live_pids = tuple(token_result)
+
+        state, failure_code, error_message, live_pids = _aggregate_persisted_snapshots(
+            final_root, group
+        )
+        if token_unknown is not None:
+            # 扫描不完整：UNKNOWN 是独立状态，不依赖未知 PID 是否可填写
+            # （doc 审计 P0-3B）；remaining 保留全部未确认身份。
+            unconfirmed = set(live_pids) | set(token_unknown.unknown_pids)
+            return _result(
                 None,
-                signals_sent=("TASKKILL_TREE",) if os.name == "nt" else ("SIGTERM", "SIGKILL"),
-                tree_kill_used=True,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                error_code=None if confirmed else "PROCESS_STILL_ALIVE",
-                error_message=None if confirmed else f"PID {pid} is still alive",
+                error_code=token_unknown.failure_code or TOKEN_DISCOVERY_UNKNOWN,
+                error_message=token_unknown.error_message,
+                signals=tuple(signals),
+                tree_kill_used=bool(signals),
+                remaining_pids=tuple(sorted(unconfirmed)),
+                root_identity_matches=final_root.root_identity_matches,
             )
-        except psutil.NoSuchProcess:
-            return TerminationResult(True, None, elapsed_ms=int((time.monotonic() - started) * 1000))
-        except Exception as exc:
-            return TerminationResult(
-                False, None,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                error_code="PERSISTED_TERMINATION_EXCEPTION",
-                error_message=str(exc),
+        # P0-3B：token 的返回值参与最终 state，而不只是诊断字段。任一来源
+        # 存活 -> LIVE；没有 LIVE 但存在 UNKNOWN -> UNKNOWN。
+        remaining = tuple(sorted(set(live_pids) | set(token_live_pids)))
+        if token_live_pids:
+            state = ProcessProbeState.LIVE
+            failure_code = failure_code or "TOKEN_PROCESS_STILL_ALIVE"
+            error_message = error_message or (
+                f"Run-token process(es) still alive: {sorted(token_live_pids)}"
             )
+        if state == ProcessProbeState.LIVE:
+            return _result(
+                False,
+                error_code=failure_code or "PROCESS_TREE_STILL_ALIVE",
+                error_message=error_message
+                or f"Persisted process tree {pid} is still alive",
+                signals=tuple(signals),
+                tree_kill_used=bool(signals),
+                remaining_pids=remaining,
+                root_identity_matches=final_root.root_identity_matches,
+            )
+        if state == ProcessProbeState.UNKNOWN:
+            return _result(
+                None,
+                error_code=failure_code or PROCESS_TREE_UNKNOWN,
+                error_message=error_message,
+                signals=tuple(signals),
+                tree_kill_used=bool(signals),
+                remaining_pids=remaining,
+                root_identity_matches=final_root.root_identity_matches,
+            )
+        # 确认死亡的返回点：不变量检查——不得携带未决来源或非空 remaining
+        # （doc 审计 P0-3B）。防御性分支：任何未决证据都必须保持 UNKNOWN。
+        if remaining:
+            return _result(
+                None,
+                error_code=PROCESS_TREE_UNKNOWN,
+                error_message=(
+                    "confirmed-dead aggregation attempted with unconfirmed targets"
+                ),
+                signals=tuple(signals),
+                tree_kill_used=bool(signals),
+                remaining_pids=remaining,
+                root_identity_matches=final_root.root_identity_matches,
+            )
+        return _result(
+            True,
+            error_code="PID_REUSED" if pid_reused else None,
+            error_message=(
+                f"PID {pid} create time does not match persisted owner"
+                if pid_reused
+                else None
+            ),
+            signals=tuple(signals),
+            tree_kill_used=bool(signals),
+            root_identity_matches=final_root.root_identity_matches,
+        )
+
+    async def _run_token_containment(
+        self,
+        run_token: str,
+        *,
+        not_before: Optional[datetime],
+        not_after: Optional[datetime],
+        signals: list[str],
+        max_wait: float = 5.0,
+    ) -> Tuple[Union[Tuple[int, ...], TerminationResult], Optional[TokenDiscoverySnapshot]]:
+        """Kill and verify every process carrying the exact run token.
+
+        返回 ``(live_pids, unknown_snapshot)``：
+        - ``unknown_snapshot`` 非 None：扫描不完整，调用方必须返回 UNKNOWN；
+        - 否则 ``live_pids`` 是最终仍存活的 token 进程（空 == 完整扫描无命中）。
+        身份冲突时返回 ``(TerminationResult, None)``，由调用方直接透传。
+        """
+        snapshot = await self._token_snapshot(run_token, not_before)
+        if snapshot.state == ProcessProbeState.UNKNOWN:
+            return (), snapshot
+        matches = snapshot.matches
+        if matches:
+            good, conflicts = self._partition_token_matches(
+                matches, not_before=not_before, not_after=not_after
+            )
+            if conflicts:
+                return (
+                    TerminationResult(
+                        False,
+                        None,
+                        elapsed_ms=0,
+                        error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
+                        error_message=(
+                            f"{len(conflicts)} run-token process(es) failed identity "
+                            "validation; manual handling required"
+                        ),
+                        remaining_pids=tuple(sorted(int(m.pid) for m in conflicts)),
+                    ),
+                    None,
+                )
+            if good:
+                await self._kill_token_matches(good, signals)
+                deadline = time.monotonic() + max(0.1, max_wait)
+                while True:
+                    snapshot = await self._token_snapshot(run_token, not_before)
+                    if snapshot.state == ProcessProbeState.UNKNOWN:
+                        return (), snapshot
+                    if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
+                        return (), None
+                    good, conflicts = self._partition_token_matches(
+                        snapshot.matches,
+                        not_before=not_before,
+                        not_after=not_after,
+                    )
+                    if conflicts:
+                        return (
+                            TerminationResult(
+                                False,
+                                None,
+                                elapsed_ms=0,
+                                error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
+                                error_message=(
+                                    f"{len(conflicts)} run-token process(es) failed "
+                                    "identity validation; manual handling required"
+                                ),
+                                remaining_pids=tuple(
+                                    sorted(int(m.pid) for m in conflicts)
+                                ),
+                            ),
+                            None,
+                        )
+                    if good:
+                        await self._kill_token_matches(good, signals)
+                    if time.monotonic() >= deadline:
+                        break
+                    await asyncio.sleep(0.1)
+        # 最终一次快照给出聚合证据。
+        final = await self._token_snapshot(run_token, not_before)
+        if final.state == ProcessProbeState.UNKNOWN:
+            return (), final
+        if final.state == ProcessProbeState.LIVE:
+            return tuple(sorted(int(m.pid) for m in final.matches)), None
+        return (), None
 
     @staticmethod
-    def _persisted_group_has_live_processes(
-        process_group_id: Optional[int],
+    def _partition_token_matches(
+        matches: Tuple[DiscoveredTokenProcess, ...],
         *,
-        ignored_pids: Optional[set[int]] = None,
-    ) -> bool:
-        """Return whether a persisted POSIX process group still has members.
+        not_before: Optional[datetime],
+        not_after: Optional[datetime],
+    ) -> Tuple[Tuple[DiscoveredTokenProcess, ...], Tuple[DiscoveredTokenProcess, ...]]:
+        """Split token matches into (killable, identity-conflicts)."""
+        good: list[DiscoveredTokenProcess] = []
+        conflicts: list[DiscoveredTokenProcess] = []
+        for match in matches:
+            if ProcessSupervisor._token_identity_ok(
+                match, not_before=not_before, not_after=not_after
+            ):
+                good.append(match)
+            else:
+                conflicts.append(match)
+        return tuple(good), tuple(conflicts)
 
-        The check is intentionally conservative for manual cleanup: seeing a
-        live member means the original ownership cannot be proven gone.  A
-        reused root PID may be ignored because its create time has already
-        proven that it is a different process and must never be terminated.
+    @staticmethod
+    def _token_identity_ok(
+        match: DiscoveredTokenProcess,
+        *,
+        not_before: Optional[datetime],
+        not_after: Optional[datetime],
+    ) -> bool:
+        """Validate a discovered token match against trusted identity bounds.
+
+        P0-2：普通工具命令不能仅因缺少命令名 marker 被排除；归属依据是
+        精确 token 匹配加上受信任的创建时间窗口。create time 不可读时
+        身份无法核实，保持冲突（不盲杀）。
         """
-        if os.name == "nt" or not process_group_id or psutil is None:
+        if match.create_time is None:
             return False
-        ignored = ignored_pids or set()
-        group_id = int(process_group_id)
+        if not_before is not None:
+            expected = not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
+            if match.create_time < expected.timestamp() - 2.0:
+                return False
+        if not_after is not None:
+            expected = not_after if not_after.tzinfo else not_after.replace(tzinfo=timezone.utc)
+            if match.create_time > expected.timestamp() + 2.0:
+                return False
+        return True
+
+    @staticmethod
+    async def _kill_token_matches(
+        matches: Tuple[DiscoveredTokenProcess, ...],
+        signals: list[str],
+    ) -> None:
+        """SIGKILL each verified token identity — never the numeric group (P0-2).
+
+        精确 token 命中一个进程不等于取得整个进程组的归属：禁止从单个
+        match 无条件升级 ``killpg``（同组可能混入携带其他 token/无 token
+        的无关进程）。每个 match 以扫描时捕获的 create time 为原身份，经
+        P0-1 的共用安全发送入口重新验证后逐个发送；身份在扫描到发送之间
+        变化/不可读时跳过（保持未确认，由调用方的重扫收敛）。
+        """
+        for match in matches:
+            outcome = await _signal_after_identity_recheck(
+                int(match.pid),
+                match.create_time,
+                signal.SIGKILL,
+                signals,
+                "SIGKILL",
+            )
+            if outcome == "unverified":
+                logger.warning(
+                    "Token process identity changed/unreadable between scan and "
+                    "send; signal skipped: pid={}",
+                    match.pid,
+                )
+
+    async def _stop_persisted_windows(
+        self,
+        pid: int,
+        process_started_at: Optional[datetime],
+        _result: Callable[..., TerminationResult],
+    ) -> TerminationResult:
+        """Windows persisted stop: taskkill tree + tri-state root verification."""
+        root = await self._persisted_root_snapshot(
+            pid, process_started_at, check_command_marker=True
+        )
+        if root.failure_code == "PID_REUSED":
+            return _result(
+                False,
+                error_code="PID_REUSED",
+                error_message=root.error_message,
+                root_identity_matches=False,
+            )
+        if root.state == ProcessProbeState.UNKNOWN:
+            return _result(
+                None,
+                error_code=root.failure_code or PROCESS_TREE_UNKNOWN,
+                error_message=root.error_message,
+            )
+        if root.state == ProcessProbeState.CONFIRMED_DEAD:
+            # Windows 没有 group/token containment 可查；root 身份消失即无
+            # 可停止目标。
+            return _result(True)
+        if root.failure_code:
+            # 身份无法核实（无关命令行/命令行不可读）：不发信号。
+            return _result(
+                False,
+                error_code=root.failure_code,
+                error_message=root.error_message,
+                root_identity_matches=root.root_identity_matches,
+            )
+        signals = ["TASKKILL_TREE"]
         try:
-            os.killpg(group_id, 0)
-        except (ProcessLookupError, PermissionError, OSError):
-            return False
-        for item in psutil.process_iter(["pid", "status"]):
-            try:
-                pid = int(item.pid)
-                if pid in ignored or item.status() == psutil.STATUS_ZOMBIE:
-                    continue
-                if os.getpgid(pid) == group_id:
-                    return True
-            except (psutil.Error, OSError, ValueError):
-                continue
-        return False
+            taskkill = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(pid), "/T", "/F",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(asyncio.shield(taskkill.wait()), timeout=5.0)
+        except Exception as exc:
+            return _result(
+                False,
+                error_code="TASKKILL_FAILED",
+                error_message=str(exc),
+                signals=tuple(signals),
+                tree_kill_used=True,
+            )
+        final = await self._wait_persisted_root_gone(pid, process_started_at, 5.0)
+        if final.state == ProcessProbeState.CONFIRMED_DEAD:
+            return _result(True, signals=tuple(signals), tree_kill_used=True)
+        if final.state == ProcessProbeState.UNKNOWN:
+            return _result(
+                None,
+                error_code=final.failure_code or PROCESS_TREE_UNKNOWN,
+                error_message=final.error_message,
+                signals=tuple(signals),
+                tree_kill_used=True,
+            )
+        return _result(
+            False,
+            error_code="PROCESS_TREE_STILL_ALIVE",
+            error_message=f"Persisted process tree {pid} is still alive",
+            signals=tuple(signals),
+            tree_kill_used=True,
+            root_identity_matches=final.root_identity_matches,
+        )
 
     async def verify_persisted_cleanup(
         self,
@@ -1512,6 +2977,9 @@ class ProcessSupervisor:
 
         This is separate from ``stop_persisted`` so the confirm-cleanup API
         cannot accidentally terminate a PID that has since been reused.
+
+        权限/探测错误保留为 UNKNOWN（``confirmed_dead=None`` + 结构化
+        failure code），绝不被折叠成“组为空”（doc 修复方案 §6.4）。
         """
         started = time.monotonic()
         if not pid or process_started_at is None:
@@ -1530,135 +2998,82 @@ class ProcessSupervisor:
                 error_code="PROCESS_INSPECTION_UNAVAILABLE",
                 error_message="psutil is required to verify persisted process cleanup",
             )
-        try:
-            proc = psutil.Process(int(pid))
-            actual_started = float(proc.create_time())
-            expected_started = process_started_at
-            if expected_started.tzinfo is None:
-                expected_started = expected_started.replace(tzinfo=timezone.utc)
-            if abs(actual_started - expected_started.timestamp()) > 2.0:
-                group_alive = self._persisted_group_has_live_processes(
-                    process_group_id,
-                    ignored_pids={int(pid)},
-                )
-                if group_alive:
-                    return TerminationResult(
-                        False,
-                        None,
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
-                        error_code="PROCESS_GROUP_STILL_ALIVE",
-                        error_message="Persisted process group still has live members",
-                        root_identity_matches=False,
-                    )
-                return TerminationResult(
-                    True,
-                    None,
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
-                    error_code="PID_REUSED",
-                    root_identity_matches=False,
-                )
-
-            if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
-                group_alive = self._persisted_group_has_live_processes(
-                    process_group_id,
-                    ignored_pids={int(pid)},
-                )
-                if not group_alive:
-                    return TerminationResult(
-                        True,
-                        None,
-                        elapsed_ms=int((time.monotonic() - started) * 1000),
-                        root_identity_matches=True,
-                    )
-            return TerminationResult(
-                False,
-                None,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                error_code="PROCESS_TREE_STILL_ALIVE",
-                error_message=f"Persisted process tree {pid} is still alive",
-                root_identity_matches=True,
+        root = await self._persisted_root_snapshot(int(pid), process_started_at)
+        if root.failure_code == "PID_REUSED" or (
+            root.state == ProcessProbeState.CONFIRMED_DEAD
+            and root.root_identity_matches is False
+        ):
+            group = await self._persisted_group_snapshot(
+                process_group_id, ignored_pids={int(pid)}
             )
-        except psutil.NoSuchProcess:
-            if self._persisted_group_has_live_processes(process_group_id):
+            if group.state == ProcessProbeState.LIVE:
                 return TerminationResult(
                     False,
                     None,
                     elapsed_ms=int((time.monotonic() - started) * 1000),
                     error_code="PROCESS_GROUP_STILL_ALIVE",
                     error_message="Persisted process group still has live members",
+                    root_identity_matches=False,
+                )
+            if group.state == ProcessProbeState.UNKNOWN:
+                return TerminationResult(
+                    None,
+                    None,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error_code=group.failure_code or PROCESS_GROUP_UNKNOWN,
+                    error_message=group.error_message,
+                    root_identity_matches=False,
                 )
             return TerminationResult(
                 True,
                 None,
                 elapsed_ms=int((time.monotonic() - started) * 1000),
+                error_code="PID_REUSED",
+                root_identity_matches=False,
             )
-        except Exception as exc:
+        if root.state == ProcessProbeState.UNKNOWN:
             return TerminationResult(
-                False,
+                None,
                 None,
                 elapsed_ms=int((time.monotonic() - started) * 1000),
-                error_code="PERSISTED_VERIFICATION_EXCEPTION",
-                error_message=str(exc),
+                error_code=root.failure_code or PROCESS_TREE_UNKNOWN,
+                error_message=root.error_message,
             )
-
-    def _iter_token_processes(self, run_token: str) -> list["psutil.Process"]:
-        """Constrained /proc discovery of processes carrying the exact run token.
-
-        Linux fallback when no in-memory registration or persisted PID exists
-        (doc 7.3).  Constraints enforced here:
-        - same-UID processes only;
-        - exact NUL-separated environ match of TRACEFORGE_RUN_TOKEN — never a
-          cmdline substring match;
-        - our own worker process is always excluded.
-        """
-        if os.name == "nt" or psutil is None:
-            return []
-        token = str(run_token or "").strip()
-        if not token:
-            return []
-        try:
-            current_uid = os.getuid()
-        except AttributeError:
-            current_uid = None
-        matches: list["psutil.Process"] = []
-        for proc in psutil.process_iter(["pid"]):
-            try:
-                if int(proc.pid) == os.getpid():
-                    continue
-                if current_uid is not None:
-                    try:
-                        if proc.uids().real != current_uid:
-                            continue
-                    except (psutil.Error, OSError):
-                        continue
-                environ = proc.environ()
-                if environ.get(RUN_TOKEN_ENV_VAR) != token:
-                    continue
-                matches.append(proc)
-            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.Error, OSError, ValueError):
-                continue
-        return matches
-
-    @staticmethod
-    def _token_process_identity_ok(proc: "psutil.Process", *, not_before, not_after) -> bool:
-        """Validate create-time window and command markers for a discovered process."""
-        try:
-            create_time = float(proc.create_time())
-        except (psutil.Error, OSError, ValueError):
-            return False
-        if not_before is not None:
-            expected = not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
-            if create_time < expected.timestamp() - 2.0:
-                return False
-        if not_after is not None:
-            expected = not_after if not_after.tzinfo else not_after.replace(tzinfo=timezone.utc)
-            if create_time > expected.timestamp() + 2.0:
-                return False
-        try:
-            command = " ".join(proc.cmdline()).lower()
-        except (psutil.Error, OSError, ValueError):
-            return False
-        return any(marker in command for marker in _TOKEN_PROCESS_COMMAND_MARKERS)
+        if root.state == ProcessProbeState.CONFIRMED_DEAD:
+            group = await self._persisted_group_snapshot(process_group_id)
+            if group.state == ProcessProbeState.LIVE:
+                return TerminationResult(
+                    False,
+                    None,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error_code="PROCESS_GROUP_STILL_ALIVE",
+                    error_message="Persisted process group still has live members",
+                    root_identity_matches=root.root_identity_matches,
+                )
+            if group.state == ProcessProbeState.UNKNOWN:
+                return TerminationResult(
+                    None,
+                    None,
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error_code=group.failure_code or PROCESS_GROUP_UNKNOWN,
+                    error_message=group.error_message,
+                    root_identity_matches=root.root_identity_matches,
+                )
+            return TerminationResult(
+                True,
+                None,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                root_identity_matches=root.root_identity_matches,
+            )
+        # root 仍存活且身份匹配：tree 仍然存活（group 无需检查）。
+        return TerminationResult(
+            False,
+            None,
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+            error_code="PROCESS_TREE_STILL_ALIVE",
+            error_message=f"Persisted process tree {pid} is still alive",
+            root_identity_matches=root.root_identity_matches,
+        )
 
     async def stop_by_run_token_discovery(
         self,
@@ -1674,75 +3089,130 @@ class ProcessSupervisor:
         so callers keep the attempt ORPHANED.  An empty double scan is the
         authoritative "no token-carrying process exists" proof: every local
         CLI and its descendants inherit the exact token at spawn time.
-        Identity conflicts (unknown command, out-of-window create time) keep
-        the attempt unconfirmed instead of blindly killing.
+
+        扫描快照三态语义（doc 修复方案 §6.4）：
+        - 权限/IO 错误使扫描不完整 -> ``confirmed_dead=None`` +
+          ``TOKEN_DISCOVERY_UNKNOWN``，绝不允许把 double-empty 当死亡证明；
+        - 单个 PID 在扫描中消失属正常情况，不会使整个快照 UNKNOWN；
+        - identity conflicts（未知命令/超出窗口）保持未确认，不盲杀。
         """
         if os.name == "nt" or psutil is None:
             return None
         started = time.monotonic()
 
-        def _scan() -> list["psutil.Process"]:
-            return self._iter_token_processes(run_token)
+        def _elapsed() -> int:
+            return int((time.monotonic() - started) * 1000)
 
-        matches = _scan()
+        snapshot = await self._token_snapshot(run_token, not_before)
+        if snapshot.state == ProcessProbeState.UNKNOWN:
+            return TerminationResult(
+                None,
+                None,
+                elapsed_ms=_elapsed(),
+                error_code=snapshot.failure_code or TOKEN_DISCOVERY_UNKNOWN,
+                error_message=snapshot.error_message,
+                remaining_pids=tuple(snapshot.unknown_pids),
+            )
+        matches = snapshot.matches
         if not matches:
             # Re-scan once after a short grace period to absorb the fork/exec
             # window before confirming "nothing carries the token".
             await asyncio.sleep(0.5)
-            matches = _scan()
+            snapshot = await self._token_snapshot(run_token, not_before)
+            if snapshot.state == ProcessProbeState.UNKNOWN:
+                return TerminationResult(
+                    None,
+                    None,
+                    elapsed_ms=_elapsed(),
+                    error_code=snapshot.failure_code or TOKEN_DISCOVERY_UNKNOWN,
+                    error_message=snapshot.error_message,
+                    remaining_pids=tuple(snapshot.unknown_pids),
+                )
+            matches = snapshot.matches
             if not matches:
                 return TerminationResult(
-                    confirmed_dead=True,
-                    root_return_code=None,
-                    signals_sent=(),
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    True,
+                    None,
+                    elapsed_ms=_elapsed(),
                 )
-        conflicts = [
-            proc
-            for proc in matches
-            if not self._token_process_identity_ok(proc, not_before=not_before, not_after=not_after)
-        ]
+        good, conflicts = self._partition_token_matches(
+            matches, not_before=not_before, not_after=not_after
+        )
         if conflicts:
             return TerminationResult(
-                confirmed_dead=False,
-                root_return_code=None,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
+                False,
+                None,
+                elapsed_ms=_elapsed(),
                 error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
                 error_message=(
-                    f"{len(conflicts)} run-token process(es) failed identity validation; "
-                    "manual handling required"
+                    f"{len(conflicts)} run-token process(es) failed identity "
+                    "validation; manual handling required"
                 ),
-                remaining_pids=tuple(sorted(int(proc.pid) for proc in conflicts)),
+                remaining_pids=tuple(sorted(int(m.pid) for m in conflicts)),
             )
         signals: list[str] = []
-        for proc in matches:
-            try:
-                pgid = os.getpgid(int(proc.pid))
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                try:
-                    proc.kill()
-                except (psutil.Error, OSError, ValueError):
-                    continue
-            signals.append("SIGKILL")
+        await self._kill_token_matches(good, signals)
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
-            if not _scan():
+            snapshot = await self._token_snapshot(run_token, not_before)
+            if snapshot.state == ProcessProbeState.UNKNOWN:
                 return TerminationResult(
-                    confirmed_dead=True,
-                    root_return_code=None,
+                    None,
+                    None,
                     signals_sent=tuple(signals),
                     tree_kill_used=True,
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    elapsed_ms=_elapsed(),
+                    error_code=snapshot.failure_code or TOKEN_DISCOVERY_UNKNOWN,
+                    error_message=snapshot.error_message,
+                    remaining_pids=tuple(snapshot.unknown_pids),
                 )
+            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
+                return TerminationResult(
+                    True,
+                    None,
+                    signals_sent=tuple(signals),
+                    tree_kill_used=True,
+                    elapsed_ms=_elapsed(),
+                )
+            good, conflicts = self._partition_token_matches(
+                snapshot.matches, not_before=not_before, not_after=not_after
+            )
+            if conflicts:
+                return TerminationResult(
+                    False,
+                    None,
+                    signals_sent=tuple(signals),
+                    tree_kill_used=True,
+                    elapsed_ms=_elapsed(),
+                    error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
+                    error_message=(
+                        f"{len(conflicts)} run-token process(es) failed identity "
+                        "validation; manual handling required"
+                    ),
+                    remaining_pids=tuple(sorted(int(m.pid) for m in conflicts)),
+                )
+            if good:
+                await self._kill_token_matches(good, signals)
             await asyncio.sleep(0.1)
-        remaining = tuple(sorted(int(proc.pid) for proc in _scan()))
+        snapshot = await self._token_snapshot(run_token, not_before)
+        if snapshot.state == ProcessProbeState.UNKNOWN:
+            return TerminationResult(
+                None,
+                None,
+                signals_sent=tuple(signals),
+                tree_kill_used=True,
+                elapsed_ms=_elapsed(),
+                error_code=snapshot.failure_code or TOKEN_DISCOVERY_UNKNOWN,
+                error_message=snapshot.error_message,
+                remaining_pids=tuple(snapshot.unknown_pids),
+            )
+        remaining = tuple(sorted(int(m.pid) for m in snapshot.matches))
         return TerminationResult(
-            confirmed_dead=False,
-            root_return_code=None,
+            False,
+            None,
             signals_sent=tuple(signals),
             tree_kill_used=True,
-            elapsed_ms=int((time.monotonic() - started) * 1000),
+            elapsed_ms=_elapsed(),
             error_code="PROCESS_TREE_STILL_ALIVE",
             error_message=f"Run-token process tree survived after {reason}",
             remaining_pids=remaining,
@@ -1777,17 +3247,24 @@ process_supervisor = ProcessSupervisor()
 
 
 __all__ = [
+    "DiscoveredTokenProcess",
+    "InspectionQueueSaturated",
     "ManagedAgentProcess",
+    "PersistedProcessSnapshot",
     "ProcessProbeState",
     "ProcessSupervisor",
     "ProcessTreeSnapshot",
     "ProcessWaitResult",
+    "PROCESS_GROUP_UNKNOWN",
     "PROCESS_TREE_UNKNOWN",
+    "TOKEN_DISCOVERY_UNKNOWN",
     "TerminationResult",
+    "TokenDiscoverySnapshot",
     "agent_stop_result_from_termination",
     "containment_capability",
     "containment_id_for_run_token",
     "inspect_process_tree_snapshot",
     "process_supervisor",
     "run_process_inspection",
+    "run_process_probe",
 ]

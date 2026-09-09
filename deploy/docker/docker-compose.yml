@@ -1,6 +1,6 @@
 # TraceForge 内部部署编排
 # 用法：
-#   cp api.env.example api.env && 修改其中的密钥 / 域名
+#   cp .env.example .env && 修改其中的密钥 / 域名（模板由 backend/.env.example 派生）
 #   docker compose up -d --build
 #
 # 拓扑：mysql + redis + api(单副本) + web(nginx) + migrate(一次性)
@@ -49,7 +49,7 @@ services:
     command: ["alembic", "upgrade", "head"]
     working_dir: /app
     env_file:
-      - api.env
+      - .env
     depends_on:
       mysql:
         condition: service_healthy
@@ -62,14 +62,14 @@ services:
     container_name: traceforge-api
     restart: unless-stopped
     env_file:
-      - api.env
+      - .env
     volumes:
       # 运行态与资产卷：这些目录丢了 = 会话断 / 资产丢，必须持久化
       - ./volumes/storage:/app/storage
       - ./volumes/uploads:/app/uploads
       - ./volumes/tmp:/app/tmp
       - ./volumes/logs:/app/logs
-      # Claude CLI 登录态。若改用 API Key，删除此挂载并在 api.env 配 ANTHROPIC_API_KEY
+      # Claude CLI 登录态。若改用 API Key，删除此挂载并在 .env 配 ANTHROPIC_API_KEY
       - ./volumes/claude:/root/.claude
       # git 凭据（工作区 clone / skill 导入需要）：SSH 方式用下面这行
       # - ./volumes/ssh:/root/.ssh:ro
