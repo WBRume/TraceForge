@@ -76,10 +76,16 @@ async def test_verified_member_identity_must_be_compared_again_before_signal():
     """已验证成员身份发送前必须重新比较原身份；PID 复用后绝不发送。"""
     supervisor = ProcessSupervisor()
     # 初次归属验证看到旧身份；发送前该 PID 已被新进程复用。
-    identities = [ps._MemberIdentity(create_time=150.0),
-                  ps._MemberIdentity(create_time=300.0), ps._MemberIdentity(gone=True)]
+    identities = [
+        ps._MemberIdentity(create_time=150.0),
+        ps._MemberIdentity(
+            state=ps.MemberBindingState.BOUND, create_time=300.0, pidfd=777
+        ),
+        ps._MemberIdentity(state=ps.MemberBindingState.GONE),
+    ]
     with patch.object(ps.ProcessSupervisor, "_probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send:
+         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
+         patch.object(ps.os, "close"):
         snapshot = await supervisor._stop_reused_group_members(
             (999992,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
@@ -96,7 +102,8 @@ async def test_unreadable_identity_before_signal_must_not_send():
     """发送前身份不可读（create time 无法读取）：绝不发送，保持未确认。"""
     supervisor = ProcessSupervisor()
     identities = [ps._MemberIdentity(create_time=150.0),
-                  ps._MemberIdentity(create_time=None), ps._MemberIdentity(gone=True)]
+                  ps._MemberIdentity(create_time=None),
+                  ps._MemberIdentity(state=ps.MemberBindingState.GONE)]
     with patch.object(ps.ProcessSupervisor, "_probe_member_identity", AsyncMock(side_effect=identities)), \
          patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send:
         snapshot = await supervisor._stop_reused_group_members(
@@ -113,10 +120,16 @@ async def test_unreadable_identity_before_signal_must_not_send():
 async def test_matching_identity_still_sends_after_recheck():
     """对照：发送前身份与原身份一致时仍允许单独发送（不过度收紧）。"""
     supervisor = ProcessSupervisor()
-    identities = [ps._MemberIdentity(create_time=150.0),
-                  ps._MemberIdentity(create_time=150.0), ps._MemberIdentity(gone=True)]
+    identities = [
+        ps._MemberIdentity(create_time=150.0),
+        ps._MemberIdentity(
+            state=ps.MemberBindingState.BOUND, create_time=150.0, pidfd=778
+        ),
+        ps._MemberIdentity(state=ps.MemberBindingState.GONE),
+    ]
     with patch.object(ps.ProcessSupervisor, "_probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send:
+         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
+         patch.object(ps.os, "close"):
         snapshot = await supervisor._stop_reused_group_members(
             (999994,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
@@ -174,9 +187,12 @@ async def test_token_send_revalidates_identity_captured_at_scan():
     match = ps.DiscoveredTokenProcess(pid=999995, process_group_id=999995, create_time=100.0)
     supervisor = ProcessSupervisor()
     with patch.object(ps.ProcessSupervisor, "_probe_member_identity",
-                      AsyncMock(return_value=ps._MemberIdentity(create_time=900.0))), \
+                      AsyncMock(return_value=ps._MemberIdentity(
+                          state=ps.MemberBindingState.BOUND,
+                          create_time=900.0, pidfd=779))), \
          patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
-         patch.object(ps.os, "killpg") as killpg, patch.object(ps.os, "kill") as kill:
+         patch.object(ps.os, "killpg") as killpg, patch.object(ps.os, "kill") as kill, \
+         patch.object(ps.os, "close"):
         await ProcessSupervisor._kill_token_matches((match,), [])
     assert not send.called and not killpg.called and not kill.called
 
@@ -187,9 +203,11 @@ async def test_token_send_with_matching_identity_still_kills():
     match = ps.DiscoveredTokenProcess(pid=999996, process_group_id=999996, create_time=100.0)
     supervisor = ProcessSupervisor()
     with patch.object(ps.ProcessSupervisor, "_probe_member_identity",
-                      AsyncMock(return_value=ps._MemberIdentity(create_time=100.0))), \
+                      AsyncMock(return_value=ps._MemberIdentity(
+                          state=ps.MemberBindingState.BOUND,
+                          create_time=100.0, pidfd=780))), \
          patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
-         patch.object(ps.os, "killpg") as killpg:
+         patch.object(ps.os, "killpg") as killpg, patch.object(ps.os, "close"):
         await ProcessSupervisor._kill_token_matches((match,), [])
     assert send.called
     assert not killpg.called, "token 命中禁止升级整组 killpg"

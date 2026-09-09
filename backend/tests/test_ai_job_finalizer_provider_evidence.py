@@ -412,3 +412,111 @@ def test_persisted_unknown_evidence_keeps_orphaned_at_decision_layer():
         )
         assert status == AiJobStatus.ORPHANED, (confirmed_dead, status)
     db.close()
+
+
+# ───────────── P1（doc: docs/agent-job-07e04775-audit-pseudocode-plan.md §4）─────────────
+# provider 终局证据按 call 身份登记：结果到达时记录，异常/重试共用同一证据源。
+
+
+def test_per_call_result_recorded_and_resolved_from_runtime():
+    """result 到达时登记 ENDED：resolve 必须看到 provider_outcome_seen。"""
+    from app.agents.contract import (
+        current_agent_attempt_key,
+        record_provider_call_result,
+        record_provider_call_session_started,
+    )
+
+    owner, binding = _bind_remote_runtime()
+    try:
+        runtime = jobs.current_agent_attempt_runtime()
+        call = runtime.begin_provider_call(current_agent_attempt_key())
+        record_provider_call_session_started(call, "remote-1")
+        assert jobs.current_agent_attempt_runtime() is runtime
+        evidence = resolve_attempt_evidence(
+            execution_kind=REMOTE, runtime=runtime
+        )
+        # 只有 STARTED、没有 result：绝不伪造结束。
+        assert evidence.provider_outcome_seen is False
+        assert evidence.remote_session_started is True
+        record_provider_call_result(call, is_error=True)
+        evidence = resolve_attempt_evidence(
+            execution_kind=REMOTE, runtime=runtime
+        )
+        # 明确失败 result 也是终局 outcome：FAILED 可收敛，不是 ORPHANED。
+        assert evidence.provider_outcome_seen is True
+        status, _ = _decide(evidence, requested=AiJobStatus.FAILED)
+        assert status == AiJobStatus.FAILED
+    finally:
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)
+
+
+def test_unresolved_retry_call_blocks_previous_ended_outcome():
+    """多次调用共享 attempt：某一次 ENDED 不能为其他未决调用提供终态证明。"""
+    from app.agents.contract import ProviderCallState
+
+    owner, binding = _bind_remote_runtime()
+    try:
+        runtime = jobs.current_agent_attempt_runtime()
+        key = ("job-1", "run-1", jobs.WORKER_BOOT_ID)
+        first = runtime.begin_provider_call(key)
+        first.state = ProviderCallState.ENDED
+        first.result_success = True
+        retry = runtime.begin_provider_call(key)
+        retry.state = ProviderCallState.STARTED
+        evidence = resolve_attempt_evidence(
+            execution_kind=REMOTE, runtime=runtime, attempt_key=key
+        )
+        assert evidence.provider_outcome_seen is False
+        retry.state = ProviderCallState.ENDED
+        retry.result_success = True
+        evidence = resolve_attempt_evidence(
+            execution_kind=REMOTE, runtime=runtime, attempt_key=key
+        )
+        assert evidence.provider_outcome_seen is True
+    finally:
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)
+
+
+def test_attempt_key_isolation_between_attempts():
+    """跨 attempt 的 provider 调用证据不得互相兜底。"""
+    from app.agents.contract import ProviderCallState
+
+    runtime = AgentAttemptRuntimeState(remote_session_started=True)
+    stale = runtime.begin_provider_call(("job-1", "stale-token", "boot"))
+    stale.state = ProviderCallState.ENDED
+    stale.result_success = True
+    evidence = resolve_attempt_evidence(
+        execution_kind=REMOTE,
+        runtime=runtime,
+        attempt_key=("job-1", "current-token", "boot"),
+    )
+    assert evidence.provider_outcome_seen is False
+
+
+def test_stop_ack_closes_unresolved_call_without_fabricating_outcome():
+    """明确 stop ACK 终止未决调用：不阻塞后续 outcome，也不伪造 result 成败。"""
+    from app.agents.contract import ProviderCallState
+    from app.domains.ai.services.ai_job_service import _close_unresolved_provider_call
+
+    owner, binding = _bind_remote_runtime()
+    try:
+        runtime = jobs.current_agent_attempt_runtime()
+        key = ("job-1", "run-1", jobs.WORKER_BOOT_ID)
+        stopped = runtime.begin_provider_call(key)
+        stopped.state = ProviderCallState.STARTED
+        retry = runtime.begin_provider_call(key)
+        _close_unresolved_provider_call(stopped, stop_acknowledged=True)
+        assert stopped.state is ProviderCallState.ENDED
+        assert stopped.result_success is None
+        # ACK 终止的调用不阻塞重试。
+        retry.state = ProviderCallState.ENDED
+        retry.result_success = True
+        evidence = resolve_attempt_evidence(
+            execution_kind=REMOTE, runtime=runtime, attempt_key=key
+        )
+        assert evidence.provider_outcome_seen is True
+    finally:
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)

@@ -1394,10 +1394,23 @@ def test_run_cli_single_turn_records_evidence_in_runtime_state(monkeypatch):
     class _RecordingBridge(_StubBridge):
         """Mirror the real SubprocessCliBridge evidence contract."""
 
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._event_callback = None
+
+        async def start_session(self, **kwargs):
+            self._event_callback = kwargs.get("event_callback")
+            return await super().start_session(**kwargs)
+
         async def wait(self):
             self.wait_calls += 1
             self.last_termination = self.termination
             record_attempt_termination(self.last_termination)
+            # 真实 bridge 在 wait 返回前一定会发出终局 result 事件
+            # （07e04775 §4.3：没有 result 事件不构成 outcome）。
+            callback = self._event_callback
+            if callback is not None:
+                await callback({"type": "result", "is_error": False, "result": "ok"})
             return self.last_termination
 
         async def cancel(self):
