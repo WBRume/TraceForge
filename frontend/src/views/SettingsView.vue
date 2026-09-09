@@ -51,6 +51,18 @@ const vm = proxyRefs(rawVm)
       @cancel="vm.closeRemoveDialog"
       @confirm="vm.confirmRemoveMember"
     />
+
+    <ConfirmActionModal
+      :show="vm.showBatchRemoveConfirm"
+      :title="$t('settings.members.batch_remove')"
+      :message="$t('settings.members.confirm_batch_remove', { count: vm.selectedMembers.length })"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('common.delete')"
+      tone="danger"
+      :loading="Boolean(vm.batchRemoving)"
+      @cancel="vm.closeBatchRemoveDialog"
+      @confirm="vm.confirmRemoveSelectedMembers"
+    />
   </div>
 </template>
 
