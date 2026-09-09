@@ -286,6 +286,13 @@ class WorkspaceCreate(BaseModel):
         return self
 
 
+class WorkspacePreflight(BaseModel):
+    """创建工作区前的冲突预检入参：重名 / 目录已被其他工作区引用。"""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    project_path: Optional[str] = None
+
+
 class WorkspaceRepositoryResponse(BaseModel):
     id: str
     workspace_id: str
@@ -418,3 +425,52 @@ class WorkspaceMyPermissionsResponse(BaseModel):
     permissions: WorkspacePermissionFlags
     is_expert: bool = False
     can_delete_workspace: bool
+
+
+class WorkspaceInviteLinkCreate(BaseModel):
+    role: str = Field(default="DEVELOPER", pattern="^(DEVELOPER|VIEWER)$")
+    permissions: Optional[WorkspacePermissionFlags] = None
+    is_expert: bool = False
+    valid_days: Optional[int] = Field(default=None, ge=1, le=365)
+    max_uses: Optional[int] = Field(default=None, ge=1, le=1000)
+
+
+class WorkspaceInviteLinkResponse(BaseModel):
+    id: str
+    workspace_id: str
+    token: str
+    role: str
+    permissions: WorkspacePermissionFlags
+    is_expert: bool
+    max_uses: Optional[int] = None
+    used_count: int
+    remaining_uses: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+    status: str
+    created_by_name: str = ""
+
+
+class WorkspaceInviteLinkListResponse(BaseModel):
+    items: List[WorkspaceInviteLinkResponse]
+    total: int
+
+
+class WorkspaceInvitePreviewResponse(BaseModel):
+    token: str
+    workspace_id: str
+    workspace_name: str
+    role: str
+    permissions: WorkspacePermissionFlags
+    is_expert: bool
+    expires_at: Optional[datetime] = None
+    status: str
+    created_by_name: str = ""
+
+
+class WorkspaceInviteAcceptResponse(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    role: str
+    is_expert: bool
+    already_member: bool

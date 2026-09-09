@@ -27,6 +27,12 @@ const router = createRouter({
       name: 'login',
       component: () => import('../views/LoginView.vue')
     },
+    // 链接邀请加入页（免登录打开；接受时要求登录）
+    {
+      path: '/join/:token',
+      name: 'joinInvite',
+      component: () => import('../views/JoinInviteView.vue')
+    },
     // OAuth 三方登录流程页（免鉴权；后端 302 落地页，T04）
     {
       path: '/oauth/callback',
