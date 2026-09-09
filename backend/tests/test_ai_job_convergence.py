@@ -1666,17 +1666,22 @@ def _seed_orphaned_remote_job(db, *, token="run-remote", backend="dsh", session_
 class _FakeRemoteBackend:
     def __init__(self, *, acknowledged=True, failure_code=None):
         self.calls: list[str] = []
+        self.close_calls: int = 0
         self._acknowledged = acknowledged
         self._failure_code = failure_code
 
-    async def cancel(self, run_id=None, **kwargs):
-        self.calls.append(str(run_id or ""))
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+        # fake 签名与正式 contract 一致：显式 session id，不用宽松 **kwargs。
+        self.calls.append(str(session_id or ""))
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
             stop_acknowledged=self._acknowledged,
             failure_code=self._failure_code,
             error_message=None if self._acknowledged else "cancel rejected",
         )
+
+    async def close(self) -> None:
+        self.close_calls += 1
 
 
 def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
@@ -1766,3 +1771,148 @@ def test_remote_reaper_missing_locator_never_claims_remote_death(monkeypatch):
     assert isinstance(result, AgentStopResult)
     assert result.stop_acknowledged is False
     assert result.failure_code == "REMOTE_STOP_LOCATOR_MISSING"
+
+
+# ────────────────── 远程 NORMAL_FINALIZE 证据底线（doc 修复方案 §8.3）──────────────────
+
+
+def _remote_normal_request(
+    *,
+    requested_status=AiJobStatus.INTERRUPTED,
+    remote_session_started=True,
+    provider_outcome_seen=False,
+    remote_stop_acknowledged=None,
+    failure_code=None,
+    error_message=None,
+) -> AttemptConvergenceRequest:
+    evidence = convergence.AttemptFinalizerEvidence(
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        process_started=False,
+        termination_confirmed_dead=None,
+        remote_stop_acknowledged=remote_stop_acknowledged,
+        failure_code=failure_code,
+        error_message=error_message,
+        remaining_pids=(),
+        source="remote",
+        remote_session_started=remote_session_started,
+        provider_outcome_seen=provider_outcome_seen,
+    )
+    return AttemptConvergenceRequest(
+        job_id="convergence-job",
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        requested_status=requested_status,
+        reason="transport disconnected",
+        evidence=evidence,
+        intent=ConvergenceIntent.NORMAL_FINALIZE,
+    )
+
+
+def _seed_running_remote_job(db):
+    job = SddAiJob(
+        id="convergence-job",
+        workspace_id="ws-1",
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key="TASK_CHAT:task-1",
+        status=AiJobStatus.RUNNING,
+        creator_id="user-1",
+        run_token="run-1",
+        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        process_execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        agent_backend="dsh",
+        session_id="persisted-session-1",
+        task_id="task-1",
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+def test_remote_normal_failure_without_outcome_or_stop_ack_is_orphaned():
+    """P1-2 最小反例：会话已建立、无 outcome、无 ACK → ORPHANED 保留 ownership。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_running_remote_job(db)
+    request = _remote_normal_request(
+        requested_status=AiJobStatus.INTERRUPTED,
+        error_message="transport disconnected",
+    )
+    result = convergence.converge_job_attempt_sync(db, request)
+
+    assert result.changed is True
+    assert result.status == AiJobStatus.ORPHANED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    # ownership / durable locator 必须保留给 reaper。
+    assert saved.run_token == "run-1"
+    assert saved.session_id == "persisted-session-1"
+
+
+def test_remote_normal_stop_nack_is_orphaned():
+    """stop NACK（ack=False）同样不得清 ownership。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_running_remote_job(db)
+    request = _remote_normal_request(remote_stop_acknowledged=False)
+    result = convergence.converge_job_attempt_sync(db, request)
+
+    assert result.changed is True
+    assert result.status == AiJobStatus.ORPHANED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.run_token == "run-1"
+
+
+def test_remote_normal_result_allows_business_terminal():
+    """provider outcome 明确完成 → 允许请求的业务终态并清 ownership。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_running_remote_job(db)
+    request = _remote_normal_request(
+        requested_status=AiJobStatus.FAILED,
+        provider_outcome_seen=True,
+    )
+    result = convergence.converge_job_attempt_sync(db, request)
+
+    assert result.changed is True
+    assert result.status == AiJobStatus.FAILED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.run_token is None
+    assert saved.finished_at is not None
+
+
+def test_remote_session_never_started_allows_clean_failure():
+    """远程会话从未建立 → 没有服务端回合需要停止，允许干净失败。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_running_remote_job(db)
+    request = _remote_normal_request(
+        requested_status=AiJobStatus.FAILED,
+        remote_session_started=False,
+    )
+    result = convergence.converge_job_attempt_sync(db, request)
+
+    assert result.changed is True
+    assert result.status == AiJobStatus.FAILED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.run_token is None
+
+
+def test_remote_stop_ack_allows_interrupted():
+    """明确 stop ACK → 允许失败/中断业务终态。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_running_remote_job(db)
+    request = _remote_normal_request(
+        requested_status=AiJobStatus.INTERRUPTED,
+        remote_stop_acknowledged=True,
+    )
+    result = convergence.converge_job_attempt_sync(db, request)
+
+    assert result.changed is True
+    assert result.status == AiJobStatus.INTERRUPTED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.run_token is None

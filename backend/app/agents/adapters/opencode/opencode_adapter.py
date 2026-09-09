@@ -805,6 +805,25 @@ class OpenCodeAdapter(AgentBackend):
             )
         return await self._abort_session(sid)
 
+    async def cancel_persisted_session(self, session_id: str) -> "AgentStopResult":
+        """Reaper durable stop：目标必须是显式传入的持久化 session id。
+
+        禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
+        session 必然为空；doc 修复方案 §9.3 的 P1-3 修复）。
+        """
+        from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
+
+        sid = str(session_id or "").strip()
+        self._running = False
+        if not sid:
+            return AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=False,
+                failure_code="REMOTE_STOP_LOCATOR_MISSING",
+                error_message="persisted OpenCode session id is required",
+            )
+        return await self._abort_session(sid)
+
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running
 

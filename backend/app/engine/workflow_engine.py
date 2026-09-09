@@ -33,6 +33,7 @@ from app.agents import (
     AgentRunResult,
     AgentStopResult,
     AgentTimeoutError,
+    EXECUTION_KIND_REMOTE_SESSION,
 )
 from app.agents.run_logging import run_agent_backend_with_logging
 from app.engine.claude_event_adapter import (
@@ -325,6 +326,10 @@ class WorkflowEngine:
         self.last_result_text: str = ""
         self.last_result_interrupted = False
         self.last_termination_confirmed_dead: Optional[bool] = None
+        # 最近一次真实 provider result（AgentRunResult）。只有 backend 返回
+        # 结果对象时才赋值：引擎异常/超时/中断路径不会设置它，finalizer
+        # 以此区分“provider 已结束”与“业务是否成功”（doc 审计 P1-1）。
+        self.last_result: Optional[AgentRunResult] = None
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_model: Optional[str] = None
@@ -1732,6 +1737,7 @@ class WorkflowEngine:
             self.last_result_text = ""
             self.last_result_interrupted = False
             self.last_termination_confirmed_dead = None
+            self.last_result = None
             self._hitl_requested_in_turn = False
             self._pending_confirmations.clear()
             self._thinking_buffer = ""
@@ -1808,6 +1814,9 @@ class WorkflowEngine:
                         request,
                         self.handle_agent_event,
                     )
+                    # 真实 provider result 已到达：先登记再持久化。持久化
+                    # 失败不能抹掉“provider 已结束”的证据（doc 审计 P1-1）。
+                    self.last_result = result
                     self.last_termination_confirmed_dead = getattr(
                         result, "termination_confirmed_dead", None
                     )
@@ -1845,6 +1854,12 @@ class WorkflowEngine:
                     self.last_termination_confirmed_dead = getattr(
                         e, "termination_confirmed_dead"
                     )
+                # 远程 adapter 在 session 已建立后的异常出口必须尝试停止并
+                # 记录结构化 stop 证据；stop 失败不吞异常语义，而是把
+                # ACK=False/UNKNOWN 交给 convergence（doc 修复方案 §8.3）。
+                # P0-2/P1-2 之前：非 timeout 的 AgentError 直接抛到 failure
+                # finalizer，NORMAL_FINALIZE 可能清掉仍存活 session 的 ownership。
+                await self._stop_remote_session_after_error()
                 error_text = str(e)
                 timeout_markers = ("timed out", "timeout", "etimedout", "请求超时", "连接超时")
                 is_timeout = any(marker in error_text.lower() for marker in timeout_markers)
@@ -1881,6 +1896,67 @@ class WorkflowEngine:
                     unregister_engine(self.task_id)
                 # 其余为可恢复态（INTERRUPTED/WAITING_HITL/超时）：保留以快速 resume，
                 # 由空闲收割器按 ENGINE_IDLE_TTL_SECONDS 兜底摘除
+
+    async def _stop_remote_session_after_error(self) -> None:
+        """异常出口的远程会话兜底停止（doc 修复方案 §8.3）。
+
+        仅当 backend 声明 REMOTE_SESSION 且本回合已建立 provider session、
+        且 attempt runtime 尚无任何 stop 证据时才尝试（用户 interrupt 已取得
+        的 ACK 绝不能被兜底的 NACK 覆盖：runtime 槽位 latest-wins）。停止
+        尝试有界超时；任何失败都以 ACK=False/UNKNOWN 结构化记录，绝不吞掉
+        原异常语义，也绝不伪造 ACK。
+        """
+        cli = self.cli
+        if cli is None or self.session_id is None:
+            return
+        kind = str(
+            getattr(getattr(cli, "capabilities", None), "execution_kind", "") or ""
+        ).strip()
+        if kind != "REMOTE_SESSION":
+            return
+        from app.agents.contract import (
+            record_attempt_remote_stop,
+            current_agent_attempt_runtime,
+        )
+
+        runtime = current_agent_attempt_runtime()
+        if runtime is not None and runtime.remote_stop_acknowledged is not None:
+            # 已有 stop 证据（interrupt/stop 路径记录）：不得覆盖。
+            return
+        stop_timeout = min(
+            30.0,
+            max(5.0, float(getattr(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 30) or 30)),
+        )
+        try:
+            if hasattr(cli, "cancel_persisted_session"):
+                stop_result = await asyncio.wait_for(
+                    cli.cancel_persisted_session(self.session_id),
+                    timeout=stop_timeout,
+                )
+            else:
+                stop_result = await asyncio.wait_for(
+                    cli.cancel(), timeout=stop_timeout
+                )
+            if isinstance(stop_result, AgentStopResult):
+                record_attempt_remote_stop(stop_result)
+        except asyncio.CancelledError:
+            raise
+        except Exception as stop_exc:
+            logger.warning(
+                "Remote session stop after engine error was not confirmed: "
+                "task_id={}, session_id={}, error={}",
+                self.task_id,
+                self.session_id,
+                stop_exc,
+            )
+            record_attempt_remote_stop(
+                AgentStopResult(
+                    execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                    stop_acknowledged=False,
+                    failure_code="REMOTE_STOP_UNCONFIRMED",
+                    error_message=str(stop_exc) or type(stop_exc).__name__,
+                )
+            )
 
     async def send_message(self, prompt: str, *, job_id: Optional[str] = None):
         """
