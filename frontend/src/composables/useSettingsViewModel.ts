@@ -1,4 +1,4 @@
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Bell, Bot, Languages, Link, MonitorCog, Palette, Shield, Users } from 'lucide-vue-next'
@@ -29,6 +29,34 @@ export function useSettingsViewModel() {
     permissions: PermissionFlags
     is_expert: boolean
   }
+
+  type BatchAddResult = {
+    email: string
+    ok: boolean
+    reason: string
+  }
+
+  type ParsedBatchEmail = {
+    email: string
+    state: 'ok' | 'duplicate' | 'invalid' | 'repeat'
+  }
+
+  type MemberViewFilter = 'all' | 'owner' | 'developer' | 'viewer' | 'expert'
+
+  type InviteLinkItem = {
+    id: string
+    token: string
+    role: string
+    is_expert: boolean
+    permissions: Record<string, boolean>
+    max_uses: number | null
+    used_count: number
+    remaining_uses: number | null
+    expires_at: string | null
+    created_at: string
+    status: string
+    created_by_name: string
+  }
   
   type MyPermissionPayload = {
     workspace_id: string
@@ -45,6 +73,7 @@ export function useSettingsViewModel() {
     page_size: number
   }
   
+  // 服务端分页：与控制台表格的页码/分页器保持一致
   const MEMBER_PAGE_SIZE = 5
   
   const route = useRoute()
@@ -68,7 +97,6 @@ export function useSettingsViewModel() {
   
   const loadingMembers = ref(false)
   const membersError = ref('')
-  const addingMember = ref(false)
   const savingMemberId = ref('')
   const removingMemberId = ref('')
   const showRemoveConfirm = ref(false)
@@ -83,12 +111,37 @@ export function useSettingsViewModel() {
   const appearanceError = ref('')
   const appearanceSuccess = ref('')
   
-  const addForm = reactive({
-    user_email: '',
+  const batchAddInput = ref('')
+  const batchAddRole = ref<'DEVELOPER' | 'VIEWER'>('DEVELOPER')
+  const batchAddExpert = ref(false)
+  const batchAddPermissions = ref<PermissionFlags>(defaultPermissionsByRole('DEVELOPER'))
+  const batchAddRunning = ref(false)
+  const batchAddDone = ref(false)
+  const batchAddResults = ref<BatchAddResult[]>([])
+  const showAddModal = ref(false)
+
+  const memberViewFilter = ref<MemberViewFilter>('all')
+  const selectedMemberIds = ref<Record<string, boolean>>({})
+  const batchRoleValue = ref<'DEVELOPER' | 'VIEWER'>('DEVELOPER')
+  const batchApplying = ref(false)
+  const batchRemoving = ref(false)
+  const showBatchRemoveConfirm = ref(false)
+
+  const addModalTab = ref<'email' | 'link'>('email')
+  const inviteLinks = ref<InviteLinkItem[]>([])
+  const inviteLinksLoading = ref(false)
+  const inviteLinkError = ref('')
+  const inviteLinkCreating = ref(false)
+  const revokingLinkId = ref('')
+  const inviteLinkJustCreated = ref<InviteLinkItem | null>(null)
+  const inviteLinkForm = ref({
     role: 'DEVELOPER' as 'DEVELOPER' | 'VIEWER',
+    valid_days: 7,
+    max_uses: 5,
     is_expert: false,
-    permissions: defaultPermissionsByRole('DEVELOPER'),
   })
+
+  const BATCH_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   
   const permissionOptions = computed(() => [
     { key: 'create_task' as PermissionKey, label: t('settings.members.permissions.create_task') },
@@ -173,6 +226,83 @@ export function useSettingsViewModel() {
     { value: 'DEVELOPER', label: t('settings.members.role_developer') },
     { value: 'VIEWER', label: t('settings.members.role_viewer') },
   ])
+  const consoleMembers = computed<WorkspaceMember[]>(() => {
+    const list: WorkspaceMember[] = []
+    if (ownerMember.value) list.push(ownerMember.value)
+    list.push(...members.value)
+    return list
+  })
+  const filteredConsoleMembers = computed(() => {
+    switch (memberViewFilter.value) {
+      case 'owner':
+        return consoleMembers.value.filter(member => member.is_owner || member.role === 'OWNER')
+      case 'developer':
+        return consoleMembers.value.filter(member => !member.is_owner && member.role === 'DEVELOPER')
+      case 'viewer':
+        return consoleMembers.value.filter(member => !member.is_owner && member.role === 'VIEWER')
+      case 'expert':
+        return consoleMembers.value.filter(member => member.is_expert)
+      default:
+        return consoleMembers.value
+    }
+  })
+  const memberViewCounts = computed(() => {
+    const counts = { all: 0, owner: 0, developer: 0, viewer: 0, expert: 0 }
+    for (const member of consoleMembers.value) {
+      counts.all += 1
+      if (member.is_owner || member.role === 'OWNER') {
+        counts.owner += 1
+      } else if (member.role === 'VIEWER') {
+        counts.viewer += 1
+      } else {
+        counts.developer += 1
+      }
+      if (member.is_expert) counts.expert += 1
+    }
+    return counts
+  })
+  const selectableFilteredMembers = computed(() => filteredConsoleMembers.value.filter(member => !member.is_owner))
+  const selectableFilteredCount = computed(() => selectableFilteredMembers.value.length)
+  const allFilteredSelected = computed(() => (
+    selectableFilteredCount.value > 0
+    && selectableFilteredMembers.value.every(member => selectedMemberIds.value[member.id])
+  ))
+  const selectedMemberCount = computed(() => (
+    consoleMembers.value.filter(member => !member.is_owner && selectedMemberIds.value[member.id]).length
+  ))
+  const selectedMembers = computed(() => (
+    consoleMembers.value.filter(member => !member.is_owner && selectedMemberIds.value[member.id])
+  ))
+  const batchAddEmails = computed<ParsedBatchEmail[]>(() => {
+    const seen = new Set<string>()
+    const parsed: ParsedBatchEmail[] = []
+    for (const raw of batchAddInput.value.split(/[\s,;，；]+/)) {
+      const email = raw.trim().toLowerCase()
+      if (!email) continue
+      if (seen.has(email)) {
+        parsed.push({ email, state: 'repeat' })
+        continue
+      }
+      seen.add(email)
+      if (consoleMembers.value.some(member => member.email.trim().toLowerCase() === email)) {
+        parsed.push({ email, state: 'duplicate' })
+      } else if (!BATCH_EMAIL_PATTERN.test(email)) {
+        parsed.push({ email, state: 'invalid' })
+      } else {
+        parsed.push({ email, state: 'ok' })
+      }
+    }
+    return parsed
+  })
+  const batchAddValidEmails = computed(() => batchAddEmails.value
+    .filter(item => item.state === 'ok')
+    .map(item => item.email))
+  const batchAddBlockedCount = computed(() => batchAddEmails.value
+    .filter(item => item.state !== 'ok')
+    .length)
+  const batchAddEnabledCount = computed(() => (
+    permissionOptions.value.reduce((total, option) => total + (batchAddPermissions.value[option.key] ? 1 : 0), 0)
+  ))
   const previewAvatarSvg = computed(() => {
     const templateSvg = buildAvatarSvg({
       displayName: authStore.user?.display_name || '',
@@ -215,11 +345,128 @@ export function useSettingsViewModel() {
     return t('settings.members.role_viewer')
   }
   
-  const resetAddFormByRole = () => {
-    addForm.permissions = defaultPermissionsByRole(addForm.role)
+  watch(batchAddRole, () => {
+    batchAddPermissions.value = defaultPermissionsByRole(batchAddRole.value)
+  })
+
+  const toggleMemberSelected = (memberId: string) => {
+    selectedMemberIds.value = { ...selectedMemberIds.value, [memberId]: !selectedMemberIds.value[memberId] }
   }
-  
-  watch(() => addForm.role, resetAddFormByRole)
+
+  const isMemberSelected = (memberId: string) => Boolean(selectedMemberIds.value[memberId])
+
+  const clearMemberSelection = () => {
+    selectedMemberIds.value = {}
+  }
+
+  const toggleSelectAllFiltered = () => {
+    const next: Record<string, boolean> = { ...selectedMemberIds.value }
+    const shouldSelect = !allFilteredSelected.value
+    for (const member of selectableFilteredMembers.value) {
+      if (shouldSelect) {
+        next[member.id] = true
+      } else {
+        delete next[member.id]
+      }
+    }
+    selectedMemberIds.value = next
+  }
+
+  const toggleDraftExpert = (memberId: string) => {
+    const draft = memberDrafts.value[memberId]
+    if (draft) draft.is_expert = !draft.is_expert
+  }
+
+  const openAddModal = () => {
+    if (!canManageMembers.value) return
+    batchAddInput.value = ''
+    batchAddRole.value = 'DEVELOPER'
+    batchAddExpert.value = false
+    batchAddPermissions.value = defaultPermissionsByRole('DEVELOPER')
+    batchAddRunning.value = false
+    batchAddDone.value = false
+    batchAddResults.value = []
+    showAddModal.value = true
+    addModalTab.value = 'email'
+    inviteLinkJustCreated.value = null
+    loadInviteLinks()
+  }
+
+  const closeAddModal = () => {
+    if (batchAddRunning.value) return
+    showAddModal.value = false
+  }
+
+  const resetBatchAdd = () => {
+    if (batchAddRunning.value) return
+    batchAddInput.value = ''
+    batchAddDone.value = false
+    batchAddResults.value = []
+  }
+
+  const loadInviteLinks = async () => {
+    if (!workspaceId.value || !canManageMembers.value) return
+    inviteLinksLoading.value = true
+    inviteLinkError.value = ''
+    try {
+      const res = await api.get(`/workspaces/${workspaceId.value}/invite-links`)
+      inviteLinks.value = res.data?.items || []
+    } catch (error) {
+      inviteLinkError.value = formatApiError(error, t('settings.members.invite_link_load_failed'), t)
+    } finally {
+      inviteLinksLoading.value = false
+    }
+  }
+
+  const createInviteLink = async () => {
+    if (!workspaceId.value || !canManageMembers.value || inviteLinkCreating.value) return
+
+    inviteLinkCreating.value = true
+    inviteLinkError.value = ''
+    try {
+      const form = inviteLinkForm.value
+      const res = await api.post(`/workspaces/${workspaceId.value}/invite-links`, {
+        role: form.role,
+        is_expert: form.is_expert,
+        valid_days: form.valid_days,
+        max_uses: form.max_uses,
+      })
+      inviteLinkJustCreated.value = res.data as InviteLinkItem
+      await loadInviteLinks()
+    } catch (error) {
+      inviteLinkError.value = formatApiError(error, t('settings.members.invite_link_create_failed'), t)
+    } finally {
+      inviteLinkCreating.value = false
+    }
+  }
+
+  const revokeInviteLink = async (link: InviteLinkItem) => {
+    if (!workspaceId.value || revokingLinkId.value) return
+
+    revokingLinkId.value = link.id
+    inviteLinkError.value = ''
+    try {
+      await api.delete(`/workspaces/${workspaceId.value}/invite-links/${link.id}`)
+      if (inviteLinkJustCreated.value?.id === link.id) {
+        inviteLinkJustCreated.value = null
+      }
+      await loadInviteLinks()
+    } catch (error) {
+      inviteLinkError.value = formatApiError(error, t('settings.members.invite_link_revoke_failed'), t)
+    } finally {
+      revokingLinkId.value = ''
+    }
+  }
+
+  const buildInviteJoinUrl = (token: string) => `${window.location.origin}/join/${token}`
+
+  const copyInviteLinkUrl = async (token: string) => {
+    try {
+      await navigator.clipboard.writeText(buildInviteJoinUrl(token))
+    } catch {
+      /* 剪贴板不可用时静默失败，用户可手动选择链接文本复制 */
+    }
+  }
   
   const seedMemberDrafts = () => {
     const nextDrafts: Record<string, MemberDraft> = {}
@@ -379,6 +626,7 @@ export function useSettingsViewModel() {
   
       seedMemberDrafts()
       seedPermissionExpandState()
+      clearMemberSelection()
     } catch (error) {
       membersError.value = formatApiError(error, t('settings.members.load_failed'), t)
     } finally {
@@ -405,29 +653,43 @@ export function useSettingsViewModel() {
     await loadMembers({ page: memberPage.value + 1 })
   }
   
-  const addMember = async () => {
-    if (!workspaceId.value || !canManageMembers.value || !addForm.user_email.trim()) return
-  
-    addingMember.value = true
+  const runBatchAdd = async () => {
+    if (!workspaceId.value || !canManageMembers.value || batchAddRunning.value) return
+
+    const emails = batchAddValidEmails.value
+    if (emails.length === 0) return
+
+    batchAddRunning.value = true
     membersError.value = ''
+    batchAddDone.value = false
+    batchAddResults.value = []
+    const results: BatchAddResult[] = []
+
     try {
-      await api.post(`/workspaces/${workspaceId.value}/members`, {
-        user_email: addForm.user_email.trim(),
-        role: addForm.role,
-        is_expert: addForm.is_expert,
-        permissions: addForm.permissions,
-      })
-  
-      addForm.user_email = ''
-      addForm.role = 'DEVELOPER'
-      addForm.is_expert = false
-      addForm.permissions = defaultPermissionsByRole('DEVELOPER')
-  
+      for (const email of emails) {
+        try {
+          await api.post(`/workspaces/${workspaceId.value}/members`, {
+            user_email: email,
+            role: batchAddRole.value,
+            is_expert: batchAddExpert.value,
+            permissions: batchAddPermissions.value,
+          })
+          results.push({ email, ok: true, reason: '' })
+        } catch (error) {
+          results.push({
+            email,
+            ok: false,
+            reason: formatApiError(error, t('settings.members.add_failed'), t),
+          })
+        }
+      }
+
+      batchAddResults.value = results
+      batchAddDone.value = true
+      batchAddInput.value = ''
       await loadMembers()
-    } catch (error) {
-      membersError.value = formatApiError(error, t('settings.members.add_failed'), t)
     } finally {
-      addingMember.value = false
+      batchAddRunning.value = false
     }
   }
   
@@ -451,6 +713,109 @@ export function useSettingsViewModel() {
     }
   }
   
+  const applyBatchRole = async () => {
+    if (!workspaceId.value || !canManageMembers.value || batchApplying.value) return
+
+    const targets = selectedMembers.value
+    if (targets.length === 0) return
+
+    batchApplying.value = true
+    membersError.value = ''
+    let failures = 0
+    try {
+      for (const member of targets) {
+        try {
+          await api.put(`/workspaces/${workspaceId.value}/members/${member.id}`, {
+            role: batchRoleValue.value,
+            is_expert: Boolean(member.is_expert),
+            permissions: defaultPermissionsByRole(batchRoleValue.value),
+          })
+        } catch {
+          failures += 1
+        }
+      }
+
+      if (failures > 0) {
+        membersError.value = t('settings.members.batch_partial_failed', { count: failures })
+      }
+      clearMemberSelection()
+      await loadMembers()
+    } finally {
+      batchApplying.value = false
+    }
+  }
+
+  const applyBatchExpert = async (expert: boolean) => {
+    if (!workspaceId.value || !canManageMembers.value || batchApplying.value) return
+
+    const targets = selectedMembers.value
+    if (targets.length === 0) return
+
+    batchApplying.value = true
+    membersError.value = ''
+    let failures = 0
+    try {
+      for (const member of targets) {
+        try {
+          await api.put(`/workspaces/${workspaceId.value}/members/${member.id}`, {
+            role: member.role === 'VIEWER' ? 'VIEWER' : 'DEVELOPER',
+            is_expert: expert,
+            permissions: member.permissions,
+          })
+        } catch {
+          failures += 1
+        }
+      }
+
+      if (failures > 0) {
+        membersError.value = t('settings.members.batch_partial_failed', { count: failures })
+      }
+      clearMemberSelection()
+      await loadMembers()
+    } finally {
+      batchApplying.value = false
+    }
+  }
+
+  const askRemoveSelectedMembers = () => {
+    if (!canManageMembers.value || selectedMembers.value.length === 0) return
+    showBatchRemoveConfirm.value = true
+  }
+
+  const closeBatchRemoveDialog = () => {
+    if (batchRemoving.value) return
+    showBatchRemoveConfirm.value = false
+  }
+
+  const confirmRemoveSelectedMembers = async () => {
+    if (!workspaceId.value || !canManageMembers.value || batchRemoving.value) return
+
+    const targets = selectedMembers.value
+    if (targets.length === 0) return
+
+    batchRemoving.value = true
+    membersError.value = ''
+    let failures = 0
+    try {
+      for (const member of targets) {
+        try {
+          await api.delete(`/workspaces/${workspaceId.value}/members/${member.id}`)
+        } catch {
+          failures += 1
+        }
+      }
+
+      if (failures > 0) {
+        membersError.value = t('settings.members.batch_partial_failed', { count: failures })
+      }
+      showBatchRemoveConfirm.value = false
+      clearMemberSelection()
+      await loadMembers()
+    } finally {
+      batchRemoving.value = false
+    }
+  }
+
   const askRemoveMember = (member: WorkspaceMember) => {
     if (!canManageMembers.value || member.is_owner) return
     memberToRemove.value = member
@@ -505,32 +870,64 @@ export function useSettingsViewModel() {
 
   return {
     activeSection,
-    addForm,
-    addingMember,
-    addMember,
+    allFilteredSelected,
+    addModalTab,
+    applyBatchExpert,
+    applyBatchRole,
     appearanceError,
     appearanceSuccess,
     applyDraftRoleDefaults,
     askRemoveMember,
+    askRemoveSelectedMembers,
     authStore,
     avatarMode,
     avatarSaving,
     avatarTemplateColor,
     avatarTemplateOptions,
     avatarTemplateStyle,
+    batchAddBlockedCount,
+    batchAddDone,
+    batchAddEmails,
+    batchAddExpert,
+    batchAddInput,
+    batchAddEnabledCount,
+    batchAddPermissions,
+    batchAddResults,
+    batchAddRole,
+    batchAddRunning,
+    batchAddValidEmails,
+    batchApplying,
+    batchRemoving,
+    batchRoleValue,
+    buildInviteJoinUrl,
     canManageMembers,
     changeLanguage,
     clearAppearanceMessage,
     clearMemberSearch,
+    clearMemberSelection,
+    closeAddModal,
+    closeBatchRemoveDialog,
     closeRemoveDialog,
     confirmRemoveMember,
+    confirmRemoveSelectedMembers,
+    consoleMembers,
+    copyInviteLinkUrl,
+    createInviteLink,
     createEmptyPermissions,
     currentLang,
     defaultPermissionsByRole,
     enabledPermissionCount,
+    filteredConsoleMembers,
     getDraft,
     handleAvatarFileChange,
+    inviteLinkCreating,
+    inviteLinkError,
+    inviteLinkForm,
+    inviteLinkJustCreated,
+    inviteLinks,
+    inviteLinksLoading,
     isAvatarSvgValidationError,
+    isMemberSelected,
     isPermissionExpanded,
     loadAppearanceStateFromUser,
     loadingMembers,
@@ -547,8 +944,11 @@ export function useSettingsViewModel() {
     membersError,
     memberToRemove,
     memberTotal,
+    memberViewCounts,
+    memberViewFilter,
     myPermissionPayload,
     nextMemberPage,
+    openAddModal,
     ownerMember,
     permissionOptionCount,
     permissionOptions,
@@ -556,19 +956,30 @@ export function useSettingsViewModel() {
     previewAvatarUrl,
     prevMemberPage,
     removingMemberId,
-    resetAddFormByRole,
+    resetBatchAdd,
+    revokingLinkId,
+    revokeInviteLink,
     roleTag,
     route,
+    runBatchAdd,
     runMemberSearch,
     saveAvatarPreference,
     saveMember,
     savingMemberId,
     seedMemberDrafts,
     seedPermissionExpandState,
+    selectableFilteredCount,
+    selectedMemberCount,
+    selectedMembers,
     settingsSections,
+    showAddModal,
+    showBatchRemoveConfirm,
     showRemoveConfirm,
     t,
+    toggleDraftExpert,
+    toggleMemberSelected,
     togglePermissionExpanded,
+    toggleSelectAllFiltered,
     totalMemberCount,
     totalMemberPages,
     uploadedFileName,
