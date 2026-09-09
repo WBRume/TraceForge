@@ -326,6 +326,10 @@ class WorkflowEngine:
         self.last_result_text: str = ""
         self.last_result_interrupted = False
         self.last_termination_confirmed_dead: Optional[bool] = None
+        # 最近一次真实 provider result（AgentRunResult）。只有 backend 返回
+        # 结果对象时才赋值：引擎异常/超时/中断路径不会设置它，finalizer
+        # 以此区分“provider 已结束”与“业务是否成功”（doc 审计 P1-1）。
+        self.last_result: Optional[AgentRunResult] = None
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
         self._runtime_model: Optional[str] = None
@@ -1733,6 +1737,7 @@ class WorkflowEngine:
             self.last_result_text = ""
             self.last_result_interrupted = False
             self.last_termination_confirmed_dead = None
+            self.last_result = None
             self._hitl_requested_in_turn = False
             self._pending_confirmations.clear()
             self._thinking_buffer = ""
@@ -1809,6 +1814,9 @@ class WorkflowEngine:
                         request,
                         self.handle_agent_event,
                     )
+                    # 真实 provider result 已到达：先登记再持久化。持久化
+                    # 失败不能抹掉“provider 已结束”的证据（doc 审计 P1-1）。
+                    self.last_result = result
                     self.last_termination_confirmed_dead = getattr(
                         result, "termination_confirmed_dead", None
                     )

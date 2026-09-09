@@ -211,8 +211,9 @@ def _find_absent_pid() -> int:
 class _MarkerlessFakeProcess:
     """Same-UID system process (sd-pam shape): readable cmdline, no marker."""
 
-    def __init__(self, *, pid: int):
+    def __init__(self, *, pid: int, create_time: float | None = None):
         self.pid = pid
+        self._create_time = create_time
 
     def uids(self):
         return SimpleNamespace(real=os.getuid())
@@ -220,34 +221,38 @@ class _MarkerlessFakeProcess:
     def cmdline(self):
         return ["(sd-pam)"]
 
+    def create_time(self):
+        if self._create_time is None:
+            raise psutil.AccessDenied(self.pid)
+        return self._create_time
+
     def environ(self):
         raise psutil.AccessDenied(self.pid)
 
 
 @pytest.mark.asyncio
-async def test_token_scan_skips_markerless_system_processes(monkeypatch):
-    """sd-pam 形状的同 UID 系统进程（environ 永久不可读）不会瘫痪 discovery。"""
-    fakes = [_MarkerlessFakeProcess(pid=_find_absent_pid())]
-    real_iter = psutil.process_iter
+async def test_markerless_environ_unreadable_requires_verifiable_boundary(monkeypatch):
+    """P0-2（修正过强假设）：markerless + environ 不可读的同 UID 进程只有
+    在“启动时间早于本 attempt”可验证时才可排除；命令名不是归属证据。
+    """
+    fake = _MarkerlessFakeProcess(pid=_find_absent_pid(), create_time=time.time())
+    monkeypatch.setattr(psutil, "process_iter", lambda *_a, **_kw: iter([fake]))
 
-    def mixed_iter(*_a, **_kw):
-        # fakes + 真实进程表，模拟真实系统上的混合扫描。
-        yield from fakes
-        yield from real_iter(["pid"])
+    # 无可信边界：无法证明该进程不属于本 attempt → UNKNOWN（正确性优先）。
+    result = await process_supervisor.stop_by_run_token_discovery("token-1", "test")
+    assert result is not None
+    assert result.confirmed_dead is None
+    assert result.error_code == TOKEN_DISCOVERY_UNKNOWN
+    assert fake.pid in result.remaining_pids
 
-    monkeypatch.setattr(psutil, "process_iter", mixed_iter)
-    result = await process_supervisor.stop_by_run_token_discovery(
-        f"probe-token-{os.getpid()}", "test"
+    # 可验证边界：create time 严格早于 not_before → 可安全排除，扫描完整。
+    result2 = await process_supervisor.stop_by_run_token_discovery(
+        "token-1",
+        "test",
+        not_before=datetime.now(timezone.utc) + timedelta(hours=1),
     )
-    # 真实系统上可能仍有 marker 进程的 environ 不可读（UNKNOWN 合法），
-    # 但绝不能因为 marker-less 系统进程而 UNKNOWN。
-    if result is not None and result.confirmed_dead is None:
-        for pid in result.remaining_pids:
-            proc = psutil.Process(pid)
-            command = " ".join(proc.cmdline()).lower()
-            assert any(
-                marker in command for marker in ("claude", "node", "traceforge")
-            ), f"marker-less process {pid} must not invalidate the scan"
+    assert result2 is not None
+    assert result2.confirmed_dead is True
 
 
 @pytest.mark.asyncio
@@ -302,6 +307,10 @@ async def test_token_process_iter_failure_is_global_unknown(monkeypatch):
 async def test_stop_by_run_token_discovery_kills_exact_token_target():
     """token 精确匹配：只杀目标 token，不杀同 UID 的其他测试进程。"""
     token = f"linux-audit-{os.getpid()}-{time.time_ns()}"
+    # P0-2：调用方必须提供受信任的 attempt 时间边界（生产 reaper 传
+    # job_started_at）；边界之前的同 UID 系统进程（sd-pam 等）被可验证地
+    # 排除，普通工具子进程（无 marker）仍会被精确匹配。
+    not_before = datetime.now(timezone.utc)
     target = subprocess.Popen(
         [sys.executable, "-c", _SLEEP_SOURCE, "traceforge-marker"],
         start_new_session=True,
@@ -316,7 +325,9 @@ async def test_stop_by_run_token_discovery_kills_exact_token_target():
     try:
         assert target_pgid == target.pid
         assert _wait_until(lambda: _token_visible(token)), "token process not visible"
-        result = await process_supervisor.stop_by_run_token_discovery(token, "test")
+        result = await process_supervisor.stop_by_run_token_discovery(
+            token, "test", not_before=not_before
+        )
         assert result is not None
         assert result.confirmed_dead is True
         # SIGKILL 后的僵尸进程仍留在组内；先收割目标子进程再断言组消失。
@@ -377,9 +388,9 @@ async def test_persisted_token_scan_does_not_block_event_loop(monkeypatch):
     """P1-1：慢 token 扫描只占 inspection worker，不占主事件循环。"""
     original = supervisor_module._scan_token_processes_sync
 
-    def slow_scan(token: str):
+    def slow_scan(token: str, _not_before=None):
         time.sleep(0.20)
-        return original(token)
+        return original(token, _not_before)
 
     monkeypatch.setattr(supervisor_module, "_scan_token_processes_sync", slow_scan)
 
@@ -395,7 +406,11 @@ async def test_persisted_token_scan_does_not_block_event_loop(monkeypatch):
 
     _, token_task = await asyncio.gather(
         ticker(),
-        process_supervisor.stop_by_run_token_discovery("missing-token", "lag-test"),
+        process_supervisor.stop_by_run_token_discovery(
+            "missing-token",
+            "lag-test",
+            not_before=datetime.now(timezone.utc) + timedelta(hours=1),
+        ),
     )
     assert token_task is not None and token_task.confirmed_dead is True
     assert max(gaps) < 0.10

@@ -41,6 +41,7 @@ from app.agents import (
     AgentAttemptContext,
     AgentAttemptRuntimeState,
     AgentProcessIdentity,
+    AgentRunResult,
     AgentStopResult,
     EXECUTION_KIND_LOCAL_PROCESS,
     EXECUTION_KIND_REMOTE_SESSION,
@@ -4839,9 +4840,10 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
             await engine.run(prompt)
 
         await _finalize_task_chat_job_from_engine(job_id, engine)
-        # provider outcome 只能来自引擎收到的明确 result event；
-        # “run/send_message 正常返回”本身不构成 provider outcome。
-        return getattr(engine, "last_result_success", None) is not None
+        # provider outcome 只能来自引擎收到的真实 provider result；
+        # “run/send_message 正常返回”不构成 outcome，引擎异常路径赋的
+        # last_result_success=False 也绝不构成 outcome（doc 审计 P1-1）。
+        return getattr(engine, "last_result", None) is not None
 
 
 def _finalize_task_chat_job_sync(
@@ -4917,6 +4919,27 @@ def _finalize_task_chat_job_sync(
     return result.payload
 
 
+def _engine_provider_result(engine: Any) -> Optional[AgentRunResult]:
+    """Extract the provider outcome evidence from an engine (doc 审计 P1-1).
+
+    优先使用真实 ``AgentRunResult``（引擎异常/持久化失败都不会设置它）；
+    兼容路径仅在 ``last_result_success is True`` 时合成最小 result——异常/
+    超时/中断路径只会把它赋成 False/None，因此 ``True`` 只能来自真实
+    result 事件。``False``（provider 明确失败）绝不在此合成为 outcome：
+    远程会话的明确失败必须由真实 result 对象或 stop ACK 证明。
+    """
+    provider_result = getattr(engine, "last_result", None)
+    if provider_result is not None:
+        return provider_result
+    if getattr(engine, "last_result_success", None) is True:
+        return AgentRunResult(
+            session_id=str(getattr(engine, "session_id", "") or ""),
+            success=True,
+            result_text=str(getattr(engine, "last_result_text", "") or ""),
+        )
+    return None
+
+
 async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngine) -> None:
     # Fallback for missing callback updates.
     is_timeout_interrupted = bool(getattr(engine, "last_result_interrupted", False)) or _looks_like_timeout_text(
@@ -4929,6 +4952,7 @@ async def _finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngin
     # consumed by the unique resolver (doc §6.2).
     evidence = _resolve_attempt_evidence(
         fallback_dead=getattr(engine, "last_termination_confirmed_dead", None),
+        provider_result=_engine_provider_result(engine),
     )
     payload = await run_db_txn(
         lambda db: _finalize_task_chat_job_sync(
