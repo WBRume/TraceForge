@@ -312,24 +312,30 @@ async def test_reused_group_new_member_created_after_reuse_is_ambiguous():
 
 @pytest.mark.asyncio
 async def test_reused_group_verified_leftover_is_signaled_individually():
-    """复用 root + 可信残留后代：必须逐个验证身份后单独发信号（非 killpg），
-    且在残留停止前绝不允许 confirmed_dead=True。"""
+    """复用 root + 可信残留后代：必须逐个验证身份后经绑定句柄单独发信号
+    （非 killpg，绝不退回数字 PID），且在残留停止前绝不允许
+    confirmed_dead=True。"""
     member = _find_absent_pid()
     reused_ct = _PERSISTED_ROOT_START.timestamp() + 3600.0
     member_ct = _PERSISTED_ROOT_START.timestamp() + 60.0
     killed: list[tuple[int, int]] = []
+    fake_fd = 424242
 
     def fake_identity_sync(pid, *, want_pidfd=False):
-        # SIGTERM 后目标仍存活（升级场景）；SIGKILL 后目标消失。
+        # SIGKILL 已发送后目标消失（绑定句柄 ESRCH 的明确死亡证据）。
+        if any(sig == int(signal.SIGKILL) for _, sig in killed):
+            return ps._MemberIdentity(state=ps.MemberBindingState.GONE)
         return ps._MemberIdentity(
-            gone=any(sig == int(signal.SIGKILL) for _, sig in killed),
-            create_time=member_ct,
+            state=ps.MemberBindingState.BOUND, create_time=member_ct, pidfd=fake_fd
         )
 
     supervisor = process_supervisor
 
-    def fake_kill(pid, sig):
-        killed.append((int(pid), int(sig)))
+    def fake_pidfd_send(fd, sig, *args, **kwargs):
+        killed.append((member, int(sig)))
+        if int(sig) == int(signal.SIGKILL):
+            # 绑定句柄的 ESRCH：该实例在 KILL 后已退出。
+            raise ProcessLookupError(member)
 
     with patch.object(supervisor, "_persisted_root_snapshot", AsyncMock(return_value=_reused_root(reused_ct))), \
          patch.object(
@@ -339,13 +345,15 @@ async def test_reused_group_verified_leftover_is_signaled_individually():
          ), \
          patch.object(ps, "_probe_member_identity_sync", fake_identity_sync), \
          patch.object(ps.os, "killpg") as killpg, \
-         patch.object(ps.os, "kill", side_effect=fake_kill), \
-         patch.object(ps.os, "pidfd_open", side_effect=ProcessLookupError(member)):
+         patch.object(ps.os, "kill") as kill, \
+         patch.object(ps.os, "close"), \
+         patch.object(ps.signal, "pidfd_send_signal", side_effect=fake_pidfd_send):
         result = await supervisor.stop_persisted(
             987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654
         )
     assert not killpg.called
-    # 验证过的残留目标被逐个 SIGTERM/SIGKILL（os.kill，非整组）。
+    assert not kill.called, "绑定失败路径禁止退回数字 PID 发送"
+    # 验证过的残留目标被逐个 SIGTERM/SIGKILL（pidfd，非整组）。
     assert (member, int(signal.SIGTERM)) in killed
     assert (member, int(signal.SIGKILL)) in killed
     assert result.confirmed_dead is True

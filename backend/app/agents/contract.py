@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import uuid
 from abc import ABC, abstractmethod
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -160,6 +161,66 @@ class ProcessTerminationEvidence:
     remaining_pids: tuple[int, ...] = ()
 
 
+class ProviderCallState(str, Enum):
+    """单次 provider 调用的生命周期状态（doc 审计 07e04775 §4.2）。
+
+    证据必须在 result 事件到达时登记（早于 JSON 解析、业务落库、错误转换
+    和广播），而不是 helper 函数返回后补记。禁止把 ENDED 改回 STARTED：
+    某些 bridge 的 session_id 晚于 result 到达。STARTED/UNKNOWN 是未决
+    状态；ENDED 是唯一的终局结果证明。
+    """
+
+    NOT_STARTED = "NOT_STARTED"
+    STARTED = "STARTED"
+    ENDED = "ENDED"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass
+class ProviderCallEvidence:
+    """一次 provider 调用的证据，按 call 身份登记、按 attempt 归属隔离。
+
+    - ``call_id``：本次调用的唯一 id；typed 异常与返回值携带它，防止同
+      attempt 的重试/多次调用相互冒用结果。
+    - ``attempt_key``：(job_id, run_token, worker_boot_id)；解析证据时
+      必须按 key 过滤，跨 attempt 的调用不得互相兜底。
+    """
+
+    call_id: str
+    attempt_key: tuple = ()
+    state: ProviderCallState = ProviderCallState.NOT_STARTED
+    provider_session_id: str | None = None
+    result_success: bool | None = None
+
+    @property
+    def resolved(self) -> bool:
+        return self.state is ProviderCallState.ENDED
+
+    @property
+    def unresolved(self) -> bool:
+        return self.state in (ProviderCallState.STARTED, ProviderCallState.UNKNOWN)
+
+
+def agent_attempt_key(attempt: "AgentAttemptContext | None") -> tuple:
+    """(job_id, run_token, worker_boot_id) 归属键；没有 attempt 时为空元组。
+
+    空元组不与任何已登记 call 匹配：无 attempt 上下文的调用方不得消费
+    attempt-local 的 provider 调用证据。
+    """
+    if attempt is None:
+        return ()
+    return (
+        str(getattr(attempt, "job_id", "") or ""),
+        str(getattr(attempt, "run_token", "") or ""),
+        str(getattr(attempt, "worker_boot_id", "") or ""),
+    )
+
+
+def current_agent_attempt_key() -> tuple:
+    """当前绑定 attempt 的归属键。"""
+    return agent_attempt_key(_CURRENT_ATTEMPT.get())
+
+
 @dataclass
 class AgentAttemptRuntimeState:
     """本次 attempt 的进程生命周期证据（attempt-local，随 AgentAttemptContext 绑定）。
@@ -186,6 +247,47 @@ class AgentAttemptRuntimeState:
     # 远程会话是否已经建立（session_started 已发生）；用于把“从未建立远程
     # 会话”的取消与“会话存在但停止未被确认”区分开。
     remote_session_started: bool = False
+    # provider 调用证据（doc 审计 07e04775 §4.2）：按 call_id 登记、按
+    # attempt_key 隔离。终局 result 事件到达时必须立即写 ENDED，早于任何
+    # 解析/落库/错误转换；异常路径只允许 STARTED -> UNKNOWN，已 ENDED 的
+    # 证据绝不能被异常覆盖。进程重启后内存证据丢失仍按 durable locator /
+    # reaper 流程处理，空 runtime 不等于“从未开始”。
+    provider_calls: dict[str, ProviderCallEvidence] = field(default_factory=dict)
+
+    def begin_provider_call(self, attempt_key: tuple) -> ProviderCallEvidence:
+        """Register a brand-new provider call for this attempt.
+
+        每次调用（含重试）都必须新建记录：begin 绝不复用上一轮 ENDED 的
+        记录，否则前一次的终局证据会被冒用为本次的放行依据。
+        """
+        call = ProviderCallEvidence(
+            call_id=uuid.uuid4().hex,
+            attempt_key=tuple(attempt_key or ()),
+        )
+        self.provider_calls[call.call_id] = call
+        return call
+
+    def calls_for(self, attempt_key: tuple) -> list[ProviderCallEvidence]:
+        """All provider calls registered for one attempt key (insertion order)."""
+        key = tuple(attempt_key or ())
+        if not key:
+            return []
+        return [
+            call
+            for call in self.provider_calls.values()
+            if tuple(call.attempt_key or ()) == key
+        ]
+
+    def matches_current_attempt(self, call: ProviderCallEvidence) -> bool:
+        """Whether the currently bound attempt still owns this call's events.
+
+        迟到的回调（fence 变更/attempt 切换后）不得再写证据。
+        """
+        if call is None:
+            return False
+        return agent_attempt_key(_CURRENT_ATTEMPT.get()) == tuple(
+            call.attempt_key or ()
+        )
 
     def record_remote_stop(self, stop_result: "AgentStopResult | None") -> None:
         """Record the attempt's remote stop acknowledgement (latest wins)."""
@@ -433,6 +535,53 @@ def record_attempt_remote_session_started() -> None:
     state = _CURRENT_ATTEMPT_RUNTIME.get()
     if state is not None:
         state.remote_session_started = True
+
+
+def record_provider_call_session_started(
+    call: "ProviderCallEvidence | None", session_id: Any = None
+) -> None:
+    """Register the provider session id on one call (NOT_STARTED -> STARTED).
+
+    某些 bridge 的 session_id 晚于 result 到达：ENDED 是终局状态，绝不
+    回退为 STARTED（doc 审计 07e04775 §4.3）。
+    """
+    if call is None:
+        return
+    session = str(session_id or "").strip()
+    if session:
+        call.provider_session_id = session
+    if call.state == ProviderCallState.NOT_STARTED:
+        call.state = ProviderCallState.STARTED
+
+
+def record_provider_call_result(
+    call: "ProviderCallEvidence | None", *, is_error: bool
+) -> None:
+    """Record a terminal provider result event on one call (-> ENDED).
+
+    必须在 result 事件到达时立即调用：早于 JSON 解析、业务落库、错误
+    转换和广播。ENDED 之后的重复 result / 迟到 session_id 不回退状态。
+    """
+    if call is None:
+        return
+    if call.state == ProviderCallState.ENDED:
+        return
+    call.state = ProviderCallState.ENDED
+    call.result_success = not bool(is_error)
+
+
+def mark_provider_call_unresolved(
+    call: "ProviderCallEvidence | None",
+) -> None:
+    """Exception path: an in-flight call becomes UNKNOWN, never ENDED.
+
+    已收到 result 的 ENDED 不能被异常覆盖；NOT_STARTED（从未建立会话）
+    保持原状，不得伪造“已开始”。
+    """
+    if call is None:
+        return
+    if call.state == ProviderCallState.STARTED:
+        call.state = ProviderCallState.UNKNOWN
 
 
 @dataclass

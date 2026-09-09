@@ -31,6 +31,8 @@ from app.agents.contract import (
     AgentStopResult,
     AttemptFinalizerEvidence,
     ExecutionKind,
+    ProviderCallState,
+    current_agent_attempt_key,
 )
 from app.config import settings
 from app.core.logging import get_logger
@@ -77,6 +79,72 @@ def _attr_bool(value: Any) -> Optional[bool]:
     return bool(value)
 
 
+def _verified_provider_result(
+    provider_result: Any,
+    runtime: Optional[AgentAttemptRuntimeState],
+    attempt_key: tuple,
+) -> bool:
+    """Whether ``provider_result`` is a verified terminal provider outcome.
+
+    P1（doc 审计 07e04775 §4.4）：现有 ``provider_result is not None`` 的
+    输入收紧为经过验证且属于当前 call 的结果——统一适配层的真实
+    ``AgentRunResult`` 直接承认；single-turn 的普通展示字典必须携带当前
+    attempt 下已 ENDED 调用的 ``provider_call_id``，绝不再把任意非空
+    字典当成 provider 终局结果。
+    """
+    if provider_result is None:
+        return False
+    if isinstance(provider_result, AgentRunResult):
+        return True
+    if isinstance(provider_result, dict):
+        call_id = str(provider_result.get("provider_call_id") or "").strip()
+        if not call_id or runtime is None or not attempt_key:
+            return False
+        for call in runtime.calls_for(attempt_key):
+            if call.call_id == call_id:
+                # result_success 非 None 才是真实 result（ACK 终止的调用
+                # 不伪造 outcome）。
+                return call.state is ProviderCallState.ENDED and (
+                    call.result_success is not None
+                )
+        return False
+    # 其他形状（SimpleNamespace 等）不是 single-turn 展示字典；按真实
+    # 终局结果对象处理，保持 engine 路径的既有行为。
+    return True
+
+
+def _provider_call_evidence(
+    runtime: Optional[AgentAttemptRuntimeState],
+    attempt_key: Optional[tuple],
+    provider_result: Any,
+) -> tuple[bool, bool]:
+    """Read per-call provider evidence for one attempt (07e04775 §4.4).
+
+    返回 ``(provider_outcome_seen, any_call_started)``：
+    - ``provider_outcome_seen``：本 attempt 存在携带真实 result 的 ENDED
+      调用，且没有任何 STARTED/UNKNOWN 未决调用。多次调用共享 attempt
+      时，某一次结束不能为其他未决调用提供终态证明；明确 stop ACK 终止
+      的调用（``result_success=None``）既不阻塞也不伪造 outcome。
+    - ``any_call_started``：任一调用已建立会话（补强 remote_session_started）。
+    """
+    if runtime is None:
+        return False, False
+    key = tuple(attempt_key or ())
+    if not key:
+        return False, False
+    calls = runtime.calls_for(key)
+    if not calls:
+        return False, False
+    ended_with_result = [
+        call for call in calls
+        if call.state is ProviderCallState.ENDED and call.result_success is not None
+    ]
+    unresolved = [call for call in calls if call.unresolved]
+    seen = bool(ended_with_result) and not unresolved
+    started = any(call.state is not ProviderCallState.NOT_STARTED for call in calls)
+    return seen, started
+
+
 # ────────────────────────── 唯一证据解析器 ──────────────────────────
 
 
@@ -91,6 +159,7 @@ def resolve_attempt_evidence(
     fallback_dead: Optional[bool] = None,
     fallback_failure_code: Optional[str] = None,
     fallback_remaining_pids: Tuple[int, ...] = (),
+    attempt_key: Optional[tuple] = None,
 ) -> AttemptFinalizerEvidence:
     """按固定优先级合并 attempt 证据（doc §6.2）。
 
@@ -102,8 +171,18 @@ def resolve_attempt_evidence(
        typed error / 显式 fallback；
     5. 多个无身份 fallback 互相冲突时返回 None 并写 EVIDENCE_CONFLICT；
     6. failure code 和 remaining PIDs 只作诊断，不反向改变死亡状态。
+
+    P1（doc 审计 07e04775 §4.4）：provider 终局证据由 attempt runtime 的
+    per-call 记录统一读取（``provider_calls``，按 attempt_key 隔离）；进程
+    重启后内存证据丢失仍按 durable locator/reaper 流程处理，空 runtime 不
+    等于“从未开始”。
     """
     kind = execution_kind if execution_kind in EXECUTION_KINDS else EXECUTION_KIND_LOCAL_PROCESS
+    resolved_attempt_key = (
+        tuple(attempt_key or ())
+        if attempt_key is not None
+        else current_agent_attempt_key()
+    )
 
     if kind == EXECUTION_KIND_REMOTE_SESSION:
         remote_stop = stop_result if (
@@ -117,8 +196,15 @@ def resolve_attempt_evidence(
         if remote_ack is None and runtime is not None:
             runtime_ack = runtime.remote_stop_acknowledged
             remote_ack = runtime_ack
-        remote_started = bool(runtime.remote_session_started) if runtime is not None else False
-        provider_seen = provider_result is not None
+        calls_outcome, any_call_started = _provider_call_evidence(
+            runtime, resolved_attempt_key, provider_result
+        )
+        remote_started = (
+            bool(runtime.remote_session_started) if runtime is not None else False
+        ) or any_call_started
+        provider_seen = calls_outcome or _verified_provider_result(
+            provider_result, runtime, resolved_attempt_key
+        )
         failure_code = None
         error_message = None
         for candidate in (
@@ -247,7 +333,9 @@ def resolve_attempt_evidence(
         remaining_pids=tuple(sorted(set(remaining))) or tuple(fallback_remaining_pids or ()),
         source=source,
         remote_session_started=False,
-        provider_outcome_seen=provider_result is not None,
+        provider_outcome_seen=(
+            _verified_provider_result(provider_result, runtime, resolved_attempt_key)
+        ),
     )
 
 
