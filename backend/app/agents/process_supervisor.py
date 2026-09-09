@@ -201,6 +201,11 @@ class TerminationResult:
     error_message: Optional[str] = None
     remaining_pids: tuple[int, ...] = ()
     root_identity_matches: Optional[bool] = None
+    # P1（doc 审计 0c381413 §3.2）：最近一轮 per-spawn 谱系扫描"无法检查"
+    # 的候选 PID。它们只表明扫描不完整（environ 暂时不可读），从未证明
+    # 携带本 spawn token；仅作诊断展示（必须标注"无法检查"，不得显示为
+    # "确认仍有子进程"），绝不进入 kill/known descendant 路径。
+    inspection_unknown_pids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1404,6 +1409,10 @@ class ManagedAgentProcess:
     job_handle: Optional[int] = None
     reader_tasks: list[asyncio.Task] = field(default_factory=list)
     known_descendant_pids: set[int] = field(default_factory=set)
+    # P1（doc 审计 0c381413 §3.2）：最近一轮谱系扫描"无法检查"的候选 PID
+    # （从未证明携带本 spawn token）。仅诊断；每轮以最新扫描替换，绝不
+    # 累加过期候选，也绝不混入 known_descendant_pids。
+    last_uninspected_candidates: tuple[int, ...] = field(default_factory=tuple)
     monitor_task: Optional[asyncio.Task] = None
     stop_monitor: bool = False
     _closed: bool = False
@@ -1742,7 +1751,11 @@ class ManagedAgentProcess:
         phase = signal.SIGTERM
         phase_name = "SIGTERM"
         signals_sent: list[str] = []
-        unknown_pids: set[int] = set()
+        # P1（doc 审计 0c381413 §3.3）：候选集合不跨轮累加——新的完整扫描
+        # 能解除"暂时未知"，deadline 结果只取最终一次扫描；``proven_pids``
+        # 记录曾经验证过 token 归属的身份，它们随后不可读时仍保留 owned
+        # 归属，绝不能降级为"从未证明"的候选。
+        proven_pids: set[int] = set()
         failure_code: Optional[str] = None
         error_message: Optional[str] = None
 
@@ -1767,7 +1780,7 @@ class ManagedAgentProcess:
             )
             if scan.state == ProcessProbeState.UNKNOWN:
                 # 扫描不完整：UNKNOWN 保留 ownership（doc 审计 P0-3）。
-                unknown_pids.update(int(pid) for pid in scan.unknown_pids)
+                # 候选 PID 不跨轮累加（0c381413 §3.3），只保留失败诊断。
                 failure_code = failure_code or scan.failure_code
                 error_message = error_message or scan.error_message
             good, conflicts = ProcessSupervisor._partition_token_matches(
@@ -1775,6 +1788,7 @@ class ManagedAgentProcess:
             )
             if conflicts:
                 return _conflict_result(conflicts)
+            proven_pids.update(int(m.pid) for m in good)
             # 混合 LIVE + UNKNOWN 也可以清理已验证的 LIVE 身份；但不完整
             # 扫描最终绝不产生死亡证明。
             if good:
@@ -1798,24 +1812,29 @@ class ManagedAgentProcess:
             )
             if conflicts:
                 return _conflict_result(conflicts)
+            proven_pids.update(int(m.pid) for m in good)
             if final.state == ProcessProbeState.UNKNOWN:
-                unknown_pids.update(int(pid) for pid in final.unknown_pids)
                 failure_code = failure_code or final.failure_code
                 error_message = error_message or final.error_message
             if time.monotonic() >= deadline:
                 # 截止仍未收敛：返回最后一次扫描的结构化快照（LIVE/UNKNOWN），
-                # 绝不折叠成死亡证明。
+                # 绝不折叠成死亡证明。归属（owned）= 本轮已验证存活 + 曾
+                # 证明归属、随后不可读的身份；``unknown_pids`` 只保留最终
+                # 扫描中"从未证明属于本 spawn"的候选，过期候选不累加。
                 signals.extend(
                     name for name in signals_sent if name not in signals
                 )
+                final_alive = {int(m.pid) for m in good}
+                final_unknown = {int(pid) for pid in final.unknown_pids}
+                owned = final_alive | (proven_pids & final_unknown)
                 return SpawnLineageCleanup(
                     state=(
                         ProcessProbeState.UNKNOWN
                         if final.state == ProcessProbeState.UNKNOWN
                         else ProcessProbeState.LIVE
                     ),
-                    remaining_pids=tuple(sorted(int(m.pid) for m in good)),
-                    unknown_pids=tuple(sorted(unknown_pids)),
+                    remaining_pids=tuple(sorted(owned)),
+                    unknown_pids=tuple(sorted(final_unknown - proven_pids)),
                     signals_sent=tuple(signals_sent),
                     failure_code=failure_code or (
                         DETACHED_DESCENDANTS_UNRESOLVED
@@ -1858,12 +1877,17 @@ class ManagedAgentProcess:
         lineage: Optional[SpawnLineageCleanup] = None
         if os.name != "nt" and psutil is not None and self.spawn_token:
             lineage = await self._cleanup_spawn_lineage(signal_list)
-            # 谱系证据必须保留：未能发送/身份不明的携带者进入已知集合，
-            # 绝不因后续采样替换被遗忘（身份已明确死亡的 entry 才允许被
-            # 剔除，且由采样自身的 CONFIRMED_DEAD 合并规则负责）。
-            stragglers = set(lineage.remaining_pids) | set(lineage.unknown_pids)
-            if stragglers:
-                self.known_descendant_pids |= stragglers
+            # P1（doc 审计 0c381413 §3.2）：归属证据与扫描完整性分离。只有
+            # "已验证 token/谱系归属"的 remaining PID 才进入已知后代集合；
+            # ``unknown_pids`` 只是 environ 暂时不可读的任意进程（从未证明
+            # 归属），绝不能按数字 PID 提升为 owned descendant——否则无关
+            # 长命进程会让后续本地快照永远 LIVE/UNKNOWN，作业无法收敛。
+            proven_stragglers = set(lineage.remaining_pids)
+            if proven_stragglers:
+                self.known_descendant_pids |= proven_stragglers
+            # 候选只进入诊断（每轮以最新扫描替换，不累加）；展示时标注
+            # "无法检查"，绝不显示为"确认仍有子进程"。
+            self.last_uninspected_candidates = tuple(lineage.unknown_pids)
             if snapshot.state != ProcessProbeState.CONFIRMED_DEAD:
                 # 清理可能已终止本地快照中的存活者：聚合前重新采样，不能
                 # 用过期快照否决谱系清理成果。
@@ -1922,6 +1946,9 @@ class ManagedAgentProcess:
             error_message=error_message,
             remaining_pids=remaining,
             root_identity_matches=snapshot.root_identity_matches,
+            inspection_unknown_pids=(
+                tuple(lineage.unknown_pids) if lineage is not None else ()
+            ),
         )
 
     async def wait(self) -> ProcessWaitResult:

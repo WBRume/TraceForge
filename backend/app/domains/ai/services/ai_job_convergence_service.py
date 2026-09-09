@@ -31,6 +31,7 @@ from app.agents.contract import (
     AgentStopResult,
     AttemptFinalizerEvidence,
     ExecutionKind,
+    ProviderCallEvidence,
     ProviderCallState,
     current_agent_attempt_key,
 )
@@ -43,6 +44,7 @@ logger = get_logger(__name__, category="ai_session")
 
 PROCESS_TREE_STILL_ALIVE = "PROCESS_TREE_STILL_ALIVE"
 REMOTE_STOP_UNCONFIRMED = "REMOTE_STOP_UNCONFIRMED"
+REMOTE_CALL_UNRESOLVED = "REMOTE_CALL_UNRESOLVED"
 EVIDENCE_CONFLICT = "EVIDENCE_CONFLICT"
 CANCEL_REQUESTED = "CANCEL_REQUESTED"
 USER_INTERRUPT = "USER_INTERRUPT"
@@ -145,6 +147,72 @@ def _provider_call_evidence(
     return seen, started
 
 
+def _bound_call_stop_acknowledged(
+    runtime: AgentAttemptRuntimeState,
+    call: ProviderCallEvidence,
+) -> bool:
+    """Whether one call carries an accepted per-call stop ACK (0c381413 §2.4).
+
+    只认 ``provider_stops`` 中按 call_id 绑定且 ``acknowledged=True`` 的
+    证据；attempt 级单槽 ACK 绝不在这里兜底。
+    """
+    stop = runtime.provider_stop_for(call.call_id)
+    return stop is not None and bool(stop.acknowledged)
+
+
+def _remote_per_call_evidence(
+    runtime: Optional[AgentAttemptRuntimeState],
+    attempt_key: tuple,
+) -> Optional[Tuple[Tuple[str, ...], bool, bool, bool]]:
+    """Read authoritative per-call evidence for one attempt (0c381413 §2.5).
+
+    返回 ``(unresolved_call_ids, provider_outcome_seen, remote_stop_acknowledged,
+    any_call_started)``，``None`` 表示该 attempt 没有任何 per-call 记录
+    （调用方走旧路径）。规则：
+
+    - ``provider_outcome_seen``：存在携带真实 result 的 ENDED 调用，且没有
+      任何 STARTED/UNKNOWN 未决调用；明确 stop ACK 终止的调用
+      （``result_success=None``）不伪造 outcome。
+    - ``remote_stop_acknowledged``：全部已启动调用都携带绑定 ACK 且无未决
+      时为 True；只要有未决调用或存在未绑定 ACK 的已启动调用即为 None
+      ——旧 attempt 级单槽 ACK 与外部 supplied result 不得旁路覆盖。
+    - 混合"某调用真实 result + 某调用绑定 ACK"：全部调用都已结束，允许
+      终态（outcome 负责授权，ACK 只决定自己那一路）。
+    """
+    if runtime is None:
+        return None
+    key = tuple(attempt_key or ())
+    if not key:
+        return None
+    calls = runtime.calls_for(key)
+    if not calls:
+        return None
+    unresolved_ids = tuple(call.call_id for call in calls if call.unresolved)
+    ended_with_result = [
+        call
+        for call in calls
+        if call.state is ProviderCallState.ENDED and call.result_success is not None
+    ]
+    started_calls = [
+        call for call in calls if call.state is not ProviderCallState.NOT_STARTED
+    ]
+    stopped_calls = [
+        call
+        for call in started_calls
+        if _bound_call_stop_acknowledged(runtime, call)
+    ]
+    outcome_seen = bool(ended_with_result) and not unresolved_ids
+    stop_acknowledged: Optional[bool] = None
+    if (
+        started_calls
+        and not unresolved_ids
+        and len(stopped_calls) == len(started_calls)
+    ):
+        stop_acknowledged = True
+    any_started = bool(started_calls)
+    return unresolved_ids, outcome_seen, stop_acknowledged, any_started
+
+
 # ────────────────────────── 唯一证据解析器 ──────────────────────────
 
 
@@ -188,23 +256,7 @@ def resolve_attempt_evidence(
         remote_stop = stop_result if (
             stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_REMOTE_SESSION
         ) else None
-        remote_ack = (
-            bool(remote_stop.stop_acknowledged)
-            if remote_stop is not None and remote_stop.stop_acknowledged
-            else (False if remote_stop is not None else None)
-        )
-        if remote_ack is None and runtime is not None:
-            runtime_ack = runtime.remote_stop_acknowledged
-            remote_ack = runtime_ack
-        calls_outcome, any_call_started = _provider_call_evidence(
-            runtime, resolved_attempt_key, provider_result
-        )
-        remote_started = (
-            bool(runtime.remote_session_started) if runtime is not None else False
-        ) or any_call_started
-        provider_seen = calls_outcome or _verified_provider_result(
-            provider_result, runtime, resolved_attempt_key
-        )
+        per_call = _remote_per_call_evidence(runtime, resolved_attempt_key)
         failure_code = None
         error_message = None
         for candidate in (
@@ -225,6 +277,48 @@ def resolve_attempt_evidence(
             if candidate:
                 error_message = str(candidate)
                 break
+        if per_call is not None:
+            # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时证据以
+            # per-call 为权威。provider outcome 只能来自已 ENDED 且携带
+            # 真实 result 的调用；attempt 级单槽 ACK 与 supplied result
+            # 一律不得旁路未决检查。停止 ACK 必须按 call 绑定（§2.4）。
+            unresolved_ids, provider_seen, remote_ack, any_call_started = per_call
+            remote_started = (
+                bool(runtime.remote_session_started) if runtime is not None else False
+            ) or any_call_started
+            return AttemptFinalizerEvidence(
+                execution_kind=kind,
+                process_started=False,
+                termination_confirmed_dead=None,
+                remote_stop_acknowledged=remote_ack,
+                failure_code=failure_code,
+                error_message=error_message,
+                remaining_pids=(),
+                source="remote",
+                remote_session_started=remote_started,
+                provider_outcome_seen=provider_seen,
+                unresolved_provider_call_ids=unresolved_ids,
+                provider_calls_authoritative=True,
+            )
+        # 无 per-call 记录的旧路径单独处理；不能将空 runtime 当作从未开始
+        # （durable locator / reaper 流程仍按既有语义收敛）。
+        remote_ack = (
+            bool(remote_stop.stop_acknowledged)
+            if remote_stop is not None and remote_stop.stop_acknowledged
+            else (False if remote_stop is not None else None)
+        )
+        if remote_ack is None and runtime is not None:
+            runtime_ack = runtime.remote_stop_acknowledged
+            remote_ack = runtime_ack
+        calls_outcome, any_call_started = _provider_call_evidence(
+            runtime, resolved_attempt_key, provider_result
+        )
+        remote_started = (
+            bool(runtime.remote_session_started) if runtime is not None else False
+        ) or any_call_started
+        provider_seen = calls_outcome or _verified_provider_result(
+            provider_result, runtime, resolved_attempt_key
+        )
         return AttemptFinalizerEvidence(
             execution_kind=kind,
             process_started=False,
@@ -658,6 +752,12 @@ def _decide_final_status(
     evidence = request.evidence
     intent = request.intent
     reason = str(request.reason or "")
+    if execution_kind == EXECUTION_KIND_REMOTE_SESSION and evidence.unresolved_provider_call_ids:
+        # P0（doc 审计 0c381413 §2.5）：未决 provider call 是终局决策的
+        # 独立输入，优先于一切 outcome / stop ACK 证据——这是防止其他
+        # 调用方遗漏检查的第二层保护。任何旧 result / 旧 attempt 级 ACK
+        # 都不能把仍有未决调用的 attempt 收敛成业务终态。
+        return AiJobStatus.ORPHANED, REMOTE_CALL_UNRESOLVED
     if intent == ConvergenceIntent.NORMAL_FINALIZE:
         if execution_kind == EXECUTION_KIND_REMOTE_SESSION:
             # 远程会话的证据底线（doc 修复方案 §8.3）：业务终态必须以
@@ -1091,6 +1191,7 @@ __all__ = [
     "TerminationMode",
     "EVIDENCE_CONFLICT",
     "REMOTE_STOP_UNCONFIRMED",
+    "REMOTE_CALL_UNRESOLVED",
     "PROCESS_TREE_STILL_ALIVE",
     "resolve_attempt_evidence",
     "evidence_from_stop_result",

@@ -10,6 +10,7 @@ import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.domains.auth.models.user import (
@@ -950,6 +951,196 @@ INVITE_STATUS_REVOKED = "REVOKED"
 INVITE_STATUS_EXHAUSTED = "EXHAUSTED"
 
 
+class InviteClaimRaceLost(ValueError):
+    """名额在锁定有效性检查与原子占用之间被并发请求消耗。
+
+    doc 审计 0c381413 §4.3：同一 ACTIVE/剩余名额快照下只允许一个请求
+    占用名额。输家不新增成员、不扣次数：commit-owning 兼容包装
+    (:func:`accept_invite_link`) 将其软化为 ``(None, link, False)``；
+    HTTP 层按 unavailable 转换为 400。
+    """
+
+
+def _lock_workspace_for_member_change(
+    db: Session, workspace_id: str
+) -> Optional[Workspace]:
+    """Lock the workspace row first (doc 审计 0c381413 §4.2).
+
+    所有会改变工作区成员集合的路径（accept/revoke）都先锁 Workspace、
+    再锁 InviteLink；该顺序短暂串行化同工作区的邀请领取，同时保证
+    revoke 与 accept 不会交错出"检查-写入"竞态。
+    """
+    return (
+        db.query(Workspace)
+        .filter(Workspace.id == workspace_id)
+        .with_for_update()
+        .one_or_none()
+    )
+
+
+def _lock_invite_link(
+    db: Session, token: str, workspace_id: str
+) -> Optional["WorkspaceInviteLink"]:
+    """Re-read the link under lock; never trust the identity-map snapshot."""
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    return (
+        db.query(WorkspaceInviteLink)
+        .filter(
+            WorkspaceInviteLink.token == token,
+            WorkspaceInviteLink.workspace_id == workspace_id,
+        )
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+
+
+def accept_invite_in_txn(
+    db: Session,
+    token: str,
+    user_id: str,
+) -> Tuple[WorkspaceMember, "WorkspaceInviteLink", bool]:
+    """接受邀请的事务核心（doc 审计 0c381413 §4.2）。
+
+    事务边界归调用方：本函数只加锁、写成员与计数并 ``flush``，成功由
+    外层 ``commit``、失败由外层 ``rollback``。绝不在此 ``commit`` /
+    ``db.begin()``（FastAPI 依赖可能已使 Session autobegin）。
+
+    顺序与不变量：
+    1. 无锁 locator 读只用于定位 workspace，不以该读的有效性授权；
+    2. 先锁 Workspace 行，再以 ``populate_existing() + FOR UPDATE`` 重读
+       link（MySQL 行锁；SQLite 上退化为由条件占用保证原子性）；
+    3. 已是成员 → 幂等放行（不扣次数）；
+    4. 锁定后再判断有效期/撤销/名额，过期判定取检查时刻的 ``now``；
+    5. 名额占用是条件更新（``used_count < max_uses``）：并发下恰好一个
+       请求 ``rowcount=1``，成员插入与计数递增在同一事务内 flush。
+
+    返回 ``(member, link, already_member)``；无效/失效抛 ``ValueError``；
+    并发名额竞争失败抛 :class:`InviteClaimRaceLost`（不产生任何写入）。
+    """
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    locator = (
+        db.query(WorkspaceInviteLink)
+        .filter(WorkspaceInviteLink.token == token)
+        .first()
+    )
+    if locator is None:
+        raise ValueError("Invite link not found")
+    if _lock_workspace_for_member_change(db, locator.workspace_id) is None:
+        raise ValueError("Invite link not found")
+    link = _lock_invite_link(db, token, locator.workspace_id)
+    if link is None:
+        raise ValueError("Invite link not found")
+
+    existing = (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.workspace_id == link.workspace_id,
+            WorkspaceMember.user_id == user_id,
+        )
+        .first()
+    )
+    if existing:
+        # 已是成员：无论链接当前是否有效，直接幂等放行，不扣次数。
+        return existing, link, True
+
+    if invite_link_status(link) != INVITE_STATUS_ACTIVE:
+        raise ValueError(f"Invite link is {invite_link_status(link).lower()}")
+
+    # 名额占用与成员插入在同一嵌套 savepoint 内：唯一约束兜底（同用户经
+    # 不同链接并发加入）冲突时只回滚本次占用+插入，外层事务仍可用，然后
+    # 重读已有成员幂等返回——绝不重复扣次数（doc 审计 0c381413 §4.2）。
+    savepoint = db.begin_nested()
+    try:
+        # 原子名额占用：条件更新让"检查-写入"竞态由数据库裁决，即使行锁
+        # 被方言忽略（SQLite）也恰好只有一个请求能把 used_count 顶到上限。
+        claimed = (
+            db.query(WorkspaceInviteLink)
+            .filter(
+                WorkspaceInviteLink.id == link.id,
+                or_(
+                    WorkspaceInviteLink.max_uses.is_(None),
+                    WorkspaceInviteLink.used_count < WorkspaceInviteLink.max_uses,
+                ),
+            )
+            .update(
+                {WorkspaceInviteLink.used_count: WorkspaceInviteLink.used_count + 1},
+                synchronize_session=False,
+            )
+        )
+        if not claimed:
+            # 另一并发请求在有效性检查与本次写入之间消耗了名额。
+            raise InviteClaimRaceLost("Invite link is exhausted")
+        member = WorkspaceMember(
+            workspace_id=link.workspace_id,
+            user_id=user_id,
+            role=link.role,
+            permissions_json=link.permissions_json,
+            is_expert=bool(link.is_expert),
+        )
+        db.add(member)
+        db.flush()
+    except InviteClaimRaceLost:
+        savepoint.rollback()
+        raise
+    except IntegrityError as exc:
+        savepoint.rollback()
+        # REPEATABLE READ 下普通 SELECT 复用事务旧快照，可能仍看不到并发
+        # 已提交的成员；必须用锁定读（当前读）重读——冲突本身意味着对方
+        # 已提交，因此这里总能读到该成员。
+        existing = (
+            db.query(WorkspaceMember)
+            .filter(
+                WorkspaceMember.workspace_id == link.workspace_id,
+                WorkspaceMember.user_id == user_id,
+            )
+            .with_for_update()
+            .first()
+        )
+        if existing is None:
+            raise
+        return existing, link, True
+    else:
+        savepoint.commit()
+    return member, link, False
+
+
+def accept_invite_link(
+    db: Session,
+    token: str,
+    user: User,
+) -> Tuple[Optional[WorkspaceMember], Optional["WorkspaceInviteLink"], bool]:
+    """接受邀请（commit-owning 兼容入口）。
+
+    返回 ``(member, link, already_member)``。链接无效/失效抛
+    ``ValueError``；并发名额竞争失败不报错——返回 ``(None, link, False)``
+    （未加入工作区、未扣次数、未新增成员），由 HTTP 层决定对外语义。
+    """
+    try:
+        result = accept_invite_in_txn(db, token, user.id)
+        db.commit()
+    except InviteClaimRaceLost:
+        # 并发竞争失败：回滚本次事务的全部写入，以最新链接状态软失败。
+        db.rollback()
+        from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+        link = (
+            db.query(WorkspaceInviteLink)
+            .filter(WorkspaceInviteLink.token == token)
+            .first()
+        )
+        return None, link, False
+    except Exception:
+        db.rollback()
+        raise
+    member, link, already_member = result
+    db.refresh(member)
+    db.refresh(link)
+    return member, link, already_member
+
+
 def _utcnow() -> datetime.datetime:
     """DateTime 列存 naive UTC（与 server_default=now() 的 UTC 语义保持一致）。"""
     return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
@@ -1024,14 +1215,45 @@ def list_invite_links(db: Session, workspace_id: str) -> List["WorkspaceInviteLi
     )
 
 
-def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
-    link = get_invite_link(db, workspace_id, link_id)
-    if not link:
+def revoke_invite_link_in_txn(
+    db: Session, workspace_id: str, link_id: str
+) -> Optional["WorkspaceInviteLink"]:
+    """撤销邀请链接的事务核心（doc 审计 0c381413 §4.2）。
+
+    与 accept 使用同一锁顺序：先锁 Workspace 行，再以
+    ``populate_existing() + FOR UPDATE`` 重读 link；撤销判定基于锁定后
+    的最新状态。只 ``flush``，commit/rollback 归调用方。
+    """
+    if _lock_workspace_for_member_change(db, workspace_id) is None:
+        return None
+    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
+
+    link = (
+        db.query(WorkspaceInviteLink)
+        .filter(
+            WorkspaceInviteLink.id == link_id,
+            WorkspaceInviteLink.workspace_id == workspace_id,
+        )
+        .populate_existing()
+        .with_for_update()
+        .one_or_none()
+    )
+    if link is None:
         return None
     if not link.revoked_at:
         link.revoked_at = _utcnow()
-        db.commit()
-        db.refresh(link)
+        db.flush()
+    return link
+
+
+def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
+    """撤销邀请链接（commit-owning 兼容入口）。"""
+    link = revoke_invite_link_in_txn(db, workspace_id, link_id)
+    if link is None:
+        db.rollback()
+        return None
+    db.commit()
+    db.refresh(link)
     return link
 
 
@@ -1080,45 +1302,3 @@ def get_invite_for_preview(db: Session, token: str) -> Optional[Tuple["Workspace
     if not workspace:
         return None
     return link, workspace, serialize_invite_link(link)
-
-
-def accept_invite_link(
-    db: Session,
-    token: str,
-    user: User,
-) -> Tuple[WorkspaceMember, "WorkspaceInviteLink", bool]:
-    """接受邀请：返回 (member, link, already_member)。链接无效/失效时抛 ValueError。"""
-    from app.domains.workspace.models.invite_link import WorkspaceInviteLink
-
-    link = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.token == token).first()
-    if not link:
-        raise ValueError("Invite link not found")
-
-    existing = (
-        db.query(WorkspaceMember)
-        .filter(
-            WorkspaceMember.workspace_id == link.workspace_id,
-            WorkspaceMember.user_id == user.id,
-        )
-        .first()
-    )
-    if existing:
-        # 已是成员：无论链接当前是否有效，直接幂等放行
-        return existing, link, True
-
-    if invite_link_status(link) != INVITE_STATUS_ACTIVE:
-        raise ValueError(f"Invite link is {invite_link_status(link).lower()}")
-
-    member = WorkspaceMember(
-        workspace_id=link.workspace_id,
-        user_id=user.id,
-        role=link.role,
-        permissions_json=link.permissions_json,
-        is_expert=bool(link.is_expert),
-    )
-    db.add(member)
-    link.used_count = int(link.used_count or 0) + 1
-    db.commit()
-    db.refresh(member)
-    db.refresh(link)
-    return member, link, False
