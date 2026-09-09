@@ -1,12 +1,14 @@
 <!--
-SystemConfigView: 系统配置项（管理员）。当前提供：
-- 新建工作区时是否启用“项目管理/产品管理”选择功能。
+SystemConfigView: 系统配置项（管理员）。每个配置项一张卡片：
+1. 新建工作区时是否启用“项目管理/产品管理”选择功能。
+2. 工作区根目录：默认取 env（WORKSPACE_ROOT_DIR）；界面保存非空值后覆盖 env，清空后回退 env。
+   生效时新建工作区路径默认为 根目录/workspace/工作区名称，且仅允许位于该目录之内。
 -->
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { SlidersHorizontal } from 'lucide-vue-next'
+import { FolderRoot, SlidersHorizontal } from 'lucide-vue-next'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import { formatApiError } from '@/utils/error'
 import { useSystemConfigStore } from '@/stores/systemConfig'
@@ -15,29 +17,58 @@ const { t } = useI18n()
 const systemConfigStore = useSystemConfigStore()
 
 const enabled = ref(false)
-const saving = ref(false)
+const rootDir = ref('')
 const loading = ref(false)
+const savingMgmt = ref(false)
+const savingRoot = ref(false)
+
+const rootDirInvalid = computed(() => {
+  const value = rootDir.value.trim()
+  if (!value) return false
+  // Windows 绝对路径（C:\ 或 C:/ 或 UNC），或 POSIX 绝对路径（/ 开头）
+  return !(/^[a-zA-Z]:[/\\]/.test(value) || value.startsWith('\\\\') || value.startsWith('/'))
+})
 
 const load = async () => {
   loading.value = true
   try {
     await systemConfigStore.load(true)
     enabled.value = systemConfigStore.projectProductManagementEnabled
+    rootDir.value = systemConfigStore.workspaceRootDir
   } finally {
     loading.value = false
   }
 }
 
-const save = async () => {
-  if (saving.value) return
-  saving.value = true
+const saveMgmtSelection = async () => {
+  if (savingMgmt.value) return
+  savingMgmt.value = true
   try {
     await systemConfigStore.updateProjectProductManagementEnabled(enabled.value)
     ElMessage.success(t('system_config.saved'))
   } catch (err) {
     ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
+    await load()
   } finally {
-    saving.value = false
+    savingMgmt.value = false
+  }
+}
+
+const saveRootDir = async () => {
+  if (savingRoot.value) return
+  if (rootDirInvalid.value) {
+    ElMessage.error(t('system_config.workspace_root_invalid'))
+    return
+  }
+  savingRoot.value = true
+  try {
+    await systemConfigStore.updateWorkspaceRootDir(rootDir.value.trim())
+    ElMessage.success(t('system_config.saved'))
+  } catch (err) {
+    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
+    await load()
+  } finally {
+    savingRoot.value = false
   }
 }
 
@@ -55,6 +86,7 @@ onMounted(() => {
       </div>
     </div>
 
+    <!-- 卡片 1：项目管理/产品管理选择开关 -->
     <div class="mgmt-card mgmt-compact-card">
       <div class="sys-config-row">
         <div class="sys-config-info">
@@ -73,7 +105,7 @@ onMounted(() => {
         </div>
         <AdminGuard>
           <label class="sys-switch">
-            <input v-model="enabled" type="checkbox" :disabled="loading || saving" />
+            <input v-model="enabled" type="checkbox" :disabled="loading || savingMgmt" />
             <span class="sys-switch-slider"></span>
             <span class="sys-switch-state" :class="{ on: enabled }">
               {{ enabled ? $t('system_config.state_on') : $t('system_config.state_off') }}
@@ -84,8 +116,47 @@ onMounted(() => {
 
       <AdminGuard>
         <div class="sys-config-actions">
-          <button class="btn-primary" :disabled="loading || saving" @click="save">
-            {{ saving ? $t('system_config.saving') : $t('system_config.save') }}
+          <button class="btn-primary" :disabled="loading || savingMgmt" @click="saveMgmtSelection">
+            {{ savingMgmt ? $t('system_config.saving') : $t('system_config.save') }}
+          </button>
+        </div>
+      </AdminGuard>
+    </div>
+
+    <!-- 卡片 2：工作区根目录 -->
+    <div class="mgmt-card mgmt-compact-card">
+      <div class="sys-config-row">
+        <div class="sys-config-info">
+          <h3 class="sys-config-name">
+            <FolderRoot class="w-4 h-4" />
+            {{ $t('system_config.workspace_root_label') }}
+          </h3>
+          <p class="mgmt-hint">{{ $t('system_config.workspace_root_desc') }}</p>
+          <ul class="sys-config-effects">
+            <li>{{ $t('system_config.workspace_root_effect_env') }}</li>
+            <li>{{ $t('system_config.workspace_root_effect_default') }}</li>
+            <li>{{ $t('system_config.workspace_root_effect_scope') }}</li>
+          </ul>
+        </div>
+      </div>
+
+      <AdminGuard>
+        <div class="sys-config-field">
+          <label>{{ $t('system_config.workspace_root_label') }}</label>
+          <input
+            v-model="rootDir"
+            type="text"
+            class="mgmt-input"
+            :placeholder="$t('system_config.workspace_root_placeholder')"
+            :disabled="loading || savingRoot"
+          />
+          <p v-if="rootDirInvalid" class="sys-config-input-error">
+            {{ $t('system_config.workspace_root_invalid') }}
+          </p>
+        </div>
+        <div class="sys-config-actions">
+          <button class="btn-primary" :disabled="loading || savingRoot" @click="saveRootDir">
+            {{ savingRoot ? $t('system_config.saving') : $t('system_config.save') }}
           </button>
         </div>
       </AdminGuard>
@@ -123,6 +194,29 @@ onMounted(() => {
   font-size: 0.8rem;
   color: #64748b;
   line-height: 1.7;
+}
+
+.sys-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 1rem;
+}
+
+.sys-config-field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.sys-config-field .mgmt-input {
+  max-width: 480px;
+}
+
+.sys-config-input-error {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: #b91c1c;
 }
 
 .sys-switch {
