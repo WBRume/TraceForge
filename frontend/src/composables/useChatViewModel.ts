@@ -1199,6 +1199,46 @@ export function useChatViewModel() {
     return undefined
   }
 
+  /**
+   * 选中路由参数指向的任务会话。ChatView 在 `/ws/:wsId/chat` 与 `/ws/:wsId/chat/:taskId`
+   * 之间导航时组件被复用不重挂载（onMounted 只覆盖首次进入），浮窗「进入任务会话」、
+   * 浏览器前进后退等仅变更 URL 的场景需要监听路由并调用这里完成会话切换。
+   */
+  const selectRouteTask = async (options?: { allowFetch?: boolean }) => {
+    const routeTaskId = String(route.params.taskId || '')
+    if (!routeTaskId) return
+    if (String(currentTask.value?.id || '') === routeTaskId) return
+    const wsId = String(route.params.wsId || '')
+
+    const matched = tasks.value.find((task: any) => task.id === routeTaskId)
+    if (matched) {
+      await selectTask(matched)
+      return
+    }
+
+    // 任务列表中暂无该任务时按需拉取（受 filters/loadTasks 场景约束）
+    if (!options?.allowFetch) return
+    try {
+      const taskRes = await api.get(`/workspaces/${wsId}/tasks/${routeTaskId}`)
+      const routeTask = taskRes.data
+      if (!routeTask?.id) return
+      // 准备中的任务不出现在任务列表（进度由全局浮窗跟踪），也不自动选中
+      if (String(routeTask.status || '') === 'PROVISIONING') return
+      tasks.value = [routeTask, ...tasks.value.filter((task: any) => task.id !== routeTask.id)]
+      if (String(currentTask.value?.id || '') !== String(routeTask.id)) {
+        await selectTask(routeTask)
+      }
+    } catch (err) {
+      console.warn('Failed to hydrate route task snapshot', err)
+    }
+  }
+
+  // ChatView 复用不重挂载：仅 URL 变化的任务会话切换（浮窗「进入任务会话」/浏览器前进后退）走这里
+  watch(() => String(route.params.taskId || ''), (nextTaskId, prevTaskId) => {
+    if (!nextTaskId || nextTaskId === prevTaskId) return
+    void selectRouteTask({ allowFetch: true })
+  })
+
   const loadTasks = async (options?: { reset?: boolean; trySelectRouteTask?: boolean }) => {
     const reset = options?.reset ?? true
     const trySelectRouteTask = options?.trySelectRouteTask ?? reset
@@ -1243,31 +1283,10 @@ export function useChatViewModel() {
 
       if (!trySelectRouteTask || !route.params.taskId) return
 
-      const routeTaskId = String(route.params.taskId || '')
-      if (!routeTaskId) return
-      const matched = tasks.value.find((task: any) => task.id === routeTaskId)
-      if (matched) {
-        if (currentTask.value?.id !== matched.id) {
-          await selectTask(matched)
-        }
-        return
-      }
-
-      if (!reset || statusQuery || taskRelationFilter.value.length > 0 || taskTypeFilter.value !== 'ALL') return
-
-      try {
-        const taskRes = await api.get(`/workspaces/${wsId}/tasks/${routeTaskId}`)
-        const routeTask = taskRes.data
-        if (!routeTask?.id) return
-        // 准备中的任务不出现在任务列表（进度由全局浮窗跟踪），也不自动选中
-        if (String(routeTask.status || '') === 'PROVISIONING') return
-        tasks.value = [routeTask, ...tasks.value.filter((task: any) => task.id !== routeTask.id)]
-        if (currentTask.value?.id !== routeTask.id) {
-          await selectTask(routeTask)
-        }
-      } catch (err) {
-        console.warn('Failed to hydrate route task snapshot', err)
-      }
+      // 筛选状态下仅支持从已加载列表中选择，不做单任务补拉
+      await selectRouteTask({
+        allowFetch: reset && !statusQuery && taskRelationFilter.value.length === 0 && taskTypeFilter.value === 'ALL',
+      })
     } catch (e) {
       if (!reset) {
         taskListPage.value = Math.max(1, taskListPage.value - 1)
