@@ -420,3 +420,178 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
     assert saved.status == service.AiJobStatus.FAILED
     assert saved.run_token is None
     assert saved.process_pid is None
+
+
+# ─────────── P1-1（doc: docs/agent-job-bc6ca89-remaining-code-audit.md）───────────
+# 远程需求预览（import/split）必须把 provider 终局结果传入 finalizer evidence：
+# 会话已建立且 provider 正常返回时，收敛不得判 ORPHANED。
+
+
+def _bind_remote_attempt(job_id: str):
+    from app.agents.contract import (
+        AgentAttemptContext,
+        AgentAttemptRuntimeState,
+        EXECUTION_KIND_REMOTE_SESSION,
+        bind_agent_attempt,
+        bind_agent_attempt_runtime,
+    )
+
+    owner = bind_agent_attempt(AgentAttemptContext(
+        job_id=job_id, task_id=None, queue_key="preview", run_token="audit-token",
+        worker_id="audit-worker", worker_boot_id="audit-boot", attempt_count=1,
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+    ))
+    binding = bind_agent_attempt_runtime(AgentAttemptRuntimeState(remote_session_started=True))
+    return owner, binding
+
+
+def _decide_status(evidence, requested):
+    from types import SimpleNamespace
+    from app.domains.ai.services import ai_job_convergence_service as convergence
+    from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION
+
+    request = convergence.AttemptConvergenceRequest(
+        job_id="audit-job", run_token="audit-token", worker_boot_id="audit-boot",
+        requested_status=requested, reason="done", evidence=evidence,
+        intent=convergence.ConvergenceIntent.NORMAL_FINALIZE,
+    )
+    return convergence._decide_final_status(SimpleNamespace(), request, EXECUTION_KIND_REMOTE_SESSION)[0]
+
+
+def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
+    """split 预览：provider 正常返回 → finalizer evidence 带 outcome → SUCCESS。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    owner, binding = _bind_remote_attempt("audit-job")
+    captured = {}
+
+    async def txn(fn):
+        return fn(None)
+
+    def capture(db, **kwargs):
+        captured.update(kwargs)
+
+    try:
+        prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
+        provider_reply = {
+            "text": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}',
+            "session_id": "remote-1",
+        }
+        monkeypatch.setattr(service, "run_db_txn", txn)
+        monkeypatch.setattr(service, "_prepare_requirement_split_sync", lambda db, **kw: prepared)
+        monkeypatch.setattr(service, "run_cli_single_turn", AsyncMock(return_value=provider_reply))
+        monkeypatch.setattr(service, "_finalize_requirement_split_sync", capture)
+        assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
+        evidence = captured["evidence"]
+        assert evidence.provider_outcome_seen is True
+        assert _decide_status(evidence, service.AiJobStatus.SUCCESS) == service.AiJobStatus.SUCCESS
+    finally:
+        from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)
+
+
+def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
+    """import 预览与 split 使用相同漏传修复（doc 审计 P1-1 静态证据路径）。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    owner, binding = _bind_remote_attempt("audit-job")
+    captured = {}
+
+    async def txn(fn):
+        return fn(None)
+
+    def capture(db, **kwargs):
+        captured.update(kwargs)
+
+    try:
+        context = {
+            "markdown": "# Feature A\n\nBody\n", "source_kind": "file",
+            "source_ref": "requirements.md", "source_uri": "", "file_name": "requirements.md",
+            "source_ext": ".md", "source_mime": "text/markdown", "render_json": {},
+        }
+        prepared = {"backend_name": "dsh", "prompt": "import", "project_path": "/tmp"}
+        provider_reply = {
+            "text": '{"items": [{"title": "Feature A", "body": "Body", "acceptance_criteria": [], "source_ref": "r1"}]}',
+            "session_id": "remote-1",
+        }
+        monkeypatch.setattr(service, "run_db_txn", txn)
+        monkeypatch.setattr(service, "_load_requirement_import_context_sync", lambda db, job_id: context)
+        monkeypatch.setattr(service, "_prepare_requirement_import_sync", lambda db, **kw: prepared)
+        monkeypatch.setattr(service, "run_cli_single_turn", AsyncMock(return_value=provider_reply))
+        monkeypatch.setattr(service, "_finalize_requirement_import_sync", capture)
+        assert asyncio.run(service.run_requirement_import_preview_job("audit-job")) is True
+        evidence = captured["evidence"]
+        assert evidence.provider_outcome_seen is True
+        assert _decide_status(evidence, service.AiJobStatus.SUCCESS) == service.AiJobStatus.SUCCESS
+    finally:
+        from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)
+
+
+def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch):
+    """provider 正常返回但解析失败：落 FAILED，且不得误判远程仍在运行。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    owner, binding = _bind_remote_attempt("audit-job")
+    captured = {}
+
+    async def txn(fn):
+        return fn(None)
+
+    def capture_fail(db, **kwargs):
+        captured.update(kwargs)
+
+    try:
+        prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
+        provider_reply = {"text": '{"items": [{"title": "Only one"}]}', "session_id": "remote-1"}
+        monkeypatch.setattr(service, "run_db_txn", txn)
+        monkeypatch.setattr(service, "_prepare_requirement_split_sync", lambda db, **kw: prepared)
+        monkeypatch.setattr(service, "run_cli_single_turn", AsyncMock(return_value=provider_reply))
+        monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
+        assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
+        evidence = captured["evidence"]
+        assert evidence.provider_outcome_seen is True
+        # provider outcome 已见：解析失败落 FAILED，绝不是 ORPHANED（远程已停）。
+        assert _decide_status(evidence, service.AiJobStatus.FAILED) == service.AiJobStatus.FAILED
+    finally:
+        from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)
+
+
+def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
+    """无 outcome 断流（CLI 抛错）：outcome 未见到，收敛保持 ORPHANED。"""
+    from unittest.mock import AsyncMock, patch
+
+    owner, binding = _bind_remote_attempt("audit-job")
+    captured = {}
+
+    async def txn(fn):
+        return fn(None)
+
+    def capture_fail(db, **kwargs):
+        captured.update(kwargs)
+
+    async def broken_cli(*_args, **_kwargs):
+        raise RuntimeError("provider stream died before any result event")
+
+    try:
+        prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
+        monkeypatch.setattr(service, "run_db_txn", txn)
+        monkeypatch.setattr(service, "_prepare_requirement_split_sync", lambda db, **kw: prepared)
+        monkeypatch.setattr(service, "run_cli_single_turn", broken_cli)
+        monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
+        assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is False
+        evidence = captured["evidence"]
+        assert evidence.provider_outcome_seen is False
+        assert evidence.remote_session_started is True
+        assert _decide_status(evidence, service.AiJobStatus.FAILED) == service.AiJobStatus.ORPHANED
+    finally:
+        from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)

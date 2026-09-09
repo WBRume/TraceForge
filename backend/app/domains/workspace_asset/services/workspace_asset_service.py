@@ -2018,13 +2018,20 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
             **({"run_token": run_token} if run_token else {}),
         )
         # 证据必须在事件循环线程解析：DB executor 线程读取不到 attempt
-        # ContextVar（doc §6.1）。
+        # ContextVar（doc §6.1）。provider 的终局结果对象必须在此处进入
+        # evidence（doc 审计 P1-1）：远程会话已建立且 provider 正常返回时，
+        # 收敛必须看到 provider_outcome_seen=True，否则业务 finalizer 先
+        # 执行会被判 ORPHANED。
         attempt_evidence = resolve_attempt_evidence(
             execution_kind=resolved_execution_kind,
             runtime=current_agent_attempt_runtime(),
+            provider_result=ai_result,
         )
         evidence = attempt_evidence
-        provider_outcome_seen = bool(str(ai_result.get("text") or "").strip())
+        # provider 终局结果对象非 None 即 outcome seen（正常结果/明确失败
+        # 结果都算）；文本为空或解析失败仍走 FAILED，但绝不能被误认为
+        # 远程仍在运行。
+        provider_outcome_seen = ai_result is not None
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
         items = _coalesce_simple_import_preview_items(
@@ -2118,13 +2125,20 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
             backend_name=backend_name,
             **({"run_token": run_token} if run_token else {}),
         )
-        # 证据必须在事件循环线程解析（doc §6.1）。
+        # 证据必须在事件循环线程解析（doc §6.1）。provider 的终局结果对象
+        # 必须在此处进入 evidence（doc 审计 P1-1）：远程会话已建立且
+        # provider 正常返回时，收敛必须看到 provider_outcome_seen=True，
+        # 否则业务 finalizer 先执行会被判 ORPHANED。
         attempt_evidence = resolve_attempt_evidence(
             execution_kind=resolved_execution_kind,
             runtime=current_agent_attempt_runtime(),
+            provider_result=ai_result,
         )
         evidence = attempt_evidence
-        provider_outcome_seen = bool(str(ai_result.get("text") or "").strip())
+        # provider 终局结果对象非 None 即 outcome seen（正常结果/明确失败
+        # 结果都算）；文本为空或解析失败仍走 FAILED，但绝不能被误认为
+        # 远程仍在运行。
+        provider_outcome_seen = ai_result is not None
         parsed_json = _extract_json_object(str(ai_result.get("text") or ""))
         items = _normalize_ai_preview_items(parsed_json)
         if len(items) <= 1:
