@@ -52,6 +52,7 @@ from app.agents import (
     current_agent_attempt_key,
     current_agent_attempt_runtime,
     mark_provider_call_unresolved,
+    record_attempt_provider_call_stop,
     record_provider_call_result,
     record_provider_call_session_started,
     reset_agent_attempt,
@@ -313,6 +314,18 @@ def _close_unresolved_provider_call(
         return
     if call.state in (ProviderCallState.STARTED, ProviderCallState.UNKNOWN):
         call.state = ProviderCallState.ENDED
+    if stop_acknowledged:
+        # P0（doc 审计 0c381413 §2.4）：把本次停止 ACK 绑定到具体 call。
+        # attempt 级单槽 ACK 只是诊断；只有按 call 绑定（attempt_key /
+        # call_id / provider_session_id 一致）的证据才能授权该调用的终态。
+        # 绑定被拒时保持已关闭状态不变——被拒绝的 ACK 绝不授权终态。
+        record_attempt_provider_call_stop(
+            call,
+            AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=True,
+            ),
+        )
 
 
 def _provider_call_ready_for_retry(
@@ -2700,8 +2713,11 @@ async def _converge_runner_exit(
             runtime=runtime_state,
             stop_result=stop_result,
         )
-        if outcome.provider_outcome_seen:
+        if outcome.provider_outcome_seen and not evidence.provider_calls_authoritative:
             # 远程回合在取消请求到达前已自然结束：正常 provider outcome。
+            # P0（doc 审计 0c381413 §2.5）：该旁路只允许给"无 per-call 记
+            # 录"的旧路径补证据；per-call 记录存在时 outcome 以调用记录为
+            # 权威，未决调用绝不能被 runner 的 outcome=True 覆盖。
             evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
         reason = str(
             (stop_result.error_message if stop_result else None)
@@ -2729,9 +2745,11 @@ async def _converge_runner_exit(
         runtime=runtime_state,
         typed_error=outcome.error,
     )
-    if outcome.provider_outcome_seen:
+    if outcome.provider_outcome_seen and not evidence.provider_calls_authoritative:
         # 真实 provider result 产生后必须显式传递 outcome；runner 兜底
         # 绝不从 requested status 推断 provider 已结束（doc 修复方案 §8.3）。
+        # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时 outcome 以调用
+        # 记录为权威，未决调用绝不能被旁路覆盖（unresolved 也绝不在此清空）。
         evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
     queue_key = attempt.queue_key or ""
     is_task_chat = queue_key.startswith(f"{AiJobChannel.TASK_CHAT.value}:")

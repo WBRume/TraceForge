@@ -692,9 +692,13 @@ def revoke_workspace_invite_link(
 ):
     _ensure_member_manager(db, ws_id, current_user.id)
 
-    link = workspace_service.revoke_invite_link(db, ws_id, link_id)
+    # 服务只加锁并 flush（与 accept 相同的锁顺序 Workspace → Link）；
+    # commit/rollback 归路由（doc 审计 0c381413 §4.2）。
+    link = workspace_service.revoke_invite_link_in_txn(db, ws_id, link_id)
     if not link:
+        db.rollback()
         raise HTTPException(status_code=404, detail="Invite link not found")
+    db.commit()
 
     audit_log(
         action="create_workspace_invite_link",
