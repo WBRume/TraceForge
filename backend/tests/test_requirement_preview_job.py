@@ -422,12 +422,15 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
     assert saved.process_pid is None
 
 
-# ─────────── P1-1（doc: docs/agent-job-bc6ca89-remaining-code-audit.md）───────────
-# 远程需求预览（import/split）必须把 provider 终局结果传入 finalizer evidence：
-# 会话已建立且 provider 正常返回时，收敛不得判 ORPHANED。
+# ─────────── P1（doc: docs/agent-job-07e04775-audit-pseudocode-plan.md §4）───────────
+# 远程需求预览（import/split）必须把 provider 终局证据传入 finalizer evidence：
+# 会话已建立且 provider 正常返回时，收敛不得判 ORPHANED。调用链测试必须包含
+# 真实 single-turn helper，不只 mock 返回 dict（doc 审计 §4.5）。
 
 
 def _bind_remote_attempt(job_id: str):
+    from unittest.mock import patch  # noqa: F401
+
     from app.agents.contract import (
         AgentAttemptContext,
         AgentAttemptRuntimeState,
@@ -458,31 +461,79 @@ def _decide_status(evidence, requested):
     return convergence._decide_final_status(SimpleNamespace(), request, EXECUTION_KIND_REMOTE_SESSION)[0]
 
 
-def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
-    """split 预览：provider 正常返回 → finalizer evidence 带 outcome → SUCCESS。"""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, patch
+class _StubRemoteBridge:
+    """远程 bridge 桩：发出 legacy 风格事件，不调用真实远程服务。"""
 
+    def __init__(self, events=(), session_id="remote-1", start_error=None):
+        self.session_id = session_id
+        self._events = list(events)
+        self._start_error = start_error
+
+    async def start_session(self, **kwargs):
+        callback = kwargs["event_callback"]
+        for event in self._events:
+            await callback(event)
+        if self._start_error is not None:
+            raise self._start_error
+        return self.session_id
+
+    async def wait(self):
+        return None
+
+    def is_running(self):
+        return False
+
+    async def cancel(self):
+        from app.agents.contract import (
+            EXECUTION_KIND_REMOTE_SESSION,
+            AgentStopResult,
+        )
+
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=False,
+            failure_code="REMOTE_STOP_UNCONFIRMED",
+        )
+
+
+async def _async_txn(fn):
+    return fn(None)
+
+
+from unittest.mock import patch  # noqa: E402
+
+from app.domains.ai.services import ai_job_service as jobs  # noqa: E402
+
+
+def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
+    """split 预览：provider 正常返回（真实 helper + 明确 result 事件）→
+    finalizer evidence 带 outcome → SUCCESS。"""
     owner, binding = _bind_remote_attempt("audit-job")
     captured = {}
-
-    async def txn(fn):
-        return fn(None)
 
     def capture(db, **kwargs):
         captured.update(kwargs)
 
+    stub = _StubRemoteBridge(
+        events=[
+            {"type": "system", "subtype": "init", "session_id": "remote-1"},
+            {
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}',
+                "session_id": "remote-1",
+            },
+        ]
+    )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        provider_reply = {
-            "text": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}',
-            "session_id": "remote-1",
-        }
-        monkeypatch.setattr(service, "run_db_txn", txn)
-        monkeypatch.setattr(service, "_prepare_requirement_split_sync", lambda db, **kw: prepared)
-        monkeypatch.setattr(service, "run_cli_single_turn", AsyncMock(return_value=provider_reply))
+        monkeypatch.setattr(
+            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        )
         monkeypatch.setattr(service, "_finalize_requirement_split_sync", capture)
-        assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
+        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+                patch.object(service, "run_db_txn", _async_txn), \
+                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+            assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
         assert _decide_status(evidence, service.AiJobStatus.SUCCESS) == service.AiJobStatus.SUCCESS
@@ -493,19 +544,23 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
 
 
 def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
-    """import 预览与 split 使用相同漏传修复（doc 审计 P1-1 静态证据路径）。"""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, patch
-
+    """import 预览与 split 使用相同 helper（真实 single-turn 调用链）。"""
     owner, binding = _bind_remote_attempt("audit-job")
     captured = {}
-
-    async def txn(fn):
-        return fn(None)
 
     def capture(db, **kwargs):
         captured.update(kwargs)
 
+    stub = _StubRemoteBridge(
+        events=[
+            {"type": "system", "subtype": "init", "session_id": "remote-1"},
+            {
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": '{"items": [{"title": "Feature A", "body": "Body", "acceptance_criteria": [], "source_ref": "r1"}]}',
+                "session_id": "remote-1",
+            },
+        ]
+    )
     try:
         context = {
             "markdown": "# Feature A\n\nBody\n", "source_kind": "file",
@@ -513,16 +568,17 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
             "source_ext": ".md", "source_mime": "text/markdown", "render_json": {},
         }
         prepared = {"backend_name": "dsh", "prompt": "import", "project_path": "/tmp"}
-        provider_reply = {
-            "text": '{"items": [{"title": "Feature A", "body": "Body", "acceptance_criteria": [], "source_ref": "r1"}]}',
-            "session_id": "remote-1",
-        }
-        monkeypatch.setattr(service, "run_db_txn", txn)
-        monkeypatch.setattr(service, "_load_requirement_import_context_sync", lambda db, job_id: context)
-        monkeypatch.setattr(service, "_prepare_requirement_import_sync", lambda db, **kw: prepared)
-        monkeypatch.setattr(service, "run_cli_single_turn", AsyncMock(return_value=provider_reply))
+        monkeypatch.setattr(
+            service, "_load_requirement_import_context_sync", lambda db, job_id: context
+        )
+        monkeypatch.setattr(
+            service, "_prepare_requirement_import_sync", lambda db, **kw: prepared
+        )
         monkeypatch.setattr(service, "_finalize_requirement_import_sync", capture)
-        assert asyncio.run(service.run_requirement_import_preview_job("audit-job")) is True
+        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+                patch.object(service, "run_db_txn", _async_txn), \
+                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+            assert asyncio.run(service.run_requirement_import_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
         assert _decide_status(evidence, service.AiJobStatus.SUCCESS) == service.AiJobStatus.SUCCESS
@@ -533,27 +589,34 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
 
 
 def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch):
-    """provider 正常返回但解析失败：落 FAILED，且不得误判远程仍在运行。"""
-    from types import SimpleNamespace
-    from unittest.mock import AsyncMock, patch
-
+    """provider 正常返回（明确 result）但解析失败：落 FAILED，outcome 仍
+    保留，绝不误判远程仍在运行（doc 审计 §4.5 验收）。"""
     owner, binding = _bind_remote_attempt("audit-job")
     captured = {}
-
-    async def txn(fn):
-        return fn(None)
 
     def capture_fail(db, **kwargs):
         captured.update(kwargs)
 
+    stub = _StubRemoteBridge(
+        events=[
+            {"type": "system", "subtype": "init", "session_id": "remote-1"},
+            {
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": '{"items": [{"title": "Only one"}]}',
+                "session_id": "remote-1",
+            },
+        ]
+    )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        provider_reply = {"text": '{"items": [{"title": "Only one"}]}', "session_id": "remote-1"}
-        monkeypatch.setattr(service, "run_db_txn", txn)
-        monkeypatch.setattr(service, "_prepare_requirement_split_sync", lambda db, **kw: prepared)
-        monkeypatch.setattr(service, "run_cli_single_turn", AsyncMock(return_value=provider_reply))
+        monkeypatch.setattr(
+            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        )
         monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
-        assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
+        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+                patch.object(service, "run_db_txn", _async_txn), \
+                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+            assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
         # provider outcome 已见：解析失败落 FAILED，绝不是 ORPHANED（远程已停）。
@@ -564,29 +627,74 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
         reset_agent_attempt(owner)
 
 
-def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
-    """无 outcome 断流（CLI 抛错）：outcome 未见到，收敛保持 ORPHANED。"""
-    from unittest.mock import AsyncMock, patch
-
+def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
+    """明确失败 result（真实 helper 调用链）：业务 FAILED 而非 ORPHANED
+    （07e04775 §4.1 repro：result 到达时登记证据，异常路径不丢失）。"""
     owner, binding = _bind_remote_attempt("audit-job")
     captured = {}
-
-    async def txn(fn):
-        return fn(None)
 
     def capture_fail(db, **kwargs):
         captured.update(kwargs)
 
-    async def broken_cli(*_args, **_kwargs):
-        raise RuntimeError("provider stream died before any result event")
-
+    stub = _StubRemoteBridge(
+        events=[
+            {
+                "type": "result", "subtype": "error", "is_error": True,
+                "result": "provider rejected request",
+            },
+        ],
+        session_id="remote-07",
+    )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        monkeypatch.setattr(service, "run_db_txn", txn)
-        monkeypatch.setattr(service, "_prepare_requirement_split_sync", lambda db, **kw: prepared)
-        monkeypatch.setattr(service, "run_cli_single_turn", broken_cli)
+        monkeypatch.setattr(
+            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        )
         monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
-        assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is False
+        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+                patch.object(service, "run_db_txn", _async_txn), \
+                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+            # 返回协议保持既有语义（异常路径返回 outcome 局部布尔）；
+            # 收敛正确性由 finalizer evidence 决定。
+            asyncio.run(service.run_requirement_split_preview_job("audit-job"))
+        evidence = captured["evidence"]
+        # provider 明确失败 result 也是终局 outcome：FAILED，不是 ORPHANED。
+        assert evidence.provider_outcome_seen is True
+        assert _decide_status(evidence, service.AiJobStatus.FAILED) == service.AiJobStatus.FAILED
+    finally:
+        from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+        reset_agent_attempt_runtime(binding)
+        reset_agent_attempt(owner)
+
+
+def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
+    """只有 assistant 文本、没有 result 事件的断流（真实 helper）：outcome
+    未见到（不伪造结束），收敛保持 ORPHANED。"""
+    owner, binding = _bind_remote_attempt("audit-job")
+    captured = {}
+
+    def capture_fail(db, **kwargs):
+        captured.update(kwargs)
+
+    stub = _StubRemoteBridge(
+        events=[
+            {"type": "system", "subtype": "init", "session_id": "remote-1"},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial stream"}]},
+            },
+        ]
+    )
+    try:
+        prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
+        monkeypatch.setattr(
+            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        )
+        monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
+        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+                patch.object(service, "run_db_txn", _async_txn), \
+                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+            assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is False
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is False
         assert evidence.remote_session_started is True

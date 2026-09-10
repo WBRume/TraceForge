@@ -45,9 +45,15 @@ def accept_invite(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 服务只加锁并 flush（锁顺序 Workspace → Link）；commit/rollback 归路由
+    # （doc 审计 0c381413 §4.2）。并发名额竞争失败按 unavailable 返回 400。
     try:
-        member, link, already_member = workspace_service.accept_invite_link(db, token, current_user)
+        member, link, already_member = workspace_service.accept_invite_in_txn(
+            db, token, current_user.id
+        )
+        db.commit()
     except ValueError as exc:
+        db.rollback()
         message = str(exc)
         status_code = 404 if "not found" in message.lower() else 400
         raise HTTPException(status_code=status_code, detail=message)

@@ -47,12 +47,17 @@ RUN_TOKEN_ENV_VAR = "TRACEFORGE_RUN_TOKEN"
 # run token 仍然同时注入，供 reaper 的 token discovery 覆盖全部后代。
 SPAWN_TOKEN_ENV_VAR = "TRACEFORGE_SPAWN_TOKEN"
 
-# P0-1：同一进程两次身份探测的 create time 匹配容差。/proc starttime 对
-# 同一进程是稳定值；PID 复用后的新进程 create time 必然不同。
-_IDENTITY_MATCH_TOLERANCE = 0.5
+# P0（07e04775）：进程身份比较是身份判断，不是业务时间误差比较。同一进程
+# 两次读取的 create time 源自同一 /proc starttime 浮点值，必须精确相等；
+# PID 复用后的新进程必然不同。旧的 0.5 秒匹配容差已删除（同一 PID 创建
+# 时间相差 0.25 秒也必须视为不同身份），发送路径一律走绑定句柄。
 
 # P0-3：全树完成检查无法收敛时的结构化 failure code。
 DETACHED_DESCENDANTS_UNRESOLVED = "DETACHED_DESCENDANTS_UNRESOLVED"
+
+# P1（07e04775）：谱系清理的 TERM 宽限秒数；拒绝 TERM 的后代在此之后升级
+# SIGKILL（升级粒度以身份验证发送为单位，绝不整组 killpg）。
+_SPAWN_LINEAGE_TERM_GRACE_SECONDS = 1.5
 
 # 命令标记：用于 run-token 发现结果的补充身份校验（doc 7.3.4）。
 _TOKEN_PROCESS_COMMAND_MARKERS = ("claude", "node", "traceforge")
@@ -196,6 +201,11 @@ class TerminationResult:
     error_message: Optional[str] = None
     remaining_pids: tuple[int, ...] = ()
     root_identity_matches: Optional[bool] = None
+    # P1（doc 审计 0c381413 §3.2）：最近一轮 per-spawn 谱系扫描"无法检查"
+    # 的候选 PID。它们只表明扫描不完整（environ 暂时不可读），从未证明
+    # 携带本 spawn token；仅作诊断展示（必须标注"无法检查"，不得显示为
+    # "确认仍有子进程"），绝不进入 kill/known descendant 路径。
+    inspection_unknown_pids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -648,6 +658,23 @@ class TokenDiscoverySnapshot:
     state: ProcessProbeState = ProcessProbeState.UNKNOWN
     matches: Tuple[DiscoveredTokenProcess, ...] = ()
     unknown_pids: Tuple[int, ...] = ()
+    failure_code: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class SpawnLineageCleanup:
+    """One structured per-spawn lineage cleanup result (doc 审计 07e04775 §3.2).
+
+    清理必须返回结构化快照而不是 bool：本地快照与谱系扫描是两个必需证据
+    来源，调用方按“任一 LIVE -> 未死；无 LIVE 但有 UNKNOWN -> 未确认；全部
+    DEAD -> 已死”聚合。``signals_sent`` 保留诊断；失败码绝不反向伪造死亡。
+    """
+
+    state: ProcessProbeState = ProcessProbeState.CONFIRMED_DEAD
+    remaining_pids: Tuple[int, ...] = ()
+    unknown_pids: Tuple[int, ...] = ()
+    signals_sent: Tuple[str, ...] = ()
     failure_code: Optional[str] = None
     error_message: Optional[str] = None
 
@@ -1129,37 +1156,78 @@ def _combine_persisted_snapshots(
     )
 
 
+class MemberBindingState(str, enum.Enum):
+    """身份探测/绑定结果的显式状态（doc 审计 07e04775 P0-2.2）。
+
+    ``pidfd=None`` 不再同时表达“不支持”“打开失败”“绑定失败”：只有
+    :attr:`BOUND` 携带已验证绑定句柄并授予 Linux 信号发送资格；其余状态
+    一律禁止发送。
+    """
+
+    BOUND = "BOUND"                # 身份已验证且持有绑定句柄
+    GONE = "GONE"                  # 已验证原目标消失
+    UNVERIFIED = "UNVERIFIED"      # 身份读取/绑定失败，归属不明
+    UNSUPPORTED = "UNSUPPORTED"    # 平台不支持安全句柄操作
+
+
 @dataclass(frozen=True)
 class _MemberIdentity:
-    """One executor-side identity probe of a candidate group member (P0-1)."""
+    """One executor-side identity probe of a candidate group member (P0-1).
 
-    gone: bool = False
+    P0（07e04775）：绑定校验失败的探测绝不再返回“旧 create_time +
+    pidfd=None”——那种形状会被发送路径重新解释成“无句柄但可按数字 PID
+    发送”。任何非 BOUND 状态都不授予发送资格。
+    """
+
+    state: MemberBindingState = MemberBindingState.UNVERIFIED
     create_time: Optional[float] = None
     pidfd: Optional[int] = None
+    error_code: Optional[str] = None
+
+    @property
+    def gone(self) -> bool:
+        return self.state == MemberBindingState.GONE
+
+    @property
+    def bound(self) -> bool:
+        return (
+            self.state == MemberBindingState.BOUND and self.pidfd is not None
+        )
+
+
+def _pidfd_send_supported() -> bool:
+    """Whether this platform supports the safe pidfd open+send pair.
+
+    两者缺一都不允许安全发送：只有 ``pidfd_open`` 而没有
+    ``pidfd_send_signal`` 时退回数字 PID 会重新打开 P0 的误杀窗口。
+    """
+    return hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
 
 
 def _probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> _MemberIdentity:
     """Probe one candidate group member's identity off the loop.
 
-    - NoSuchProcess / zombie -> ``gone=True``（明确的该身份死亡证据）；
-    - create time 不可读 / 其他错误 -> 身份无法核实（归属不明），并且
+    - NoSuchProcess / zombie -> ``GONE``（明确的该身份死亡证据）；
+    - create time 不可读 / 其他错误 -> ``UNVERIFIED``（归属不明），并且
       不打开任何句柄（没有可验证的绑定对象，doc 审计 P0-1）；
     - ``want_pidfd`` 时同时返回 ``pidfd_open`` 稳定句柄：发送路径用它消除
       身份验证到信号发送之间的 PID 复用窗口（doc 审计 P0-1/P1-2）。句柄
       在同一探测流程内取得并做绑定校验：打开后立即重读 create time，
-      两次读取不一致说明探测期间 PID 已被复用，句柄无法证明绑定到已
-      验证身份 → 关闭句柄并按“归属不明”返回。调用方负责在发送完成后
-      关闭句柄。
+      两次读取必须精确一致（同一 /proc starttime 的同一浮点值；禁止
+      容差放宽，doc 审计 07e04775 P0-2.1）。不一致/不可读说明探测期间
+      PID 已被复用，句柄无法证明绑定到已验证身份 → 关闭句柄并返回
+      ``UNVERIFIED``（绝不退回“旧身份 + fd=None”）。调用方负责在发送
+      完成后关闭 BOUND 句柄。
     """
     pid = int(pid)
     if psutil is None:
-        return _MemberIdentity()
+        return _MemberIdentity(error_code="PROCESS_INSPECTION_UNAVAILABLE")
     try:
         proc = psutil.Process(pid)
     except (psutil.NoSuchProcess, psutil.ZombieProcess):
-        return _MemberIdentity(gone=True)
+        return _MemberIdentity(state=MemberBindingState.GONE)
     except (psutil.Error, OSError, ValueError):
-        return _MemberIdentity()
+        return _MemberIdentity(error_code="IDENTITY_PROBE_FAILED")
     create_time: Optional[float] = None
     try:
         create_time = float(proc.create_time())
@@ -1167,26 +1235,41 @@ def _probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> _Membe
         create_time = None
     if create_time is None:
         # 身份不可读：调用方绝不能凭此发送；也不交出未绑定句柄。
-        return _MemberIdentity(gone=False, create_time=None, pidfd=None)
+        return _MemberIdentity(error_code="IDENTITY_PROBE_FAILED")
+    if not want_pidfd:
+        # 身份可读但未取得绑定句柄：该探测不授予发送资格（只有 BOUND
+        # 状态允许发送）。
+        return _MemberIdentity(state=MemberBindingState.UNVERIFIED, create_time=create_time)
+    if not _pidfd_send_supported():
+        # 平台不支持安全句柄操作：明确 UNSUPPORTED，由上层按“未确认”
+        # 保留 ownership，绝不悄悄退回数字 PID 发送。
+        return _MemberIdentity(
+            state=MemberBindingState.UNSUPPORTED,
+            error_code="PIDFD_UNAVAILABLE",
+        )
     pidfd: Optional[int] = None
-    if want_pidfd and hasattr(os, "pidfd_open"):
-        try:
-            pidfd = os.pidfd_open(pid)
-        except (OSError, ValueError):
-            pidfd = None
-        if pidfd is not None:
-            try:
-                rebinding = float(psutil.Process(pid).create_time())
-            except (psutil.Error, OSError, ValueError):
-                rebinding = None
-            if (
-                rebinding is None
-                or abs(rebinding - create_time) > _IDENTITY_MATCH_TOLERANCE
-            ):
-                # 探测期间 PID 被复用：句柄不能证明绑定到已验证身份。
-                _close_pidfd(pidfd)
-                return _MemberIdentity(gone=False, create_time=create_time, pidfd=None)
-    return _MemberIdentity(gone=False, create_time=create_time, pidfd=pidfd)
+    try:
+        pidfd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        # 打开时目标已消失：明确的该身份死亡证据。
+        return _MemberIdentity(state=MemberBindingState.GONE)
+    except (OSError, ValueError):
+        return _MemberIdentity(error_code="PIDFD_OPEN_FAILED")
+    try:
+        rebinding = float(psutil.Process(pid).create_time())
+    except (psutil.Error, OSError, ValueError):
+        # 绑定后身份不可读：句柄无法证明绑定到已验证身份。
+        _close_pidfd(pidfd)
+        return _MemberIdentity(error_code="IDENTITY_PROBE_FAILED")
+    if rebinding != create_time:
+        # 探测期间 PID 被复用（或身份读取漂移）：句柄不能证明绑定到已
+        # 验证身份。关闭句柄并返回 UNVERIFIED——绝不交回旧 create_time
+        # 让发送路径误判为“身份已确认”。
+        _close_pidfd(pidfd)
+        return _MemberIdentity(error_code="IDENTITY_CHANGED")
+    return _MemberIdentity(
+        state=MemberBindingState.BOUND, create_time=create_time, pidfd=pidfd
+    )
 
 
 def _close_pidfd(pidfd: Optional[int]) -> None:
@@ -1206,38 +1289,47 @@ async def _signal_after_identity_recheck(
     signals: list[str],
     signal_name: str,
 ) -> str:
-    """P0-1/P0-2 共用的唯一安全发送入口：发送前重新验证目标身份。
+    """P0-1/P0-2 共用的唯一安全发送入口：发送前重新验证并绑定目标身份。
 
     - 重新探测目标身份并在同一流程内取得绑定句柄（pidfd 指向已验证的
       进程实例，消除验证到发送之间的 PID 复用窗口）；
-    - ``expected_create_time`` 为 None（原身份从未验证）、重探身份不可读、
-      或与原身份不符时，绝不发送，返回 ``"unverified"`` 交上层保留
-      ownership；
-    - 返回 ``"dead"``（目标已消失或发送时已退出）/ ``"sent"`` /
-      ``"unverified"``。
+    - 只有 ``BOUND`` 状态（句柄绑定成功 + 身份精确一致）才允许发送；
+      ``expected_create_time`` 为 None（原身份从未验证）、重探身份不可读、
+      与原身份不完全相等、或平台不支持安全句柄时，绝不发送，返回
+      ``"unverified"`` 交上层保留 ownership（doc 审计 07e04775 P0-2.4：
+      绑定失败禁止 fallback 到 os.kill/killpg 数字 PID）；
+    - 返回 ``"dead"``（目标已消失或绑定句柄发送时已退出）/ ``"sent"`` /
+      ``"unverified"``。``sent`` 不是死亡证明，调用方仍必须重扫确认。
     """
     identity = await ProcessSupervisor._probe_member_identity(
         int(pid), want_pidfd=True
     )
-    if identity.gone:
-        _close_pidfd(identity.pidfd)
-        return "dead"
-    if (
-        expected_create_time is None
-        or identity.create_time is None
-        or abs(float(identity.create_time) - float(expected_create_time))
-        > _IDENTITY_MATCH_TOLERANCE
-    ):
-        # 身份无法在发送前重新确认（不可读或不符）：绝不发送。
-        _close_pidfd(identity.pidfd)
+    try:
+        if identity.state == MemberBindingState.GONE:
+            return "dead"
+        if not identity.bound:
+            # UNVERIFIED / UNSUPPORTED：无绑定句柄，绝不退回数字 PID。
+            return "unverified"
+        if (
+            expected_create_time is None
+            or identity.create_time is None
+            or float(identity.create_time) != float(expected_create_time)
+        ):
+            # 身份无法在发送前重新确认（不可读或不符）：绝不发送。
+            return "unverified"
+        if ProcessSupervisor._signal_verified_member(int(pid), identity.pidfd, sig):
+            if signal_name not in signals:
+                signals.append(signal_name)
+            return "sent"
+        # 发送失败（权限拒绝等）：绝不折叠成死亡证据，按未确认处理，由
+        # 重扫/重探收敛。
         return "unverified"
-    if ProcessSupervisor._signal_verified_member(int(pid), identity.pidfd, sig):
-        if signal_name not in signals:
-            signals.append(signal_name)
-        return "sent"
-    # 发送失败（权限拒绝等）：绝不折叠成死亡证据，按未确认处理，由
-    # 重扫/重探收敛。
-    return "unverified"
+    except ProcessLookupError:
+        # 绑定句柄指向已验证实例；ESRCH 说明该实例在发送时已退出。
+        return "dead"
+    finally:
+        # 句柄所有权归本入口：无论发送成功与否恰好关闭一次。
+        _close_pidfd(identity.pidfd)
 
 
 def _windows_job_object() -> Optional[int]:
@@ -1317,6 +1409,10 @@ class ManagedAgentProcess:
     job_handle: Optional[int] = None
     reader_tasks: list[asyncio.Task] = field(default_factory=list)
     known_descendant_pids: set[int] = field(default_factory=set)
+    # P1（doc 审计 0c381413 §3.2）：最近一轮谱系扫描"无法检查"的候选 PID
+    # （从未证明携带本 spawn token）。仅诊断；每轮以最新扫描替换，绝不
+    # 累加过期候选，也绝不混入 known_descendant_pids。
+    last_uninspected_candidates: tuple[int, ...] = field(default_factory=tuple)
     monitor_task: Optional[asyncio.Task] = None
     stop_monitor: bool = False
     _closed: bool = False
@@ -1618,53 +1714,140 @@ class ManagedAgentProcess:
                 error_message=str(exc),
             )
 
-    async def _settle_detached_descendants(
+    async def _cleanup_spawn_lineage(
         self,
         signals: list[str],
         *,
-        max_wait: float = 5.0,
-    ) -> bool:
-        """P0-3：出具全树死亡证明前的脱组后代最终检查（spawn 谱系 containment）。
+        max_wait: float = 6.0,
+    ) -> SpawnLineageCleanup:
+        """P0-3/P1：本 spawn 谱系后代的结构化清理（07e04775 §3.3）。
 
         本地快照（root returncode + 原组 + 已采样后代）无法覆盖在一次采样
-        间隔内启动并 ``setsid`` 脱组的后代。spawn 时注入的
+        间隔内启动并 ``setsid`` 脱组的后代——它不在原组里，``killpg`` 打
+        不到；即使已被采样登记，本地快照也只会一直报 LIVE。spawn 时注入的
         ``TRACEFORGE_SPAWN_TOKEN`` 是本 spawn 专属谱系标记（uuid4 仅注入
-        本次子进程 env）：任何携带者都可证明属于本 spawn 的后代，因此可以
-        复用 P0-1/P0-2 的安全身份发送路径逐个终止后重扫；attempt 级 run
-        token 仍由 reaper 的 token discovery 统一覆盖。语义：
-        - 扫描确认无携带者 -> ``True``（全树完成证据闭合）；
-        - 携带者经身份验证后终止、重扫为空 -> ``True``；
+        本次子进程 env）：任何携带者都可证明属于本 spawn 的后代，因此
+        无论本地快照是否已经报死，都必须按本 token 清理谱系（doc 审计
+        07e04775 §3.2：清理不再以 local DEAD 为前置条件）。
+
+        语义（结构化返回，绝不只给 bool）：
+        - 完整扫描且无携带者 -> ``CONFIRMED_DEAD``（全树完成证据闭合）；
+        - 携带者经验证身份后逐个发送（TERM 宽限后升级 KILL）、重扫为空
+          -> ``CONFIRMED_DEAD``；``sent`` 不是死亡证明，必须重扫确认；
         - 扫描 UNKNOWN / 携带者身份冲突（create time 不可读或早于 spawn）
-          / 超时未收敛 -> ``False``（调用方必须保持 ownership，绝不出具
-          不可撤销的 confirmed_dead=True）。
-        Windows（Job Object containment）或无 spawn token 时无事可查，
-        返回 ``True`` 保持原语义。
+          / 超时未收敛 -> ``UNKNOWN``/``LIVE`` 结构化快照（调用方必须保持
+          ownership，绝不出具不可撤销的 confirmed_dead=True）。
+        只扫描 per-spawn token，绝不触碰同 attempt 其他 managed 的进程；
+        Windows（Job Object containment）或无 spawn token 时无事可查，返回
+        空死亡快照保持原语义。
         """
         if os.name == "nt" or psutil is None or not self.spawn_token:
-            return True
+            return SpawnLineageCleanup()
         not_before = datetime.fromtimestamp(
             max(0.0, float(self.created_at) - 2.0), tz=timezone.utc
         )
         deadline = time.monotonic() + max(0.1, max_wait)
+        kill_at = min(deadline, time.monotonic() + _SPAWN_LINEAGE_TERM_GRACE_SECONDS)
+        phase = signal.SIGTERM
+        phase_name = "SIGTERM"
+        signals_sent: list[str] = []
+        # P1（doc 审计 0c381413 §3.3）：候选集合不跨轮累加——新的完整扫描
+        # 能解除"暂时未知"，deadline 结果只取最终一次扫描；``proven_pids``
+        # 记录曾经验证过 token 归属的身份，它们随后不可读时仍保留 owned
+        # 归属，绝不能降级为"从未证明"的候选。
+        proven_pids: set[int] = set()
+        failure_code: Optional[str] = None
+        error_message: Optional[str] = None
+
+        def _conflict_result(
+            conflicts: Tuple[DiscoveredTokenProcess, ...],
+        ) -> SpawnLineageCleanup:
+            # 携带者身份无法核实（不可读/早于 spawn）：不盲杀，保持未确认。
+            return SpawnLineageCleanup(
+                state=ProcessProbeState.UNKNOWN,
+                unknown_pids=tuple(sorted(int(m.pid) for m in conflicts)),
+                signals_sent=tuple(signals_sent),
+                failure_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
+                error_message=(
+                    "Spawn-token process(es) failed identity validation; "
+                    "manual handling required"
+                ),
+            )
+
         while True:
-            snapshot = await ProcessSupervisor._token_snapshot(
+            scan = await ProcessSupervisor._token_snapshot(
                 self.spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
             )
-            if snapshot.state == ProcessProbeState.UNKNOWN:
+            if scan.state == ProcessProbeState.UNKNOWN:
                 # 扫描不完整：UNKNOWN 保留 ownership（doc 审计 P0-3）。
-                return False
-            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
-                return True
+                # 候选 PID 不跨轮累加（0c381413 §3.3），只保留失败诊断。
+                failure_code = failure_code or scan.failure_code
+                error_message = error_message or scan.error_message
             good, conflicts = ProcessSupervisor._partition_token_matches(
-                snapshot.matches, not_before=not_before, not_after=None
+                scan.matches, not_before=not_before, not_after=None
             )
             if conflicts:
-                # 携带者身份无法核实（不可读/早于 spawn）：不盲杀，保持未确认。
-                return False
+                return _conflict_result(conflicts)
+            proven_pids.update(int(m.pid) for m in good)
+            # 混合 LIVE + UNKNOWN 也可以清理已验证的 LIVE 身份；但不完整
+            # 扫描最终绝不产生死亡证明。
             if good:
-                await ProcessSupervisor._kill_token_matches(good, signals)
+                await ProcessSupervisor._kill_token_matches(
+                    good, signals_sent, sig=phase, signal_name=phase_name
+                )
+            # 不能根据“信号发完”返回死亡证明，必须重扫。
+            final = await ProcessSupervisor._token_snapshot(
+                self.spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
+            )
+            if final.state == ProcessProbeState.CONFIRMED_DEAD:
+                signals.extend(
+                    name for name in signals_sent if name not in signals
+                )
+                return SpawnLineageCleanup(
+                    state=ProcessProbeState.CONFIRMED_DEAD,
+                    signals_sent=tuple(signals_sent),
+                )
+            good, conflicts = ProcessSupervisor._partition_token_matches(
+                final.matches, not_before=not_before, not_after=None
+            )
+            if conflicts:
+                return _conflict_result(conflicts)
+            proven_pids.update(int(m.pid) for m in good)
+            if final.state == ProcessProbeState.UNKNOWN:
+                failure_code = failure_code or final.failure_code
+                error_message = error_message or final.error_message
             if time.monotonic() >= deadline:
-                return False
+                # 截止仍未收敛：返回最后一次扫描的结构化快照（LIVE/UNKNOWN），
+                # 绝不折叠成死亡证明。归属（owned）= 本轮已验证存活 + 曾
+                # 证明归属、随后不可读的身份；``unknown_pids`` 只保留最终
+                # 扫描中"从未证明属于本 spawn"的候选，过期候选不累加。
+                signals.extend(
+                    name for name in signals_sent if name not in signals
+                )
+                final_alive = {int(m.pid) for m in good}
+                final_unknown = {int(pid) for pid in final.unknown_pids}
+                owned = final_alive | (proven_pids & final_unknown)
+                return SpawnLineageCleanup(
+                    state=(
+                        ProcessProbeState.UNKNOWN
+                        if final.state == ProcessProbeState.UNKNOWN
+                        else ProcessProbeState.LIVE
+                    ),
+                    remaining_pids=tuple(sorted(owned)),
+                    unknown_pids=tuple(sorted(final_unknown - proven_pids)),
+                    signals_sent=tuple(signals_sent),
+                    failure_code=failure_code or (
+                        DETACHED_DESCENDANTS_UNRESOLVED
+                        if final.state == ProcessProbeState.UNKNOWN
+                        else "TOKEN_PROCESS_STILL_ALIVE"
+                    ),
+                    error_message=error_message
+                    or "Spawn-token lineage did not converge before deadline",
+                )
+            if time.monotonic() >= kill_at:
+                # 拒绝 TERM 的后代升级 KILL（按已验证身份逐个发送）。
+                phase = signal.SIGKILL
+                phase_name = "SIGKILL"
             await asyncio.sleep(0.1)
 
     async def _result(
@@ -1678,34 +1861,81 @@ class ManagedAgentProcess:
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> TerminationResult:
-        """Build the termination result from the last completed tri-state snapshot.
+        """Build the termination result from local snapshot + lineage evidence.
 
         本方法绝不再次同步扫描进程树（doc §9.4）；没有快照时先通过
-        inspection executor 取一次三态采样。confirmed_dead=True 之前必须
-        先闭合 P0-3 的脱组后代 containment 检查：正常返回、异常、取消、
-        重启后的清理路径共用同一“全树完成”标准。
+        inspection executor 取一次三态采样。P1（07e04775 §3.4）：本地快照
+        与 per-spawn 谱系扫描是两个必需证据来源，脱组后代清理不再以“本地
+        快照已死”为前置条件——已被采样登记的脱组后代会让本地快照一直
+        LIVE，而组 killpg 打不到它。聚合规则：任一来源 LIVE -> 未死；无
+        LIVE 但有 UNKNOWN -> 未确认；全部来源 DEAD -> 已死。正常返回、
+        异常、取消、重启后的清理路径共用同一“全树完成”标准。
         """
         if snapshot is None:
             snapshot = await self.inspect_tree()
-        if confirmed_dead is None:
-            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
-                confirmed_dead = True
-            elif snapshot.state == ProcessProbeState.LIVE:
-                confirmed_dead = False
-            else:
-                confirmed_dead = None
-                error_code = error_code or snapshot.failure_code or PROCESS_TREE_UNKNOWN
         signal_list = list(signals)
-        if confirmed_dead is True and not await self._settle_detached_descendants(
-            signal_list
-        ):
-            # P0-3：本地快照死亡 ≠ 全树完成；存在未解决的 spawn 谱系后代
-            # （或扫描 UNKNOWN）时保留 ownership，绝不出具不可撤销死亡证明。
-            confirmed_dead = None
-            error_code = error_code or DETACHED_DESCENDANTS_UNRESOLVED
-            error_message = error_message or (
-                "Spawn-token containment unresolved after local tree termination"
+        lineage: Optional[SpawnLineageCleanup] = None
+        if os.name != "nt" and psutil is not None and self.spawn_token:
+            lineage = await self._cleanup_spawn_lineage(signal_list)
+            # P1（doc 审计 0c381413 §3.2）：归属证据与扫描完整性分离。只有
+            # "已验证 token/谱系归属"的 remaining PID 才进入已知后代集合；
+            # ``unknown_pids`` 只是 environ 暂时不可读的任意进程（从未证明
+            # 归属），绝不能按数字 PID 提升为 owned descendant——否则无关
+            # 长命进程会让后续本地快照永远 LIVE/UNKNOWN，作业无法收敛。
+            proven_stragglers = set(lineage.remaining_pids)
+            if proven_stragglers:
+                self.known_descendant_pids |= proven_stragglers
+            # 候选只进入诊断（每轮以最新扫描替换，不累加）；展示时标注
+            # "无法检查"，绝不显示为"确认仍有子进程"。
+            self.last_uninspected_candidates = tuple(lineage.unknown_pids)
+            if snapshot.state != ProcessProbeState.CONFIRMED_DEAD:
+                # 清理可能已终止本地快照中的存活者：聚合前重新采样，不能
+                # 用过期快照否决谱系清理成果。
+                snapshot = await self.inspect_tree()
+        # 本地快照三态。
+        if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
+            local_dead: Optional[bool] = True
+        elif snapshot.state == ProcessProbeState.LIVE:
+            local_dead = False
+        else:
+            local_dead = None
+            error_code = error_code or snapshot.failure_code or PROCESS_TREE_UNKNOWN
+        if lineage is None:
+            confirmed_dead = local_dead
+        else:
+            # 结构化聚合（doc 审计 07e04775 §3.2/§3.4）。
+            if ProcessProbeState.LIVE in (snapshot.state, lineage.state):
+                confirmed_dead = False
+                if lineage.state == ProcessProbeState.LIVE:
+                    error_code = error_code or lineage.failure_code or (
+                        "TOKEN_PROCESS_STILL_ALIVE"
+                    )
+                    error_message = (
+                        error_message
+                        or lineage.error_message
+                        or "Spawn-token process(es) still alive after cleanup"
+                    )
+            elif ProcessProbeState.UNKNOWN in (snapshot.state, lineage.state):
+                confirmed_dead = None
+                error_code = error_code or lineage.failure_code or (
+                    DETACHED_DESCENDANTS_UNRESOLVED
+                )
+                error_message = error_message or lineage.error_message or (
+                    "Spawn-token containment unresolved after local tree termination"
+                )
+            else:
+                # 全部必需来源明确死亡：干净的死亡证明，清除过期诊断。
+                confirmed_dead = True
+                error_code = None
+                error_message = None
+        if confirmed_dead is not True:
+            remaining = tuple(
+                sorted(set(snapshot.remaining_pids) | set(lineage.remaining_pids or ()))
+                if lineage is not None
+                else snapshot.remaining_pids
             )
+        else:
+            remaining = snapshot.remaining_pids
         return TerminationResult(
             confirmed_dead=confirmed_dead,
             root_return_code=self.process.returncode,
@@ -1714,67 +1944,22 @@ class ManagedAgentProcess:
             elapsed_ms=int((time.monotonic() - started) * 1000),
             error_code=error_code,
             error_message=error_message,
-            remaining_pids=snapshot.remaining_pids,
+            remaining_pids=remaining,
             root_identity_matches=snapshot.root_identity_matches,
+            inspection_unknown_pids=(
+                tuple(lineage.unknown_pids) if lineage is not None else ()
+            ),
         )
 
     async def wait(self) -> ProcessWaitResult:
+        """等待 root 退出并按唯一收尾入口收敛全树（07e04775 §3.4）。
+
+        root 退出不是全树死亡证明：wait 与 close 共用同一串行化收尾
+        （``close`` → ``_terminate`` → ``_result``），避免两份不同的条件表。
+        """
         try:
             root_return_code = await self.process.wait()
-            snapshot = await self.inspect_tree()
-            confirmed_dead = snapshot.state == ProcessProbeState.CONFIRMED_DEAD
-            signals: list[str] = []
-            if confirmed_dead and not await self._settle_detached_descendants(signals):
-                # P0-3：root 退出不是全树死亡证明。存在携带本 spawn 谱系
-                # token 的脱组后代（或扫描 UNKNOWN）时，绝不缓存/返回不可
-                # 撤销的 confirmed_dead=True——后续缓存/归属释放都依赖该
-                # 证明的完整性。携带者已由安全身份路径终止；仍未收敛时
-                # 交由 close() 的终止流程继续处理。
-                confirmed_dead = None
-            termination = TerminationResult(
-                confirmed_dead=confirmed_dead,
-                root_return_code=root_return_code,
-                root_identity_matches=snapshot.root_identity_matches,
-                remaining_pids=snapshot.remaining_pids,
-                signals_sent=tuple(signals),
-                tree_kill_used=bool(signals),
-                error_code=(
-                    None
-                    if confirmed_dead
-                    else (
-                        snapshot.failure_code
-                        or (
-                            DETACHED_DESCENDANTS_UNRESOLVED
-                            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD
-                            else PROCESS_TREE_UNKNOWN
-                        )
-                    )
-                ),
-                error_message=(
-                    None
-                    if confirmed_dead
-                    else (
-                        snapshot.error_message
-                        or (
-                            "Spawn-token containment unresolved after root exit"
-                            if snapshot.state == ProcessProbeState.CONFIRMED_DEAD
-                            else "Process tree not fully confirmed dead after root exit"
-                        )
-                    )
-                ),
-            )
-            if confirmed_dead is not True:
-                # The root's exit is not the end of the attempt.  Preserve the
-                # actual tree-cleanup result so callers cannot report SUCCESS
-                # while descendants are still alive (or their state unknown).
-                termination = await self.close(reason="root_exit_with_descendants")
-            else:
-                # Cache the authoritative proof under the same serialization
-                # rules as close()/terminate().
-                async with self._termination_lock:
-                    cached = self._last_termination
-                    if cached is None or not cached.confirmed_dead:
-                        self._last_termination = termination
+            termination = await self.close(reason="root_exited")
             return ProcessWaitResult(
                 root_return_code=root_return_code,
                 termination=termination,
@@ -2299,34 +2484,27 @@ class ProcessSupervisor:
         pidfd: Optional[int],
         sig: int,
     ) -> bool:
-        """Send one signal to a verified identity; pidfd preferred (P0-1).
+        """Send one signal through the verified pidfd binding only (P0-1).
 
-        pidfd 句柄在探测时打开、发送后立即关闭：即使 PID 在探测与发送之间
-        被复用，句柄仍指向原进程，内核会以 ESRCH 拒绝，不会误杀新进程。
+        P0（07e04775）：只有已绑定的 pidfd 允许发送。句柄缺失、平台缺
+        ``pidfd_send_signal``、或发送失败都按“未确认”处理——禁止退回
+        ``os.kill(数字 PID)``，那会把“校验明确失败”重新解释成“无句柄但
+        可发送”，在 PID 复用窗口内误杀无关进程。句柄由调用方
+        （``_signal_after_identity_recheck``）恰好关闭一次。
         """
-        if pidfd is not None:
-            send = getattr(signal, "pidfd_send_signal", None)
-            if send is not None:
-                try:
-                    send(pidfd, sig)
-                    return True
-                except (ProcessLookupError, PermissionError, OSError):
-                    return False
-                finally:
-                    try:
-                        os.close(pidfd)
-                    except OSError:
-                        pass
-            try:
-                os.close(pidfd)
-            except OSError:
-                pass
-            # 平台没有 pidfd_send_signal：退回数字 PID（与既有 os.kill
-            # 语义一致；发送目标已经过 create-time 身份验证）。
+        if pidfd is None:
+            return False
+        send = getattr(signal, "pidfd_send_signal", None)
+        if send is None:
+            return False
         try:
-            os.kill(int(member_pid), sig)
+            send(int(pidfd), sig)
             return True
-        except (ProcessLookupError, PermissionError, OSError):
+        except ProcessLookupError:
+            # 句柄绑定在已验证实例上：ESRCH 说明该实例在发送时已退出，
+            # 这是明确的死亡证据（交由调用方映射为 dead 并重扫确认）。
+            raise
+        except (PermissionError, OSError):
             return False
 
     async def _terminate_verified_members(
@@ -2871,22 +3049,26 @@ class ProcessSupervisor:
     async def _kill_token_matches(
         matches: Tuple[DiscoveredTokenProcess, ...],
         signals: list[str],
+        *,
+        sig: int = signal.SIGKILL,
+        signal_name: str = "SIGKILL",
     ) -> None:
-        """SIGKILL each verified token identity — never the numeric group (P0-2).
+        """Signal each verified token identity — never the numeric group (P0-2).
 
         精确 token 命中一个进程不等于取得整个进程组的归属：禁止从单个
         match 无条件升级 ``killpg``（同组可能混入携带其他 token/无 token
         的无关进程）。每个 match 以扫描时捕获的 create time 为原身份，经
         P0-1 的共用安全发送入口重新验证后逐个发送；身份在扫描到发送之间
-        变化/不可读时跳过（保持未确认，由调用方的重扫收敛）。
+        变化/不可读时跳过（保持未确认，由调用方的重扫收敛）。谱系清理以
+        ``sig``/``signal_name`` 指定 TERM→KILL 升级阶段；默认仍是 SIGKILL。
         """
         for match in matches:
             outcome = await _signal_after_identity_recheck(
                 int(match.pid),
                 match.create_time,
-                signal.SIGKILL,
+                sig,
                 signals,
-                "SIGKILL",
+                signal_name,
             )
             if outcome == "unverified":
                 logger.warning(
