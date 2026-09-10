@@ -1,22 +1,26 @@
 <script setup lang="ts">
-import { proxyRefs } from 'vue'
-import { Loader2, Save, Search } from 'lucide-vue-next'
-import BaseSelect from '@/components/BaseSelect.vue'
+import { onMounted, onUnmounted, proxyRefs, ref } from 'vue'
+import { ChevronDown, Loader2, Pencil, Save, Search, X } from 'lucide-vue-next'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
-import type { PermissionKey } from '@/utils/settingsPermissions'
+import type { PermissionFlags, PermissionKey } from '@/utils/settingsPermissions'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const props = defineProps<{ vm: SettingsViewModel }>()
 const vm = proxyRefs(props.vm)
 
+type MemberRole = 'OWNER' | 'DEVELOPER' | 'VIEWER'
+
 type MemberRow = {
   id: string
+  workspace_id: string
+  user_id: string
   email: string
   display_name: string
-  role: string
+  role: MemberRole
+  joined_at: string
   is_owner: boolean
   is_expert: boolean
-  permissions: Record<string, boolean>
+  permissions: PermissionFlags
 }
 
 const avatarInitial = (member: MemberRow) => (
@@ -26,6 +30,31 @@ const avatarInitial = (member: MemberRow) => (
 const permissionOn = (member: MemberRow, key: PermissionKey) => Boolean(member.permissions?.[key])
 
 const colCount = () => (vm.canManageMembers ? 6 : 5)
+
+const roleMenuOpenId = ref('')
+
+const toggleRoleMenu = (memberId: string) => {
+  roleMenuOpenId.value = roleMenuOpenId.value === memberId ? '' : memberId
+}
+
+const closeRoleMenu = () => {
+  roleMenuOpenId.value = ''
+}
+
+const pickRole = (member: MemberRow, value: 'DEVELOPER' | 'VIEWER') => {
+  const draft = vm.memberDrafts[member.id]
+  if (draft) draft.role = value
+  vm.applyDraftRoleDefaults(member.id)
+  roleMenuOpenId.value = ''
+}
+
+onMounted(() => {
+  window.addEventListener('click', closeRoleMenu)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('click', closeRoleMenu)
+})
 </script>
 
 <template>
@@ -169,26 +198,38 @@ const colCount = () => (vm.canManageMembers ? 6 : 5)
               </td>
               <td class="col-role">
                 <span v-if="member.is_owner" class="role-badge owner">{{ vm.roleTag(member.role) }}</span>
-                <div v-else-if="vm.canManageMembers" class="role-select-wrap">
-                  <BaseSelect
-                    v-model="vm.memberDrafts[member.id].role"
-                    :options="vm.memberRoleOptions"
-                    size="sm"
-                    @update:model-value="vm.applyDraftRoleDefaults(member.id)"
-                  />
+                <div v-else-if="vm.isEditingMember(member)" class="role-pill-select">
+                  <button
+                    type="button"
+                    class="role-pill"
+                    :class="vm.memberDrafts[member.id].role.toLowerCase()"
+                    @click.stop="toggleRoleMenu(member.id)"
+                  >
+                    {{ vm.roleTag(vm.memberDrafts[member.id].role) }}
+                    <ChevronDown class="pill-caret" />
+                  </button>
+                  <transition name="role-menu">
+                    <div v-if="roleMenuOpenId === member.id" class="role-pill-menu">
+                      <button
+                        v-for="option in vm.memberRoleOptions"
+                        :key="option.value"
+                        type="button"
+                        class="role-pill-menu-item"
+                        :class="{ selected: option.value === vm.memberDrafts[member.id].role }"
+                        @click.stop="pickRole(member, option.value)"
+                      >
+                        {{ option.label }}
+                      </button>
+                    </div>
+                  </transition>
                 </div>
                 <span v-else class="role-badge" :class="member.role.toLowerCase()">{{ vm.roleTag(member.role) }}</span>
               </td>
               <td class="col-expert">
-                <span v-if="member.is_owner" class="expert-badge">{{ $t('settings.members.expert_badge') }}</span>
-                <button
-                  v-else-if="vm.canManageMembers"
-                  type="button"
-                  class="member-toggle"
-                  :class="{ on: vm.memberDrafts[member.id]?.is_expert }"
-                  :aria-pressed="Boolean(vm.memberDrafts[member.id]?.is_expert)"
-                  @click="vm.toggleDraftExpert(member.id)"
-                ></button>
+                <label v-if="vm.isEditingMember(member)" class="expert-switch inline col-expert-switch">
+                  <input v-model="vm.memberDrafts[member.id].is_expert" type="checkbox">
+                  <span>{{ $t('settings.members.expert_badge') }}</span>
+                </label>
                 <span v-else-if="member.is_expert" class="expert-badge">{{ $t('settings.members.expert_badge') }}</span>
                 <span v-else class="member-readonly-tag">—</span>
               </td>
@@ -209,29 +250,48 @@ const colCount = () => (vm.canManageMembers ? 6 : 5)
                 </div>
               </td>
               <td class="col-actions">
-                <div v-if="vm.canManageMembers && !member.is_owner" class="member-row-actions">
-                  <button
-                    class="btn-secondary btn-compact"
-                    :disabled="vm.savingMemberId === member.id"
-                    @click="vm.saveMember(member)"
-                  >
-                    <Loader2 v-if="vm.savingMemberId === member.id" class="w-4 h-4 spin" />
-                    <Save v-else class="w-4 h-4" />
-                    {{ $t('settings.members.save_member') }}
-                  </button>
-                  <DeleteActionButton
-                    mode="icon"
-                    :title="$t('settings.members.remove_member')"
-                    :loading="vm.removingMemberId === member.id"
-                    @click="vm.askRemoveMember(member)"
-                  />
-                </div>
+                <template v-if="vm.canManageMembers && !member.is_owner">
+                  <div v-if="vm.isEditingMember(member)" class="member-row-actions">
+                    <button
+                      class="icon-action save"
+                      :title="$t('settings.members.save_member')"
+                      :disabled="vm.savingMemberId === member.id"
+                      @click="vm.saveMember(member)"
+                    >
+                      <Loader2 v-if="vm.savingMemberId === member.id" class="w-4 h-4 spin" />
+                      <Save v-else class="w-4 h-4" />
+                    </button>
+                    <button
+                      class="icon-action cancel"
+                      :title="$t('common.cancel')"
+                      :disabled="vm.savingMemberId === member.id"
+                      @click="vm.cancelEditMember(member)"
+                    >
+                      <X class="w-4 h-4" />
+                    </button>
+                    <DeleteActionButton
+                      mode="icon"
+                      :title="$t('settings.members.remove_member')"
+                      :loading="vm.removingMemberId === member.id"
+                      @click="vm.askRemoveMember(member)"
+                    />
+                  </div>
+                  <div v-else class="member-row-actions">
+                    <button
+                      class="icon-action edit"
+                      :title="$t('settings.members.edit_member')"
+                      @click="vm.startEditMember(member)"
+                    >
+                      <Pencil class="w-4 h-4" />
+                    </button>
+                  </div>
+                </template>
                 <span v-else-if="member.is_owner" class="member-readonly-tag">{{ $t('settings.members.readonly_tag') }}</span>
               </td>
             </tr>
             <tr v-if="vm.isPermissionExpanded(member.id)" class="member-detail-row">
               <td :colspan="colCount()">
-                <div v-if="vm.canManageMembers && !member.is_owner" class="permission-grid">
+                <div v-if="vm.isEditingMember(member)" class="permission-grid">
                   <label
                     v-for="option in vm.permissionOptions"
                     :key="`${member.id}-${option.key}`"

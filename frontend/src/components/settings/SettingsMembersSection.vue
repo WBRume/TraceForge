@@ -51,7 +51,7 @@ const vm = proxyRefs(rawVm)
         <div v-if="vm.selectedMemberCount > 0" class="member-batch-bar">
           <span class="batch-bar-count">{{ $t('settings.members.batch_selected', { count: vm.selectedMemberCount }) }}</span>
           <div class="batch-bar-role">
-            <BaseSelect v-model="vm.batchRoleValue" :options="vm.memberRoleOptions" size="sm" />
+            <BaseSelect v-model="vm.batchRoleValue" :options="vm.memberRoleOptions" size="sm" drop-up />
           </div>
           <button class="btn-primary btn-compact" :disabled="vm.batchApplying" @click="vm.applyBatchRole">
             <Loader2 v-if="vm.batchApplying" class="w-4 h-4 spin" />
