@@ -5,7 +5,17 @@ User / workspace models.
 import uuid
 from enum import Enum as PyEnum
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, Text, Boolean, func
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    Text,
+    Boolean,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -115,6 +125,14 @@ class Workspace(Base):
 
 class WorkspaceMember(Base):
     __tablename__ = "workspace_members"
+    # doc 审计 0c381413 §4.2：同一用户在同一工作区最多一条成员记录（幂等
+    # 依赖的数据库兜底）。增量迁移先做只读重复审计；发现重复时必须先给出
+    # 明确数据处理方案，禁止自动删除开发数据。
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "user_id", name="uq_workspace_members_workspace_user"
+        ),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)

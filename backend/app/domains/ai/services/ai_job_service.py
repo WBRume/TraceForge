@@ -45,10 +45,16 @@ from app.agents import (
     AgentStopResult,
     EXECUTION_KIND_LOCAL_PROCESS,
     EXECUTION_KIND_REMOTE_SESSION,
+    ProviderCallState,
     bind_agent_attempt,
     bind_agent_attempt_runtime,
     current_agent_attempt,
+    current_agent_attempt_key,
     current_agent_attempt_runtime,
+    mark_provider_call_unresolved,
+    record_attempt_provider_call_stop,
+    record_provider_call_result,
+    record_provider_call_session_started,
     reset_agent_attempt,
     reset_agent_attempt_runtime,
 )
@@ -287,6 +293,62 @@ def _bridge_stop_result(bridge: Any) -> Optional[AgentStopResult]:
     if termination is None:
         return None
     return agent_stop_result_from_termination(termination)
+
+
+def _close_unresolved_provider_call(
+    call: Optional[Any],
+    *,
+    stop_acknowledged: bool = False,
+    tree_dead: bool = False,
+) -> None:
+    """Close an unresolved provider call when its outcome can never arrive.
+
+    P1（07e04775 §4.3/§4.4）：明确 stop ACK（绑定本次 bridge/调用的会话
+    停止）或已证明死亡的本地进程树都意味着该调用已确定终结。关闭未决
+    记录（STARTED/UNKNOWN -> ENDED，``result_success`` 保持 None）是为了
+    让重试产生的新 ENDED 不被旧未决阻塞；它绝不伪造 provider outcome
+    成败，收敛仍优先消费真实 result（``result_success``）与 stop ACK。
+    已 ENDED 的记录保持不变。
+    """
+    if call is None or not (stop_acknowledged or tree_dead):
+        return
+    if call.state in (ProviderCallState.STARTED, ProviderCallState.UNKNOWN):
+        call.state = ProviderCallState.ENDED
+    if stop_acknowledged:
+        # P0（doc 审计 0c381413 §2.4）：把本次停止 ACK 绑定到具体 call。
+        # attempt 级单槽 ACK 只是诊断；只有按 call 绑定（attempt_key /
+        # call_id / provider_session_id 一致）的证据才能授权该调用的终态。
+        # 绑定被拒时保持已关闭状态不变——被拒绝的 ACK 绝不授权终态。
+        record_attempt_provider_call_stop(
+            call,
+            AgentStopResult(
+                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                stop_acknowledged=True,
+            ),
+        )
+
+
+def _provider_call_ready_for_retry(
+    call: Optional[Any],
+    attempt: Optional[AgentAttemptContext],
+) -> bool:
+    """Retry gate: the previous call must be finished before overlapping.
+
+    P1（07e04775 §4.3）：远程不能因为 ``process_started=False`` 就允许与
+    未结束调用重叠——前一次调用必须已 ENDED（真实 result 或绑定 ACK 终止）
+    才允许启动下一次。无证据登记能力（runtime 缺失）时保持旧行为。
+    """
+    if call is None:
+        return True
+    if call.state in (ProviderCallState.ENDED, ProviderCallState.NOT_STARTED):
+        return True
+    kind = getattr(attempt, "execution_kind", None) or EXECUTION_KIND_LOCAL_PROCESS
+    if kind == EXECUTION_KIND_REMOTE_SESSION:
+        # STARTED/UNKNOWN：与未结束的远程调用重叠被禁止。
+        return False
+    # 本地进程路径：重试前提（进程树确认死亡）已在外层检查；未决记录
+    # 不阻塞本地新进程，但其证据绝不会被冒用（resolve 按 call 隔离）。
+    return True
 
 
 def process_containment_readiness() -> Dict[str, Any]:
@@ -2651,8 +2713,11 @@ async def _converge_runner_exit(
             runtime=runtime_state,
             stop_result=stop_result,
         )
-        if outcome.provider_outcome_seen:
+        if outcome.provider_outcome_seen and not evidence.provider_calls_authoritative:
             # 远程回合在取消请求到达前已自然结束：正常 provider outcome。
+            # P0（doc 审计 0c381413 §2.5）：该旁路只允许给"无 per-call 记
+            # 录"的旧路径补证据；per-call 记录存在时 outcome 以调用记录为
+            # 权威，未决调用绝不能被 runner 的 outcome=True 覆盖。
             evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
         reason = str(
             (stop_result.error_message if stop_result else None)
@@ -2680,9 +2745,11 @@ async def _converge_runner_exit(
         runtime=runtime_state,
         typed_error=outcome.error,
     )
-    if outcome.provider_outcome_seen:
+    if outcome.provider_outcome_seen and not evidence.provider_calls_authoritative:
         # 真实 provider result 产生后必须显式传递 outcome；runner 兜底
         # 绝不从 requested status 推断 provider 已结束（doc 修复方案 §8.3）。
+        # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时 outcome 以调用
+        # 记录为权威，未决调用绝不能被旁路覆盖（unresolved 也绝不在此清空）。
         evidence = dataclasses.replace(evidence, provider_outcome_seen=True)
     queue_key = attempt.queue_key or ""
     is_task_chat = queue_key.startswith(f"{AiJobChannel.TASK_CHAT.value}:")
@@ -3068,6 +3135,12 @@ async def run_cli_single_turn(
         effective_run_token = run_token or (current_attempt.run_token if current_attempt else None)
         # 指定 backend（工作区配置或线程粘性）走统一适配层；否则保持旧全局行为
         bridge = create_legacy_bridge(backend_name) if backend_name else create_cli_bridge()
+        # P1（07e04775 §4.2）：provider 终局证据必须在 result 事件到达时按
+        # call 身份登记，而不是 helper 返回后补记。每次调用（含重试）新建
+        # 记录，绝不复用上一轮 ENDED。
+        runtime = current_agent_attempt_runtime()
+        attempt_key = current_agent_attempt_key()
+        call = runtime.begin_provider_call(attempt_key) if runtime is not None else None
         text_parts: List[str] = []
         result_text = ""
         result_is_error = False
@@ -3077,6 +3150,16 @@ async def run_cli_single_turn(
         async def on_event(event: dict):
             nonlocal result_text, result_is_error
             event_type = str(event.get("type") or "")
+            if call is not None and runtime is not None and runtime.matches_current_attempt(call):
+                # 统一适配边界（Claude 风格 legacy dict）：system/init 携带
+                # provider session id；result 是唯一终局事件。证据必须早于
+                # JSON 解析、业务落库、错误转换和广播（doc 审计 §4.3）。
+                if event_type == "system" and str(event.get("subtype") or "").lower() == "init":
+                    record_provider_call_session_started(call, event.get("session_id"))
+                elif event_type == "result":
+                    subtype = str(event.get("subtype") or "").lower()
+                    is_error = bool(event.get("is_error")) or subtype == "error"
+                    record_provider_call_result(call, is_error=is_error)
             if event_type == "assistant":
                 message = event.get("message") or {}
                 blocks = message.get("content") if isinstance(message, dict) else []
@@ -3117,140 +3200,182 @@ async def run_cli_single_turn(
 
         monitor_task: Optional[asyncio.Task] = None
         try:
-            resumed_session_id = await bridge.start_session(
-                prompt=prompt,
-                project_path=project_path,
-                event_callback=on_event,
-                session_id=next_session_id,
-                env_overrides=env_overrides or None,
-                fork_session=fork_session and attempt == 1,
-                permission_mode=permission_mode,
-                on_process_started=on_process_started,
-            )
-            session_started = True
-            if should_cancel:
-                async def _cancel_monitor() -> None:
-                    nonlocal cancelled
-                    while True:
-                        if should_cancel():
-                            cancelled = True
-                            await bridge.cancel()
-                            return
-                        await asyncio.sleep(0.2)
+            try:
+                resumed_session_id = await bridge.start_session(
+                    prompt=prompt,
+                    project_path=project_path,
+                    event_callback=on_event,
+                    session_id=next_session_id,
+                    env_overrides=env_overrides or None,
+                    fork_session=fork_session and attempt == 1,
+                    permission_mode=permission_mode,
+                    on_process_started=on_process_started,
+                )
+                session_started = True
+                # start_session 成功返回是“已确认远程 session 创建”的登记点；
+                # 不能只依赖它（result 可能先于返回值到达），但必须补记。
+                if call is not None:
+                    record_provider_call_session_started(call, resumed_session_id)
+                if should_cancel:
+                    async def _cancel_monitor() -> None:
+                        nonlocal cancelled
+                        while True:
+                            if should_cancel():
+                                cancelled = True
+                                await bridge.cancel()
+                                return
+                            await asyncio.sleep(0.2)
 
-                monitor_task = asyncio.create_task(_cancel_monitor())
+                    monitor_task = asyncio.create_task(_cancel_monitor())
 
-            # 文档讨论是异步作业，允许更长执行时长，避免误超时。
-            wait_seconds = max(600, int(settings.AGENT_MAX_RUNTIME_SECONDS or 7200))
-            if hasattr(bridge, "wait"):
-                try:
-                    await asyncio.wait_for(bridge.wait(), timeout=wait_seconds)
-                except asyncio.CancelledError:
-                    # LegacyBridgeShim.cancel 会取消其内部 run task；该取消以
-                    # CancelledError 从 wait() 冒出。取消监控已确认本次是
-                    # 用户取消时，按取消路径收敛；否则保持传播语义。
-                    if not cancelled:
-                        raise
-        except asyncio.TimeoutError as exc:
-            # Cancel must finish first so its termination result becomes the
-            # authoritative evidence before any retry decision.
-            await bridge.cancel()
-            bridge_stop = _bridge_stop_result(bridge)
-            evidence = _resolve_attempt_evidence(stop_result=bridge_stop)
+                # 文档讨论是异步作业，允许更长执行时长，避免误超时。
+                wait_seconds = max(600, int(settings.AGENT_MAX_RUNTIME_SECONDS or 7200))
+                if hasattr(bridge, "wait"):
+                    try:
+                        await asyncio.wait_for(bridge.wait(), timeout=wait_seconds)
+                    except asyncio.CancelledError:
+                        # LegacyBridgeShim.cancel 会取消其内部 run task；该取消以
+                        # CancelledError 从 wait() 冒出。取消监控已确认本次是
+                        # 用户取消时，按取消路径收敛；否则保持传播语义。
+                        if not cancelled:
+                            raise
+            except asyncio.TimeoutError as exc:
+                # Cancel must finish first so its termination result becomes the
+                # authoritative evidence before any retry decision.
+                await bridge.cancel()
+                bridge_stop = _bridge_stop_result(bridge)
+                evidence = _resolve_attempt_evidence(stop_result=bridge_stop)
+                process_started = evidence.process_started
+                dead = evidence.termination_confirmed_dead
+                if dead is False:
+                    raise AgentError(
+                        "Agent process tree could not be confirmed dead",
+                        termination_confirmed_dead=False,
+                        process_started=process_started or True,
+                        failure_code=evidence.failure_code or "PROCESS_TREE_STILL_ALIVE",
+                    ) from exc
+                # P1（07e04775 §4.3）：明确 stop ACK 或已证明死亡的进程树
+                # 都意味着该调用已确定不会再产出 result——关闭未决记录
+                # （result_success 保持 None，绝不伪造 outcome）。
+                _close_unresolved_provider_call(
+                    call,
+                    stop_acknowledged=evidence.remote_stop_acknowledged is True,
+                    tree_dead=dead is True,
+                )
+                last_error = AgentTimeoutError(
+                    "AI reply timed out",
+                    phase="hard",
+                    limit_seconds=float(wait_seconds),
+                    termination_confirmed_dead=dead,
+                    process_started=process_started,
+                )
+                logger.warning(
+                    "Asset AI single-turn wait timeout (attempt {}/{})",
+                    attempt,
+                    attempts,
+                )
+                # Retry only after the previous tree is proven dead, or when this
+                # attempt never started a local process at all.  远程会话不能
+                # 因 process_started=False 就与未结束的调用重叠：上一次调用
+                # 必须 ENDED（含 ACK 终止）才允许重试（doc 审计 §4.3）。
+                if attempt < attempts and (dead is True or not process_started):
+                    if not _provider_call_ready_for_retry(call, current_attempt):
+                        raise last_error from exc
+                    next_session_id = None
+                    continue
+                raise last_error from exc
+            finally:
+                if monitor_task:
+                    monitor_task.cancel()
+                    await asyncio.gather(monitor_task, return_exceptions=True)
+                if not session_started or getattr(bridge, "is_running", lambda: False)():
+                    await asyncio.shield(bridge.cancel())
+
+            if cancelled:
+                # 用户取消：取消后的终止结果必须随 typed 异常携带，交由上层
+                # termination finalizer 收敛（确认死亡 → 可恢复/取消态）。
+                evidence = _resolve_attempt_evidence(stop_result=_bridge_stop_result(bridge))
+                _close_unresolved_provider_call(
+                    call, stop_acknowledged=evidence.remote_stop_acknowledged is True
+                )
+                raise AgentCancelledError(
+                    "AI job cancelled by user",
+                    termination_confirmed_dead=evidence.termination_confirmed_dead,
+                    process_started=evidence.process_started,
+                    failure_code="USER_CANCELLED",
+                )
+
+            merged = "\n\n".join(part for part in text_parts if part.strip()).strip()
+            final_text = merged or result_text or "AI 暂时没有返回有效内容，请稍后重试。"
+            final_session_id = getattr(bridge, "session_id", None) or resumed_session_id
+
+            evidence = _resolve_attempt_evidence(stop_result=_bridge_stop_result(bridge))
             process_started = evidence.process_started
             dead = evidence.termination_confirmed_dead
             if dead is False:
+                # CLI 已退出但进程树死亡未被证明：禁止重试启动下一进程，
+                # 立即抛出携带证据的 typed 异常，由收尾路径转 ORPHANED。
                 raise AgentError(
                     "Agent process tree could not be confirmed dead",
                     termination_confirmed_dead=False,
                     process_started=process_started or True,
                     failure_code=evidence.failure_code or "PROCESS_TREE_STILL_ALIVE",
-                ) from exc
-            last_error = AgentTimeoutError(
-                "AI reply timed out",
-                phase="hard",
-                limit_seconds=float(wait_seconds),
-                termination_confirmed_dead=dead,
-                process_started=process_started,
-            )
-            logger.warning(
-                "Asset AI single-turn wait timeout (attempt {}/{})",
-                attempt,
-                attempts,
-            )
-            # Retry only after the previous tree is proven dead, or when this
-            # attempt never started a local process at all.
-            if attempt < attempts and (dead is True or not process_started):
-                next_session_id = None
-                continue
-            raise last_error from exc
-        finally:
-            if monitor_task:
-                monitor_task.cancel()
-                await asyncio.gather(monitor_task, return_exceptions=True)
-            if not session_started or getattr(bridge, "is_running", lambda: False)():
-                await asyncio.shield(bridge.cancel())
+                )
 
-        if cancelled:
-            # 用户取消：取消后的终止结果必须随 typed 异常携带，交由上层
-            # termination finalizer 收敛（确认死亡 → 可恢复/取消态）。
-            evidence = _resolve_attempt_evidence(stop_result=_bridge_stop_result(bridge))
-            raise AgentCancelledError(
-                "AI job cancelled by user",
-                termination_confirmed_dead=evidence.termination_confirmed_dead,
-                process_started=evidence.process_started,
-                failure_code="USER_CANCELLED",
-            )
+            if call is not None and call.state != ProviderCallState.ENDED:
+                # P1（07e04775 §4.3）：函数正常返回 / assistant 文本 / 非空
+                # dict 都不是终局结果证明——没有 result 事件绝不伪造 outcome，
+                # 交由上层按“无 outcome”收敛（本地已证明死亡 → FAILED；
+                # 远程会话未结束 → ORPHANED）。
+                raise AgentError(
+                    "provider outcome missing",
+                    termination_confirmed_dead=dead,
+                    process_started=process_started,
+                    failure_code="PROVIDER_OUTCOME_MISSING",
+                    provider_call_id=call.call_id,
+                )
 
-        merged = "\n\n".join(part for part in text_parts if part.strip()).strip()
-        final_text = merged or result_text or "AI 暂时没有返回有效内容，请稍后重试。"
-        final_session_id = getattr(bridge, "session_id", None) or resumed_session_id
+            if result_is_error or _looks_like_timeout_text(final_text):
+                last_error = AgentProviderError(
+                    final_text or "AI provider returned timeout/error",
+                    termination_confirmed_dead=dead,
+                    process_started=process_started,
+                    failure_code="PROVIDER_ERROR",
+                    provider_call_id=call.call_id if call is not None else None,
+                )
+                logger.warning(
+                    "Asset AI single-turn got timeout/error text (attempt {}/{}): {}",
+                    attempt,
+                    attempts,
+                    final_text[:160],
+                )
+                # Retry only after the previous tree is proven dead, or when this
+                # attempt never started a local process at all.  本次调用已
+                # 收到明确 result（ENDED），远程重试不会与未结束调用重叠。
+                if attempt < attempts and (dead is True or not process_started):
+                    # 上一进程树必须已确认死亡才会走到这里（dead is not False）。
+                    next_session_id = None
+                    continue
+                raise last_error
 
-        evidence = _resolve_attempt_evidence(stop_result=_bridge_stop_result(bridge))
-        process_started = evidence.process_started
-        dead = evidence.termination_confirmed_dead
-        if dead is False:
-            # CLI 已退出但进程树死亡未被证明：禁止重试启动下一进程，
-            # 立即抛出携带证据的 typed 异常，由收尾路径转 ORPHANED。
-            raise AgentError(
-                "Agent process tree could not be confirmed dead",
-                termination_confirmed_dead=False,
-                process_started=process_started or True,
-                failure_code=evidence.failure_code or "PROCESS_TREE_STILL_ALIVE",
-            )
-
-        if result_is_error or _looks_like_timeout_text(final_text):
-            last_error = AgentProviderError(
-                final_text or "AI provider returned timeout/error",
-                termination_confirmed_dead=dead,
-                process_started=process_started,
-                failure_code="PROVIDER_ERROR",
-            )
-            logger.warning(
-                "Asset AI single-turn got timeout/error text (attempt {}/{}): {}",
-                attempt,
-                attempts,
-                final_text[:160],
-            )
-            # Retry only after the previous tree is proven dead, or when this
-            # attempt never started a local process at all.
-            if attempt < attempts and (dead is True or not process_started):
-                # 上一进程树必须已确认死亡才会走到这里（dead is not False）。
-                next_session_id = None
-                continue
-            raise last_error
-
-        termination = getattr(bridge, "last_termination", None)
-        return {
-            "text": final_text,
-            "session_id": final_session_id,
-            "process_started": process_started,
-            "termination_confirmed_dead": (
-                bool(termination.confirmed_dead) if termination is not None else None
-            )
-            if dead is None
-            else dead,
-        }
+            termination = getattr(bridge, "last_termination", None)
+            return {
+                "text": final_text,
+                "session_id": final_session_id,
+                "provider_call_id": call.call_id if call is not None else None,
+                "process_started": process_started,
+                "termination_confirmed_dead": (
+                    bool(termination.confirmed_dead) if termination is not None else None
+                )
+                if dead is None
+                else dead,
+            }
+        except BaseException:
+            # P1（07e04775 §4.3）：已收到 result 的 ENDED 不能被异常覆盖；
+            # 未结束调用继续保持未决（STARTED -> UNKNOWN），由上层按证据
+            # 收敛，绝不伪造结束。
+            mark_provider_call_unresolved(call)
+            raise
 
     if last_error:
         raise last_error
