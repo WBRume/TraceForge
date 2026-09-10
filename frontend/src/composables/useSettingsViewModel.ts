@@ -122,6 +122,7 @@ export function useSettingsViewModel() {
 
   const memberViewFilter = ref<MemberViewFilter>('all')
   const selectedMemberIds = ref<Record<string, boolean>>({})
+  const editingMemberId = ref('')
   const batchRoleValue = ref<'DEVELOPER' | 'VIEWER'>('DEVELOPER')
   const batchApplying = ref(false)
   const batchRemoving = ref(false)
@@ -222,7 +223,7 @@ export function useSettingsViewModel() {
     { value: 'soft' as AvatarTemplateStyle, label: t('settings.appearance.style_soft') },
     { value: 'split' as AvatarTemplateStyle, label: t('settings.appearance.style_split') },
   ])
-  const memberRoleOptions = computed(() => [
+  const memberRoleOptions = computed<{ value: 'DEVELOPER' | 'VIEWER'; label: string }[]>(() => [
     { value: 'DEVELOPER', label: t('settings.members.role_developer') },
     { value: 'VIEWER', label: t('settings.members.role_viewer') },
   ])
@@ -375,6 +376,39 @@ export function useSettingsViewModel() {
   const toggleDraftExpert = (memberId: string) => {
     const draft = memberDrafts.value[memberId]
     if (draft) draft.is_expert = !draft.is_expert
+  }
+
+  const resetMemberDraft = (member: WorkspaceMember) => {
+    memberDrafts.value[member.id] = {
+      role: member.role === 'VIEWER' ? 'VIEWER' : 'DEVELOPER',
+      permissions: createEmptyPermissions(member.permissions),
+      is_expert: Boolean(member.is_expert),
+    }
+  }
+
+  const isEditingMember = (member: WorkspaceMember) => (
+    Boolean(canManageMembers.value) && !member.is_owner && editingMemberId.value === member.id
+  )
+
+  const startEditMember = (member: WorkspaceMember) => {
+    if (!canManageMembers.value || member.is_owner) return
+    if (editingMemberId.value && editingMemberId.value !== member.id) {
+      const previous = consoleMembers.value.find(item => item.id === editingMemberId.value)
+      if (previous) resetMemberDraft(previous)
+    }
+    if (!memberDrafts.value[member.id]) {
+      resetMemberDraft(member)
+    }
+    editingMemberId.value = member.id
+    if (!isPermissionExpanded(member.id)) {
+      togglePermissionExpanded(member.id)
+    }
+  }
+
+  const cancelEditMember = (member: WorkspaceMember) => {
+    if (editingMemberId.value !== member.id) return
+    resetMemberDraft(member)
+    editingMemberId.value = ''
   }
 
   const openAddModal = () => {
@@ -627,6 +661,7 @@ export function useSettingsViewModel() {
       seedMemberDrafts()
       seedPermissionExpandState()
       clearMemberSelection()
+      editingMemberId.value = ''
     } catch (error) {
       membersError.value = formatApiError(error, t('settings.members.load_failed'), t)
     } finally {
@@ -695,7 +730,7 @@ export function useSettingsViewModel() {
   
   const saveMember = async (member: WorkspaceMember) => {
     if (!workspaceId.value || !canManageMembers.value || member.is_owner) return
-  
+
     const draft = getDraft(member)
     savingMemberId.value = member.id
     membersError.value = ''
@@ -705,6 +740,7 @@ export function useSettingsViewModel() {
         is_expert: draft.is_expert,
         permissions: draft.permissions,
       })
+      editingMemberId.value = ''
       await loadMembers()
     } catch (error) {
       membersError.value = formatApiError(error, t('settings.members.save_failed'), t)
@@ -885,8 +921,7 @@ export function useSettingsViewModel() {
     avatarTemplateColor,
     avatarTemplateOptions,
     avatarTemplateStyle,
-    batchAddBlockedCount,
-    batchAddDone,
+    batchAddBlockedCount,    batchAddDone,
     batchAddEmails,
     batchAddExpert,
     batchAddInput,
@@ -901,6 +936,7 @@ export function useSettingsViewModel() {
     batchRoleValue,
     buildInviteJoinUrl,
     canManageMembers,
+    cancelEditMember,
     changeLanguage,
     clearAppearanceMessage,
     clearMemberSearch,
@@ -916,6 +952,7 @@ export function useSettingsViewModel() {
     createEmptyPermissions,
     currentLang,
     defaultPermissionsByRole,
+    editingMemberId,
     enabledPermissionCount,
     filteredConsoleMembers,
     getDraft,
@@ -928,6 +965,7 @@ export function useSettingsViewModel() {
     inviteLinksLoading,
     isAvatarSvgValidationError,
     isMemberSelected,
+    isEditingMember,
     isPermissionExpanded,
     loadAppearanceStateFromUser,
     loadingMembers,
@@ -975,6 +1013,7 @@ export function useSettingsViewModel() {
     showAddModal,
     showBatchRemoveConfirm,
     showRemoveConfirm,
+    startEditMember,
     t,
     toggleDraftExpert,
     toggleMemberSelected,

@@ -239,6 +239,7 @@
       "save_failed": "保存成员权限失败",
       "remove_failed": "移除成员失败",
       "save_member": "保存",
+      "edit_member": "编辑",
       "remove_member": "移除",
       "search_placeholder": "按名称或邮箱搜索成员",
       "search": "搜索",
