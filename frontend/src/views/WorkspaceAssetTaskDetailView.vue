@@ -47,7 +47,7 @@ const {
 
 const wsId = computed(() => String(route.params.wsId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
-const backToTasks = computed(() => `/ws/${wsId.value}/assets/tasks`)
+const backToTasks = computed(() => `/workspaces/${wsId.value}/assets/tasks`)
 
 const sectionKeys: TaskWorkbenchSectionKey[] = [
   'taskFile',

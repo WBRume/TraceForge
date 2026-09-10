@@ -103,7 +103,7 @@ const handleEnterSession = (job: ProvisionJobView) => {
   const taskId = String(job.taskId || '').trim()
   store.dismiss(job.jobId)
   if (workspaceId && taskId) {
-    router.push(`/ws/${workspaceId}/chat/${taskId}`)
+    router.push(`/workspaces/${workspaceId}/chat/${taskId}`)
   }
 }
 

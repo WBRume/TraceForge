@@ -130,7 +130,7 @@ const navigateOnSuccess = async (currentJob: ProvisionJob) => {
     } catch {
       // Keep redirecting even if current workspace refresh fails.
     }
-    router.replace(`/ws/${workspaceId}/dashboard`)
+    router.replace(`/workspaces/${workspaceId}/dashboard`)
     return
   }
 
@@ -140,7 +140,7 @@ const navigateOnSuccess = async (currentJob: ProvisionJob) => {
     const workspaceId = String(currentJob.workspace_id || '').trim()
     const taskId = String(currentJob.task_id || '').trim()
     if (workspaceId && taskId) {
-      router.replace(`/ws/${workspaceId}/chat/${taskId}`)
+      router.replace(`/workspaces/${workspaceId}/chat/${taskId}`)
       return
     }
   }
@@ -173,7 +173,7 @@ const fetchJob = async () => {
 const goBack = () => {
   const fallbackWorkspace = String(job.value?.workspace_id || '').trim()
   if (fallbackWorkspace) {
-    router.replace(`/ws/${fallbackWorkspace}/dashboard`)
+    router.replace(`/workspaces/${fallbackWorkspace}/dashboard`)
     return
   }
   router.replace('/workspaces')

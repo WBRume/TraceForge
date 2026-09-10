@@ -117,7 +117,7 @@ describe('ProvisionFloatingWidget', () => {
     expect(enterButton).toBeTruthy()
     await enterButton!.trigger('click')
     await flushPromises()
-    expect(routerMock.push).toHaveBeenCalledWith('/ws/ws-1/chat/task-1')
+    expect(routerMock.push).toHaveBeenCalledWith('/workspaces/ws-1/chat/task-1')
     expect(store.jobs['job-1']).toBeUndefined()
     wrapper.unmount()
   })

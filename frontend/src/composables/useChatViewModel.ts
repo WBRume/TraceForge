@@ -1200,7 +1200,7 @@ export function useChatViewModel() {
   }
 
   /**
-   * 选中路由参数指向的任务会话。ChatView 在 `/ws/:wsId/chat` 与 `/ws/:wsId/chat/:taskId`
+   * 选中路由参数指向的任务会话。ChatView 在 `/workspaces/:wsId/chat` 与 `/workspaces/:wsId/chat/:taskId`
    * 之间导航时组件被复用不重挂载（onMounted 只覆盖首次进入），浮窗「进入任务会话」、
    * 浏览器前进后退等仅变更 URL 的场景需要监听路由并调用这里完成会话切换。
    */
@@ -1374,7 +1374,7 @@ export function useChatViewModel() {
 
   const openTaskSession = async (taskId: string) => {
     const wsId = route.params.wsId
-    router.push(`/ws/${wsId}/chat/${taskId}`)
+    router.push(`/workspaces/${wsId}/chat/${taskId}`)
     // 重新获取一下最新的 task 对象，并同步到任务列表，避免后续 loadTasks 用旧 PROVISIONING 覆盖当前状态
     try {
       const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
@@ -1424,7 +1424,7 @@ export function useChatViewModel() {
       expanded: false 
     }
   
-    const chatPath = `/ws/${route.params.wsId}/chat/${task.id}`
+    const chatPath = `/workspaces/${route.params.wsId}/chat/${task.id}`
     if (route.path !== chatPath || String(route.params.taskId || '') !== String(task.id)) {
       router.push(chatPath)
     }
@@ -1590,7 +1590,7 @@ export function useChatViewModel() {
       const caseId = String(res.data?.id || '')
       diagnosisCaseLink.value = caseId
       ElMessage.success(t(submitForReview ? 'diagnosis.case_created_and_submitted' : 'diagnosis.case_created'))
-      router.push(`/ws/${route.params.wsId}/cases?case=${caseId}`)
+      router.push(`/workspaces/${route.params.wsId}/cases?case=${caseId}`)
       return caseId
     } catch (e: any) {
       if (e?.response?.status === 409) {
@@ -1600,7 +1600,7 @@ export function useChatViewModel() {
         if (existingId) {
           diagnosisCaseLink.value = existingId
           ElMessage.info(t('diagnosis.case_already_exists'))
-          router.push(`/ws/${route.params.wsId}/cases?case=${existingId}`)
+          router.push(`/workspaces/${route.params.wsId}/cases?case=${existingId}`)
           return existingId
         }
       }
@@ -1775,7 +1775,7 @@ export function useChatViewModel() {
   
   const openSpecWorkspace = () => {
     if (!currentTask.value || !currentTaskHasSpec.value) return
-    router.push(`/ws/${route.params.wsId}/chat/${currentTask.value.id}/spec`)
+    router.push(`/workspaces/${route.params.wsId}/chat/${currentTask.value.id}/spec`)
   }
   
   const closeSpecDrawer = () => {
@@ -1984,7 +1984,7 @@ export function useChatViewModel() {
       if (currentTask.value?.id === removedTaskId) {
         currentTask.value = null
         if (route.params.taskId) {
-          router.push(`/ws/${wsId}/chat`)
+          router.push(`/workspaces/${wsId}/chat`)
         }
       }
       return true
@@ -2353,7 +2353,7 @@ export function useChatViewModel() {
       await loadTasks({ reset: true, trySelectRouteTask: false })
       if (currentTask.value?.id === deletedId) {
         currentTask.value = null
-        router.push(`/ws/${route.params.wsId}/chat`)
+        router.push(`/workspaces/${route.params.wsId}/chat`)
       }
     } catch (e) {
       console.error('Failed to delete task', e)

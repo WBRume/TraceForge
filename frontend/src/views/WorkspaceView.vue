@@ -51,7 +51,7 @@ onMounted(async () => {
 
 const enterWorkspace = (ws: any) => {
   wsStore.setCurrent(ws)
-  router.push(`/ws/${ws.id}/dashboard`)
+  router.push(`/workspaces/${ws.id}/dashboard`)
 }
 
 const handleWorkspaceCreated = async (jobId: string) => {

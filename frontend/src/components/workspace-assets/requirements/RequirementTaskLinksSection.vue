@@ -93,7 +93,7 @@ function submit() {
     <el-table v-if="linkedTasks.length" :data="linkedTasks" row-key="link_id" size="small">
       <el-table-column prop="task_name" :label="t('workspace_assets.requirements.drawer.task')" min-width="220">
         <template #default="{ row }">
-          <RouterLink :to="`/ws/${workspaceId}/assets/tasks/${row.task_id}`">{{ row.task_name }}</RouterLink>
+          <RouterLink :to="`/workspaces/${workspaceId}/assets/tasks/${row.task_id}`">{{ row.task_name }}</RouterLink>
         </template>
       </el-table-column>
       <el-table-column prop="relation_type" :label="t('workspace_assets.requirements.drawer.relation_type')" width="140" />

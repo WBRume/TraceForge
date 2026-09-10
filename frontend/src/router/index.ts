@@ -225,7 +225,9 @@ const router = createRouter({
       ],
     },
     {
-      path: '/ws/:wsId',
+      // 注意：前端页面路由不要使用 /ws 前缀，该前缀被后端 WebSocket 代理（vite proxy / nginx）占用，
+      // 整页刷新 / 直达链接会被代理转发到后端 API 导致 404。
+      path: '/workspaces/:wsId',
       component: () => import('../views/layouts/WorkspaceLayout.vue'),
       meta: { requiresAuth: true },
       children: [

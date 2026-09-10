@@ -64,28 +64,28 @@ const navItems = computed<NavItem[]>(() => [
     key: 'requirements',
     label: t('workspace_assets.nav.requirements'),
     description: t('workspace_assets.nav_desc.requirements'),
-    to: `/ws/${wsId.value}/assets/requirements`,
+    to: `/workspaces/${wsId.value}/assets/requirements`,
     icon: FileText,
   },
   {
     key: 'tasks',
     label: t('workspace_assets.nav.tasks'),
     description: t('workspace_assets.nav_desc.tasks'),
-    to: `/ws/${wsId.value}/assets/tasks`,
+    to: `/workspaces/${wsId.value}/assets/tasks`,
     icon: MessageSquare,
   },
   {
     key: 'traceability',
     label: t('workspace_assets.nav.traceability'),
     description: t('workspace_assets.nav_desc.traceability'),
-    to: `/ws/${wsId.value}/assets/traceability`,
+    to: `/workspaces/${wsId.value}/assets/traceability`,
     icon: GitBranch,
   },
   {
     key: 'knowledgeBase',
     label: t('workspace_assets.nav.knowledge_base'),
     description: t('workspace_assets.nav_desc.knowledgeBase'),
-    to: `/ws/${wsId.value}/assets/knowledge-base`,
+    to: `/workspaces/${wsId.value}/assets/knowledge-base`,
     icon: Database,
   },
 ])
@@ -245,7 +245,7 @@ watch(
               :stats="tasks?.stats || null"
               :loading="loading"
               @query-change="(query) => loadTasks(wsId, query)"
-              @open="(task) => $router.push(`/ws/${wsId}/assets/tasks/${task.id}`)"
+              @open="(task) => $router.push(`/workspaces/${wsId}/assets/tasks/${task.id}`)"
             />
         </section>
 

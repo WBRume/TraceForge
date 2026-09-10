@@ -85,7 +85,7 @@ const acceptInvite = async () => {
 
 const goWorkspace = () => {
   if (!acceptResult.value) return
-  router.push(`/ws/${acceptResult.value.workspace_id}/dashboard`)
+  router.push(`/workspaces/${acceptResult.value.workspace_id}/dashboard`)
 }
 
 onMounted(async () => {
