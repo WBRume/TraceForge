@@ -190,7 +190,7 @@ function handleRegenerateDiagnosis() {
 }
 
 function openDiagnosisCase(caseId: string) {
-  props.vm.router.push(`/ws/${props.vm.route.params.wsId}/cases/${caseId}`)
+  props.vm.router.push(`/workspaces/${props.vm.route.params.wsId}/cases/${caseId}`)
 }
 </script>
 

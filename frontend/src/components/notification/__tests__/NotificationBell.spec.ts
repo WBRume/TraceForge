@@ -11,7 +11,7 @@ import NotificationBell from '@/components/notification/NotificationBell.vue'
 const { routerPush } = vi.hoisted(() => ({ routerPush: vi.fn() }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ path: '/ws/ws-1/dashboard' }),
+  useRoute: () => ({ path: '/workspaces/ws-1/dashboard' }),
   useRouter: () => ({ push: routerPush }),
 }))
 
@@ -145,7 +145,7 @@ describe('NotificationBell', () => {
     await flushAsync()
 
     expect(api.delete).toHaveBeenCalledWith('/notifications/n-1')
-    expect(routerPush).toHaveBeenCalledWith('/ws/ws-1/chat/task-9')
+    expect(routerPush).toHaveBeenCalledWith('/workspaces/ws-1/chat/task-9')
     expect(document.body.querySelector('.notification-popover')).toBeNull()
 
     wrapper.unmount()

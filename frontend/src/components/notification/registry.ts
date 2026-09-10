@@ -32,7 +32,7 @@ const resolveTaskChatTarget = (item: AppNotificationItem): string | null => {
   const payload = item.payload || {}
   const taskId = String(payload.task_id || '')
   const workspaceId = String(payload.workspace_id || '')
-  return taskId && workspaceId ? `/ws/${workspaceId}/chat/${taskId}` : null
+  return taskId && workspaceId ? `/workspaces/${workspaceId}/chat/${taskId}` : null
 }
 
 registerNotificationType({

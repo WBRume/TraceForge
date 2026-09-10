@@ -332,19 +332,20 @@ def _build_target_path(
     ws_id = str(workspace_id or "").strip()
     tk_id = str(task_id or "").strip()
     sk_id = str(skill_id or "").strip()
+    # target_path 指向前端 SPA 路由；前端工作区路由前缀是 /workspaces（/ws 已被后端 WebSocket 代理占用）
     if source == QUEUE_SOURCE_PROVISION:
         if job_type == ProvisionJobType.CREATE_WORKSPACE.value and ws_id:
-            return f"/ws/{ws_id}/dashboard"
+            return f"/workspaces/{ws_id}/dashboard"
         if job_type == ProvisionJobType.CREATE_TASK.value and ws_id and tk_id:
-            return f"/ws/{ws_id}/chat/{tk_id}"
+            return f"/workspaces/{ws_id}/chat/{tk_id}"
         if job_type == ProvisionJobType.IMPORT_SKILL.value and sk_id:
             query = f"?wsId={ws_id}" if ws_id else ""
             return f"/skills/{sk_id}/edit{query}"
         return None
     if source == QUEUE_SOURCE_API_MOCK and ws_id:
-        return f"/ws/{ws_id}/api-mock"
+        return f"/workspaces/{ws_id}/api-mock"
     if source == QUEUE_SOURCE_BOOTSTRAP and ws_id and tk_id:
-        return f"/ws/{ws_id}/chat/{tk_id}"
+        return f"/workspaces/{ws_id}/chat/{tk_id}"
     if source == QUEUE_SOURCE_SKILL_ANALYSIS and ws_id and sk_id:
         return f"/skills/{sk_id}/edit?wsId={ws_id}"
     return None
