@@ -23,18 +23,33 @@ const vm = proxyRefs(rawVm)
       </div>
     </div>
 
-    <div class="member-summary">
-      <div class="summary-card">
-        <span class="summary-label">{{ $t('settings.members.my_role') }}</span>
-        <strong>{{ vm.roleTag(vm.myPermissionPayload?.role || 'VIEWER') }}</strong>
+    <div class="compact-meta-strip">
+      <div class="meta-strip-items">
+        <div class="meta-strip-item">
+          <span class="meta-strip-label">{{ $t('settings.members.my_role') }}:</span>
+          <span class="role-badge" :class="String(vm.myPermissionPayload?.role || 'VIEWER').toLowerCase()">
+            {{ vm.roleTag(vm.myPermissionPayload?.role || 'VIEWER') }}
+          </span>
+        </div>
+
+        <div class="meta-strip-divider"></div>
+
+        <div class="meta-strip-item">
+          <span class="meta-strip-label">{{ $t('settings.members.member_count') }}:</span>
+          <strong class="meta-strip-val">{{ vm.totalMemberCount }}</strong>
+        </div>
+
+        <div class="meta-strip-divider"></div>
+
+        <div class="meta-strip-item">
+          <span class="meta-strip-label">{{ $t('settings.members.delete_workspace_right') }}:</span>
+          <span class="meta-status-tag" :class="vm.myPermissionPayload?.can_delete_workspace ? 'success' : 'neutral'">
+            {{ vm.myPermissionPayload?.can_delete_workspace ? $t('settings.members.yes') : $t('settings.members.no') }}
+          </span>
+        </div>
       </div>
-      <div class="summary-card">
-        <span class="summary-label">{{ $t('settings.members.member_count') }}</span>
-        <strong>{{ vm.totalMemberCount }}</strong>
-      </div>
-      <div class="summary-card">
-        <span class="summary-label">{{ $t('settings.members.delete_workspace_right') }}</span>
-        <strong>{{ vm.myPermissionPayload?.can_delete_workspace ? $t('settings.members.yes') : $t('settings.members.no') }}</strong>
+      <div class="meta-strip-hint">
+        点击每行“微调权限”可侧滑调整 14 项原子权限
       </div>
     </div>
 
