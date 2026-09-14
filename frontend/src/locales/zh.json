@@ -3484,6 +3484,7 @@
     "errors": {
       "ws_unavailable": "连接不可用，请稍后重试",
       "already_active": "当前会话已有进行中的预输入",
+      "engine_running": "引擎执行中，暂不能发起协作预输入",
       "generic": "预输入操作失败，请重试"
     },
     "volunteer_hint": "未被{'@'}但主动加入的成员",

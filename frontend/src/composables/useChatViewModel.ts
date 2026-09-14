@@ -3039,6 +3039,10 @@ export function useChatViewModel() {
       ElMessage.warning(t('preInput.errors.already_active'))
       return false
     }
+    if (engineRunning.value) {
+      ElMessage.warning(t('preInput.errors.engine_running'))
+      return false
+    }
     if (isChatLocked.value) {
       ElMessage.warning(t('chat.start_before_chat'))
       return false

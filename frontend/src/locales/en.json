@@ -3479,6 +3479,7 @@
     "errors": {
       "ws_unavailable": "Connection unavailable, please retry later",
       "already_active": "A pre-input is already collecting in this session",
+      "engine_running": "Engine is running, cannot start collaborative pre-input now",
       "generic": "Pre-input action failed, please retry"
     },
     "volunteer_hint": "Joined voluntarily without being mentioned",
