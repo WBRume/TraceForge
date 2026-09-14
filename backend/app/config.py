@@ -203,6 +203,14 @@ class Settings(BaseSettings):
     # successful operation.  Keeping this configurable also makes live tests
     # able to assert that no secret-bearing temporary file remains.
     TASK_SESSION_SNAPSHOT_ROOT: str = "tmp/task_session_snapshots"
+    # Directory names pruned at any depth. Tracked files always remain protected.
+    # JSON array in environment; an empty array disables directory exclusions.
+    TASK_SESSION_SNAPSHOT_EXCLUDED_DIRS: list[str] = [
+        "node_modules", "dist", "build", "coverage", ".next", ".nuxt", ".output",
+        ".vite", ".cache", ".turbo", ".parcel-cache", ".svelte-kit",
+        "target", ".gradle", ".venv", "venv", "__pycache__", ".pytest_cache",
+        ".mypy_cache", ".ruff_cache", ".tox", ".nox", "htmlcov",
+    ]
     TASK_SESSION_REVERT_WAIT_SECONDS: float = 30.0
     CLI_BOOTSTRAP_TIMEOUT: int = 1800  # seconds
     CLI_CLEANUP_RETRY_COUNT: int = 5

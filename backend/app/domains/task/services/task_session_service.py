@@ -191,6 +191,8 @@ def _prepare_chat_turn_sync(
     return {
         "task_id": task.id,
         "workspace_id": task.workspace_id,
+        "workspace_name": str(task.workspace.name or ""),
+        "task_name": str(task.name or ""),
         "project_path": str(task.project_path or ""),
         "repo_rel_paths": _repo_rel_paths(task),
         "generation": int(task.session_generation),
@@ -245,7 +247,7 @@ def _persist_chat_turn_sync(
         provider_session_id=provider_session_id,
         provider_message_ids_json=None,
         checkpoint_path=checkpoint_root,
-        worktree_snapshot_path=os.path.join(checkpoint_root, "worktree") if checkpoint_root else None,
+        worktree_snapshot_path=os.path.join(checkpoint_root, "worktree.json") if checkpoint_root else None,
         status=TaskSessionTurnStatus.ACTIVE,
     )
     db.add(turn)
@@ -330,6 +332,10 @@ async def create_task_chat_turn(
             list(prepared["repo_rel_paths"]),
             prepared["provider"],
             prepared["provider_session_id"],
+            workspace_id=str(prepared["workspace_id"]),
+            workspace_name=prepared["workspace_name"],
+            task_id=str(prepared["task_id"]),
+            task_name=prepared["task_name"],
         )
         checkpoint_root = str(checkpoint["root"])
         prepared["checkpoint_root"] = checkpoint_root
