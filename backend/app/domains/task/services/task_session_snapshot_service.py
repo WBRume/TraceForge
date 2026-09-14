@@ -176,7 +176,8 @@ def _candidate_repo_paths(task_root: str, repo_rel_paths: Iterable[str]) -> list
 
 
 def _git_state(task_root: str, repo_path: str, metadata_dir: str) -> dict[str, Any]:
-    head = _run_git(repo_path, ["rev-parse", "HEAD"]).stdout.strip()
+    head_result = _run_git(repo_path, ["rev-parse", "--verify", "HEAD"], check=False)
+    head = head_result.stdout.strip() if head_result.returncode == 0 else None
     branch_result = _run_git(repo_path, ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False)
     branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
     git_dir = _run_git(repo_path, ["rev-parse", "--git-dir"]).stdout.strip()
@@ -461,7 +462,6 @@ def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_
             "repositories": current_repos,
         },
     )
-    _remove_tree_without_git(task_root)
 
     # Reset each task-owned repository's control state before putting the
     # exact bytes back.  The reset is not the restore mechanism; it only
@@ -474,18 +474,23 @@ def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_
         if not os.path.isdir(repo_path):
             continue
         branch = str(repo.get("branch") or "").strip()
-        head = str(repo.get("head") or "HEAD")
+        head = str(repo.get("head") or "").strip()
         # Clear the current worktree before changing branches.  ``checkout``
         # without this preparation can fail on a dirty path even though the
         # checkpoint contains the exact bytes/index to restore afterwards.
         _run_git(repo_path, ["reset", "--hard", "HEAD"], check=False)
         _run_git(repo_path, ["clean", "-fdx"], check=False)
-        if branch:
-            _run_git(repo_path, ["checkout", "-f", branch])
-        else:
-            _run_git(repo_path, ["checkout", "--detach", head])
-        _run_git(repo_path, ["reset", "--hard", head])
+        if head:
+            if branch:
+                _run_git(repo_path, ["checkout", "-f", branch])
+            else:
+                _run_git(repo_path, ["checkout", "--detach", head])
+            _run_git(repo_path, ["reset", "--hard", head])
+        elif branch:
+            _run_git(repo_path, ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=False)
+            _run_git(repo_path, ["update-ref", "-d", f"refs/heads/{branch}"], check=False)
 
+    _remove_tree_without_git(task_root)
     _copy_tree_without_git(os.path.join(checkpoint_root, "worktree"), task_root)
 
     for repo in metadata.get("repositories") or []:
@@ -496,13 +501,16 @@ def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_
         index_path = str(repo.get("index_path") or "").strip()
         if index_copy and index_path and os.path.isfile(index_copy):
             _atomic_copy_file(index_copy, index_path)
+        elif index_path and os.path.isfile(index_path):
+            os.remove(index_path)
 
     actual_manifest = _file_manifest(task_root)
     if actual_manifest != (metadata.get("manifest") or {}):
         raise TaskSessionSnapshotError("Restored worktree bytes differ from checkpoint", code="WORKTREE_VERIFY_FAILED")
     for repo in metadata.get("repositories") or []:
         repo_path = os.path.abspath(str(repo.get("repo_path") or os.path.join(task_root, str(repo.get("repo_rel_path") or "."))))
-        actual_head = _run_git(repo_path, ["rev-parse", "HEAD"]).stdout.strip()
+        head_result = _run_git(repo_path, ["rev-parse", "--verify", "HEAD"], check=False)
+        actual_head = head_result.stdout.strip() if head_result.returncode == 0 else ""
         if actual_head != str(repo.get("head") or ""):
             raise TaskSessionSnapshotError("Restored repository HEAD differs from checkpoint", code="WORKTREE_VERIFY_FAILED")
         expected_status = str(repo.get("status") or "")

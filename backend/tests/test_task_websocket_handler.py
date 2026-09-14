@@ -221,6 +221,70 @@ async def test_duplicate_chat_message_returns_existing_identifiers(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_survives_message_handler_exception(monkeypatch):
+    websocket = _FakeWebSocket(incoming=[{"type": "chat_message"}, {"type": "unknown"}])
+    manager = _FakeConnectionManager()
+    handler = _handler(websocket=websocket, manager=manager)
+    received = []
+
+    async def _flaky(message):
+        received.append(message)
+        if len(received) == 1:
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(handler, "_dispatch", _flaky)
+
+    await handler.run()
+
+    assert len(received) == 2
+    assert manager.disconnect_calls == [(websocket, "task-1")]
+
+
+@pytest.mark.asyncio
+async def test_unexpected_chat_failure_acks_failed(monkeypatch):
+    manager = _FakeConnectionManager()
+    claim = SimpleNamespace(claimed=True)
+    mark_failed = AsyncMock()
+
+    @asynccontextmanager
+    async def _unlocked(_task_id):
+        yield
+
+    monkeypatch.setattr(task_handler, "run_db", AsyncMock(return_value="CODING"))
+    monkeypatch.setattr(task_handler, "lock_task", _unlocked)
+    monkeypatch.setattr(
+        task_handler.chat_message_idempotency_service,
+        "claim_message",
+        AsyncMock(return_value=claim),
+    )
+    monkeypatch.setattr(
+        task_handler.chat_message_idempotency_service,
+        "mark_message_failed",
+        mark_failed,
+    )
+    monkeypatch.setattr(
+        task_handler.task_session_service,
+        "create_task_chat_turn",
+        AsyncMock(side_effect=RuntimeError("checkpoint failed")),
+    )
+
+    handler = _handler(manager=manager)
+    with pytest.raises(RuntimeError):
+        await handler._dispatch(
+            {
+                "type": "chat_message",
+                "payload": {"content": "hello", "client_message_id": "client-1"},
+            }
+        )
+
+    mark_failed.assert_awaited_once_with(claim)
+    ack = manager.outbound.sent_json[0]
+    assert ack["type"] == "chat_message_ack"
+    assert ack["payload"]["status"] == "failed"
+    assert ack["payload"]["client_message_id"] == "client-1"
+
+
+@pytest.mark.asyncio
 async def test_deprecated_hitl_response_is_ignored(monkeypatch):
     resume_job = AsyncMock(return_value=True)
     monkeypatch.setattr(

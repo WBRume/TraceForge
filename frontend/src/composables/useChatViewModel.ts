@@ -2609,6 +2609,10 @@ export function useChatViewModel() {
         }
         if (status === 'failed' || status === 'conflict') {
           ElMessage.error(payload.message || 'Message was not sent. Please retry.')
+          if (status === 'failed') {
+            syncEngineRunningFromJobs()
+            if (currentTask.value?.id) void loadActiveChatJobs(currentTask.value.id)
+          }
         }
         break
       }
