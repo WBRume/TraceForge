@@ -1,15 +1,13 @@
 """Filesystem checkpoints used by task-session undo.
 
-All blocking git and filesystem work in this module is synchronous by design
-and is called through ``asyncio.to_thread`` by the async orchestration layer.
-The checkpoint root is outside every task worktree.  A successful undo removes
-both the provider copy and the worktree copy; a failed undo keeps them for
-compensation/recovery.
+Blocking work runs on the bounded offload executors. Scoped worktree manifests
+reference immutable objects shared by a task's turns. Successful undo removes
+turns and collects unreferenced objects; failures retain compensation manifests.
+Provider state is checkpointed separately.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import os
@@ -18,10 +16,10 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from app.config import settings
+from app.domains.task.services import task_snapshot_store as store
 
 
 class TaskSessionSnapshotError(RuntimeError):
@@ -74,61 +72,6 @@ def _is_control_entry(name: str) -> bool:
     return name.lower() == ".git"
 
 
-def _copy_tree_without_git(source: str, target: str) -> None:
-    source = os.path.abspath(source)
-    target = os.path.abspath(target)
-    if not os.path.isdir(source):
-        raise TaskSessionSnapshotError(f"Task worktree does not exist: {source}", code="WORKTREE_MISSING")
-    os.makedirs(target, exist_ok=True)
-    for current, dirs, files in os.walk(source, topdown=True):
-        dirs[:] = [name for name in dirs if not _is_control_entry(name)]
-        rel = os.path.relpath(current, source)
-        output_dir = target if rel == "." else os.path.join(target, rel)
-        os.makedirs(output_dir, exist_ok=True)
-        for name in files:
-            if _is_control_entry(name):
-                continue
-            source_file = os.path.join(current, name)
-            target_file = os.path.join(output_dir, name)
-            if os.path.islink(source_file):
-                if os.path.lexists(target_file):
-                    os.remove(target_file)
-                os.symlink(os.readlink(source_file), target_file)
-            else:
-                shutil.copy2(source_file, target_file)
-
-
-def _remove_tree_without_git(root: str) -> None:
-    if not os.path.isdir(root):
-        os.makedirs(root, exist_ok=True)
-        return
-    # Preserve every repository directory and its .git control entry.  A
-    # multi-repository task commonly stores nested worktrees whose .git is a
-    # file pointing outside the task root; deleting the parent would destroy
-    # the worktree even though .git itself was excluded.
-    walked: list[tuple[str, list[str], list[str]]] = []
-    for current, dirs, files in os.walk(root, topdown=True):
-        dirs[:] = [name for name in dirs if not _is_control_entry(name)]
-        walked.append((current, list(dirs), list(files)))
-    for current, dirs, files in reversed(walked):
-        for name in files:
-            if _is_control_entry(name):
-                continue
-            path = os.path.join(current, name)
-            if os.path.lexists(path):
-                os.remove(path)
-        for name in dirs:
-            if _is_control_entry(name):
-                continue
-            path = os.path.join(current, name)
-            if os.path.isdir(os.path.join(path, ".git")) or os.path.isfile(os.path.join(path, ".git")):
-                continue
-            if os.path.isdir(path) and not os.path.islink(path):
-                shutil.rmtree(path)
-            elif os.path.lexists(path):
-                os.remove(path)
-
-
 def _sha256_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -166,9 +109,12 @@ def _candidate_repo_paths(task_root: str, repo_rel_paths: Iterable[str]) -> list
     seen: set[str] = set()
     for candidate in values:
         normalized = os.path.normcase(os.path.abspath(candidate))
+        if os.path.commonpath([os.path.normcase(task_root), normalized]) != os.path.normcase(task_root):
+            raise TaskSessionSnapshotError("Repository escapes task root", code="WORKTREE_PATH_INVALID")
         if normalized in seen or not os.path.isdir(candidate):
             continue
-        if _run_git(candidate, ["rev-parse", "--show-toplevel"], check=False).returncode != 0:
+        top = _run_git(candidate, ["rev-parse", "--show-toplevel"], check=False)
+        if top.returncode != 0 or os.path.normcase(os.path.abspath(top.stdout.strip())) != normalized:
             continue
         seen.add(normalized)
         output.append(os.path.abspath(candidate))
@@ -190,7 +136,6 @@ def _git_state(task_root: str, repo_path: str, metadata_dir: str) -> dict[str, A
     if os.path.isfile(index_path):
         index_copy = os.path.join(metadata_dir, f"index-{len(os.listdir(metadata_dir))}.bin")
         shutil.copy2(index_path, index_copy)
-    status = _run_git(repo_path, ["status", "--porcelain=v2", "--untracked-files=all"]).stdout
     return {
         "repo_rel_path": os.path.relpath(repo_path, task_root).replace("\\", "/"),
         "repo_path": repo_path,
@@ -201,29 +146,55 @@ def _git_state(task_root: str, repo_path: str, metadata_dir: str) -> dict[str, A
         "index_path": index_path,
         "index_copy": index_copy,
         "index_sha256": _sha256_file(index_path) if os.path.isfile(index_path) else None,
-        "status": status,
     }
 
 
 def _write_json(path: str, payload: dict[str, Any]) -> None:
-    with open(path, "w", encoding="utf-8", newline="\n") as handle:
-        json.dump(payload, handle, ensure_ascii=True, sort_keys=True, indent=2)
+    store.write_json(path, payload)
+
+
+def _tracked_paths(task_root: str, repositories: list[str]) -> set[str]:
+    tracked: set[str] = set()
+    for repo in repositories:
+        # NUL separators preserve spaces, tabs, and newlines in filenames.
+        output = _run_git(repo, ["ls-files", "--cached", "-z"]).stdout
+        for name in output.split("\0"):
+            if name:
+                tracked.add(os.path.relpath(os.path.join(repo, name), task_root).replace("\\", "/"))
+    return tracked
+
+
+def _snapshot_policy() -> dict[str, Any]:
+    return {
+        "excluded_dirs": list(settings.TASK_SESSION_SNAPSHOT_EXCLUDED_DIRS),
+        "excluded_suffixes": list(store.DEFAULT_EXCLUDED_SUFFIXES),
+    }
+
+
+def _capture_worktree(task_root: str, repo_rel_paths: list[str], checkpoint_root: str,
+                      object_store: str, policy: dict[str, Any], extra_tracked: set[str] | None = None) -> dict[str, Any]:
+    metadata_dir = os.path.join(checkpoint_root, "git")
+    os.makedirs(metadata_dir, exist_ok=True)
+    repo_paths = _candidate_repo_paths(task_root, repo_rel_paths)
+    tracked = _tracked_paths(task_root, repo_paths) | (extra_tracked or set())
+    payload = {
+        "version": 2,
+        "task_root": task_root,
+        "object_store": object_store,
+        "policy": policy,
+        "tracked": sorted(tracked),
+        "manifest": store.capture(task_root, policy, tracked, object_store),
+        "repositories": [_git_state(task_root, path, metadata_dir) for path in repo_paths],
+    }
+    _write_json(os.path.join(checkpoint_root, "worktree.json"), payload)
+    return payload
 
 
 def _create_worktree_checkpoint_sync(task_root: str, repo_rel_paths: list[str], checkpoint_root: str) -> dict[str, Any]:
     task_root = _task_root(task_root)
-    tree_path = os.path.join(checkpoint_root, "worktree")
-    metadata_dir = os.path.join(checkpoint_root, "git")
-    os.makedirs(metadata_dir, exist_ok=True)
-    _copy_tree_without_git(task_root, tree_path)
-    repos = [_git_state(task_root, path, metadata_dir) for path in _candidate_repo_paths(task_root, repo_rel_paths)]
-    payload = {
-        "task_root": task_root,
-        "manifest": _file_manifest(task_root),
-        "repositories": repos,
-    }
-    _write_json(os.path.join(checkpoint_root, "worktree.json"), payload)
-    return payload
+    object_store = os.path.abspath(os.path.dirname(checkpoint_root))
+    with store.store_lock(object_store):
+        return _capture_worktree(task_root, repo_rel_paths, checkpoint_root, object_store, _snapshot_policy())
 
 
 def _claude_store_dir(project_path: str) -> str:
@@ -436,97 +407,85 @@ def _restore_provider_backup_sync(checkpoint_root: str) -> None:
 
 def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_path: str) -> None:
     task_root = _task_root(task_root)
-    worktree_json = os.path.join(checkpoint_root, "worktree.json")
-    if not os.path.isfile(worktree_json):
-        raise TaskSessionSnapshotError("Worktree checkpoint manifest is missing", code="WORKTREE_CHECKPOINT_MISSING")
-    with open(worktree_json, "r", encoding="utf-8") as handle:
+    with open(os.path.join(checkpoint_root, "worktree.json"), encoding="utf-8") as handle:
         metadata = json.load(handle)
-    current_backup_path = os.path.abspath(current_backup_path)
-    os.makedirs(current_backup_path, exist_ok=True)
-    current_tree_path = os.path.join(current_backup_path, "worktree")
-    current_git_path = os.path.join(current_backup_path, "git")
-    os.makedirs(current_git_path, exist_ok=True)
-    _copy_tree_without_git(task_root, current_tree_path)
-    current_repos = [
-        _git_state(task_root, path, current_git_path)
-        for path in _candidate_repo_paths(
-            task_root,
-            [str(repo.get("repo_rel_path") or "") for repo in metadata.get("repositories") or []],
+    if metadata.get("version") != 2:
+        raise TaskSessionSnapshotError("Unsupported checkpoint version", code="WORKTREE_CHECKPOINT_VERSION")
+    object_store = metadata["object_store"]
+    with store.store_lock(object_store):
+        # Validate before any destructive action, including compensation backup.
+        for relative in metadata["manifest"]:
+            store.safe_path(task_root, relative)
+        store.validate_objects(object_store, metadata["manifest"])
+        repo_rels = [repo["repo_rel_path"] for repo in metadata["repositories"]]
+        current = _capture_worktree(
+            task_root, repo_rels, current_backup_path, object_store,
+            metadata["policy"], set(metadata["tracked"]),
         )
-    ]
-    _write_json(
-        os.path.join(current_backup_path, "worktree.json"),
-        {
-            "task_root": task_root,
-            "manifest": _file_manifest(task_root),
-            "repositories": current_repos,
-        },
-    )
-
-    # Reset each task-owned repository's control state before putting the
-    # exact bytes back.  The reset is not the restore mechanism; it only
-    # releases Git's current dirty state and is followed by tree + index copy.
-    for repo in metadata.get("repositories") or []:
-        repo_path = str(repo.get("repo_path") or "")
-        if not repo_path:
-            repo_path = os.path.join(task_root, str(repo.get("repo_rel_path") or "."))
-        repo_path = os.path.abspath(repo_path)
-        if not os.path.isdir(repo_path):
-            continue
-        branch = str(repo.get("branch") or "").strip()
-        head = str(repo.get("head") or "").strip()
-        # Clear the current worktree before changing branches.  ``checkout``
-        # without this preparation can fail on a dirty path even though the
-        # checkpoint contains the exact bytes/index to restore afterwards.
-        _run_git(repo_path, ["reset", "--hard", "HEAD"], check=False)
-        _run_git(repo_path, ["clean", "-fdx"], check=False)
-        if head:
+        store.restore(task_root, object_store, current["manifest"], metadata["manifest"])
+        # Restore only Git metadata. checkout/reset --hard/clean would modify
+        # excluded paths and destroy dependencies that were intentionally omitted.
+        for repo in metadata["repositories"]:
+            repo_path = repo["repo_path"]
+            branch, head = repo.get("branch"), repo.get("head")
             if branch:
-                _run_git(repo_path, ["checkout", "-f", branch])
-            else:
-                _run_git(repo_path, ["checkout", "--detach", head])
-            _run_git(repo_path, ["reset", "--hard", head])
-        elif branch:
-            _run_git(repo_path, ["symbolic-ref", "HEAD", f"refs/heads/{branch}"], check=False)
-            _run_git(repo_path, ["update-ref", "-d", f"refs/heads/{branch}"], check=False)
-
-    _remove_tree_without_git(task_root)
-    _copy_tree_without_git(os.path.join(checkpoint_root, "worktree"), task_root)
-
-    for repo in metadata.get("repositories") or []:
-        repo_path = os.path.abspath(str(repo.get("repo_path") or os.path.join(task_root, str(repo.get("repo_rel_path") or "."))))
-        if not os.path.isdir(repo_path):
-            raise TaskSessionSnapshotError(f"Repository worktree disappeared: {repo_path}", code="WORKTREE_RESTORE_FAILED")
-        index_copy = str(repo.get("index_copy") or "").strip()
-        index_path = str(repo.get("index_path") or "").strip()
-        if index_copy and index_path and os.path.isfile(index_copy):
-            _atomic_copy_file(index_copy, index_path)
-        elif index_path and os.path.isfile(index_path):
-            os.remove(index_path)
-
-    actual_manifest = _file_manifest(task_root)
-    if actual_manifest != (metadata.get("manifest") or {}):
-        raise TaskSessionSnapshotError("Restored worktree bytes differ from checkpoint", code="WORKTREE_VERIFY_FAILED")
-    for repo in metadata.get("repositories") or []:
-        repo_path = os.path.abspath(str(repo.get("repo_path") or os.path.join(task_root, str(repo.get("repo_rel_path") or "."))))
-        head_result = _run_git(repo_path, ["rev-parse", "--verify", "HEAD"], check=False)
-        actual_head = head_result.stdout.strip() if head_result.returncode == 0 else ""
-        if actual_head != str(repo.get("head") or ""):
-            raise TaskSessionSnapshotError("Restored repository HEAD differs from checkpoint", code="WORKTREE_VERIFY_FAILED")
-        expected_status = str(repo.get("status") or "")
-        actual_status = _run_git(repo_path, ["status", "--porcelain=v2", "--untracked-files=all"]).stdout
-        if actual_status != expected_status:
-            raise TaskSessionSnapshotError("Restored repository status differs from checkpoint", code="WORKTREE_VERIFY_FAILED")
+                ref = f"refs/heads/{branch}"
+                _run_git(repo_path, ["symbolic-ref", "HEAD", ref])
+                _run_git(repo_path, ["update-ref", ref, head] if head else ["update-ref", "-d", ref])
+            elif head:
+                _run_git(repo_path, ["update-ref", "--no-deref", "HEAD", head])
+            index_copy, index_path = repo.get("index_copy"), repo.get("index_path")
+            if index_copy:
+                _atomic_copy_file(index_copy, index_path)
+            elif index_path and os.path.isfile(index_path):
+                os.remove(index_path)
+        # Scope is frozen at creation; ignored/build files are not verified.
+        actual = store.capture(task_root, metadata["policy"], set(metadata["tracked"]), None)
+        if actual != metadata["manifest"]:
+            raise TaskSessionSnapshotError("Restored files differ from checkpoint", code="WORKTREE_VERIFY_FAILED")
+        for repo in metadata["repositories"]:
+            actual_head = _run_git(repo["repo_path"], ["rev-parse", "--verify", "HEAD"], check=False)
+            head = actual_head.stdout.strip() if actual_head.returncode == 0 else None
+            branch_result = _run_git(repo["repo_path"], ["symbolic-ref", "--quiet", "--short", "HEAD"], check=False)
+            branch = branch_result.stdout.strip() if branch_result.returncode == 0 else None
+            if head != repo["head"] or branch != repo["branch"]:
+                raise TaskSessionSnapshotError("Restored Git identity differs", code="WORKTREE_VERIFY_FAILED")
+            index_path = repo.get("index_path")
+            index_hash = _sha256_file(index_path) if index_path and os.path.isfile(index_path) else None
+            if index_hash != repo["index_sha256"]:
+                raise TaskSessionSnapshotError("Restored Git index differs", code="WORKTREE_VERIFY_FAILED")
 
 
-def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str]) -> dict[str, Any]:
+def _directory_label(identity: str, name: str) -> str:
+    # IDs are stable and authoritative; names are bounded human-readable labels.
+    identity = str(identity or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", identity):
+        raise TaskSessionSnapshotError("Invalid snapshot owner id", code="SNAPSHOT_OWNER_INVALID")
+    label = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(name or "")).strip(" .")[:40].rstrip(" .")
+    return f"{identity}_{label or 'unnamed'}"
+
+
+def _cleanup_checkpoint_sync(path: str) -> None:
+    path = os.path.abspath(path)
+    if not os.path.basename(path).startswith("turn-"):
+        raise TaskSessionSnapshotError("Invalid checkpoint cleanup path", code="SNAPSHOT_PATH_INVALID")
+    object_store = os.path.dirname(path)
+    with store.store_lock(object_store):
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        store.collect(object_store)
+
+
+def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
+                            workspace_id: str, workspace_name: str, task_id: str, task_name: str) -> dict[str, Any]:
     task_root = _task_root(task_root)
-    root = os.path.abspath(str(getattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", "") or ""))
-    if not root:
+    configured_root = str(settings.TASK_SESSION_SNAPSHOT_ROOT or "").strip()
+    if not configured_root:
         raise TaskSessionSnapshotError("Task session snapshot root is not configured", code="SNAPSHOT_ROOT_MISSING")
+    root = os.path.abspath(configured_root)
     try:
-        normalized_task_root = os.path.normcase(task_root)
-        normalized_snapshot_root = os.path.normcase(root)
+        normalized_task_root = os.path.normcase(os.path.realpath(task_root))
+        normalized_snapshot_root = os.path.normcase(os.path.realpath(root))
         if os.path.commonpath([normalized_task_root, normalized_snapshot_root]) == normalized_task_root:
             raise TaskSessionSnapshotError(
                 "Task session snapshot root must be outside the task worktree",
@@ -535,6 +494,7 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
     except ValueError:
         # Different Windows drives are necessarily outside one another.
         pass
+    root = os.path.join(root, _directory_label(workspace_id, workspace_name), _directory_label(task_id, task_name))
     os.makedirs(root, exist_ok=True)
     operation_root = tempfile.mkdtemp(prefix="turn-", dir=root)
     try:
@@ -546,14 +506,18 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
             "provider": provider_state,
         }
     except Exception:
-        shutil.rmtree(operation_root, ignore_errors=True)
+        _cleanup_checkpoint_sync(operation_root)
         raise
 
 
-async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str]) -> dict[str, Any]:
+async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
+                            *, workspace_id: str, workspace_name: str, task_id: str, task_name: str) -> dict[str, Any]:
     from app.core.offload import run_git_job
 
-    return await run_git_job(_create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id)
+    return await run_git_job(
+        _create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id,
+        workspace_id, workspace_name, task_id, task_name,
+    )
 
 
 async def restore_provider(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:
@@ -676,4 +640,4 @@ async def cleanup_checkpoint(path: Optional[str]) -> None:
     if path:
         from app.core.offload import run_file_job
 
-        await run_file_job(shutil.rmtree, path, True)
+        await run_file_job(_cleanup_checkpoint_sync, path)
