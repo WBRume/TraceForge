@@ -219,10 +219,32 @@ watch(
 }
 
 .check-row input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
   border-radius: 4px;
+  border: 1.5px solid #cbd5e1;
+  background-color: #ffffff;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 10px;
   cursor: pointer;
+  transition: all 0.16s ease;
+  flex-shrink: 0;
+  outline: none;
+}
+
+.check-row input[type="checkbox"]:hover {
+  border-color: #38bdf8;
+  background-color: #f0f9ff;
+}
+
+.check-row input[type="checkbox"]:checked {
+  border-color: #0ea5e9;
+  background-color: #0ea5e9;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M2.5 7L5.5 10L11.5 4' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
 
 .popover-actions {

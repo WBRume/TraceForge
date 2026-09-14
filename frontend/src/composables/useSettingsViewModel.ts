@@ -268,6 +268,11 @@ export function useSettingsViewModel() {
     selectableFilteredCount.value > 0
     && selectableFilteredMembers.value.every(member => selectedMemberIds.value[member.id])
   ))
+  const someFilteredSelected = computed(() => (
+    selectableFilteredCount.value > 0
+    && !allFilteredSelected.value
+    && selectableFilteredMembers.value.some(member => selectedMemberIds.value[member.id])
+  ))
   const selectedMemberCount = computed(() => (
     consoleMembers.value.filter(member => !member.is_owner && selectedMemberIds.value[member.id]).length
   ))
@@ -907,6 +912,7 @@ export function useSettingsViewModel() {
   return {
     activeSection,
     allFilteredSelected,
+    someFilteredSelected,
     addModalTab,
     applyBatchExpert,
     applyBatchRole,

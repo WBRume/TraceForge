@@ -308,11 +308,62 @@ const indentStyle = (depth: number) => ({
 }
 
 .wf-tree-checkbox {
-  width: 1rem;
-  height: 1rem;
-  flex-shrink: 0;
-  accent-color: #0ea5e9;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border-radius: 5px;
+  border: 1.5px solid #cbd5e1;
+  background-color: #ffffff;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px 11px;
   cursor: pointer;
+  transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  outline: none;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.wf-tree-checkbox:hover:not(:checked):not(:indeterminate):not(:disabled) {
+  border-color: #38bdf8;
+  background-color: #f0f9ff;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
+}
+
+.wf-tree-checkbox:checked:hover:not(:disabled),
+.wf-tree-checkbox:indeterminate:hover:not(:disabled) {
+  border-color: #0284c7;
+  background-color: #0284c7;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.35);
+}
+
+.wf-tree-checkbox:checked {
+  border-color: #0ea5e9;
+  background-color: #0ea5e9;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M2.5 7L5.5 10L11.5 4' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  box-shadow: 0 2px 5px rgba(14, 165, 233, 0.28);
+}
+
+.wf-tree-checkbox:indeterminate {
+  border-color: #0ea5e9;
+  background-color: #0ea5e9;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M3.5 7H10.5' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  box-shadow: 0 2px 5px rgba(14, 165, 233, 0.28);
+}
+
+.wf-tree-checkbox:focus-visible {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.22);
+}
+
+.wf-tree-checkbox:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background-color: #f8fafc;
+  border-color: #cbd5e1;
 }
 
 .wf-tree-repo {

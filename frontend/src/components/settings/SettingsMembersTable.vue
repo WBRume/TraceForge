@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, proxyRefs, ref } from 'vue'
-import { ChevronDown, Loader2, Pencil, Save, Search, X } from 'lucide-vue-next'
+import { ChevronDown, Loader2, Search } from 'lucide-vue-next'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
-import type { PermissionFlags, PermissionKey } from '@/utils/settingsPermissions'
+import SettingsMemberPermissionDrawer from './SettingsMemberPermissionDrawer.vue'
+import type { PermissionFlags } from '@/utils/settingsPermissions'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const props = defineProps<{ vm: SettingsViewModel }>()
@@ -27,10 +28,28 @@ const avatarInitial = (member: MemberRow) => (
   (member.display_name || member.email).trim().charAt(0).toUpperCase() || '?'
 )
 
-const permissionOn = (member: MemberRow, key: PermissionKey) => Boolean(member.permissions?.[key])
+// 4 大原子权限业务域统计计算
+const taskCount = (p?: PermissionFlags) => {
+  if (!p) return 0
+  return [p.create_task, p.start_task, p.manage_task_status, p.delete_task, p.export_task].filter(Boolean).length
+}
 
-const colCount = () => (vm.canManageMembers ? 6 : 5)
+const assetCount = (p?: PermissionFlags) => {
+  if (!p) return 0
+  return [p.view_dashboard, p.view_assets, p.manage_requirements, p.upload_task_spec, p.manage_skills].filter(Boolean).length
+}
 
+const mockCount = (p?: PermissionFlags) => {
+  if (!p) return 0
+  return [p.view_api_mock, p.manage_api_mock, p.publish_api_mock].filter(Boolean).length
+}
+
+const govCount = (p?: PermissionFlags) => {
+  if (!p) return 0
+  return p.manage_members ? 1 : 0
+}
+
+// 角色快捷下拉菜单管理
 const roleMenuOpenId = ref('')
 
 const toggleRoleMenu = (memberId: string) => {
@@ -41,11 +60,53 @@ const closeRoleMenu = () => {
   roleMenuOpenId.value = ''
 }
 
-const pickRole = (member: MemberRow, value: 'DEVELOPER' | 'VIEWER') => {
+const pickRole = async (member: MemberRow, value: 'DEVELOPER' | 'VIEWER') => {
+  vm.startEditMember(member)
   const draft = vm.memberDrafts[member.id]
-  if (draft) draft.role = value
-  vm.applyDraftRoleDefaults(member.id)
+  if (draft) {
+    draft.role = value
+    vm.applyDraftRoleDefaults(member.id)
+    await vm.saveMember(member)
+  }
   roleMenuOpenId.value = ''
+}
+
+// 权限微调侧滑抽屉控制
+const drawerVisible = ref(false)
+const drawerEditingMember = ref<MemberRow | null>(null)
+
+const openPermissionDrawer = (member: MemberRow) => {
+  vm.startEditMember(member)
+  drawerEditingMember.value = member
+  drawerVisible.value = true
+}
+
+const handleDrawerSave = async (payload: {
+  permissions: PermissionFlags
+  isExpert: boolean
+  role: 'DEVELOPER' | 'VIEWER'
+}) => {
+  if (!drawerEditingMember.value) return
+  const member = drawerEditingMember.value
+  const draft = vm.memberDrafts[member.id]
+  if (draft) {
+    draft.permissions = payload.permissions
+    draft.is_expert = payload.isExpert
+    draft.role = payload.role
+    await vm.saveMember(member)
+  }
+  drawerVisible.value = false
+}
+
+// 快速切换专家标签
+const quickToggleExpert = async (member: MemberRow) => {
+  if (!vm.canManageMembers || member.is_owner) return
+  vm.startEditMember(member)
+  const draft = vm.memberDrafts[member.id]
+  if (draft) {
+    draft.is_expert = !member.is_expert
+    await vm.saveMember(member)
+  }
 }
 
 onMounted(() => {
@@ -59,6 +120,7 @@ onUnmounted(() => {
 
 <template>
   <section class="member-console-panel">
+    <!-- 顶部操作工具栏 -->
     <div class="member-toolbar">
       <div class="member-search-box">
         <Search class="member-search-icon" />
@@ -88,6 +150,7 @@ onUnmounted(() => {
       </button>
     </div>
 
+    <!-- 视图分类 Tabs 与分页指示 -->
     <div class="member-views-row">
       <div class="member-views">
         <button
@@ -137,192 +200,184 @@ onUnmounted(() => {
       </span>
     </div>
 
-    <div class="member-table-wrap">
-      <table class="member-table">
-        <colgroup>
-          <col v-if="vm.canManageMembers" class="colc-check">
-          <col class="colc-member">
-          <col class="colc-role">
-          <col class="colc-expert">
-          <col class="colc-perms">
-          <col class="colc-actions">
-        </colgroup>
-        <thead>
-          <tr>
-            <th v-if="vm.canManageMembers" class="col-check">
-              <input
-                type="checkbox"
-                class="member-check"
-                :checked="vm.allFilteredSelected"
-                :disabled="vm.selectableFilteredCount === 0"
-                @change="vm.toggleSelectAllFiltered"
-              >
-            </th>
-            <th>{{ $t('settings.members.col_member') }}</th>
-            <th class="col-role">{{ $t('settings.members.col_role') }}</th>
-            <th class="col-expert">{{ $t('settings.members.col_expert') }}</th>
-            <th>{{ $t('settings.members.col_permissions') }}</th>
-            <th class="col-actions"></th>
-          </tr>
-        </thead>
-        <tbody v-if="vm.loadingMembers">
-          <tr>
-            <td :colspan="colCount()">
-              <div class="member-loading">
-                <Loader2 class="w-5 h-5 spin text-primary" />
-                <span>{{ $t('settings.members.loading') }}</span>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-        <tbody v-else>
-          <template v-for="member in vm.filteredConsoleMembers" :key="member.id">
-            <tr class="member-row" :class="{ 'is-owner': member.is_owner }">
-              <td v-if="vm.canManageMembers" class="col-check">
-                <input
-                  v-if="!member.is_owner"
-                  type="checkbox"
-                  class="member-check"
-                  :checked="vm.isMemberSelected(member.id)"
-                  @change="vm.toggleMemberSelected(member.id)"
-                >
-              </td>
-              <td>
-                <div class="member-identity">
-                  <span class="member-avatar" :class="{ owner: member.is_owner }">{{ avatarInitial(member) }}</span>
-                  <div class="member-name">
-                    <b>{{ member.display_name || member.email }}</b>
-                    <small>{{ member.email }}</small>
-                  </div>
-                </div>
-              </td>
-              <td class="col-role">
-                <span v-if="member.is_owner" class="role-badge owner">{{ vm.roleTag(member.role) }}</span>
-                <div v-else-if="vm.isEditingMember(member)" class="role-pill-select">
-                  <button
-                    type="button"
-                    class="role-pill"
-                    :class="vm.memberDrafts[member.id].role.toLowerCase()"
-                    @click.stop="toggleRoleMenu(member.id)"
-                  >
-                    {{ vm.roleTag(vm.memberDrafts[member.id].role) }}
-                    <ChevronDown class="pill-caret" />
-                  </button>
-                  <transition name="role-menu">
-                    <div v-if="roleMenuOpenId === member.id" class="role-pill-menu">
-                      <button
-                        v-for="option in vm.memberRoleOptions"
-                        :key="option.value"
-                        type="button"
-                        class="role-pill-menu-item"
-                        :class="{ selected: option.value === vm.memberDrafts[member.id].role }"
-                        @click.stop="pickRole(member, option.value)"
-                      >
-                        {{ option.label }}
-                      </button>
-                    </div>
-                  </transition>
-                </div>
-                <span v-else class="role-badge" :class="member.role.toLowerCase()">{{ vm.roleTag(member.role) }}</span>
-              </td>
-              <td class="col-expert">
-                <label v-if="vm.isEditingMember(member)" class="expert-switch inline col-expert-switch">
-                  <input v-model="vm.memberDrafts[member.id].is_expert" type="checkbox">
-                  <span>{{ $t('settings.members.expert_badge') }}</span>
-                </label>
-                <span v-else-if="member.is_expert" class="expert-badge">{{ $t('settings.members.expert_badge') }}</span>
-                <span v-else class="member-readonly-tag">—</span>
-              </td>
-              <td>
-                <div class="heat-cell">
-                  <span class="heat-dots">
-                    <span
-                      v-for="option in vm.permissionOptions"
-                      :key="option.key"
-                      class="heat-dot"
-                      :class="{ on: permissionOn(member, option.key) }"
-                    ></span>
-                  </span>
-                  <span class="heat-count">{{ vm.enabledPermissionCount(member) }}/{{ vm.permissionOptionCount }}</span>
-                  <button class="permission-toggle-btn" @click="vm.togglePermissionExpanded(member.id)">
-                    {{ vm.isPermissionExpanded(member.id) ? $t('settings.members.hide_permissions') : $t('settings.members.show_permissions') }}
-                  </button>
-                </div>
-              </td>
-              <td class="col-actions">
-                <template v-if="vm.canManageMembers && !member.is_owner">
-                  <div v-if="vm.isEditingMember(member)" class="member-row-actions">
-                    <button
-                      class="icon-action save"
-                      :title="$t('settings.members.save_member')"
-                      :disabled="vm.savingMemberId === member.id"
-                      @click="vm.saveMember(member)"
-                    >
-                      <Loader2 v-if="vm.savingMemberId === member.id" class="w-4 h-4 spin" />
-                      <Save v-else class="w-4 h-4" />
-                    </button>
-                    <button
-                      class="icon-action cancel"
-                      :title="$t('common.cancel')"
-                      :disabled="vm.savingMemberId === member.id"
-                      @click="vm.cancelEditMember(member)"
-                    >
-                      <X class="w-4 h-4" />
-                    </button>
-                    <DeleteActionButton
-                      mode="icon"
-                      :title="$t('settings.members.remove_member')"
-                      :loading="vm.removingMemberId === member.id"
-                      @click="vm.askRemoveMember(member)"
-                    />
-                  </div>
-                  <div v-else class="member-row-actions">
-                    <button
-                      class="icon-action edit"
-                      :title="$t('settings.members.edit_member')"
-                      @click="vm.startEditMember(member)"
-                    >
-                      <Pencil class="w-4 h-4" />
-                    </button>
-                  </div>
-                </template>
-                <span v-else-if="member.is_owner" class="member-readonly-tag">{{ $t('settings.members.readonly_tag') }}</span>
-              </td>
-            </tr>
-            <tr v-if="vm.isPermissionExpanded(member.id)" class="member-detail-row">
-              <td :colspan="colCount()">
-                <div v-if="vm.isEditingMember(member)" class="permission-grid">
-                  <label
-                    v-for="option in vm.permissionOptions"
-                    :key="`${member.id}-${option.key}`"
-                    class="permission-item"
-                  >
-                    <input v-model="vm.memberDrafts[member.id].permissions[option.key]" type="checkbox">
-                    <span>{{ option.label }}</span>
-                  </label>
-                </div>
-                <div v-else class="permission-grid">
-                  <div
-                    v-for="option in vm.permissionOptions"
-                    :key="`${member.id}-${option.key}`"
-                    class="permission-readonly"
-                    :class="{ enabled: permissionOn(member, option.key) }"
-                  >
-                    {{ option.label }}
-                  </div>
-                </div>
-              </td>
-            </tr>
-          </template>
-          <tr v-if="!vm.filteredConsoleMembers.length">
-            <td :colspan="colCount()">
-              <div class="member-empty member-empty-inline">{{ $t('settings.members.empty') }}</div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <!-- 批量全选表头条 -->
+    <div v-if="vm.canManageMembers && vm.filteredConsoleMembers.length" class="member-batch-header-strip">
+      <label class="batch-select-all-label">
+        <input
+          type="checkbox"
+          class="member-check"
+          :checked="vm.allFilteredSelected"
+          :indeterminate="vm.someFilteredSelected"
+          :disabled="vm.selectableFilteredCount === 0"
+          @click.stop
+          @change="vm.toggleSelectAllFiltered"
+        >
+        <span>全选当前页成员 ({{ vm.filteredConsoleMembers.length }})</span>
+      </label>
+      <span class="batch-hint">点击每行“微调权限”即可侧滑微调 14 项原子权限</span>
     </div>
 
+    <!-- 悬浮行卡槽列表 (Floating Row Pods) -->
+    <div v-if="vm.loadingMembers" class="member-loading-block">
+      <Loader2 class="w-6 h-6 spin text-primary" />
+      <span>{{ $t('settings.members.loading') }}</span>
+    </div>
+
+    <div v-else-if="!vm.filteredConsoleMembers.length" class="member-empty-block">
+      <p class="member-empty-text">{{ $t('settings.members.empty') }}</p>
+    </div>
+
+    <div v-else class="member-pods-container">
+      <article
+        v-for="member in vm.filteredConsoleMembers"
+        :key="member.id"
+        class="member-pod-card"
+        :class="{
+          'is-owner': member.is_owner,
+          'is-selected': vm.isMemberSelected(member.id),
+          'has-open-menu': roleMenuOpenId === member.id
+        }"
+      >
+        <!-- 左侧身份区 -->
+        <div class="pod-identity-section">
+          <input
+            v-if="vm.canManageMembers && !member.is_owner"
+            type="checkbox"
+            class="member-check"
+            :checked="vm.isMemberSelected(member.id)"
+            @change="vm.toggleMemberSelected(member.id)"
+          >
+          <span class="pod-avatar" :class="{ 'is-owner': member.is_owner }">
+            {{ avatarInitial(member) }}
+          </span>
+          <div class="pod-name-col">
+            <div class="pod-name-line">
+              <span class="pod-display-name">{{ member.display_name || member.email }}</span>
+
+              <!-- 角色标签/下拉 -->
+              <span v-if="member.is_owner" class="role-badge owner">所有者</span>
+              <div v-else-if="vm.canManageMembers" class="role-pill-select" @click.stop>
+                <button
+                  type="button"
+                  class="role-pill"
+                  :class="member.role.toLowerCase()"
+                  @click="toggleRoleMenu(member.id)"
+                >
+                  {{ vm.roleTag(member.role) }}
+                  <ChevronDown class="pill-caret" />
+                </button>
+                <transition name="role-menu">
+                  <div v-if="roleMenuOpenId === member.id" class="role-pill-menu">
+                    <button
+                      v-for="option in vm.memberRoleOptions"
+                      :key="option.value"
+                      type="button"
+                      class="role-pill-menu-item"
+                      :class="{ selected: option.value === member.role }"
+                      @click="pickRole(member, option.value as 'DEVELOPER' | 'VIEWER')"
+                    >
+                      {{ option.label }}
+                    </button>
+                  </div>
+                </transition>
+              </div>
+              <span v-else class="role-badge" :class="member.role.toLowerCase()">{{ vm.roleTag(member.role) }}</span>
+
+              <span v-if="member.is_expert" class="expert-badge-compact">专家</span>
+            </div>
+            <span class="pod-email-line">{{ member.email }} · 加入于 {{ member.joined_at?.slice(0, 10) || '近期' }}</span>
+          </div>
+        </div>
+
+        <!-- 中间：4 段微型刻度电量表 (无无异议装饰icon，纯净排版，浅蓝指示) -->
+        <div class="mini-gauge-cluster">
+          <div class="gauge-unit">
+            <div class="gauge-meta">
+              <span class="gauge-title">任务流</span>
+              <span class="gauge-val">{{ taskCount(member.permissions) }}/5</span>
+            </div>
+            <div class="gauge-track">
+              <div
+                class="gauge-fill"
+                :style="{ width: `${(taskCount(member.permissions) / 5) * 100}%` }"
+              ></div>
+            </div>
+          </div>
+
+          <div class="gauge-unit">
+            <div class="gauge-meta">
+              <span class="gauge-title">需求与资产</span>
+              <span class="gauge-val">{{ assetCount(member.permissions) }}/5</span>
+            </div>
+            <div class="gauge-track">
+              <div
+                class="gauge-fill"
+                :style="{ width: `${(assetCount(member.permissions) / 5) * 100}%` }"
+              ></div>
+            </div>
+          </div>
+
+          <div class="gauge-unit">
+            <div class="gauge-meta">
+              <span class="gauge-title">API Mock</span>
+              <span class="gauge-val">{{ mockCount(member.permissions) }}/3</span>
+            </div>
+            <div class="gauge-track">
+              <div
+                class="gauge-fill"
+                :style="{ width: `${(mockCount(member.permissions) / 3) * 100}%` }"
+              ></div>
+            </div>
+          </div>
+
+          <div class="gauge-unit">
+            <div class="gauge-meta">
+              <span class="gauge-title">治理</span>
+              <span class="gauge-val">{{ govCount(member.permissions) }}/1</span>
+            </div>
+            <div class="gauge-track">
+              <div
+                class="gauge-fill"
+                :style="{ width: `${govCount(member.permissions) * 100}%` }"
+              ></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右侧操作区 -->
+        <div class="pod-actions-col">
+          <button
+            type="button"
+            class="btn-subtle"
+            title="微调该成员 14 项原子权限"
+            @click="openPermissionDrawer(member)"
+          >
+            微调权限
+          </button>
+
+          <template v-if="vm.canManageMembers && !member.is_owner">
+            <button
+              type="button"
+              class="btn-subtle"
+              :class="{ 'is-active': member.is_expert }"
+              :title="member.is_expert ? '取消专家认证' : '设为专家'"
+              @click="quickToggleExpert(member)"
+            >
+              {{ member.is_expert ? '取消专家' : '标为专家' }}
+            </button>
+            <DeleteActionButton
+              mode="icon"
+              :title="$t('settings.members.remove_member')"
+              :loading="vm.removingMemberId === member.id"
+              @click="vm.askRemoveMember(member)"
+            />
+          </template>
+          <span v-else-if="member.is_owner" class="pod-owner-readonly-badge">创建者</span>
+        </div>
+      </article>
+    </div>
+
+    <!-- 底部分页控制 -->
     <div v-if="vm.memberTotal > vm.MEMBER_PAGE_SIZE" class="member-pagination">
       <button class="btn-secondary" :disabled="vm.loadingMembers || vm.memberPage <= 1" @click="vm.prevMemberPage">
         {{ $t('settings.members.prev_page') }}
@@ -336,6 +391,16 @@ onUnmounted(() => {
         {{ $t('settings.members.next_page') }}
       </button>
     </div>
+
+    <!-- 权限微调侧滑抽屉 -->
+    <SettingsMemberPermissionDrawer
+      :visible="drawerVisible"
+      :member="drawerEditingMember"
+      :saving="vm.savingMemberId === drawerEditingMember?.id"
+      :can-manage="vm.canManageMembers"
+      @close="drawerVisible = false"
+      @save="handleDrawerSave"
+    />
   </section>
 </template>
 
