@@ -62,6 +62,10 @@ _SPAWN_LINEAGE_TERM_GRACE_SECONDS = 1.5
 # 命令标记：用于 run-token 发现结果的补充身份校验（doc 7.3.4）。
 _TOKEN_PROCESS_COMMAND_MARKERS = ("claude", "node", "traceforge")
 
+# 默认强杀信号：Windows 没有 SIGKILL，模块导入必须无平台差异；POSIX 路径
+# 显式传 SIGKILL 保持不变，非 POSIX 的受保护路径不会走到该发送分支。
+_DEFAULT_KILL_SIGNAL: int = getattr(signal, "SIGKILL", signal.SIGTERM)
+
 
 def containment_id_for_run_token(run_token: Optional[str]) -> Optional[str]:
     """Stable attempt containment id derived from the durable run token.
@@ -3050,7 +3054,7 @@ class ProcessSupervisor:
         matches: Tuple[DiscoveredTokenProcess, ...],
         signals: list[str],
         *,
-        sig: int = signal.SIGKILL,
+        sig: int = _DEFAULT_KILL_SIGNAL,
         signal_name: str = "SIGKILL",
     ) -> None:
         """Signal each verified token identity — never the numeric group (P0-2).
