@@ -65,10 +65,9 @@ const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabl
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
-    if (canSend.value) {
-      if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
-      else emit('submit')
-    }
+    if (!canSend.value || props.running) return
+    if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
+    else emit('submit')
   }
 }
 
@@ -264,7 +263,7 @@ defineExpose({ resetPreInputForm, focusInput })
           type="button"
           class="tool-toggle"
           :class="{ 'is-active': isPreInput }"
-          :disabled="props.canStartPreInput === false || props.disabled"
+          :disabled="props.canStartPreInput === false || props.disabled || props.running"
           :title="t('preInput.toggle_title')"
           @click="togglePreInputMode"
         >
