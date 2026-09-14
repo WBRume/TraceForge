@@ -120,84 +120,87 @@ onUnmounted(() => {
 
 <template>
   <section class="member-console-panel">
-    <!-- 顶部操作工具栏 -->
-    <div class="member-toolbar">
-      <div class="member-search-box">
-        <Search class="member-search-icon" />
-        <input
-          v-model="vm.memberKeywordInput"
-          class="member-search-input"
-          type="text"
-          :placeholder="$t('settings.members.search_placeholder')"
-          @keyup.enter="vm.runMemberSearch"
-        >
-        <button
-          v-if="vm.memberKeywordQuery"
-          class="member-view-chip"
-          :disabled="vm.loadingMembers"
-          @click="vm.clearMemberSearch"
-        >
-          {{ $t('settings.members.clear_search') }}
+    <!-- 顶部操作控制卡片（搜索工具栏与视图分类 Tabs，保留独立边框） -->
+    <div class="member-control-card">
+      <!-- 顶部操作工具栏 -->
+      <div class="member-toolbar">
+        <div class="member-search-box">
+          <Search class="member-search-icon" />
+          <input
+            v-model="vm.memberKeywordInput"
+            class="member-search-input"
+            type="text"
+            :placeholder="$t('settings.members.search_placeholder')"
+            @keyup.enter="vm.runMemberSearch"
+          >
+          <button
+            v-if="vm.memberKeywordQuery"
+            class="member-view-chip"
+            :disabled="vm.loadingMembers"
+            @click="vm.clearMemberSearch"
+          >
+            {{ $t('settings.members.clear_search') }}
+          </button>
+        </div>
+
+        <div class="member-toolbar-spacer"></div>
+        <button v-if="vm.canManageMembers" class="btn-secondary" @click="vm.openAddModal">
+          {{ $t('settings.members.batch_add') }}
+        </button>
+        <button v-if="vm.canManageMembers" class="btn-primary" @click="vm.openAddModal">
+          {{ $t('settings.members.invite_members') }}
         </button>
       </div>
 
-      <div class="member-toolbar-spacer"></div>
-      <button v-if="vm.canManageMembers" class="btn-secondary" @click="vm.openAddModal">
-        {{ $t('settings.members.batch_add') }}
-      </button>
-      <button v-if="vm.canManageMembers" class="btn-primary" @click="vm.openAddModal">
-        {{ $t('settings.members.invite_members') }}
-      </button>
-    </div>
-
-    <!-- 视图分类 Tabs 与分页指示 -->
-    <div class="member-views-row">
-      <div class="member-views">
-        <button
-          class="member-view-chip"
-          :class="{ active: vm.memberViewFilter === 'all' }"
-          @click="vm.memberViewFilter = 'all'"
-        >
-          {{ $t('settings.members.views_all') }}
-          <span class="view-count">{{ vm.memberViewCounts.all }}</span>
-        </button>
-        <button
-          class="member-view-chip"
-          :class="{ active: vm.memberViewFilter === 'owner' }"
-          @click="vm.memberViewFilter = 'owner'"
-        >
-          {{ $t('settings.members.views_owner') }}
-          <span class="view-count">{{ vm.memberViewCounts.owner }}</span>
-        </button>
-        <button
-          class="member-view-chip"
-          :class="{ active: vm.memberViewFilter === 'developer' }"
-          @click="vm.memberViewFilter = 'developer'"
-        >
-          {{ $t('settings.members.views_developer') }}
-          <span class="view-count">{{ vm.memberViewCounts.developer }}</span>
-        </button>
-        <button
-          class="member-view-chip"
-          :class="{ active: vm.memberViewFilter === 'viewer' }"
-          @click="vm.memberViewFilter = 'viewer'"
-        >
-          {{ $t('settings.members.views_viewer') }}
-          <span class="view-count">{{ vm.memberViewCounts.viewer }}</span>
-        </button>
-        <button
-          class="member-view-chip"
-          :class="{ active: vm.memberViewFilter === 'expert' }"
-          @click="vm.memberViewFilter = 'expert'"
-        >
-          {{ $t('settings.members.views_expert') }}
-          <span class="view-count">{{ vm.memberViewCounts.expert }}</span>
-        </button>
+      <!-- 视图分类 Tabs 与分页指示 -->
+      <div class="member-views-row">
+        <div class="member-views">
+          <button
+            class="member-view-chip"
+            :class="{ active: vm.memberViewFilter === 'all' }"
+            @click="vm.memberViewFilter = 'all'"
+          >
+            {{ $t('settings.members.views_all') }}
+            <span class="view-count">{{ vm.memberViewCounts.all }}</span>
+          </button>
+          <button
+            class="member-view-chip"
+            :class="{ active: vm.memberViewFilter === 'owner' }"
+            @click="vm.memberViewFilter = 'owner'"
+          >
+            {{ $t('settings.members.views_owner') }}
+            <span class="view-count">{{ vm.memberViewCounts.owner }}</span>
+          </button>
+          <button
+            class="member-view-chip"
+            :class="{ active: vm.memberViewFilter === 'developer' }"
+            @click="vm.memberViewFilter = 'developer'"
+          >
+            {{ $t('settings.members.views_developer') }}
+            <span class="view-count">{{ vm.memberViewCounts.developer }}</span>
+          </button>
+          <button
+            class="member-view-chip"
+            :class="{ active: vm.memberViewFilter === 'viewer' }"
+            @click="vm.memberViewFilter = 'viewer'"
+          >
+            {{ $t('settings.members.views_viewer') }}
+            <span class="view-count">{{ vm.memberViewCounts.viewer }}</span>
+          </button>
+          <button
+            class="member-view-chip"
+            :class="{ active: vm.memberViewFilter === 'expert' }"
+            @click="vm.memberViewFilter = 'expert'"
+          >
+            {{ $t('settings.members.views_expert') }}
+            <span class="view-count">{{ vm.memberViewCounts.expert }}</span>
+          </button>
+        </div>
+        <div class="member-toolbar-spacer"></div>
+        <span class="member-view-chip is-static">
+          {{ $t('settings.members.page_info', { page: vm.memberPage, total: vm.totalMemberPages }) }}
+        </span>
       </div>
-      <div class="member-toolbar-spacer"></div>
-      <span class="member-view-chip is-static">
-        {{ $t('settings.members.page_info', { page: vm.memberPage, total: vm.totalMemberPages }) }}
-      </span>
     </div>
 
     <!-- 批量全选表头条 -->
