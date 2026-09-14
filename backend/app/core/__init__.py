@@ -12,6 +12,7 @@ from .logging import (  # noqa: F401
 )
 from .distributed_lock import (  # noqa: F401
     LockAcquireTimeout,
+    QueueWaitCancelled,
     ResourceBusyError,
     get_lock_provider,
     lock_ai_queue,
