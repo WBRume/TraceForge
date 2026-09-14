@@ -35,8 +35,10 @@ async def get_redis_client() -> Any:
             return cached_client
 
         redis_asyncio = _load_redis_asyncio_module()
+        redis_password = str(settings.REDIS_PASSWORD or "").strip()
         client = redis_asyncio.from_url(
             str(settings.REDIS_URL or "").strip(),
+            password=redis_password or None,
             socket_timeout=float(settings.REDIS_SOCKET_TIMEOUT_SECONDS or 3.0),
             socket_connect_timeout=float(settings.REDIS_CONNECT_TIMEOUT_SECONDS or 3.0),
             decode_responses=False,

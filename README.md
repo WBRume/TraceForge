@@ -457,6 +457,7 @@ npm run dev:electron
 | LOG_DIR | 日志目录 | ./logs |
 | REDIS_ENABLED | 是否启用 Redis | false（可选） |
 | REDIS_URL | Redis 连接地址 | redis://127.0.0.1:6379/0 |
+| REDIS_PASSWORD | Redis 密码（留空表示无认证） | 空 |
 | DISTRIBUTED_LOCK_BACKEND | 分布式锁后端 | local |
 
 > **注意**：
