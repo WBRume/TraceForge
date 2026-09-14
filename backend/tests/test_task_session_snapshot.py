@@ -83,6 +83,45 @@ class TaskSessionSnapshotTest(unittest.TestCase):
             manifest = json.load(open(os.path.join(checkpoint_root, "worktree.json"), encoding="utf-8"))
             self.assertNotIn("must-disappear", json.dumps(manifest))
 
+    def test_unborn_head_checkpoint_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "task")
+            os.makedirs(repo)
+            _git(repo, "init")
+            _git(repo, "config", "user.email", "traceforge@example.test")
+            _git(repo, "config", "user.name", "TraceForge Test")
+            self._write(repo, "untracked.txt", "before\n")
+            expected_status = _git(repo, "status", "--porcelain=v2", "--untracked-files=all")
+
+            checkpoint_root = os.path.join(tmp, "checkpoint")
+            os.makedirs(checkpoint_root)
+            payload = snapshots._create_worktree_checkpoint_sync(repo, [], checkpoint_root)
+            self.assertIsNone(payload["repositories"][0]["head"])
+            self.assertIsNone(payload["repositories"][0]["index_copy"])
+
+            self._write(repo, "untracked.txt", "changed\n")
+            self._write(repo, "committed.txt", "committed-after-boundary\n")
+            _git(repo, "add", ".")
+            _git(repo, "commit", "-m", "agent-commit")
+
+            snapshots._restore_worktree_sync(
+                checkpoint_root,
+                repo,
+                os.path.join(checkpoint_root, "current-worktree"),
+            )
+
+            self.assertEqual(open(os.path.join(repo, "untracked.txt"), encoding="utf-8").read(), "before\n")
+            self.assertFalse(os.path.exists(os.path.join(repo, "committed.txt")))
+            verify = subprocess.run(
+                ["git", "rev-parse", "--verify", "HEAD"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(verify.returncode, 0)
+            self.assertEqual(_git(repo, "status", "--porcelain=v2", "--untracked-files=all"), expected_status)
+
     def test_fresh_claude_checkpoint_removes_session_created_after_boundary(self):
         old_home = os.environ.get("CLAUDE_HOME")
         old_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")

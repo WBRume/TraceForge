@@ -88,7 +88,14 @@ class TaskWebSocketHandler:
         try:
             while True:
                 message = await self._websocket.receive_json()
-                await self._dispatch(message)
+                try:
+                    await self._dispatch(message)
+                except WebSocketDisconnect:
+                    raise
+                except Exception:
+                    task_logger.exception(
+                        f"Failed to process websocket message for task {self._task_id}"
+                    )
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -281,6 +288,11 @@ class TaskWebSocketHandler:
             return None
         except Exception:
             await self._mark_chat_claim_failed(claim)
+            await self._send_chat_ack(
+                request,
+                status="failed",
+                message="Message could not be processed. Please retry.",
+            )
             raise
 
     async def _resume_interrupted_task(
