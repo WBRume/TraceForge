@@ -388,8 +388,10 @@
     "time_saved": "Time Saved",
     "total_cost": "Total cost",
     "new_task": "Start New Task",
+    "load_error": "Failed to load dashboard data",
+    "retry": "Retry",
     "status_dist": "Task Status Distribution",
-    "avg_phase": "Average Phase Duration",
+    "avg_phase": "Estimated vs Actual",
     "retry_heatmap": "Error & Retry Heatmap (Last 7 Days)",
     "status": {
       "DONE": "Done",
