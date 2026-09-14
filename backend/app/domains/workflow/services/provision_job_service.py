@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import (
     LockAcquireTimeout,
+    QueueWaitCancelled,
     lock_workspace_repo,
     lock_workspace_repo_creation,
     queue_provision_jobs,
@@ -718,6 +719,9 @@ async def run_create_task_job(job_id: str) -> None:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     task_id = str(payload.get("task_id") or "").strip()
     use_repo_lock = _workspace_uses_git(workspace_id)
+    # 排队等待期间也要响应取消：否则 job 会卡在队列里直到等待超时，
+    # 用户点击取消没有任何效果（旧实现的“无法取消任务”）。
+    cancel_check = (lambda: is_cancel_requested(job_id))
 
     with bind_log_context(job_id=job_id, workspace_id=workspace_id, task_id=task_id, user_id=creator_id):
         try:
@@ -727,12 +731,12 @@ async def run_create_task_job(job_id: str) -> None:
                 progress=1,
                 message="Waiting for provision execution slot",
             )
-            async with queue_provision_jobs(queue_tag="create_task"):
+            async with queue_provision_jobs(queue_tag="create_task", cancel_check=cancel_check):
                 _ensure_not_cancelled(job_id)
                 mark_running(job_id, stage="PREPARING_TASK", progress=5, message="Task request accepted")
                 if use_repo_lock:
                     mark_progress(job_id, stage="WAITING_TASK_QUEUE", progress=10, message="Waiting in create task queue")
-                    async with queue_workspace_task_creation(workspace_id):
+                    async with queue_workspace_task_creation(workspace_id, cancel_check=cancel_check):
                         _ensure_not_cancelled(job_id)
                         mark_progress(job_id, stage="WAITING_REPO_LOCK", progress=20, message="Waiting for repository lock")
                         async with lock_workspace_repo(workspace_id):
@@ -781,7 +785,7 @@ async def run_create_task_job(job_id: str) -> None:
                 workspace_id=workspace_id,
                 job_id=job_id,
             )
-        except ProvisionJobCancelled:
+        except (ProvisionJobCancelled, QueueWaitCancelled):
             _mark_job_cancelled(job_id)
             await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             audit_log(

@@ -314,5 +314,204 @@ class LocalQueueSlotReclaimTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dl._LOCAL_QUEUE_SLOT_REFS, {})
 
 
+class _FakeRedisClient:
+    """最小异步 Redis 替身：覆盖队列实现用到的命令。"""
+
+    def __init__(self) -> None:
+        self.lists: dict = {}
+        self.kv: dict = {}
+        self.deleted_keys: list = []
+
+    async def set(self, key, value, ex=None, xx=False):
+        if xx and key not in self.kv:
+            return None
+        self.kv[key] = value
+        return True
+
+    async def rpush(self, key, value):
+        self.lists.setdefault(key, []).append(value)
+        return len(self.lists[key])
+
+    async def lrange(self, key, start, end):
+        items = self.lists.get(key, [])
+        if end == -1:
+            return list(items[start:])
+        return list(items[start : end + 1])
+
+    async def llen(self, key):
+        return len(self.lists.get(key, []))
+
+    async def lrem(self, key, count, value):
+        items = self.lists.get(key, [])
+        removed = 0
+        remaining = []
+        for item in items:
+            if removed < count and item == value:
+                removed += 1
+                continue
+            remaining.append(item)
+        if remaining:
+            self.lists[key] = remaining
+        else:
+            self.lists.pop(key, None)
+        return removed
+
+    async def exists(self, key):
+        return 1 if key in self.kv else 0
+
+    async def delete(self, *keys):
+        removed = 0
+        for key in keys:
+            self.deleted_keys.append(key)
+            if key in self.kv:
+                del self.kv[key]
+                removed += 1
+            if key in self.lists:
+                del self.lists[key]
+                removed += 1
+        return removed
+
+
+class RedisQueueTokenReclaimTest(unittest.IsolatedAsyncioTestCase):
+    """Redis 队列令牌自愈：孤儿令牌回收、活跃令牌保护、等待可取消。"""
+
+    def setUp(self) -> None:
+        self._orig_provider = dl._PROVIDER
+        dl._PROVIDER = dl.RedisLockProvider()
+        self.client = _FakeRedisClient()
+        self._client_patcher = patch(
+            "app.core.distributed_lock.get_redis_client",
+            new=AsyncMock(return_value=self.client),
+        )
+        self._client_patcher.start()
+
+    def tearDown(self) -> None:
+        self._client_patcher.stop()
+        dl._PROVIDER = self._orig_provider
+
+    async def test_stale_token_is_reclaimed_and_waiter_proceeds(self):
+        queue_key = dl._background_queue_key("unit:redis-stale")
+        # 模拟 Redis 中断/进程崩溃后残留的孤儿令牌：无心跳键
+        self.client.lists[queue_key] = [b"orphan-token"]
+
+        entered = False
+        async with dl.queue_background_job(
+            queue_name="unit:redis-stale",
+            max_concurrent=1,
+            wait_timeout=1.0,
+            poll_interval=0.01,
+        ):
+            entered = True
+
+        self.assertTrue(entered)
+        self.assertNotIn(queue_key, self.client.lists)
+        # 不再显式 DEL 队列键（避免误删并发 RPUSH 的新令牌）
+        self.assertNotIn(queue_key, self.client.deleted_keys)
+
+    async def test_live_token_is_not_reclaimed(self):
+        queue_key = dl._background_queue_key("unit:redis-live")
+        holder = b"live-holder-token"
+        self.client.lists[queue_key] = [holder]
+        self.client.kv[dl._queue_heartbeat_key(queue_key, holder)] = b"1"
+
+        with self.assertRaises(dl.LockAcquireTimeout):
+            async with dl.queue_background_job(
+                queue_name="unit:redis-live",
+                max_concurrent=1,
+                wait_timeout=0.2,
+                poll_interval=0.01,
+            ):
+                self.fail("waiter must not enter while holder token is live")
+
+        self.assertEqual(self.client.lists.get(queue_key), [holder])
+
+    async def test_reclaimed_token_is_requeued(self):
+        with patch.object(settings, "BACKGROUND_QUEUE_TOKEN_TTL_SECONDS", 0.3):
+            queue_key = dl._background_queue_key("unit:redis-requeue")
+            holder = b"live-holder-token"
+            self.client.lists[queue_key] = [holder]
+            self.client.kv[dl._queue_heartbeat_key(queue_key, holder)] = b"1"
+
+            entered = asyncio.Event()
+
+            async def _waiter() -> None:
+                async with dl.queue_background_job(
+                    queue_name="unit:redis-requeue",
+                    max_concurrent=1,
+                    wait_timeout=2.0,
+                    poll_interval=0.02,
+                ):
+                    entered.set()
+
+            waiter_task = asyncio.create_task(_waiter())
+            try:
+                await asyncio.sleep(0.2)
+                waiter_tokens = [t for t in self.client.lists.get(queue_key, []) if t != holder]
+                self.assertEqual(len(waiter_tokens), 1)
+                waiter_token = waiter_tokens[0]
+                # 模拟心跳过期后被其他等待者误回收（令牌与心跳键同时消失）
+                self.client.lists[queue_key] = [holder]
+                self.client.kv.pop(dl._queue_heartbeat_key(queue_key, waiter_token), None)
+
+                await asyncio.sleep(0.6)
+                self.assertIn(waiter_token, self.client.lists.get(queue_key, []))
+
+                self.client.lists[queue_key].remove(holder)
+                await asyncio.wait_for(entered.wait(), timeout=2.0)
+            finally:
+                if not waiter_task.done():
+                    waiter_task.cancel()
+                await asyncio.gather(waiter_task, return_exceptions=True)
+
+    async def test_redis_queue_wait_is_cancellable(self):
+        queue_key = dl._background_queue_key("unit:redis-cancel")
+        holder = b"live-holder-token"
+        self.client.lists[queue_key] = [holder]
+        self.client.kv[dl._queue_heartbeat_key(queue_key, holder)] = b"1"
+
+        with self.assertRaises(dl.QueueWaitCancelled):
+            async with dl.queue_background_job(
+                queue_name="unit:redis-cancel",
+                max_concurrent=1,
+                wait_timeout=5.0,
+                poll_interval=0.01,
+                cancel_check=lambda: True,
+            ):
+                self.fail("cancelled waiter must not enter")
+
+        self.assertEqual(self.client.lists.get(queue_key), [holder])
+
+    async def test_local_queue_wait_is_cancellable(self):
+        dl._PROVIDER = dl.LocalLockProvider()
+        hold = asyncio.Event()
+        holder_entered = asyncio.Event()
+
+        async def _holder() -> None:
+            async with dl.queue_background_job(
+                queue_name="unit:local-cancel",
+                max_concurrent=1,
+                wait_timeout=2.0,
+                poll_interval=0.01,
+            ):
+                holder_entered.set()
+                await hold.wait()
+
+        holder_task = asyncio.create_task(_holder())
+        try:
+            await asyncio.wait_for(holder_entered.wait(), timeout=1.0)
+            with self.assertRaises(dl.QueueWaitCancelled):
+                async with dl.queue_background_job(
+                    queue_name="unit:local-cancel",
+                    max_concurrent=1,
+                    wait_timeout=2.0,
+                    poll_interval=0.01,
+                    cancel_check=lambda: True,
+                ):
+                    self.fail("cancelled waiter must not enter")
+        finally:
+            hold.set()
+            await asyncio.gather(holder_task, return_exceptions=True)
+
+
 if __name__ == "__main__":
     unittest.main()

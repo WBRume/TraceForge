@@ -12,7 +12,7 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Dict, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -64,6 +64,25 @@ class ResourceBusyError(RuntimeError):
         self.resource_id = resource_id
         self.lock_key = lock_key
         self.backend = backend
+
+
+class QueueWaitCancelled(RuntimeError):
+    """排队等待期间收到取消请求（令牌已在退出时清理，调用方按取消语义收尾）。"""
+
+    def __init__(
+        self,
+        *,
+        lock_key: str,
+        resource_type: str,
+        resource_id: str,
+        message: Optional[str] = None,
+    ) -> None:
+        super().__init__(
+            message or f"Queue wait cancelled for {resource_type}:{resource_id}"
+        )
+        self.lock_key = lock_key
+        self.resource_type = resource_type
+        self.resource_id = resource_id
 
 
 @dataclass(frozen=True)
@@ -151,6 +170,61 @@ def _background_queue_key(queue_name: str) -> str:
         resource_type="queue",
         resource_id=f"background:{normalized}",
     )
+
+
+_QUEUE_HEARTBEAT_VALUE = b"1"
+_QUEUE_HEARTBEAT_SUFFIX = ":hb:"
+_MAX_QUEUE_TOKEN_REPUSH = 3
+
+
+def _queue_heartbeat_key(queue_key: str, token: bytes) -> str:
+    return f"{queue_key}{_QUEUE_HEARTBEAT_SUFFIX}{token.decode('ascii', errors='ignore')}"
+
+
+def _resolve_queue_token_ttl(value: Optional[float] = None) -> float:
+    raw = settings.BACKGROUND_QUEUE_TOKEN_TTL_SECONDS if value is None else value
+    return max(1.0, float(raw or 30.0))
+
+
+async def _queue_token_heartbeat_loop(
+    client: Any,
+    *,
+    heartbeat_key: str,
+    ttl_seconds: float,
+    reclaimed: asyncio.Event,
+    stop: asyncio.Event,
+) -> None:
+    """续约排队令牌心跳。
+
+    以 SET ... XX 续约：心跳键被回收（返回空）说明令牌已被其他等待者
+    按过期回收，置位 reclaimed 由主循环决定重排队或失败。
+    """
+    interval = max(0.25, float(ttl_seconds) / 3.0)
+    ex_seconds = max(1, int(round(float(ttl_seconds))))
+    while not stop.is_set():
+        try:
+            refreshed = await client.set(
+                heartbeat_key,
+                _QUEUE_HEARTBEAT_VALUE,
+                ex=ex_seconds,
+                xx=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "queue token heartbeat failed: key={}, error={}",
+                heartbeat_key,
+                str(exc),
+            )
+        else:
+            if not refreshed:
+                reclaimed.set()
+                return
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
 
 
 class DistributedLockProvider(ABC):
@@ -579,6 +653,7 @@ async def queue_workspace_task_creation(
     *,
     wait_timeout: Optional[float] = None,
     poll_interval: Optional[float] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> AsyncIterator[None]:
     timeout_sec = max(
         0.5,
@@ -604,6 +679,7 @@ async def queue_workspace_task_creation(
         poll_interval=sleep_sec,
         resource_type="workspace_task_create_queue",
         resource_id=str(workspace_id or "").strip() or "unknown",
+        cancel_check=cancel_check,
     ):
         yield
 
@@ -617,6 +693,7 @@ async def queue_background_job(
     poll_interval: Optional[float] = None,
     resource_type: str = "background_queue",
     resource_id: Optional[str] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> AsyncIterator[None]:
     provider = await get_lock_provider()
     limit = max(
@@ -645,23 +722,52 @@ async def queue_background_job(
     )
     rid = str(resource_id or queue_name or "unknown").strip() or "unknown"
     queue_key = _background_queue_key(queue_name)
+    # 取消检查有 DB 查询成本：等待期间最多每秒探测一次，避免空转打库。
+    cancel_poll_interval = max(1.0, sleep_sec)
+    next_cancel_poll_at = 0.0
+
+    def _raise_if_cancelled() -> None:
+        nonlocal next_cancel_poll_at
+        if cancel_check is None:
+            return
+        now = time.monotonic()
+        if now < next_cancel_poll_at:
+            return
+        next_cancel_poll_at = now + cancel_poll_interval
+        if cancel_check():
+            raise QueueWaitCancelled(
+                lock_key=queue_key,
+                resource_type=resource_type,
+                resource_id=rid,
+                message=f"Cancelled while waiting in queue '{queue_name}'",
+            )
 
     if provider.backend_name != "redis":
         semaphore = await _get_local_queue_semaphore(queue_key, limit)
         acquired = False
+        deadline = time.monotonic() + timeout_sec
         try:
-            try:
-                await asyncio.wait_for(semaphore.acquire(), timeout=timeout_sec)
-                acquired = True
-                yield
-            except asyncio.TimeoutError as exc:
-                raise LockAcquireTimeout(
-                    lock_key=queue_key,
-                    resource_type=resource_type,
-                    resource_id=rid,
-                    backend="local",
-                    message=f"Timed out waiting in queue '{queue_name}'",
-                ) from exc
+            while True:
+                _raise_if_cancelled()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LockAcquireTimeout(
+                        lock_key=queue_key,
+                        resource_type=resource_type,
+                        resource_id=rid,
+                        backend="local",
+                        message=f"Timed out waiting in queue '{queue_name}'",
+                    )
+                try:
+                    await asyncio.wait_for(
+                        semaphore.acquire(),
+                        timeout=min(max(sleep_sec, 0.01), remaining),
+                    )
+                    acquired = True
+                    break
+                except asyncio.TimeoutError:
+                    continue
+            yield
         finally:
             if acquired:
                 semaphore.release()
@@ -669,14 +775,74 @@ async def queue_background_job(
         return
 
     token = uuid.uuid4().hex.encode("ascii")
+    heartbeat_key = _queue_heartbeat_key(queue_key, token)
+    heartbeat_ttl = _resolve_queue_token_ttl()
+    heartbeat_ex = max(1, int(round(heartbeat_ttl)))
     deadline = time.monotonic() + timeout_sec
     client = await get_redis_client()
-    await client.rpush(queue_key, token)
+    reclaimed = asyncio.Event()
+    stop_heartbeat = asyncio.Event()
+    heartbeat_task: Optional[asyncio.Task[None]] = None
+    re_push_count = 0
+
+    async def _start_heartbeat() -> None:
+        nonlocal heartbeat_task
+        stop_heartbeat.clear()
+        reclaimed.clear()
+        heartbeat_task = asyncio.create_task(
+            _queue_token_heartbeat_loop(
+                client,
+                heartbeat_key=heartbeat_key,
+                ttl_seconds=heartbeat_ttl,
+                reclaimed=reclaimed,
+                stop=stop_heartbeat,
+            )
+        )
+
+    async def _stop_heartbeat() -> None:
+        nonlocal heartbeat_task
+        task = heartbeat_task
+        heartbeat_task = None
+        if task is None:
+            return
+        stop_heartbeat.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     try:
+        # 先写心跳键再入队：等待者只会回收“队头且心跳键已消失”的令牌，
+        # 该顺序保证新令牌一旦可见就带有心跳，不会被并发等待者误判为孤儿。
+        await client.set(heartbeat_key, _QUEUE_HEARTBEAT_VALUE, ex=heartbeat_ex)
+        await client.rpush(queue_key, token)
+        await _start_heartbeat()
         while True:
+            _raise_if_cancelled()
+            if reclaimed.is_set():
+                # 等待期间令牌被回收（如 Redis 抖动导致心跳过期）：有限次重排队
+                await _stop_heartbeat()
+                re_push_count += 1
+                if re_push_count > _MAX_QUEUE_TOKEN_REPUSH or time.monotonic() >= deadline:
+                    raise LockAcquireTimeout(
+                        lock_key=queue_key,
+                        resource_type=resource_type,
+                        resource_id=rid,
+                        backend="redis",
+                        message=f"Queue token expired while waiting in queue '{queue_name}'",
+                    )
+                await client.set(heartbeat_key, _QUEUE_HEARTBEAT_VALUE, ex=heartbeat_ex)
+                await client.rpush(queue_key, token)
+                await _start_heartbeat()
             head_tokens = await client.lrange(queue_key, 0, max(0, limit - 1))
-            if isinstance(head_tokens, list) and token in head_tokens:
-                break
+            if isinstance(head_tokens, list):
+                # 回收队头孤儿令牌：进程崩溃/重启/Redis 中断后残留的令牌没有心跳，
+                # 否则会永远占用并发槽位，导致后续任务卡在“等待队列”。
+                for candidate in head_tokens:
+                    if candidate == token:
+                        continue
+                    if await client.exists(_queue_heartbeat_key(queue_key, candidate)) == 0:
+                        await client.lrem(queue_key, 1, candidate)
+                if token in head_tokens:
+                    break
             if time.monotonic() >= deadline:
                 raise LockAcquireTimeout(
                     lock_key=queue_key,
@@ -688,10 +854,12 @@ async def queue_background_job(
             await asyncio.sleep(sleep_sec)
         yield
     finally:
+        await _stop_heartbeat()
         try:
             await client.lrem(queue_key, 1, token)
-            if int(await client.llen(queue_key) or 0) == 0:
-                await client.delete(queue_key)
+            # 不显式删除队列键：Redis 在列表清空时自动删除，显式 DEL 会与
+            # 并发 RPUSH 竞争并误删新令牌（旧实现导致新任务永久等待）。
+            await client.delete(heartbeat_key)
         except Exception as exc:
             logger.warning(
                 "background queue cleanup failed: queue_name={}, queue_key={}, error={}",
@@ -708,6 +876,7 @@ async def queue_provision_jobs(
     max_concurrent: Optional[int] = None,
     wait_timeout: Optional[float] = None,
     poll_interval: Optional[float] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> AsyncIterator[None]:
     normalized_tag = _normalize_component(str(queue_tag or "default").strip().lower())
     async with queue_background_job(
@@ -717,6 +886,7 @@ async def queue_provision_jobs(
         poll_interval=poll_interval,
         resource_type="provision_queue",
         resource_id=normalized_tag,
+        cancel_check=cancel_check,
     ):
         yield
 
