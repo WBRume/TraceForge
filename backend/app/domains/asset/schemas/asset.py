@@ -210,7 +210,7 @@ class DashboardOverview(BaseModel):
     total_tasks: int
     success_rate: float
     active_tasks: int
-    avg_duration_minutes: float
+    time_saved_hours: float
     total_cost_usd: float
 
 
