@@ -23,6 +23,7 @@ export const setApiServerUrl = (serverUrl: string): string => {
   const normalized = normalizeServerUrl(serverUrl)
   api.defaults.baseURL = buildApiBaseUrl(normalized)
   localStorage.setItem('sdd_server_url', normalized)
+  window.dispatchEvent(new Event('sdd-server-changed'))
   return normalized
 }
 

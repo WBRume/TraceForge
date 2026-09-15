@@ -1,5 +1,5 @@
 """
-SDD Native Platform - Global Configuration
+TraceForge Platform - Global Configuration
 使用 Pydantic Settings 管理环境变量和配置
 """
 
@@ -28,8 +28,26 @@ def _resolve_backend_path(raw_value: Optional[str], *, fallback: str) -> str:
 class Settings(BaseSettings):
     """应用全局配置"""
 
+    # Search remains opt-in until migrations, backfill and capability checks pass.
+    SEARCH_ENABLED: bool = False
+    SEARCH_WORKERS_ENABLED: bool = True
+    SEARCH_ES_URL: str = "http://127.0.0.1:9200"
+    SEARCH_READ_ALIAS: str = "traceforge-search-read"
+    SEARCH_ES_USERNAME: str = "elastic"
+    SEARCH_ES_PASSWORD: str = ""
+    SEARCH_ES_CA_CERTS: str = ""
+    SEARCH_CURSOR_SECRET: str = ""
+    SEARCH_CONFIG_ENCRYPTION_KEY: str = ""
+    SEARCH_EMBEDDING_API_KEY: str = ""
+    SEARCH_SESSION_NAMESPACE: str = "traceforge:search"
+    SEARCH_EMBEDDING_TIMEOUT: float = 10.0
+    SEARCH_QUERY_EMBEDDING_TIMEOUT: float = 0.8
+    SEARCH_WORKER_POLL_SECONDS: float = 1.0
+    SEARCH_QUERY_RPS: int = 16
+    SEARCH_DOCUMENT_RPS: int = 2
+
     # ── App ──
-    APP_NAME: str = "SDD Native Platform"
+    APP_NAME: str = "TraceForge Platform"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = True
 

@@ -1,5 +1,5 @@
 """
-SDD Native Platform - Database Engine & Session
+TraceForge Platform - Database Engine & Session
 """
 
 from sqlalchemy import create_engine
@@ -29,3 +29,13 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 class Base(DeclarativeBase):
     """SQLAlchemy 声明基类"""
     pass
+
+# Register search tables before metadata-based tests/migrations create the schema.
+from app.domains.search import models as _search_models  # noqa: E402,F401
+from sqlalchemy import event as _event
+from sqlalchemy.orm import Session as _Session
+
+@_event.listens_for(_Session, "before_flush")
+def _install_search_capture(session, flush_context, instances):
+    from app.domains.search.capture import install_capture
+    install_capture()

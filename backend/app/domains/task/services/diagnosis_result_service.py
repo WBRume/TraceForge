@@ -402,7 +402,8 @@ def _sync_card_message(
     )
     summary = _clean(payload.summary) or _clean(payload.root_cause) or "Diagnosis result"
     metadata = _payload_dict(payload)
-    metadata["order_index"] = _next_message_order_index(db, task.id)
+    from app.domains.search.capture import allocate_chat_seq
+    metadata["order_index"] = allocate_chat_seq(db, task.id)
     if existing:
         existing.content = summary
         existing.metadata_json = metadata
@@ -421,6 +422,8 @@ def _sync_card_message(
             metadata_json=metadata,
         )
         db.add(message)
+    db.flush()
+    message.sort_seq = metadata["order_index"]
     db.flush()
     result.source_chat_message_id = message.id
     return message

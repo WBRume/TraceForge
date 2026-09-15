@@ -535,6 +535,11 @@ const hitlOptionLabel = (option: unknown): string => {
       </div>
 
       <!-- �?对话气泡�?(仅自然语言) -->
+      <div v-if="vm.historyAnchored" class="history-context-bar" role="status">
+        <span>{{ vm.historyHasNew ? '历史窗口 · 有新消息' : '正在查看历史消息' }}</span>
+        <button @click="vm.returnToLatest">回到最新</button>
+        <button v-if="vm.historyHasAfter" :disabled="vm.historyContextLoading" @click="vm.loadContextDirection('after')">加载后续消息</button>
+      </div>
       <div class="chat-history" :ref="rawVm.chatContainer" @scroll="vm.handleChatScroll">
         <div v-if="vm.loadingMore" class="loading-more-hint">
           <Loader2 class="w-4 h-4 spin" />
@@ -1572,4 +1577,9 @@ const hitlOptionLabel = (option: unknown): string => {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+.history-context-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 24px 0; padding: 10px 14px; border: 1px solid var(--el-color-primary-light-7); border-radius: 8px; background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); font-size: 13px; }
+.history-context-bar span { margin-right: auto; }
+.history-context-bar button { cursor: pointer; padding: 4px 9px; background: var(--el-bg-color); color: var(--el-color-primary); border: 1px solid var(--el-border-color); border-radius: 5px; }
+.history-context-bar button:disabled { cursor: wait; opacity: .5; }
 </style>

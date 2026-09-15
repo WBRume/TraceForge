@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError
 
 from app.config import settings
+from app.domains.search import router as search_router
 from app.core.offload import run_db, shutdown_offload_executors
 from app.core.redis_client import close_redis_client
 from app.core.logging import (
@@ -97,6 +98,7 @@ app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
 async def _on_startup() -> None:
     global _pre_input_worker_task
     app.state.ai_runtime_ready = False
+    await search_router.start(app)
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
     recovered_queue_count = await ai_job_service.start_runtime_workers()
     app.state.ai_runtime_ready = True
@@ -135,6 +137,7 @@ async def _on_shutdown() -> None:
             await ws_manager.shutdown()
         except Exception:
             logger.warning("Failed to shutdown %s websocket hubs", label)
+    await search_router.stop(app)
     try:
         await close_redis_client()
     except Exception:
@@ -148,6 +151,7 @@ async def _on_shutdown() -> None:
         logger.warning("Failed to shutdown offload executors")
 
 # ── 路由挂载 ──
+app.include_router(search_router.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(oauth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")

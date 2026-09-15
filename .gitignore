@@ -69,3 +69,4 @@ codebuddy-sdk-doc.txt
 /.workbuddy/
 /.playwright-cli/
 /output/
+/frontend/demos/
