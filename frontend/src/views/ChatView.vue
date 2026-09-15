@@ -26,6 +26,7 @@ import {
   FolderGit2,
   GitFork,
   Upload,
+  SlidersHorizontal,
 } from 'lucide-vue-next'
 import NewTaskModal from '@/components/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -40,8 +41,10 @@ import ContextWindowDrawer from '@/components/chat/context-window/ContextWindowD
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
-import TaskProvisionProgressModal from '@/components/TaskProvisionProgressModal.vue'
+import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
+import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
+import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
 import { useChatViewModel } from '@/composables/useChatViewModel'
 import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagnosisDocs'
 
@@ -50,6 +53,42 @@ const vm = proxyRefs(rawVm)
 const showApplyPatchDrawer = ref(false)
 const preInputMode = ref(false)
 const chatInputRef = ref<any>(null)
+const pendingUndoMessage = ref<Record<string, any> | null>(null)
+const taskAdvancedDrawerOpen = ref(false)
+const showBootstrapConfirm = ref(false)
+
+const confirmBootstrapBuild = async () => {
+  if (rawVm.specBootstrapTriggering.value) return
+  showBootstrapConfirm.value = false
+  try {
+    await rawVm.triggerSpecBootstrap()
+  } catch {
+    // triggerSpecBootstrap owns user-facing error handling
+  }
+}
+
+const handleUndoRequest = (message: Record<string, any>) => {
+  if (rawVm.isUndoing.value || !rawVm.canUndoMessage(message)) return
+  pendingUndoMessage.value = message
+}
+
+const cancelUndoConfirmation = () => {
+  if (rawVm.isUndoing.value) return
+  pendingUndoMessage.value = null
+}
+
+const confirmUndoMessage = async () => {
+  const message = pendingUndoMessage.value
+  if (!message || rawVm.isUndoing.value) return
+  // Close the confirmation layer before the async provider/worktree restore starts.
+  // The chat-main busy overlay then becomes visible immediately.
+  pendingUndoMessage.value = null
+  try {
+    await rawVm.undoMessage(message)
+  } catch {
+    // undoMessage owns user-facing error handling; keep this callback rejection-free.
+  }
+}
 
 const handleStartPreInput = (payload: {
   main_text: string
@@ -105,6 +144,7 @@ watch(
   () => vm.currentTask?.id,
   () => {
     preInputMode.value = false
+    pendingUndoMessage.value = null
   },
 )
 
@@ -118,6 +158,22 @@ const statusModelText = (card: any): string => {
   const match = String(card?.message || '').match(/\(model:\s*([^)]+)\)/i)
   return match?.[1]?.trim() || ''
 }
+
+const hitlOptionValue = (option: unknown): string => {
+  if (option && typeof option === 'object') {
+    const item = option as Record<string, unknown>
+    return String(item.value ?? item.label ?? '').trim()
+  }
+  return String(option ?? '').trim()
+}
+
+const hitlOptionLabel = (option: unknown): string => {
+  if (option && typeof option === 'object') {
+    const item = option as Record<string, unknown>
+    return String(item.label ?? item.value ?? '').trim()
+  }
+  return String(option ?? '').trim()
+}
 </script>
 <template>
   <div class="chat-layout">
@@ -126,9 +182,30 @@ const statusModelText = (card: any): string => {
       <div class="sidebar-header">
         <div class="sidebar-title-row">
           <h3>{{ $t('chat.terminal') }}</h3>
-          <button class="new-session-btn" :disabled="!vm.canCreateTask" @click="vm.openNewTaskModal" :title="$t('dashboard.new_task')">
-            <Plus class="w-4 h-4" />
-          </button>
+          <div class="sidebar-title-actions">
+            <span class="advanced-filter-anchor">
+              <button
+                class="advanced-filter-btn"
+                :class="{ active: vm.taskRelationFilter.length > 0 }"
+                type="button"
+                :title="$t('chat.task_advanced_filter')"
+                :aria-label="$t('chat.task_advanced_filter')"
+                @click="taskAdvancedDrawerOpen = true"
+              >
+                <SlidersHorizontal class="w-4 h-4" />
+                <span v-if="vm.taskRelationFilter.length > 0" class="advanced-filter-badge">{{ vm.taskRelationFilter.length }}</span>
+              </button>
+              <TaskAdvancedFilterDrawer
+                v-model="taskAdvancedDrawerOpen"
+                :relations="vm.taskRelationFilter"
+                @apply="vm.applyTaskRelationFilter"
+                @reset="vm.resetTaskRelationFilter"
+              />
+            </span>
+            <button class="new-session-btn" :disabled="!vm.canCreateTask" @click="vm.openNewTaskModal" :title="$t('dashboard.new_task')">
+              <Plus class="w-4 h-4" />
+            </button>
+          </div>
         </div>
         <div class="sidebar-filter-row">
           <div class="sidebar-filter-item">
@@ -162,40 +239,16 @@ const statusModelText = (card: any): string => {
         </div>
       </div>
       <div class="task-list" :ref="rawVm.taskListContainer" @scroll="vm.handleTaskListScroll">
-        <div
+        <ChatTaskListItem
           v-for="task in vm.tasks"
           :key="task.id"
-          class="task-item group"
-          :class="{ active: vm.currentTask?.id === task.id }"
-          @click="vm.selectTask(task)"
-        >
-          <div class="task-item-content">
-            <div class="task-name-row">
-              <div class="task-name">{{ task.name }}</div>
-              <span
-                class="task-type-tag"
-                :class="task.task_type === 'DIAGNOSIS' ? 'is-diagnosis' : 'is-development'"
-              >
-                {{ task.task_type === 'DIAGNOSIS' ? $t('task_types.diagnosis') : $t('task_types.development') }}
-              </span>
-              <div class="task-status">
-                <span class="status-dot" :class="task.status.toLowerCase()"></span>
-                {{ task.status }}
-              </div>
-            </div>
-            <div class="task-meta" v-if="task.creator_name || task.created_at">
-              <span v-if="task.creator_name" class="task-creator">{{ task.creator_name }}</span>
-              <span v-if="task.created_at" class="task-date">{{ vm.formatTime(task.created_at) }}</span>
-            </div>
-          </div>
-          <DeleteActionButton
-            mode="icon"
-            class="delete-btn"
-            :title="$t('common.delete')"
-            :disabled="!vm.canDeleteTask"
-            @click.stop="vm.handleDeleteTask(task)"
-          />
-        </div>
+          :task="task"
+          :active="vm.currentTask?.id === task.id"
+          :can-delete="vm.canDeleteTask"
+          @select="vm.selectTask"
+          @delete="vm.handleDeleteTask"
+          @toggle-follow="vm.toggleTaskFollow"
+        />
         <div v-if="vm.taskListLoading && vm.tasks.length === 0" class="empty-hint">
           {{ $t('common.loading') }}
         </div>
@@ -213,11 +266,16 @@ const statusModelText = (card: any): string => {
     </aside>
 
     <!-- Center: Chat + Pinned Cards -->
-    <section class="chat-main" v-if="vm.currentTask">
+    <section
+      class="chat-main"
+      :class="{ 'is-session-busy': vm.isUndoing }"
+      :aria-busy="vm.isUndoing"
+      v-if="vm.currentTask"
+    >
       <!-- Header -->
       <header class="chat-header glass-panel">
         <div class="header-left">
-          <h2>{{ vm.currentTask.name }}</h2>
+          <h2 :title="vm.currentTask.name">{{ vm.currentTask.name }}</h2>
           <span class="badge" :class="vm.currentTask.status.toLowerCase()">{{ vm.currentTask.status }}</span>
           <Loader2 v-if="vm.engineRunning" class="w-4 h-4 spin text-primary" />
         </div>
@@ -307,8 +365,25 @@ const statusModelText = (card: any): string => {
             :disabled="!vm.canDeleteTask"
             @click="vm.handleDeleteTask(vm.currentTask)"
           />
+          <GlobalSearchTrigger compact />
         </div>
       </header>
+
+      <div
+        v-if="vm.isUndoing"
+        class="session-operation-overlay"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <div class="session-operation-card">
+          <svg class="session-operation-progress-ring" viewBox="0 0 48 48" aria-hidden="true">
+            <circle class="session-operation-progress-track" cx="24" cy="24" r="18" pathLength="100" />
+            <circle class="session-operation-progress-path" cx="24" cy="24" r="18" pathLength="100" />
+          </svg>
+          <span class="session-operation-copy">{{ $t('chat.undo.in_progress') }}</span>
+        </div>
+      </div>
 
       <div v-if="vm.isTaskPreStart && vm.currentTaskHasSpec" class="prestart-doc-tip glass-panel">
         <p>{{ $t('chat.spec_prestart_hint') }}</p>
@@ -319,6 +394,14 @@ const statusModelText = (card: any): string => {
           <div class="bootstrap-status-main">
             <Loader2 v-if="vm.isSpecBootstrapActive" class="w-4 h-4 spin text-primary" />
             <span>{{ vm.bootstrapStatusText(vm.specBootstrap.status) }} · {{ vm.specBootstrap.progress }}%</span>
+            <button
+              v-if="vm.canTriggerSpecBootstrap"
+              class="btn-secondary bootstrap-trigger-btn"
+              :disabled="vm.specBootstrapTriggering"
+              @click="showBootstrapConfirm = true"
+            >
+              {{ $t('chat.spec_bootstrap_action_build') }}
+            </button>
           </div>
           <p v-if="vm.specBootstrap.message" class="bootstrap-status-message">{{ vm.specBootstrap.message }}</p>
           <p v-if="vm.specBootstrap.error_message" class="bootstrap-status-error">{{ vm.specBootstrap.error_message }}</p>
@@ -345,6 +428,7 @@ const statusModelText = (card: any): string => {
           >
           <div class="header-title flex items-center gap-2">
             <Brain class="w-4 h-4" />
+            <Loader2 v-if="vm.engineRunning" class="w-3 h-3 spin text-primary" />
             <span>{{ $t('chat.thinking') }}</span>
           </div>
             <ChevronDown class="w-4 h-4 toggle-icon transition-transform" :class="{'rotate-180': vm.thinkingExpanded}" />
@@ -428,6 +512,16 @@ const statusModelText = (card: any): string => {
               <button class="btn-success" @click="vm.submitHitl(card.id, 'y')">{{ $t('common.confirm') }} (Y)</button>
               <button class="btn-danger" @click="vm.submitHitl(card.id, 'n')">{{ $t('common.cancel') }} (N)</button>
             </template>
+            <template v-else-if="card.hitl_type === 'select' && card.options?.length">
+              <button
+                v-for="(option, index) in card.options"
+                :key="`${card.id}-option-${index}`"
+                class="btn-primary"
+                @click="vm.submitHitl(card.id, hitlOptionValue(option))"
+              >
+                {{ hitlOptionLabel(option) }}
+              </button>
+            </template>
             <template v-else>
               <input
                 type="text"
@@ -443,6 +537,11 @@ const statusModelText = (card: any): string => {
       </div>
 
       <!-- �?对话气泡�?(仅自然语言) -->
+      <div v-if="vm.historyAnchored" class="history-context-bar" role="status">
+        <span>{{ vm.historyHasNew ? '历史窗口 · 有新消息' : '正在查看历史消息' }}</span>
+        <button @click="vm.returnToLatest">回到最新</button>
+        <button v-if="vm.historyHasAfter" :disabled="vm.historyContextLoading" @click="vm.loadContextDirection('after')">加载后续消息</button>
+      </div>
       <div class="chat-history" :ref="rawVm.chatContainer" @scroll="vm.handleChatScroll">
         <div v-if="vm.loadingMore" class="loading-more-hint">
           <Loader2 class="w-4 h-4 spin" />
@@ -471,6 +570,7 @@ const statusModelText = (card: any): string => {
             v-else
             :msg="msg"
             :vm="vm"
+            @undo-request="handleUndoRequest"
           />
         </template>
 
@@ -499,13 +599,13 @@ const statusModelText = (card: any): string => {
         <template v-else>
           <button
             class="btn-micro"
-            :disabled="vm.engineRunning || vm.diagnosisSummarizing || vm.isDiagnosisAdopted"
+            :disabled="vm.engineRunning || vm.diagnosisChatBusy || vm.diagnosisSummarizing || vm.isDiagnosisAdopted"
             :title="vm.isDiagnosisAdopted ? $t('diagnosis.case_already_adopted_no_summary') : $t('diagnosis.summarize_case_button')"
             @click="vm.generateDiagnosisSummary"
           >
             <Loader2 v-if="vm.diagnosisSummarizing" class="w-3 h-3 spin" />
             <Sparkles v-else class="w-3 h-3" />
-            {{ vm.isDiagnosisAdopted ? $t('diagnosis.case_adopted_label') : vm.diagnosisSummarizing ? $t('diagnosis.summarizing') : $t('diagnosis.summarize_case_button') }}
+            {{ vm.isDiagnosisAdopted ? $t('diagnosis.case_adopted_label') : vm.diagnosisSummarizingLabel }}
           </button>
         </template>
       </div>
@@ -518,8 +618,10 @@ const statusModelText = (card: any): string => {
         :vm="vm"
       />
 
-      <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换） -->
+      <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
+           收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
       <ChatExecutionInput
+        v-if="!vm.preInputIsCollecting"
         ref="chatInputRef"
         v-model="vm.chatInput"
         v-model:pre-input-mode="preInputMode"
@@ -604,7 +706,7 @@ const statusModelText = (card: any): string => {
             <span>{{ $t('diagnosis.code_path_tab') }}</span>
           </button>
         </div>
-        <!-- 研发态任务：需求文档 / Superpowers 文档 -->
+        <!-- 研发态任务：需求文档 / 计划文档 -->
         <div v-else class="spec-tabbar">
           <button 
             class="tab-item" 
@@ -645,12 +747,12 @@ const statusModelText = (card: any): string => {
                   <p class="diag-panel-subtitle">{{ $t('diagnosis.docs_upload_hint') }}</p>
                 </div>
                 <div class="diag-panel-actions">
+                  <!-- 问题定位诊断文档：类型不限（日志/CSV/压缩包等），后端 upload-diagnosis-doc 无扩展名限制 -->
                   <input
                     id="diag-panel-file"
                     type="file"
                     class="diag-hidden-input"
                     multiple
-                    accept=".md,.markdown,.txt,.log,.json,.csv,.pdf,.doc,.docx"
                     @change="handleDiagnosisDocSelect"
                   />
                   <label for="diag-panel-file" class="btn-ghost diag-upload-btn" :class="{ disabled: diagDocs.uploading }">
@@ -784,7 +886,7 @@ const statusModelText = (card: any): string => {
               compact
             />
           </div>
-          <!-- 研发态：Superpowers 文档 -->
+          <!-- 研发态：计划文档 -->
           <div
             v-if="!vm.isDiagnosisTask"
             class="spec-tab-panel"
@@ -804,14 +906,7 @@ const statusModelText = (card: any): string => {
     </aside>
 
     <!-- ─── Modals and Drawers ─── -->
-    <TaskProvisionProgressModal
-      :show="vm.taskProvisionVisible"
-      :job-id="vm.taskProvisionJobId"
-      :task-id="vm.taskProvisionTaskId"
-      :workspace-id="String(vm.route.params.wsId || '')"
-      @close="vm.closeTaskProvision"
-      @open-session="vm.openTaskSession(vm.taskProvisionTaskId)"
-    />
+    <!-- 任务准备进度由全局浮窗 ProvisionFloatingWidget（App.vue 挂载）负责 -->
 
     <NewTaskModal 
       :show="vm.showTaskModal" 
@@ -850,6 +945,46 @@ const statusModelText = (card: any): string => {
       :loading="vm.startingTask"
       @cancel="vm.showStartConfirm = false"
       @confirm="vm.startTask"
+    >
+      <template #content>
+        <div class="modal-form">
+          <div class="form-group">
+            <label for="start-initial-prompt">{{ $t('chat.initial_prompt_label') }}</label>
+            <textarea
+              id="start-initial-prompt"
+              v-model="vm.startPrompt"
+              class="input-field textarea-field"
+              rows="5"
+              :placeholder="$t('chat.initial_prompt_placeholder')"
+            ></textarea>
+          </div>
+        </div>
+      </template>
+    </ConfirmActionModal>
+
+    <ConfirmActionModal
+      :show="showBootstrapConfirm"
+      :title="$t('chat.spec_bootstrap_build_confirm_title')"
+      :message="$t('chat.spec_bootstrap_build_confirm_message')"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('chat.spec_bootstrap_action_build')"
+      tone="primary"
+      :loading="vm.specBootstrapTriggering"
+      @cancel="showBootstrapConfirm = false"
+      @confirm="confirmBootstrapBuild"
+    />
+
+    <ConfirmActionModal
+      :show="Boolean(pendingUndoMessage)"
+      :title="$t('chat.undo.confirm_title')"
+      :message="$t('chat.undo.confirm_message')"
+      :description="$t('chat.undo.confirm_description')"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('chat.undo.confirm_action')"
+      tone="danger"
+      :loading="vm.isUndoing"
+      @cancel="cancelUndoConfirmation"
+      @confirm="confirmUndoMessage"
     />
 
     <!-- Initialize Reason Modal -->
@@ -864,6 +999,16 @@ const statusModelText = (card: any): string => {
           <span>{{ $t('chat.init_reason_title') }}</span>
         </div>
         <div class="modal-form">
+          <div class="form-group">
+            <label for="initialize-initial-prompt">{{ $t('chat.initial_prompt_label') }}</label>
+            <textarea
+              id="initialize-initial-prompt"
+              v-model="vm.initPrompt"
+              class="input-field textarea-field"
+              rows="5"
+              :placeholder="$t('chat.initial_prompt_placeholder')"
+            ></textarea>
+          </div>
           <div class="form-group">
             <label>{{ $t('chat.init_reason_label') }}</label>
             <input
@@ -997,6 +1142,57 @@ const statusModelText = (card: any): string => {
 <style scoped src="@/styles/chat-view/chat-view-spec.css"></style>
 <style scoped src="@/styles/chat-view/chat-view-modal-buttons.css"></style>
 <style scoped>
+.sidebar-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.advanced-filter-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.advanced-filter-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--color-text-muted);
+  background: transparent;
+  cursor: pointer;
+  transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.advanced-filter-btn:hover,
+.advanced-filter-btn.active {
+  border-color: rgba(37, 99, 235, 0.22);
+  color: var(--color-primary-600);
+  background: var(--color-primary-50);
+}
+
+.advanced-filter-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--color-primary-600);
+  font-size: 0.6rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .session-separator.is-highlighted {
   animation: context-reference-pulse 1.3s ease-in-out 2;
 }
@@ -1334,8 +1530,58 @@ const statusModelText = (card: any): string => {
   animation: diag-spin 1s linear infinite;
 }
 
+.init-skill-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.init-skill-item:hover {
+  background-color: #f0f9ff;
+}
+
+.init-skill-item input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border-radius: 4px;
+  border: 1.5px solid #cbd5e1;
+  background-color: #ffffff;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 11px 11px;
+  cursor: pointer;
+  transition: all 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  outline: none;
+}
+
+.init-skill-item input[type="checkbox"]:hover {
+  border-color: #38bdf8;
+  background-color: #f0f9ff;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.12);
+}
+
+.init-skill-item input[type="checkbox"]:checked {
+  border-color: #0ea5e9;
+  background-color: #0ea5e9;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='M2.5 7L5.5 10L11.5 4' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  box-shadow: 0 2px 4px rgba(14, 165, 233, 0.25);
+}
+
 @keyframes diag-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
+
+.history-context-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 8px 24px 0; padding: 10px 14px; border: 1px solid var(--el-color-primary-light-7); border-radius: 8px; background: var(--el-color-primary-light-9); color: var(--el-text-color-regular); font-size: 13px; }
+.history-context-bar span { margin-right: auto; }
+.history-context-bar button { cursor: pointer; padding: 4px 9px; background: var(--el-bg-color); color: var(--el-color-primary); border: 1px solid var(--el-border-color); border-radius: 5px; }
+.history-context-bar button:disabled { cursor: wait; opacity: .5; }
 </style>

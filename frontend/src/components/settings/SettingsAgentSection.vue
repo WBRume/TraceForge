@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, Info } from 'lucide-vue-next'
+import { Bot, Info, Loader2 } from 'lucide-vue-next'
 import { useAgentBackendSettings } from '@/composables/useAgentBackendSettings'
 
 const { t } = useI18n()
@@ -84,9 +84,24 @@ const dirty = computed(() => {
         <div v-if="vm.error.value" class="error-text mt-4">{{ vm.error.value }}</div>
         <div v-if="vm.success.value" class="success-text mt-4">{{ vm.success.value }}</div>
 
+        <div v-if="vm.testResult.value" class="test-result mt-4" :class="vm.testResult.value.success ? 'success' : 'error'">
+          <span class="test-result-label">
+            {{ vm.testResult.value.success ? t('settings.agent.test_success') : t('settings.agent.test_failed') }}
+          </span>
+          <span class="test-result-message">{{ vm.testResult.value.message }}</span>
+        </div>
+
         <div class="actions mt-6">
           <button
-            class="save-btn"
+            class="btn-secondary"
+            :disabled="vm.testing.value || !vm.selected.value"
+            @click="vm.testBackend()"
+          >
+            <Loader2 v-if="vm.testing.value" class="w-4 h-4 spin" />
+            {{ vm.testing.value ? t('settings.agent.testing') : t('settings.agent.test') }}
+          </button>
+          <button
+            class="btn-primary"
             :disabled="vm.saving.value || !dirty"
             @click="vm.save()"
           >
@@ -290,23 +305,48 @@ const dirty = computed(() => {
 .actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
 }
 
-.save-btn {
-  border: none;
-  border-radius: 10px;
-  padding: 0.6rem 1.4rem;
-  font-weight: 700;
-  font-size: 0.9rem;
-  color: #fff;
-  background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
-  cursor: pointer;
-  transition: opacity 0.15s ease;
+.test-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  border: 1px solid;
 }
 
-.save-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.test-result.success {
+  color: #15803d;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.test-result.error {
+  color: #b91c1c;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.test-result-label {
+  font-weight: 600;
+}
+
+.test-result-message {
+  color: inherit;
+  word-break: break-word;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .flex { display: flex; }

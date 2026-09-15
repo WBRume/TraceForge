@@ -27,6 +27,7 @@ from app.domains.management.services import (  # noqa: E402
 )
 from app.domains.management.models.management import (  # noqa: E402
     ProjectLifecycleStatus,
+    SddManagementRepository,
 )
 
 # Register every mapped model for create_all completeness.
@@ -73,22 +74,25 @@ def _seed_user(db) -> User:
 
 
 def _seed_repository(db, name="billing-core", git_url="https://git.example.com/billing-core.git", repo_type="OOTB"):
+    group = repo_group_service.create_group(db, name=f"Seed 组 {name}")
     return repository_service.create_repository(
         db,
         name=name,
         git_url=git_url,
         repo_type=repo_type,
         default_branch="main",
+        group_id=group.id,
         creator_id="user-1",
     )
 
 
-def _seed_product_version(db, product, version_no="V1"):
+def _seed_product_version(db, product, version_no="V1", **kwargs):
     return product_service.create_version(
         db,
         product,
         version_no=version_no,
         creator_id="user-1",
+        **kwargs,
     )
 
 
@@ -611,12 +615,43 @@ class TestRepoGroupService:
         with pytest.raises(repo_group_service.RepoGroupServiceError):
             repo_group_service.update_group(db, parent, parent_id=child.id)
 
-    def test_unassigned_repositories_exposed(self, db_session):
+    def test_unassigned_repositories_not_exposed(self, db_session):
         db = db_session
-        _seed_repository(db)
+        # Simulate legacy ungrouped data (no longer creatable through the service).
+        repo = SddManagementRepository(
+            name="legacy-ungrouped",
+            git_url="https://git.example.com/legacy-ungrouped.git",
+            repo_type="OOTB",
+            default_branch="main",
+        )
+        db.add(repo)
+        db.commit()
         tree = repo_group_service.build_repo_group_tree(db)
-        assert tree[-1]["name"] == "Unassigned"
-        assert tree[-1]["repositories"][0]["name"] == "billing-core"
+        assert all(node.get("id") is not None for node in tree)
+        assert not any(node["name"] == "Unassigned" for node in tree)
+
+    def test_create_repository_requires_group(self, db_session):
+        db = db_session
+        with pytest.raises(repository_service.RepositoryServiceError) as exc_info:
+            repository_service.create_repository(
+                db,
+                name="no-group-repo",
+                git_url="https://git.example.com/no-group.git",
+                repo_type="OOTB",
+                creator_id="user-1",
+            )
+        assert exc_info.value.status_code == 400
+
+        with pytest.raises(repository_service.RepositoryServiceError) as exc_info:
+            repository_service.create_repository(
+                db,
+                name="missing-group-repo",
+                git_url="https://git.example.com/missing-group.git",
+                repo_type="OOTB",
+                group_id="missing-group-id",
+                creator_id="user-1",
+            )
+        assert exc_info.value.status_code == 400
 
 
 class TestProjectService:
@@ -688,6 +723,77 @@ class TestProjectService:
         with pytest.raises(project_service.ProjectServiceError) as exc_info:
             project_service.add_project_product(db, project, product_id=product.id, creator_id="user-1")
         assert exc_info.value.status_code == 409
+
+    def test_project_cannot_bind_custom_product_with_its_baseline(self, db_session):
+        db = db_session
+        project = self._seed_project(db)
+        baseline = product_service.create_product(db, name="OOTB Billing", code="BILLING", creator_id="user-1")
+        baseline_version = _seed_product_version(db, baseline, version_no="V1")
+        custom = product_service.create_product(
+            db,
+            name="Custom Billing",
+            code="CUSTOM-BILLING",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
+            creator_id="user-1",
+        )
+        _seed_product_version(db, custom, version_no="C1", baseline_product_version_id=baseline_version.id)
+
+        project_service.add_project_product(db, project, product_id=baseline.id, creator_id="user-1")
+        with pytest.raises(project_service.ProjectServiceError) as exc_info:
+            project_service.add_project_product(db, project, product_id=custom.id, creator_id="user-1")
+        assert exc_info.value.status_code == 409
+        assert "baseline" in str(exc_info.value)
+
+    def test_project_cannot_bind_baseline_product_after_custom(self, db_session):
+        db = db_session
+        project = self._seed_project(db)
+        baseline = product_service.create_product(db, name="OOTB Billing", code="BILLING", creator_id="user-1")
+        baseline_version = _seed_product_version(db, baseline, version_no="V1")
+        custom = product_service.create_product(
+            db,
+            name="Custom Billing",
+            code="CUSTOM-BILLING",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
+            creator_id="user-1",
+        )
+        _seed_product_version(db, custom, version_no="C1", baseline_product_version_id=baseline_version.id)
+
+        project_service.add_project_product(db, project, product_id=custom.id, creator_id="user-1")
+        with pytest.raises(project_service.ProjectServiceError) as exc_info:
+            project_service.add_project_product(db, project, product_id=baseline.id, creator_id="user-1")
+        assert exc_info.value.status_code == 409
+        assert "baseline" in str(exc_info.value)
+
+    def test_project_can_bind_multiple_custom_products(self, db_session):
+        db = db_session
+        project = self._seed_project(db)
+        baseline = product_service.create_product(db, name="OOTB Billing", code="BILLING", creator_id="user-1")
+        baseline_version = _seed_product_version(db, baseline, version_no="V1")
+        custom_a = product_service.create_product(
+            db,
+            name="Custom Billing A",
+            code="CUSTOM-A",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
+            creator_id="user-1",
+        )
+        custom_b = product_service.create_product(
+            db,
+            name="Custom Billing B",
+            code="CUSTOM-B",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
+            creator_id="user-1",
+        )
+        _seed_product_version(db, custom_a, version_no="C1", baseline_product_version_id=baseline_version.id)
+        _seed_product_version(db, custom_b, version_no="C2", baseline_product_version_id=baseline_version.id)
+
+        project_service.add_project_product(db, project, product_id=custom_a.id, creator_id="user-1")
+        project_service.add_project_product(db, project, product_id=custom_b.id, creator_id="user-1")
+        detail = project_service.serialize_project_detail(project_service.get_project(db, project.id))
+        assert len(detail["products"]) == 2
 
     def test_delete_project_with_products_conflicts(self, db_session):
         db = db_session

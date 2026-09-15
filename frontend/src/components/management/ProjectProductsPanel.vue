@@ -46,6 +46,14 @@ const availableProducts = computed(() =>
   )
 )
 
+const isBaselineConflict = (product: Product): boolean => {
+  const boundProducts = props.project.products
+  if (product.baseline_product_id && boundProducts.some((p) => p.product_id === product.baseline_product_id)) {
+    return true
+  }
+  return boundProducts.some((p) => products.value.find((candidate) => candidate.id === p.product_id)?.baseline_product_id === product.id)
+}
+
 const versionOptions = (product: Product): { label: string; value: string }[] =>
   (product.versions ?? []).map((v) => ({ label: v.version_no, value: v.id }))
 
@@ -286,11 +294,12 @@ const confirmRemove = async () => {
               v-for="product in availableProducts"
               :key="product.id"
               class="product-pick-row"
-              :class="{ checked: pickIds.includes(product.id) }"
+              :class="{ checked: pickIds.includes(product.id), disabled: isBaselineConflict(product) }"
             >
               <input
                 type="checkbox"
                 :checked="pickIds.includes(product.id)"
+                :disabled="isBaselineConflict(product)"
                 @change="togglePick(product, ($event.target as HTMLInputElement).checked)"
               />
               <span class="product-pick-name">{{ product.name }}</span>
@@ -299,7 +308,7 @@ const confirmRemove = async () => {
                 v-model="pickVersions[product.id]"
                 class="product-pick-version-select"
                 :placeholder="$t('management.project.product_version_label')"
-                :disabled="!pickIds.includes(product.id)"
+                :disabled="!pickIds.includes(product.id) || isBaselineConflict(product)"
                 size="small"
               >
                 <el-option
@@ -309,6 +318,9 @@ const confirmRemove = async () => {
                   :value="option.value"
                 />
               </el-select>
+              <span v-if="isBaselineConflict(product)" class="product-pick-conflict">
+                {{ $t('management.project.custom_baseline_conflict') }}
+              </span>
             </div>
           </div>
 
@@ -438,6 +450,23 @@ const confirmRemove = async () => {
 .product-pick-row.checked {
   border-color: #0ea5e9;
   background: rgba(14, 165, 233, 0.06);
+}
+
+.product-pick-row.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: rgba(241, 245, 249, 0.5);
+}
+
+.product-pick-row.disabled:hover {
+  border-color: #e2e8f0;
+}
+
+.product-pick-conflict {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.76rem;
+  color: #f59e0b;
 }
 
 .product-pick-name {

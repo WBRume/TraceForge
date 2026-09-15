@@ -28,8 +28,8 @@ describe('runtime and backend URL helpers', () => {
   it('builds websocket URLs from the current API base', () => {
     setApiServerUrl('https://sdd.example.com')
     expect(buildBackendWsUrl('/ws/task/task-1')).toBe('wss://sdd.example.com/ws/task/task-1')
-    expect(buildBackendWsUrl('/ws/api-mock/project-1', { userId: 'u 1' })).toBe(
-      'wss://sdd.example.com/ws/api-mock/project-1?userId=u+1',
+    expect(buildBackendWsUrl('/ws/api-mock/project-1', { token: 'token-1' })).toBe(
+      'wss://sdd.example.com/ws/api-mock/project-1?token=token-1',
     )
   })
 })

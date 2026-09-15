@@ -18,7 +18,19 @@ from app.domains.skill.routers import skill as skill_router
 from app.domains.workspace.routers import workspace as workspace_router
 
 
+class _FakeQuery:
+    def filter(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        # 无配置行 → system_config_service 返回默认值（功能开启）
+        return None
+
+
 class _FakeDb:
+    def query(self, model):
+        return _FakeQuery()
+
     def close(self) -> None:
         return None
 
@@ -78,7 +90,9 @@ def test_create_workspace_returns_accepted_payload(monkeypatch):
             "name": "Async Workspace",
             "description": "test",
             "project_path": "G:/tmp/ws-async",
-            "git_repo_url": "https://github.com/example/repo",
+            "project_name": "P",
+            "product_name": "PR",
+            "repositories": [{"repository_id": "repo-1", "branch_name": "main"}],
         },
     )
     assert resp.status_code == 202
@@ -87,6 +101,26 @@ def test_create_workspace_returns_accepted_payload(monkeypatch):
     assert payload["job_type"] == "CREATE_WORKSPACE"
     assert payload["status"] == "PENDING"
     assert payload["stage"] == "QUEUED"
+
+
+def test_create_workspace_rejects_multiple_products(monkeypatch):
+    app = FastAPI()
+    app.include_router(workspace_router.router, prefix="/api")
+    app.dependency_overrides[workspace_router.get_db] = _override_db
+    app.dependency_overrides[workspace_router.get_current_user] = _override_user
+
+    client = TestClient(app)
+    resp = client.post(
+        "/api/workspaces",
+        json={
+            "name": "Multi Product Workspace",
+            "project_path": "G:/tmp/ws-multi-product",
+            "project_id": "project-1",
+            "product_ids": ["product-1", "product-2"],
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "only select one product" in resp.text
 
 
 def test_import_skill_from_github_returns_accepted_payload(monkeypatch):

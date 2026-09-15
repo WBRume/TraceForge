@@ -5,7 +5,7 @@ Shared API schemas (assets, dashboard, workspaces).
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
 
 class AssetResponse(BaseModel):
@@ -210,7 +210,7 @@ class DashboardOverview(BaseModel):
     total_tasks: int
     success_rate: float
     active_tasks: int
-    avg_duration_minutes: float
+    time_saved_hours: float
     total_cost_usd: float
 
 
@@ -275,6 +275,22 @@ class WorkspaceCreate(BaseModel):
     project_id: Optional[str] = None
     product_ids: Optional[List[str]] = None
     repositories: Optional[List[WorkspaceRepositoryCreate]] = None
+    # 独立模式（未关联管理项目）下手动填写的项目/产品名称，不与项目管理/产品管理数据绑定
+    project_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    product_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _validate_single_product_selection(self):
+        if self.product_ids and len(self.product_ids) > 1:
+            raise ValueError("workspace can only select one product")
+        return self
+
+
+class WorkspacePreflight(BaseModel):
+    """创建工作区前的冲突预检入参：重名 / 目录已被其他工作区引用。"""
+
+    name: str = Field(..., min_length=1, max_length=200)
+    project_path: Optional[str] = None
 
 
 class WorkspaceRepositoryResponse(BaseModel):
@@ -322,6 +338,8 @@ class WorkspaceResponse(BaseModel):
     project_id: Optional[str] = None
     owner_id: str
     agent_backend: Optional[str] = None
+    custom_project_name: Optional[str] = None
+    custom_product_name: Optional[str] = None
     created_at: datetime
     my_role: Optional[str] = None
     my_is_expert: Optional[bool] = None
@@ -352,6 +370,17 @@ class WorkspaceAgentBackendResponse(BaseModel):
 class WorkspaceAgentBackendUpdate(BaseModel):
     # None/空字符串表示清除工作区覆盖，回退全局 .env 默认
     agent_backend: Optional[str] = None
+
+
+class WorkspaceAgentBackendTestRequest(BaseModel):
+    backend: str
+
+
+class WorkspaceAgentBackendTestResponse(BaseModel):
+    backend: str
+    success: bool
+    message: str
+    duration_ms: int = 0
 
 
 class WorkspaceMemberAdd(BaseModel):
@@ -396,3 +425,52 @@ class WorkspaceMyPermissionsResponse(BaseModel):
     permissions: WorkspacePermissionFlags
     is_expert: bool = False
     can_delete_workspace: bool
+
+
+class WorkspaceInviteLinkCreate(BaseModel):
+    role: str = Field(default="DEVELOPER", pattern="^(DEVELOPER|VIEWER)$")
+    permissions: Optional[WorkspacePermissionFlags] = None
+    is_expert: bool = False
+    valid_days: Optional[int] = Field(default=None, ge=1, le=365)
+    max_uses: Optional[int] = Field(default=None, ge=1, le=1000)
+
+
+class WorkspaceInviteLinkResponse(BaseModel):
+    id: str
+    workspace_id: str
+    token: str
+    role: str
+    permissions: WorkspacePermissionFlags
+    is_expert: bool
+    max_uses: Optional[int] = None
+    used_count: int
+    remaining_uses: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    created_at: datetime
+    status: str
+    created_by_name: str = ""
+
+
+class WorkspaceInviteLinkListResponse(BaseModel):
+    items: List[WorkspaceInviteLinkResponse]
+    total: int
+
+
+class WorkspaceInvitePreviewResponse(BaseModel):
+    token: str
+    workspace_id: str
+    workspace_name: str
+    role: str
+    permissions: WorkspacePermissionFlags
+    is_expert: bool
+    expires_at: Optional[datetime] = None
+    status: str
+    created_by_name: str = ""
+
+
+class WorkspaceInviteAcceptResponse(BaseModel):
+    workspace_id: str
+    workspace_name: str
+    role: str
+    is_expert: bool
+    already_member: bool

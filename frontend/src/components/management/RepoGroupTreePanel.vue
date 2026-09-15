@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Folder, GitBranch, Info, Plus, Search } from 'lucide-vue-next'
+import { Info, Plus, Search } from 'lucide-vue-next'
 import RepoGroupTreeNodeRow from '@/components/management/RepoGroupTreeNodeRow.vue'
 import RepoGroupFormModal from '@/components/management/RepoGroupFormModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
@@ -13,13 +13,10 @@ import type { RepoGroupTreeNode } from '@/types/management'
 const props = defineProps<{
   canManage: boolean;
   selectedGroupId: string | null;
-  selectedRepoId: string | null;
-  showUnassigned: boolean;
 }>()
 
 const emit = defineEmits<{
   (e: 'select-group', groupId: string | null): void;
-  (e: 'select-repo', repositoryId: string): void;
   (e: 'changed'): void;
 }>()
 
@@ -66,9 +63,9 @@ const handleGroupSaved = () => {
 const openCreate = () => {
   editingGroup.value = null
   // 从树中选中的仓库组直接作为新组的上级组，且不允许变更；
-  // 未选中任何组时（且未选中仓库）允许自由选择上级组。
+  // 未选中任何组时允许自由选择上级组。
   defaultParentId.value = props.selectedGroupId
-  lockParent.value = props.selectedGroupId !== null && !props.selectedRepoId
+  lockParent.value = props.selectedGroupId !== null
   formVisible.value = true
 }
 
@@ -99,7 +96,7 @@ const handleDeleteConfirm = async () => {
 }
 
 // 树形搜索过滤：仅按仓库组名称匹配；命中的组展示整棵子树，
-// 未命中的祖先组仅作为路径保留（不展示其直属仓库）。
+// 未命中的祖先组仅作为路径保留。
 const filteredTree = computed<RepoGroupTreeNode[]>(() => {
   const kw = searchKeyword.value.trim().toLowerCase()
   if (!kw) return tree.value
@@ -122,12 +119,10 @@ const filteredTree = computed<RepoGroupTreeNode[]>(() => {
     }
   }
   return tree.value
-    .filter((node) => !kw || node.id !== null)
     .map(filterNode)
     .filter((node): node is RepoGroupTreeNode => node !== null)
 })
 
-const unassignedGroups = computed(() => filteredTree.value.filter((node) => node.id === null))
 const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id !== null))
 </script>
 
@@ -138,11 +133,7 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
       <button
         v-if="canManage"
         class="btn-ghost mgmt-repo-group-add"
-        :class="{ 'is-disabled': Boolean(selectedRepoId) }"
-        :disabled="Boolean(selectedRepoId)"
-        :title="selectedRepoId
-          ? $t('management.repo_group.add_requires_group')
-          : $t('management.repo_group.add')"
+        :title="$t('management.repo_group.add')"
         @click="openCreate"
       >
         <Plus class="mgmt-repo-group-add-icon" />
@@ -168,44 +159,20 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
     <div v-if="loading" class="mgmt-empty">{{ $t('common.loading') }}</div>
 
     <template v-else>
-      <div
-        class="mgmt-group-row mgmt-group-unassigned"
-        :class="{ 'is-selected': showUnassigned && !selectedRepoId }"
-        @click="emit('select-group', null)"
-      >
-        <Folder class="mgmt-group-icon" />
-        <span class="mgmt-group-name">{{ $t('management.repo_group.unassigned') }}</span>
-      </div>
-
-      <template v-for="(node, index) in unassignedGroups" :key="'unassigned-' + index">
-        <div
-          v-for="repo in node.repositories"
-          :key="repo.id"
-          class="mgmt-repo-row"
-          :class="{ 'is-selected': selectedRepoId === repo.id }"
-          @click="emit('select-repo', repo.id)"
-        >
-          <GitBranch class="mgmt-repo-icon" />
-          <span class="mgmt-repo-name">{{ repo.name }}</span>
-        </div>
-      </template>
-
       <RepoGroupTreeNodeRow
         v-for="node in groupedNodes"
         :key="node.id ?? node.name"
         :node="node"
         :can-manage="canManage"
         :selected-group-id="selectedGroupId"
-        :selected-repo-id="selectedRepoId"
         :depth="0"
         @select-group="emit('select-group', $event)"
-        @select-repo="emit('select-repo', $event)"
         @edit-group="openEdit"
         @delete-group="openDelete"
         @changed="handleChanged"
       />
 
-      <div v-if="groupedNodes.length === 0 && unassignedGroups.length === 0" class="mgmt-empty">
+      <div v-if="groupedNodes.length === 0" class="mgmt-empty">
         {{ $t('management.common.empty') }}
       </div>
     </template>
@@ -328,10 +295,6 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
   color: #0ea5e9;
 }
 
-.mgmt-group-unassigned {
-  color: #64748b;
-}
-
 .mgmt-group-icon {
   width: 1rem;
   height: 1rem;
@@ -341,41 +304,6 @@ const groupedNodes = computed(() => filteredTree.value.filter((node) => node.id 
 
 .mgmt-group-name {
   flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mgmt-repo-row {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.25rem 0.5rem 0.25rem 1.4rem;
-  font-size: 0.8rem;
-  color: #64748b;
-  cursor: pointer;
-  border-radius: 6px;
-}
-
-.mgmt-repo-row:hover {
-  background: rgba(14, 165, 233, 0.05);
-  color: #0ea5e9;
-}
-
-.mgmt-repo-row.is-selected {
-  background: rgba(14, 165, 233, 0.12);
-  color: #0ea5e9;
-  font-weight: 600;
-}
-
-.mgmt-repo-icon {
-  width: 0.8rem;
-  height: 0.8rem;
-  flex-shrink: 0;
-}
-
-.mgmt-repo-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

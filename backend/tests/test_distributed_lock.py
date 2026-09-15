@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sys
 import unittest
 from unittest import mock
@@ -30,6 +31,44 @@ class _FakeRedisLock:
 
 
 class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
+    async def test_redis_renews_while_owner_is_working(self):
+        fake_lock = _FakeRedisLock()
+        renewed = asyncio.Event()
+        async def extend(*args, **kwargs):
+            renewed.set()
+            return True
+        fake_lock.extend = mock.AsyncMock(side_effect=extend)
+        client = mock.Mock()
+        client.lock.return_value = fake_lock
+        with mock.patch.object(dl, "get_redis_client", new=mock.AsyncMock(return_value=client)):
+            async with dl.RedisLockProvider().lock(resource_type="task", resource_id="slow", ttl=1):
+                await asyncio.wait_for(renewed.wait(), 2)
+                self.assertEqual(fake_lock.release_calls, 0)
+        fake_lock.extend.assert_awaited_with(1, replace_ttl=True)
+        self.assertEqual(fake_lock.release_calls, 1)
+
+    async def test_redis_ownership_loss_interrupts_owner_before_publication(self):
+        fake_lock = _FakeRedisLock()
+        fake_lock.extend = mock.AsyncMock(side_effect=RuntimeError("token lost"))
+        client = mock.Mock()
+        client.lock.return_value = fake_lock
+        with mock.patch.object(dl, "get_redis_client", new=mock.AsyncMock(return_value=client)):
+            with self.assertRaises(dl.LockAcquireTimeout):
+                async with dl.RedisLockProvider().lock(resource_type="task", resource_id="lost", ttl=1):
+                    await asyncio.sleep(2)
+                    self.fail("owner must stop on lease loss")
+        self.assertEqual(fake_lock.release_calls, 1)
+
+    async def test_external_cancellation_remains_cancellation(self):
+        fake_lock = _FakeRedisLock()
+        client = mock.Mock()
+        client.lock.return_value = fake_lock
+        with mock.patch.object(dl, "get_redis_client", new=mock.AsyncMock(return_value=client)):
+            with self.assertRaises(asyncio.CancelledError):
+                async with dl.RedisLockProvider().lock(resource_type="task", resource_id="cancel"):
+                    raise asyncio.CancelledError()
+        self.assertEqual(fake_lock.release_calls, 1)
+
     def setUp(self) -> None:
         self._orig = {
             "REDIS_ENABLED": settings.REDIS_ENABLED,

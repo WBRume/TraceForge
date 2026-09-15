@@ -159,12 +159,66 @@ def _write_log_text(log_path: str, suffix: str, text: str) -> None:
             f.write(compressor.compress(rest.encode("utf-8")))
 
 
+def _contiguous_log_prefix(text: str) -> str:
+    """Return the header plus the first contiguous logical event prefix.
+
+    DSH assigns ``seq`` from the live in-memory session length.  If a caller
+    restored an old file while that Agent was still alive, a later append can
+    leave a stale tail such as ``0..149, 209..`` on disk.  Such a tail must
+    never be copied into a cold fork: DSH's loader correctly rejects it as a
+    committed-log corruption.  Packed rows use ``seq0`` and ``data.dt``; the
+    number of logical events is one plus the number of deltas.
+
+    A malformed row is not silently repaired here.  Only a sequence jump is
+    treated as the known stale-tail shape, and the caller can then resume the
+    valid prefix under a new provider identity.
+    """
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return text
+    expected = 0
+    end = 1
+    for line_number, line in enumerate(lines[1:], start=2):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SessionForkError(
+                f"DSH session log row is not valid JSON at line {line_number}"
+            ) from exc
+        if not isinstance(record, dict):
+            raise SessionForkError(
+                f"DSH session log row is not an object at line {line_number}"
+            )
+
+        seq = record.get("seq")
+        span = 1
+        if type(seq) is int and seq >= 0:
+            first_seq = seq
+        else:
+            seq0 = record.get("seq0")
+            data = record.get("data")
+            deltas = data.get("dt") if isinstance(data, dict) else None
+            if type(seq0) is not int or seq0 < 0 or not isinstance(deltas, list):
+                raise SessionForkError(
+                    f"DSH session log row has no usable sequence at line {line_number}"
+                )
+            first_seq = seq0
+            span = len(deltas) + 1
+
+        if first_seq != expected:
+            break
+        expected += span
+        end = line_number
+    return "".join(lines[:end])
+
+
 def fork_session_log(
     root: str,
     session_id: str,
     *,
     new_session_id: str,
     target_cwd: str,
+    contiguous_prefix: bool = False,
 ) -> str:
     """把 root 下的既有会话 fork 成 target_cwd 下的新 id 会话，返回新日志路径。
 
@@ -173,6 +227,8 @@ def fork_session_log(
     """
     source_path, suffix = locate_session_log(root, session_id)
     text = _read_log_text(source_path, suffix)
+    if contiguous_prefix:
+        text = _contiguous_log_prefix(text)
     lines = text.splitlines(keepends=True)
     if not lines:
         raise SessionForkError(f"DSH session log is empty: {source_path}")

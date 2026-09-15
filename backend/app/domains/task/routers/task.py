@@ -5,7 +5,7 @@ Task API routes.
 import asyncio
 from contextlib import AsyncExitStack
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -18,6 +18,7 @@ from app.core.distributed_lock import (
     queue_change_proposal_jobs,
 )
 from app.core.logging import audit_log, bind_task_context, get_logger
+from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.dependencies import get_current_user, get_db
 from app.engine.workflow_engine import get_engine
 from app.domains.task.models.task import TaskStatus
@@ -38,11 +39,13 @@ from app.domains.task.schemas.task import (
     TaskSkillRuntimeFileWriteRequest,
     TaskCliBootstrapResponse,
     TaskCreate,
+    TaskFollowResponse,
     TaskListResponse,
     TaskResponse,
     TaskInterruptRequest,
     TaskResumeInterruptedRequest,
     TaskStartRequest,
+    TaskUndoMessageRequest,
 )
 from app.domains.task.schemas.diagnosis import (
     DiagnosisResultResponse,
@@ -51,11 +54,18 @@ from app.domains.task.schemas.diagnosis import (
 from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseResponse
 from app.domains.case_center.models.case import SddCase
 from app.domains.case_center.services import case_service
-from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
+from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse, ProvisionJobResponse
 from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
-from app.domains.task.services import git_patch_service, task_cli_state_service, task_service, context_token_service, task_session_control_service
+from app.domains.task.services import (
+    git_patch_service,
+    task_cli_state_service,
+    task_service,
+    context_token_service,
+    task_session_control_service,
+    task_session_service,
+)
 from app.domains.task.services import diagnosis_result_service
 from app.domains.workflow.services import change_proposal_service, provision_job_service
 from app.domains.workspace.services import workspace_service
@@ -86,6 +96,20 @@ def verify_workspace_permission(
 ):
     verify_workspace_access(ws_id, current_user, db)
     if not workspace_service.user_has_permission(db, ws_id, current_user.id, permission):
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def _verify_workspace_permission_by_id(
+    ws_id: str,
+    user_id: str,
+    db: Session,
+    permission: WorkspacePermission,
+    detail: str,
+) -> None:
+    member = workspace_service.get_workspace_member(db, ws_id, user_id)
+    if not member:
+        raise HTTPException(status_code=403, detail="No access to this workspace")
+    if not workspace_service.user_has_permission(db, ws_id, user_id, permission):
         raise HTTPException(status_code=403, detail=detail)
 
 
@@ -120,6 +144,19 @@ def _raise_change_proposal_queue_conflict(exc: LockAcquireTimeout) -> None:
     raise HTTPException(status_code=busy.status_code, detail=str(busy))
 
 
+async def _run_route_db_txn(db: Session, db_bind: Any, body):
+    """Run route DB work on the dependency's bind without carrying its Session."""
+    if db_bind is None:
+        # Lightweight endpoint test doubles do not expose a SQLAlchemy bind.
+        return body(db)
+    return await run_db_txn_with_bind(db_bind, body)
+
+
+def _get_db_bind(db: Session) -> Any:
+    getter = getattr(db, "get_bind", None)
+    return getter() if callable(getter) else None
+
+
 def _raise_session_control_error(exc: task_session_control_service.TaskSessionControlError) -> None:
     raise HTTPException(status_code=int(exc.status_code), detail=str(exc))
 
@@ -127,6 +164,32 @@ def _raise_session_control_error(exc: task_session_control_service.TaskSessionCo
 def _ensure_task_not_baselined(task) -> None:
     if task.status == TaskStatus.BASELINED:
         raise HTTPException(status_code=403, detail="Task is BASELINED and locked for changes")
+
+
+def _prepare_task_undo_context_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    user_id: str,
+) -> Dict[str, str]:
+    _verify_workspace_permission_by_id(
+        ws_id,
+        user_id,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to undo task messages",
+    )
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _ensure_task_not_baselined(task)
+    return {"task_id": str(task.id)}
 
 
 def _serialize_asset(asset) -> AssetResponse:
@@ -148,6 +211,263 @@ def _diagnosis_prompt_suffix(task) -> str:
     return diagnosis_result_service.build_diagnosis_prompt_suffix(task)
 
 
+def _load_start_task_context_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    requested_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _ensure_task_not_baselined(task)
+    if task.status == TaskStatus.PROVISIONING:
+        raise HTTPException(
+            status_code=409,
+            detail="Task is still being provisioned. Please wait until the workspace is ready.",
+        )
+    if task.status == TaskStatus.CODING:
+        raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
+    if task.status == TaskStatus.INTERRUPTED:
+        raise HTTPException(status_code=409, detail=_TASK_INTERRUPTED_MSG)
+    if ai_job_service.find_active_summary_job(db, task.id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="一键总结问题案例进行中，请等待完成或停止后再启动会话",
+        )
+    requested = str(requested_prompt or "").strip()
+    user_display = requested or (task.description or "").strip() or f"Please start task '{task.name}'."
+    prompt = user_display
+    if task.spec_doc_path:
+        abs_path = os.path.abspath(task.spec_doc_path)
+        prompt += (
+            "\n\nPlease read and strictly implement all requirements in the specification file. "
+            f"Absolute path: {abs_path}"
+        )
+    prompt += _diagnosis_prompt_suffix(task)
+    return {
+        "task_id": task.id,
+        "task_name": task.name,
+        "task_description": task.description,
+        "task_spec_doc_path": task.spec_doc_path,
+        "prompt": prompt,
+        "user_display": user_display,
+    }
+
+
+def _start_task_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    prompt: str,
+    user_display: str,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    task.session_id = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
+
+    initial_message = task_service.save_chat_message(
+        db,
+        task_id=task.id,
+        workspace_id=ws_id,
+        creator_id=creator_id,
+        role="user",
+        content=user_display,
+        message_type="text",
+        metadata_json={
+            "source": "task_start",
+            "fresh_session": True,
+            "initial_prompt": True,
+        },
+    )
+    job = ai_job_service.create_task_chat_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=creator_id,
+        prompt_text=prompt,
+        context_json={"source": "task_start", "fresh_session": True},
+        chat_message_id=initial_message.id,
+    )
+    return {
+        "task_id": task.id,
+        "job_id": job.id,
+        "job": ai_job_service.serialize_job(job),
+    }
+
+
+def _create_task_change_proposal_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    summary: Optional[str],
+    risk_notes: Optional[str],
+) -> ChangeProposalResponse:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    workspace = db.query(Workspace).filter(Workspace.id == ws_id).first()
+    proposal = change_proposal_service.create_change_proposal(
+        db,
+        task=task,
+        workspace=workspace,
+        creator_id=creator_id,
+        summary=summary,
+        risk_notes=risk_notes,
+    )
+    # Touch the relationship while this short transaction is active so the
+    # response is a detached DTO, never an ORM instance crossing an await.
+    _ = proposal.repositories
+    return ChangeProposalResponse.model_validate(proposal)
+
+
+def _load_task_change_proposal_context_sync(
+    db: Session, *, ws_id: str, task_id: str
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    return {"task_id": task.id}
+
+
+def _prepare_initialize_sync(
+    db: Session, *, ws_id: str, task_id: str
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _ensure_task_not_baselined(task)
+    if task.status == TaskStatus.PROVISIONING:
+        raise HTTPException(
+            status_code=409,
+            detail="Task is still being provisioned. Please wait until the workspace is ready.",
+        )
+    if str(task.current_phase or "").strip().upper() == "PREPARE_FAILED":
+        raise HTTPException(
+            status_code=409,
+            detail="Task preparation failed and cannot be initialized. Please create a new task.",
+        )
+    cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+        db,
+        workspace_id=ws_id,
+        task_id=task_id,
+        message="Task initialized with a fresh session",
+    )
+    return {"task_id": task.id, "cancelled_job_ids": cancelled_job_ids}
+
+
+def _apply_initialize_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    skill_ids: Optional[list[str]],
+    keep_deleted_runtime_skills: bool,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    if skill_ids is not None:
+        task_service.replace_task_skills_for_initialize(
+            db,
+            task,
+            workspace_id=ws_id,
+            skill_ids=skill_ids,
+            keep_deleted_runtime_skills=keep_deleted_runtime_skills,
+        )
+    task.retry_count += 1
+    task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    task.session_id = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
+    db.commit()
+    return {
+        "task_id": task.id,
+        "task_name": task.name,
+        "task_description": task.description,
+        "task_spec_doc_path": task.spec_doc_path,
+    }
+
+
+def _serialize_job_by_id_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
+    job = db.get(ai_job_service.SddAiJob, job_id)
+    return ai_job_service.serialize_job(job) if job else None
+
+
+def _load_task_control_context_sync(
+    db: Session, *, ws_id: str, task_id: str
+) -> Dict[str, str]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    return {"task_id": task.id, "workspace_id": task.workspace_id}
+
+
+def _create_diagnosis_doc_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    file_name: Optional[str],
+    file_content: bytes,
+) -> Dict[str, Any]:
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _ensure_task_not_baselined(task)
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        raise HTTPException(
+            status_code=403,
+            detail="Only diagnosis tasks support diagnosis documents",
+        )
+    asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
+        db,
+        task,
+        creator_id=creator_id,
+        file_name=file_name,
+        file_content=file_content,
+        change_note="Uploaded diagnosis document",
+    )
+    db.commit()
+    return {
+        "status": "success",
+        "path": cli_path,
+        "filename": file_name,
+        "asset_id": asset.id,
+        "version_id": version.id,
+    }
+
+
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
 async def create_task(
     ws_id: str,
@@ -165,8 +485,6 @@ async def create_task(
     )
 
     desc = data.description or ""
-    if data.use_brainstorm:
-        desc += "\n\nUse `/brainstorm` from superpowers to run requirement and architecture brainstorming first."
 
     try:
         task = task_service.create_task_record_for_provision(
@@ -181,6 +499,11 @@ async def create_task(
             task_type=data.task_type,
             phenomenon=data.phenomenon,
             priority=data.priority,
+            repository_branches=[
+                {"repository_id": item.repository_id, "branch_name": item.branch_name}
+                for item in (data.repository_branches or [])
+            ] or None,
+            repository_ids=list(data.repository_ids or []) or None,
         )
         job = provision_job_service.create_job(
             db,
@@ -232,20 +555,67 @@ async def create_task(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@router.post("/{task_id}/provision-job/cancel", response_model=ProvisionJobResponse)
+def cancel_task_provision_job(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """创建人取消任务进行中的资源准备：后台工作流在下一个检查点终止并回滚（清理目录/worktree + 删除任务记录）。"""
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if str(task.creator_id or "") != str(current_user.id or ""):
+        raise HTTPException(status_code=403, detail="Only the task creator can cancel provisioning")
+
+    job = provision_job_service.get_latest_active_job_for_task(db, task_id)
+    if not job:
+        raise HTTPException(status_code=409, detail="No active provisioning job for this task")
+
+    if not provision_job_service.request_cancel(db, job, message="Task creation cancelled by user"):
+        raise HTTPException(status_code=409, detail="Provision job already finished")
+
+    return ProvisionJobResponse(**provision_job_service.serialize_job(job))
+
+
 @router.get("", response_model=TaskListResponse)
 def list_tasks(
     ws_id: str,
     status: Optional[str] = None,
     task_type: Optional[str] = Query(default=None),
+    relation: Optional[str] = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user, db)
-    items, total = task_service.list_tasks(db, ws_id, status, page, page_size, task_type=task_type)
+    items, total = task_service.list_tasks(
+        db,
+        ws_id,
+        status,
+        page,
+        page_size,
+        task_type=task_type,
+        relation=relation,
+        current_user_id=current_user.id,
+    )
+    following_ids = task_service.list_following_task_ids(
+        db,
+        ws_id,
+        current_user.id,
+        [task.id for task in items],
+    )
+    serialized_items = []
+    for task in items:
+        payload = TaskResponse.model_validate(task).model_dump()
+        payload["is_following"] = task.id in following_ids
+        serialized_items.append(payload)
     return {
-        "items": items,
+        "items": serialized_items,
         "total": total,
         "page": page,
         "page_size": page_size,
@@ -263,7 +633,62 @@ def get_task(
     task = task_service.get_task(db, task_id, ws_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return task
+    payload = TaskResponse.model_validate(task).model_dump()
+    payload["is_following"] = task.id in task_service.list_following_task_ids(
+        db, ws_id, current_user.id, [task.id]
+    )
+    return payload
+
+
+@router.get("/{task_id}/follow", response_model=TaskFollowResponse)
+def get_task_following(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    following = task.id in task_service.list_following_task_ids(
+        db, ws_id, current_user.id, [task.id]
+    )
+    return TaskFollowResponse(task_id=task.id, is_following=following)
+
+
+@router.put("/{task_id}/follow", response_model=TaskFollowResponse)
+def follow_task_messages(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    following = task_service.set_task_following(
+        db, task=task, user_id=current_user.id, following=True
+    )
+    return TaskFollowResponse(task_id=task.id, is_following=following)
+
+
+@router.delete("/{task_id}/follow", response_model=TaskFollowResponse)
+def unfollow_task_messages(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    verify_workspace_access(ws_id, current_user, db)
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    following = task_service.set_task_following(
+        db, task=task, user_id=current_user.id, following=False
+    )
+    return TaskFollowResponse(task_id=task.id, is_following=following)
 
 
 @router.get("/{task_id}/repositories")
@@ -294,53 +719,62 @@ async def create_task_change_proposal(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
+    db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
         db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to create change proposals",
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to create change proposals",
+        ),
     )
+    # Permission checks are complete; no dependency Session is allowed to
+    # remain open while distributed locks are awaited.
+    db.close()
 
     try:
         async with queue_change_proposal_jobs(workspace_id=ws_id):
-            async with AsyncExitStack() as stack:
-                try:
-                    await stack.enter_async_context(lock_workspace_repo(ws_id))
-                except LockAcquireTimeout as exc:
-                    _raise_workspace_lock_conflict(exc)
-                try:
-                    await stack.enter_async_context(lock_task(task_id))
-                except LockAcquireTimeout as exc:
-                    _raise_task_lock_conflict(exc)
-
-                task = task_service.get_task(db, task_id, ws_id)
-                if not task:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                _ensure_task_not_baselined(task)
-                engine = get_engine(task.id)
-                if engine and engine.running:
-                    raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-
-                workspace = db.query(Workspace).filter(Workspace.id == ws_id).first()
-                proposal = change_proposal_service.create_change_proposal(
-                    db,
-                    task=task,
-                    workspace=workspace,
-                    creator_id=current_user.id,
-                    summary=data.summary,
-                    risk_notes=data.risk_notes,
-                )
-                audit_log(
-                    action="create_change_proposal",
-                    outcome="success",
-                    resource_type="task_change_proposal",
-                    resource_id=proposal.id,
-                    user_id=current_user.id,
-                    workspace_id=ws_id,
-                    task_id=task.id,
-                )
-                return proposal
+            try:
+                async with lock_workspace_repo(ws_id):
+                    try:
+                        async with lock_task(task_id):
+                            state = await _run_route_db_txn(
+                                db, db_bind,
+                                lambda db: _load_task_change_proposal_context_sync(
+                                    db, ws_id=ws_id, task_id=task_id
+                                )
+                            )
+                            engine = get_engine(state["task_id"])
+                            if engine and engine.running:
+                                raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
+                            proposal = await _run_route_db_txn(
+                                db, db_bind,
+                                lambda db: _create_task_change_proposal_sync(
+                                    db,
+                                    ws_id=ws_id,
+                                    task_id=task_id,
+                                    creator_id=current_user.id,
+                                    summary=data.summary,
+                                    risk_notes=data.risk_notes,
+                                )
+                            )
+                            audit_log(
+                                action="create_change_proposal",
+                                outcome="success",
+                                resource_type="task_change_proposal",
+                                resource_id=proposal.id,
+                                user_id=current_user.id,
+                                workspace_id=ws_id,
+                                task_id=task_id,
+                            )
+                            return proposal
+                    except LockAcquireTimeout as exc:
+                        _raise_task_lock_conflict(exc)
+            except LockAcquireTimeout as exc:
+                _raise_workspace_lock_conflict(exc)
     except LockAcquireTimeout as exc:
         _raise_change_proposal_queue_conflict(exc)
     except (change_proposal_service.ChangeProposalError, git_patch_service.GitPatchError, ValueError) as exc:
@@ -389,68 +823,52 @@ async def start_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
+    db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
         db,
-        WorkspacePermission.START_TASK,
-        "No permission to start tasks",
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.START_TASK,
+            "No permission to start tasks",
+        ),
     )
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
-
-            existing_engine = get_engine(task.id)
+            requested_prompt = str(start_req.prompt or "").strip() if start_req else ""
+            state = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _load_start_task_context_sync(
+                    db,
+                    ws_id=ws_id,
+                    task_id=task_id,
+                    requested_prompt=requested_prompt,
+                )
+            )
+            existing_engine = get_engine(state["task_id"])
             if existing_engine and existing_engine.running:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-            if task.status == TaskStatus.PROVISIONING:
-                raise HTTPException(status_code=409, detail="Task is still being provisioned. Please wait until the workspace is ready.")
-            if task.status == TaskStatus.CODING:
-                raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-            if task.status == TaskStatus.INTERRUPTED:
-                raise HTTPException(status_code=409, detail=_TASK_INTERRUPTED_MSG)
             if existing_engine and not existing_engine.running:
                 await existing_engine.stop()
 
-            if start_req and start_req.prompt:
-                prompt = start_req.prompt
-            elif task.description:
-                prompt = task.description
-            else:
-                prompt = f"Please start task '{task.name}'."
-
-            if task.spec_doc_path:
-                abs_path = os.path.abspath(task.spec_doc_path)
-                prompt += (
-                    "\n\nPlease read and strictly implement all requirements in the specification file. "
-                    f"Absolute path: {abs_path}"
+            result = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _start_task_sync(
+                    db,
+                    ws_id=ws_id,
+                    task_id=task_id,
+                    creator_id=current_user.id,
+                    prompt=state["prompt"],
+                    user_display=state["user_display"],
                 )
-
-            prompt += _diagnosis_prompt_suffix(task)
-
-            task.status = TaskStatus.CODING
-            task.error_message = None
-            task.session_id = None
-            task.interrupt_reason = None
-            task.interrupted_by_id = None
-            task.interrupted_at = None
-            db.commit()
-
-            job = ai_job_service.create_task_chat_job(
-                db,
-                workspace_id=ws_id,
-                task_id=task.id,
-                creator_id=current_user.id,
-                prompt_text=prompt,
-                context_json={"source": "task_start", "fresh_session": True},
             )
-            await ai_job_service.enqueue_task_chat_job(job.id)
+            await ai_job_service.enqueue_task_chat_job(result["job_id"])
 
-            return {"msg": "Task started", "task_id": task.id, "job": ai_job_service.serialize_job(job)}
+            return {"msg": "Task started", "task_id": result["task_id"], "job": result["job"]}
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -463,108 +881,97 @@ async def initialize_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
+    db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
         db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to initialize tasks",
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to initialize tasks",
+        ),
     )
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
-            if task.status == TaskStatus.PROVISIONING:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Task is still being provisioned. Please wait until the workspace is ready.",
-                )
-
-            cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
-                db,
-                workspace_id=ws_id,
-                task_id=task_id,
-                message="Task initialized with a fresh session",
+            prepared = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _prepare_initialize_sync(db, ws_id=ws_id, task_id=task_id)
             )
             engine = get_engine(task_id)
             if engine:
                 await engine.stop()
-            for old_job_id in cancelled_job_ids:
-                await ai_job_service.publish_job(old_job_id, final=True)
+            for old_job_id in prepared["cancelled_job_ids"]:
+                await ai_job_service.publish_job(old_job_id)
 
-            if body.skill_ids is not None:
-                try:
-                    task_service.replace_task_skills_for_initialize(
+            try:
+                state = await _run_route_db_txn(
+                    db, db_bind,
+                    lambda db: _apply_initialize_sync(
                         db,
-                        task,
-                        workspace_id=ws_id,
+                        ws_id=ws_id,
+                        task_id=task_id,
                         skill_ids=body.skill_ids,
                         keep_deleted_runtime_skills=body.keep_deleted_runtime_skills is not False,
                     )
-                    db.refresh(task)
-                except ValueError as exc:
-                    raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
-
-            task.retry_count += 1
-            task.status = TaskStatus.CODING
-            task.error_message = None
-            task.session_id = None
-            task.interrupt_reason = None
-            task.interrupted_by_id = None
-            task.interrupted_at = None
-            db.commit()
-            db.refresh(task)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
 
             # 会话窗口只展示用户输入部分；规格文件指引/诊断后缀等内置提示词只随作业发给 agent
-            user_display = (task.description or "").strip() or f"Please start task '{task.name}'."
+            requested_prompt = str(body.prompt or "").strip()
+            user_display = requested_prompt or (state["task_description"] or "").strip() or f"Please start task '{state['task_name']}'."
             prompt = user_display
-            if task.spec_doc_path:
-                abs_path = os.path.abspath(task.spec_doc_path)
+            if state["task_spec_doc_path"]:
+                abs_path = os.path.abspath(state["task_spec_doc_path"])
                 prompt += (
                     "\n\nPlease read and strictly implement all requirements in the specification file. "
                     f"Absolute path: {abs_path}"
                 )
-
-            prompt += _diagnosis_prompt_suffix(task)
+            # The task DTO is reconstructed inside the short transaction so
+            # the prompt still uses the task-specific diagnosis contract.
+            prompt += await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _diagnosis_prompt_suffix(task_service.get_task(db, task_id, ws_id))
+            )
 
             init_reason_text = (body.reason or "").strip()
-            task_service.save_chat_message(
-                db,
-                task_id,
-                ws_id,
-                current_user.id,
-                role="system",
-                content=init_reason_text,
-                message_type="init_reason",
+            # 同步落库 off-loop（线程内自建 session，含通知生成）
+            await _run_route_db_txn(
+                db, db_bind,
+                lambda db: task_service.save_chat_message(
+                    db,
+                    task_id,
+                    ws_id,
+                    current_user.id,
+                    role="system",
+                    content=init_reason_text,
+                    message_type="init_reason",
+                )
             )
-            prompt_message = task_service.save_chat_message(
-                db,
-                task_id,
-                ws_id,
-                current_user.id,
-                role="user",
+            created = await task_session_service.create_task_chat_turn(
+                task_id=task_id,
+                actor_user_id=current_user.id,
                 content=user_display,
-            )
-
-            job = ai_job_service.create_task_chat_job(
-                db,
-                workspace_id=ws_id,
-                task_id=task.id,
-                creator_id=current_user.id,
                 prompt_text=prompt,
                 context_json={
                     "source": "task_initialize",
                     "fresh_session": True,
                     "initialize_reason": init_reason_text,
                 },
-                chat_message_id=prompt_message.id,
+                fresh_session=True,
+                skip_checkpoint=True,
             )
-            await ai_job_service.enqueue_task_chat_job(job.id)
+            await ai_job_service.enqueue_task_chat_job(created.job_id)
+            job_payload = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _serialize_job_by_id_sync(db, created.job_id)
+            )
 
-            return {"msg": "Task initialized", "job": ai_job_service.serialize_job(job)}
+            return {"msg": "Task initialized", "job": job_payload}
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -747,23 +1154,32 @@ async def interrupt_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
+    db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
         db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to interrupt tasks",
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to interrupt tasks",
+        ),
     )
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
+            state = await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _load_task_control_context_sync(
+                    db, ws_id=ws_id, task_id=task_id
+                )
+            )
             return await task_session_control_service.interrupt_task(
                 db,
-                task=task,
+                task_id=state["task_id"],
+                workspace_id=state["workspace_id"],
                 actor_user_id=current_user.id,
                 reason=body.reason,
             )
@@ -788,19 +1204,23 @@ async def resume_interrupted_task(
         WorkspacePermission.START_TASK,
         "No permission to resume tasks",
     )
+    db_bind = _get_db_bind(db)
+    db.close()
 
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
-            if not task:
-                raise HTTPException(status_code=404, detail="Task not found")
-            _ensure_task_not_baselined(task)
+            await _run_route_db_txn(
+                db, db_bind,
+                lambda db: _load_task_control_context_sync(
+                    db, ws_id=ws_id, task_id=task_id
+                )
+            )
             return await task_session_control_service.resume_interrupted_task(
-                db,
-                task=task,
+                task_id=task_id,
                 actor_user_id=current_user.id,
                 prompt=body.prompt,
                 confirm_continue=body.confirm_continue,
+                client_message_id=body.client_message_id,
             )
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
@@ -918,6 +1338,74 @@ def get_task_history(
     return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
 
+@router.get("/{task_id}/chat-submissions")
+def list_chat_submissions(ws_id: str, task_id: str,
+                         current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.domains.task.services import chat_submission_service
+    verify_workspace_access(ws_id, current_user, db)
+    if not task_service.get_task(db, task_id, ws_id):
+        raise HTTPException(404, "Task not found")
+    return {"items": chat_submission_service.list_for_task(db, task_id)}
+
+
+@router.post("/{task_id}/chat-submissions", status_code=202)
+async def submit_chat(ws_id: str, task_id: str, payload: dict = Body(...),
+                      current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.domains.task.services import chat_submission_service
+    bind = _get_db_bind(db)
+    actor_id = str(current_user.id)
+    def authorize(session):
+        if not workspace_service.get_workspace_member(session, ws_id, actor_id):
+            raise HTTPException(403, "No access to this workspace")
+        if not task_service.get_task(session, task_id, ws_id):
+            raise HTTPException(404, "Task not found")
+    await _run_route_db_txn(db, bind, authorize)
+    db.close()
+    try:
+        return await chat_submission_service.accept(task_id=task_id, actor_id=actor_id,
+            client_message_id=payload.get("client_message_id"), content=payload.get("content"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {})
+    except chat_submission_service.SubmissionError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.post("/{task_id}/messages/{message_id}/undo")
+async def undo_task_message(
+    ws_id: str,
+    task_id: str,
+    message_id: str,
+    body: TaskUndoMessageRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db_bind = _get_db_bind(db)
+    context = await _run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: _prepare_task_undo_context_sync(
+            session,
+            ws_id=ws_id,
+            task_id=task_id,
+            user_id=current_user.id,
+        ),
+    )
+    db.close()
+    try:
+        return await task_session_service.undo_task_message(
+            db,
+            task_id=context["task_id"],
+            message_id=message_id,
+            actor_user_id=current_user.id,
+            operation_id=body.operation_id,
+        )
+    except task_session_service.TaskSessionUndoError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except LockAcquireTimeout as exc:
+        _raise_task_lock_conflict(exc)
+
 @router.get("/{task_id}/pre-input/active")
 def get_active_pre_input(
     ws_id: str,
@@ -958,7 +1446,11 @@ async def clear_task_history(
             engine = get_engine(task_id)
             if (engine and engine.running) or task.status == TaskStatus.CODING:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-            return task_service.clear_task_history(db, task_id, ws_id)
+            from app.domains.task.services.chat_submission_service import SubmissionError
+            try:
+                return task_service.clear_task_history(db, task_id, ws_id)
+            except SubmissionError as exc:
+                raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -1005,6 +1497,56 @@ def get_task_spec_bootstrap(
     if not snapshot:
         raise HTTPException(status_code=404, detail="Specification baseline not initialized")
     return TaskCliBootstrapResponse(**snapshot)
+
+
+@router.post("/{task_id}/spec-bootstrap/run", response_model=TaskCliBootstrapResponse)
+async def run_task_spec_bootstrap(
+    ws_id: str,
+    task_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """手动触发 spec 基线构建（PENDING/FAILED/STALE 可触发；RUNNING 幂等；READY 返回 409）。"""
+    with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
+        try:
+            def prepare_baseline_request(db: Session):
+                verify_workspace_permission(
+                    ws_id,
+                    current_user,
+                    db,
+                    WorkspacePermission.UPLOAD_TASK_SPEC,
+                    "No permission to run task specification baseline",
+                )
+                task = task_service.get_task(db, task_id, ws_id)
+                if not task:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                task_cli_state_service.request_bootstrap_run(
+                    db,
+                    workspace_id=ws_id,
+                    task_id=task_id,
+                )
+                snapshot = task_cli_state_service.get_bootstrap_snapshot(
+                    db,
+                    workspace_id=ws_id,
+                    task_id=task_id,
+                )
+                if not snapshot:
+                    raise HTTPException(status_code=404, detail="Specification baseline not initialized")
+                return snapshot
+
+            snapshot = await run_db_txn(prepare_baseline_request)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Specification baseline not initialized")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        await task_cli_state_service.publish_bootstrap_snapshot(task_id)
+        baseline_job = await ai_job_service.enqueue_task_baseline_job(
+            workspace_id=ws_id,
+            task_id=task_id,
+            creator_id=current_user.id,
+        )
+        if baseline_job:
+            snapshot["job_id"] = baseline_job.get("id")
+        return TaskCliBootstrapResponse(**snapshot)
 
 
 @router.get("/{task_id}/superpowers-docs", response_model=SuperpowersDocsListResponse)
@@ -1065,7 +1607,7 @@ def save_task_superpowers_doc_content(
         current_user,
         db,
         WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to edit superpowers documents",
+        "No permission to edit plan documents",
     )
 
     task = task_service.get_task(db, task_id, ws_id)
@@ -1095,43 +1637,56 @@ async def upload_task_spec(
     task_id: str,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to upload task specification",
-    )
-
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
             async with lock_task(task_id):
-                task = task_service.get_task(db, task_id, ws_id)
-                if not task:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                _ensure_task_not_baselined(task)
                 content = await file.read()
-                file_path, asset_id, version_id = task_service.upload_task_spec(db, task_id, file.filename, content)
-                bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
-                    db,
-                    workspace_id=ws_id,
-                    task_id=task_id,
-                    spec_asset_id=asset_id,
-                    spec_version_id=version_id,
-                )
-                db.commit()
-                db.refresh(bootstrap)
-                asyncio.create_task(task_cli_state_service.publish_bootstrap_snapshot(task_id))
-                task_cli_state_service.schedule_bootstrap(task_id)
+
+                def persist_task_spec_upload(db: Session):
+                    verify_workspace_permission(
+                        ws_id,
+                        current_user,
+                        db,
+                        WorkspacePermission.UPLOAD_TASK_SPEC,
+                        "No permission to upload task specification",
+                    )
+                    task = task_service.get_task(db, task_id, ws_id)
+                    if not task:
+                        raise HTTPException(status_code=404, detail="Task not found")
+                    _ensure_task_not_baselined(task)
+                    file_path, asset_id, version_id = task_service.upload_task_spec(
+                        db, task_id, file.filename, content
+                    )
+                    bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
+                        db,
+                        workspace_id=ws_id,
+                        task_id=task_id,
+                        spec_asset_id=asset_id,
+                        spec_version_id=version_id,
+                    )
+                    return {
+                        "path": file_path,
+                        "asset_id": asset_id,
+                        "version_id": version_id,
+                        "spec_bootstrap_status": (
+                            bootstrap.status.value
+                            if hasattr(bootstrap.status, "value")
+                            else str(bootstrap.status)
+                        ),
+                    }
+
+                upload = await run_db_txn(persist_task_spec_upload)
+                await task_cli_state_service.publish_bootstrap_snapshot(task_id)
+                # 基线构建改为手动触发，
+                # 避免批量上传 spec 时 CLI 资源被大量并发 bootstrap 抢占。
                 return {
                     "status": "success",
-                    "path": file_path,
+                    "path": upload["path"],
                     "filename": file.filename,
-                    "asset_id": asset_id,
-                    "version_id": version_id,
-                    "spec_bootstrap_status": bootstrap.status.value if hasattr(bootstrap.status, "value") else str(bootstrap.status),
+                    "asset_id": upload["asset_id"],
+                    "version_id": upload["version_id"],
+                    "spec_bootstrap_status": upload["spec_bootstrap_status"],
                 }
         except LockAcquireTimeout as exc:
             _raise_task_lock_conflict(exc)
@@ -1154,6 +1709,71 @@ def _require_diagnosis_task(db: Session, task_id: str, ws_id: str):
     return task
 
 
+def _prepare_diagnosis_summary_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    current_user_id: str,
+) -> Dict[str, Any]:
+    """Authorize, guard, and create the summary job in one DB transaction."""
+    _verify_workspace_permission_by_id(
+        ws_id,
+        current_user_id,
+        db,
+        WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to summarize diagnosis cases",
+    )
+    task = _require_diagnosis_task(db, task_id, ws_id)
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+    existing_case = (
+        db.query(SddCase)
+        .filter(
+            SddCase.workspace_id == ws_id,
+            SddCase.source_task_id == task.id,
+        )
+        .first()
+    )
+    diagnosis_result = getattr(task, "diagnosis_result", None)
+    if existing_case is not None or (
+        diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Case already adopted, diagnosis summarization is not allowed",
+        )
+
+    active_summary = ai_job_service.find_active_summary_job(db, task.id)
+    if active_summary is not None:
+        return {
+            "job_id": active_summary.id,
+            "status": ai_job_service.serialize_job(active_summary).get("status"),
+            "task_id": task.id,
+            "created": False,
+        }
+    if ai_job_service.find_active_chat_job(db, task.id) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="会话进行中，请等待完成或停止后再一键总结问题案例",
+        )
+    job = ai_job_service.create_diagnosis_summary_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=current_user_id,
+    )
+    return {
+        "job_id": job.id,
+        "status": "PENDING",
+        "task_id": task.id,
+        "created": True,
+    }
+
+
 @router.post("/{task_id}/upload-diagnosis-doc", response_model=dict)
 async def upload_task_diagnosis_doc(
     ws_id: str,
@@ -1163,43 +1783,37 @@ async def upload_task_diagnosis_doc(
     db: Session = Depends(get_db),
 ):
     """问题定位任务：上传需求/日志等辅助文档（供 AI 会话与诊断文档抽屉使用）。"""
-    verify_workspace_permission(
-        ws_id,
-        current_user,
+    db_bind = _get_db_bind(db)
+    await _run_route_db_txn(
         db,
-        WorkspacePermission.UPLOAD_TASK_SPEC,
-        "No permission to upload diagnosis documents",
+        db_bind,
+        lambda session: _verify_workspace_permission_by_id(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.UPLOAD_TASK_SPEC,
+            "No permission to upload diagnosis documents",
+        ),
     )
+    db.close()
 
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
+            content = await file.read()
+            if len(content) > 20 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
             async with lock_task(task_id):
-                task = task_service.get_task(db, task_id, ws_id)
-                if not task:
-                    raise HTTPException(status_code=404, detail="Task not found")
-                _ensure_task_not_baselined(task)
-                if getattr(task, "task_type", None) != "DIAGNOSIS":
-                    raise HTTPException(status_code=403, detail="Only diagnosis tasks support diagnosis documents")
-                content = await file.read()
-                if len(content) > 20 * 1024 * 1024:
-                    raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
-                asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
-                    db,
-                    task,
-                    creator_id=current_user.id,
-                    file_name=file.filename,
-                    file_content=content,
-                    change_note="Uploaded diagnosis document",
+                return await _run_route_db_txn(
+                    db, db_bind,
+                    lambda session: _create_diagnosis_doc_sync(
+                        session,
+                        ws_id=ws_id,
+                        task_id=task_id,
+                        creator_id=current_user.id,
+                        file_name=file.filename,
+                        file_content=content,
+                    )
                 )
-                db.commit()
-                db.refresh(asset)
-                return {
-                    "status": "success",
-                    "path": cli_path,
-                    "filename": file.filename,
-                    "asset_id": asset.id,
-                    "version_id": version.id,
-                }
         except LockAcquireTimeout as exc:
             _raise_task_lock_conflict(exc)
         except HTTPException:
@@ -1307,76 +1921,46 @@ async def trigger_diagnosis_summary(
     JSON 契约生成结构化结果，完成后原位刷新「定位结果」卡片并广播到任务房间。
     同任务已有进行中的总结任务时直接返回既有任务（幂等）。
     """
-    verify_workspace_permission(
-        ws_id,
-        current_user,
-        db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to summarize diagnosis cases",
-    )
-    task = _require_diagnosis_task(db, task_id, ws_id)
+    db_bind = _get_db_bind(db)
+    db.close()
 
-    # 案例被采纳（已生成案例草案 / 定位结果已 CONFIRMED）后，禁止再次一键总结
-    existing_case = (
-        db.query(SddCase)
-        .filter(
-            SddCase.workspace_id == ws_id,
-            SddCase.source_task_id == task.id,
-        )
-        .first()
-    )
-    diagnosis_result = getattr(task, "diagnosis_result", None)
-    if existing_case is not None or (diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"):
-        raise HTTPException(
-            status_code=409,
-            detail="Case already adopted, diagnosis summarization is not allowed",
-        )
+    try:
+        async with lock_task(task_id):
+            prepared = await _run_route_db_txn(
+                db,
+                db_bind,
+                lambda session: _prepare_diagnosis_summary_sync(
+                    session,
+                    ws_id=ws_id,
+                    task_id=task_id,
+                    current_user_id=current_user.id,
+                ),
+            )
+    except LockAcquireTimeout as exc:
+        _raise_task_lock_conflict(exc)
 
-    active_job = (
-        db.query(ai_job_service.SddAiJob)
-        .filter(
-            ai_job_service.SddAiJob.task_id == task.id,
-            ai_job_service.SddAiJob.channel == ai_job_service.AiJobChannel.TASK_CHAT,
-            ai_job_service.SddAiJob.status.in_(
-                [
-                    ai_job_service.AiJobStatus.PENDING.value,
-                    ai_job_service.AiJobStatus.RUNNING.value,
-                ]
-            ),
-        )
-        .order_by(ai_job_service.SddAiJob.created_at.desc())
-        .first()
-    )
-    if active_job is not None:
-        active_context = (
-            active_job.context_json
-            if isinstance(active_job.context_json, dict)
-            else {}
-        )
-        if str(active_context.get("job_kind") or "").strip().upper() == "DIAGNOSIS_SUMMARY":
-            return {
-                "job_id": active_job.id,
-                "status": ai_job_service.serialize_job(active_job).get("status"),
-                "task_id": task.id,
-            }
+    if not prepared["created"]:
+        return {
+            "job_id": prepared["job_id"],
+            "status": prepared["status"],
+            "task_id": prepared["task_id"],
+        }
 
-    job = ai_job_service.create_diagnosis_summary_job(
-        db,
-        workspace_id=ws_id,
-        task_id=task.id,
-        creator_id=current_user.id,
-    )
     audit_log(
         action="diagnosis_summary_triggered",
         outcome="success",
         resource_type="ai_job",
-        resource_id=job.id,
+        resource_id=prepared["job_id"],
         user_id=current_user.id,
         workspace_id=ws_id,
-        task_id=task.id,
+        task_id=prepared["task_id"],
     )
-    await ai_job_service.enqueue_task_chat_job(job.id)
-    return {"job_id": job.id, "status": "PENDING", "task_id": task.id}
+    await ai_job_service.enqueue_task_chat_job(prepared["job_id"])
+    return {
+        "job_id": prepared["job_id"],
+        "status": prepared["status"],
+        "task_id": prepared["task_id"],
+    }
 
 
 @router.get("/{task_id}/diagnosis-summary/{job_id}", response_model=dict)

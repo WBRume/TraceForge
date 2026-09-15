@@ -28,7 +28,9 @@ onBeforeUnmount(() => {
 const deadlineTs = computed(() => {
   const raw = preInput.value?.deadline_at
   if (!raw) return 0
-  const parsed = new Date(raw.includes('T') ? raw : `${raw}Z`).getTime()
+  // 后端返回的是 UTC naive ISO 字符串；无时区标记时按 UTC 解析，避免本地时区导致倒计时偏差/不可见
+  const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(raw) ? raw : `${raw}Z`
+  const parsed = new Date(normalized).getTime()
   return Number.isNaN(parsed) ? 0 : parsed
 })
 const remainingSeconds = computed(() => Math.max(0, Math.floor((deadlineTs.value - nowTs.value) / 1000)))
@@ -380,9 +382,14 @@ const cancelCollect = () => {
   font-size: 0.8125rem;
   color: var(--color-text-title);
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .panel-sub {
+  flex: 0 1 auto;
+  min-width: 0;
   font-size: 0.75rem;
   color: var(--color-text-muted);
   overflow: hidden;
@@ -392,6 +399,7 @@ const cancelCollect = () => {
 
 .countdown {
   margin-left: auto;
+  flex-shrink: 0;
   padding: 2px 8px;
   border-radius: var(--radius-full);
   background: var(--color-primary-50);

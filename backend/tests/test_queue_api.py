@@ -49,7 +49,7 @@ def _queue_item(**overrides):
         "creator_id": "user-1",
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow(),
-        "target_path": "/ws/ws-1/chat/task-1",
+        "target_path": "/workspaces/ws-1/chat/task-1",
         "actions": {"can_stop": False, "can_retry": True, "can_open": False},
     }
     payload.update(overrides)

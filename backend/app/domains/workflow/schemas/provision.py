@@ -32,6 +32,8 @@ class ProvisionJobResponse(BaseModel):
     stage: str
     message: Optional[str] = None
     error_message: Optional[str] = None
+    cancel_requested: bool = False
+    task_name: Optional[str] = None
     result_json: Optional[Dict[str, Any]] = None
     context_json: Optional[Dict[str, Any]] = None
     workspace_id: Optional[str] = None

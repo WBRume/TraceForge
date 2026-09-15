@@ -4,32 +4,47 @@
 
 import os
 import shutil
-from typing import Optional, List, Tuple
+from typing import Callable, Dict, Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func as sqlfunc
+from sqlalchemy import func as sqlfunc, or_, exists
 
 from app.core.logging import bind_task_context, get_logger
-from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
+from app.domains.task.models.chat import ChatMessage, MessageRole
+from app.domains.task.models.pre_input import SddTaskPreInput
 from app.domains.task.models.log import SddExecutionLog, LogType
+from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, generate_uuid
 from app.domains.asset.services import asset_discussion_service, asset_document_service
 from app.domains.skill.services import skill_service
 from app.domains.task.services import git_worktree_service
 from app.domains.skill.services.skill import storage_service as skill_storage_service
+from app.domains.task.services.task_doc_scan import (
+    TASK_DOC_EXTENSIONS,
+    plan_doc_root_label,
+    plan_doc_root_parts,
+)
 
 logger = get_logger(__name__, category="task_execution")
 
 SUPERPOWERS_DOC_SECTIONS = {"plans", "specs"}
-SUPERPOWERS_DOC_ROOT_CANDIDATES = (
-    ("docs", "superpowers"),
-    ("superpowers", "docs", "superpowers"),
-    (),
-)
-SUPERPOWERS_DOC_EXTENSIONS = {".md", ".markdown"}
+TERMINAL_LOG_HISTORY_LIMIT = 500
+
+
+class ProvisionJobCancelled(Exception):
+    """任务创建准备过程被创建人取消（触发回滚：清理磁盘资源并删除任务记录）。"""
+
+
+def _terminal_execution_log_filter():
+    """Select replayable terminal records while excluding provider debug noise."""
+    return or_(
+        SddExecutionLog.log_type != LogType.STDOUT,
+        SddExecutionLog.content.like('{"tool_name":%'),
+        SddExecutionLog.content.like('{"tool_use_id":%'),
+    )
 
 
 def _build_task_project_path(base_path: str, task_id: str, task_name: str) -> str:
@@ -61,26 +76,57 @@ def snapshot_workspace_repositories_into_task(
     db: Session,
     workspace: Workspace,
     task: SddTask,
+    branch_overrides: Optional[Dict[str, str]] = None,
+    selected_ids: Optional[List[str]] = None,
 ) -> List:
-    """Snapshot workspace repository bindings into sdd_task_repositories."""
+    """Snapshot workspace repository bindings into sdd_task_repositories.
+
+    branch_overrides: repository_id -> 分支名；用于会话创建时按仓库选填分支覆盖。
+    selected_ids: 仓库 id 子集；提供时仅为所选仓库创建 worktree 绑定（默认全部仓库）。
+    """
     from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
     from app.domains.task.models.task_repository import SddTaskRepository, TaskRepositoryState
 
+    overrides = {
+        str(repo_id or "").strip(): str(branch or "").strip()
+        for repo_id, branch in (branch_overrides or {}).items()
+        if str(repo_id or "").strip() and str(branch or "").strip()
+    }
     ws_repos = (
         db.query(SddWorkspaceRepository)
         .filter(SddWorkspaceRepository.workspace_id == workspace.id)
         .order_by(SddWorkspaceRepository.created_at.asc())
         .all()
     )
+    ws_by_id = {row.repository_id: row for row in ws_repos if row.repository_id}
+    unknown_overrides = sorted(set(overrides) - set(ws_by_id))
+    if unknown_overrides:
+        raise ValueError(
+            "Repository does not belong to this workspace: " + ", ".join(unknown_overrides)
+        )
+    if selected_ids is not None:
+        normalized_selected = {str(repo_id or "").strip() for repo_id in selected_ids}
+        normalized_selected.discard("")
+        unknown_selected = sorted(normalized_selected - set(ws_by_id))
+        if unknown_selected:
+            raise ValueError(
+                "Repository does not belong to this workspace: " + ", ".join(unknown_selected)
+            )
+        if not normalized_selected:
+            raise ValueError("At least one repository must be selected for the task")
+        ws_repos = [row for row in ws_repos if row.repository_id in normalized_selected]
+        # 未被选中的仓库不接受分支覆盖
+        overrides = {repo_id: branch for repo_id, branch in overrides.items() if repo_id in normalized_selected}
     bindings: List = []
     for ws_repo in ws_repos:
+        override = overrides.get(str(ws_repo.repository_id or ""), "")
         binding = SddTaskRepository(
             task_id=task.id,
             repository_id=ws_repo.repository_id,
             repo_url=ws_repo.repo_url,
             repo_name=ws_repo.repo_name,
             repo_slug=ws_repo.repo_slug,
-            branch_name=ws_repo.branch_name,
+            branch_name=override or ws_repo.branch_name,
             rel_path=ws_repo.repo_slug,
             state=TaskRepositoryState.PENDING,
         )
@@ -217,6 +263,8 @@ def create_task_record_for_provision(
     task_type: str = "DEVELOPMENT",
     phenomenon: Optional[str] = None,
     priority: Optional[str] = None,
+    repository_branches: Optional[List[Dict[str, str]]] = None,
+    repository_ids: Optional[List[str]] = None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -232,10 +280,11 @@ def create_task_record_for_provision(
 
     task_meta = None
     if task_type == "DIAGNOSIS":
-        task_meta = {}
         phenomenon_text = str(phenomenon or "").strip()
-        if phenomenon_text:
-            task_meta["phenomenon"] = phenomenon_text
+        if not phenomenon_text:
+            raise ValueError("phenomenon is required for DIAGNOSIS task")
+        task_meta = {}
+        task_meta["phenomenon"] = phenomenon_text
         priority_text = str(priority or "").strip().upper()
         if priority_text in {"P0", "P1", "P2", "P3"}:
             task_meta["priority"] = priority_text
@@ -266,7 +315,23 @@ def create_task_record_for_provision(
         db.flush()
 
         # Multi-repository workspace: snapshot the workspace repo set onto the task.
-        snapshot_workspace_repositories_into_task(db, ws, task)
+        branch_overrides = {
+            str(item.get("repository_id") or "").strip(): str(item.get("branch_name") or "").strip()
+            for item in (repository_branches or [])
+            if isinstance(item, dict) and str(item.get("repository_id") or "").strip()
+        }
+        selected_repo_ids = (
+            [str(repo_id or "").strip() for repo_id in repository_ids if str(repo_id or "").strip()]
+            if repository_ids is not None
+            else None
+        )
+        snapshot_workspace_repositories_into_task(
+            db,
+            ws,
+            task,
+            branch_overrides=branch_overrides,
+            selected_ids=selected_repo_ids,
+        )
         db.flush()
 
         skill_service.bind_task_skills(db, task, selected_skills)
@@ -293,6 +358,7 @@ def prepare_task_resources_for_provision(
     *,
     workspace_id: str,
     task_id: str,
+    cancel_check: Optional[Callable[[], bool]] = None,
 ) -> SddTask:
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
@@ -302,12 +368,19 @@ def prepare_task_resources_for_provision(
     if not ws:
         raise ValueError("Workspace not found")
 
+    def _checkpoint() -> None:
+        # 取消检查点：命中即抛出，走 except 分支清理已创建的资源后上抛，
+        # 由 provision job 终局回滚删除任务记录。
+        if cancel_check is not None and cancel_check():
+            raise ProvisionJobCancelled("Task creation cancelled by user")
+
     use_git_worktree = git_worktree_service.should_use_git_worktree(ws.project_path, ws.git_repo_url)
     task_repos = get_task_repositories(db, task.id)
     use_multi_repo = bool(task_repos)
     workspace_prepared = False
     with bind_task_context(task_id=task.id, workspace_id=workspace_id, user_id=task.creator_id):
         try:
+            _checkpoint()
             if use_multi_repo:
                 prepare_task_repositories(db, ws, task, task_repos)
             elif use_git_worktree:
@@ -323,9 +396,15 @@ def prepare_task_resources_for_provision(
                 os.makedirs(task.project_path, exist_ok=False)
             workspace_prepared = True
 
+            _checkpoint()
             if task.skill_links:
                 skill_service.materialize_task_skills(db, task.id)
 
+            # 最终检查点：确认任务仍处于 PROVISIONING（防止用户已标记失败/关闭后复活）
+            db.expire(task)
+            db.refresh(task)
+            if task.status != TaskStatus.PROVISIONING:
+                raise ProvisionJobCancelled("Task no longer provisioning")
             task.status = TaskStatus.PENDING
             task.current_phase = None
             task.error_message = None
@@ -353,23 +432,63 @@ def prepare_task_resources_for_provision(
                         logger.warning(f"Failed to cleanup task worktree {task.id}: {cleanup_exc}")
                 else:
                     shutil.rmtree(task.project_path, ignore_errors=True)
+                _prune_empty_parent_dirs(task.project_path, ws.project_path or "")
             raise
 
 
-def mark_task_prepare_failed(
-    db: Session,
-    *,
-    workspace_id: str,
-    task_id: str,
-    error_message: str,
-) -> None:
+def _prune_empty_parent_dirs(task_project_path: str, workspace_project_path: str) -> None:
+    """best-effort 清理任务目录下残留的空父目录（不超过工作区根目录）。"""
+    try:
+        stop = os.path.abspath(str(workspace_project_path or "").strip())
+        if not stop or not os.path.isdir(stop):
+            return
+        current = os.path.dirname(os.path.abspath(str(task_project_path or "").strip()))
+        while current.startswith(stop + os.sep):
+            try:
+                os.rmdir(current)
+            except OSError:
+                break
+            current = os.path.dirname(current)
+    except Exception as exc:
+        logger.warning(f"Failed to prune empty task parent dirs {task_project_path}: {exc}")
+
+
+def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> bool:
+    """任务创建失败/被取消后的终局回滚：清理磁盘资源并删除任务记录。
+
+    与 prepare_task_resources_for_provision 的资源分支一一对应：
+    multi-repo → 清理各仓库 worktree；单仓 git → 移除 worktree；非 git → 删除目录。
+    任务记录删除后任务不会以 FAILED 形式残留（FAILED 仅允许用户标记触发）。
+    """
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
-        return
-    task.status = TaskStatus.FAILED
-    task.current_phase = "PREPARE_FAILED"
-    task.error_message = str(error_message or "Task preparation failed")
+        return False
+
+    ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    workspace_project_path = str(ws.project_path or "").strip() if ws else ""
+    task_repos = get_task_repositories(db, task.id)
+
+    try:
+        if task_repos and ws:
+            cleanup_task_repositories(db, ws, task, missing_ok=True)
+        elif ws and git_worktree_service.should_use_git_worktree(workspace_project_path, ws.git_repo_url or task.git_repo_url):
+            git_worktree_service.remove_task_worktree(
+                repo_path=workspace_project_path,
+                task_id=task.id,
+                task_project_path=task.project_path,
+                expected_git_repo_url=ws.git_repo_url or task.git_repo_url,
+                missing_ok=True,
+            )
+        else:
+            shutil.rmtree(task.project_path, ignore_errors=True)
+    except Exception as cleanup_exc:
+        logger.warning(f"Failed to cleanup provision task resources {task.id}: {cleanup_exc}")
+    finally:
+        _prune_empty_parent_dirs(task.project_path, workspace_project_path)
+
+    db.delete(task)
     db.commit()
+    return True
 
 
 def create_task(
@@ -577,7 +696,7 @@ def _normalize_superpowers_doc_section_path(*, name: Optional[str] = None, path:
         if "\x00" in segment:
             raise ValueError("Document path is invalid")
 
-    if Path(segments[-1]).suffix.lower() not in SUPERPOWERS_DOC_EXTENSIONS:
+    if Path(segments[-1]).suffix.lower() not in TASK_DOC_EXTENSIONS:
         raise ValueError("Only markdown files (.md/.markdown) are supported")
     return "/".join(segments)
 
@@ -593,7 +712,7 @@ def _superpowers_docs_root_candidates(task: SddTask) -> List[Path]:
     project_root = _task_project_root(task)
     seen: set[str] = set()
     roots: List[Path] = []
-    for rel_parts in SUPERPOWERS_DOC_ROOT_CANDIDATES:
+    for rel_parts in plan_doc_root_parts():
         root = (project_root.joinpath(*rel_parts)).resolve()
         key = str(root).lower()
         if key in seen:
@@ -651,9 +770,9 @@ def _resolve_superpowers_doc_path(
             return existing_section_candidate, normalized_section_path
         if fallback_candidate is not None:
             return fallback_candidate, normalized_section_path
-        raise ValueError("Cannot resolve target path for superpowers document")
+        raise ValueError("Cannot resolve target path for plan document")
 
-    raise FileNotFoundError(f"Superpowers document not found: {normalized_section}/{normalized_section_path}")
+    raise FileNotFoundError(f"Plan document not found: {normalized_section}/{normalized_section_path}")
 
 
 def _serialize_superpowers_doc_entry(
@@ -688,7 +807,7 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
         for child in sorted(section_dir.rglob("*"), key=lambda item: item.as_posix().lower()):
             if not child.is_file():
                 continue
-            if child.suffix.lower() not in SUPERPOWERS_DOC_EXTENSIONS:
+            if child.suffix.lower() not in TASK_DOC_EXTENSIONS:
                 continue
             resolved_child = child.resolve()
             if not _is_path_within(project_root, resolved_child):
@@ -712,7 +831,7 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
 def list_superpowers_docs(task: SddTask) -> dict:
     return {
         "task_id": task.id,
-        "root_relative_path": "docs/superpowers",
+        "root_relative_path": plan_doc_root_label(),
         "plans": _list_superpowers_docs_in_section(task, "plans"),
         "specs": _list_superpowers_docs_in_section(task, "specs"),
     }
@@ -780,14 +899,66 @@ def list_tasks(
     page: int = 1,
     page_size: int = 20,
     task_type: Optional[str] = None,
+    relation: Optional[str] = None,
+    current_user_id: Optional[str] = None,
 ) -> Tuple[List[SddTask], int]:
     query = db.query(SddTask).options(joinedload(SddTask.creator)).filter(SddTask.workspace_id == workspace_id)
+
+    # 准备中的任务不在任务列表展示：进度由创建人的全局浮窗跟踪，
+    # 任务就绪（PENDING）后才会出现在列表中。
+    query = query.filter(SddTask.status != TaskStatus.PROVISIONING)
 
     if status_filter:
         query = query.filter(SddTask.status == status_filter)
 
     if task_type:
         query = query.filter(SddTask.task_type == task_type)
+
+    normalized_relations = {
+        value.strip().lower()
+        for value in str(relation or "").split(",")
+        if value.strip()
+    }
+    normalized_relations.discard("all")
+    actor_id = str(current_user_id or "").strip()
+    if normalized_relations and actor_id:
+        relation_filters = []
+        if "created_by_me" in normalized_relations:
+            relation_filters.append(SddTask.creator_id == actor_id)
+        if "messaged_by_me" in normalized_relations:
+            relation_filters.append(
+                exists().where(
+                    ChatMessage.task_id == SddTask.id,
+                    ChatMessage.workspace_id == workspace_id,
+                    ChatMessage.creator_id == actor_id,
+                    ChatMessage.role == MessageRole.USER,
+                )
+            )
+        if "followed_by_me" in normalized_relations:
+            relation_filters.append(
+                exists().where(
+                    SddTaskFollower.task_id == SddTask.id,
+                    SddTaskFollower.workspace_id == workspace_id,
+                    SddTaskFollower.user_id == actor_id,
+                )
+            )
+        if "mentioned_me" in normalized_relations:
+            # Mentions currently originate from the collaboration pre-input JSON.
+            # Keep the compatibility read here while the mention relation remains
+            # unnormalised in existing databases.
+            mentioned_task_ids = {
+                str(task_id)
+                for task_id, mentioned_user_ids in db.query(
+                    SddTaskPreInput.task_id,
+                    SddTaskPreInput.mentioned_user_ids,
+                ).filter(
+                    SddTaskPreInput.workspace_id == workspace_id,
+                ).all()
+                if actor_id in {str(value) for value in (mentioned_user_ids or [])}
+            }
+            relation_filters.append(SddTask.id.in_(mentioned_task_ids))
+        if relation_filters:
+            query = query.filter(or_(*relation_filters))
 
     total = query.count()
     items = (
@@ -797,6 +968,48 @@ def list_tasks(
         .all()
     )
     return items, total
+
+
+def list_following_task_ids(
+    db: Session,
+    workspace_id: str,
+    user_id: str,
+    task_ids: Optional[List[str]] = None,
+) -> set[str]:
+    query = db.query(SddTaskFollower.task_id).filter(
+        SddTaskFollower.workspace_id == workspace_id,
+        SddTaskFollower.user_id == str(user_id),
+    )
+    if task_ids is not None:
+        if not task_ids:
+            return set()
+        query = query.filter(SddTaskFollower.task_id.in_(task_ids))
+    return {str(task_id) for (task_id,) in query.all()}
+
+
+def set_task_following(
+    db: Session,
+    *,
+    task: SddTask,
+    user_id: str,
+    following: bool,
+) -> bool:
+    normalized_user_id = str(user_id or "").strip()
+    row = db.query(SddTaskFollower).filter(
+        SddTaskFollower.task_id == task.id,
+        SddTaskFollower.workspace_id == task.workspace_id,
+        SddTaskFollower.user_id == normalized_user_id,
+    ).first()
+    if following and row is None:
+        db.add(SddTaskFollower(
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            user_id=normalized_user_id,
+        ))
+    elif not following and row is not None:
+        db.delete(row)
+    db.commit()
+    return following
 
 
 def get_task(db: Session, task_id: str, workspace_id: str) -> Optional[SddTask]:
@@ -921,15 +1134,22 @@ def save_chat_message(
     content: str,
     message_type: str = "text",
     metadata_json: Optional[dict] = None,
+    session_turn_id: Optional[str] = None,
+    session_generation: Optional[int] = None,
 ) -> ChatMessage:
     # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
-    order_index = (
-        db.query(sqlfunc.count(ChatMessage.id))
-        .filter(ChatMessage.task_id == task_id)
-        .scalar()
-        or 0
-    )
+    # followers 与 task_name 合并为一条 join 查询，减少每条消息的 DB 往返。
+    from app.domains.search.capture import allocate_chat_seq
+    order_index = allocate_chat_seq(db, task_id)
     merged_metadata = dict(metadata_json or {})
+    if session_turn_id:
+        from app.domains.task.models.chat_submission import TaskChatSubmission
+        from app.domains.task.models.session_turn import TaskSessionTurn
+        turn = db.get(TaskSessionTurn, session_turn_id)
+        submission = db.query(TaskChatSubmission).filter_by(ai_job_id=turn.ai_job_id).first() if turn and turn.ai_job_id else None
+        if submission:
+            merged_metadata["submission_id"] = submission.id
+            merged_metadata["knowledge_state"] = "published" if submission.status == "SUCCEEDED" else "pending"
     merged_metadata["order_index"] = order_index
     msg = ChatMessage(
         task_id=task_id,
@@ -939,32 +1159,218 @@ def save_chat_message(
         content=content,
         message_type=message_type,
         metadata_json=merged_metadata,
+        sort_seq=order_index,
+        session_turn_id=session_turn_id,
+        session_generation=session_generation,
     )
     db.add(msg)
     db.commit()
     db.refresh(msg)
+    # 关注是任务级订阅；消息落库后同步写入站内信，实时 WS 投递由通知中心的
+    # 后续刷新兜底，避免在同步服务函数中驱动异步事件循环。
+    try:
+        role_value = getattr(role, "value", role)
+        if str(role_value or "").lower() == MessageRole.USER.value:
+            recipient_filter = SddTaskFollower.user_id != str(creator_id)
+        else:
+            recipient_filter = True
+        # 单条 join：关注者 + task_name 一次往返
+        follower_rows = (
+            db.query(SddTaskFollower.user_id, SddTask.name)
+            .outerjoin(SddTask, SddTask.id == SddTaskFollower.task_id)
+            .filter(
+                SddTaskFollower.task_id == task_id,
+                SddTaskFollower.workspace_id == workspace_id,
+                recipient_filter,
+            )
+            .all()
+        )
+        task_name = str(follower_rows[0][1] or "任务") if follower_rows else "任务"
+        follower_ids = [str(row[0]) for row in follower_rows]
+        if follower_ids:
+            from app.domains.notification.services.notification_service import create_notifications
+            from app.domains.notification.models.notification import SddUserNotification
+
+            # Streaming providers may persist several assistant text chunks for one
+            # reply. Keep one unread notification per follower/task until it is
+            # consumed, so following a task does not turn into notification spam.
+            existing_rows = db.query(
+                SddUserNotification.recipient_user_id,
+                SddUserNotification.payload_json,
+            ).filter(
+                SddUserNotification.workspace_id == workspace_id,
+                SddUserNotification.type == "task_message",
+                SddUserNotification.read_at.is_(None),
+                SddUserNotification.recipient_user_id.in_(follower_ids),
+            ).all()
+            already_notified = {
+                str(recipient_id)
+                for recipient_id, payload in existing_rows
+                if isinstance(payload, dict) and str(payload.get("task_id") or "") == str(task_id)
+            }
+            follower_ids = [uid for uid in follower_ids if uid not in already_notified]
+        if follower_ids:
+            create_notifications(
+                db,
+                follower_ids,
+                type="task_message",
+                title=f"「{task_name}」有新消息",
+                body=str(content or "")[:120],
+                payload_json={
+                    "task_id": task_id,
+                    "task_name": task_name,
+                    "workspace_id": workspace_id,
+                    "message_id": msg.id,
+                    "message_type": message_type,
+                },
+                workspace_id=workspace_id,
+            )
+    except Exception:
+        logger.exception("Failed to create task message notifications")
     return msg
 
 
-def get_task_history(db: Session, task_id: str, workspace_id: str,
-                     page: int = 1, page_size: int = 50) -> dict:
+def get_task_history(
+    db: Session,
+    task_id: str,
+    workspace_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    log_limit: int = TERMINAL_LOG_HISTORY_LIMIT,
+) -> dict:
     task = db.query(SddTask).filter(
         SddTask.id == task_id,
         SddTask.workspace_id == workspace_id
     ).first()
 
     if not task:
-        return {"messages": [], "logs": [], "page": page, "page_size": page_size, "total": 0, "has_more": False}
+        return {
+            "messages": [],
+            "logs": [],
+            "page": page,
+            "page_size": page_size,
+            "total": 0,
+            "has_more": False,
+            "logs_has_more": False,
+        }
 
-    messages_all = db.query(ChatMessage).filter(
-        ChatMessage.task_id == task_id
-    ).all()
-    messages_all = sort_chat_messages(messages_all)
-    total = len(messages_all)
+    # 分页与统计全部下推 SQL，避免聊天全量 .all() 后内存切片。
+    # 第 1 页返回“最新一页”，块内仍按真实落库顺序正序；
+    # 后续页向前翻，方便前端“向上加载更早消息”直接 prepend。
+    page = max(1, int(page or 1))
+    page_size = max(1, int(page_size or 50))
+    offset_from_end = (page - 1) * page_size
 
-    # 按真实落库顺序分页（created_at + order_index + id），保持正序返回
-    start = (page - 1) * page_size
-    msg_query = messages_all[start:start + page_size]
+    # 排序键与 sort_chat_messages 保持一致：created_at -> 写入序号 -> id 兜底。
+    # order_index 存于 metadata_json（JSON 列），用可移植的 JSON 下标提取，
+    # 缺失时 coalesce 0，与 _message_order_index 的兜底一致。
+    order_index_expr = sqlfunc.coalesce(
+        ChatMessage.sort_seq,
+        ChatMessage.metadata_json["order_index"].as_integer(),
+        0,
+    )
+    total = (
+        db.query(sqlfunc.count(ChatMessage.id))
+        .filter(ChatMessage.task_id == task_id)
+        .scalar()
+        or 0
+    )
+    rows_desc = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.task_id == task_id)
+        .order_by(
+            ChatMessage.created_at.desc(),
+            order_index_expr.desc(),
+            ChatMessage.id.desc(),
+        )
+        .offset(offset_from_end)
+        .limit(page_size)
+        .all()
+    )
+    msg_query = list(reversed(rows_desc))
+    messages = serialize_history_messages(db, task, msg_query, workspace_id, task_id)
+
+    has_more = offset_from_end + len(msg_query) < total
+
+    # 终端历史只返回可回放的结构化事件。provider debug、assistant 文本副本等
+    # 已在文件日志/聊天消息中有权威来源，不应放大 CLI 历史响应。
+    log_limit = max(1, int(log_limit or TERMINAL_LOG_HISTORY_LIMIT))
+    log_rows_desc = (
+        db.query(SddExecutionLog)
+        .filter(
+            SddExecutionLog.task_id == task_id,
+            SddExecutionLog.workspace_id == workspace_id,
+            _terminal_execution_log_filter(),
+        )
+        .order_by(
+            SddExecutionLog.event_order.desc(),
+            SddExecutionLog.created_at.desc(),
+            SddExecutionLog.id.desc(),
+        )
+        .limit(log_limit + 1)
+        .all()
+    )
+    logs_has_more = len(log_rows_desc) > log_limit
+    log_rows = list(reversed(log_rows_desc[:log_limit]))
+    logs = [
+        {
+            "id": log.id,
+            "type": log.log_type.value if hasattr(log.log_type, 'value') else log.log_type,
+            "content": log.content,
+            "created_at": log.created_at.isoformat()
+        } for log in log_rows
+    ]
+
+    return {
+        "messages": messages,
+        "logs": logs,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "has_more": has_more,
+        "logs_has_more": logs_has_more,
+    }
+
+
+def clear_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
+    from app.domains.search.capture import enqueue_scope
+    enqueue_scope(db, task_id=task_id, workspace_id=workspace_id)
+    """
+    Clear chat history and execution logs for a task.
+    Old-data compatibility is intentionally not required.
+    """
+    task = db.query(SddTask).filter(
+        SddTask.id == task_id,
+        SddTask.workspace_id == workspace_id,
+    ).first()
+    if not task:
+        raise ValueError("Task not found")
+
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    assert_no_preparing_submission(db, task_id)
+    if db.query(TaskChatSubmission.id).filter_by(active_task_id=task_id).first():
+        raise SubmissionError("当前消息正在执行，请等待完成")
+    db.query(TaskChatSubmission).filter_by(task_id=task_id).delete(synchronize_session=False)
+    deleted_messages = db.query(ChatMessage).filter(
+        ChatMessage.task_id == task_id,
+        ChatMessage.workspace_id == workspace_id,
+    ).delete(synchronize_session=False)
+
+    deleted_logs = db.query(SddExecutionLog).filter(
+        SddExecutionLog.task_id == task_id,
+        SddExecutionLog.workspace_id == workspace_id,
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    return {
+        "deleted_chat_messages": int(deleted_messages),
+        "deleted_execution_logs": int(deleted_logs),
+        "deleted_total": int(deleted_messages + deleted_logs),
+    }
+
+
+def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
     creator_ids = sorted({str(msg.creator_id or "") for msg in msg_query if str(msg.creator_id or "").strip()})
     message_ids = [msg.id for msg in msg_query]
     creators_by_id = {
@@ -989,6 +1395,15 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
             SddDecision.source_chat_message_id.in_(message_ids),
         ).all()
     } if message_ids else {}
+    turn_ids = {str(msg.session_turn_id) for msg in msg_query if msg.session_turn_id}
+    active_turn_ids = {
+        str(turn_id)
+        for (turn_id,) in db.query(TaskSessionTurn.id).filter(
+            TaskSessionTurn.id.in_(turn_ids),
+            TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
+            TaskSessionTurn.checkpoint_path.isnot(None),
+        ).all()
+    } if turn_ids else set()
 
     messages = []
     for msg in msg_query:
@@ -1007,55 +1422,15 @@ def get_task_history(db: Session, task_id: str, workspace_id: str,
             "client_message_id": metadata.get("client_message_id"),
             "decision_id": decisions_by_message_id.get(msg.id),
             "metadata": metadata or None,
+            "session_turn_id": msg.session_turn_id,
+            "session_generation": msg.session_generation,
+            "can_undo": bool(
+                getattr(msg.role, "value", msg.role) == "user"
+                and msg.session_turn_id
+                and str(msg.session_turn_id) in active_turn_ids
+                and msg.session_generation == getattr(task, "session_generation", None)
+                and msg.id not in decisions_by_message_id
+            ),
         })
 
-    has_more = (page * page_size) < total
-
-    # logs 保持全量返回（日志量通常不大，且只用于终端面板）
-    logs = [
-        {
-            "id": log.id,
-            "type": log.log_type.value if hasattr(log.log_type, 'value') else log.log_type,
-            "content": log.content,
-            "created_at": log.created_at.isoformat()
-        } for log in sorted(task.execution_logs, key=lambda x: x.created_at)
-    ]
-
-    return {
-        "messages": messages,
-        "logs": logs,
-        "page": page,
-        "page_size": page_size,
-        "total": total,
-        "has_more": has_more
-    }
-
-
-def clear_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
-    """
-    Clear chat history and execution logs for a task.
-    Old-data compatibility is intentionally not required.
-    """
-    task = db.query(SddTask).filter(
-        SddTask.id == task_id,
-        SddTask.workspace_id == workspace_id,
-    ).first()
-    if not task:
-        raise ValueError("Task not found")
-
-    deleted_messages = db.query(ChatMessage).filter(
-        ChatMessage.task_id == task_id,
-        ChatMessage.workspace_id == workspace_id,
-    ).delete(synchronize_session=False)
-
-    deleted_logs = db.query(SddExecutionLog).filter(
-        SddExecutionLog.task_id == task_id,
-        SddExecutionLog.workspace_id == workspace_id,
-    ).delete(synchronize_session=False)
-
-    db.commit()
-    return {
-        "deleted_chat_messages": int(deleted_messages),
-        "deleted_execution_logs": int(deleted_logs),
-        "deleted_total": int(deleted_messages + deleted_logs),
-    }
+    return messages

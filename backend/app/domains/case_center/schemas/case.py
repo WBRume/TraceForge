@@ -90,7 +90,6 @@ class CaseResponse(BaseModel):
     priority: str
     status: str
     review_round: int = 1
-    conversation_snapshot: Optional[list] = None
     diagnosis_detail: Optional[dict] = None
     submitted_at: Optional[datetime] = None
     reviewed_at: Optional[datetime] = None
@@ -99,6 +98,7 @@ class CaseResponse(BaseModel):
     updated_at: Optional[datetime] = None
     creator_name: Optional[str] = None
     source_task_name: Optional[str] = None
+    source_task_phenomenon: Optional[str] = None
     my_can_manage: bool = False
     my_can_review: bool = False
     review_records: List[CaseReviewRecordResponse] = Field(default_factory=list)

@@ -5,7 +5,8 @@ SDD 任务与计划节点模型
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, func
+    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, func,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -60,6 +61,10 @@ class SddTask(Base):
     current_phase = Column(String(50), nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)
+    # generation 隔离初始化前历史；revision 用来拒绝迟到 provider 事件。
+    session_generation = Column(Integer, nullable=False, default=0, server_default="0", index=True)
+    session_revision = Column(Integer, nullable=False, default=0, server_default="0", index=True)
+    next_chat_seq = Column(BigInteger, nullable=True)
     # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
     agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)
@@ -95,6 +100,8 @@ class SddTask(Base):
     skill_links = relationship("SddTaskSkill", back_populates="task", cascade="all, delete-orphan")
     api_mock_projects = relationship("SddApiMockProject", back_populates="task", cascade="all, delete-orphan")
     ai_jobs = relationship("SddAiJob", back_populates="task", cascade="all, delete-orphan")
+    session_turns = relationship("TaskSessionTurn", back_populates="task", cascade="all, delete-orphan")
+    session_operations = relationship("TaskSessionOperation", back_populates="task", cascade="all, delete-orphan")
     requirement_links = relationship("SddTaskRequirement", back_populates="task", cascade="all, delete-orphan")
     ai_outputs = relationship("SddAiOutput", back_populates="task", cascade="all, delete-orphan")
     human_reviews = relationship("SddHumanReview", back_populates="task", cascade="all, delete-orphan")
@@ -136,6 +143,11 @@ class SddTask(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    followers = relationship(
+        "SddTaskFollower",
+        back_populates="task",
+        cascade="all, delete-orphan",
+    )
 
     @property
     def skill_ids(self):
@@ -144,6 +156,25 @@ class SddTask(Base):
     @property
     def creator_name(self):
         return self.creator.display_name if self.creator else None
+
+
+class SddTaskFollower(Base):
+    """A user's durable subscription to task messages."""
+
+    __tablename__ = "sdd_task_followers"
+    __table_args__ = (
+        UniqueConstraint("task_id", "user_id", name="uq_sdd_task_followers_task_user"),
+    )
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    task = relationship("SddTask", back_populates="followers")
+    workspace = relationship("Workspace")
+    user = relationship("User")
 
 
 class SddPlanNode(Base):

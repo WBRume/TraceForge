@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bell, CheckCheck } from 'lucide-vue-next'
+import { Bell } from 'lucide-vue-next'
 import { useNotificationStore } from '@/stores/notification'
+import type { AppNotificationItem } from '@/stores/notification'
+import { resolveNotificationTarget } from '@/components/notification/registry'
+import NotificationPopover from '@/components/notification/NotificationPopover.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -11,6 +14,89 @@ const router = useRouter()
 const store = useNotificationStore()
 
 const popoverOpen = ref(false)
+const popoverStyle = ref<Record<string, string>>({})
+
+// 弹层 Teleport 到 body 并用 fixed 定位锚定在铃铛右侧:
+// 侧栏容器 overflow: hidden,absolute 定位会被裁剪在侧栏区域内
+const bellButtonRef = useTemplateRef<HTMLButtonElement>('bellButton')
+const popoverRef = useTemplateRef<HTMLElement>('popoverRoot')
+
+const hasUnread = computed(() => store.unreadCount > 0)
+const unreadBadgeText = computed(() => (store.unreadCount > 99 ? '99+' : String(store.unreadCount)))
+
+const updatePosition = () => {
+  const rect = bellButtonRef.value?.getBoundingClientRect()
+  if (!rect) return
+  const left = rect.right + 8
+  popoverStyle.value = {
+    position: 'fixed',
+    left: `${Math.max(left, 8)}px`,
+    bottom: `${Math.max(window.innerHeight - rect.top + 6, 8)}px`,
+    width: '320px',
+    maxWidth: `min(320px, calc(100vw - ${Math.max(left, 8)}px - 16px))`,
+    zIndex: '1200',
+  }
+}
+
+const togglePopover = async () => {
+  popoverOpen.value = !popoverOpen.value
+  if (popoverOpen.value) {
+    updatePosition()
+    await store.fetchList()
+    void store.refreshUnreadCount()
+  }
+}
+
+const closePopover = () => {
+  popoverOpen.value = false
+}
+
+const handleConsume = (item: AppNotificationItem) => {
+  closePopover()
+  void store.removeItem(item.id)
+  const target = resolveNotificationTarget(item)
+  if (target && route.path !== target) {
+    router.push(target)
+  }
+}
+
+const handleRemove = (id: string) => {
+  void store.removeItem(id)
+}
+
+const handleReadAll = () => {
+  void store.markAllRead()
+}
+
+const handleClearAll = () => {
+  void store.clearAll()
+}
+
+const onPointerDown = (event: PointerEvent) => {
+  const target = event.target as Node
+  if (bellButtonRef.value?.contains(target) || popoverRef.value?.contains(target)) return
+  closePopover()
+}
+
+const onKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') closePopover()
+}
+
+const onResize = () => {
+  if (popoverOpen.value) updatePosition()
+}
+
+watch(popoverOpen, (open) => {
+  if (open) {
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKeydown, true)
+    window.addEventListener('resize', onResize)
+  } else {
+    document.removeEventListener('pointerdown', onPointerDown, true)
+    document.removeEventListener('keydown', onKeydown, true)
+    window.removeEventListener('resize', onResize)
+  }
+})
 
 onMounted(() => {
   store.start()
@@ -18,57 +104,19 @@ onMounted(() => {
 
 onUnmounted(() => {
   store.stop()
+  document.removeEventListener('pointerdown', onPointerDown, true)
+  document.removeEventListener('keydown', onKeydown, true)
+  window.removeEventListener('resize', onResize)
 })
-
-const hasUnread = computed(() => store.unreadCount > 0)
-const unreadBadgeText = computed(() => (store.unreadCount > 99 ? '99+' : String(store.unreadCount)))
-
-const togglePopover = async () => {
-  popoverOpen.value = !popoverOpen.value
-  if (popoverOpen.value) {
-    await store.fetchList()
-    void store.refreshUnreadCount()
-  }
-}
-
-const handleReadAll = async () => {
-  await store.markAllRead()
-}
-
-const formatTime = (iso: string | null): string => {
-  if (!iso) return ''
-  const date = new Date(iso)
-  const now = new Date()
-  const diffMs = now.getTime() - date.getTime()
-  const diffMin = Math.floor(diffMs / 60000)
-  if (diffMin < 1) return t('notification.just_now')
-  if (diffMin < 60) return t('notification.minutes_ago', { n: diffMin })
-  const diffHour = Math.floor(diffMin / 60)
-  if (diffHour < 24) return t('notification.hours_ago', { n: diffHour })
-  return date.toLocaleDateString()
-}
-
-const handleItemClick = async (item: any) => {
-  await store.markRead(item.id)
-  popoverOpen.value = false
-  const payload = item.payload || {}
-  const taskId = String(payload.task_id || '')
-  const workspaceId = String(payload.workspace_id || '')
-  if (taskId && workspaceId) {
-    const target = `/ws/${workspaceId}/chat/${taskId}`
-    if (route.path !== target) {
-      router.push(target)
-    }
-  }
-}
 </script>
 
 <template>
   <div class="notification-bell-wrap">
     <button
+      ref="bellButton"
       type="button"
       class="notification-nav-item"
-      :title="$t('notification.title')"
+      :title="t('notification.title')"
       @click="togglePopover"
     >
       <span class="bell-icon-wrap">
@@ -79,48 +127,20 @@ const handleItemClick = async (item: any) => {
       <span v-if="hasUnread" class="unread-pill">{{ unreadBadgeText }}</span>
     </button>
 
-    <Transition name="notif-pop">
-      <div v-if="popoverOpen" class="notification-popover">
-        <div class="popover-header">
-          <span class="popover-title">{{ $t('notification.title') }}</span>
-          <button
-            v-if="hasUnread"
-            type="button"
-            class="read-all-btn"
-            @click="handleReadAll"
-          >
-            <CheckCheck class="w-3.5 h-3.5" />
-            <span>{{ $t('notification.mark_all_read') }}</span>
-          </button>
+    <Teleport to="body">
+      <Transition name="notif-pop">
+        <div v-if="popoverOpen" ref="popoverRoot" class="notification-popover-anchor" :style="popoverStyle">
+          <NotificationPopover
+            :items="store.items"
+            :loading="store.loading"
+            @consume="handleConsume"
+            @remove="handleRemove"
+            @mark-all-read="handleReadAll"
+            @clear-all="handleClearAll"
+          />
         </div>
-
-        <div class="popover-body">
-          <div v-if="store.loading && store.items.length === 0" class="empty-hint">
-            {{ $t('common.loading') }}
-          </div>
-          <div v-else-if="store.items.length === 0" class="empty-hint">
-            {{ $t('notification.empty') }}
-          </div>
-          <template v-else>
-            <button
-              v-for="item in store.items"
-              :key="item.id"
-              type="button"
-              class="notification-item"
-              :class="{ 'is-unread': !item.read_at }"
-              @click="handleItemClick(item)"
-            >
-              <span class="item-dot" :class="{ 'is-unread': !item.read_at }"></span>
-              <span class="item-main">
-                <span class="item-title">{{ item.title }}</span>
-                <span v-if="item.body" class="item-body">{{ item.body }}</span>
-                <span class="item-time">{{ formatTime(item.created_at) }}</span>
-              </span>
-            </button>
-          </template>
-        </div>
-      </div>
-    </Transition>
+      </Transition>
+    </Teleport>
   </div>
 </template>
 
@@ -131,7 +151,7 @@ const handleItemClick = async (item: any) => {
   position: relative;
 }
 
-/* 与 AppSidebar .nav-item 完全同规格：尺寸/内边距/颜色/交互一致 */
+/* 与 AppSidebar .nav-item 完全同规格:尺寸/内边距/颜色/交互一致 */
 .notification-nav-item {
   display: flex;
   align-items: center;
@@ -190,140 +210,6 @@ const handleItemClick = async (item: any) => {
   transition: max-width 0.24s ease, opacity 0.18s ease;
 }
 
-.notification-popover {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  width: 320px;
-  max-width: min(320px, calc(100vw - 32px));
-  border-radius: var(--radius-lg);
-  background: var(--color-surface-white);
-  border: 1px solid #E2E8F0;
-  box-shadow: var(--shadow-lg);
-  z-index: 200;
-  overflow: hidden;
-}
-
-.popover-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 14px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.popover-title {
-  font-weight: 600;
-  color: var(--color-text-title);
-  font-size: 0.85rem;
-}
-
-.read-all-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: none;
-  background: transparent;
-  color: var(--color-primary-600);
-  font-size: 0.72rem;
-  font-weight: 500;
-  cursor: pointer;
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
-  transition: background var(--transition-fast);
-}
-
-.read-all-btn:hover {
-  background: var(--color-primary-50);
-}
-
-.popover-body {
-  max-height: 380px;
-  overflow-y: auto;
-  padding: 6px;
-}
-
-.empty-hint {
-  padding: 28px 12px;
-  text-align: center;
-  color: #94A3B8;
-  font-size: 0.8rem;
-}
-
-.notification-item {
-  display: flex;
-  gap: 8px;
-  width: 100%;
-  text-align: left;
-  border: none;
-  background: transparent;
-  border-radius: var(--radius-md);
-  padding: 10px;
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.notification-item:hover {
-  background: #F1F5F9;
-}
-
-.notification-item.is-unread {
-  background: var(--color-primary-50);
-}
-
-.notification-item.is-unread:hover {
-  background: var(--color-primary-100);
-}
-
-.item-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  margin-top: 6px;
-  border-radius: var(--radius-full);
-  background: transparent;
-  border: 1px solid #CBD5E1;
-}
-
-.item-dot.is-unread {
-  background: var(--color-primary-500);
-  border-color: var(--color-primary-500);
-}
-
-.item-main {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.item-title {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--color-text-body);
-  line-height: 1.4;
-}
-
-.notification-item.is-unread .item-title {
-  font-weight: 600;
-  color: var(--color-text-title);
-}
-
-.item-body {
-  font-size: 0.72rem;
-  color: var(--color-text-muted);
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.item-time {
-  font-size: 0.66rem;
-  color: #94A3B8;
-}
-
 .notif-pop-enter-active,
 .notif-pop-leave-active {
   transition: opacity 0.16s ease, transform 0.16s ease;
@@ -332,11 +218,11 @@ const handleItemClick = async (item: any) => {
 .notif-pop-enter-from,
 .notif-pop-leave-to {
   opacity: 0;
-  transform: translateY(6px);
+  transform: translateX(-8px);
 }
 </style>
 
-<!-- 非 scoped：跟随侧栏折叠态（.sidebar.is-collapsed 由 AppSidebar 控制） -->
+<!-- 非 scoped:跟随侧栏折叠态(.sidebar.is-collapsed 由 AppSidebar 控制) -->
 <style>
 .sidebar.is-collapsed .notification-nav-item {
   justify-content: center;

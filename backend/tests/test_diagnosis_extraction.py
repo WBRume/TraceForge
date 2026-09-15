@@ -44,6 +44,10 @@ def test_prompt_suffix_declares_diagnosis_contract():
             assert "[问题定位任务]" in suffix
             assert "现象: 接口偶发超时" in suffix
             assert "优先级: P1" in suffix
+            # 辅助文档目录指引：告知 agent 上传的日志/文档可能在 .sdd/diagnosis/ 下
+            assert ".sdd/diagnosis" in suffix
+            assert "辅助文档" in suffix
+            assert "日志" in suffix
             # 任务性质与定位优先约束
             assert "问题定位任务" in suffix and "不是一次性全量修复" in suffix
             assert "禁止一次性全量修复" in suffix
@@ -58,6 +62,9 @@ def test_prompt_suffix_declares_diagnosis_contract():
             assert '"confidence"' not in suffix
             assert '"call_chain"' not in suffix
             assert "每轮回复结束时" not in suffix
+            assert "JSON" not in suffix
+            assert "fix_suggestion" not in suffix
+            assert "fix_code" not in suffix
     finally:
         engine.dispose()
 
@@ -87,6 +94,14 @@ def test_build_diagnosis_summary_prompt_reuses_removed_json_contract():
             assert "优先级: P1" in prompt
             assert "会话记录" in prompt
             assert "[用户] 接口偶发超时" in prompt
+            # 只读总结约束：压制 fork 会话历史中的定位惯性（写 plan 文件 /
+            # ExitPlanMode / 继续定位修复），保证仅输出 fenced JSON
+            assert "只读总结约束" in prompt
+            assert "禁止调用任何工具" in prompt
+            assert "ExitPlanMode" in prompt
+            assert "不要写计划文件" in prompt
+            assert "不要继续执行定位、修复、测试" in prompt
+            assert "不要输出任何 Markdown 正文" in prompt
             # 复用了原定位结果 JSON 契约
             assert "```json" in prompt
             assert '"summary"' in prompt

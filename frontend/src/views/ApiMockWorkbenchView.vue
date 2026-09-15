@@ -6,6 +6,9 @@ import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { buildBackendWsUrl } from '@/utils/ws'
+import { wsBackoffDelay } from '@/utils/wsBackoff'
+import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 import { useAuthStore } from '@/stores/auth'
 import type {
   ApiMockDocument,
@@ -112,6 +115,7 @@ const activeAutoMockJob = ref<ActiveJobState | null>(null)
 const autoMockStartBusy = ref(false)
 const collabConnected = ref(false)
 let collabSocket: WebSocket | null = null
+let collabConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
 let collabSocketManualClose = false
 let collabReconnectTimer: number | null = null
 let keywordTimer: number | null = null
@@ -120,6 +124,7 @@ let autoMockPolling = false
 const handledAutoMockDoneJobIds = new Set<string>()
 let jobWaitSeq = 0
 const COLLAB_RECONNECT_DELAY_MS = 1200
+let collabReconnectAttempt = 0
 const AUTO_MOCK_POLL_INTERVAL_MS = 1500
 
 const canView = computed(() => Boolean(permissions.value?.view_api_mock))
@@ -301,12 +306,14 @@ const clearCollabReconnectTimer = () => {
 
 const scheduleCollabReconnect = () => {
   if (!project.value?.id || collabReconnectTimer !== null) return
+  const delay = wsBackoffDelay(collabReconnectAttempt, COLLAB_RECONNECT_DELAY_MS)
+  collabReconnectAttempt += 1
   collabReconnectTimer = window.setTimeout(() => {
     collabReconnectTimer = null
     if (!project.value?.id) return
     if (collabSocket && collabSocket.readyState !== WebSocket.CLOSED) return
     connectCollab()
-  }, COLLAB_RECONNECT_DELAY_MS)
+  }, delay)
 }
 
 const stopAutoMockPolling = () => {
@@ -386,6 +393,8 @@ const pollActiveAutoMockJob = async () => {
 
 const closeSocket = () => {
   clearCollabReconnectTimer()
+  collabConsumer?.close()
+  collabConsumer = null
   if (collabSocket) {
     collabSocketManualClose = true
     collabSocket.close()
@@ -398,17 +407,45 @@ const closeSocket = () => {
 const connectCollab = () => {
   closeSocket()
   if (!project.value?.id) return
-  const userId = authStore.user?.id || 'anonymous'
-  const url = buildBackendWsUrl(`/ws/api-mock/${project.value.id}`, { userId })
+  const token = authStore.token || ''
+  const room = `api-mock:${project.value.id}`
+  const url = buildBackendWsUrl(`/ws/api-mock/${project.value.id}`, {
+    token,
+    ...buildWsCursorQuery(room),
+  })
   const socket = new WebSocket(url)
   collabSocket = socket
+  const consumer = createSerializedWsConsumer({
+    room,
+    onEvent: (event) => applyCollabMessage(event.payload || {}),
+    onResync: async (frame, reason, context, signal) => {
+      if (reason === 'gap') {
+        context.socket.close(4000, 'sequence_gap')
+        return
+      }
+      await refreshProjectContext()
+      if (!signal.aborted && collabSocket === context.socket && context.socket.readyState === WebSocket.OPEN) {
+        sendResyncComplete(context.socket, frame, room)
+      }
+    },
+    onControl: (frame) => {
+      if (!['resume_ok', 'resync_ok'].includes(String(frame?.type || ''))) applyCollabMessage(frame)
+    },
+    onFailure: (_error, context) => {
+      if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+    },
+  })
+  collabConsumer = consumer
+  const generation = consumer.resetForConnection(socket)
   socket.onopen = () => {
     if (collabSocket !== socket) return
     collabSocketManualClose = false
     clearCollabReconnectTimer()
+    collabReconnectAttempt = 0
     collabConnected.value = true
   }
   socket.onclose = () => {
+    consumer.close(generation)
     if (collabSocket !== socket) return
     collabConnected.value = false
     collabSocket = null
@@ -425,7 +462,14 @@ const connectCollab = () => {
   socket.onmessage = (event) => {
     if (collabSocket !== socket) return
     try {
-      const data = JSON.parse(event.data || '{}')
+      const raw = JSON.parse(event.data || '{}')
+      consumer.enqueue(raw, generation)
+    } catch {
+      // ignore ws parse errors
+    }
+  }
+
+  const applyCollabMessage = (data: any) => {
       if (Array.isArray(data.online_users)) {
         onlineUserIds.value = data.online_users
           .map((item: unknown) => String(item || '').trim())
@@ -454,9 +498,6 @@ const connectCollab = () => {
           })
         }
       }
-    } catch {
-      // ignore ws parse errors
-    }
   }
 }
 

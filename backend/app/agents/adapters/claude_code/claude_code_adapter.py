@@ -18,10 +18,20 @@ from app.agents.contract import (
     AgentEventSink,
     AgentRunRequest,
     AgentRunResult,
+    AgentStopResult,
+    EXECUTION_KIND_LOCAL_PROCESS,
     TokenUsage,
 )
 from app.agents.adapters.claude_code.event_mapper import map_claude_event
-from app.agents.errors import AgentCancelledError, AgentError, AgentTimeoutError, SessionForkError
+from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.errors import (
+    AgentCancelledError,
+    AgentError,
+    AgentTimeoutError,
+    SessionForkError,
+)
+from app.agents.process_supervisor import agent_stop_result_from_termination
+from app.config import settings
 from app.engine.claude_bridge import SubprocessCliBridge
 
 
@@ -67,29 +77,51 @@ class ClaudeCodeAdapter(AgentBackend):
         self._bridge = SubprocessCliBridge(cli_path=cli_path)
         self._last_result_payload: Dict[str, Any] = {}
         self._cancelled = False
+        self._legacy_run_task: Optional[asyncio.Task] = None
+        self._legacy_session_id: Optional[str] = None
+        self.last_termination = None
 
     async def _handle_raw_event(self, event: dict[str, Any], on_event: AgentEventSink) -> None:
         for agent_event in map_claude_event(event):
             if agent_event.type == "result" or agent_event.type == "error":
                 self._last_result_payload = dict(agent_event.payload)
             if agent_event.type == "session_started":
-                sid = agent_event.payload.get("provider_session_id")
+                sid = str(agent_event.payload.get("provider_session_id") or "").strip()
+                if not sid:
+                    sid = str(self._bridge.session_id or "").strip()
+                    if sid:
+                        agent_event.payload["provider_session_id"] = sid
                 if sid:
                     self._last_result_payload.setdefault("session_id", sid)
             await on_event(agent_event)
+
+    async def probe(self) -> str:
+        cli_path = self._bridge._cli_path
+        resolved = shutil.which(cli_path) or cli_path
+        if not shutil.which(cli_path) and not os.path.isfile(cli_path):
+            raise AgentError(f"Claude Code CLI not found: {cli_path!r}")
+        return f"Claude Code CLI is available: {resolved}"
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         self._validate_request(request)
         self._cancelled = False
         self._last_result_payload = {}
+        self.last_termination = None
 
         program = self._bridge
-        program._task_id = str(request.metadata.get("task_id") or request.env.get("TASK_ID") or "")
-        program._workspace_id = str(request.metadata.get("workspace_id") or request.env.get("WORKSPACE_ID") or "")
-        program._job_id = str(request.metadata.get("ai_job_id") or request.env.get("AI_JOB_ID") or "")
+
+        watchdog = AgentActivityWatchdog(
+            startup_timeout_seconds=request.startup_timeout_seconds,
+            idle_timeout_seconds=request.idle_timeout_seconds,
+            hard_timeout_seconds=request.timeout_seconds,
+        )
+
+        async def _tracked_event(agent_event) -> None:
+            watchdog.mark(agent_event.type)
+            await on_event(agent_event)
 
         async def _raw_callback(event: dict[str, Any]) -> None:
-            await self._handle_raw_event(event, on_event)
+            await self._handle_raw_event(event, _tracked_event)
 
         try:
             await program.start_session(
@@ -98,12 +130,52 @@ class ClaudeCodeAdapter(AgentBackend):
                 event_callback=_raw_callback,
                 session_id=request.session_id,
                 env_overrides=request.env or None,
+                fork_session=bool(request.provider_options.get("fork_session")),
+                permission_mode=request.permission_mode,
+                on_process_started=request.on_process_started,
+                process_attach_timeout_seconds=request.process_attach_timeout_seconds,
             )
             try:
-                await asyncio.wait_for(program.wait(), timeout=max(1.0, request.timeout_seconds))
-            except asyncio.TimeoutError as exc:
-                await program.cancel()
-                raise AgentTimeoutError(f"Claude Code session timed out after {request.timeout_seconds}s") from exc
+                await watchdog.wait(program.wait())
+                termination = program.last_termination
+                self.last_termination = termination
+                if termination is not None and not termination.confirmed_dead:
+                    raise AgentError(
+                        "Claude Code process tree could not be confirmed dead",
+                        termination_confirmed_dead=False,
+                        process_started=True,
+                        failure_code=(
+                            getattr(termination, "error_code", None)
+                            or "PROCESS_TREE_STILL_ALIVE"
+                        ),
+                    )
+            except AgentTimeoutError as timeout_error:
+                termination = await program.cancel()
+                self.last_termination = termination
+                # Re-raise as a typed exception carrying fresh termination
+                # evidence; dynamic attribute mutation is not allowed.
+                raise AgentTimeoutError(
+                    str(timeout_error),
+                    phase=timeout_error.phase,
+                    limit_seconds=timeout_error.limit_seconds,
+                    termination_confirmed_dead=(
+                        bool(termination.confirmed_dead) if termination is not None else None
+                    ),
+                    process_started=True,
+                ) from timeout_error
+        except AgentTimeoutError:
+            raise
+        except TimeoutError as startup_timeout_error:
+            # Supervisor-side attach timeout: the (uncancellable) cleanup has
+            # already finished inside the supervisor and its death proof is
+            # recorded in the attempt-local runtime state.  Convert to the
+            # typed startup timeout so callers see one error vocabulary.
+            raise AgentTimeoutError(
+                "Claude Code process attach timed out during startup",
+                phase="startup",
+                limit_seconds=request.process_attach_timeout_seconds,
+                process_started=True,
+            ) from startup_timeout_error
         except AgentError:
             raise
         except Exception as exc:
@@ -134,24 +206,75 @@ class ClaudeCodeAdapter(AgentBackend):
             cost_usd=payload.get("cost_usd"),
             duration_ms=payload.get("duration_ms"),
             return_code=getattr(program.process, "returncode", None),
-            raw_trace=getattr(program, "_session_trace_path", None),
+            termination_confirmed_dead=(
+                program.last_termination.confirmed_dead
+                if program.last_termination is not None
+                else None
+            ),
+            raw_trace=None,
         )
 
-    async def interrupt(self, run_id: str | None = None) -> None:
+    async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         self._cancelled = True
-        await self._bridge.interrupt()
+        termination = await self._bridge.interrupt()
+        self.last_termination = termination
+        await self._await_legacy_task_exit()
+        # 本地进程：细粒度身份证据继续写入 AgentAttemptRuntimeState
+        # （由 supervisor 完成）；这里只负责统一停止结果协议。
+        return agent_stop_result_from_termination(termination)
 
-    async def cancel(self, run_id: str | None = None) -> None:
+    async def cancel(self, run_id: str | None = None) -> AgentStopResult:
         self._cancelled = True
-        await self._bridge.cancel()
+        termination = await self._bridge.cancel()
+        self.last_termination = termination
+        await self._await_legacy_task_exit()
+        return agent_stop_result_from_termination(termination)
+
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+        # 本地执行类别不会被远程 reaper 调用；若被调用必须返回结构化
+        # capability 错误而不是 ACK（doc 修复方案 §9.3）。
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+            stop_acknowledged=False,
+            failure_code="CAPABILITY_UNSUPPORTED",
+            error_message=(
+                "claude-code is a local-process backend; persisted remote "
+                "session stop does not apply"
+            ),
+        )
+
+    async def _await_legacy_task_exit(self) -> None:
+        task = self._legacy_run_task
+        if task is None or task is asyncio.current_task():
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=float(
+                    getattr(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 30) or 30
+                ),
+            )
+        except asyncio.TimeoutError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        except Exception:
+            # The run task may already have completed with the timeout/error
+            # that triggered cleanup.  Its process lifecycle is handled above;
+            # do not turn that original failure into a cleanup failure.
+            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            if self._legacy_run_task is task:
+                self._legacy_run_task = None
 
     def is_running(self, run_id: str | None = None) -> bool:
+        if self._legacy_run_task is not None and not self._legacy_run_task.done():
+            return True
         return self._bridge.is_running()
 
     async def close(self) -> None:
         if self._bridge.is_running():
             await self._bridge.cancel()
-        self._bridge._session_trace_path = None
+        await self._await_legacy_task_exit()
         self._last_result_payload = {}
 
     # ── 旧 CliBridgeBase 兼容入口 ──────────────────────────────
@@ -162,33 +285,35 @@ class ClaudeCodeAdapter(AgentBackend):
         source_dir: str,
         target_dir: str,
     ) -> str:
-        """文件级 fork：把 baseline 会话 jsonl 复制到线程工作区的 project store。
+        """把 baseline 会话 stage 到目标目录的 project store，返回原会话 id。
 
-        Claude 的会话以 cwd 派生 key 存储，复制单个 `{sid}.jsonl` 到目标 store
-        后，线程在自己的目录里 resume 同一 id，写入只落在线程副本上，
-        baseline 保持只读。找不到单文件时回退为整目录复制。
+        claude 的会话查找按 cwd 的 project store 隔离（跨目录 --resume 会报
+        "No conversation found"），因此在目标目录 fork 前必须让 baseline 快照
+        在目标 store 可见。这里做一次性 staging（硬链接优先，失败回退复制，
+        幂等），之后每个线程在目标目录用 `--resume <sid> --fork-session`
+        生成各自的新会话 id，原快照文件不会被任何线程续写。
         """
         source_store = _claude_project_store_dir(source_dir)
         target_store = _claude_project_store_dir(target_dir)
-        if os.path.isdir(target_store) and _locate_session_file(target_store, session_id):
+        target_file = os.path.join(target_store, f"{session_id}.jsonl")
+        if os.path.isfile(target_file):
             return session_id
 
         source_file = _locate_session_file(source_store, session_id)
-        os.makedirs(os.path.dirname(target_store), exist_ok=True)
-        if source_file:
-            os.makedirs(target_store, exist_ok=True)
-            shutil.copy2(source_file, os.path.join(target_store, f"{session_id}.jsonl"))
-            return session_id
+        if source_file is None:
+            raise SessionForkError(
+                f"Claude session snapshot not found for fork: session={session_id}, store={source_store}"
+            )
 
-        # 回退：兼容旧版布局（快照嵌套/未按单文件存放）时复制整个 project store
-        if os.path.isdir(source_store):
-            if not os.path.isdir(target_store):
-                shutil.copytree(source_store, target_store, dirs_exist_ok=False)
-            return session_id
+        os.makedirs(target_store, exist_ok=True)
+        try:
+            os.link(source_file, target_file)
+        except OSError:
+            # 跨卷/文件系统不支持硬链接时回退为复制（单文件，一次性，offload 到 file 池）
+            from app.core.offload import run_file_job
 
-        raise SessionForkError(
-            f"Claude session snapshot not found for fork: session={session_id}, store={source_store}"
-        )
+            await run_file_job(shutil.copy2, source_file, target_file)
+        return session_id
 
     async def start_session(
         self,
@@ -197,21 +322,125 @@ class ClaudeCodeAdapter(AgentBackend):
         event_callback,
         session_id: str | None = None,
         env_overrides: dict[str, str] | None = None,
+        fork_session: bool = False,
+        permission_mode: str = "default",
+        on_process_started=None,
     ) -> str:
-        return await self._bridge.start_session(
+        """旧 CliBridgeBase 入口：统一走 AgentBackend.run() + 底层日志/trace。"""
+        from app.agents.run_logging import run_agent_backend_with_logging
+        from app.agents.selection import agent_event_to_legacy_payload
+
+        if fork_session and not session_id:
+            raise AgentError("Claude fork-on-resume requires an existing session id")
+
+        request = AgentRunRequest(
+            run_id=f"claude-legacy-{id(self)}",
             prompt=prompt,
             project_path=project_path,
-            event_callback=event_callback,
             session_id=session_id,
-            env_overrides=env_overrides,
+            env=dict(env_overrides or {}),
+            metadata={
+                "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
+                "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
+                "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
+                "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
+                "run_token": str((env_overrides or {}).get("TRACEFORGE_RUN_TOKEN") or "").strip() or None,
+                "worker_boot_id": str((env_overrides or {}).get("WORKER_BOOT_ID") or "").strip() or None,
+            },
+            timeout_seconds=float(
+                getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
+            ),
+            startup_timeout_seconds=float(
+                getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
+            ),
+            idle_timeout_seconds=float(
+                getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+            ),
+            # The supervisor enforces the real attach timeout (DB attach), so
+            # the outer startup watchdog is only a secondary safety net.
+            process_attach_timeout_seconds=float(
+                getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
+            ) or None,
+            permission_mode=permission_mode,
         )
+        if fork_session:
+            # ClaudeCodeAdapter.fork_session 只做快照 staging，返回原 session id；
+            # run() 内部通过 provider_options 再传 --fork-session 生成子会话。
+            await self.fork_session(
+                session_id,
+                source_dir=project_path,
+                target_dir=project_path,
+            )
+            request.provider_options["fork_session"] = True
+
+        async def _on_event(agent_event) -> None:
+            legacy = agent_event_to_legacy_payload(agent_event)
+            if legacy is None:
+                return
+            result = event_callback(legacy)
+            if asyncio.iscoroutine(result):
+                await result
+
+        started_future = asyncio.get_running_loop().create_future() if on_process_started else None
+
+        async def _started(identity) -> bool:
+            accepted = on_process_started(identity) if on_process_started else True
+            if asyncio.iscoroutine(accepted):
+                accepted = await accepted
+            if started_future is not None and not started_future.done():
+                started_future.set_result(bool(accepted))
+            return bool(accepted)
+
+        request.on_process_started = _started if on_process_started else None
+
+        async def _run() -> None:
+            try:
+                result = await run_agent_backend_with_logging(self, request, _on_event)
+                if result and result.session_id:
+                    self._legacy_session_id = result.session_id
+            except BaseException as exc:
+                if started_future is not None and not started_future.done():
+                    started_future.set_exception(exc)
+                raise
+
+        self._legacy_run_task = asyncio.create_task(_run())
+        if started_future is not None:
+            try:
+                accepted = await asyncio.wait_for(
+                    asyncio.shield(started_future),
+                    timeout=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
+                )
+            except BaseException as startup_error:
+                if not started_future.done():
+                    started_future.cancel()
+                # Supervisor cleanup must happen before the Python run task is
+                # cancelled; otherwise a late spawn can outlive the caller.
+                await asyncio.shield(self._bridge.cancel())
+                await self._await_legacy_task_exit()
+                # Preserve the original exception identity (TimeoutError /
+                # CancelledError / fence rejection).  The termination result of
+                # the cleanup above is durably recorded in the attempt-local
+                # runtime state, so the finalizer still gets the death proof
+                # without mutating the raised exception object.
+                raise
+            if not accepted:
+                raise AgentError("Claude process was rejected by the current job attempt")
+        return request.session_id or ""
 
     async def wait(self) -> None:
-        await self._bridge.wait()
+        if self._legacy_run_task is not None:
+            try:
+                await self._legacy_run_task
+            finally:
+                self._legacy_run_task = None
+                if self._bridge.is_running():
+                    await asyncio.shield(self._bridge.cancel())
+        else:
+            await self._bridge.wait()
 
     @property
     def session_id(self) -> str | None:
-        return self._bridge.session_id
+        return self._legacy_session_id or self._bridge.session_id
 
     @property
     def process(self):

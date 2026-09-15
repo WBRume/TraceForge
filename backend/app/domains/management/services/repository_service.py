@@ -93,7 +93,6 @@ def list_repositories(
     repo_type: Optional[str] = None,
     group_id: Optional[str] = None,
     repository_id: Optional[str] = None,
-    unassigned_only: bool = False,
     page: int = 1,
     page_size: int = 20,
 ) -> Tuple[List[Dict[str, object]], int]:
@@ -114,8 +113,6 @@ def list_repositories(
         query = query.filter(SddManagementRepository.group_id.in_(group_ids))
     if repository_id:
         query = query.filter(SddManagementRepository.id == repository_id)
-    if unassigned_only:
-        query = query.filter(SddManagementRepository.group_id.is_(None))
 
     total = query.count()
     repositories = (
@@ -149,6 +146,18 @@ def create_repository(
     if not normalized_url:
         raise RepositoryServiceError("git_url is required", status_code=400)
 
+    normalized_group_id = str(group_id or "").strip()
+    group = (
+        db.query(SddManagementRepoGroup)
+        .filter(SddManagementRepoGroup.id == normalized_group_id)
+        .first()
+    )
+    if not group:
+        raise RepositoryServiceError(
+            "group_id is required and must reference an existing repository group",
+            status_code=400,
+        )
+
     existing = (
         db.query(SddManagementRepository)
         .filter(SddManagementRepository.git_url == normalized_url)
@@ -162,7 +171,7 @@ def create_repository(
         git_url=normalized_url,
         repo_type=_normalize_repo_type(repo_type),
         default_branch=(str(default_branch or "").strip() or "main"),
-        group_id=group_id or None,
+        group_id=group.id,
         description=description,
         created_by=creator_id,
     )
@@ -208,7 +217,19 @@ def update_repository(
     if default_branch is not None:
         repository.default_branch = str(default_branch).strip() or repository.default_branch
     if group_id is not None:
-        repository.group_id = group_id or None
+        if not group_id:
+            raise RepositoryServiceError(
+                "group_id cannot be empty; every repository must belong to a group",
+                status_code=400,
+            )
+        group = (
+            db.query(SddManagementRepoGroup)
+            .filter(SddManagementRepoGroup.id == group_id)
+            .first()
+        )
+        if not group:
+            raise RepositoryServiceError("Repository group not found", status_code=404)
+        repository.group_id = group.id
     if description is not None:
         repository.description = description
     db.commit()
@@ -294,11 +315,16 @@ def move_repository_to_group(
     repository: SddManagementRepository,
     group_id: Optional[str],
 ) -> SddManagementRepository:
-    if group_id:
-        group = db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.id == group_id).first()
-        if not group:
-            raise RepositoryServiceError("Repository group not found", status_code=404)
-    repository.group_id = group_id or None
+    normalized_group_id = str(group_id or "").strip()
+    if not normalized_group_id:
+        raise RepositoryServiceError(
+            "group_id is required; every repository must belong to a group",
+            status_code=400,
+        )
+    group = db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.id == normalized_group_id).first()
+    if not group:
+        raise RepositoryServiceError("Repository group not found", status_code=404)
+    repository.group_id = group.id
     db.commit()
     db.refresh(repository)
     return repository

@@ -56,6 +56,13 @@ class GithubImportUrlTest(unittest.TestCase):
 
 class GithubImportGitCommandTest(unittest.TestCase):
     def test_run_git_checked_terminates_process_tree_on_timeout(self):
+        """超时时进程树被回收并抛 GithubImportError。
+
+        Popen/树杀逻辑已统一收敛到 app.core.subprocess_runner，
+        这里通过 patch runner 内核验证 github_import 的超时映射。
+        """
+        from app.core import subprocess_runner
+
         class FakeProcess:
             pid = 12345
             returncode = None
@@ -79,13 +86,13 @@ class GithubImportGitCommandTest(unittest.TestCase):
         def _fake_popen(*_args, **_kwargs):
             return fake_process
 
-        original_popen = github_import_service.subprocess.Popen
+        original_popen = subprocess_runner.subprocess.Popen
         original_timeout = github_import_service._git_timeout_seconds
-        original_terminate = github_import_service._terminate_process_tree
+        original_terminate = subprocess_runner.terminate_process_tree
         try:
-            github_import_service.subprocess.Popen = _fake_popen
+            subprocess_runner.subprocess.Popen = _fake_popen
             github_import_service._git_timeout_seconds = lambda: 1
-            github_import_service._terminate_process_tree = lambda process: terminated.append(process.pid)
+            subprocess_runner.terminate_process_tree = lambda process: terminated.append(process.pid)
 
             with self.assertRaises(GithubImportError) as ctx:
                 _run_git_checked(["clone", "https://github.com/example/repo.git", "repo"])
@@ -94,9 +101,9 @@ class GithubImportGitCommandTest(unittest.TestCase):
             self.assertEqual(terminated, [12345])
             self.assertEqual(fake_process.communicate_calls, 2)
         finally:
-            github_import_service.subprocess.Popen = original_popen
+            subprocess_runner.subprocess.Popen = original_popen
             github_import_service._git_timeout_seconds = original_timeout
-            github_import_service._terminate_process_tree = original_terminate
+            subprocess_runner.terminate_process_tree = original_terminate
 
 
 class GithubImportLocateTest(unittest.TestCase):

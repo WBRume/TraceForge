@@ -62,13 +62,12 @@ describe('useCaseCenter', () => {
     })
     const vm = useCaseCenter()
     vm.keyword.value = '连接池'
-    vm.category.value = 'PRODUCT'
     vm.status.value = 'DRAFT'
     vm.priority.value = 'P0'
     await vm.loadCases({ reset: true })
 
     expect(apiMock.get).toHaveBeenCalledWith('/workspaces/ws-1/cases', {
-      params: { page: 1, page_size: 20, keyword: '连接池', category: 'PRODUCT', status: 'DRAFT', priority: 'P0' },
+      params: { page: 1, page_size: 20, keyword: '连接池', status: 'DRAFT', priority: 'P0' },
     })
     expect(vm.items.value).toHaveLength(1)
     expect(vm.total.value).toBe(1)

@@ -1,0 +1,1128 @@
+"""Task chat turn lifecycle and provider/worktree undo orchestration."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import os
+from dataclasses import dataclass
+from datetime import datetime
+from types import SimpleNamespace
+from typing import Any, Optional
+
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.core.distributed_lock import get_lock_provider, lock_task
+from app.core.logging import get_logger
+from app.core.offload import run_db_txn, run_db_txn_with_bind
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.schemas.websocket import WSMessage
+from app.domains.ai.services import ai_job_service
+from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.context_token import SddContextTokenSegment, SddContextTokenSnapshot
+from app.domains.task.models.log import SddExecutionLog
+from app.domains.task.models.session_turn import (
+    TaskSessionOperation,
+    TaskSessionOperationStatus,
+    TaskSessionTurn,
+    TaskSessionTurnStatus,
+)
+from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.skill.models.skill import SddSkillRuntimeEvent
+from app.domains.skill.services import skill_runtime_trace_service
+from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
+from app.domains.task.services import task_service, task_session_snapshot_service
+from app.domains.websocket.ws.manager import manager
+from app.engine.workflow_engine import get_engine
+
+logger = get_logger(__name__, category="task_session_undo")
+
+
+class TaskSessionUndoError(RuntimeError):
+    def __init__(self, message: str, *, code: str, status_code: int = 409) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+
+
+def _enum_text(value: Any) -> str:
+    return value.value if hasattr(value, "value") else str(value or "")
+
+
+def _secret_fingerprint(value: str) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _repo_rel_paths(task: SddTask) -> list[str]:
+    paths: list[str] = []
+    for repo in list(getattr(task, "repo_bindings", None) or []):
+        value = str(getattr(repo, "rel_path", "") or "").strip()
+        if value and value not in paths:
+            paths.append(value)
+    return paths
+
+
+def _next_turn_index(db: Session, task_id: str, generation: int) -> int:
+    rows = (
+        db.query(TaskSessionTurn.turn_index)
+        .filter(
+            TaskSessionTurn.task_id == task_id,
+            TaskSessionTurn.session_generation == generation,
+        )
+        .all()
+    )
+    return max((int(row[0] or 0) for row in rows), default=0) + 1
+
+
+def _new_chat_message(
+    db: Session,
+    *,
+    task_id: str,
+    workspace_id: str,
+    actor_user_id: str,
+    content: str,
+    prompt_text: Optional[str] = None,
+    metadata_json: Optional[dict[str, Any]],
+    session_generation: int,
+) -> ChatMessage:
+    from app.domains.search.capture import allocate_chat_seq
+    order_index = allocate_chat_seq(db, task_id)
+    metadata = dict(metadata_json or {})
+    metadata["order_index"] = order_index
+    message = ChatMessage(
+        task_id=task_id,
+        workspace_id=workspace_id,
+        creator_id=actor_user_id,
+        role="user",
+        content=content,
+        message_type="text",
+        metadata_json=metadata,
+        sort_seq=order_index,
+        session_generation=session_generation,
+    )
+    db.add(message)
+    db.flush()
+    return message
+
+
+@dataclass(frozen=True)
+class CreatedChatTurn:
+    """回合创建结果的纯数据快照。
+
+    全部字段在 DB 线程闭包内组装；禁止跨线程携带 ORM 对象，
+    调用方（WS handler / 路由 / 服务）只消费这些标量。
+    """
+
+    task_id: str
+    workspace_id: str
+    message_id: str
+    created_at: Optional[datetime]
+    session_turn_id: Optional[str]
+    session_generation: Optional[int]
+    job_id: str
+    can_undo: bool = True
+
+
+@dataclass(frozen=True)
+class CreatedConfirmationReply:
+    task_id: str
+    workspace_id: str
+    message_id: str
+    created_at: Optional[datetime]
+    session_generation: Optional[int]
+
+
+def _prepare_chat_turn_sync(
+    db: Session,
+    *,
+    task_id: str,
+    content: str,
+    prompt: str,
+    session_id: Optional[str],
+    fresh_session: bool,
+    submission_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """回合准备段（线程内执行）：活跃 job 互斥 + generation/revision 推进 + backend 解析。
+
+    注意：本段在返回时提交。revision/generation 的推进先于 checkpoint 落库；
+    checkpoint 失败仅留下一次多余的 revision 推进（单调、无 job 引用，无副作用），
+    消息/turn/job 仍只在持久化段可见，维持"checkpoint 先于消息可见"的边界。
+    """
+    task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
+    if not task:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
+    assert_no_preparing_submission(db, task_id, allowed_id=submission_id)
+    active_job = db.query(SddAiJob).filter(
+        SddAiJob.task_id == task_id,
+        SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        SddAiJob.status.in_([
+            AiJobStatus.PENDING,
+            AiJobStatus.RUNNING,
+            AiJobStatus.WAITING_HITL,
+            AiJobStatus.TERMINATING,
+            AiJobStatus.ORPHANED,
+        ]),
+    ).first()
+    if active_job:
+        active_context = active_job.context_json if isinstance(active_job.context_json, dict) else {}
+        if str(active_context.get("job_kind") or "").strip().upper() == ai_job_service.JOB_KIND_DIAGNOSIS_SUMMARY:
+            # 会话/总结互斥：总结进行中禁止发送新的聊天消息
+            raise TaskSessionUndoError(
+                "一键总结问题案例进行中，请等待完成或停止后再发送消息",
+                code="DIAGNOSIS_SUMMARY_BUSY",
+            )
+        raise TaskSessionUndoError("Task is currently running; wait for it to finish", code="TASK_SESSION_BUSY")
+    current_generation = int(getattr(task, "session_generation", 0) or 0)
+    if current_generation <= 0:
+        task.session_generation = 1
+    if fresh_session:
+        # The caller has already advanced the generation for an explicit
+        # initialization.  Clear the old provider id before checkpointing so
+        # undoing a not-yet-started fresh turn cannot target the old session.
+        task.session_id = None
+    task.session_revision = int(getattr(task, "session_revision", 0) or 0) + 1
+    if submission_id:
+        from app.domains.task.models.chat_submission import TaskChatSubmission
+        submission = db.query(TaskChatSubmission).filter_by(id=submission_id, task_id=task_id).with_for_update().one()
+        if submission.status != "PREPARING":
+            raise TaskSessionUndoError("Submission is no longer preparing", code="MESSAGE_ALREADY_PROCESSED")
+        submission.session_generation = int(task.session_generation)
+        submission.session_revision = int(task.session_revision)
+
+    from app.agents.selection import resolve_task_backend
+
+    provider = resolve_task_backend(db, task.id)
+    provider_session_id = str(
+        session_id if session_id is not None else (None if fresh_session else task.session_id) or ""
+    ).strip() or None
+    return {
+        "task_id": task.id,
+        "workspace_id": task.workspace_id,
+        "workspace_name": str(task.workspace.name or ""),
+        "task_name": str(task.name or ""),
+        "project_path": str(task.project_path or ""),
+        "repo_rel_paths": _repo_rel_paths(task),
+        "generation": int(task.session_generation),
+        "revision": int(task.session_revision),
+        "provider": provider,
+        "provider_session_id": provider_session_id,
+    }
+
+
+def _persist_chat_turn_sync(
+    db: Session,
+    *,
+    prepared: dict[str, Any],
+    content: str,
+    prompt: str,
+    context_json: Optional[dict[str, Any]],
+    client_message_id: Optional[str],
+) -> CreatedChatTurn:
+    """回合持久化段（线程内单事务）：message/turn/job + seed snapshot。"""
+    task_id = str(prepared["task_id"])
+    workspace_id = str(prepared["workspace_id"])
+    generation = int(prepared["generation"])
+    revision = int(prepared["revision"])
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    task = db.query(SddTask).filter_by(id=task_id).with_for_update().one()
+    if int(task.session_generation or 0) != generation or int(task.session_revision or 0) != revision:
+        raise TaskSessionUndoError("Session changed while preparing message", code="TASK_SESSION_CHANGED")
+    submission_id = (context_json or {}).get("submission_id")
+    if submission_id and _enum_text(task.status) in {"PENDING", "PROVISIONING", "DONE", "FAILED", "BASELINED", "INTERRUPTED"}:
+        raise TaskSessionUndoError("Task state changed while preparing message", code="TASK_SESSION_CHANGED")
+    submission = db.query(TaskChatSubmission).filter_by(id=submission_id).with_for_update().one() if submission_id else None
+    if submission is not None and (submission.status != "PREPARING" or submission.ai_job_id
+            or submission.task_id != task_id or submission.creator_id != prepared["actor_user_id"]):
+        raise TaskSessionUndoError("Message has already been processed", code="MESSAGE_ALREADY_PROCESSED")
+    provider = prepared["provider"]
+    provider_session_id = prepared["provider_session_id"]
+    checkpoint_root = str(prepared.get("checkpoint_root") or "").strip() or None
+
+    metadata = dict(context_json or {})
+    if client_message_id:
+        metadata["client_message_id"] = client_message_id
+    metadata.update({
+        "session_turn_generation": generation,
+        "session_revision": revision,
+    })
+    message = _new_chat_message(
+        db,
+        task_id=task_id,
+        workspace_id=workspace_id,
+        actor_user_id=prepared["actor_user_id"],
+        content=str(content),
+        metadata_json=metadata,
+        session_generation=generation,
+    )
+    turn = TaskSessionTurn(
+        task_id=task_id,
+        workspace_id=workspace_id,
+        user_message_id=message.id,
+        session_generation=generation,
+        turn_index=_next_turn_index(db, task_id, generation),
+        session_revision=revision,
+        provider=provider,
+        provider_session_id=provider_session_id,
+        provider_message_ids_json=None,
+        checkpoint_path=checkpoint_root,
+        worktree_snapshot_path=os.path.join(checkpoint_root, "worktree.json") if checkpoint_root else None,
+        status=TaskSessionTurnStatus.ACTIVE,
+    )
+    db.add(turn)
+    db.flush()
+    # The turn is created after its user message so the message can be
+    # used as the stable undo target.  Complete the reverse association
+    # before the message is committed/broadcast; history and live UI both
+    # rely on this column to expose the undo action.
+    message.session_turn_id = turn.id
+    metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
+    job = ai_job_service.create_task_chat_job(
+        db,
+        workspace_id=workspace_id,
+        task_id=task_id,
+        creator_id=str(prepared["actor_user_id"]),
+        prompt_text=prompt,
+        context_json=metadata,
+        session_id=provider_session_id,
+        chat_message_id=message.id,
+        session_turn_id=turn.id,
+        session_generation=generation,
+        session_revision=revision,
+        commit=False,
+    )
+    turn.ai_job_id = job.id
+    if submission is not None:
+        submission.ai_job_id = job.id
+        submission.chat_message_id = message.id
+        submission.status = "EXECUTING"
+    db.commit()
+    try:
+        from app.domains.task.services import context_token_service
+        context_token_service.seed_snapshot_for_job(
+            db, job=job, prompt_text=prompt, chat_message_id=message.id,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Failed to seed context token snapshot for job {}: {}", job.id, exc)
+    # commit 过期属性后立即读取（session 尚在），组装纯数据结果
+    return CreatedChatTurn(
+        task_id=task_id,
+        workspace_id=workspace_id,
+        message_id=str(message.id),
+        created_at=message.created_at,
+        session_turn_id=str(turn.id),
+        session_generation=generation,
+        job_id=str(job.id),
+        can_undo=bool(checkpoint_root),
+    )
+
+
+async def create_task_chat_turn(
+    *,
+    task_id: str,
+    actor_user_id: str,
+    content: str,
+    prompt_text: Optional[str] = None,
+    context_json: Optional[dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+    fresh_session: bool = False,
+    client_message_id: Optional[str] = None,
+    skip_checkpoint: bool = False,
+) -> CreatedChatTurn:
+    """Create one user message/job and, unless skipped, its pre-turn checkpoints.
+
+    Callers must hold ``lock_task``.  The provider/worktree copy occurs before
+    the message is exposed to the queue, so every undoable turn has a stable
+    boundary even if the agent immediately starts producing events.  The
+    explicit initialization turn may set ``skip_checkpoint`` because it is the
+    first session boundary and is intentionally not undoable.
+
+    同步 DB 全部经 DB executor 执行（准备段/持久化段各自单事务、线程内自建
+    session），checkpoint 走 git executor；事件循环不执行任何 DB/文件 IO。
+    """
+    prompt = str(prompt_text if prompt_text is not None else content or "")
+    if not str(content or "").strip() or not prompt.strip():
+        raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
+
+    prepared = await run_db_txn(
+        lambda db: _prepare_chat_turn_sync(
+            db,
+            task_id=task_id,
+            content=str(content),
+            prompt=prompt,
+            session_id=session_id,
+            fresh_session=fresh_session,
+            submission_id=(context_json or {}).get("submission_id"),
+        )
+    )
+    prepared["actor_user_id"] = str(actor_user_id)
+
+    checkpoint_root: Optional[str] = None
+    if not skip_checkpoint:
+        checkpoint = await task_session_snapshot_service.create_checkpoint(
+            str(prepared["project_path"]),
+            list(prepared["repo_rel_paths"]),
+            prepared["provider"],
+            prepared["provider_session_id"],
+            workspace_id=str(prepared["workspace_id"]),
+            workspace_name=prepared["workspace_name"],
+            task_id=str(prepared["task_id"]),
+            task_name=prepared["task_name"],
+        )
+        checkpoint_root = str(checkpoint["root"])
+        prepared["checkpoint_root"] = checkpoint_root
+    try:
+        return await run_db_txn(
+            lambda db: _persist_chat_turn_sync(
+                db,
+                prepared=prepared,
+                content=str(content),
+                prompt=prompt,
+                context_json=context_json,
+                client_message_id=client_message_id,
+            )
+        )
+    except Exception:
+        committed_or_unknown = False
+        submission_id = (context_json or {}).get("submission_id")
+        if submission_id:
+            from app.domains.task.models.chat_submission import TaskChatSubmission
+            try:
+                committed_or_unknown = await run_db_txn(lambda db: bool(
+                    db.query(TaskChatSubmission.ai_job_id).filter_by(id=submission_id).scalar()
+                ))
+            except Exception:
+                # A lost database response is not proof that commit failed.
+                # Preserve the checkpoint until the durable job can be recovered.
+                committed_or_unknown = True
+        if checkpoint_root and not committed_or_unknown:
+            try:
+                await task_session_snapshot_service.cleanup_checkpoint(checkpoint_root)
+            except Exception as cleanup_exc:
+                # Keep the persistence error as the result; cleanup is best
+                # effort and can be retried by recovery.
+                logger.warning(
+                    "Task session checkpoint cleanup deferred after turn persistence failure: task={}, checkpoint={}, error={}",
+                    task_id,
+                    _secret_fingerprint(checkpoint_root),
+                    str(cleanup_exc),
+                )
+        raise
+
+
+def _persist_confirmation_reply_sync(
+    db: Session,
+    *,
+    task_id: str,
+    actor_user_id: str,
+    content: str,
+    client_message_id: str,
+    interaction_id: str,
+    reply_to_message_id: str,
+    confirmation_value: Any,
+) -> CreatedConfirmationReply:
+    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    if not task:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    parent = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.id == reply_to_message_id, ChatMessage.task_id == task_id)
+        .first()
+    )
+    parent_metadata = parent.metadata_json if parent and isinstance(parent.metadata_json, dict) else {}
+    confirmation = parent_metadata.get("confirmation") if isinstance(parent_metadata, dict) else None
+    if not parent or parent.role != "assistant" or not isinstance(confirmation, dict):
+        raise TaskSessionUndoError("Confirmation message not found", code="CONFIRMATION_NOT_FOUND", status_code=409)
+    if str(confirmation.get("interaction_id") or "") != str(interaction_id):
+        raise TaskSessionUndoError("Confirmation interaction does not match", code="CONFIRMATION_MISMATCH", status_code=409)
+    for existing in db.query(ChatMessage).filter(
+        ChatMessage.task_id == task_id,
+        ChatMessage.role == "user",
+    ).all():
+        metadata = existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
+        if str(metadata.get("interaction_id") or "") == str(interaction_id):
+            return CreatedConfirmationReply(
+                task_id=task_id,
+                workspace_id=str(task.workspace_id),
+                message_id=str(existing.id),
+                created_at=existing.created_at,
+                session_generation=existing.session_generation,
+            )
+    message = _new_chat_message(
+        db,
+        task_id=task_id,
+        workspace_id=str(task.workspace_id),
+        actor_user_id=actor_user_id,
+        content=content,
+        metadata_json={
+            "client_message_id": client_message_id,
+            "reply_to_message_id": reply_to_message_id,
+            "interaction_id": interaction_id,
+            "confirmation_value": confirmation_value,
+            **({"submission_id": parent_metadata["submission_id"],
+                "knowledge_state": parent_metadata.get("knowledge_state", "pending")}
+               if parent_metadata.get("submission_id") else {}),
+        },
+        session_generation=int(getattr(task, "session_generation", 0) or 0),
+    )
+    message.session_turn_id = parent.session_turn_id
+    db.commit()
+    db.refresh(message)
+    return CreatedConfirmationReply(
+        task_id=task_id,
+        workspace_id=str(task.workspace_id),
+        message_id=str(message.id),
+        created_at=message.created_at,
+        session_generation=message.session_generation,
+    )
+
+
+async def create_confirmation_reply_message(
+    *,
+    task_id: str,
+    actor_user_id: str,
+    content: str,
+    client_message_id: str,
+    interaction_id: str,
+    reply_to_message_id: str,
+    confirmation_value: Any,
+) -> CreatedConfirmationReply:
+    if not str(content or "").strip():
+        raise TaskSessionUndoError("Message content is empty", code="MESSAGE_EMPTY", status_code=400)
+    return await run_db_txn(
+        lambda db: _persist_confirmation_reply_sync(
+            db,
+            task_id=task_id,
+            actor_user_id=actor_user_id,
+            content=content,
+            client_message_id=client_message_id,
+            interaction_id=interaction_id,
+            reply_to_message_id=reply_to_message_id,
+            confirmation_value=confirmation_value,
+        )
+    )
+
+
+def _load_turn_target(db: Session, task: SddTask, message_id: str) -> tuple[TaskSessionTurn, ChatMessage]:
+    message = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.id == message_id, ChatMessage.task_id == task.id)
+        .first()
+    )
+    if not message:
+        raise TaskSessionUndoError("Message not found", code="MESSAGE_NOT_FOUND", status_code=404)
+    turn = db.query(TaskSessionTurn).filter(TaskSessionTurn.user_message_id == message.id).first()
+    if not turn or not str(turn.checkpoint_path or "").strip():
+        raise TaskSessionUndoError("This message has no session checkpoint", code="UNDO_NO_CHECKPOINT")
+    if turn.session_generation != int(getattr(task, "session_generation", 0) or 0):
+        raise TaskSessionUndoError("Messages before the current session cannot be undone", code="UNDO_NOT_CURRENT_GENERATION")
+    if turn.status != TaskSessionTurnStatus.ACTIVE:
+        raise TaskSessionUndoError("This session turn has already been reverted", code="UNDO_ALREADY_REVERTED")
+    from app.domains.workspace_asset.models.workspace_asset import SddDecision
+
+    if db.query(SddDecision.id).filter(
+        SddDecision.task_id == task.id,
+        SddDecision.source_chat_message_id == message.id,
+    ).first():
+        raise TaskSessionUndoError("Decision messages cannot be undone", code="UNDO_DECISION_MESSAGE")
+    return turn, message
+
+
+def _suffix_turns(db: Session, task: SddTask, target: TaskSessionTurn) -> list[TaskSessionTurn]:
+    return (
+        db.query(TaskSessionTurn)
+        .filter(
+            TaskSessionTurn.task_id == task.id,
+            TaskSessionTurn.session_generation == target.session_generation,
+            TaskSessionTurn.turn_index >= target.turn_index,
+            TaskSessionTurn.status == TaskSessionTurnStatus.ACTIVE,
+        )
+        .order_by(TaskSessionTurn.turn_index.desc())
+        .all()
+    )
+
+
+def _suffix_message_ids(db: Session, task: SddTask, target_message: ChatMessage, suffix_turns: list[TaskSessionTurn]) -> list[str]:
+    # Assistant/tool messages may predate session_turn_id backfilling.  Use
+    # the persisted order as a conservative fallback and remove everything at
+    # or after the selected user message in the current task transcript.
+    all_messages = task_service.sort_chat_messages(
+        db.query(ChatMessage).filter(ChatMessage.task_id == task.id).all()
+    )
+    target_index = next((index for index, item in enumerate(all_messages) if item.id == target_message.id), None)
+    if target_index is None:
+        return [target_message.id]
+    return [item.id for item in all_messages[target_index:]]
+
+
+async def _stop_engine_and_wait(task_id: str) -> bool:
+    """Stop the TraceForge engine and close its provider adapter.
+
+    Returns whether an engine was found.  Closing the DSH adapter is important
+    even though the deployed DSH server itself keeps its session Agent alive:
+    the undo path will switch to a newly forked cold provider session.
+    """
+    engine = get_engine(task_id)
+    if not engine:
+        return False
+    cli = engine.cli
+    stop_error: Optional[Exception] = None
+    try:
+        await engine.stop()
+    except Exception as exc:
+        stop_error = exc
+
+    deadline = asyncio.get_running_loop().time() + float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0)
+    while asyncio.get_running_loop().time() < deadline:
+        cli_running = False
+        try:
+            cli_running = bool(engine.cli and engine.cli.is_running())
+        except Exception:
+            pass
+        if not engine.running and not cli_running:
+            close = getattr(cli, "close", None)
+            if close is not None:
+                try:
+                    result = close()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as exc:
+                    raise TaskSessionUndoError(
+                        "Agent adapter did not close before undo",
+                        code="UNDO_AGENT_CLOSE_FAILED",
+                    ) from exc
+            if stop_error is not None:
+                raise stop_error
+            return True
+        await asyncio.sleep(0.05)
+    if stop_error is not None:
+        raise stop_error
+    raise TaskSessionUndoError("Agent process did not exit before undo", code="UNDO_AGENT_STILL_RUNNING")
+
+
+async def _cancel_dsh_without_engine(session_id: Optional[str]) -> None:
+    """Best-effort cancellation when the API process has no local engine object."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+
+    adapter = DshServerAdapter(str(settings.DSH_SERVER_URL or "http://127.0.0.1:3080"))
+    try:
+        await adapter.cancel(session_id=sid)
+    finally:
+        await adapter.close()
+
+
+async def _restore_provider_for_suffix(
+    task: SddTask,
+    target: TaskSessionTurn,
+    suffix: list[TaskSessionTurn],
+) -> Optional[str]:
+    provider = str(target.provider or "").strip().lower()
+    current_session_id = str(task.session_id or target.provider_session_id or "").strip() or None
+    if provider == "opencode":
+        from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
+        session_id = current_session_id
+        provider_ids: list[str] = []
+        target_user_id = None
+        for turn in suffix:
+            values = turn.provider_message_ids_json if isinstance(turn.provider_message_ids_json, dict) else {}
+            ids = values.get("provider_message_ids") if isinstance(values.get("provider_message_ids"), list) else []
+            provider_ids.extend(str(value).strip() for value in ids if str(value).strip())
+            if turn.id == target.id:
+                target_user_id = str(values.get("provider_user_message_id") or "").strip() or None
+        if not session_id:
+            return
+        if not target_user_id:
+            raise TaskSessionUndoError("OpenCode message boundary is unavailable", code="UNDO_PROVIDER_BOUNDARY_MISSING")
+        adapter = OpenCodeAdapter(str(settings.OPENCODE_SERVER_URL or "http://127.0.0.1:4097"))
+        try:
+            await adapter.wait_until_idle(
+                session_id,
+                float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0),
+            )
+            if not await adapter.revert_message(session_id, target_user_id):
+                raise TaskSessionUndoError("OpenCode provider does not support revert", code="UNDO_PROVIDER_REVERT_FAILED")
+            for message_id in dict.fromkeys(reversed(provider_ids)):
+                if not await adapter.delete_message(session_id, message_id):
+                    raise TaskSessionUndoError("OpenCode provider message deletion failed", code="UNDO_PROVIDER_DELETE_FAILED")
+            remaining = await adapter.list_messages(session_id)
+            remaining_ids = {
+                str((item.get("info") or item).get("id") or "").strip()
+                for item in remaining
+                if isinstance(item, dict)
+            }
+            if remaining_ids.intersection(set(provider_ids)):
+                raise TaskSessionUndoError("OpenCode provider still exposes reverted messages", code="UNDO_PROVIDER_VERIFY_FAILED")
+        finally:
+            await adapter.close()
+        return None
+
+    checkpoint = str(target.checkpoint_path or "").strip()
+    if not checkpoint:
+        raise TaskSessionUndoError("Provider checkpoint is missing", code="UNDO_PROVIDER_CHECKPOINT_MISSING")
+    await task_session_snapshot_service.restore_provider(
+        checkpoint,
+        provider,
+        str(task.project_path or ""),
+        current_session_id,
+    )
+    if provider in {"dsh", "dsh-webhost", "webhost"} and current_session_id:
+        return await task_session_snapshot_service.fork_dsh_session(
+            current_session_id,
+            str(task.project_path or ""),
+        )
+    return None
+
+
+def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], message_ids: list[str]) -> None:
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    db.query(TaskChatSubmission).filter(TaskChatSubmission.task_id == task.id,
+        TaskChatSubmission.chat_message_id.in_(message_ids)).delete(synchronize_session=False)
+    from app.domains.search.capture import enqueue_scope
+    enqueue_scope(db, task_id=task.id, workspace_id=task.workspace_id)
+    job_ids = [turn.ai_job_id for turn in suffix if turn.ai_job_id]
+    trace_paths: list[str] = []
+    for turn in suffix:
+        metadata = turn.provider_message_ids_json if isinstance(turn.provider_message_ids_json, dict) else {}
+        path = str(metadata.get("raw_trace_path") or "").strip()
+        if path:
+            trace_paths.append(path)
+    if job_ids:
+        db.query(SddContextTokenSegment).filter(
+            SddContextTokenSegment.task_id == task.id,
+            SddContextTokenSegment.ai_job_id.in_(job_ids),
+        ).delete(synchronize_session=False)
+        db.query(SddContextTokenSnapshot).filter(
+            SddContextTokenSnapshot.task_id == task.id,
+            SddContextTokenSnapshot.ai_job_id.in_(job_ids),
+        ).delete(synchronize_session=False)
+        jobs = db.query(SddAiJob).filter(SddAiJob.id.in_(job_ids), SddAiJob.task_id == task.id).all()
+        for job in jobs:
+            job.status = AiJobStatus.REVERTED
+            job.prompt_text = None
+            job.result_json = {"redacted": True, "reason": "session_undo"}
+            job.context_json = {"redacted": True, "reason": "session_undo"}
+            job.error_message = None
+            job.message = "Session turn reverted"
+            job.finished_at = datetime.utcnow()
+            try:
+                ai_job_service._clear_cancel_event(job.id)
+            except Exception:
+                pass
+        # Runtime skill events can contain tool input/result previews and are
+        # separate from context-token segments, so remove them by job too.
+        db.query(SddSkillRuntimeEvent).filter(
+            SddSkillRuntimeEvent.task_id == task.id,
+            SddSkillRuntimeEvent.ai_job_id.in_(job_ids),
+        ).delete(synchronize_session=False)
+        db.query(SddAiOutput).filter(
+            SddAiOutput.task_id == task.id,
+            SddAiOutput.ai_job_id.in_(job_ids),
+        ).delete(synchronize_session=False)
+        db.query(SddEvidence).filter(
+            SddEvidence.task_id == task.id,
+            SddEvidence.ai_job_id.in_(job_ids),
+        ).delete(synchronize_session=False)
+    suffix_turn_ids = [turn.id for turn in suffix]
+    if suffix_turn_ids:
+        db.query(SddExecutionLog).filter(
+            SddExecutionLog.task_id == task.id,
+            SddExecutionLog.session_turn_id.in_(suffix_turn_ids),
+        ).delete(synchronize_session=False)
+    if message_ids:
+        # A decision is keyed to the source chat message.  Removing only the
+        # message would leave a decision card pointing at history that no
+        # longer exists, and would make a later undo look like a durable
+        # decision survived the reverted turn.
+        db.query(SddDecision).filter(
+            SddDecision.task_id == task.id,
+            SddDecision.source_chat_message_id.in_(message_ids),
+        ).delete(synchronize_session=False)
+        db.query(ChatMessage).filter(
+            ChatMessage.task_id == task.id,
+            ChatMessage.id.in_(message_ids),
+        ).delete(synchronize_session=False)
+    for path in trace_paths:
+        if os.path.isfile(path):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                raise TaskSessionUndoError(
+                    "Agent trace could not be removed",
+                    code="UNDO_TRACE_REDACT_FAILED",
+                ) from exc
+
+
+def _prepare_undo_sync(
+    db: Session,
+    *,
+    task_id: str,
+    message_id: str,
+    actor_user_id: str,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Create the undo fence and return only detached scalar snapshots."""
+    task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
+    if not task:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise TaskSessionUndoError(str(exc), code=exc.code) from exc
+    existing = db.query(TaskSessionOperation).filter(
+        TaskSessionOperation.task_id == task.id,
+        TaskSessionOperation.operation_id == operation_id,
+    ).first()
+    if existing:
+        if existing.status == TaskSessionOperationStatus.REVERTED:
+            raise TaskSessionUndoError("Undo operation has already completed", code="UNDO_ALREADY_COMPLETED")
+        if existing.status == TaskSessionOperationStatus.REVERTING:
+            raise TaskSessionUndoError("Undo operation is already running", code="UNDO_OPERATION_BUSY")
+        raise TaskSessionUndoError(
+            "Previous undo operation failed; recover it before retrying",
+            code="UNDO_RECOVERY_REQUIRED",
+        )
+
+    target, target_message = _load_turn_target(db, task, message_id)
+    suffix = _suffix_turns(db, task, target)
+    message_ids = _suffix_message_ids(db, task, target_message, suffix)
+    operation = TaskSessionOperation(
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        operation_id=operation_id,
+        target_turn_id=target.id,
+        status=TaskSessionOperationStatus.REVERTING,
+        actor_user_id=actor_user_id,
+    )
+    db.add(operation)
+    task.session_revision = int(getattr(task, "session_revision", 0) or 0) + 1
+    for turn in suffix:
+        turn.status = TaskSessionTurnStatus.REVERTING
+    # Persist the fence before provider files are touched.  Late worker
+    # events now see a newer revision and are discarded by the engine.
+    db.commit()
+
+    def snapshot_turn(turn: TaskSessionTurn) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=str(turn.id),
+            checkpoint_path=str(turn.checkpoint_path or ""),
+            provider=str(turn.provider or ""),
+            provider_session_id=str(turn.provider_session_id or "") or None,
+            provider_message_ids_json=(
+                dict(turn.provider_message_ids_json)
+                if isinstance(turn.provider_message_ids_json, dict)
+                else {}
+            ),
+            ai_job_id=turn.ai_job_id,
+        )
+
+    return {
+        "task_id": str(task.id),
+        "workspace_id": str(task.workspace_id),
+        "project_path": str(task.project_path or ""),
+        "task_session_id": str(task.session_id or "") or None,
+        "session_generation": int(task.session_generation or 0),
+        "provider_name": str(target.provider or "").strip().lower(),
+        "provider_session_id": str(
+            task.session_id or target.provider_session_id or ""
+        ).strip() or None,
+        "target": snapshot_turn(target),
+        "suffix": [snapshot_turn(turn) for turn in suffix],
+        "message_ids": [str(value) for value in message_ids],
+        "target_message_id": str(target_message.id),
+        "restored_content": str(target_message.content),
+        "operation_id": operation_id,
+        "current_backup": os.path.join(str(target.checkpoint_path), "current-worktree"),
+        "checkpoint_paths": list(dict.fromkeys(
+            str(turn.checkpoint_path or "").strip()
+            for turn in suffix
+            if str(turn.checkpoint_path or "").strip()
+        )),
+    }
+
+
+def _record_undo_backup_path_sync(db: Session, *, task_id: str, operation_id: str, path: str) -> None:
+    operation = db.query(TaskSessionOperation).filter(
+        TaskSessionOperation.task_id == task_id,
+        TaskSessionOperation.operation_id == operation_id,
+    ).first()
+    if not operation:
+        raise TaskSessionUndoError("Undo operation not found", code="UNDO_OPERATION_NOT_FOUND")
+    operation.current_state_backup_path = path
+
+
+def _complete_undo_sync(
+    db: Session,
+    *,
+    context: dict[str, Any],
+    actor_user_id: str,
+    forked_dsh_session_id: Optional[str],
+) -> dict[str, Any]:
+    task = db.query(SddTask).filter(SddTask.id == context["task_id"]).first()
+    if not task:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    suffix_ids = [turn.id for turn in context["suffix"]]
+    suffix = (
+        db.query(TaskSessionTurn)
+        .filter(TaskSessionTurn.id.in_(suffix_ids), TaskSessionTurn.task_id == task.id)
+        .all()
+        if suffix_ids
+        else []
+    )
+    _redact_suffix(db, task, suffix, context["message_ids"])
+    now = datetime.utcnow()
+    for turn in suffix:
+        turn.status = TaskSessionTurnStatus.REVERTED
+        turn.reverted_at = now
+        turn.reverted_by_id = actor_user_id
+        turn.operation_id = context["operation_id"]
+        turn.provider_message_ids_json = None
+        turn.provider_session_id = None
+    operation = db.query(TaskSessionOperation).filter(
+        TaskSessionOperation.task_id == task.id,
+        TaskSessionOperation.operation_id == context["operation_id"],
+    ).first()
+    if not operation:
+        raise TaskSessionUndoError("Undo operation not found", code="UNDO_OPERATION_NOT_FOUND")
+    operation.status = TaskSessionOperationStatus.REVERTED
+    operation.finished_at = now
+    task.session_id = forked_dsh_session_id if context["provider_name"] in {"dsh", "dsh-webhost", "webhost"} else task.session_id
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    db.commit()
+    return {
+        "target_message_id": context["target_message_id"],
+        "removed_message_ids": context["message_ids"],
+        "restored_content": context["restored_content"],
+        "session_generation": context["session_generation"],
+        "task_status": TaskStatus.CODING.value,
+        "status": TaskSessionTurnStatus.REVERTED.value,
+    }
+
+
+def _fail_undo_sync(db: Session, *, task_id: str, operation_id: str) -> None:
+    operation = db.query(TaskSessionOperation).filter(
+        TaskSessionOperation.task_id == task_id,
+        TaskSessionOperation.operation_id == operation_id,
+    ).first()
+    if operation:
+        operation.status = TaskSessionOperationStatus.FAILED
+        operation.error_code = "UNDO_FAILED"
+        operation.error_message = "Undo failed; recovery checkpoint retained"
+        operation.finished_at = datetime.utcnow()
+        db.commit()
+
+
+
+
+async def undo_task_message(
+    db: Session,
+    *,
+    task: Optional[SddTask] = None,
+    task_id: Optional[str] = None,
+    message_id: str,
+    actor_user_id: str,
+    operation_id: str,
+) -> dict[str, Any]:
+    """Undo a turn while keeping every synchronous ORM phase off-loop."""
+    operation_id = str(operation_id or "").strip()
+    if not operation_id:
+        raise TaskSessionUndoError(
+            "operation_id is required",
+            code="UNDO_OPERATION_ID_REQUIRED",
+            status_code=400,
+        )
+    provider = await get_lock_provider()
+    if provider.backend_name != "redis":
+        raise TaskSessionUndoError(
+            "Undo requires the Redis distributed lock backend",
+            code="UNDO_REDIS_LOCK_REQUIRED",
+            status_code=503,
+        )
+
+    db_bind = db.get_bind()
+    resolved_task_id = str(task_id or (task.id if task is not None else "")).strip()
+    if not resolved_task_id:
+        raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    db.close()
+    context: Optional[dict[str, Any]] = None
+    async with lock_task(
+        resolved_task_id,
+        ttl=max(120, int(getattr(settings, "TASK_LOCK_TTL_SECONDS", 120) or 120)),
+    ):
+        context = await run_db_txn_with_bind(
+            db_bind,
+            lambda session: _prepare_undo_sync(
+                session,
+                task_id=resolved_task_id,
+                message_id=str(message_id),
+                actor_user_id=actor_user_id,
+                operation_id=operation_id,
+            ),
+        )
+        provider_name = context["provider_name"]
+        target = context["target"]
+        suffix = context["suffix"]
+        task_snapshot = SimpleNamespace(
+            id=context["task_id"],
+            project_path=context["project_path"],
+            session_id=context["task_session_id"],
+        )
+        provider_backup_ready = False
+        forked_dsh_session_id: Optional[str] = None
+
+        async def _compensate_live_state() -> None:
+            if forked_dsh_session_id:
+                try:
+                    await task_session_snapshot_service.cleanup_dsh_session(forked_dsh_session_id)
+                except Exception as fork_exc:
+                    logger.error(
+                        "Task session undo DSH fork compensation failed: task={}, operation={}, error={}",
+                        resolved_task_id,
+                        operation_id,
+                        str(fork_exc),
+                    )
+            if provider_backup_ready:
+                try:
+                    await task_session_snapshot_service.restore_provider_backup(
+                        str(target.checkpoint_path),
+                    )
+                except Exception as provider_exc:
+                    logger.error(
+                        "Task session undo provider compensation failed: task={}, operation={}, error={}",
+                        resolved_task_id,
+                        operation_id,
+                        str(provider_exc),
+                    )
+            if os.path.isfile(os.path.join(context["current_backup"], "worktree.json")):
+                try:
+                    await task_session_snapshot_service.restore_worktree(
+                        context["current_backup"],
+                        context["project_path"],
+                        os.path.join(
+                            str(target.checkpoint_path),
+                            "current-recovery-worktree",
+                        ),
+                    )
+                except Exception as worktree_exc:
+                    logger.error(
+                        "Task session undo worktree compensation failed: task={}, operation={}, error={}",
+                        resolved_task_id,
+                        operation_id,
+                        str(worktree_exc),
+                    )
+
+        try:
+            engine_was_stopped = await _stop_engine_and_wait(resolved_task_id)
+            if provider_name in {"dsh", "dsh-webhost", "webhost"} and not engine_was_stopped:
+                await _cancel_dsh_without_engine(context["provider_session_id"])
+            await skill_runtime_trace_service.wait_for_pending_writes(
+                float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0)
+            )
+            await run_db_txn_with_bind(
+                db_bind,
+                lambda session: _record_undo_backup_path_sync(
+                    session,
+                    task_id=resolved_task_id,
+                    operation_id=operation_id,
+                    path=context["current_backup"],
+                ),
+            )
+            await task_session_snapshot_service.backup_current_provider(
+                str(target.checkpoint_path),
+                str(target.provider or ""),
+                context["project_path"],
+                context["provider_session_id"],
+            )
+            provider_backup_ready = True
+            forked_dsh_session_id = await _restore_provider_for_suffix(
+                task_snapshot,
+                target,
+                suffix,
+            )
+            await task_session_snapshot_service.restore_worktree(
+                str(target.checkpoint_path),
+                context["project_path"],
+                context["current_backup"],
+            )
+            result = await run_db_txn_with_bind(
+                db_bind,
+                lambda session: _complete_undo_sync(
+                    session,
+                    context=context,
+                    actor_user_id=actor_user_id,
+                    forked_dsh_session_id=forked_dsh_session_id,
+                ),
+            )
+            for checkpoint_path in context["checkpoint_paths"]:
+                try:
+                    await task_session_snapshot_service.cleanup_checkpoint(checkpoint_path)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Task session undo checkpoint cleanup deferred: task={}, operation={}, checkpoint={}, error={}",
+                        resolved_task_id,
+                        operation_id,
+                        _secret_fingerprint(checkpoint_path),
+                        str(cleanup_exc),
+                    )
+            try:
+                await manager.send_message_to_room(
+                    resolved_task_id,
+                    WSMessage(
+                        type="task_session_reverted",
+                        payload={
+                            "task_id": resolved_task_id,
+                            "operation_id": operation_id,
+                            "removed_message_ids": context["message_ids"],
+                            "session_generation": context["session_generation"],
+                            "task_status": TaskStatus.CODING.value,
+                        },
+                    ),
+                )
+            except Exception as broadcast_exc:
+                logger.warning(
+                    "Task session undo broadcast deferred: task={}, operation={}, error={}",
+                    resolved_task_id,
+                    operation_id,
+                    str(broadcast_exc),
+                )
+            return result
+        except TaskSessionUndoError:
+            await _compensate_live_state()
+            if context is not None:
+                await run_db_txn_with_bind(
+                    db_bind,
+                    lambda session: _fail_undo_sync(
+                        session,
+                        task_id=resolved_task_id,
+                        operation_id=operation_id,
+                    ),
+                )
+            raise
+        except Exception as exc:
+            await _compensate_live_state()
+            if context is not None:
+                await run_db_txn_with_bind(
+                    db_bind,
+                    lambda session: _fail_undo_sync(
+                        session,
+                        task_id=resolved_task_id,
+                        operation_id=operation_id,
+                    ),
+                )
+            logger.error(
+                "Task session undo failed: task={}, operation={}, error={}",
+                resolved_task_id,
+                operation_id,
+                str(exc),
+            )
+            raise TaskSessionUndoError(
+                "Undo failed; recovery checkpoint retained",
+                code="UNDO_FAILED",
+            ) from exc

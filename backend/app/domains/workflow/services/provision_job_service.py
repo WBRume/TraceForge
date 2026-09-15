@@ -4,20 +4,21 @@ Provision job orchestration service.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import (
     LockAcquireTimeout,
+    QueueWaitCancelled,
     lock_workspace_repo,
     lock_workspace_repo_creation,
     queue_provision_jobs,
     queue_workspace_task_creation,
 )
 from app.core.logging import audit_log, bind_log_context, get_logger
+from app.core.offload import run_git_job
 from app.database import SessionLocal
 from app.domains.workflow.models.provision_job import (
     ProvisionJobStatus,
@@ -27,6 +28,7 @@ from app.domains.workflow.models.provision_job import (
 from app.domains.auth.models.user import User, Workspace
 from app.domains.skill.services import skill_service
 from app.domains.task.services import task_service
+from app.domains.task.services.task_service import ProvisionJobCancelled
 from app.domains.workspace.services import workspace_service
 from app.domains.task.services import git_worktree_service
 
@@ -55,6 +57,7 @@ def serialize_job(job: SddProvisionJob) -> Dict[str, Any]:
         "stage": str(job.stage or ""),
         "message": job.message,
         "error_message": job.error_message,
+        "cancel_requested": bool(getattr(job, "cancel_requested", False)),
         "result_json": dict(job.result_json or {}) if isinstance(job.result_json, dict) else job.result_json,
         "context_json": dict(job.context_json or {}) if isinstance(job.context_json, dict) else job.context_json,
         "workspace_id": job.workspace_id,
@@ -267,6 +270,83 @@ def mark_failed(
         db.close()
 
 
+def request_cancel(db: Session, job: SddProvisionJob, *, message: Optional[str] = None) -> bool:
+    """标记任务创建 job 为“请求取消”。
+
+    返回 True 表示标记成功（后台工作流会在下一个检查点终止并回滚）；
+    返回 False 表示 job 已终态（SUCCESS/FAILED），无可取消内容。
+    """
+    if job.status in (ProvisionJobStatus.SUCCESS, ProvisionJobStatus.FAILED):
+        return False
+    job.cancel_requested = True
+    if str(job.stage or "").strip().upper() not in {"CANCELLING", "CANCELLED"}:
+        job.stage = "CANCELLING"
+    if message:
+        job.message = message
+    db.commit()
+    db.refresh(job)
+    return True
+
+
+def is_cancel_requested(job_id: str) -> bool:
+    """读取取消标记（供工作流检查点调用，短会话避免长事务）。"""
+    db = SessionLocal()
+    try:
+        job = get_job(db, job_id)
+        if not job or not job.cancel_requested:
+            return False
+        return job.status in (ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING)
+    finally:
+        db.close()
+
+
+def get_latest_active_job_for_task(db: Session, task_id: str) -> Optional[SddProvisionJob]:
+    """按任务查找最新一个未终态的任务创建 job。"""
+    return (
+        db.query(SddProvisionJob)
+        .filter(
+            SddProvisionJob.task_id == str(task_id or "").strip(),
+            SddProvisionJob.job_type == ProvisionJobType.CREATE_TASK,
+            SddProvisionJob.status.in_([ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING]),
+        )
+        .order_by(SddProvisionJob.created_at.desc())
+        .first()
+    )
+
+
+def list_active_jobs_for_creator(db: Session, creator_id: str) -> List[SddProvisionJob]:
+    """列出创建人名下所有未终态的任务创建 job（用于前端浮窗状态恢复）。"""
+    return (
+        db.query(SddProvisionJob)
+        .filter(
+            SddProvisionJob.creator_id == str(creator_id or "").strip(),
+            SddProvisionJob.job_type == ProvisionJobType.CREATE_TASK,
+            SddProvisionJob.status.in_([ProvisionJobStatus.PENDING, ProvisionJobStatus.RUNNING]),
+        )
+        .order_by(SddProvisionJob.created_at.asc())
+        .all()
+    )
+
+
+def serialize_active_job(db: Session, job: SddProvisionJob) -> Dict[str, Any]:
+    """序列化浮窗所需的 job 摘要（附带任务名，供跨工作区展示）。"""
+    from app.domains.task.models.task import SddTask
+
+    payload = serialize_job(job)
+    task_name = ""
+    task_id = str(payload.get("task_id") or "").strip()
+    if task_id:
+        task = db.query(SddTask).filter(SddTask.id == task_id).first()
+        if task:
+            task_name = str(task.name or "")
+    if not task_name:
+        context = payload.get("context_json")
+        if isinstance(context, dict):
+            task_name = str(context.get("task_name") or "")
+    payload["task_name"] = task_name
+    return payload
+
+
 def _get_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
     db = SessionLocal()
     try:
@@ -295,6 +375,8 @@ def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, A
             project_id=context.get("project_id"),
             product_ids=context.get("product_ids") if isinstance(context.get("product_ids"), list) else None,
             repositories=context.get("repositories") if isinstance(context.get("repositories"), list) else None,
+            project_name=context.get("project_name"),
+            product_name=context.get("product_name"),
         )
         repositories = []
         for row in workspace.repositories:
@@ -361,13 +443,15 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:
         db.close()
 
 
-def _prepare_task_sync(*, workspace_id: str, task_id: str) -> Dict[str, Any]:
+def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> Dict[str, Any]:
     db = SessionLocal()
     try:
+        cancel_check = (lambda: is_cancel_requested(job_id)) if job_id else None
         task = task_service.prepare_task_resources_for_provision(
             db,
             workspace_id=workspace_id,
             task_id=task_id,
+            cancel_check=cancel_check,
         )
         return {
             "workspace_id": task.workspace_id,
@@ -410,17 +494,42 @@ def _import_skill_sync(*, creator_id: str, context: Dict[str, Any]) -> Dict[str,
         db.close()
 
 
-def _mark_task_prepare_failed(*, workspace_id: str, task_id: str, error_message: str) -> None:
+def _rollback_provision_task_sync(*, workspace_id: str, task_id: str) -> None:
     db = SessionLocal()
     try:
-        task_service.mark_task_prepare_failed(
-            db,
-            workspace_id=workspace_id,
-            task_id=task_id,
-            error_message=error_message,
+        task_service.rollback_provision_task(db, workspace_id=workspace_id, task_id=task_id)
+    except Exception as exc:
+        task_logger.exception(
+            "Task provision rollback failed: workspace_id={}, task_id={}, error={}",
+            workspace_id,
+            task_id,
+            str(exc),
         )
     finally:
         db.close()
+
+
+async def _rollback_task_resources(*, workspace_id: str, task_id: str) -> None:
+    """任务创建失败/被取消后的终局回滚：清理磁盘资源并删除任务记录。
+
+    失败/取消发生时仓库锁已被释放，这里重新获取（best-effort）以保证
+    worktree 操作与其它任务创建互斥；拿不到锁时退化为无锁清理
+    （remove_task_worktree 只触碰 task/<task_id> 专属分支与目录，missing_ok）。
+    """
+    use_repo_lock = _workspace_uses_git(workspace_id)
+    if not use_repo_lock:
+        await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+        return
+    try:
+        async with lock_workspace_repo(workspace_id):
+            await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
+    except LockAcquireTimeout:
+        task_logger.warning(
+            "Task provision rollback skipped repo lock (busy): workspace_id={}, task_id={}",
+            workspace_id,
+            task_id,
+        )
+        await run_git_job(_rollback_provision_task_sync, workspace_id=workspace_id, task_id=task_id)
 
 
 def _workspace_uses_git(workspace_id: str) -> bool:
@@ -453,9 +562,16 @@ async def run_create_workspace_job(job_id: str) -> None:
     project_path = str(context.get("project_path") or "").strip()
     git_repo_url = str(context.get("git_repo_url") or "").strip()
     project_id = str(context.get("project_id") or "").strip()
-    use_multi_repo = bool(project_id)
+    # 多仓库模式：关联管理项目，或独立模式（未关联项目但手动指定了仓库集合）。
+    # 独立模式若不进入该分支，MATERIALIZE_REPOS 阶段会被跳过，仓库永远不会 clone。
+    context_repositories = (
+        context.get("repositories") if isinstance(context.get("repositories"), list) else None
+    )
+    use_multi_repo = bool(project_id) or bool(context_repositories)
     use_repo_lock = bool(project_path and git_repo_url)
-    creation_lock_url = git_repo_url if use_repo_lock else (f"project:{project_id}" if use_multi_repo else "")
+    # 独立模式（无 project_id）时按 project_path 隔离锁；不能落到全局常量“project:”上，
+    # 否则所有独立模式的工作区创建会互相串行阻塞。
+    creation_lock_url = git_repo_url if use_repo_lock else (f"project:{project_id}" if project_id else "")
 
     with bind_log_context(job_id=job_id, user_id=creator_id):
         try:
@@ -476,7 +592,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                         ):
                             if use_multi_repo:
                                 mark_progress(job_id, stage="CREATING_WORKSPACE", progress=25, message="Creating workspace")
-                                result = await asyncio.to_thread(
+                                result = await run_git_job(
                                     _create_workspace_sync,
                                     job_id=job_id,
                                     creator_id=creator_id,
@@ -488,14 +604,14 @@ async def run_create_workspace_job(job_id: str) -> None:
                                     progress=40,
                                     message="Materializing workspace repositories",
                                 )
-                                repo_result = await asyncio.to_thread(
+                                repo_result = await run_git_job(
                                     _materialize_workspace_repos_sync,
                                     workspace_id=str(result.get("workspace_id") or "").strip(),
                                 )
                                 result["repository_materialization"] = repo_result
                             else:
                                 mark_progress(job_id, stage="CLONING_REPOSITORY", progress=30, message="Cloning workspace repository")
-                                result = await asyncio.to_thread(
+                                result = await run_git_job(
                                     _create_workspace_sync,
                                     job_id=job_id,
                                     creator_id=creator_id,
@@ -505,7 +621,7 @@ async def run_create_workspace_job(job_id: str) -> None:
                         raise ValueError("Workspace repository is busy. Please retry later.") from exc
                 else:
                     mark_progress(job_id, stage="CREATING_WORKSPACE", progress=40, message="Creating workspace")
-                    result = await asyncio.to_thread(
+                    result = await run_git_job(
                         _create_workspace_sync,
                         job_id=job_id,
                         creator_id=creator_id,
@@ -568,6 +684,32 @@ async def run_create_workspace_job(job_id: str) -> None:
             )
 
 
+def _ensure_not_cancelled(job_id: str) -> None:
+    """取消检查点：命中取消标记时终止工作流（由调用方负责回滚）。"""
+    if is_cancel_requested(job_id):
+        raise ProvisionJobCancelled("Task creation cancelled by user")
+
+
+def _mark_job_cancelled(job_id: str) -> None:
+    db = SessionLocal()
+    try:
+        job = get_job(db, job_id)
+        if not job:
+            return
+        _set_job_state(
+            db,
+            job,
+            status=ProvisionJobStatus.FAILED,
+            stage="CANCELLED",
+            progress=max(int(job.progress or 0), 1),
+            message="Task creation cancelled by user",
+            error_message="Cancelled by user",
+            finished_at=_utcnow(),
+        )
+    finally:
+        db.close()
+
+
 async def run_create_task_job(job_id: str) -> None:
     payload = _get_job_payload(job_id)
     if not payload:
@@ -577,6 +719,9 @@ async def run_create_task_job(job_id: str) -> None:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     task_id = str(payload.get("task_id") or "").strip()
     use_repo_lock = _workspace_uses_git(workspace_id)
+    # 排队等待期间也要响应取消：否则 job 会卡在队列里直到等待超时，
+    # 用户点击取消没有任何效果（旧实现的“无法取消任务”）。
+    cancel_check = (lambda: is_cancel_requested(job_id))
 
     with bind_log_context(job_id=job_id, workspace_id=workspace_id, task_id=task_id, user_id=creator_id):
         try:
@@ -586,23 +731,27 @@ async def run_create_task_job(job_id: str) -> None:
                 progress=1,
                 message="Waiting for provision execution slot",
             )
-            async with queue_provision_jobs(queue_tag="create_task"):
+            async with queue_provision_jobs(queue_tag="create_task", cancel_check=cancel_check):
+                _ensure_not_cancelled(job_id)
                 mark_running(job_id, stage="PREPARING_TASK", progress=5, message="Task request accepted")
                 if use_repo_lock:
                     mark_progress(job_id, stage="WAITING_TASK_QUEUE", progress=10, message="Waiting in create task queue")
-                    async with queue_workspace_task_creation(workspace_id):
+                    async with queue_workspace_task_creation(workspace_id, cancel_check=cancel_check):
+                        _ensure_not_cancelled(job_id)
                         mark_progress(job_id, stage="WAITING_REPO_LOCK", progress=20, message="Waiting for repository lock")
                         async with lock_workspace_repo(workspace_id):
+                            _ensure_not_cancelled(job_id)
                             mark_progress(
                                 job_id,
                                 stage="PREPARING_WORKTREE",
                                 progress=40,
                                 message="Preparing repository worktree",
                             )
-                            result = await asyncio.to_thread(
+                            result = await run_git_job(
                                 _prepare_task_sync,
                                 workspace_id=workspace_id,
                                 task_id=task_id,
+                                job_id=job_id,
                             )
                 else:
                     mark_progress(
@@ -611,12 +760,14 @@ async def run_create_task_job(job_id: str) -> None:
                         progress=35,
                         message="Preparing local workspace",
                     )
-                    result = await asyncio.to_thread(
+                    result = await run_git_job(
                         _prepare_task_sync,
                         workspace_id=workspace_id,
                         task_id=task_id,
+                        job_id=job_id,
                     )
 
+            _ensure_not_cancelled(job_id)
             mark_success(
                 job_id,
                 stage="COMPLETED",
@@ -634,6 +785,19 @@ async def run_create_task_job(job_id: str) -> None:
                 workspace_id=workspace_id,
                 job_id=job_id,
             )
+        except (ProvisionJobCancelled, QueueWaitCancelled):
+            _mark_job_cancelled(job_id)
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
+            audit_log(
+                action="create_task",
+                outcome="cancelled",
+                resource_type="task",
+                resource_id=task_id,
+                user_id=creator_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                reason="cancelled by user",
+            )
         except LockAcquireTimeout as exc:
             if str(exc.resource_type or "").strip() == "provision_queue":
                 err = "Provision queue is busy. Please retry later."
@@ -645,13 +809,24 @@ async def run_create_task_job(job_id: str) -> None:
                 message="Task provisioning failed",
                 error_message=err,
             )
-            _mark_task_prepare_failed(workspace_id=workspace_id, task_id=task_id, error_message=err)
+            # 失败不留任务：清理磁盘资源并删除任务记录（FAILED 仅允许用户标记）
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             task_logger.warning(
                 "Task provision lock timeout: job_id={}, workspace_id={}, task_id={}, lock_key={}",
                 job_id,
                 workspace_id,
                 task_id,
                 exc.lock_key,
+            )
+            audit_log(
+                action="create_task",
+                outcome="failed",
+                resource_type="task",
+                resource_id=task_id,
+                user_id=creator_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                reason=err,
             )
         except Exception as exc:
             mark_failed(
@@ -660,13 +835,24 @@ async def run_create_task_job(job_id: str) -> None:
                 message="Task provisioning failed",
                 error_message=str(exc),
             )
-            _mark_task_prepare_failed(workspace_id=workspace_id, task_id=task_id, error_message=str(exc))
+            # 失败不留任务：清理磁盘资源并删除任务记录（FAILED 仅允许用户标记）
+            await _rollback_task_resources(workspace_id=workspace_id, task_id=task_id)
             task_logger.exception(
                 "Task provision job failed: job_id={}, workspace_id={}, task_id={}, error={}",
                 job_id,
                 workspace_id,
                 task_id,
                 str(exc),
+            )
+            audit_log(
+                action="create_task",
+                outcome="failed",
+                resource_type="task",
+                resource_id=task_id,
+                user_id=creator_id,
+                workspace_id=workspace_id,
+                job_id=job_id,
+                reason=str(exc),
             )
 
 
@@ -702,7 +888,7 @@ async def run_import_skill_job(job_id: str) -> None:
                     progress=20,
                     message=f"Importing {skill_name or 'skill'} from GitHub",
                 )
-                result = await asyncio.to_thread(
+                result = await run_git_job(
                     _import_skill_sync,
                     creator_id=creator_id,
                     context=context,

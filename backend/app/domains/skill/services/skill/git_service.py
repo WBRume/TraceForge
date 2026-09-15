@@ -32,23 +32,26 @@ def _run_git_raw(
     *,
     decode_text: bool = True,
 ) -> subprocess.CompletedProcess:
+    from app.config import settings
+    from app.core.subprocess_runner import ProcessTimeoutError, run_git
+
     cwd = os.path.abspath(repo_path)
-    if decode_text:
-        return subprocess.run(
-            ["git", *args],
+    try:
+        return run_git(
+            list(args),
             cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
+            timeout_seconds=float(getattr(settings, "GIT_COMMAND_TIMEOUT_SECONDS", 180) or 180),
+            decode_text=decode_text,
         )
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        check=False,
-    )
+    except (ProcessTimeoutError, OSError) as exc:
+        # 超时/git 不存在按失败退出码归一，交由 _run_git_checked 抛领域异常
+        message = str(exc)
+        return subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=-1,
+            stdout="" if decode_text else b"",
+            stderr=message if decode_text else message.encode("utf-8"),
+        )
 
 
 def _run_git_checked(repo_path: str, args: List[str]) -> str:

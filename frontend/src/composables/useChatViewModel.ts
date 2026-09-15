@@ -1,22 +1,35 @@
-import { ref, onMounted, onUnmounted, nextTick, computed } from 'vue'
+import { useChatMessageContext } from '@/composables/useChatMessageContext'
+import { useChatSubmissions } from '@/composables/useChatSubmissions'
+import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { formatApiError } from '@/utils/error'
-import { formatTime, formatToolInput } from '@/utils/chatFormatters'
+import { formatTime, formatToolInput, formatElapsedDuration } from '@/utils/chatFormatters'
+import { isDiagnosisSummaryJob, isDiagnosisSummaryActiveForTask, isChatActiveForTask, resolveDiagnosisSummaryStartedMs } from '@/utils/diagnosisSummary'
 import { buildBackendWsUrl } from '@/utils/ws'
+import { wsBackoffDelay } from '@/utils/wsBackoff'
+import {
+  buildWsCursorQuery,
+  sendResyncComplete,
+} from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useTaskContextWindow } from '@/composables/useTaskContextWindow'
 import { useChatDecision, type ChatDecisionPayload } from '@/composables/useChatDecision'
 import { useTaskSkillRuntimeTrace } from '@/composables/useTaskSkillRuntimeTrace'
 import { useAuthStore } from '@/stores/auth'
+import { useProvisioningStore } from '@/stores/provisioning'
 import type { ContextCompactionLocatePayload, ContextTokenCategory } from '@/types/contextWindow'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
 import {
   normalizeDiagnosisPayload,
   type DiagnosisResultPayload,
 } from '@/types/diagnosis'
+import { useMarkdownExport } from '@/composables/useMarkdownExport'
+import { useTaskRuntimePanels, type TaskRuntimeStatusCard } from '@/composables/useTaskRuntimePanels'
+import { useChatWorkbenchScroll, type ChatWorkbenchMode } from '@/composables/useChatWorkbenchScroll'
 
 
 export function useChatViewModel() {
@@ -25,11 +38,12 @@ export function useChatViewModel() {
   const route = useRoute()
   const router = useRouter()
   const authStore = useAuthStore()
+  const { exportDiagnosisMarkdown, exportCaseMarkdown } = useMarkdownExport()
   const taskSessionControls = useTaskSessionControls({
     getWorkspaceId: () => String(route.params.wsId || ''),
   })
   
-  type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'SUCCESS' | 'FAILED' | 'CANCELLED'
+  type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUPTED' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'REVERTED'
   type ChatAiJob = {
     id: string
     task_id?: string | null
@@ -38,6 +52,9 @@ export function useChatViewModel() {
     message?: string | null
     error_message?: string | null
     context_json?: Record<string, any> | null
+    session_id?: string | null
+    started_at?: string | null
+    created_at?: string | null
   }
   type SpecBootstrapStatus = 'PENDING' | 'RUNNING' | 'READY' | 'FAILED' | 'STALE'
   type TaskSpecBootstrap = {
@@ -56,7 +73,7 @@ export function useChatViewModel() {
   type OpenSpecDrawerLevel = 1 | 2 | 3
   type SpecDrawerTab = 'spec_doc' | 'superpowers_docs' | 'diag_docs' | 'diag_code'
   type TaskSessionFilter = 'ALL' | 'DONE' | 'FAILED'
-  type ChatWorkbenchMode = 'platform' | 'cli'
+  type TaskRelationFilter = 'created_by_me' | 'mentioned_me' | 'messaged_by_me' | 'followed_by_me'
   type RuntimeSkillUsage = {
     is_used: boolean
     used_count: number
@@ -91,11 +108,14 @@ export function useChatViewModel() {
   const currentTask = ref<any>(null)
   const chatInput = ref('')
   const sendingChat = ref(false)
+  const undoingMessageId = ref('')
+  const isUndoing = computed(() => Boolean(undoingMessageId.value))
   const currentWorkspace = ref<any>(null)
   const workspacePermissions = ref<any>(null)
   const workspaceCurrentUserIsExpert = ref(false)
   const taskListContainer = ref<HTMLElement | null>(null)
   const taskStatusFilter = ref<TaskSessionFilter>('ALL')
+  const taskRelationFilter = ref<TaskRelationFilter[]>([])
   const taskListPage = ref(1)
   const taskListTotal = ref(0)
   const taskListLoading = ref(false)
@@ -104,12 +124,48 @@ export function useChatViewModel() {
   
   // Chat bubbles: 仅自然语言 (user / assistant text)
   const messages = ref<any[]>([])
+  const submissions = useChatSubmissions({
+    workspaceId: () => String(route.params.wsId || ''),
+    taskId: () => String(currentTask.value?.id || ''),
+    userId: () => String(authStore.user?.id || ''),
+  })
+  const recoveringSubmissions = ref(false)
+  const visibleMessages = computed(() => submissions.bubbles(messages.value))
+  let submissionPoll: ReturnType<typeof setInterval> | null = null
+  let submissionRefreshRunning = false
+  const refreshSubmissions = async (taskId: string) => {
+    try {
+      const changed = await submissions.refresh(taskId)
+      if (currentTask.value?.id === taskId) {
+        recoveringSubmissions.value = false
+        if (changed) {
+          await loadHistory(taskId)
+          await loadActiveChatJobs(taskId)
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to recover chat submissions', error)
+    }
+  }
+  const historyContext = useChatMessageContext()
+  let historyGeneration = 0
   
   // 终端日志面板：tool_use, tool_result, raw logs
   const terminalLogs = ref<any[]>([])
   const highlightedMessageId = ref('')
   const highlightedTerminalLogId = ref('')
   const chatWorkbenchMode = ref<ChatWorkbenchMode>('platform')
+  const workbenchScroll = useChatWorkbenchScroll({
+    activeMode: chatWorkbenchMode,
+    getTaskId: () => String(currentTask.value?.id || ''),
+  })
+  const {
+    chatContainer,
+    terminalContainer,
+    restoreScrollPosition: restoreWorkbenchScrollPosition,
+    scrollToBottom,
+    setTerminalContainer,
+  } = workbenchScroll
   const specDrawerLevel = ref<SpecDrawerLevel>(0)
   const lastOpenSpecDrawerLevel = ref<OpenSpecDrawerLevel>(1)
   const specDrawerTab = ref<SpecDrawerTab>('spec_doc')
@@ -129,13 +185,17 @@ export function useChatViewModel() {
   let referenceHighlightTimer: number | null = null
   
   // AI 思考面�?
+  // AI thinking panel: delta/snapshot frame protocol state
   const thinkingContent = ref('')
   const showThinking = ref(false)
   const thinkingExpanded = ref(false)
+  const thinkingSequence = ref(0)
+  const taskRuntimePanels = useTaskRuntimePanels()
   const resetThinkingPanel = () => {
     thinkingContent.value = ''
     showThinking.value = false
     thinkingExpanded.value = false
+    thinkingSequence.value = 0
   }
   
   // 运行状况总览
@@ -166,6 +226,8 @@ export function useChatViewModel() {
   // Engine state
   const engineRunning = ref(false)
   const showInitReasonModal = ref(false)
+  const startPrompt = ref('')
+  const initPrompt = ref('')
   const initReason = ref('')
   const initSkillOptionsLoading = ref(false)
   const initSkillOptions = ref<any[]>([])
@@ -212,8 +274,11 @@ export function useChatViewModel() {
   
   // WebSocket
   let ws: WebSocket | null = null
+  let wsTaskId = ''
   let wsReconnectTimer: number | null = null
   let wsManualClose = false
+  let taskWsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
+  let activeChatJobsRequestSeq = 0
   
   const hasTaskSpecDoc = (task: any): boolean => {
     return Boolean(String(task?.spec_doc_path || '').trim())
@@ -264,7 +329,7 @@ export function useChatViewModel() {
     (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !isTaskPreStart.value && !isDiagnosisTask.value
   ))
   const isSpecPanelOpen = computed(() => specDrawerLevel.value > 0)
-  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value || isTaskProvisioning.value)
+  const isChatLocked = computed(() => isTerminalStatus.value || isTaskPreStart.value || isTaskProvisioning.value || isUndoing.value)
 
   // 问题定位任务：诊断文档/代码路径抽屉（复用 spec 抽屉三段式容器）
   const toggleDiagnosisDocsDrawer = () => {
@@ -329,6 +394,10 @@ export function useChatViewModel() {
   }
 
   const upsertChatMessage = (item: any) => {
+    if (historyContext.anchored.value && !messages.value.some(m => messageIdentity(m) === messageIdentity(item))) {
+      historyContext.hasNew.value = true
+      return
+    }
     const key = messageIdentity(item)
     if (!key) {
       messages.value.push(item)
@@ -352,6 +421,45 @@ export function useChatViewModel() {
     messages.value.push(item)
   }
 
+  const syncConfirmationCardsFromMessages = () => {
+    const confirmations = messages.value.filter((message) => (
+      message?.role === 'assistant'
+      && message?.metadata?.confirmation?.interaction_id
+    ))
+    const confirmationIds = new Set(confirmations.map(message => (
+      String(message.metadata.confirmation.interaction_id)
+    )))
+    pinnedCards.value = pinnedCards.value.filter(card => (
+      card.type !== 'hitl' || confirmationIds.has(String(card.interaction_id || ''))
+    ))
+    for (const message of confirmations) {
+      const confirmation = message.metadata.confirmation
+      const interactionId = String(confirmation.interaction_id)
+      const answer = messages.value.find((candidate) => (
+        candidate?.role === 'user'
+        && String(candidate?.metadata?.interaction_id || '') === interactionId
+      ))
+      const existing = pinnedCards.value.find(card => card.type === 'hitl' && card.interaction_id === interactionId)
+      const nextCard = {
+        id: `confirmation-${message.id}`,
+        type: 'hitl',
+        interaction_id: interactionId,
+        message_id: String(message.id),
+        hitl_type: String(confirmation.kind || 'text'),
+        prompt: String(message.content || ''),
+        options: Array.isArray(confirmation.options) ? confirmation.options : [],
+        context: String(message.metadata.context || ''),
+        job_id: String(message.metadata.job_id || ''),
+        answered: Boolean(answer),
+        answer: answer?.content || '',
+        tempInput: '',
+        created_at: message.created_at || new Date().toISOString(),
+      }
+      if (existing) Object.assign(existing, nextCard)
+      else pinnedCards.value.push(nextCard)
+    }
+  }
+
   const isMessageFromCurrentUser = (msg: any): boolean => {
     const creatorId = String(msg?.creator_id || '').trim()
     const currentUserId = String(authStore.user?.id || '').trim()
@@ -360,7 +468,7 @@ export function useChatViewModel() {
 
   const messageAuthorLabel = (msg: any): string => {
     const role = String(msg?.role || '').toLowerCase()
-    if (role === 'assistant') return 'Claude'
+    if (role === 'assistant') return t('chat.ai_assistant_name')
     if (role === 'system') return 'System'
     if (isMessageFromCurrentUser(msg)) return 'You'
     return String(msg?.creator_display_name || '').trim() || 'Member'
@@ -446,9 +554,9 @@ export function useChatViewModel() {
     && runtimeActiveFileContent.value !== runtimeActiveFileOriginalContent.value
   ))
 
-  const setChatWorkbenchMode = (mode: ChatWorkbenchMode) => {
-    chatWorkbenchMode.value = mode
+  const setChatWorkbenchMode = async (mode: ChatWorkbenchMode) => {
     localStorage.setItem(CHAT_WORKBENCH_MODE_KEY, mode)
+    await workbenchScroll.switchMode(mode)
   }
 
   const restoreChatWorkbenchMode = () => {
@@ -517,6 +625,31 @@ export function useChatViewModel() {
   const isJobExecuting = (status?: ChatAiJobStatus) => (
     status === 'PENDING' || status === 'RUNNING' || status === 'WAITING_HITL'
   )
+
+  const persistCurrentRuntimePanels = () => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return
+    const hasExecutingJob = Object.values(activeChatJobs.value).some(job => isJobExecuting(job.status))
+    if (!engineRunning.value && !hasExecutingJob) {
+      taskRuntimePanels.clear(taskId)
+      return
+    }
+    taskRuntimePanels.save(taskId, {
+      statusCards: pinnedCards.value.filter(card => card.type === 'status') as TaskRuntimeStatusCard[],
+      thinkingContent: thinkingContent.value,
+      showThinking: showThinking.value,
+      thinkingExpanded: thinkingExpanded.value,
+    })
+  }
+
+  const restoreRuntimePanels = (taskId: string) => {
+    const snapshot = taskRuntimePanels.restore(taskId)
+    pinnedCards.value = snapshot?.statusCards || []
+    thinkingContent.value = snapshot?.thinkingContent || ''
+    showThinking.value = Boolean(snapshot?.showThinking && snapshot.thinkingContent)
+    thinkingExpanded.value = snapshot?.thinkingExpanded || false
+    engineRunning.value = Boolean(snapshot)
+  }
   
   const syncEngineRunningFromJobs = () => {
     const hasActiveJob = Object.values(activeChatJobs.value).some(job => isJobExecuting(job.status))
@@ -524,35 +657,8 @@ export function useChatViewModel() {
   }
   
   const upsertHitlCardFromJob = (job: ChatAiJob) => {
-    const pending = job.context_json?.pending_hitl
-    if (!pending || typeof pending !== 'object') return
-    const cardId = `job-hitl-${job.id}`
-    const existing = pinnedCards.value.find(card => card.id === cardId)
-    const hitlType = String(pending.hitl_type || 'text')
-    const options = Array.isArray(pending.options) ? pending.options : []
-    if (existing) {
-      existing.hitl_type = hitlType
-      existing.prompt = String(pending.prompt || '')
-      existing.options = options
-      existing.context = String(pending.context || '')
-      existing.answered = false
-      existing.job_id = job.id
-      existing.created_at = existing.created_at || new Date().toISOString()
-      return
-    }
-    pinnedCards.value.push({
-      id: cardId,
-      type: 'hitl',
-      hitl_type: hitlType,
-      prompt: String(pending.prompt || ''),
-      options,
-      context: String(pending.context || ''),
-      answered: false,
-      answer: '',
-      tempInput: '',
-      job_id: job.id,
-      created_at: new Date().toISOString(),
-    })
+    void job
+    syncConfirmationCardsFromMessages()
   }
   
   const markHitlCardAnswered = (jobId: string, answer: string) => {
@@ -563,6 +669,7 @@ export function useChatViewModel() {
   }
   
   const upsertChatJob = (job: ChatAiJob) => {
+    activeChatJobsRequestSeq += 1
     if (!job?.id) return
     const nextJobs = { ...activeChatJobs.value }
     if (isJobActive(job.status)) {
@@ -571,9 +678,7 @@ export function useChatViewModel() {
       delete nextJobs[job.id]
     }
     activeChatJobs.value = nextJobs
-    if (job.status === 'WAITING_HITL') {
-      upsertHitlCardFromJob(job)
-    } else {
+    if (job.status !== 'WAITING_HITL') {
       const pendingCard = pinnedCards.value.find(item => item.type === 'hitl' && item.job_id === job.id && !item.answered)
       if (pendingCard) {
         pendingCard.answered = true
@@ -613,6 +718,13 @@ export function useChatViewModel() {
     if (payload?.session_id !== undefined) {
       currentTask.value.session_id = payload.session_id
     }
+    if (payload?.session_generation !== undefined) {
+      if (Number(currentTask.value.session_generation) !== Number(payload.session_generation)) {
+        historyGeneration++
+        submissions.clear(String(currentTask.value.id))
+      }
+      currentTask.value.session_generation = Number(payload.session_generation || 0)
+    }
     if (payload?.interrupt_reason !== undefined) {
       currentTask.value.interrupt_reason = payload.interrupt_reason
     }
@@ -628,17 +740,39 @@ export function useChatViewModel() {
   }
   
   const loadActiveChatJobs = async (taskId: string) => {
+    const requestSeq = ++activeChatJobsRequestSeq
     try {
       const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/ai-jobs`, {
         params: { active_only: true },
       })
       const items = (res.data?.items || []) as ChatAiJob[]
+      if (
+        requestSeq !== activeChatJobsRequestSeq
+        || String(currentTask.value?.id || '') !== String(taskId)
+      ) return
       activeChatJobs.value = {}
       for (const job of items) {
         upsertChatJob(job)
       }
-      if (!items.length) {
+      const executingJobs = items.filter(job => isJobExecuting(job.status))
+      if (!executingJobs.length) {
         engineRunning.value = false
+        pinnedCards.value = pinnedCards.value.filter(card => card.type !== 'status')
+        resetThinkingPanel()
+        taskRuntimePanels.clear(taskId)
+        return
+      }
+      if (!pinnedCards.value.some(card => card.type === 'status')) {
+        const job = executingJobs.find(item => Boolean(item.session_id)) || executingJobs[0]
+        const isSessionStarted = Boolean(job.session_id) && !job.context_json?.job_kind
+        pinnedCards.value.push({
+          id: `job-status-${job.id}`,
+          type: 'status',
+          status: isSessionStarted ? 'INIT' : 'RUNNING',
+          message: isSessionStarted ? t('chat.agent_session_started') : (job.message || t('chat.ai_job_running')),
+          model: String(job.context_json?.model || '').trim() || null,
+          created_at: job.started_at || job.created_at || new Date().toISOString(),
+        })
       }
     } catch (e) {
       console.warn('Failed to load active AI jobs', e)
@@ -673,6 +807,33 @@ export function useChatViewModel() {
     if (status === 'FAILED') return t('chat.spec_bootstrap_status_failed')
     if (status === 'STALE') return t('chat.spec_bootstrap_status_stale')
     return ''
+  }
+
+  const specBootstrapTriggering = ref(false)
+
+  const canTriggerSpecBootstrap = computed(() => {
+    const status = specBootstrap.value?.status
+    return status === 'PENDING' || status === 'FAILED' || status === 'STALE'
+  })
+
+  const triggerSpecBootstrap = async () => {
+    const taskId = currentTask.value?.id
+    if (!taskId || specBootstrapTriggering.value) return
+    specBootstrapTriggering.value = true
+    try {
+      await api.post(`/workspaces/${route.params.wsId}/tasks/${taskId}/spec-bootstrap/run`)
+      ElMessage.success(t('chat.spec_bootstrap_build_started'))
+    } catch (e: any) {
+      if (e?.response?.status === 409) {
+        const detail = typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : ''
+        ElMessage.info(detail || t('chat.spec_bootstrap_build_started'))
+      } else {
+        ElMessage.error(formatApiError(e, t('chat.spec_bootstrap_build_failed'), t))
+      }
+    } finally {
+      specBootstrapTriggering.value = false
+      void loadTaskSpecBootstrap(taskId, currentTask.value)
+    }
   }
 
   const clearRuntimeUsageRefreshTimer = () => {
@@ -764,7 +925,7 @@ export function useChatViewModel() {
     const messageId = String(payload.chat_message_id || '').trim()
     const logId = String(payload.log_id || '').trim()
     if (messageId) {
-      chatWorkbenchMode.value = 'platform'
+      await setChatWorkbenchMode('platform')
       contextWindowDrawerOpen.value = false
       highlightedMessageId.value = messageId
       await scrollToElementByAttr('data-message-id', messageId)
@@ -772,7 +933,7 @@ export function useChatViewModel() {
       return
     }
     if (logId) {
-      chatWorkbenchMode.value = 'cli'
+      await setChatWorkbenchMode('cli')
       contextWindowDrawerOpen.value = false
       highlightedTerminalLogId.value = logId
       await scrollToElementByAttr('data-log-id', logId)
@@ -780,9 +941,8 @@ export function useChatViewModel() {
       return
     }
     if (payload.ai_job_id) {
-      chatWorkbenchMode.value = 'cli'
+      await setChatWorkbenchMode('cli')
       contextWindowDrawerOpen.value = false
-      await nextTick()
       scrollToBottom('terminal')
     }
   }
@@ -1076,6 +1236,46 @@ export function useChatViewModel() {
     return undefined
   }
 
+  /**
+   * 选中路由参数指向的任务会话。ChatView 在 `/workspaces/:wsId/chat` 与 `/workspaces/:wsId/chat/:taskId`
+   * 之间导航时组件被复用不重挂载（onMounted 只覆盖首次进入），浮窗「进入任务会话」、
+   * 浏览器前进后退等仅变更 URL 的场景需要监听路由并调用这里完成会话切换。
+   */
+  const selectRouteTask = async (options?: { allowFetch?: boolean }) => {
+    const routeTaskId = String(route.params.taskId || '')
+    if (!routeTaskId) return
+    if (String(currentTask.value?.id || '') === routeTaskId) return
+    const wsId = String(route.params.wsId || '')
+
+    const matched = tasks.value.find((task: any) => task.id === routeTaskId)
+    if (matched) {
+      await selectTask(matched)
+      return
+    }
+
+    // 任务列表中暂无该任务时按需拉取（受 filters/loadTasks 场景约束）
+    if (!options?.allowFetch) return
+    try {
+      const taskRes = await api.get(`/workspaces/${wsId}/tasks/${routeTaskId}`)
+      const routeTask = taskRes.data
+      if (!routeTask?.id) return
+      // 准备中的任务不出现在任务列表（进度由全局浮窗跟踪），也不自动选中
+      if (String(routeTask.status || '') === 'PROVISIONING') return
+      tasks.value = [routeTask, ...tasks.value.filter((task: any) => task.id !== routeTask.id)]
+      if (String(currentTask.value?.id || '') !== String(routeTask.id)) {
+        await selectTask(routeTask)
+      }
+    } catch (err) {
+      console.warn('Failed to hydrate route task snapshot', err)
+    }
+  }
+
+  // ChatView 复用不重挂载：仅 URL 变化的任务会话切换（浮窗「进入任务会话」/浏览器前进后退）走这里
+  watch(() => String(route.params.taskId || ''), (nextTaskId, prevTaskId) => {
+    if (!nextTaskId || nextTaskId === prevTaskId) return
+    void selectRouteTask({ allowFetch: true })
+  })
+
   const loadTasks = async (options?: { reset?: boolean; trySelectRouteTask?: boolean }) => {
     const reset = options?.reset ?? true
     const trySelectRouteTask = options?.trySelectRouteTask ?? reset
@@ -1102,6 +1302,9 @@ export function useChatViewModel() {
       if (taskTypeFilter.value !== 'ALL') {
         params.task_type = taskTypeFilter.value
       }
+      if (taskRelationFilter.value.length > 0) {
+        params.relation = taskRelationFilter.value.join(',')
+      }
 
       const res = await api.get(`/workspaces/${wsId}/tasks`, { params })
       const items = Array.isArray(res.data?.items) ? res.data.items : []
@@ -1117,29 +1320,10 @@ export function useChatViewModel() {
 
       if (!trySelectRouteTask || !route.params.taskId) return
 
-      const routeTaskId = String(route.params.taskId || '')
-      if (!routeTaskId) return
-      const matched = tasks.value.find((task: any) => task.id === routeTaskId)
-      if (matched) {
-        if (currentTask.value?.id !== matched.id) {
-          await selectTask(matched)
-        }
-        return
-      }
-
-      if (!reset || statusQuery) return
-
-      try {
-        const taskRes = await api.get(`/workspaces/${wsId}/tasks/${routeTaskId}`)
-        const routeTask = taskRes.data
-        if (!routeTask?.id) return
-        tasks.value = [routeTask, ...tasks.value.filter((task: any) => task.id !== routeTask.id)]
-        if (currentTask.value?.id !== routeTask.id) {
-          await selectTask(routeTask)
-        }
-      } catch (err) {
-        console.warn('Failed to hydrate route task snapshot', err)
-      }
+      // 筛选状态下仅支持从已加载列表中选择，不做单任务补拉
+      await selectRouteTask({
+        allowFetch: reset && !statusQuery && taskRelationFilter.value.length === 0 && taskTypeFilter.value === 'ALL',
+      })
     } catch (e) {
       if (!reset) {
         taskListPage.value = Math.max(1, taskListPage.value - 1)
@@ -1161,6 +1345,15 @@ export function useChatViewModel() {
 
   const applyTaskStatusFilter = async () => {
     await loadTasks({ reset: true, trySelectRouteTask: false })
+  }
+
+  const applyTaskRelationFilter = async (relations: TaskRelationFilter[]) => {
+    taskRelationFilter.value = [...new Set(relations)]
+    await loadTasks({ reset: true, trySelectRouteTask: false })
+  }
+
+  const resetTaskRelationFilter = async () => {
+    await applyTaskRelationFilter([])
   }
 
   const handleTaskListScroll = () => {
@@ -1190,48 +1383,35 @@ export function useChatViewModel() {
   }
 
   // 任务创建后：始终进入任务准备进度弹窗（等待 git worktree/clone 完成，防止提前启动会话）
-  const taskProvisionVisible = ref(false)
-  const taskProvisionJobId = ref('')
-  const taskProvisionTaskId = ref('')
+  const provisioningStore = useProvisioningStore()
 
-  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
+  // 准备浮窗终态变化（成功就绪/取消/失败）后刷新任务列表：任务此时才会出现（或已被回滚删除）
+  watch(() => provisioningStore.taskListRefreshToken, () => {
+    void loadTasks({ reset: true, trySelectRouteTask: false })
+  })
+
+  const onTaskCreated = async (payload: string | { taskId: string; assetId?: string | null; jobId?: string; workspaceId?: string | null; expectSpecUpload?: boolean; expectDiagnosisDocs?: boolean }) => {
     showTaskModal.value = false
     const taskId = typeof payload === 'string' ? payload : payload.taskId
     const jobId = typeof payload === 'string' ? '' : String(payload.jobId || '').trim()
+    const workspaceId = typeof payload === 'string' ? '' : String(payload.workspaceId || '').trim()
 
     preferredSpecTaskId.value = taskId
     preferredSpecAssetId.value = typeof payload === 'string' ? '' : (payload.assetId || '')
-    await loadTasks()
-
-    // 任务创建后即使仍在 PROVISIONING，也先选中新任务，避免准备弹窗期间/关闭后看不到会话与启动按钮
-    const createdTask = tasks.value.find((task: any) => task.id === taskId)
-    if (createdTask && currentTask.value?.id !== taskId) {
-      await selectTask(createdTask)
-    }
+    await loadTasks({ reset: true, trySelectRouteTask: false })
 
     if (jobId) {
-      // 无论是否携带 spec/诊断文档，都先等待运维队列准备完成
-      taskProvisionJobId.value = jobId
-      taskProvisionTaskId.value = taskId
-      taskProvisionVisible.value = true
+      // 准备中的任务不进入会话也不出现在任务列表：进度由全局浮窗跟踪，
+      // 就绪（PENDING）后任务才会出现在列表中，由用户主动进入。
+      provisioningStore.startWatching({ jobId, taskId, workspaceId })
       return
     }
     openTaskSession(taskId)
   }
 
-  const closeTaskProvision = () => {
-    const taskId = taskProvisionTaskId.value
-    if (taskId) {
-      void openTaskSession(taskId)
-    } else {
-      taskProvisionVisible.value = false
-    }
-  }
-
   const openTaskSession = async (taskId: string) => {
     const wsId = route.params.wsId
-    taskProvisionVisible.value = false
-    router.push(`/ws/${wsId}/chat/${taskId}`)
+    router.push(`/workspaces/${wsId}/chat/${taskId}`)
     // 重新获取一下最新的 task 对象，并同步到任务列表，避免后续 loadTasks 用旧 PROVISIONING 覆盖当前状态
     try {
       const latestTaskRes = await api.get(`/workspaces/${wsId}/tasks/${taskId}`)
@@ -1250,6 +1430,8 @@ export function useChatViewModel() {
   
   const selectTask = async (task: any) => {
     if (!task) return
+    persistCurrentRuntimePanels()
+    workbenchScroll.rememberScrollPosition()
     if (task.id !== preferredSpecTaskId.value) {
       preferredSpecAssetId.value = ''
     }
@@ -1258,8 +1440,10 @@ export function useChatViewModel() {
     contextWindowDrawerLevel.value = 1
     contextWindow.reset()
     clearContextWindowRefreshTimer()
-    specDrawerTab.value = isDiagnosisTask.value ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
+    specDrawerTab.value = task.task_type === 'DIAGNOSIS' ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
     currentTask.value = task
+    recoveringSubmissions.value = true
+    void refreshSubmissions(String(task.id))
     showTaskSkillsDrawer.value = false
     messages.value = []
     terminalLogs.value = []
@@ -1270,6 +1454,7 @@ export function useChatViewModel() {
     specBootstrap.value = null
     specBootstrapLoading.value = false
     resetThinkingPanel()
+    restoreRuntimePanels(String(task.id))
     resultsSummary.value = { 
       visible: (task.total_cost_usd || 0) > 0 || (task.total_duration_ms || 0) > 0, 
       totalDurationMs: task.total_duration_ms || 0, 
@@ -1277,9 +1462,8 @@ export function useChatViewModel() {
       history: [], 
       expanded: false 
     }
-    engineRunning.value = false
   
-    const chatPath = `/ws/${route.params.wsId}/chat/${task.id}`
+    const chatPath = `/workspaces/${route.params.wsId}/chat/${task.id}`
     if (route.path !== chatPath || String(route.params.taskId || '') !== String(task.id)) {
       router.push(chatPath)
     }
@@ -1313,12 +1497,51 @@ export function useChatViewModel() {
   const diagnosisResultSaving = ref(false)
   const diagnosisCaseCreating = ref(false)
   const diagnosisCaseLink = ref('')
-  // 每个任务/对话窗口独立记录总结中状态，互不覆盖
-  const diagnosisSummarizingTasks = ref<Record<string, boolean>>({})
-  const diagnosisSummarizing = computed(() => Boolean(
-    currentTask.value?.id && diagnosisSummarizingTasks.value[currentTask.value.id],
-  ))
+  // 「一键总结/重新生成」的 loading 状态以后端真实 job 状态为唯一事实源：
+  // 识别 TASK_CHAT 中 job_kind=DIAGNOSIS_SUMMARY 且仍在 PENDING/RUNNING 的任务，
+  // 与停止按钮一样跟随 activeChatJobs（由 WebSocket chat_job_update/done/failed 与 loadActiveChatJobs 实时驱动），
+  // 不再使用本地 3 分钟倒计时，避免“动效已消失但模型还在生成”的错位。
+  const diagnosisSummarizing = computed<boolean>(() =>
+    isDiagnosisSummaryActiveForTask(activeChatJobs.value, currentTask.value?.id),
+  )
+  // 会话/总结互斥：会话 job（含排队与 HITL 挂起）进行中时禁止发起一键总结
+  const diagnosisChatBusy = computed<boolean>(() =>
+    isChatActiveForTask(activeChatJobs.value, currentTask.value?.id),
+  )
   const diagnosisSummaryJobId = ref('')
+  // 长耗时提示：计时基准 = 后端 job 的 created_at（started_at 兜底）——发起时刻，
+  // 跨 session 不变；切换会话/重新挂载后时间依然准确，不再用组件本地挂载时刻。
+  // 每秒 tick 只刷新「当前时刻」，时长 = 当前时刻 − job 发起时刻。
+  const diagnosisSummaryNowTick = ref(0)
+  let diagnosisSummaryElapsedTimer: number | null = null
+  // 发起时刻来自后端 job.created_at（started_at 兜底），跨 session 不变
+  const diagnosisSummaryJobStartedMs = computed(() =>
+    resolveDiagnosisSummaryStartedMs(activeChatJobs.value, currentTask.value?.id),
+  )
+  watch(diagnosisSummarizing, (active) => {
+    if (active) {
+      diagnosisSummaryNowTick.value = Date.now()
+      if (diagnosisSummaryElapsedTimer === null) {
+        diagnosisSummaryElapsedTimer = window.setInterval(() => {
+          diagnosisSummaryNowTick.value = Date.now()
+        }, 1000)
+      }
+    } else if (diagnosisSummaryElapsedTimer !== null) {
+      window.clearInterval(diagnosisSummaryElapsedTimer)
+      diagnosisSummaryElapsedTimer = null
+    }
+  })
+  const diagnosisSummarizingElapsed = computed(() => {
+    const startedMs = diagnosisSummaryJobStartedMs.value
+    if (!startedMs || !diagnosisSummarizing.value) return 0
+    return Math.max(0, Math.floor((diagnosisSummaryNowTick.value - startedMs) / 1000))
+  })
+  const diagnosisSummarizingLabel = computed(() => {
+    if (!diagnosisSummarizing.value) return t('diagnosis.summarize_case_button')
+    const total = diagnosisSummarizingElapsed.value
+    if (total < 5) return t('diagnosis.summarizing')
+    return t('diagnosis.summarizing_elapsed', { elapsed: formatElapsedDuration(total) })
+  })
   const isDiagnosisAdopted = computed(() => Boolean(
     diagnosisResult.value?.status === 'CONFIRMED' || diagnosisCaseLink.value,
   ))
@@ -1353,6 +1576,17 @@ export function useChatViewModel() {
       diagnosisCaseLink.value = linked?.id || ''
     } catch (e) {
       diagnosisCaseLink.value = ''
+    }
+  }
+
+  /** 诊断总结 job 到达终态时，立即刷新定位结果卡片与案例链接（WebSocket 即时收敛路径）。 */
+  const refreshDiagnosisSummaryResult = (job: ChatAiJob) => {
+    if (!isDiagnosisSummaryJob(job)) return
+    const taskId = String(job.task_id || '')
+    const currentId = String(currentTask.value?.id || '')
+    if (!taskId || taskId !== currentId) return
+    if (job.status === 'SUCCESS' || job.status === 'FAILED' || job.status === 'CANCELLED') {
+      void loadDiagnosisResult()
     }
   }
 
@@ -1395,7 +1629,7 @@ export function useChatViewModel() {
       const caseId = String(res.data?.id || '')
       diagnosisCaseLink.value = caseId
       ElMessage.success(t(submitForReview ? 'diagnosis.case_created_and_submitted' : 'diagnosis.case_created'))
-      router.push(`/ws/${route.params.wsId}/cases?case=${caseId}`)
+      router.push(`/workspaces/${route.params.wsId}/cases?case=${caseId}`)
       return caseId
     } catch (e: any) {
       if (e?.response?.status === 409) {
@@ -1405,7 +1639,7 @@ export function useChatViewModel() {
         if (existingId) {
           diagnosisCaseLink.value = existingId
           ElMessage.info(t('diagnosis.case_already_exists'))
-          router.push(`/ws/${route.params.wsId}/cases?case=${existingId}`)
+          router.push(`/workspaces/${route.params.wsId}/cases?case=${existingId}`)
           return existingId
         }
       }
@@ -1417,42 +1651,74 @@ export function useChatViewModel() {
     }
   }
 
-  const waitForDiagnosisSummary = async (jobId: string, taskId: string): Promise<void> => {
-    // 轮询后端任务状态直至收敛（SUCCESS / FAILED / CANCELLED），最多等待 3 分钟
+  const waitForDiagnosisSummary = async (jobId: string, taskId: string): Promise<string> => {
+    // 轮询后端任务状态直至收敛（SUCCESS / FAILED / CANCELLED）。
+    // 不再设 3 分钟硬上限：模型生成多久，加载动效就保持多久。
+    // WebSocket chat_job_done/failed 会先行收敛（终态被 upsertChatJob 移出 activeChatJobs），
+    // 这里作为无 WebSocket / 断线场景的兜底，负责把终态同步回本地状态。
     const terminal = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
-    const deadline = Date.now() + 3 * 60 * 1000
-    while (Date.now() < deadline) {
+    let terminalStatus = ''
+    let missingCount = 0
+    while (!terminalStatus) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000))
       try {
         const res = await api.get(
           `/workspaces/${route.params.wsId}/tasks/${taskId}/diagnosis-summary/${jobId}`,
         )
+        missingCount = 0
         const status = String(res.data?.status || '')
         if (terminal.has(status)) {
+          terminalStatus = status
           break
         }
-      } catch (e) {
-        console.warn('Failed to poll diagnosis summary status', e)
-        // 短时抖动不终止轮询，直到超时
+      } catch (e: any) {
+        if (e?.response?.status === 404) {
+          // job 记录已不存在（如任务被清理）：给几次重试后按失败收敛，避免无限轮询
+          missingCount += 1
+          if (missingCount >= 3) {
+            console.warn('Diagnosis summary job disappeared', { jobId, taskId })
+            break
+          }
+        } else {
+          console.warn('Failed to poll diagnosis summary status', e)
+          // 短时抖动不终止轮询，继续等待终态
+        }
       }
+    }
+    // 无论经哪条路径收敛，都把当前总结 job 同步进 activeChatJobs：
+    // 终态会被 upsertChatJob 移出列表 → diagnosisSummarizing 自动关闭。
+    // 若该 job 已被 WebSocket 终态消息移出，说明已收敛过，跳过重复提示。
+    const alreadySynced = !activeChatJobs.value[jobId]
+    upsertChatJob({
+      id: jobId,
+      task_id: taskId,
+      status: (terminalStatus || 'FAILED') as ChatAiJobStatus,
+      progress: terminalStatus ? 100 : 0,
+      message: terminalStatus ? null : t('diagnosis.summary_failed'),
+      context_json: { job_kind: 'DIAGNOSIS_SUMMARY' },
+      created_at: new Date().toISOString(),
+    })
+    if (!terminalStatus && !alreadySynced) {
+      ElMessage.error(t('diagnosis.summary_failed'))
     }
     // 延迟一拍再拉取，确保定位结果卡片已由后端写入并广播
     await new Promise((resolve) => window.setTimeout(resolve, 1500))
     if (currentTask.value?.id === taskId) {
       await loadDiagnosisResult()
     }
+    return terminalStatus
   }
 
   const generateDiagnosisSummary = async (): Promise<boolean> => {
     const taskId = currentTask.value?.id
     if (!taskId || !isDiagnosisTask.value || diagnosisSummarizing.value) return false
+    if (diagnosisChatBusy.value) {
+      ElMessage.warning(t('diagnosis.summary_blocked_by_chat'))
+      return false
+    }
     if (isDiagnosisAdopted.value) {
       ElMessage.warning(t('diagnosis.case_already_adopted_no_summary'))
       return false
-    }
-    diagnosisSummarizingTasks.value = {
-      ...diagnosisSummarizingTasks.value,
-      [taskId]: true,
     }
     diagnosisSummaryJobId.value = ''
     try {
@@ -1462,6 +1728,17 @@ export function useChatViewModel() {
         throw new Error(t('diagnosis.summary_job_missing'))
       }
       diagnosisSummaryJobId.value = jobId
+      // 立即播种 PENDING 状态，避免 WebSocket 事件未到达前出现动效空窗；
+      // 后续由 chat_job_update / 轮询驱动真实状态。
+      upsertChatJob({
+        id: jobId,
+        task_id: taskId,
+        status: 'PENDING',
+        progress: 0,
+        message: t('diagnosis.summary_started'),
+        context_json: { job_kind: 'DIAGNOSIS_SUMMARY' },
+        created_at: new Date().toISOString(),
+      } as ChatAiJob)
       ElMessage.success(t('diagnosis.summary_started'))
       await waitForDiagnosisSummary(jobId, taskId)
       return true
@@ -1469,73 +1746,40 @@ export function useChatViewModel() {
       ElMessage.error(formatApiError(e, t('diagnosis.summary_failed'), t))
       console.error('Failed to generate diagnosis summary', e)
       return false
-    } finally {
-      // 只清除当前任务自己的总结状态，避免影响其他对话窗口的独立按钮
-      if (diagnosisSummarizingTasks.value[taskId]) {
-        const next = { ...diagnosisSummarizingTasks.value }
-        delete next[taskId]
-        diagnosisSummarizingTasks.value = next
-        diagnosisSummaryJobId.value = ''
-      }
     }
+    // 不再需要 finally 手工清标志：diagnosisSummarizing 完全由 activeChatJobs 派生，
+    // 终态（SUCCESS/FAILED/CANCELLED）被 upsertChatJob 移出后即自动关闭。
   }
 
-  const exportDiagnosisResult = (payload: DiagnosisResultPayload) => {
+  const exportDiagnosisResult = async (payload: DiagnosisResultPayload) => {
     if (!payload) return
+    const taskId = String(currentTask.value?.id || '')
+    const wsId = String(route.params.wsId || '')
+
+    // 若该任务已生成案例，则与会话/案例详情导出一致：优先导出案例内容。
+    if (diagnosisCaseLink.value) {
+      try {
+        const res = await api.get(`/workspaces/${wsId}/cases/${diagnosisCaseLink.value}`)
+        if (res.data) {
+          exportCaseMarkdown(res.data)
+          return
+        }
+      } catch (e) {
+        console.warn('Failed to load linked case for export', e)
+      }
+    }
+
     const norm = normalizeDiagnosisPayload(payload)
     const taskName = currentTask.value?.name || ''
-    const lines: string[] = []
-    lines.push(`# 问题定位结果 · ${taskName}`)
-    lines.push('')
-    if (norm.summary) lines.push(`## 结果内容\n\n${norm.summary}\n`)
-    if (norm.root_cause) lines.push(`## 根因结论\n\n${norm.root_cause}\n`)
-    if (norm.evidence_chain) lines.push(`## 证据链\n\n${norm.evidence_chain}\n`)
-    if (norm.fix_suggestion) lines.push(`## 修复方案\n\n${norm.fix_suggestion}\n`)
-    if (norm.fix_code) lines.push(`## 修复代码\n\n\`\`\`\n${norm.fix_code}\n\`\`\`\n`)
-    if (norm.code_context.length) {
-      lines.push('## 相关代码上下文\n')
-      norm.code_context.forEach((item, index) => {
-        const start = item.start_line ?? ''
-        const end = item.end_line ?? ''
-        const loc = start ? (end && end !== start ? `:${start}-${end}` : `:${start}`) : ''
-        lines.push(`${index + 1}. \`${item.file_path || ''}${loc}\``)
-        if (item.note) lines.push(`   - 说明：${item.note}`)
-        if (item.snippet) lines.push(`   \`\`\`\n   ${item.snippet.replace(/\n/g, '\n   ')}\n   \`\`\``)
-      })
-      lines.push('')
-    }
-    if (norm.similar_cases.length) {
-      lines.push('## 相似案例\n')
-      norm.similar_cases.forEach((item) => {
-        lines.push(`- **${item.title || ''}**${item.similarity ? `（相似度：${item.similarity}）` : ''}`)
-        if (item.summary) lines.push(`  - ${item.summary}`)
-        if (item.reference) lines.push(`  - 参考：${item.reference}`)
-      })
-      lines.push('')
-    }
-    if (norm.call_chain.length) {
-      lines.push('## 调用链路\n')
-      norm.call_chain.forEach((node, index) => {
-        const seq = node.seq ?? index + 1
-        const label = [node.module, node.function].filter(Boolean).join('.') || node.file_path || ''
-        lines.push(`${seq}. ${label || '（未命名节点）'}${node.file_path ? ` — \`${node.file_path}\`` : ''}`)
-        if (node.description) lines.push(`   - ${node.description}`)
-      })
-      lines.push('')
-    }
-    lines.push(`## 置信度\n\n${norm.confidence}%`)
-    lines.push('')
-    const markdown = lines.join('\n')
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    const safeName = (taskName || 'diagnosis-result').replace(/[\\/:*?"<>|]/g, '_')
-    link.href = url
-    link.download = `${safeName}-定位结果.md`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    const diagnosisMeta = currentTask.value?.task_meta_json || {}
+    exportDiagnosisMarkdown(norm, taskName, {
+      taskId,
+      problemDescription: String(diagnosisMeta.phenomenon || currentTask.value?.description || ''),
+      productName: String(currentWorkspace.value?.products?.[0]?.name || ''),
+      productVersion: String(currentWorkspace.value?.products?.[0]?.version_no || ''),
+      projectName: String(currentWorkspace.value?.project?.name || ''),
+      repositories: Array.isArray(currentWorkspace.value?.repositories) ? currentWorkspace.value.repositories : undefined,
+    })
   }
 
   // ─── 任务类型过滤（会话列表） ───
@@ -1545,10 +1789,32 @@ export function useChatViewModel() {
   const applyTaskTypeFilter = async () => {
     await loadTasks({ reset: true, trySelectRouteTask: false })
   }
+
+  const toggleTaskFollow = async (task: any) => {
+    const wsId = String(route.params.wsId || '')
+    const taskId = String(task?.id || '')
+    if (!wsId || !taskId) return
+    const following = !Boolean(task.is_following)
+    try {
+      const response = following
+        ? await api.put(`/workspaces/${wsId}/tasks/${taskId}/follow`)
+        : await api.delete(`/workspaces/${wsId}/tasks/${taskId}/follow`)
+      const nextFollowing = Boolean(response.data?.is_following ?? following)
+      tasks.value = tasks.value.map((item: any) => (
+        item.id === taskId ? { ...item, is_following: nextFollowing } : item
+      ))
+      if (currentTask.value?.id === taskId) {
+        currentTask.value = { ...currentTask.value, is_following: nextFollowing }
+      }
+    } catch (error) {
+      console.error('Failed to update task follow state', error)
+      ElMessage.error(resolveActionError(error, 'chat.task_follow_failed', 'chat.task_follow_failed'))
+    }
+  }
   
   const openSpecWorkspace = () => {
     if (!currentTask.value || !currentTaskHasSpec.value) return
-    router.push(`/ws/${route.params.wsId}/chat/${currentTask.value.id}/spec`)
+    router.push(`/workspaces/${route.params.wsId}/chat/${currentTask.value.id}/spec`)
   }
   
   const closeSpecDrawer = () => {
@@ -1600,21 +1866,7 @@ export function useChatViewModel() {
     requestSpecDrawerLevel(lastOpenSpecDrawerLevel.value)
   }
   
-  const loadHistory = async (taskId: string, reset: boolean = true) => {
-    try {
-      if (reset) {
-        currentPage.value = 1
-        messages.value = []
-        terminalLogs.value = []
-      }
-  
-      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/history`, {
-        params: { page: currentPage.value, page_size: 50 }
-      })
-      const { messages: hMessages, logs: hLogs, has_more } = res.data
-      hasMore.value = has_more
-  
-      const mapped = hMessages.map((m: any) => ({
+  const mapHistoryMessages = (hMessages: any[]) => hMessages.map((m: any) => ({
         id: m.id,
         role: m.role,
         content: m.content,
@@ -1628,10 +1880,82 @@ export function useChatViewModel() {
         client_message_id: m.client_message_id || null,
         decision_id: m.decision_id || null,
         metadata: m.metadata || null,
+        session_turn_id: m.session_turn_id || null,
+        session_generation: m.session_generation ?? null,
+        can_undo: Boolean(m.can_undo),
       }))
-  
+
+  const loadAnchorContext = async (messageId: string) => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return
+    historyGeneration++
+    messages.value = []
+    try {
+      const result = await historyContext.load(String(route.params.wsId), taskId, messageId)
+      if (!result || String(currentTask.value?.id) !== taskId) return
+      messages.value = mapHistoryMessages(result.messages)
+      hasMore.value = result.has_before
+      await highlightMessageFromRouteQuery()
+    } catch (error: any) {
+      if (error.code !== 'ERR_CANCELED') ElMessage.warning(error.response?.status === 404 ? '该消息已被撤销或删除' : '历史上下文暂不可用，请回到最新会话')
+    }
+  }
+  const loadContextDirection = async (direction: 'before' | 'after') => {
+    if (!currentTask.value || historyContext.loading.value) return
+    const container = chatContainer.value
+    const oldHeight = container?.scrollHeight || 0
+    const oldTop = container?.scrollTop || 0
+    try {
+      const result = await historyContext.more(String(route.params.wsId), currentTask.value.id, direction)
+      if (!result) return
+      const mapped = mapHistoryMessages(result.messages)
+      messages.value = dedupeMessages(direction === 'before' ? [...mapped, ...messages.value] : [...messages.value, ...mapped])
+      hasMore.value = Boolean(historyContext.context.value?.has_before)
+      await nextTick()
+      if (container && direction === 'before') container.scrollTop = oldTop + container.scrollHeight - oldHeight
+    } catch { ElMessage.warning('历史窗口已失效，请重新定位或回到最新') }
+  }
+  const returnToLatest = async () => {
+    historyContext.reset()
+    const query = { ...route.query }
+    delete query.messageId
+    await router.replace({ query })
+    if (currentTask.value) await loadHistory(currentTask.value.id, true)
+    await nextTick()
+    scrollToBottom('chat')
+  }
+  watch(() => String(route.query.messageId || ''), (messageId, old) => {
+    if (messageId && messageId !== old && String(currentTask.value?.id) === String(route.params.taskId)) void loadAnchorContext(messageId)
+    else if (!messageId && historyContext.anchored.value) { historyContext.reset(); if (currentTask.value) void loadHistory(currentTask.value.id, true) }
+  })
+
+  const loadHistory = async (taskId: string, reset: boolean = true) => {
+    if (reset && route.query.messageId && String(route.params.taskId) === taskId) {
+      await loadAnchorContext(String(route.query.messageId))
+      return
+    }
+    if (reset) historyContext.reset()
+    const requestGeneration = ++historyGeneration
+    try {
       if (reset) {
-        messages.value = dedupeMessages(mapped)
+        currentPage.value = 1
+      }
+
+      const initialMessages = new Map(messages.value.map(item => [messageIdentity(item), item]))
+
+      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/history`, {
+        params: { page: currentPage.value, page_size: 50 }
+      })
+      if (requestGeneration !== historyGeneration || String(currentTask.value?.id) !== taskId) return
+      const { messages: hMessages, logs: hLogs, has_more } = res.data
+      hasMore.value = has_more
+
+      const mapped = mapHistoryMessages(hMessages)
+
+      if (reset) {
+        const duringRequest = messages.value.filter(item => initialMessages.get(messageIdentity(item)) !== item)
+        messages.value = dedupeMessages([...mapped, ...duringRequest])
+        syncConfirmationCardsFromMessages()
         // 还原终端日志（仅首次加载�?
         terminalLogs.value = hLogs.map((l: any) => {
           const createdAt = l.created_at || new Date().toISOString()
@@ -1670,14 +1994,13 @@ export function useChatViewModel() {
             timestamp: new Date(createdAt).toLocaleTimeString(),
           }
         })
-  
+
         await nextTick()
         if (route.query.messageId) {
           await highlightMessageFromRouteQuery()
         } else {
-          scrollToBottom('chat')
+          await restoreWorkbenchScrollPosition(chatWorkbenchMode.value, taskId)
         }
-        scrollToBottom('terminal')
       } else {
         // 向上加载更早消息：prepend 到列表前�?
         messages.value = dedupeMessages([...mapped, ...messages.value])
@@ -1686,8 +2009,9 @@ export function useChatViewModel() {
       console.error('Failed to load history', e)
     }
   }
-  
+
   const loadOlderMessages = async () => {
+    if (historyContext.anchored.value) { await loadContextDirection('before'); return }
     if (!hasMore.value || loadingMore.value || !currentTask.value) return
   
     loadingMore.value = true
@@ -1723,7 +2047,13 @@ export function useChatViewModel() {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
     }
-  
+
+    // 准备中的任务：停止按钮 = 取消任务创建（回滚资源并删除任务），不走 closeout
+    if (isTaskProvisioning.value) {
+      void cancelTaskProvision()
+      return true
+    }
+
     const status = currentTask.value?.status
     const isRunningStatus = status && !['DONE', 'FAILED'].includes(status)
   
@@ -1733,6 +2063,35 @@ export function useChatViewModel() {
     }
     closeoutMode.value = 'fail'
     return true
+  }
+
+  /** 创建人取消当前任务的资源准备：后台回滚清理并删除任务，随后刷新列表并离开该任务 */
+  const cancelTaskProvision = async (): Promise<boolean> => {
+    const task = currentTask.value
+    const wsId = String(route.params.wsId || '')
+    if (!task?.id || !wsId) return false
+    try {
+      await api.post(`/workspaces/${wsId}/tasks/${task.id}/provision-job/cancel`)
+      ElMessage.info(t('provisioning.cancelling'))
+      const removedTaskId = task.id
+      tasks.value = tasks.value.filter((item: any) => item.id !== removedTaskId)
+      if (currentTask.value?.id === removedTaskId) {
+        currentTask.value = null
+        if (route.params.taskId) {
+          router.push(`/workspaces/${wsId}/chat`)
+        }
+      }
+      return true
+    } catch (e: any) {
+      const detail = String(e?.response?.data?.detail || '')
+      if (detail.includes('No active provisioning job')) {
+        // 已经没有进行中的准备（可能刚完成）：回读任务最新状态
+        await loadTasks({ reset: true, trySelectRouteTask: false })
+        return false
+      }
+      ElMessage.error(resolveActionError(e, 'provisioning.cancel_failed', 'provisioning.cancel_failed'))
+      return false
+    }
   }
   
   const handleCompleteClick = (): boolean => {
@@ -1822,10 +2181,12 @@ export function useChatViewModel() {
       created_at: new Date().toISOString(),
       message_type: 'text',
     })
-    scrollToBottom('chat')
+    if (!historyContext.anchored.value) scrollToBottom('chat')
   }
 
   const canMarkMessageAsDecision = (msg: any): boolean => {
+    if (String(msg?.id || '').startsWith('submission-')) return false
+    if (msg?.metadata?.submission_id && msg.metadata.knowledge_state !== 'published') return false
     const id = String(msg?.id || '').trim()
     if (!id || id.startsWith('local-')) return false
     if (!currentTask.value?.id || !canManageTaskStatus.value) return false
@@ -1833,6 +2194,65 @@ export function useChatViewModel() {
     if (msg?.message_type === 'init_reason') return false
     if (String(msg?.role || '').toLowerCase() !== 'user') return false
     return Boolean(String(msg?.content || '').trim())
+  }
+
+  const canUndoMessage = (msg: any): boolean => {
+    const id = String(msg?.id || '').trim()
+    if (!id || id.startsWith('local-')) return false
+    if (!currentTask.value?.id || !canManageTaskStatus.value || sendingChat.value) return false
+    if (recoveringSubmissions.value || submissions.current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))) return false
+    if (String(msg?.role || '').toLowerCase() !== 'user') return false
+    if (msg?.decision_id || msg?.message_type === 'init_reason') return false
+    if (!msg?.session_turn_id || !String(msg?.content || '')) return false
+    const currentGeneration = Number(currentTask.value?.session_generation || 0)
+    if (!currentGeneration || Number(msg?.session_generation || 0) !== currentGeneration) return false
+    return msg?.can_undo !== false
+  }
+
+  const undoMessage = async (msg: any): Promise<boolean> => {
+    if (!canUndoMessage(msg) || !currentTask.value?.id) return false
+    const messageId = String(msg.id)
+    undoingMessageId.value = messageId
+    try {
+      const payload = await taskSessionControls.undoTaskMessage(
+        currentTask.value.id,
+        messageId,
+        { operationId: generateClientMessageId() },
+      )
+      const removedIds = new Set(
+        (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
+      )
+      removedIds.add(messageId)
+      historyGeneration++
+      submissions.removeMessages(String(currentTask.value.id), removedIds as Set<string>)
+      if (historyContext.anchored.value && removedIds.has(String(route.query.messageId || ''))) ElMessage.warning('定位的消息已被撤销，请回到最新')
+      messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
+      terminalLogs.value = []
+      resetChatJobState()
+      pinnedCards.value = []
+      thinkingContent.value = ''
+      showThinking.value = false
+      engineRunning.value = false
+      if (currentTask.value) {
+        currentTask.value.status = 'CODING'
+        currentTask.value.session_generation = Number(payload?.session_generation || currentTask.value.session_generation || 0)
+      }
+      chatInput.value = String(payload?.restored_content ?? msg.content ?? '')
+      await nextTick()
+      document.querySelector<HTMLTextAreaElement>('.card-textarea')?.focus()
+      if (currentTask.value?.id) {
+        await loadHistory(currentTask.value.id, true)
+      }
+      ElMessage.success(t('chat.undo.success'))
+      scheduleContextWindowRefresh()
+      return true
+    } catch (e: any) {
+      console.error('Undo task message failed', e)
+      ElMessage.error(resolveActionError(e, 'chat.undo.failed', 'chat.undo.failed'))
+      return false
+    } finally {
+      undoingMessageId.value = ''
+    }
   }
 
   const openDecisionModal = (msg: any) => {
@@ -1869,6 +2289,14 @@ export function useChatViewModel() {
   const confirmInterrupt = async () => {
     await interruptTaskNow()
   }
+
+  const defaultInitialPromptForTask = (task: any): string => {
+    const description = String(task?.description || '').trim()
+    if (description) return description
+    return t('chat.start_default_prompt', {
+      taskName: String(task?.name || ''),
+    })
+  }
   
   const handleInitialize = async () => {
     if (!currentTask.value) return
@@ -1878,6 +2306,7 @@ export function useChatViewModel() {
     }
     if (!canInitializeAction.value) return
     initReason.value = ''
+    initPrompt.value = defaultInitialPromptForTask(currentTask.value)
     const fallbackSkillIds = Array.isArray(currentTask.value?.skill_ids)
       ? currentTask.value.skill_ids.map((value: string) => String(value || '').trim()).filter(Boolean)
       : []
@@ -1892,6 +2321,7 @@ export function useChatViewModel() {
   
   const initializeTaskWithReason = async (
     reason?: string,
+    prompt?: string,
     skillIds?: string[],
     options?: { keepDeletedRuntimeSkills?: boolean },
   ): Promise<boolean> => {
@@ -1902,6 +2332,7 @@ export function useChatViewModel() {
     }
 
     const reasonText = String(reason ?? initReason.value).trim()
+    const promptText = String(prompt ?? initPrompt.value).trim()
     const hasSkillSelectionArg = Array.isArray(skillIds)
     const optionIds = activeInitSkillOptionIds.value
     const normalizedSkillIds = hasSkillSelectionArg
@@ -1924,6 +2355,7 @@ export function useChatViewModel() {
     try {
       const payload: Record<string, unknown> = {
         reason: reasonText || undefined,
+        prompt: promptText || undefined,
       }
       if (hasSkillSelectionArg) {
         payload.skill_ids = normalizedSkillIds
@@ -1938,6 +2370,7 @@ export function useChatViewModel() {
         currentTask.value.skill_ids = normalizedSkillIds
       }
   
+      submissions.clear(String(currentTask.value.id))
       // 加载初始化时保存的消息（用户初始消息 + 可能�?init_reason 分隔线）
       await loadHistory(currentTask.value.id)
       await loadActiveChatJobs(currentTask.value.id)
@@ -1969,6 +2402,7 @@ export function useChatViewModel() {
     showInitReasonModal.value = false
     await initializeTaskWithReason(
       initReason.value,
+      initPrompt.value,
       initSelectedSkillIds.value,
       { keepDeletedRuntimeSkills: true },
     )
@@ -1984,6 +2418,7 @@ export function useChatViewModel() {
     showInitReasonModal.value = false
     await initializeTaskWithReason(
       initReason.value,
+      initPrompt.value,
       initSelectedSkillIds.value,
       { keepDeletedRuntimeSkills },
     )
@@ -2019,7 +2454,7 @@ export function useChatViewModel() {
       await loadTasks({ reset: true, trySelectRouteTask: false })
       if (currentTask.value?.id === deletedId) {
         currentTask.value = null
-        router.push(`/ws/${route.params.wsId}/chat`)
+        router.push(`/workspaces/${route.params.wsId}/chat`)
       }
     } catch (e) {
       console.error('Failed to delete task', e)
@@ -2061,6 +2496,8 @@ export function useChatViewModel() {
     if (!currentTask.value) return null
     try {
       const res = await api.delete(`/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/history`)
+      historyGeneration++
+      submissions.clear(String(currentTask.value.id))
       messages.value = []
       terminalLogs.value = []
       pinnedCards.value = []
@@ -2086,21 +2523,37 @@ export function useChatViewModel() {
   const buildTaskWsUrl = (taskId: string): string => {
     return buildBackendWsUrl(`/ws/task/${taskId}`, {
       token: authStore.token || undefined,
+      ...buildWsCursorQuery(`task:${taskId}`),
     })
   }
   
+  let wsReconnectAttempt = 0
   const scheduleWsReconnect = (taskId: string) => {
     if (wsManualClose || wsReconnectTimer !== null) return
+    const delay = wsBackoffDelay(wsReconnectAttempt)
+    wsReconnectAttempt += 1
     wsReconnectTimer = window.setTimeout(() => {
       wsReconnectTimer = null
       if (currentTask.value?.id !== taskId) return
       connectWebSocket(taskId)
-    }, 1200)
+    }, delay)
   }
-  
+
   const connectWebSocket = (taskId: string) => {
+    // 同一任务的连接已建立（或正在建立）时不再重建，避免重复 select/重复挂载
+    // 触发 socket 抖动，服务端会把旧连接判定为 send_failed 后淘汰。
+    if (
+      ws
+      && wsTaskId === taskId
+      && taskWsConsumer
+      && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return
+    }
     clearWsReconnectTimer()
     wsManualClose = false
+    taskWsConsumer?.close()
+    taskWsConsumer = null
     if (ws) {
       ws.onopen = null
       ws.onmessage = null
@@ -2110,8 +2563,36 @@ export function useChatViewModel() {
       ws = null
     }
     ws = new WebSocket(buildTaskWsUrl(taskId))
+    wsTaskId = taskId
+    const socket = ws
+    const consumer = createSerializedWsConsumer({
+      room: `task:${taskId}`,
+      onEvent: (event) => {
+        handleWsMessage({ type: event.event_type, payload: event.payload })
+      },
+      onResync: async (frame, reason, context, signal) => {
+        if (reason === 'gap') {
+          context.socket.close(4000, 'sequence_gap')
+          return
+        }
+        await loadHistory(taskId, true)
+        await loadActiveChatJobs(taskId)
+        if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
+          sendResyncComplete(context.socket, frame, `task:${taskId}`)
+        }
+      },
+      onControl: (frame) => {
+        if (!['resume_ok', 'resync_ok'].includes(String(frame?.type || ''))) handleWsMessage(frame)
+      },
+      onFailure: (_error, context) => {
+        if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+      },
+    })
+    taskWsConsumer = consumer
+    const generation = consumer.resetForConnection(socket)
     ws.onopen = () => {
       console.log(`WS Connected: task=${taskId}`)
+      wsReconnectAttempt = 0
       if (currentTask.value?.id === taskId) {
         void loadActiveChatJobs(taskId)
         void loadActivePreInput(taskId)
@@ -2121,13 +2602,18 @@ export function useChatViewModel() {
       }
     }
     ws.onmessage = (event) => {
-      const data = JSON.parse(event.data)
-      handleWsMessage(data)
+      try {
+        const data = JSON.parse(event.data)
+        consumer.enqueue(data, generation)
+      } catch {
+        // Ignore malformed frames; the next reconnect will resync from REST.
+      }
     }
     ws.onerror = (event) => {
       console.error('WS Error', event)
     }
     ws.onclose = (event) => {
+      consumer.close(generation)
       console.log(`WS Disconnected: task=${taskId}`)
       if (event.code === 1008) {
         ElMessage.error('Task WebSocket authentication failed. Please sign in again.')
@@ -2137,19 +2623,8 @@ export function useChatViewModel() {
       scheduleWsReconnect(taskId)
     }
   }
-  
-  const terminalContainer = ref<HTMLElement | null>(null)
-  const chatContainer = ref<HTMLElement | null>(null)
-  
-  const scrollToBottom = async (target: 'chat' | 'terminal') => {
-    await nextTick()
-    if (target === 'chat' && chatContainer.value) {
-      chatContainer.value.scrollTop = chatContainer.value.scrollHeight
-    } else if (target === 'terminal' && terminalContainer.value) {
-      terminalContainer.value.scrollTop = terminalContainer.value.scrollHeight
-    }
-  }
 
+  
   const highlightMessageFromRouteQuery = async () => {
     const messageId = String(route.query.messageId || '').trim()
     if (!messageId) return false
@@ -2174,6 +2649,13 @@ export function useChatViewModel() {
     switch (type) {
       case 'chat_message': {
         // 自然语言对话气泡 (user / assistant text) 与定位结果卡片
+        if (
+          currentTask.value?.id
+          && String(payload?.task_id || currentTask.value.id) === String(currentTask.value.id)
+          && payload?.session_generation !== undefined
+        ) {
+          currentTask.value.session_generation = Number(payload.session_generation || 0)
+        }
         upsertChatMessage({
           id: payload.id || Date.now().toString(),
           role: payload.role,
@@ -2188,9 +2670,13 @@ export function useChatViewModel() {
           client_message_id: payload.client_message_id || null,
           decision_id: payload.decision_id || null,
           metadata: payload.metadata || null,
+          session_turn_id: payload.session_turn_id || null,
+          session_generation: payload.session_generation ?? null,
+          can_undo: payload.can_undo,
           delivery_status: 'sent',
         })
-        scrollToBottom('chat')
+        syncConfirmationCardsFromMessages()
+        if (!historyContext.anchored.value) scrollToBottom('chat')
         scheduleContextWindowRefresh()
         break
       }
@@ -2198,6 +2684,13 @@ export function useChatViewModel() {
       case 'chat_message_ack': {
         const status = String(payload.status || '').toLowerCase()
         const clientMessageId = String(payload.client_message_id || '').trim()
+        if (
+          currentTask.value?.id
+          && String(payload?.task_id || currentTask.value.id) === String(currentTask.value.id)
+          && payload?.session_generation !== undefined
+        ) {
+          currentTask.value.session_generation = Number(payload.session_generation || 0)
+        }
         const messagePatch = {
           id: payload.id || payload.chat_message_id || (clientMessageId ? `local-${clientMessageId}` : Date.now().toString()),
           role: payload.role || 'user',
@@ -2210,6 +2703,9 @@ export function useChatViewModel() {
           client_message_id: clientMessageId || null,
           decision_id: payload.decision_id || null,
           metadata: payload.metadata || null,
+          session_turn_id: payload.session_turn_id || null,
+          session_generation: payload.session_generation ?? null,
+          can_undo: payload.can_undo,
           delivery_status: status === 'accepted' || status === 'duplicate' ? 'sent' : status,
         }
         if (clientMessageId) {
@@ -2223,9 +2719,14 @@ export function useChatViewModel() {
           } else if (messagePatch.content) {
             upsertChatMessage(messagePatch)
           }
+          syncConfirmationCardsFromMessages()
         }
         if (status === 'failed' || status === 'conflict') {
           ElMessage.error(payload.message || 'Message was not sent. Please retry.')
+          if (status === 'failed') {
+            syncEngineRunningFromJobs()
+            if (currentTask.value?.id) void loadActiveChatJobs(currentTask.value.id)
+          }
         }
         break
       }
@@ -2255,11 +2756,28 @@ export function useChatViewModel() {
         if (taskId) void loadActivePreInput(taskId)
         break
       }
+
+      case 'hitl_rejected': {
+        // HITL 回复被拒（如一键总结进行中互斥）：明确告知用户，不中断连接
+        ElMessage.warning(payload?.message || 'HITL response rejected, please wait and retry')
+        break
+      }
   
       case 'thinking': {
         // AI 思考过�?�?思考面�?(不进入对话气�?
+        const sequence = Number(payload?.sequence ?? 0)
+        if (sequence > 0 && sequence <= thinkingSequence.value) {
+          break
+        }
+        thinkingSequence.value = sequence
         const wasThinkingVisible = showThinking.value
-        thinkingContent.value = payload.content
+        const delta = typeof payload?.delta === 'string' ? payload.delta : null
+        if (delta !== null) {
+          // delta frame: append instead of whole replace (content is empty)
+          thinkingContent.value += delta
+        } else {
+          thinkingContent.value = String(payload?.content || '')
+        }
         showThinking.value = true
         if (!wasThinkingVisible) {
           thinkingExpanded.value = false
@@ -2323,46 +2841,19 @@ export function useChatViewModel() {
         break
       }
   
-      case 'hitl_request': {
-        // HITL 交互 �?置顶富文本卡�?(不进入对话流)
-        const jobId = String(payload.job_id || '')
-        if (jobId) {
-          upsertHitlCardFromJob({
-            id: jobId,
-            task_id: payload.task_id,
-            status: 'WAITING_HITL',
-            progress: 60,
-            context_json: {
-              pending_hitl: {
-                prompt: payload.prompt,
-                hitl_type: payload.hitl_type,
-                options: payload.options,
-                context: payload.context,
-              },
-            },
-          })
-        } else {
-          pinnedCards.value.push({
-            id: Date.now().toString(),
-            type: 'hitl',
-            hitl_type: payload.hitl_type,
-            prompt: payload.prompt,
-            options: payload.options,
-            context: payload.context,
-            answered: false,
-            answer: '',
-            tempInput: '',
-            job_id: '',
-            created_at: new Date().toISOString(),
-          })
-        }
-        break
-      }
-  
       case 'chat_job_update': {
         const job = payload?.job as ChatAiJob | undefined
         if (job?.id) {
           upsertChatJob(job)
+          refreshDiagnosisSummaryResult(job)
+        }
+        break
+      }
+
+      case 'chat_submission_update': {
+        if (String(payload?.task_id || '') === String(currentTask.value?.id || '')) {
+          submissions.put(payload)
+          void refreshSubmissions(payload.task_id)
         }
         break
       }
@@ -2375,6 +2866,7 @@ export function useChatViewModel() {
           if (job.status === 'FAILED') {
             ElMessage.error(job.error_message || t('chat.ai_job_failed_default'))
           }
+          refreshDiagnosisSummaryResult(job)
         }
         scheduleContextWindowRefresh()
         break
@@ -2384,6 +2876,32 @@ export function useChatViewModel() {
         applyTaskSessionPayload(payload)
         engineRunning.value = false
         pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status')
+        scheduleContextWindowRefresh()
+        break
+      }
+
+      case 'task_session_reverted': {
+        if (String(payload?.task_id || '') !== String(currentTask.value?.id || '')) break
+        historyGeneration++
+        const removedIds = new Set(
+          (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
+        )
+        submissions.removeMessages(String(currentTask.value.id), removedIds as Set<string>)
+        if (historyContext.anchored.value && removedIds.has(String(route.query.messageId || ''))) ElMessage.warning('定位的消息已被撤销，请回到最新')
+      messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
+        terminalLogs.value = []
+        pinnedCards.value = []
+        resetThinkingPanel()
+        engineRunning.value = false
+        if (payload?.session_generation !== undefined) {
+          currentTask.value.session_generation = Number(payload.session_generation || 0)
+        }
+        if (payload?.task_status) {
+          currentTask.value.status = String(payload.task_status)
+          const targetTask = tasks.value.find((task) => task.id === currentTask.value?.id)
+          if (targetTask) targetTask.status = String(payload.task_status)
+        }
+        // Only the initiating client puts restored text into its composer.
         scheduleContextWindowRefresh()
         break
       }
@@ -2405,6 +2923,9 @@ export function useChatViewModel() {
   
       case 'status': {
         // 阶段状�?�?置顶卡片
+        const nextTaskStatus = (payload.status === 'INIT' || payload.status === 'RUNNING')
+          ? 'CODING'
+          : payload.status
         engineRunning.value = payload.status === 'INIT' || payload.status === 'RUNNING'
         pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status')
         pinnedCards.value.push({
@@ -2416,16 +2937,16 @@ export function useChatViewModel() {
           created_at: new Date().toISOString(),
         })
         if (currentTask.value) {
-          currentTask.value.status = 'CODING'
+          currentTask.value.status = nextTaskStatus
           const targetTask = tasks.value.find((task) => task.id === currentTask.value.id)
-          if (targetTask) targetTask.status = 'CODING'
+          if (targetTask) targetTask.status = nextTaskStatus
         }
         break
       }
   
       case 'result': {
         // 执行结果 �?汇总卡�?+ 标记引擎停止
-        engineRunning.value = false
+        syncEngineRunningFromJobs()
         pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status')
         
         resultsSummary.value.visible = true
@@ -2441,9 +2962,11 @@ export function useChatViewModel() {
           timestamp: new Date().toLocaleTimeString()
         })
   
-        // 更新任务状�?
-        if (currentTask.value) {
-          currentTask.value.status = payload.success ? 'IDLE' : 'FAILED'
+        // 更新任务状态（自动执行异常保留为 INTERRUPTED 以便继续会话；
+        // FAILED 只能由用户通过失败复盘显式标记。）
+        if (currentTask.value && !engineRunning.value && !submissions.busy.value) {
+          const terminalStatus = ['DONE', 'FAILED', 'BASELINED'].includes(currentTask.value.status)
+          currentTask.value.status = terminalStatus ? currentTask.value.status : (payload.success ? 'IDLE' : 'INTERRUPTED')
           const targetTask = tasks.value.find((task) => task.id === currentTask.value.id)
           if (targetTask) targetTask.status = currentTask.value.status
         }
@@ -2455,48 +2978,59 @@ export function useChatViewModel() {
   }
   
   // ─── HITL 回复 ───
-  const submitHitl = (cardId: string, response: string) => {
-    if (!response) return
+  const submitHitl = async (cardId: string, response: string) => {
+    if (!response || isUndoing.value) return
     const card = pinnedCards.value.find(c => c.id === cardId)
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      if (currentTask.value?.id) connectWebSocket(currentTask.value.id)
-      return
-    }
-    ws.send(JSON.stringify({
-      type: 'hitl_response',
-      payload: {
-        response,
+    const sent = await sendChatContent(response, {
+      displayContent: response,
+      metadata: {
+        reply_to_message_id: card?.message_id,
+        interaction_id: card?.interaction_id,
+        confirmation_value: response,
         job_id: card?.job_id || undefined,
-      }
-    }))
-    if (card) {
+      },
+    })
+    if (sent && card) {
       card.answered = true
       card.answer = response
-    }
-    if (card?.job_id) {
-      markHitlCardAnswered(card.job_id, response)
     }
   }
   
   // ─── 用户发送消�?───
   const sendChatContent = async (
     content: string,
-    options: { displayContent?: string } = {},
+    options: { displayContent?: string; metadata?: Record<string, any> } = {},
   ): Promise<boolean> => {
     if (isTaskPreStart.value) {
       ElMessage.warning(t('chat.start_before_chat'))
       return false
     }
-    if (sendingChat.value) return false
+    if (sendingChat.value || isUndoing.value) return false
+    if (!options.metadata?.interaction_id && (submissions.busy.value || recoveringSubmissions.value)) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
+    if (historyContext.anchored.value) await returnToLatest()
     const displayContent = String(options.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
     sendingChat.value = true
+    if (!isTaskInterrupted.value && !options.metadata?.interaction_id && currentTask.value?.id) {
+      const taskId = String(currentTask.value.id)
+      try {
+        const accepted = await submissions.send(taskId, clientMessageId, normalized, options.metadata)
+        if (currentTask.value?.id === taskId) {
+          if (accepted) void refreshSubmissions(taskId)
+          scrollToBottom('chat')
+        }
+        return accepted
+      } finally {
+        sendingChat.value = false
+      }
+    }
     if (isTaskInterrupted.value && currentTask.value?.id) {
       try {
         const payload = await taskSessionControls.resumeInterruptedTask(currentTask.value.id, {
           prompt: normalized,
+          clientMessageId,
         })
         upsertChatMessage({
           id: `local-${clientMessageId}`,
@@ -2507,10 +3041,11 @@ export function useChatViewModel() {
           client_message_id: clientMessageId,
           delivery_status: 'sent',
           ...localUserMessageMeta(),
+          metadata: options.metadata || null,
         })
         applyTaskSessionPayload(payload)
         engineRunning.value = true
-        scrollToBottom('chat')
+        if (!historyContext.anchored.value) scrollToBottom('chat')
         return true
       } catch (e) {
         console.error('Resume interrupted task failed', e)
@@ -2536,16 +3071,22 @@ export function useChatViewModel() {
       client_message_id: clientMessageId,
       delivery_status: 'sending',
       ...localUserMessageMeta(),
+      metadata: options.metadata || null,
     })
   
     // 通过 WebSocket 发送给后端 �?CLI 引擎
     try {
       ws.send(JSON.stringify({
         type: 'chat_message',
-        payload: { role: 'user', content: normalized, client_message_id: clientMessageId }
+        payload: {
+          role: 'user',
+          content: normalized,
+          client_message_id: clientMessageId,
+          metadata: options.metadata || undefined,
+        }
       }))
       engineRunning.value = true
-      scrollToBottom('chat')
+      if (!historyContext.anchored.value) scrollToBottom('chat')
       return true
     } finally {
       releaseSendingChatSoon()
@@ -2555,9 +3096,13 @@ export function useChatViewModel() {
   const sendChat = async () => {
     if (!chatInput.value.trim()) return
     const content = chatInput.value
+    const taskId = currentTask.value?.id
+    // The submission bubble owns this text during the request. Clearing now
+    // also prevents a slow response from carrying the sent prompt into another task.
+    chatInput.value = ''
     const sent = await sendChatContent(content)
-    if (sent) {
-      chatInput.value = ''
+    if (!sent && currentTask.value?.id === taskId && !chatInput.value) {
+      chatInput.value = content
     }
   }
 
@@ -2602,6 +3147,7 @@ export function useChatViewModel() {
   const preInputBusy = ref(false)
 
   const sendPreInputAction = (action: string, payload: Record<string, any> = {}): boolean => {
+    if (isUndoing.value) return false
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       ElMessage.error(t('preInput.errors.ws_unavailable'))
       return false
@@ -2635,6 +3181,10 @@ export function useChatViewModel() {
     if (!currentTask.value?.id) return false
     if (activePreInput.value) {
       ElMessage.warning(t('preInput.errors.already_active'))
+      return false
+    }
+    if (engineRunning.value) {
+      ElMessage.warning(t('preInput.errors.engine_running'))
       return false
     }
     if (isChatLocked.value) {
@@ -2773,6 +3323,7 @@ export function useChatViewModel() {
   // ─── 启动引擎 ───
   const startTask = async (): Promise<boolean> => {
     if (!currentTask.value) return false
+    if (isUndoing.value) return false
     if (!isStartActionVisible.value) return false
     if (isTaskProvisioning.value) {
       ElMessage.warning(t('chat.task_provisioning_hint'))
@@ -2785,10 +3336,7 @@ export function useChatViewModel() {
     if (startingTask.value) return false
     startingTask.value = true
   
-    // 使用任务描述作为初始 prompt
-    const prompt = currentTask.value.description || t('chat.start_default_prompt', {
-      taskName: currentTask.value.name || '',
-    })
+    const prompt = String(startPrompt.value || defaultInitialPromptForTask(currentTask.value)).trim()
   
     try {
       await api.post(
@@ -2800,15 +3348,11 @@ export function useChatViewModel() {
       engineRunning.value = true
       showStartConfirm.value = false
       specDrawerLevel.value = 0
-  
-      messages.value.push({
-        id: Date.now().toString(),
-        role: 'system',
-        content: '🚀 ' + t('dashboard.new_task') + '...',
-        created_at: new Date().toISOString(),
-        message_type: 'text',
-      })
-      scrollToBottom('chat')
+
+      // The API persists the exact user-visible initial prompt. Reload it so
+      // start and initialize share the same durable transcript behavior.
+      await loadHistory(currentTask.value.id)
+      if (!historyContext.anchored.value) scrollToBottom('chat')
       return true
     } catch (e) {
       console.error('Start task failed', e)
@@ -2831,11 +3375,18 @@ export function useChatViewModel() {
       return
     }
     if (startingTask.value) return
+    startPrompt.value = defaultInitialPromptForTask(currentTask.value)
     showStartConfirm.value = true
   }
   
   // ─── Lifecycle ───
   onMounted(() => {
+    submissionPoll = setInterval(async () => {
+      const taskId = String(currentTask.value?.id || '')
+      if (!taskId || submissionRefreshRunning || (!submissions.busy.value && !recoveringSubmissions.value && !engineRunning.value)) return
+      submissionRefreshRunning = true
+      try { await refreshSubmissions(taskId) } finally { submissionRefreshRunning = false }
+    }, 2500)
     window.addEventListener('blur', cancelAllInlineOverlayClose)
     restoreChatWorkbenchMode()
     if (authStore.token) void authStore.fetchCurrentUser()
@@ -2844,16 +3395,29 @@ export function useChatViewModel() {
   })
   
   onUnmounted(() => {
+    if (submissionPoll) clearInterval(submissionPoll)
+    historyGeneration++
+    historyContext.reset()
     window.removeEventListener('blur', cancelAllInlineOverlayClose)
     wsManualClose = true
     clearWsReconnectTimer()
     clearRuntimeUsageRefreshTimer()
     clearContextWindowRefreshTimer()
     clearReferenceHighlight()
+    if (diagnosisSummaryElapsedTimer !== null) {
+      window.clearInterval(diagnosisSummaryElapsedTimer)
+      diagnosisSummaryElapsedTimer = null
+    }
     if (ws) ws.close()
   })
 
   return {
+    historyAnchored: historyContext.anchored,
+    historyHasNew: historyContext.hasNew,
+    historyContextLoading: historyContext.loading,
+    historyHasAfter: computed(() => Boolean(historyContext.context.value?.has_after)),
+    loadContextDirection,
+    returnToLatest,
     activeChatJobs,
     activeHitlCards,
     activeInitialSpecAssetId,
@@ -2912,7 +3476,7 @@ export function useChatViewModel() {
     deletingTask,
     deletedRuntimeSkillsForInitialize,
     deletedRuntimeSkillNamesForInitialize,
-    engineRunning,
+    engineRunning: computed(() => engineRunning.value || submissions.busy.value || recoveringSubmissions.value),
     finishInlineOverlayClose,
     formatMessageTime,
     formatTime,
@@ -2935,6 +3499,7 @@ export function useChatViewModel() {
     hasTaskSpecDoc,
     hasTaskSpecification,
     initializeTaskWithReason,
+    initPrompt,
     initSelectedSkillIds,
     initSkillOptions,
     initSkillOptionsLoading,
@@ -2967,13 +3532,17 @@ export function useChatViewModel() {
     loadWorkspace,
     locateContextWindowReference,
     canMarkMessageAsDecision,
+    canUndoMessage,
+    undoMessage,
+    undoingMessageId,
+    isUndoing,
     openDecisionModal,
     markHitlCardAnswered,
     messageAuthorLabel,
     messageAuthorColor,
     memberColorFor,
     memberColorRgba,
-    messages,
+    messages: visibleMessages,
     // 协作预输入
     activePreInput,
     preInputBusy,
@@ -2992,10 +3561,7 @@ export function useChatViewModel() {
     closeTaskSkillsDrawer,
     openTaskSkillsDrawer,
     isTaskProvisioning,
-    taskProvisionVisible,
-    taskProvisionJobId,
-    taskProvisionTaskId,
-    closeTaskProvision,
+    cancelTaskProvision,
     openTaskSession,
     toggleDiagnosisDocsDrawer,
     createDiagnosisCase,
@@ -3005,6 +3571,9 @@ export function useChatViewModel() {
     diagnosisResultLoading,
     diagnosisResultSaving,
     diagnosisSummarizing,
+    diagnosisChatBusy,
+    diagnosisSummarizingElapsed,
+    diagnosisSummarizingLabel,
     diagnosisSummaryJobId,
     isDiagnosisAdopted,
     exportDiagnosisResult,
@@ -3016,6 +3585,10 @@ export function useChatViewModel() {
     saveDiagnosisResult,
     taskTypeFilter,
     applyTaskTypeFilter,
+    taskRelationFilter,
+    applyTaskRelationFilter,
+    resetTaskRelationFilter,
+    toggleTaskFollow,
     openContextWindowDrawer,
     onTaskCreated,
     openNewTaskModal,
@@ -3054,9 +3627,13 @@ export function useChatViewModel() {
     showThinking,
     specBootstrap,
     specBootstrapLoading,
+    specBootstrapTriggering,
+    canTriggerSpecBootstrap,
+    triggerSpecBootstrap,
     specDrawerLevel,
     specDrawerTab,
     startingTask,
+    startPrompt,
     startTask,
     statusCards,
     submitHitl,
@@ -3077,6 +3654,7 @@ export function useChatViewModel() {
     runtimeTraceLoading,
     taskStatusFilter,
     terminalContainer,
+    setTerminalContainer,
     terminalLogs,
     thinkingContent,
     thinkingExpanded,

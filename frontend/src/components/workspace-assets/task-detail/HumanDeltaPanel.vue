@@ -68,7 +68,7 @@ async function retryCompare(deltaId: string) {
 }
 
 function navigateToDelta(deltaId: string) {
-  router.push(`/ws/${wsId.value}/assets/tasks/${props.taskId}/deltas/${deltaId}/workbench`)
+  router.push(`/workspaces/${wsId.value}/assets/tasks/${props.taskId}/deltas/${deltaId}/workbench`)
 }
 
 function statusTagType(status: string): string {

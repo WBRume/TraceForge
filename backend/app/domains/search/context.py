@@ -1,0 +1,55 @@
+"""Bounded bidirectional indexed history windows with shared history DTOs."""
+from datetime import datetime
+import time
+from fastapi import HTTPException
+from sqlalchemy import and_, or_
+from app.domains.task.models.task import SddTask
+from app.domains.task.models.chat import ChatMessage
+from app.domains.task.services.task_service import serialize_history_messages
+from app.domains.search.service import authorized_scope
+from app.domains.search.sessions import sign, unsign
+
+
+def keyset(key, direction):
+    created, seq, identity = key
+    if isinstance(created, str):
+        created = datetime.fromisoformat(created)
+    cols, vals = (ChatMessage.created_at, ChatMessage.sort_seq, ChatMessage.id), (created, seq, identity)
+    compare = (lambda a, b: a < b) if direction == "before" else (lambda a, b: a > b)
+    return or_(compare(cols[0], vals[0]), and_(cols[0] == vals[0], compare(cols[1], vals[1])),
+        and_(cols[0] == vals[0], cols[1] == vals[1], compare(cols[2], vals[2])))
+
+
+def window(db, user, ws, task_id, message_id=None, cursor=None, direction="before", before=15, after=15, limit=30):
+    authorized_scope(db, user, ws, task_id)
+    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == ws).first()
+    query = db.query(ChatMessage).filter(ChatMessage.task_id == task_id, ChatMessage.workspace_id == ws)
+    if query.filter(ChatMessage.sort_seq.is_(None)).with_entities(ChatMessage.id).first():
+        raise HTTPException(409, "SEARCH_HISTORY_NOT_READY")
+    def fetch(key, way, count):
+        columns = (ChatMessage.created_at, ChatMessage.sort_seq, ChatMessage.id)
+        rows = query.filter(keyset(key, way)).order_by(*[c.desc() if way == "before" else c.asc() for c in columns]).limit(count + 1).all()
+        more = len(rows) > count
+        return (list(reversed(rows[:count])) if way == "before" else rows[:count]), more
+    anchor = None
+    if cursor:
+        token = unsign(cursor, "context", user)
+        if token.get("workspace") != ws or token.get("task") != task_id or token.get("direction") != direction:
+            raise HTTPException(410, "SEARCH_CURSOR_EXPIRED")
+        rows, more = fetch(token["key"], direction, limit)
+        has_before, has_after = (more, True) if direction == "before" else (True, more)
+    else:
+        anchor = query.filter(ChatMessage.id == message_id).first()
+        if not anchor:
+            raise HTTPException(404, "Message not found")
+        key = (anchor.created_at, anchor.sort_seq, anchor.id)
+        left, has_before = fetch(key, "before", before)
+        right, has_after = fetch(key, "after", after)
+        rows = left + [anchor] + right
+    def token_for(row, way):
+        return sign(dict(purpose="context", user=user, workspace=ws, task=task_id, direction=way,
+            key=[row.created_at.isoformat(), row.sort_seq, row.id], expires=int(time.time()) + 300))
+    return dict(anchor_message_id=message_id, messages=serialize_history_messages(db, task, rows, ws, task_id),
+        before_cursor=token_for(rows[0], "before") if rows and has_before else None,
+        after_cursor=token_for(rows[-1], "after") if rows and has_after else None,
+        has_before=has_before, has_after=has_after, at_latest=not has_after)

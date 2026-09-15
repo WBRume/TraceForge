@@ -1,8 +1,11 @@
 import { computed, onBeforeUnmount, ref, shallowRef, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
 import { buildBackendWsUrl } from '@/utils/ws'
-
+import { wsBackoffDelay } from '@/utils/wsBackoff'
+import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 export type AssetSummary = {
   id: string
   task_id: string
@@ -157,11 +160,11 @@ type ThreadJobKind = 'THREAD_AI_REPLY' | 'RESOLUTION_PROPOSAL' | 'RESOLUTION_REW
 type UseAssetDiscussionOptions = {
   wsId: MaybeRefOrGetter<string>
   assetId: MaybeRefOrGetter<string | null | undefined>
-  userId: MaybeRefOrGetter<string | null | undefined>
 }
 
 export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
   const { t } = useI18n()
+  const authStore = useAuthStore()
   const documentData = ref<AssetDocumentPayload | null>(null)
   const versions = ref<AssetVersion[]>([])
   const threads = ref<AssetThread[]>([])
@@ -177,7 +180,9 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
 
   const ws = shallowRef<WebSocket | null>(null)
   const reconnectTimer = shallowRef<number | null>(null)
+  const wsReconnectAttempt = ref(0)
   const wsManualClose = ref(false)
+  let wsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
   const jobPollTimers = shallowRef<Record<string, number>>({})
 
   const wsIdRef = computed(() => String(toValue(options.wsId) || ''))
@@ -185,11 +190,6 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     const val = toValue(options.assetId)
     return val ? String(val) : ''
   })
-  const userIdRef = computed(() => {
-    const val = toValue(options.userId)
-    return val ? String(val) : 'anonymous'
-  })
-
   const activeVersionId = computed(() => documentData.value?.active_version?.id || '')
   const markersByBlock = computed<Record<string, AssetThreadMarker[]>>(() => {
     const map: Record<string, AssetThreadMarker[]> = {}
@@ -649,18 +649,21 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     }
   }
 
-  const buildWsUrl = (assetId: string, userId: string): string => {
+  const buildWsUrl = (assetId: string, token: string): string => {
     return buildBackendWsUrl(`/ws/assets/${assetId}/discussion`, {
-      userId: userId || 'anonymous',
+      token,
+      ...buildWsCursorQuery(`asset:${assetId}`),
     })
   }
 
   const scheduleReconnect = () => {
     if (wsManualClose.value || reconnectTimer.value !== null || !assetIdRef.value) return
+    const delay = wsBackoffDelay(wsReconnectAttempt.value)
+    wsReconnectAttempt.value += 1
     reconnectTimer.value = window.setTimeout(() => {
       reconnectTimer.value = null
       connectWs()
-    }, 1200)
+    }, delay)
   }
 
   const handleWsEvent = async (eventData: any) => {
@@ -752,6 +755,8 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       return
     }
     wsManualClose.value = false
+    wsConsumer?.close()
+    wsConsumer = null
     if (ws.value) {
       ws.value.onopen = null
       ws.value.onmessage = null
@@ -761,15 +766,36 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       ws.value = null
     }
 
-    const socket = new WebSocket(buildWsUrl(assetId, userIdRef.value))
+    const socket = new WebSocket(buildWsUrl(assetId, authStore.token || ''))
     ws.value = socket
+    const consumer = createSerializedWsConsumer({
+      room: `asset:${assetId}`,
+      onEvent: (event) => handleWsEvent(event.payload),
+      onResync: async (frame, reason, context, signal) => {
+        if (reason === 'gap') {
+          context.socket.close(4000, 'sequence_gap')
+          return
+        }
+        await refresh()
+        if (!signal.aborted && context.socket === ws.value && context.socket.readyState === WebSocket.OPEN) {
+          sendResyncComplete(context.socket, frame, `asset:${assetId}`)
+        }
+      },
+      onControl: (frame) => handleWsEvent(frame),
+      onFailure: (_error, context) => {
+        if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+      },
+    })
+    wsConsumer = consumer
+    const generation = consumer.resetForConnection(socket)
     socket.onopen = () => {
       wsConnected.value = true
+      wsReconnectAttempt.value = 0
     }
     socket.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data)
-        void handleWsEvent(data)
+        consumer.enqueue(data, generation)
       } catch {
         // Ignore malformed events
       }
@@ -778,6 +804,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       wsConnected.value = false
     }
     socket.onclose = () => {
+      consumer.close(generation)
       wsConnected.value = false
       if (assetIdRef.value === assetId) {
         scheduleReconnect()
@@ -789,6 +816,8 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     wsManualClose.value = true
     clearWsTimer()
     wsConnected.value = false
+    wsConsumer?.close()
+    wsConsumer = null
     if (ws.value) {
       ws.value.onopen = null
       ws.value.onmessage = null

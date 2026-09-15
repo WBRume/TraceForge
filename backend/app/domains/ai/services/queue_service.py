@@ -5,7 +5,8 @@ Unified background queue aggregation and management service.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy.orm import Session
@@ -24,8 +25,9 @@ from app.domains.task.models.task_cli_bootstrap import (
     SddTaskCliBootstrap,
     TaskCliBootstrapStatus,
 )
-from app.domains.auth.models.user import WorkspaceMember, WorkspacePermission
+from app.domains.auth.models.user import User, WorkspaceMember, WorkspacePermission
 from app.domains.ai.schemas.queue import QueueJobActions, QueueJobItem
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.api_mock.services import api_mock_service
 from app.domains.skill.services import skill_analysis_service
 from app.domains.task.services import task_cli_state_service
@@ -42,6 +44,207 @@ QUEUE_SOURCES = {QUEUE_SOURCE_PROVISION, QUEUE_SOURCE_API_MOCK, QUEUE_SOURCE_BOO
 API_MOCK_JOB_SYNC = "SYNC_TASK_SOURCE"
 API_MOCK_JOB_IMPORT = "IMPORT_SWAGGER"
 API_MOCK_JOB_AUTO = api_mock_service.AUTO_MOCK_JOB_TYPE
+
+
+def list_orphaned_jobs(
+    db: Session,
+    *,
+    user_id: str,
+    page: int = 1,
+    page_size: int = 50,
+) -> Tuple[List[SddAiJob], int]:
+    """Admin-only ORPHANED evidence view; no status mutation is performed."""
+    if not _is_admin(db, user_id):
+        raise PermissionError("Only platform administrators can inspect orphaned jobs")
+    query = (
+        db.query(SddAiJob)
+        .filter(SddAiJob.status == AiJobStatus.ORPHANED)
+        .order_by(SddAiJob.orphaned_at.asc(), SddAiJob.updated_at.asc())
+    )
+    total = query.count()
+    safe_page = max(1, int(page or 1))
+    safe_size = max(1, min(int(page_size or 50), 200))
+    rows = query.offset((safe_page - 1) * safe_size).limit(safe_size).all()
+    return rows, total
+
+
+def protect_orphaned_job(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: str,
+) -> SddAiJob:
+    """Pause automatic reaping with explicit operator evidence.
+
+    This is intentionally not a generic status-edit endpoint. The job stays
+    ORPHANED until a separate, evidence-backed recovery workflow is performed.
+    """
+    if not _is_admin(db, operator_id):
+        raise PermissionError("Only platform administrators can protect orphaned jobs")
+    normalized_reason = str(reason or "").strip()
+    normalized_evidence = str(evidence or "").strip()
+    if not normalized_reason or not normalized_evidence:
+        raise ValueError("reason and evidence are required")
+    job = db.query(SddAiJob).filter(SddAiJob.id == str(job_id or "").strip()).first()
+    if not job:
+        raise LookupError("Queue job not found")
+    if job.status != AiJobStatus.ORPHANED:
+        raise ValueError("Only ORPHANED jobs can be protected")
+    job.manual_intervention_required = True
+    job.manual_intervention_operator_id = str(operator_id)
+    job.manual_intervention_reason = normalized_reason
+    job.manual_intervention_evidence = normalized_evidence
+    job.next_reap_at = None
+    db.commit()
+    db.refresh(job)
+    audit_log(
+        action="orphaned_job_protect",
+        outcome="success",
+        resource_type="ai_job",
+        resource_id=job.id,
+        operator_id=operator_id,
+        workspace_id=job.workspace_id,
+        task_id=job.task_id,
+        reason=normalized_reason,
+        evidence=normalized_evidence,
+    )
+    return job
+
+
+def _append_orphan_recovery_history(
+    job: SddAiJob,
+    *,
+    action: str,
+    operator_id: str,
+    reason: str,
+    evidence: Optional[str] = None,
+) -> None:
+    context = dict(job.context_json) if isinstance(job.context_json, dict) else {}
+    history = list(context.get("orphan_recovery_history") or [])
+    history.append({
+        "action": action,
+        "operator_id": str(operator_id),
+        "reason": reason,
+        "evidence": evidence,
+        "at": datetime.utcnow().isoformat() + "Z",
+    })
+    context["orphan_recovery_history"] = history[-50:]
+    job.context_json = context
+
+
+def _adopt_orphaned_job_for_manual_action(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: Optional[str],
+    action: str,
+) -> Dict[str, Any]:
+    """CAS an ORPHANED job into a single administrator-owned termination."""
+    if not _is_admin(db, operator_id):
+        raise PermissionError("Only platform administrators can recover orphaned jobs")
+    normalized_reason = str(reason or "").strip()
+    normalized_evidence = str(evidence or "").strip() or None
+    if not normalized_reason:
+        raise ValueError("reason is required")
+    normalized_job_id = str(job_id or "").strip()
+    job = (
+        db.query(SddAiJob)
+        .filter(SddAiJob.id == normalized_job_id)
+        .with_for_update()
+        .first()
+    )
+    if not job:
+        raise LookupError("Queue job not found")
+    if job.status != AiJobStatus.ORPHANED:
+        raise ValueError(
+            f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})"
+        )
+
+    from app.domains.ai.services import ai_job_service
+
+    previous_run_token = str(job.run_token or "") or None
+    adopted_run_token = str(uuid.uuid4())
+    _append_orphan_recovery_history(
+        job,
+        action=action,
+        operator_id=operator_id,
+        reason=normalized_reason,
+        evidence=normalized_evidence,
+    )
+    job.status = AiJobStatus.TERMINATING
+    job.worker_id = ai_job_service.WORKER_ID
+    job.worker_boot_id = ai_job_service.WORKER_BOOT_ID
+    job.run_token = adopted_run_token
+    job.termination_attempts = int(job.termination_attempts or 0) + 1
+    job.terminal_reason = normalized_reason
+    job.failure_code = "MANUAL_ORPHAN_RECOVERY"
+    now = datetime.utcnow()
+    job.last_reap_attempt_at = now
+    # Keep the automatic reaper from adopting this fresh manual fence while
+    # the administrator is validating/stopping the external process.
+    manual_lease_seconds = max(5, int(getattr(settings, "AI_JOB_LEASE_SECONDS", 45) or 45))
+    job.lease_expires_at = now + timedelta(seconds=manual_lease_seconds)
+    job.next_reap_at = now + timedelta(seconds=manual_lease_seconds)
+    job.manual_intervention_required = False
+    job.manual_intervention_operator_id = None
+    job.manual_intervention_reason = None
+    job.manual_intervention_evidence = None
+    db.flush()
+    return {
+        "job_id": str(job.id),
+        "run_token": adopted_run_token,
+        "previous_run_token": previous_run_token,
+        "process_pid": job.process_pid,
+        "process_started_at": job.process_started_at,
+        "process_group_id": job.process_group_id,
+        "queue_key": str(job.queue_key or ""),
+        "reason": normalized_reason,
+        "action": action,
+        "workspace_id": job.workspace_id,
+        "task_id": job.task_id,
+    }
+
+
+def begin_orphaned_retry_termination(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+) -> Dict[str, Any]:
+    return _adopt_orphaned_job_for_manual_action(
+        db,
+        job_id=job_id,
+        operator_id=operator_id,
+        reason=reason,
+        evidence=None,
+        action="retry_termination",
+    )
+
+
+def begin_orphaned_cleanup_confirmation(
+    db: Session,
+    *,
+    job_id: str,
+    operator_id: str,
+    reason: str,
+    evidence: str,
+) -> Dict[str, Any]:
+    normalized_evidence = str(evidence or "").strip()
+    if not normalized_evidence:
+        raise ValueError("evidence is required")
+    return _adopt_orphaned_job_for_manual_action(
+        db,
+        job_id=job_id,
+        operator_id=operator_id,
+        reason=reason,
+        evidence=normalized_evidence,
+        action="confirm_cleanup",
+    )
 
 
 def _enum_text(value: Any) -> str:
@@ -61,6 +264,12 @@ def _to_queue_status(raw_status: str) -> str:
     if normalized in {"STALE"}:
         return "FAILED"
     return "PENDING"
+
+
+def _is_admin(db: Session, user_id: str) -> bool:
+    normalized_user_id = str(user_id or "").strip()
+    user = db.query(User).filter(User.id == normalized_user_id).first()
+    return bool(user and user.is_admin)
 
 
 def _workspace_member_ids(db: Session, user_id: str) -> set[str]:
@@ -123,19 +332,20 @@ def _build_target_path(
     ws_id = str(workspace_id or "").strip()
     tk_id = str(task_id or "").strip()
     sk_id = str(skill_id or "").strip()
+    # target_path 指向前端 SPA 路由；前端工作区路由前缀是 /workspaces（/ws 已被后端 WebSocket 代理占用）
     if source == QUEUE_SOURCE_PROVISION:
         if job_type == ProvisionJobType.CREATE_WORKSPACE.value and ws_id:
-            return f"/ws/{ws_id}/dashboard"
+            return f"/workspaces/{ws_id}/dashboard"
         if job_type == ProvisionJobType.CREATE_TASK.value and ws_id and tk_id:
-            return f"/ws/{ws_id}/chat/{tk_id}"
+            return f"/workspaces/{ws_id}/chat/{tk_id}"
         if job_type == ProvisionJobType.IMPORT_SKILL.value and sk_id:
             query = f"?wsId={ws_id}" if ws_id else ""
             return f"/skills/{sk_id}/edit{query}"
         return None
     if source == QUEUE_SOURCE_API_MOCK and ws_id:
-        return f"/ws/{ws_id}/api-mock"
+        return f"/workspaces/{ws_id}/api-mock"
     if source == QUEUE_SOURCE_BOOTSTRAP and ws_id and tk_id:
-        return f"/ws/{ws_id}/chat/{tk_id}"
+        return f"/workspaces/{ws_id}/chat/{tk_id}"
     if source == QUEUE_SOURCE_SKILL_ANALYSIS and ws_id and sk_id:
         return f"/skills/{sk_id}/edit?wsId={ws_id}"
     return None
@@ -210,7 +420,7 @@ def _build_api_mock_actions(*, job_type: str, item_status: str, target_path: Opt
 def _build_bootstrap_actions(item_status: str, target_path: Optional[str]) -> QueueJobActions:
     return QueueJobActions(
         can_stop=False,
-        can_retry=item_status == "FAILED",
+        can_retry=item_status in {"PENDING", "FAILED"},
         can_open=bool(item_status == "SUCCESS" and target_path),
     )
 
@@ -1038,8 +1248,12 @@ def retry_queue_job(
         if not _can_manage_task_jobs(db, workspace_id=record.workspace_id, user_id=normalized_user_id):
             raise PermissionError("No permission to retry bootstrap jobs")
         status_text = _enum_text(record.status)
-        if status_text not in {TaskCliBootstrapStatus.FAILED.value, TaskCliBootstrapStatus.STALE.value}:
-            raise ValueError("Only failed/stale bootstrap jobs can be retried")
+        if status_text not in {
+            TaskCliBootstrapStatus.PENDING.value,
+            TaskCliBootstrapStatus.FAILED.value,
+            TaskCliBootstrapStatus.STALE.value,
+        }:
+            raise ValueError("Only pending/failed/stale bootstrap jobs can be retried")
 
         record.status = TaskCliBootstrapStatus.PENDING
         record.progress = 0
@@ -1047,7 +1261,14 @@ def retry_queue_job(
         record.error_message = None
         db.commit()
         db.refresh(record)
-        task_cli_state_service.schedule_bootstrap(record.task_id)
+        from app.domains.ai.services import ai_job_service
+
+        baseline_job = ai_job_service.create_task_baseline_job(
+            db,
+            workspace_id=record.workspace_id,
+            task_id=record.task_id,
+            creator_id=normalized_user_id,
+        )
         audit_log(
             action="queue_retry",
             outcome="success",
@@ -1057,11 +1278,13 @@ def retry_queue_job(
             operator_id=normalized_user_id,
             workspace_id=record.workspace_id,
             task_id=record.task_id,
+            new_job_id=baseline_job.id,
         )
         return {
             "source": normalized_source,
             "job_id": record.id,
-            "new_job_id": None,
+            "new_job_id": baseline_job.id,
+            "queue_key": baseline_job.queue_key,
             "message": "Bootstrap retry queued",
         }
 
@@ -1101,5 +1324,4 @@ def retry_queue_job(
             "new_job_id": new_job.id,
             "message": "Skill analysis retry queued",
         }
-
     raise ValueError("Unsupported queue source")

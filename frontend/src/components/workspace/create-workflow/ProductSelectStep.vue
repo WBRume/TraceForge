@@ -4,23 +4,17 @@ import { Package } from 'lucide-vue-next'
 import type { ProjectProduct } from '@/types/management'
 
 const props = defineProps<{
-  modelValue: string[]
+  modelValue: string | null
   products: ProjectProduct[]
   loading: boolean
 }>()
 
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: string[]): void
+  (e: 'update:modelValue', value: string | null): void
 }>()
 
 const toggle = (productId: string) => {
-  const selected = new Set(props.modelValue)
-  if (selected.has(productId)) {
-    selected.delete(productId)
-  } else {
-    selected.add(productId)
-  }
-  emit('update:modelValue', [...selected])
+  emit('update:modelValue', props.modelValue === productId ? null : productId)
 }
 </script>
 
@@ -35,11 +29,12 @@ const toggle = (productId: string) => {
     </div>
 
     <div v-else class="wf-product-grid">
-      <label v-for="product in products" :key="product.id" class="wf-product-card" :class="{ selected: modelValue.includes(product.product_id) }">
+      <label v-for="product in products" :key="product.id" class="wf-product-card" :class="{ selected: modelValue === product.product_id }">
         <input
-          type="checkbox"
+          type="radio"
+          name="workspace-product"
           class="wf-checkbox"
-          :checked="modelValue.includes(product.product_id)"
+          :checked="modelValue === product.product_id"
           @change="toggle(product.product_id)"
         />
         <div class="wf-product-title-row">

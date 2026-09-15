@@ -33,6 +33,8 @@ export function useAgentBackendSettings() {
   const selected = ref<string>('')
   const loading = ref(false)
   const saving = ref(false)
+  const testing = ref(false)
+  const testResult = ref<{ success: boolean; message: string; duration_ms?: number } | null>(null)
   const error = ref('')
   const success = ref('')
 
@@ -86,6 +88,26 @@ export function useAgentBackendSettings() {
     }
   }
 
+  const testBackend = async () => {
+    if (!workspaceId.value || !selected.value) return
+    testing.value = true
+    testResult.value = null
+    clearMessage()
+    try {
+      const res = await api.post(`/workspaces/${workspaceId.value}/agent-backends/test`, {
+        backend: selected.value,
+      })
+      testResult.value = res.data
+    } catch (err) {
+      testResult.value = {
+        success: false,
+        message: formatApiError(err, t('settings.agent.test_failed'), t),
+      }
+    } finally {
+      testing.value = false
+    }
+  }
+
   watch(workspaceId, (next, prev) => {
     if (next && next !== prev) void load()
   }, { immediate: true })
@@ -101,9 +123,12 @@ export function useAgentBackendSettings() {
     supportsFork,
     loading,
     saving,
+    testing,
+    testResult,
     error,
     success,
     load,
     save,
+    testBackend,
   }
 }

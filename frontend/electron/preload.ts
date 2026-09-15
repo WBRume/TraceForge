@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const desktopApi = {
   platform: process.platform,
+  download: {
+    save: (payload: { suggestedName: string; data: ArrayBuffer | Uint8Array; mimeType?: string }) =>
+      ipcRenderer.invoke('sdd:download:save', payload),
+  },
   git: {
     selectDirectory: () => ipcRenderer.invoke('sdd:git:select-directory'),
     validateGitRepo: (repoPath: string) => ipcRenderer.invoke('sdd:git:validate-repo', { repoPath }),
@@ -42,6 +46,15 @@ const desktopApi = {
   system: {
     openExternal: (url: string) => ipcRenderer.invoke('sdd:system:open-external', { url }),
     openPath: (path: string) => ipcRenderer.invoke('sdd:system:open-path', { path }),
+  },
+  oauth: {
+    start: (payload: { provider: string; intent: 'login' | 'bind'; clientType: 'web' | 'desktop' }) =>
+      ipcRenderer.invoke('sdd:oauth:start', payload),
+    onTicket: (listener: (payload: { ticket?: string; status?: string; error?: string }) => void) => {
+      const wrapped = (_event: Electron.IpcRendererEvent, payload: unknown) => listener(payload as { ticket?: string; status?: string; error?: string })
+      ipcRenderer.on('sdd:oauth:ticket', wrapped)
+      return () => ipcRenderer.removeListener('sdd:oauth:ticket', wrapped)
+    },
   },
 }
 

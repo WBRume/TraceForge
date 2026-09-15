@@ -15,6 +15,7 @@ class ContextTokenSnapshotResponse(BaseModel):
     ai_job_id: Optional[str] = None
     session_id: Optional[str] = None
     model: Optional[str] = None
+    agent_backend: Optional[str] = None
     status: str
     total_cost_usd: Optional[float] = None
     duration_ms: Optional[int] = None

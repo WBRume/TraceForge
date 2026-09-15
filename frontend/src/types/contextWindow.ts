@@ -16,6 +16,7 @@ export type ContextTokenSnapshot = {
   ai_job_id?: string | null
   session_id?: string | null
   model?: string | null
+  agent_backend?: string | null
   status: string
   total_cost_usd?: number | null
   duration_ms?: number | null

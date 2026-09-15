@@ -50,7 +50,7 @@ function requirementTo(requirementId: string) {
 }
 
 function taskTo(taskId: string) {
-  return `/ws/${props.workspaceId}/assets/tasks/${encodeURIComponent(taskId)}`
+  return `/workspaces/${props.workspaceId}/assets/tasks/${encodeURIComponent(taskId)}`
 }
 
 function statusLabel(status: string) {

@@ -62,7 +62,7 @@ describe('SpecCoverageMatrix', () => {
       const to = link.props('to')
       return typeof to === 'object' && to.name === 'workspaceAssetsRequirementDetail' && to.params?.requirementId === 'req-1'
     })).toBe(true)
-    expect(links.some((link) => link.props('to') === '/ws/ws-1/assets/tasks/task-1')).toBe(true)
+    expect(links.some((link) => link.props('to') === '/workspaces/ws-1/assets/tasks/task-1')).toBe(true)
   })
 
   it('shows an empty state when no real matrix rows are derived', () => {

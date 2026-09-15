@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { useChatTerminalController, type ChatTerminalBridge } from '@/composables/chat-terminal/useChatTerminalController'
 import { mergeTerminalTimeline } from '@/utils/chat-terminal/mergeTerminalTimeline'
@@ -88,7 +88,12 @@ watch(
 )
 
 onMounted(() => {
+  props.vm.setTerminalContainer(timelineContainer.value)
   void refocusInput()
+})
+
+onBeforeUnmount(() => {
+  props.vm.setTerminalContainer(null)
 })
 </script>
 

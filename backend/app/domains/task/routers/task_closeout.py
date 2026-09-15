@@ -38,7 +38,7 @@ async def _stop_active_task_session(db: Session, ws_id: str, task_id: str, messa
     if engine:
         await engine.stop()
     for job_id in cancelled_job_ids:
-        await ai_job_service.publish_job(job_id, final=True)
+        await ai_job_service.publish_job(job_id)
     task_cli_state_service.schedule_task_cli_state_cleanup(ws_id, task_id)
 
 

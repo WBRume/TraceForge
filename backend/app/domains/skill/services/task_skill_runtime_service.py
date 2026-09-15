@@ -2,7 +2,7 @@
 Runtime skill service for task/session execution.
 
 This module operates only on task-local materialized skill copies:
-<task.project_path>/.claude/skills/<materialized_dir>/...
+<task.project_path>/<agent-specific skills dir>/<materialized_dir>/...
 """
 
 from __future__ import annotations
@@ -34,16 +34,26 @@ class RuntimeSkillRecord:
     config_deleted: bool = False
 
 
-def _task_skills_root(task: SddTask) -> str:
-    return os.path.abspath(os.path.join(task.project_path, ".claude", "skills"))
+def _task_skills_root(db: Optional[Session] = None, task: Optional[SddTask] = None) -> str:
+    # Backward-compatible with the old one-argument signature `_task_skills_root(task)`.
+    if task is None:
+        task = db
+        db = None
+    return skill_service.resolve_task_skills_root(db, task)
 
 
-def _runtime_manifest_path(task: SddTask) -> str:
-    return os.path.join(_task_skills_root(task), skill_service.TASK_SKILLS_MANIFEST)
+def _runtime_manifest_path(db: Optional[Session] = None, task: Optional[SddTask] = None) -> str:
+    if task is None:
+        task = db
+        db = None
+    return os.path.join(_task_skills_root(db, task), skill_service.TASK_SKILLS_MANIFEST)
 
 
-def _read_runtime_manifest(task: SddTask) -> List[Dict[str, Any]]:
-    manifest_path = _runtime_manifest_path(task)
+def _read_runtime_manifest(db: Optional[Session] = None, task: Optional[SddTask] = None) -> List[Dict[str, Any]]:
+    if task is None:
+        task = db
+        db = None
+    manifest_path = _runtime_manifest_path(db, task)
     if not os.path.isfile(manifest_path):
         return []
     try:
@@ -107,7 +117,7 @@ def _fallback_runtime_dir_records(root: str, existing_folders: set[str]) -> List
 
 
 def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSkillRecord]:
-    root = _task_skills_root(task)
+    root = _task_skills_root(db, task)
     skills = skill_service.get_task_skills(db, task.id)
     folder_map = skill_service.build_task_skill_folder_map(skills)
     records: List[RuntimeSkillRecord] = []
@@ -132,7 +142,7 @@ def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSk
         seen_skill_ids.add(skill.id)
         seen_folders.add(folder)
 
-    for item in _read_runtime_manifest(task):
+    for item in _read_runtime_manifest(db, task):
         record = _record_from_manifest_item(item, root=root)
         if not record or record.skill_id in seen_skill_ids or record.materialized_dir in seen_folders:
             continue
@@ -154,7 +164,7 @@ def _resolve_runtime_skill_root(db: Session, task: SddTask, skill_id: str) -> Tu
     if not folder_name:
         raise ValueError("Failed to resolve materialized skill folder")
 
-    skill_root = os.path.abspath(os.path.join(_task_skills_root(task), folder_name))
+    skill_root = os.path.abspath(os.path.join(_task_skills_root(db, task), folder_name))
     return target, folder_name, skill_root
 
 
@@ -248,7 +258,7 @@ def list_task_runtime_skills(db: Session, task: SddTask) -> Dict[str, object]:
         records=records,
         scope_start_at=scope_start_at,
     )
-    root = _task_skills_root(task)
+    root = _task_skills_root(db, task)
 
     items: List[Dict[str, object]] = []
     for record in records:

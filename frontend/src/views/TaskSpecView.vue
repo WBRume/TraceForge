@@ -43,7 +43,7 @@ watch(
 
 const backToChat = () => {
   if (!wsId.value || !taskId.value) return
-  router.push(`/ws/${wsId.value}/chat/${taskId.value}`)
+  router.push(`/workspaces/${wsId.value}/chat/${taskId.value}`)
 }
 </script>
 

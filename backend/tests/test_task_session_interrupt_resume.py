@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -24,14 +25,16 @@ from app.domains.task.models.task import SddTask
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus  # noqa: E402
 from app.domains.task.models.chat import ChatMessage  # noqa: E402
 from app.domains.task.models.task import TaskStatus  # noqa: E402
+from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus  # noqa: E402
 from app.domains.ai.services import ai_job_service
 from app.domains.task.services import task_session_control_service
+from app.domains.task.services import task_session_service
 
 
-def _build_session():
+def _build_session(*, expire_on_commit=False):
     engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, expire_on_commit=False)
+    return sessionmaker(bind=engine, expire_on_commit=expire_on_commit)
 
 
 def _seed_task(db, *, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING):
@@ -83,8 +86,8 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     published = []
     events = []
 
-    async def _publish_job(job_id, *, final=False):
-        published.append((job_id, final))
+    async def _publish_job(job_id):
+        published.append(job_id)
 
     async def _broadcast(event_type, event_task, job_payload):
         events.append((event_type, event_task.id, job_payload["id"]))
@@ -110,9 +113,126 @@ def test_task_interrupt_marks_task_and_job_interrupted(monkeypatch):
     assert task.interrupt_reason == "pause for edits"
     assert job.status == AiJobStatus.INTERRUPTED
     assert job.session_id == "session-1"
-    assert published == [("job-1", False)]
+    assert published == ["job-1"]
     assert events == [("task_interrupted", "task-1", "job-1")]
     assert payload["status"] == TaskStatus.INTERRUPTED.value
+
+
+def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_failure(monkeypatch):
+    """A deleted target ORM row must not convert a durable undo into FAILED."""
+    # The production session expires ORM instances after commit.  Keep that
+    # behavior here so a deleted target reproduces SQLAlchemy's ObjectDeletedError.
+    SessionLocal = _build_session(expire_on_commit=True)
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    task.session_generation = 1
+    task.session_revision = 1
+    task.session_id = "session-1"
+    message = ChatMessage(
+        id="message-1",
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        creator_id="user-1",
+        role="user",
+        content="remember the old marker",
+        message_type="text",
+        session_generation=1,
+    )
+    turn = TaskSessionTurn(
+        id="turn-1",
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        user_message_id=message.id,
+        ai_job_id=job.id,
+        session_generation=1,
+        turn_index=1,
+        session_revision=1,
+        provider="claude-code",
+        provider_session_id="session-1",
+        checkpoint_path="G:/tmp/traceforge-undo-checkpoint",
+        status=TaskSessionTurnStatus.ACTIVE,
+    )
+    message.session_turn_id = turn.id
+    job.session_turn_id = turn.id
+    job.session_generation = 1
+    job.session_revision = 1
+    db.add_all([message, turn])
+    db.commit()
+    task_id = str(task.id)
+    job_id = str(job.id)
+    message_id = str(message.id)
+    turn_id = str(turn.id)
+
+    @asynccontextmanager
+    async def _fake_task_lock(*_args, **_kwargs):
+        yield
+
+    async def _fake_lock_provider():
+        return SimpleNamespace(backend_name="redis")
+
+    async def _raise_broadcast(*_args, **_kwargs):
+        raise RuntimeError("websocket disconnected")
+
+    monkeypatch.setattr(task_session_service, "get_lock_provider", _fake_lock_provider)
+    monkeypatch.setattr(task_session_service, "lock_task", _fake_task_lock)
+    monkeypatch.setattr(task_session_service, "_stop_engine_and_wait", lambda _task_id: _noop_async())
+    monkeypatch.setattr(task_session_service.skill_runtime_trace_service, "wait_for_pending_writes", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "backup_current_provider", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "restore_provider", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "restore_worktree", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(task_session_service.manager, "send_message_to_room", _raise_broadcast)
+
+    payload = asyncio.run(
+        task_session_service.undo_task_message(
+            db,
+            task=task,
+            message_id=message_id,
+            actor_user_id="user-1",
+            operation_id="undo-operation-1",
+        )
+    )
+
+    assert payload["target_message_id"] == "message-1"
+    assert payload["status"] == TaskSessionTurnStatus.REVERTED.value
+    check_db = SessionLocal()
+    try:
+        assert check_db.query(ChatMessage).filter(ChatMessage.id == message_id).first() is None
+        stored_job = check_db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
+        assert stored_job.prompt_text is None
+        assert stored_job.result_json == {"redacted": True, "reason": "session_undo"}
+        assert check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn_id).one().status == TaskSessionTurnStatus.REVERTED
+        assert check_db.query(SddTask).filter(SddTask.id == task_id).one().status == TaskStatus.CODING
+    finally:
+        check_db.close()
+
+
+async def _noop_async():
+    return None
+
+
+def test_undo_stop_engine_does_not_swallow_stop_failure(monkeypatch):
+    closed = []
+
+    class _FakeCli:
+        def is_running(self):
+            return False
+
+        async def close(self):
+            closed.append(True)
+
+    class _FakeEngine:
+        running = False
+        cli = _FakeCli()
+
+        async def stop(self):
+            raise RuntimeError("stop failed")
+
+    monkeypatch.setattr(task_session_service, "get_engine", lambda _task_id: _FakeEngine())
+
+    with pytest.raises(RuntimeError, match="stop failed"):
+        asyncio.run(task_session_service._stop_engine_and_wait("task-1"))
+    assert closed == [True]
 
 
 def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch):
@@ -123,8 +243,8 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     published = []
     events = []
 
-    async def _publish_job(job_id, *, final=False):
-        published.append((job_id, final))
+    async def _publish_job(job_id):
+        published.append(job_id)
 
     async def _broadcast(event_type, event_task, job_payload):
         events.append((event_type, event_task.id, job_payload["id"]))
@@ -147,7 +267,7 @@ def test_task_interrupt_cancels_pending_job_when_engine_not_running(monkeypatch)
     assert job.status == AiJobStatus.CANCELLED
     assert job.message == "stop before start"
     assert task.status == TaskStatus.CODING
-    assert published == [("job-1", True)]
+    assert published == ["job-1"]
     assert events == [("task_interrupted", "task-1", "job-1")]
     assert payload["job"]["status"] == AiJobStatus.CANCELLED.value
 
@@ -157,12 +277,13 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
     db = SessionLocal()
     task, _job = _seed_task(db, task_status=TaskStatus.FAILED, job_status=AiJobStatus.INTERRUPTED)
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
+    # run_db_txn 在线程内从 app.database 惰性导入 SessionLocal
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
         asyncio.run(
             task_session_control_service.resume_interrupted_task(
-                db,
-                task=task,
+                task_id=task.id,
                 actor_user_id="user-1",
                 prompt="continue",
             )
@@ -171,7 +292,7 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
     assert exc.value.status_code == 409
 
 
-def test_task_resume_reuses_original_session_and_job(monkeypatch):
+def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(monkeypatch):
     SessionLocal = _build_session()
     db = SessionLocal()
     task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.INTERRUPTED)
@@ -180,45 +301,240 @@ def test_task_resume_reuses_original_session_and_job(monkeypatch):
 
     published = []
     events = []
-    scheduled = []
+    enqueued = []
 
-    async def _publish_job(job_id, *, final=False):
-        published.append((job_id, final))
+    async def _publish_job(job_id):
+        published.append(job_id)
 
-    async def _broadcast(event_type, event_task, job_payload):
-        events.append((event_type, event_task.id, job_payload["id"]))
+    async def _broadcast_event(event_type, payload):
+        events.append((event_type, payload["task_id"], payload["job"]["id"]))
 
-    def _create_task(coro):
-        scheduled.append(coro)
-        coro.close()
-        return SimpleNamespace(done=lambda: True)
+    async def _enqueue(job_id):
+        enqueued.append(job_id)
+        return None
+
+    async def _checkpoint(*_args, **_kwargs):
+        return {"root": "G:/tmp/fake-session-checkpoint", "worktree": {}, "provider": {}}
+
+    async def _cleanup(_path):
+        return None
+
+    class _CaptureManager:
+        async def send_message_to_room(self, task_id, message):
+            await _broadcast_event(message.type, message.payload)
 
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _task_id: None)
     monkeypatch.setattr(task_session_control_service.ai_job_service, "publish_job", _publish_job)
-    monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", _broadcast)
-    monkeypatch.setattr(task_session_control_service.asyncio, "create_task", _create_task)
+    monkeypatch.setattr(task_session_control_service.ai_job_service, "enqueue_task_chat_job", _enqueue)
+    monkeypatch.setattr(task_session_control_service, "task_ws_manager", _CaptureManager())
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", _checkpoint)
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", _cleanup)
 
     payload = asyncio.run(
         task_session_control_service.resume_interrupted_task(
-            db,
-            task=task,
+            task_id=task.id,
             actor_user_id="user-1",
             prompt="use this correction",
+            client_message_id="client-resume-1",
         )
     )
 
     db.refresh(task)
     db.refresh(job)
+    resume_job = db.query(SddAiJob).filter(SddAiJob.id != job.id).one()
     assert task.status == TaskStatus.CODING
     assert task.session_id == "session-1"
-    assert job.status == AiJobStatus.RUNNING
-    assert job.session_id == "session-1"
-    assert job.prompt_text == "use this correction"
+    assert job.status == AiJobStatus.CANCELLED
+    assert resume_job.status == AiJobStatus.PENDING
+    assert resume_job.session_id == "session-1"
+    assert resume_job.prompt_text == "use this correction"
+    assert resume_job.context_json["resumed_from_job_id"] == job.id
+    assert resume_job.context_json["client_message_id"] == "client-resume-1"
     assert db.query(ChatMessage).filter(ChatMessage.task_id == task.id).count() == 1
-    assert published == [("job-1", False)]
-    assert events == [("task_resumed", "task-1", "job-1")]
-    assert len(scheduled) == 1
+    assert published == ["job-1"]
+    assert events == [("task_resumed", "task-1", resume_job.id)]
+    assert enqueued == [resume_job.id]
     assert payload["status"] == TaskStatus.CODING.value
+
+    # Retrying the same HTTP request is idempotent even though the task is now CODING.
+    duplicate = asyncio.run(
+        task_session_control_service.resume_interrupted_task(
+            task_id=task.id,
+            actor_user_id="user-1",
+            prompt="use this correction",
+            client_message_id="client-resume-1",
+        )
+    )
+    assert duplicate["job"]["id"] == resume_job.id
+    assert db.query(SddAiJob).count() == 2
+
+
+def test_initialize_turn_can_skip_checkpoint_and_is_not_undoable(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    db.close()
+
+    checkpoint_calls = []
+
+    async def _unexpected_checkpoint(*args, **kwargs):
+        checkpoint_calls.append((args, kwargs))
+        raise AssertionError("initialization must not create a checkpoint")
+
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.agents.selection.resolve_task_backend", lambda *_args: "opencode")
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service,
+        "create_checkpoint",
+        _unexpected_checkpoint,
+    )
+
+    created = asyncio.run(
+        task_session_service.create_task_chat_turn(
+            task_id=task.id,
+            actor_user_id="user-1",
+            content="初始化任务",
+            context_json={"source": "task_initialize", "fresh_session": True},
+            fresh_session=True,
+            skip_checkpoint=True,
+        )
+    )
+
+    assert checkpoint_calls == []
+    assert created.can_undo is False
+    check_db = SessionLocal()
+    try:
+        message = check_db.query(ChatMessage).filter(ChatMessage.id == created.message_id).one()
+        turn = check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == created.session_turn_id).one()
+        assert message.session_turn_id == turn.id
+        assert turn.checkpoint_path is None
+        assert turn.worktree_snapshot_path is None
+
+        history = task_session_service.task_service.get_task_history(
+            check_db,
+            task.id,
+            task.workspace_id,
+        )
+        assert history["messages"][0]["can_undo"] is False
+
+        with pytest.raises(task_session_service.TaskSessionUndoError) as exc_info:
+            task_session_service._load_turn_target(check_db, check_db.get(SddTask, task.id), message.id)
+        assert exc_info.value.code == "UNDO_NO_CHECKPOINT"
+    finally:
+        check_db.close()
+
+
+def test_execute_job_failure_converges_running_resume_attempt_to_interrupted(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    job.context_json = {"resume_interrupted": True, "resumed_from_job_id": "old-job"}
+    db.commit()
+    db.close()
+
+    async def _raise(_job_id):
+        raise RuntimeError("simulated resume executor failure")
+
+    async def _ignore_broadcast(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "_execute_task_chat_job", _raise)
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _ignore_broadcast)
+
+    asyncio.run(ai_job_service._execute_job(job.id))
+
+    check_db = SessionLocal()
+    try:
+        interrupted = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
+        check_task = check_db.query(SddTask).filter(SddTask.id == task.id).one()
+        assert interrupted.status == AiJobStatus.INTERRUPTED
+        assert "simulated resume executor failure" in interrupted.interrupt_reason
+        assert check_task.status == TaskStatus.INTERRUPTED
+    finally:
+        check_db.close()
+
+
+def test_startup_recovery_schedules_requirement_preview_queues(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    managed = SddAiJob(
+        id="managed-pending",
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key=f"TASK_CHAT:{task.id}",
+        status=AiJobStatus.PENDING,
+        creator_id="user-1",
+    )
+    preview = SddAiJob(
+        id="requirement-pending",
+        workspace_id=task.workspace_id,
+        channel=AiJobChannel.ASSET_THREAD,
+        queue_key=f"REQUIREMENT_PREVIEW:{task.workspace_id}",
+        status=AiJobStatus.PENDING,
+        creator_id="user-1",
+    )
+    db.add_all([managed, preview])
+    db.commit()
+    db.close()
+
+    scheduled = []
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "schedule_queue", scheduled.append)
+
+    count = asyncio.run(ai_job_service.recover_pending_queues())
+
+    assert count == 2
+    assert sorted(scheduled) == sorted(
+        [
+            f"TASK_CHAT:{task.id}",
+            f"REQUIREMENT_PREVIEW:{task.workspace_id}",
+        ]
+    )
+
+
+def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, _job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.SUCCESS)
+    preview_job = SddAiJob(
+        id="preview-job-1",
+        workspace_id=task.workspace_id,
+        channel=AiJobChannel.ASSET_THREAD,
+        queue_key=f"REQUIREMENT_PREVIEW:{task.workspace_id}",
+        status=AiJobStatus.RUNNING,
+        context_json={"job_kind": "REQUIREMENT_IMPORT_PREVIEW"},
+        creator_id="user-1",
+    )
+    db.add(preview_job)
+    db.commit()
+    db.close()
+
+    calls = []
+
+    class _FakePreviewService:
+        @staticmethod
+        async def run_requirement_import_preview_job(job_id):
+            calls.append(("import", job_id))
+
+        @staticmethod
+        async def run_requirement_split_preview_job(job_id):
+            calls.append(("split", job_id))
+
+    import app.domains.workspace_asset.services.workspace_asset_service as workspace_asset_service
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(workspace_asset_service, "run_requirement_import_preview_job", _FakePreviewService.run_requirement_import_preview_job)
+    monkeypatch.setattr(workspace_asset_service, "run_requirement_split_preview_job", _FakePreviewService.run_requirement_split_preview_job)
+
+    asyncio.run(ai_job_service._execute_job("preview-job-1"))
+    assert calls == [("import", "preview-job-1")]
 
 
 def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):
@@ -240,6 +556,7 @@ def test_ai_job_queue_blocks_on_interrupted_job(monkeypatch):
     db.close()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     assert ai_job_service._take_next_pending_job_id_sync(f"{AiJobChannel.TASK_CHAT.value}:task-1") is None
     check_db = SessionLocal()
@@ -268,6 +585,7 @@ def test_ai_job_queue_pauses_failed_task_pending_jobs(monkeypatch):
     db.close()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     assert ai_job_service._take_next_pending_job_id_sync(f"{AiJobChannel.TASK_CHAT.value}:task-1") is None
     check_db = SessionLocal()
@@ -315,6 +633,7 @@ def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
     engine = _FakeEngine()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "get_engine", lambda _task_id: engine)
     monkeypatch.setattr(ai_job_service, "_update_job_state", _noop_update_job_state)
     monkeypatch.setattr(ai_job_service, "_finalize_task_chat_job_from_engine", _noop_finalize)
@@ -325,6 +644,95 @@ def test_run_task_chat_turn_restores_job_session_for_resume(monkeypatch):
     assert engine.session_id == "session-1"
     assert calls["sent"] == [(task.id, "continue from where I stopped", job.id)]
     assert calls["run"] == []
+
+
+def test_finalize_timeout_marks_task_and_job_interrupted(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    db.commit()
+    db.close()
+
+    engine = SimpleNamespace(
+        last_result_success=None,
+        last_result_text="Claude Code session timed out after 300.0s",
+        last_result_interrupted=True,
+        session_id="session-1",
+    )
+    broadcasted = []
+    scheduled = []
+
+    async def _broadcast(payload):
+        broadcasted.append(payload["id"])
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _broadcast)
+    monkeypatch.setattr(ai_job_service, "schedule_queue", lambda queue_key: scheduled.append(queue_key))
+
+    asyncio.run(ai_job_service._finalize_task_chat_job_from_engine(job.id, engine))
+
+    check_db = SessionLocal()
+    try:
+        check_task = check_db.query(SddTask).filter(SddTask.id == task.id).first()
+        check_job = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).first()
+        assert check_task.status == TaskStatus.INTERRUPTED
+        assert check_task.session_id == "session-1"
+        assert check_task.interrupt_reason and "timed out" in check_task.interrupt_reason
+        assert check_job.status == AiJobStatus.INTERRUPTED
+        assert check_job.session_id == "session-1"
+        assert check_job.interrupt_reason and "timed out" in check_job.interrupt_reason
+        assert check_job.context_json.get("timeout_interrupted") is True
+    finally:
+        check_db.close()
+
+    assert broadcasted == ["job-1"]
+    assert scheduled == []
+
+
+def test_finalize_auto_failure_marks_task_and_job_interrupted(monkeypatch):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    task, job = _seed_task(db, task_status=TaskStatus.CODING, job_status=AiJobStatus.RUNNING)
+    db.commit()
+    db.close()
+
+    engine = SimpleNamespace(
+        last_result_success=False,
+        last_result_text="API quota exceeded",
+        last_result_interrupted=False,
+        session_id="session-1",
+    )
+    broadcasted = []
+    scheduled = []
+
+    async def _broadcast(payload):
+        broadcasted.append(payload["id"])
+
+    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _broadcast)
+    monkeypatch.setattr(ai_job_service, "schedule_queue", lambda queue_key: scheduled.append(queue_key))
+
+    asyncio.run(ai_job_service._finalize_task_chat_job_from_engine(job.id, engine))
+
+    check_db = SessionLocal()
+    try:
+        check_task = check_db.query(SddTask).filter(SddTask.id == task.id).first()
+        check_job = check_db.query(SddAiJob).filter(SddAiJob.id == job.id).first()
+        assert check_task.status == TaskStatus.INTERRUPTED
+        assert check_task.session_id == "session-1"
+        assert check_task.interrupt_reason and "API quota exceeded" in check_task.interrupt_reason
+        assert check_job.status == AiJobStatus.INTERRUPTED
+        assert check_job.session_id == "session-1"
+        assert check_job.interrupt_reason and "API quota exceeded" in check_job.interrupt_reason
+        assert check_job.context_json.get("interrupted") is True
+        assert check_job.context_json.get("timeout_interrupted") is None
+    finally:
+        check_db.close()
+
+    assert broadcasted == ["job-1"]
+    assert scheduled == []
 
 
 def test_run_task_chat_turn_fresh_session_clears_engine_session(monkeypatch):
@@ -356,6 +764,7 @@ def test_run_task_chat_turn_fresh_session_clears_engine_session(monkeypatch):
     engine = _FakeEngine()
 
     monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(ai_job_service, "get_engine", lambda _task_id: engine)
     monkeypatch.setattr(ai_job_service, "_update_job_state", _noop_update_job_state)
     monkeypatch.setattr(ai_job_service, "_finalize_task_chat_job_from_engine", _noop_finalize)

@@ -145,6 +145,7 @@ export type TaskListQuery = {
   requirement_q?: string | null
   status?: string | null
   current_phase?: string | null
+  relation?: string | null
   sort_by?: 'created_at' | 'updated_at' | 'name' | 'status' | 'current_phase' | 'requirement_count' | 'evidence_count'
   sort_order?: 'asc' | 'desc'
   page?: number
@@ -585,6 +586,7 @@ export type TaskSummary = {
   baselined_by_id?: string | null
   created_at?: string | null
   updated_at?: string | null
+  is_following?: boolean
 }
 
 export type TaskProcessSummary = {

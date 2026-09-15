@@ -75,9 +75,9 @@ const formatTime = (value?: string | null) => {
         <RefreshCw class="w-3 h-3" />
       </button>
     </div>
-    <div class="trace-boundary" title="这里只展示 Claude CLI 工具调用中可观察到的 Skill 访问证据；脚本内部隐式访问不会被追踪。">
+    <div class="trace-boundary" title="这里只展示 AI 引擎工具调用中可观察到的 Skill 访问证据；脚本内部隐式访问不会被追踪。">
       <Info class="w-3 h-3" />
-      <span>只展示 Claude CLI 工具调用中可观察到的 Skill 访问证据；脚本内部隐式访问不会被追踪。</span>
+      <span>只展示 AI 引擎工具调用中可观察到的 Skill 访问证据；脚本内部隐式访问不会被追踪。</span>
     </div>
     <div v-if="loading" class="trace-state">加载运行证据...</div>
     <div v-else-if="traceRows.length === 0" class="trace-state">暂无可观察到的工具访问证据。</div>

@@ -28,13 +28,19 @@ from app.domains.auth.models.user import (
     WorkspaceMember,
     WorkspaceRole,
 )
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import (
+    PlanNodeStatus,
+    SddPlanNode,
+    SddTask,
+    TaskStatus,
+)
 from app.domains.workspace_asset.models.workspace_asset import (
     AiOutputType,
     ClarificationStatus,
     DecisionStatus,
     EvidenceSourceType,
     EvidenceStatus,
+    EvidenceType,
     HumanDeltaStatus,
     HumanReviewStatus,
     KnowledgeAssetStatus,
@@ -53,6 +59,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
 )
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
 from app.domains.workspace_asset.services import workspace_asset_service  # noqa: E402
+from app.domains.workspace_asset.services.workspace_asset_task_query import list_tasks
 
 
 def _build_db():
@@ -590,6 +597,115 @@ def test_workspace_asset_tasks_pagination_and_filtering():
         res3 = client.get("/api/workspaces/ws-tasks/workspace-assets/tasks?q=Filterable task")
         assert res3.status_code == 200
         assert len(res3.json()["items"]) == 5
+    finally:
+        engine.dispose()
+
+
+def _seed_stats_fixtures(db, workspace, user):
+    """task-a: 2 需求 + 未确认证据（缺证据）；task-b: 1 需求 + 已确认证据；
+    task-c / seed 任务：无需求关联（不应计入 evidence_missing）。"""
+    tasks = [
+        SddTask(id=f"task-{k}", workspace_id=workspace.id, creator_id=user.id,
+                name=f"Task {k.upper()}", project_path="G:/repo", status=TaskStatus.CODING)
+        for k in ("a", "b", "c")
+    ]
+    db.add_all(tasks)
+    db.flush()
+
+    db.add_all([
+        SddRequirement(
+            id=f"req-{i}", workspace_id=workspace.id, created_by_id=user.id,
+            title=f"Requirement {i}", status=RequirementStatus.ACTIVE,
+            source_kind="manual", source_ref=f"REQ-{i}",
+        )
+        for i in range(3)
+    ])
+    db.add_all([
+        SddTaskRequirement(id="link-a1", workspace_id=workspace.id, requirement_id="req-0",
+                           task_id="task-a", relation_type=TaskRequirementRelationType.COVERS,
+                           created_by_id=user.id),
+        SddTaskRequirement(id="link-a2", workspace_id=workspace.id, requirement_id="req-1",
+                           task_id="task-a", relation_type=TaskRequirementRelationType.COVERS,
+                           created_by_id=user.id),
+        SddTaskRequirement(id="link-b1", workspace_id=workspace.id, requirement_id="req-2",
+                           task_id="task-b", relation_type=TaskRequirementRelationType.COVERS,
+                           created_by_id=user.id),
+    ])
+    db.add_all([
+        SddEvidence(id="ev-a", workspace_id=workspace.id, task_id="task-a",
+                    status=EvidenceStatus.UNCONFIRMED, evidence_type=EvidenceType.CODE,
+                    source_type=EvidenceSourceType.OTHER),
+        SddEvidence(id="ev-b", workspace_id=workspace.id, task_id="task-b",
+                    status=EvidenceStatus.CONFIRMED, evidence_type=EvidenceType.CODE,
+                    source_type=EvidenceSourceType.OTHER),
+    ])
+    db.add_all([
+        SddAsset(id="spec-a1", workspace_id=workspace.id, task_id="task-a",
+                 creator_id=user.id, asset_type=AssetType.SPEC, name="spec1"),
+        SddAsset(id="spec-a2", workspace_id=workspace.id, task_id="task-a",
+                 creator_id=user.id, asset_type=AssetType.SPEC, name="spec2"),
+        SddAsset(id="plan-a1", workspace_id=workspace.id, task_id="task-a",
+                 creator_id=user.id, asset_type=AssetType.PLAN, name="plan1"),
+        SddPlanNode(id="pn-a1", workspace_id=workspace.id, task_id="task-a",
+                    creator_id=user.id, title="node1", status=PlanNodeStatus.PENDING),
+        SddPlanNode(id="pn-a2", workspace_id=workspace.id, task_id="task-a",
+                    creator_id=user.id, title="node2", status=PlanNodeStatus.PENDING),
+    ])
+    db.commit()
+
+
+def test_workspace_asset_tasks_stats_evidence_missing_uses_sql():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, _task = _seed_workspace(db, workspace_id="ws-stats", task_id="task-seed")
+            _seed_stats_fixtures(db, workspace, user)
+
+            resp = list_tasks(db, workspace.id)
+            assert resp.total == 4
+            assert resp.stats.evidence_missing_count == 1
+            assert resp.stats.review_pending_count == 0
+            assert resp.stats.human_delta_count == 0
+            assert resp.stats.clarification_pending_count == 0
+
+            by_id = {item.id: item for item in resp.items}
+            assert by_id["task-a"].requirement_count == 2
+            assert by_id["task-b"].requirement_count == 1
+            # 批量 GROUP BY 与逐任务 count 的单任务路径结果一致
+            assert by_id["task-a"].spec_count == 2
+            assert by_id["task-a"].plan_count == 3
+            fallback = workspace_asset_service._task_summary(db, db.query(SddTask).filter(SddTask.id == "task-a").one())
+            assert fallback.spec_count == by_id["task-a"].spec_count
+            assert fallback.plan_count == by_id["task-a"].plan_count
+    finally:
+        engine.dispose()
+
+
+def test_workspace_asset_tasks_requirement_count_sort_in_sql():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, _task = _seed_workspace(db, workspace_id="ws-sort", task_id="task-seed")
+            _seed_stats_fixtures(db, workspace, user)
+
+            desc = list_tasks(db, workspace.id, sort_by="requirement_count", sort_order="desc")
+            assert [item.id for item in desc.items] == ["task-a", "task-b", "task-seed", "task-c"]
+            assert [item.requirement_count for item in desc.items] == [2, 1, 0, 0]
+
+            asc = list_tasks(db, workspace.id, sort_by="requirement_count", sort_order="asc")
+            assert [item.id for item in asc.items] == ["task-c", "task-seed", "task-b", "task-a"]
+
+            # EXISTS 搜索：名称与需求标题都能命中
+            by_name = list_tasks(db, workspace.id, q="Task A")
+            assert by_name.total == 1 and by_name.items[0].id == "task-a"
+            by_req = list_tasks(db, workspace.id, requirement_q="Requirement 2")
+            assert by_req.total == 1 and by_req.items[0].id == "task-b"
+
+            # 分页取段：按 requirement_count 降序取第 2 页（page_size=2）
+            page2 = list_tasks(db, workspace.id, sort_by="requirement_count",
+                               sort_order="desc", page=2, page_size=2)
+            assert page2.total == 4
+            assert [item.id for item in page2.items] == ["task-seed", "task-c"]
     finally:
         engine.dispose()
 

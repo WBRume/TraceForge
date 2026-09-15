@@ -2,16 +2,22 @@
 任务相关 Pydantic Schemas
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from typing import Any, Optional, List, Literal
 from datetime import datetime
+
+
+class TaskRepositoryBranchInput(BaseModel):
+    """创建会话时可选的仓库分支覆盖（选填；未提供则沿用工作区绑定分支）。"""
+
+    repository_id: str = Field(..., min_length=1)
+    branch_name: str = Field(..., min_length=1, max_length=255)
 
 
 class TaskCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=300)
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None
-    use_brainstorm: Optional[bool] = False
     requirement_duration_hours: float = 0.0
     skill_ids: List[str] = Field(default_factory=list)
     # 任务类型：DEVELOPMENT 研发态（默认） / DIAGNOSIS 问题定位
@@ -19,6 +25,16 @@ class TaskCreate(BaseModel):
     # 问题定位任务专用：现象与优先级
     phenomenon: Optional[str] = None
     priority: Optional[str] = None
+    # 可选：按仓库覆盖会话使用的工作区分支
+    repository_branches: Optional[List[TaskRepositoryBranchInput]] = None
+    # 可选：仅为所选仓库子集创建 worktree（缺省/为空时默认使用工作区全部仓库）
+    repository_ids: Optional[List[str]] = None
+
+    @model_validator(mode="after")
+    def _validate_diagnosis_phenomenon(self):
+        if self.task_type == "DIAGNOSIS" and not (self.phenomenon or "").strip():
+            raise ValueError("phenomenon is required for DIAGNOSIS task")
+        return self
 
 
 class TaskUpdate(BaseModel):
@@ -56,6 +72,8 @@ class TaskResponse(BaseModel):
     current_phase: Optional[str] = None
     error_message: Optional[str] = None
     session_id: Optional[str] = None
+    session_generation: int = 0
+    session_revision: int = 0
     interrupt_reason: Optional[str] = None
     interrupted_by_id: Optional[str] = None
     interrupted_at: Optional[datetime] = None
@@ -66,6 +84,7 @@ class TaskResponse(BaseModel):
     total_duration_ms: int
     skill_ids: List[str] = Field(default_factory=list)
     creator_name: Optional[str] = None
+    is_following: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -75,6 +94,11 @@ class TaskListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+class TaskFollowResponse(BaseModel):
+    task_id: str
+    is_following: bool
 
 
 class TaskStartRequest(BaseModel):
@@ -90,10 +114,16 @@ class TaskInterruptRequest(BaseModel):
 class TaskResumeInterruptedRequest(BaseModel):
     prompt: Optional[str] = None
     confirm_continue: bool = False
+    client_message_id: Optional[str] = None
+
+
+class TaskUndoMessageRequest(BaseModel):
+    operation_id: str = Field(..., min_length=8, max_length=80)
 
 
 class InitializeRequest(BaseModel):
     """初始化任务时的参数"""
+    prompt: Optional[str] = None
     reason: Optional[str] = None
     skill_ids: Optional[List[str]] = None
     keep_deleted_runtime_skills: Optional[bool] = True
@@ -210,6 +240,7 @@ class TaskCliBootstrapResponse(BaseModel):
     error_message: Optional[str] = None
     refresh_mode: Optional[str] = None
     refresh_context_json: Optional[dict] = None
+    job_id: Optional[str] = None
     updated_at: Optional[datetime] = None
 
 

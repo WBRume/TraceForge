@@ -27,23 +27,17 @@ def _run_ls_remote(
     patterns: Optional[List[str]] = None,
     timeout: int = _GIT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
+    from app.core.subprocess_runner import ProcessTimeoutError, run_git
+
     args = ["-c", "protocol.file.allow=always", "ls-remote"]
     if patterns:
         args.extend(patterns)
     args.append(str(git_url or "").strip())
     try:
-        return subprocess.run(
-            ["git", *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            check=False,
-        )
+        return run_git(args, timeout_seconds=timeout)
     except FileNotFoundError as exc:
         raise GitRefAccessError("Git executable not found in PATH", status_code=500) from exc
-    except subprocess.TimeoutExpired as exc:
+    except ProcessTimeoutError as exc:
         raise GitRefAccessError(f"Git ls-remote timed out after {timeout}s: {git_url}", status_code=409) from exc
 
 
