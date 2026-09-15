@@ -63,20 +63,13 @@ def _normalize_remote_url(url: str) -> str:
 
 
 def _run_git_raw(args: list[str], *, cwd: Optional[str] = None) -> subprocess.CompletedProcess[str]:
+    from app.core.subprocess_runner import ProcessTimeoutError, run_git
+
     try:
-        return subprocess.run(
-            ["git", *args],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
-            check=False,
-        )
+        return run_git(list(args), cwd=cwd, timeout_seconds=180)
     except FileNotFoundError as exc:
         raise GitWorktreeError("Git executable not found in PATH", status_code=500) from exc
-    except subprocess.TimeoutExpired as exc:
+    except ProcessTimeoutError as exc:
         raise GitWorktreeError(f"Git command timed out: git {' '.join(args)}", status_code=409) from exc
 
 

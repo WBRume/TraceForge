@@ -33,7 +33,26 @@ def _skip_unless_redis_lock_mode() -> None:
         pytest.skip("DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK is true; skip strict redis API concurrency tests")
 
 
+class _FakeQuery:
+    """支持 start_task 中 find_active_summary_job 的最小查询链。"""
+
+    def filter(self, *_args, **_kwargs) -> "_FakeQuery":
+        return self
+
+    def order_by(self, *_args, **_kwargs) -> "_FakeQuery":
+        return self
+
+    def all(self) -> list:
+        return []
+
+    def first(self):
+        return None
+
+
 class _FakeDb:
+    def query(self, _model) -> _FakeQuery:
+        return _FakeQuery()
+
     def commit(self) -> None:
         return None
 
@@ -101,11 +120,33 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         error_message=None,
     )
     monkeypatch.setattr(task_router, "verify_workspace_permission", lambda *args, **kwargs: None)
+    # start_task now goes through the by-id permission helper; the fixture
+    # must cover the current call point so the route reaches the lock section.
+    monkeypatch.setattr(
+        task_router,
+        "_verify_workspace_permission_by_id",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(task_router.task_service, "get_task", lambda db, task_id, ws_id: fake_task)
     monkeypatch.setattr(task_router, "get_engine", lambda task_id: None)
+    monkeypatch.setattr(
+        task_router.task_service,
+        "save_chat_message",
+        lambda *args, **kwargs: SimpleNamespace(id="message-start-1"),
+    )
 
-    def _create_task_chat_job(db, *, workspace_id, task_id, creator_id, prompt_text, context_json=None, session_id=None):
-        _ = (db, workspace_id, task_id, creator_id, prompt_text, context_json, session_id)
+    def _create_task_chat_job(
+        db,
+        *,
+        workspace_id,
+        task_id,
+        creator_id,
+        prompt_text,
+        context_json=None,
+        session_id=None,
+        chat_message_id=None,
+    ):
+        _ = (db, workspace_id, task_id, creator_id, prompt_text, context_json, session_id, chat_message_id)
         return SimpleNamespace(id="job-start-1", status="PENDING")
 
     async def _enqueue_task_chat_job(job_id: str):
@@ -144,7 +185,11 @@ def test_commit_skill_endpoint_returns_409_when_lock_is_busy(monkeypatch: pytest
     _skip_unless_redis_lock_mode()
 
     app = _build_skill_test_app()
-    fake_skill = SimpleNamespace(id="skill-stress-1", name="stress-skill")
+    fake_skill = SimpleNamespace(
+        id="skill-stress-1",
+        name="stress-skill",
+        creator_id="user-1",
+    )
     commit_call_count = {"value": 0}
 
     def _commit_skill_package(db, current_user, skill, change_note=None):
@@ -215,8 +260,23 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
         spec_doc_path=None,
         requirement_duration_hours=0.0,
         skill_ids=None,
+        task_type="DEVELOPMENT",
+        phenomenon=None,
+        priority=None,
+        repository_branches=None,
+        repository_ids=None,
     ):
-        _ = (db, current_user, spec_doc_path, skill_ids)
+        _ = (
+            db,
+            current_user,
+            spec_doc_path,
+            skill_ids,
+            task_type,
+            phenomenon,
+            priority,
+            repository_branches,
+            repository_ids,
+        )
         # Simulate heavier synchronous record creation path.
         time.sleep(0.03)
         task_no = next(id_counter)

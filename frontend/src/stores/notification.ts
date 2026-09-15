@@ -3,6 +3,9 @@ import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
 import { buildBackendWsUrl } from '@/utils/ws'
+import { wsBackoffDelay } from '@/utils/wsBackoff'
+import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
+import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
 
 export type AppNotificationItem = {
   id: string
@@ -26,6 +29,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
   let ws: WebSocket | null = null
   let reconnectTimer: number | null = null
   let started = false
+  let wsReconnectAttempt = 0
+  let wsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
 
   const refreshUnreadCount = async () => {
     if (!authStore.isAuthenticated) return
@@ -83,6 +88,33 @@ export const useNotificationStore = defineStore('appNotification', () => {
     }
   }
 
+  const removeItem = async (id: string) => {
+    const target = items.value.find((item) => item.id === id)
+    if (!target) return
+    const wasUnread = !target.read_at
+    // 乐观移除,失败时以刷新兜底恢复
+    items.value = items.value.filter((item) => item.id !== id)
+    if (wasUnread && unreadCount.value > 0) unreadCount.value -= 1
+    try {
+      await api.delete(`/notifications/${id}`)
+    } catch {
+      void fetchList()
+      void refreshUnreadCount()
+    }
+  }
+
+  const clearAll = async () => {
+    if (items.value.length === 0) return
+    items.value = []
+    unreadCount.value = 0
+    try {
+      await api.delete('/notifications')
+    } catch {
+      void fetchList()
+      void refreshUnreadCount()
+    }
+  }
+
   const handleIncoming = (item: AppNotificationItem) => {
     if (!item?.id) return
     const index = items.value.findIndex((existing) => existing.id === item.id)
@@ -102,6 +134,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
 
   const connectWs = () => {
     if (!started || !authStore.token) return
+    wsConsumer?.close()
+    wsConsumer = null
     if (ws) {
       ws.onopen = null
       ws.onmessage = null
@@ -110,16 +144,49 @@ export const useNotificationStore = defineStore('appNotification', () => {
       ws.close()
       ws = null
     }
-    ws = new WebSocket(buildBackendWsUrl('/ws/notifications', { token: authStore.token }))
+    const room = `notification:${authStore.user?.id || ''}`
+    ws = new WebSocket(buildBackendWsUrl('/ws/notifications', {
+      token: authStore.token,
+      ...buildWsCursorQuery(room),
+    }))
+    const socket = ws
+    const consumer = createSerializedWsConsumer({
+      room,
+      onEvent: (event) => {
+        if (event.event_type === 'notification' && event.payload) {
+          handleIncoming(event.payload as AppNotificationItem)
+        }
+      },
+      onResync: async (frame, reason, context, signal) => {
+        if (reason === 'gap') {
+          context.socket.close(4000, 'sequence_gap')
+          return
+        }
+        await fetchList()
+        await refreshUnreadCount()
+        if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
+          sendResyncComplete(context.socket, frame, room)
+        }
+      },
+      onControl: (frame) => {
+        if (frame?.type === 'notification' && frame.payload) {
+          handleIncoming(frame.payload as AppNotificationItem)
+        }
+      },
+      onFailure: (_error, context) => {
+        if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
+      },
+    })
+    wsConsumer = consumer
+    const generation = consumer.resetForConnection(socket)
     ws.onopen = () => {
       connected.value = true
+      wsReconnectAttempt = 0
     }
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
-        if (data?.type === 'notification' && data.payload) {
-          handleIncoming(data.payload as AppNotificationItem)
-        }
+        consumer.enqueue(data, generation)
       } catch {
         // 忽略非 JSON 帧
       }
@@ -128,16 +195,19 @@ export const useNotificationStore = defineStore('appNotification', () => {
       connected.value = false
     }
     ws.onclose = (event) => {
+      consumer.close(generation)
       connected.value = false
       if (event.code === 1008 || !started) return
       clearReconnectTimer()
+      const delay = wsBackoffDelay(wsReconnectAttempt, 3000)
+      wsReconnectAttempt += 1
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null
         if (started && authStore.isAuthenticated) {
           connectWs()
           void refreshUnreadCount()
         }
-      }, 3000)
+      }, delay)
     }
   }
 
@@ -157,6 +227,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
       ws.close()
       ws = null
     }
+    wsConsumer?.close()
+    wsConsumer = null
     connected.value = false
   }
 
@@ -175,6 +247,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
     fetchList,
     markRead,
     markAllRead,
+    removeItem,
+    clearAll,
     start,
     stop,
     reset,

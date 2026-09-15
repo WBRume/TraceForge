@@ -18,8 +18,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.core.offload import run_db
+from app.database import SessionLocal
 from app.domains.case_center.models.case import CaseStatus, SddCase
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.task import SddTask
 from app.domains.task.models.diagnosis import (
     DiagnosisResultStatus,
     SddDiagnosisResult,
@@ -57,11 +60,17 @@ def build_diagnosis_prompt_suffix(task) -> str:
         parts.append(f"优先级: {priority}")
 
     parts.append(
+        "辅助材料：任务可能已上传需求、日志、CSV、压缩包等辅助文档，其中可能包含与本次问题相关的日志信息，"
+        "统一存放于任务工作目录 .sdd/diagnosis/ 下。开始定位前请先检查该目录：若存在文件，请逐一阅读与问题相关的内容"
+        "（压缩包请先解压再查看）；若目录不存在或为空，则说明暂无辅助文档，可忽略。"
+    )
+
+    parts.append(
         "你现在处理的是「问题定位任务」，目标是快速、准确地定位问题根因，而不是一次性全量修复。\n"
         "工作方式：\n"
         "1. 允许以辅助定位为目的修改代码、编写并执行测试用例（复现、隔离、验证性最小改动），"
         "但禁止一次性全量修复——定位优先，避免长时间占用；现网问题请保持最小侵入、快速收敛。\n"
-        "2. 修复方案不需要在会话内大规模实施，请以建议形式写入最终结果 JSON 的 fix_suggestion 与 fix_code 字段。\n"
+        "2. 修复方案不需要在会话内大规模实施，请以建议形式给出修复方案与示例代码/补丁，避免一次性全量修复。\n"
         "3. 本会话支持多轮交互（HITL）：你可以通过提问向用户索取新的问题线索（日志、复现步骤、环境信息、变更记录等），"
         "收到新线索后继续收敛定位。"
     )
@@ -88,12 +97,31 @@ def build_diagnosis_summary_prompt(task, transcript: str) -> str:
 
     复用上线时移出初始化提示词的 JSON 契约，仅要求输出一个 fenced JSON 代码块，
     供 extract_payload_from_text 提取后反填入「定位结果」卡片。
+
+    总结任务以 fork（--resume --fork-session）方式继承原会话上下文（agent 原生
+    fork 不续写原会话），因此本 prompt 必须携带只读总结约束，压制会话历史中
+    「问题定位任务」契约与 plan 模式残留的惯性（写计划文件 / ExitPlanMode /
+    继续定位修复），否则模型会把总结当成新一轮定位执行。
     """
     task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
     phenomenon = str(task_meta.get("phenomenon") or "").strip()
     priority = str(task_meta.get("priority") or "").strip()
 
     lines = ["你把「问题定位任务」的完整会话过程总结为一份结构化「问题案例」定位结果。"]
+    lines.append("")
+    lines.append("只读总结约束（必须遵守）：")
+    lines.append(
+        "- 本次回复是一次纯文本总结，禁止调用任何工具：不要读取/写入任何文件，"
+        "不要执行命令，不要写计划文件，不要调用 ExitPlanMode。"
+    )
+    lines.append(
+        "- 忽略会话历史中此前注入的「问题定位任务」工作契约与任何待审批计划/plan 文件状态，"
+        "不要继续执行定位、修复、测试等动作，不要等待任何审批。"
+    )
+    lines.append(
+        "- 只基于下方会话记录做总结；除一个 fenced JSON 代码块外，"
+        "不要输出任何 Markdown 正文或额外文字。"
+    )
     if phenomenon:
         lines.append(f"现象: {phenomenon}")
     if priority:
@@ -374,7 +402,8 @@ def _sync_card_message(
     )
     summary = _clean(payload.summary) or _clean(payload.root_cause) or "Diagnosis result"
     metadata = _payload_dict(payload)
-    metadata["order_index"] = _next_message_order_index(db, task.id)
+    from app.domains.search.capture import allocate_chat_seq
+    metadata["order_index"] = allocate_chat_seq(db, task.id)
     if existing:
         existing.content = summary
         existing.metadata_json = metadata
@@ -393,6 +422,8 @@ def _sync_card_message(
             metadata_json=metadata,
         )
         db.add(message)
+    db.flush()
+    message.sort_seq = metadata["order_index"]
     db.flush()
     result.source_chat_message_id = message.id
     return message
@@ -523,8 +554,23 @@ def serialize_diagnosis_result(result: SddDiagnosisResult) -> dict:
     }
 
 
-async def publish_diagnosis_result_message(db: Session, *, task, message: ChatMessage) -> None:
-    """把定位结果卡片消息广播到任务房间（多端原位更新）。"""
+def _build_diagnosis_result_message_payload_sync(
+    task_id: str,
+    message_id: str,
+) -> Optional[Dict[str, Any]]:
+    db = SessionLocal()
+    try:
+        task = db.query(SddTask).filter(SddTask.id == task_id).first()
+        message = db.query(ChatMessage).filter(ChatMessage.id == message_id).first()
+        if task is None or message is None:
+            return None
+        return _build_diagnosis_result_message_payload(db, task=task, message=message)
+    finally:
+        db.close()
+
+
+def _build_diagnosis_result_message_payload(db: Session, *, task, message: ChatMessage) -> Dict[str, Any]:
+    """Build the WS payload while a short-lived DB session is owned by caller."""
     from app.domains.auth.models.user import User, WorkspaceMember
 
     creator = db.query(User).filter(User.id == message.creator_id).first()
@@ -536,7 +582,7 @@ async def publish_diagnosis_result_message(db: Session, *, task, message: ChatMe
         )
         .first()
     )
-    payload = WSChatPayload(
+    return WSChatPayload(
         task_id=task.id,
         role=MessageRole.ASSISTANT.value,
         content=message.content,
@@ -548,4 +594,10 @@ async def publish_diagnosis_result_message(db: Session, *, task, message: ChatMe
         creator_is_workspace_expert=bool(member.is_expert) if member else False,
         created_at=message.created_at.isoformat() if message.created_at else None,
     ).model_dump()
-    await ws_manager.send_message_to_room(task.id, WSMessage(type="chat_message", payload=payload))
+
+
+async def publish_diagnosis_result_message(*, task_id: str, message_id: str) -> None:
+    """Build the card payload off-loop, then broadcast without holding ORM state."""
+    payload = await run_db(_build_diagnosis_result_message_payload_sync, task_id, message_id)
+    if payload:
+        await ws_manager.send_message_to_room(task_id, WSMessage(type="chat_message", payload=payload))

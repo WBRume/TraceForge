@@ -90,7 +90,14 @@ def _confirmed_evidence_count(db: Session, workspace_id: str, task_id: str) -> i
 
 
 def _active_job_count(db: Session, workspace_id: str, task_id: str) -> int:
-    active_statuses = {AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}
+    active_statuses = {
+        AiJobStatus.PENDING,
+        AiJobStatus.RUNNING,
+        AiJobStatus.WAITING_HITL,
+        AiJobStatus.INTERRUPTED,
+        AiJobStatus.TERMINATING,
+        AiJobStatus.ORPHANED,
+    }
     return int(
         db.query(func.count(SddAiJob.id))
         .filter(

@@ -370,7 +370,7 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
 
   return {
     authStore,
-    desktop,
+    desktop: computed(() => desktop),
     electronAvailable,
     initialized,
     token,

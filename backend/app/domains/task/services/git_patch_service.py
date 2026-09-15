@@ -93,21 +93,18 @@ def _run_git(
     env: Optional[Dict[str, str]] = None,
     check: bool = True,
 ) -> str:
+    from app.core.subprocess_runner import ProcessTimeoutError, run_git
+
     try:
-        result = subprocess.run(
-            ["git", *args],
+        result = run_git(
+            list(args),
             cwd=os.path.abspath(repo_path),
-            env=env,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_GIT_TIMEOUT_SECONDS,
-            check=False,
+            timeout_seconds=_GIT_TIMEOUT_SECONDS,
+            env_extra=env,
         )
     except FileNotFoundError as exc:
         raise GitPatchError("Git executable not found in PATH", status_code=500) from exc
-    except subprocess.TimeoutExpired as exc:
+    except ProcessTimeoutError as exc:
         raise GitPatchError(f"Git command timed out: git {' '.join(args)}", status_code=409) from exc
 
     if check and result.returncode != 0:

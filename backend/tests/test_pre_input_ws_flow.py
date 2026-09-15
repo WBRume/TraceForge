@@ -1,8 +1,8 @@
 """协作预输入 WebSocket 全链路集成测试：发起 → 框选 → 手动提交 / 非发起人提交报错。"""
 
-import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +22,7 @@ import app.domains.workflow.models.provision_job  # noqa: F401,E402
 import app.domains.workflow.models.task_change  # noqa: F401,E402
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
 from app.database import Base  # noqa: E402
+from app.config import settings  # noqa: E402
 from app.domains.auth.models.user import (  # noqa: E402
     User, Workspace, WorkspaceMember, WorkspaceRole,
 )
@@ -30,9 +31,43 @@ from app.domains.ai.services import ai_job_service  # noqa: E402
 from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
 import app.main as main_module  # noqa: E402
 from app.domains.task.services import pre_input_worker  # noqa: E402
+from app.domains.websocket.ws import task_handler  # noqa: E402
 
 
-def _seed(db):
+def _receive_business(websocket):
+    while True:
+        frame = websocket.receive_json()
+        frame_type = frame.get("type")
+        if frame_type == "resync_required":
+            websocket.send_json({
+                "type": "resync_complete",
+                "payload": {
+                    "epoch": frame["epoch"],
+                    "barrier_sequence": frame["barrier_sequence"],
+                },
+            })
+            continue
+        if frame_type in {"resync_ok", "resume_ok"}:
+            continue
+        if frame_type == "event":
+            return {"type": frame["event_type"], "payload": frame.get("payload")}
+        return frame
+
+
+def _complete_initial_sync(websocket):
+    frame = websocket.receive_json()
+    assert frame["type"] == "resync_required"
+    websocket.send_json({
+        "type": "resync_complete",
+        "payload": {
+            "epoch": frame["epoch"],
+            "barrier_sequence": frame["barrier_sequence"],
+        },
+    })
+    assert websocket.receive_json()["type"] == "resync_ok"
+
+
+def _seed(db, project_path: str):
     owner = User(id="u-owner", email="owner@example.com", hashed_password="x", display_name="Owner")
     member = User(id="u-member", email="member@example.com", hashed_password="x", display_name="Member")
     workspace = Workspace(id="ws-1", name="Workspace", owner_id=owner.id)
@@ -41,7 +76,7 @@ def _seed(db):
         workspace_id=workspace.id,
         creator_id=owner.id,
         name="Task",
-        project_path="G:/tmp/task-1",
+        project_path=project_path,
         status=TaskStatus.CODING,
     )
     rows = [owner, member, workspace, task]
@@ -57,7 +92,8 @@ def _seed(db):
 
 
 @pytest.fixture()
-def ws_env(monkeypatch):
+def ws_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "SEARCH_WORKERS_ENABLED", False)
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -66,13 +102,22 @@ def ws_env(monkeypatch):
     Base.metadata.create_all(engine)
     test_session = sessionmaker(bind=engine, expire_on_commit=False)()
 
-    # manager 是进程级单例：清掉此前用例留下的连接与离线缓冲，避免事件串扰
-    main_module.manager.active_connections.clear()
-    main_module.manager.pending_payloads.clear()
+    task_root = tmp_path / "task-1"
+    task_root.mkdir()
+    monkeypatch.setattr(
+        settings,
+        "TASK_SESSION_SNAPSHOT_ROOT",
+        str(tmp_path / "snapshots"),
+    )
+
+    # manager 是进程级单例：清掉此前用例留下的连接与房间 journal，避免事件串扰
+    main_module.manager.registry.reset()
 
     monkeypatch.setattr(main_module, "SessionLocal", lambda: test_session)
     monkeypatch.setattr(ai_job_service, "SessionLocal", lambda: test_session)
     monkeypatch.setattr(pre_input_worker, "SessionLocal", lambda: test_session)
+    # offload 层（run_db/run_db_txn）在线程内从 app.database 惰性导入 SessionLocal
+    monkeypatch.setattr("app.database.SessionLocal", lambda: test_session)
 
     async def _noop_enqueue(job_id):
         return None
@@ -83,7 +128,7 @@ def ws_env(monkeypatch):
         return None
 
     monkeypatch.setattr(main_module.pre_input_deadline_worker, "run_pre_input_worker", _noop_worker)
-    monkeypatch.setattr(main_module, "get_engine", lambda task_id: None)
+    monkeypatch.setattr(task_handler, "get_engine", lambda task_id: None)
 
     # token 直接携带用户 id，绕开 JWT 签发
     monkeypatch.setattr(
@@ -92,17 +137,17 @@ def ws_env(monkeypatch):
         lambda token, expected_type=None: {"sub": str(token)},
     )
 
-    _seed(test_session)
+    _seed(test_session, str(task_root))
     yield test_session
 
-    main_module.manager.active_connections.clear()
-    main_module.manager.pending_payloads.clear()
+    main_module.manager.registry.reset()
 
 
 def test_ws_pre_input_full_flow(ws_env):
     with TestClient(main_module.app) as client:
         # 1) 发起人连接并发起预输入
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {
@@ -112,7 +157,7 @@ def test_ws_pre_input_full_flow(ws_env):
                     "wait_seconds": 180,
                 },
             })
-            evt = owner_ws.receive_json()
+            evt = _receive_business(owner_ws)
             assert evt["type"] == "pre_input_update"
             assert evt["payload"]["status"] == "COLLECTING"
             assert evt["payload"]["document_segments"][0]["text"] == "hello world"
@@ -122,34 +167,126 @@ def test_ws_pre_input_full_flow(ws_env):
                 "type": "pre_input_replace_span",
                 "payload": {"start": 6, "end": 11, "anchor_text": "world", "replacement": "traceforge"},
             })
-            evt = owner_ws.receive_json()
+            evt = _receive_business(owner_ws)
             assert evt["type"] == "pre_input_update"
             joined = "".join(s["text"] for s in evt["payload"]["document_segments"])
             assert joined == "hello traceforge"
 
             # 3) 立即提交（发起人）
             owner_ws.send_json({"type": "pre_input_submit", "payload": {}})
-            chat_evt = owner_ws.receive_json()
+            chat_evt = _receive_business(owner_ws)
             assert chat_evt["type"] == "chat_message"
             # 内容 = 文档原文，无拼接标签
             assert chat_evt["payload"]["content"] == "hello traceforge"
             assert chat_evt["payload"]["metadata"]["segments"]
-            done_evt = owner_ws.receive_json()
+            done_evt = _receive_business(owner_ws)
             assert done_evt["type"] == "pre_input_submitted"
             assert done_evt["payload"]["status"] == "SUBMITTED"
+
+
+def test_ws_chat_message_persists_receipt_before_background_preparation(ws_env, monkeypatch):
+    from app.domains.task.services import chat_submission_service
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.ai.models.ai_job import SddAiJob
+    scheduled = []
+    monkeypatch.setattr(chat_submission_service, "schedule", scheduled.append)
+    with TestClient(main_module.app) as client:
+        with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
+            owner_ws.send_json({"type": "chat_message", "payload": {
+                "content": "hello agent", "client_message_id": "client-1",
+            }})
+            event = _receive_business(owner_ws)
+            assert event["type"] == "chat_submission_update"
+            assert event["payload"]["status"] == "PREPARING"
+            assert event["payload"]["client_message_id"] == "client-1"
+            receipt_id = event["payload"]["id"]
+            assert ws_env.get(TaskChatSubmission, receipt_id).content == "hello agent"
+            assert ws_env.query(ChatMessage).count() == ws_env.query(SddAiJob).count() == 0
+    assert receipt_id in scheduled
+
+
+def test_ws_chat_message_broadcasts_submission_to_second_client(ws_env, monkeypatch):
+    from app.domains.task.services import chat_submission_service
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.ai.models.ai_job import SddAiJob
+
+    scheduled = []
+    monkeypatch.setattr(chat_submission_service, "schedule", scheduled.append)
+    with TestClient(main_module.app) as client:
+        with client.websocket_connect("/ws/task/task-1?token=u-owner") as sender_ws:
+            _complete_initial_sync(sender_ws)
+            with client.websocket_connect("/ws/task/task-1?token=u-member") as observer_ws:
+                _complete_initial_sync(observer_ws)
+                sender_ws.send_json({"type": "chat_message", "payload": {
+                    "content": "hello from client A", "client_message_id": "client-a-message",
+                }})
+
+                # Read from B: a sender-only acknowledgement cannot satisfy this.
+                event = _receive_business(observer_ws)
+                assert event["type"] == "chat_submission_update"
+                payload = event["payload"]
+                assert payload["task_id"] == "task-1"
+                assert payload["client_message_id"] == "client-a-message"
+                assert payload["creator_id"] == "u-owner"
+                assert payload["content"] == "hello from client A"
+                assert payload["status"] == "PREPARING"
+                receipt = ws_env.get(TaskChatSubmission, payload["id"])
+                assert receipt is not None and receipt.client_message_id == "client-a-message"
+                assert ws_env.query(ChatMessage).count() == ws_env.query(SddAiJob).count() == 0
+    assert payload["id"] in scheduled
+
+
+def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):
+    async def _fail_submit(*args, **kwargs):
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(task_handler.pre_input_service, "submit_pre_input", _fail_submit)
+
+    with TestClient(main_module.app) as client:
+        with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
+            owner_ws.send_json({
+                "type": "pre_input_create",
+                "payload": {
+                    "main_text": "hello world",
+                    "mentioned_user_ids": [],
+                    "edit_permission": "ALL",
+                    "wait_seconds": 180,
+                },
+            })
+            assert _receive_business(owner_ws)["type"] == "pre_input_update"
+
+            owner_ws.send_json({"type": "pre_input_submit", "payload": {}})
+            evt = _receive_business(owner_ws)
+            assert evt["type"] == "pre_input_error"
+            assert evt["payload"]["action"] == "pre_input_submit"
+            assert evt["payload"]["message"] == "Failed to process pre input"
+
+            # 单条消息处理失败不应终止整个 WebSocket 会话。
+            owner_ws.send_json({
+                "type": "pre_input_edit_document",
+                "payload": {"text": "still connected"},
+            })
+            update_evt = _receive_business(owner_ws)
+            assert update_evt["type"] == "pre_input_update"
 
 
 def test_ws_pre_input_submit_rejected_for_non_creator(ws_env):
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {"main_text": "hello world", "mentioned_user_ids": [], "edit_permission": "ALL", "wait_seconds": 180},
             })
-            assert owner_ws.receive_json()["type"] == "pre_input_update"
+            assert _receive_business(owner_ws)["type"] == "pre_input_update"
 
         # 非发起人提交 → pre_input_error
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
+            _complete_initial_sync(member_ws)
             member_ws.send_json({"type": "pre_input_submit", "payload": {}})
             evt = member_ws.receive_json()
             assert evt["type"] == "pre_input_error"
@@ -159,21 +296,24 @@ def test_ws_pre_input_submit_rejected_for_non_creator(ws_env):
 def test_ws_pre_input_edit_document_flow(ws_env):
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
+            _complete_initial_sync(member_ws)
             # 无进行中预输入 → 报错
             member_ws.send_json({"type": "pre_input_edit_document", "payload": {"text": "x"}})
             evt = member_ws.receive_json()
             assert evt["type"] == "pre_input_error"
 
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
+            _complete_initial_sync(owner_ws)
             owner_ws.send_json({
                 "type": "pre_input_create",
                 "payload": {"main_text": "hello world", "mentioned_user_ids": [], "edit_permission": "ALL", "wait_seconds": 180},
             })
-            assert owner_ws.receive_json()["type"] == "pre_input_update"
+            assert _receive_business(owner_ws)["type"] == "pre_input_update"
 
         with client.websocket_connect("/ws/task/task-1?token=u-member") as member_ws:
+            _complete_initial_sync(member_ws)
             member_ws.send_json({"type": "pre_input_edit_document", "payload": {"text": "hello brave world"}})
-            evt = member_ws.receive_json()
+            evt = _receive_business(member_ws)
             assert evt["type"] == "pre_input_update"
             joined = "".join(s["text"] for s in evt["payload"]["document_segments"])
             assert joined == "hello brave world"

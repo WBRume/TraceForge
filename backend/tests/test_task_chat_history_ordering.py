@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from app.database import Base  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
 from app.domains.task.models.task import SddTask  # noqa: E402
 from app.domains.task.models.chat import ChatMessage, MessageType  # noqa: E402
+from app.domains.task.models.log import LogType, SddExecutionLog  # noqa: E402
 from app.domains.task.schemas.diagnosis import DiagnosisResultPayload  # noqa: E402
 from app.domains.task.services import diagnosis_result_service, task_service  # noqa: E402
 
@@ -83,6 +85,108 @@ def test_task_history_keeps_streamed_bubbles_in_insertion_order(db_session):
     contents = [m["content"] for m in history["messages"]]
     assert contents == ["stream-chunk-0", "stream-chunk-1", "stream-chunk-2"]
     assert len(history["messages"]) == 3
+
+
+def test_task_history_pagination_returns_latest_page_first(db_session):
+    db = db_session
+    task = _seed_task(db)
+
+    total = 120
+    for index in range(total):
+        task_service.save_chat_message(
+            db,
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            role="assistant",
+            content=f"msg-{index}",
+            message_type="text",
+        )
+
+    # 同一秒写入，确保分页依据 order_index 而不是 created_at 秒级精度
+    same_time = datetime.utcnow()
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
+        {"created_at": same_time}
+    )
+    db.commit()
+
+    page1 = task_service.get_task_history(db, task.id, task.workspace_id, page=1, page_size=50)
+    assert len(page1["messages"]) == 50
+    assert page1["has_more"] is True
+    assert [m["content"] for m in page1["messages"]] == [f"msg-{i}" for i in range(70, 120)]
+
+    page2 = task_service.get_task_history(db, task.id, task.workspace_id, page=2, page_size=50)
+    assert len(page2["messages"]) == 50
+    assert page2["has_more"] is True
+    assert [m["content"] for m in page2["messages"]] == [f"msg-{i}" for i in range(20, 70)]
+
+    page3 = task_service.get_task_history(db, task.id, task.workspace_id, page=3, page_size=50)
+    assert len(page3["messages"]) == 20
+    assert page3["has_more"] is False
+    assert [m["content"] for m in page3["messages"]] == [f"msg-{i}" for i in range(20)]
+
+
+def test_task_history_limits_terminal_logs_and_excludes_provider_noise(db_session):
+    db = db_session
+    task = _seed_task(db)
+    base_time = datetime.utcnow()
+
+    for index in range(8):
+        db.add(SddExecutionLog(
+            id=f"log-{index}",
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            log_type=LogType.STDOUT,
+            content=json.dumps({
+                "tool_name": "read_file",
+                "tool_input": {"path": f"file-{index}.py"},
+                "tool_use_id": f"call-{index}",
+            }),
+            event_order=index + 1,
+            created_at=base_time + timedelta(milliseconds=index),
+        ))
+    db.add_all([
+        SddExecutionLog(
+            id="debug-log",
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            log_type=LogType.STDOUT,
+            content='[opencode:session.status] {"type": "busy"}',
+            event_order=100,
+            created_at=base_time + timedelta(seconds=1),
+        ),
+        SddExecutionLog(
+            id="assistant-copy",
+            task_id=task.id,
+            workspace_id=task.workspace_id,
+            creator_id=task.creator_id,
+            log_type=LogType.STDOUT,
+            content="duplicate assistant response",
+            event_order=101,
+            created_at=base_time + timedelta(seconds=2),
+        ),
+    ])
+    db.commit()
+
+    history = task_service.get_task_history(
+        db,
+        task.id,
+        task.workspace_id,
+        log_limit=5,
+    )
+
+    assert history["logs_has_more"] is True
+    assert len(history["logs"]) == 5
+    assert [json.loads(log["content"])["tool_use_id"] for log in history["logs"]] == [
+        "call-3",
+        "call-4",
+        "call-5",
+        "call-6",
+        "call-7",
+    ]
+
 
 def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):
     db = db_session

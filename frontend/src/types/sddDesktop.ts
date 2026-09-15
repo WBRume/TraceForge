@@ -70,8 +70,40 @@ export type DesktopCommandExitEvent = {
   finishedAt: string
 }
 
+export type DesktopSaveResult = {
+  saved: boolean
+  canceled: boolean
+  savedPath: string | null
+  error?: string
+}
+
+export type DesktopSaveRequest = {
+  suggestedName: string
+  data: ArrayBuffer | Uint8Array
+  mimeType?: string
+}
+
+export type DesktopOAuthStartPayload = {
+  provider: string
+  intent: OAuthIntent
+  clientType: OAuthClientType
+}
+
+export type DesktopOAuthStartResult = {
+  ticket?: string
+  status?: string
+  error?: string
+}
+
+export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => void
+
+import type { OAuthClientType, OAuthIntent } from './oauth'
+
 export type SddDesktopApi = {
   platform: string
+  download: {
+    save: (payload: DesktopSaveRequest) => Promise<DesktopSaveResult>
+  }
   git: {
     selectDirectory: () => Promise<DesktopDirectorySelection>
     validateGitRepo: (repoPath: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>
@@ -100,6 +132,10 @@ export type SddDesktopApi = {
   system: {
     openExternal: (url: string) => Promise<{ ok: boolean }>
     openPath: (path: string) => Promise<{ ok: boolean }>
+  }
+  oauth?: {
+    start: (payload: DesktopOAuthStartPayload) => Promise<DesktopOAuthStartResult>
+    onTicket: (listener: DesktopOAuthTicketListener) => () => void
   }
 }
 

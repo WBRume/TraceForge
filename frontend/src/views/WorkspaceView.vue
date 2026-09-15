@@ -11,6 +11,7 @@ import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflo
 import api from '@/utils/api'
 import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
+import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
 
 const { locale } = useI18n()
 const router = useRouter()
@@ -51,7 +52,7 @@ onMounted(async () => {
 
 const enterWorkspace = (ws: any) => {
   wsStore.setCurrent(ws)
-  router.push(`/ws/${ws.id}/dashboard`)
+  router.push(`/workspaces/${ws.id}/dashboard`)
 }
 
 const handleWorkspaceCreated = async (jobId: string) => {
@@ -115,6 +116,7 @@ const confirmDeleteWorkspace = async () => {
           <Languages class="w-4 h-4" />
           <span>{{ locale === 'zh' ? 'EN' : 'ZH' }}</span>
         </button>
+        <GlobalSearchTrigger />
       </div>
     </nav>
 
@@ -175,15 +177,15 @@ const confirmDeleteWorkspace = async () => {
           </div>
           <p class="ws-card-desc">{{ ws.description || $t('workspaces.no_desc') }}</p>
           <div class="ws-card-meta">
-            <div class="ws-meta-row" :title="ws.project?.name">
+            <div class="ws-meta-row" :title="ws.project?.name || ws.custom_project_name">
               <FolderKanban class="ws-meta-icon" />
               <span class="ws-meta-label">{{ $t('workspaces.card_project') }}</span>
-              <span class="ws-meta-value">{{ ws.project?.name || $t('workspaces.not_set') }}</span>
+              <span class="ws-meta-value">{{ ws.project?.name || ws.custom_project_name || $t('workspaces.not_set') }}</span>
             </div>
-            <div class="ws-meta-row" :title="summarize(ws.products, productLabel, 10)">
+            <div class="ws-meta-row" :title="summarize(ws.products, productLabel, 10) || ws.custom_product_name">
               <Package class="ws-meta-icon" />
               <span class="ws-meta-label">{{ $t('workspaces.card_products') }}</span>
-              <span class="ws-meta-value">{{ summarize(ws.products, productLabel) || $t('workspaces.not_set') }}</span>
+              <span class="ws-meta-value">{{ summarize(ws.products, productLabel) || ws.custom_product_name || $t('workspaces.not_set') }}</span>
             </div>
             <div class="ws-meta-row" :title="summarize(ws.repositories, (repo) => repo?.repo_name, 10)">
               <GitFork class="ws-meta-icon" />

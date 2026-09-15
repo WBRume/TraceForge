@@ -11,6 +11,8 @@ from app.agents.contract import (
     AgentRunRequest,
     AgentRunResult,
     AgentEventSink,
+    AgentStopResult,
+    EXECUTION_KIND_REMOTE_SESSION,
 )
 from app.agents.events import AgentEvent
 
@@ -95,11 +97,32 @@ class MockAdapter(AgentBackend):
         finally:
             self._running = False
 
-    async def interrupt(self, run_id: str | None = None) -> None:
-        self._running = False
+    async def probe(self) -> str:
+        return "Mock backend is available"
 
-    async def cancel(self, run_id: str | None = None) -> None:
+    async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         self._running = False
+        # mock 无本地受监管进程，也没有真实服务端回合：停止流程必然完成。
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
+
+    async def cancel(self, run_id: str | None = None) -> AgentStopResult:
+        self._running = False
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
+
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
+        # 按显式 session id 记录目标，不用宽松 **kwargs 掩盖签名错误。
+        self._running = False
+        self._last_persisted_cancel = str(session_id or "").strip()
+        return AgentStopResult(
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+            stop_acknowledged=True,
+        )
 
     def is_running(self, run_id: str | None = None) -> bool:
         return self._running

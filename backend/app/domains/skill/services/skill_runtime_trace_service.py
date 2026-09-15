@@ -1,8 +1,8 @@
 """Runtime Skill evidence trace capture.
 
-Only observable Claude CLI tool_use / tool_result payloads are considered. The
+Only observable Agent CLI tool_use / tool_result payloads are considered. The
 matcher attributes events to a Skill when a path explicitly enters
-.claude/skills/<materialized_dir>/... for the current task.
+<agent-specific skills dir>/<materialized_dir>/... for the current task.
 """
 
 from __future__ import annotations
@@ -11,13 +11,16 @@ import asyncio
 import os
 import re
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.logging import get_logger
+from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.skill.models.skill import (
     SddSkillRuntimeEvent,
@@ -27,7 +30,7 @@ from app.domains.skill.models.skill import (
 )
 from app.domains.task.models.task import SddTask
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.skill.services import task_skill_runtime_service
+from app.domains.skill.services import skill_service, task_skill_runtime_service
 from app.domains.task.services import context_token_service
 from app.domains.skill.services.skill import storage_service
 from app.domains.websocket.ws.manager import manager as ws_manager
@@ -49,6 +52,14 @@ class RuntimeSkillIndexItem:
 
 _writer_queue: Optional[asyncio.Queue[Dict[str, Any]]] = None
 _writer_task: Optional[asyncio.Task[None]] = None
+
+
+async def wait_for_pending_writes(timeout: float = 30.0) -> None:
+    """Wait until queued runtime trace writes have reached the database."""
+    queue = _writer_queue
+    if queue is None:
+        return
+    await asyncio.wait_for(queue.join(), timeout=max(0.1, float(timeout)))
 
 
 def _enum_value(value: Any) -> str:
@@ -80,6 +91,7 @@ def serialize_runtime_event(event: SddSkillRuntimeEvent) -> Dict[str, Any]:
 def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIndexItem]:
     records = task_skill_runtime_service.get_task_runtime_skill_records(db, task)
     project_path = os.path.abspath(str(task.project_path or "."))
+    rel_root = skill_service.resolve_task_skills_rel_root(db, task)
     items: List[RuntimeSkillIndexItem] = []
     for record in records:
         folder = str(record.materialized_dir or "").strip()
@@ -90,8 +102,8 @@ def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIn
                 skill_id=record.skill_id if record.skill is not None and not record.config_deleted else None,
                 skill_name=record.name,
                 materialized_dir=folder,
-                runtime_root_abs=os.path.abspath(os.path.join(project_path, ".claude", "skills", folder)),
-                runtime_root_rel=storage_service.normalize_path(os.path.join(".claude", "skills", folder)),
+                runtime_root_abs=os.path.abspath(os.path.join(project_path, rel_root, folder)),
+                runtime_root_rel=storage_service.normalize_path(os.path.join(rel_root, folder)),
             )
         )
     return items
@@ -140,7 +152,7 @@ def _path_under_root(candidate: str, item: RuntimeSkillIndexItem) -> Optional[Tu
     if candidate_rel == root_rel:
         return raw, ""
     prefix = root_rel.rstrip("/") + "/"
-    marker = f".claude/skills/{item.materialized_dir}".replace("\\", "/")
+    marker = root_rel.replace("\\", "/")
     marker_lc = marker.lower()
     candidate_lc = candidate_rel.lower()
     if candidate_lc.startswith(prefix.lower()):
@@ -160,7 +172,6 @@ def _command_match(command: str, item: RuntimeSkillIndexItem) -> Optional[Tuple[
     roots = [
         _slash(os.path.normcase(item.runtime_root_abs)).lower(),
         _norm_rel(item.runtime_root_rel).lower(),
-        f".claude/skills/{item.materialized_dir}".lower(),
     ]
     for root in roots:
         idx = lowered.find(root)
@@ -462,13 +473,31 @@ def _enqueue_or_thread(payload: Dict[str, Any]) -> None:
         return
     _ensure_writer(loop)
     if _writer_queue is not None:
-        _writer_queue.put_nowait(payload)
+        try:
+            _writer_queue.put_nowait(payload)
+        except asyncio.QueueFull:
+            # 队列上限保护：满则丢弃并限频告警，避免无界堆积拖垮内存
+            global _dropped_count, _last_drop_log_at
+            _dropped_count += 1
+            now = time.monotonic()
+            if now - _last_drop_log_at > 10.0:
+                _last_drop_log_at = now
+                logger.warning(
+                    f"Runtime skill trace queue full, dropped {_dropped_count} payloads "
+                    f"(maxsize={_writer_queue.maxsize})"
+                )
+
+
+_dropped_count = 0
+_last_drop_log_at = 0.0
 
 
 def _ensure_writer(loop: asyncio.AbstractEventLoop) -> None:
     global _writer_queue, _writer_task
     if _writer_queue is None:
-        _writer_queue = asyncio.Queue()
+        _writer_queue = asyncio.Queue(
+            maxsize=max(1, int(getattr(settings, "SKILL_TRACE_QUEUE_MAX_SIZE", 1000) or 1000))
+        )
     if _writer_task is None or _writer_task.done():
         _writer_task = loop.create_task(_writer_loop())
 
@@ -478,7 +507,7 @@ async def _writer_loop() -> None:
     while True:
         payload = await _writer_queue.get()
         try:
-            events = await asyncio.to_thread(_write_payload_sync, payload)
+            events = await run_db(_write_payload_sync, payload)
             for event_payload in events:
                 await ws_manager.send_message_to_room(
                     str(event_payload.get("task_id") or payload.get("task_id") or ""),

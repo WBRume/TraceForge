@@ -65,6 +65,7 @@ describe('NewTaskModal diagnosis mode', () => {
     const textareas = wrapper.findAll('textarea')
     expect(textareas).toHaveLength(1)
     expect(textareas[0].attributes('placeholder')).toContain('diagnosis.phenomenon_placeholder')
+    expect(textareas[0].attributes('required')).toBeDefined()
     expect(wrapper.find('textarea[placeholder="dashboard.desc_placeholder"]').exists()).toBe(false)
   })
 
@@ -124,5 +125,38 @@ describe('NewTaskModal diagnosis mode', () => {
     const createdEvent = wrapper.emitted('created')
     expect(createdEvent).toHaveLength(1)
     expect((createdEvent![0][0] as Record<string, unknown>).expectDiagnosisDocs).toBe(true)
+  })
+
+  it('does not create diagnosis task without phenomenon', async () => {
+    const wrapper = await mountModal()
+    await diagnosisTypeCard(wrapper).trigger('click')
+    await flushPromises()
+
+    await wrapper.find('input[placeholder="dashboard.task_name_placeholder"]').setValue('定位超时问题')
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.post).not.toHaveBeenCalled()
+  })
+
+  it('does not restrict diagnosis doc upload file types', async () => {
+    const wrapper = await mountModal()
+    await diagnosisTypeCard(wrapper).trigger('click')
+    await flushPromises()
+
+    const diagInput = wrapper.find('input[type="file"][multiple]')
+    expect(diagInput.exists()).toBe(true)
+    // 问题定位诊断文档：不限类型（日志/CSV/压缩包等），accept 限制已移除
+    expect(diagInput.attributes('accept')).toBeUndefined()
+  })
+
+  it('keeps the development spec upload type restriction unchanged', async () => {
+    const wrapper = await mountModal()
+    await flushPromises()
+
+    const specInput = wrapper.find('#spec-upload-ws-1')
+    expect(specInput.exists()).toBe(true)
+    // 需求开发侧：spec 上传白名单保持不变，不受诊断上传放开影响
+    expect(specInput.attributes('accept')).toBe('.pdf,.doc,.docx,.md,.txt')
   })
 })

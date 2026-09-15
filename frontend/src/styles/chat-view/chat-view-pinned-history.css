@@ -234,6 +234,8 @@
 /* ─── Chat History ─── */
 .chat-history {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: var(--space-6);
   display: flex;
@@ -339,17 +341,12 @@
   white-space: nowrap;
 }
 
-.message-role-icon,
-.message-expert-icon {
+.message-role-icon {
   flex: 0 0 auto;
   color: #475569;
 }
 
-.message-expert-icon {
-  color: #166534;
-}
-
-.message-pm-badge {
+.message-expert-badge {
   display: inline-flex;
   align-items: center;
   height: 18px;

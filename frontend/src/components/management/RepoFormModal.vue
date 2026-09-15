@@ -67,9 +67,7 @@ const flattenedGroups = computed(() => {
 })
 
 const groupOptions = computed(() => {
-  const options: { label: string; value: string | null }[] = [
-    { label: t('management.repository.no_group'), value: null },
-  ]
+  const options: { label: string; value: string }[] = []
   for (const group of flattenedGroups.value) {
     options.push({ label: group.name, value: group.id })
   }
@@ -94,7 +92,10 @@ watch(() => props.show, (visible) => {
 })
 
 const canSubmit = computed(
-  () => form.name.trim().length > 0 && form.git_url.trim().length > 0 && !saving.value,
+  () => form.name.trim().length > 0
+    && form.git_url.trim().length > 0
+    && Boolean(form.group_id)
+    && !saving.value,
 )
 
 const handleValidate = async () => {
@@ -120,7 +121,11 @@ const handleValidate = async () => {
 
 const handleSave = async () => {
   if (!canSubmit.value) {
-    ElMessage.error(t('management.common.required'))
+    if (!form.group_id) {
+      ElMessage.error(t('management.repository.group_required_hint'))
+    } else {
+      ElMessage.error(t('management.common.required'))
+    }
     return
   }
   saving.value = true
@@ -187,7 +192,11 @@ const handleCancel = () => {
 
         <div class="mgmt-field">
           <label>{{ $t('management.repository.group') }}</label>
-          <BaseSelect v-model="form.group_id" :options="groupOptions" />
+          <BaseSelect
+            v-model="form.group_id"
+            :options="groupOptions"
+            :placeholder="$t('management.repository.group_required_hint')"
+          />
         </div>
 
         <div class="mgmt-field full">

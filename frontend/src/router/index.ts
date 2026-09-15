@@ -24,7 +24,30 @@ const router = createRouter({
     },
     {
       path: '/login',
-      redirect: '/'
+      name: 'login',
+      component: () => import('../views/LoginView.vue')
+    },
+    // 链接邀请加入页（免登录打开；接受时要求登录）
+    {
+      path: '/join/:token',
+      name: 'joinInvite',
+      component: () => import('../views/JoinInviteView.vue')
+    },
+    // OAuth 三方登录流程页（免鉴权；后端 302 落地页，T04）
+    {
+      path: '/oauth/callback',
+      name: 'oauthCallback',
+      component: () => import('../views/OAuthCallbackView.vue')
+    },
+    {
+      path: '/oauth/register',
+      name: 'oauthRegister',
+      component: () => import('../views/OAuthRegisterView.vue')
+    },
+    {
+      path: '/oauth/bind-confirm',
+      name: 'oauthBindConfirm',
+      component: () => import('../views/OAuthBindConfirmView.vue')
     },
     {
       path: '/workspaces',
@@ -94,6 +117,11 @@ const router = createRouter({
           component: () => import('../views/management/RepositoriesView.vue'),
         },
         {
+          path: 'system',
+          name: 'systemConfigHome',
+          component: () => import('../views/management/SystemConfigView.vue'),
+        },
+        {
           path: '',
           redirect: '/management/products',
         },
@@ -108,6 +136,16 @@ const router = createRouter({
           path: 'queue',
           name: 'opsQueueList',
           component: () => import('../views/OpsQueueListView.vue'),
+        },
+        {
+          path: 'rag-queue',
+          name: 'ragQueueList',
+          component: () => import('../views/RagQueueView.vue'),
+        },
+        {
+          path: 'rag-queue/:queueId',
+          name: 'ragQueueDetail',
+          component: () => import('../views/RagQueueDetailView.vue'),
         },
         {
           path: 'queue/:source/:jobId',
@@ -187,7 +225,9 @@ const router = createRouter({
       ],
     },
     {
-      path: '/ws/:wsId',
+      // 注意：前端页面路由不要使用 /ws 前缀，该前缀被后端 WebSocket 代理（vite proxy / nginx）占用，
+      // 整页刷新 / 直达链接会被代理转发到后端 API 导致 404。
+      path: '/workspaces/:wsId',
       component: () => import('../views/layouts/WorkspaceLayout.vue'),
       meta: { requiresAuth: true },
       children: [
@@ -294,6 +334,21 @@ router.beforeEach(async (to) => {
     const me = await authStore.fetchCurrentUser()
     if (!me) {
       return { name: 'login', query: { redirect: to.fullPath } }
+    }
+  }
+
+  // 配置项：关闭“项目管理/产品管理”选择功能时，屏蔽对应功能页面。
+  if (
+    to.name === 'productsHome' ||
+    to.name === 'productDetail' ||
+    to.name === 'projectsHome' ||
+    to.name === 'projectDetail'
+  ) {
+    const { useSystemConfigStore } = await import('@/stores/systemConfig')
+    const systemConfigStore = useSystemConfigStore()
+    await systemConfigStore.load()
+    if (!systemConfigStore.projectProductManagementEnabled) {
+      return { path: '/management/repositories' }
     }
   }
 

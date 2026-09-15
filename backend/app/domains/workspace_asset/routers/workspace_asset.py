@@ -5,10 +5,11 @@ Workspace Assets API routes.
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
+from app.core.offload import run_db_txn
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationCreateRequest,
@@ -203,7 +204,6 @@ def create_workspace_asset_requirement(
 )
 async def create_workspace_asset_requirement_import_preview(
     ws_id: str,
-    background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(default=None),
     text: Optional[str] = Form(default=None),
     source_kind: Optional[str] = Form(default="document"),
@@ -232,15 +232,7 @@ async def create_workspace_asset_requirement_import_preview(
             source_uri=source_uri,
             source_ref=source_ref,
         )
-        background_tasks.add_task(
-            workspace_asset_service.run_requirement_import_preview_job,
-            response.job_id,
-            file_name=file_name,
-            raw=raw,
-            source_kind=source_kind,
-            source_uri=source_uri,
-            source_ref=source_ref,
-        )
+        workspace_asset_service.schedule_requirement_preview_queue(ws_id)
         return response
     except workspace_asset_service.WorkspaceAssetWriteError as exc:
         _raise_write_error(exc)
@@ -400,11 +392,10 @@ def unlink_workspace_asset_requirement_task(
     response_model=RequirementPreviewJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def create_workspace_asset_requirement_split_preview(
+async def create_workspace_asset_requirement_split_preview(
     ws_id: str,
     requirement_id: str,
     payload: RequirementSplitPreviewRequest,
-    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -421,7 +412,7 @@ def create_workspace_asset_requirement_split_preview(
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
-    background_tasks.add_task(workspace_asset_service.run_requirement_split_preview_job, result.job_id)
+    workspace_asset_service.schedule_requirement_preview_queue(ws_id)
     return result
 
 
@@ -450,6 +441,7 @@ def list_workspace_asset_tasks(
     requirement_q: Optional[str] = Query(None, description="Search associated requirement title"),
     status: Optional[str] = Query(None, description="Filter by status"),
     current_phase: Optional[str] = Query(None, description="Filter by current phase"),
+    relation: Optional[str] = Query(None, description="Filter by relationship to current user"),
     sort_by: str = Query("created_at", description="Sort field"),
     sort_order: str = Query("desc", description="Sort order (asc/desc)"),
     page: int = Query(1, description="Page number, 1-indexed"),
@@ -465,6 +457,8 @@ def list_workspace_asset_tasks(
         requirement_q=requirement_q,
         status=status,
         current_phase=current_phase,
+        relation=relation,
+        current_user_id=current_user.id,
         sort_by=sort_by,
         sort_order=sort_order,
         page=page,
@@ -1008,23 +1002,24 @@ async def create_workspace_asset_task_human_delta(
     task_id: str,
     payload: HumanDeltaCreateRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    _verify_manage_task_process_assets(ws_id, current_user, db)
     from app.core.distributed_lock import LockAcquireTimeout, make_resource_busy_error, queue_workspace_compare_jobs
 
     try:
         async with queue_workspace_compare_jobs(workspace_id=ws_id):
-            await asyncio.to_thread(
-                workspace_task_detail_service.create_human_delta,
-                db, ws_id, task_id, current_user.id, payload,
-            )
+            def create_delta_sync(db: Session):
+                _verify_manage_task_process_assets(ws_id, current_user, db)
+                workspace_task_detail_service.create_human_delta(
+                    db, ws_id, task_id, current_user.id, payload,
+                )
+                return _task_summary_or_404(db, ws_id, task_id)
+
+            return await run_db_txn(create_delta_sync)
     except workspace_task_detail_service.TaskDetailWriteError as exc:
         _raise_task_detail_write_error(exc)
     except LockAcquireTimeout as exc:
         busy = make_resource_busy_error(exc, "Compare queue busy, please retry later.")
         raise HTTPException(status_code=busy.status_code, detail=str(busy)) from exc
-    return _task_summary_or_404(db, ws_id, task_id)
 
 
 @router.patch("/tasks/{task_id}/human-deltas/{delta_id}", response_model=TaskDetailSummaryResponse)

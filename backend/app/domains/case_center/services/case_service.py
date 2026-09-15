@@ -25,7 +25,6 @@ from app.domains.case_center.schemas.case import (
     CaseUpdateRequest,
 )
 from app.domains.task.models.task import SddTask, TaskType
-from app.domains.task.services import task_service
 from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
 from app.domains.workspace.services import workspace_service
 from app.domains.rag.services import outbox_service as rag_outbox_service
@@ -75,8 +74,28 @@ def serialize_case(case: SddCase) -> dict:
                 "created_at": record.created_at,
             }
         )
-    snapshot = case.conversation_snapshot_json
-    diagnosis_detail = case.diagnosis_detail_json
+    had_diagnosis_detail = isinstance(case.diagnosis_detail_json, dict)
+    diagnosis_detail = case.diagnosis_detail_json if had_diagnosis_detail else {}
+
+    # 历史案例可能未在 diagnosis_detail_json 中沉淀 summary/evidence_chain 等 RAG 导出字段；
+    # 在线从关联定位结果补齐，保证会话内导出与案例详情导出内容一致。
+    source_task_phenomenon = None
+    if case.source_task is not None:
+        source_task_meta = case.source_task.task_meta_json
+        if isinstance(source_task_meta, dict) and str(source_task_meta.get("phenomenon") or "").strip():
+            source_task_phenomenon = _clean(str(source_task_meta.get("phenomenon") or ""))
+
+    source_diagnosis = getattr(case.source_task, "diagnosis_result", None) if case.source_task else None
+    if source_diagnosis is not None:
+        diagnosis_detail = dict(diagnosis_detail)
+        diagnosis_detail.setdefault("summary", source_diagnosis.summary)
+        diagnosis_detail.setdefault("root_cause", source_diagnosis.root_cause)
+        diagnosis_detail.setdefault("evidence_chain", source_diagnosis.evidence_chain)
+        diagnosis_detail.setdefault("fix_suggestion", source_diagnosis.fix_suggestion)
+        diagnosis_detail.setdefault("fix_code", source_diagnosis.fix_code)
+        diagnosis_detail.setdefault("confidence", int(source_diagnosis.confidence or 0))
+    if not diagnosis_detail and not had_diagnosis_detail:
+        diagnosis_detail = None
 
     workspace = case.workspace
     project = workspace.project if workspace else None
@@ -136,7 +155,6 @@ def serialize_case(case: SddCase) -> dict:
         "priority": case.priority,
         "status": case.status,
         "review_round": case.review_round,
-        "conversation_snapshot": snapshot if isinstance(snapshot, list) else None,
         "diagnosis_detail": diagnosis_detail if isinstance(diagnosis_detail, dict) else None,
         "submitted_at": case.submitted_at,
         "reviewed_at": case.reviewed_at,
@@ -145,6 +163,7 @@ def serialize_case(case: SddCase) -> dict:
         "updated_at": case.updated_at,
         "creator_name": case.creator.display_name if case.creator else None,
         "source_task_name": case.source_task.name if case.source_task else None,
+        "source_task_phenomenon": source_task_phenomenon,
         "review_records": records,
     }
 
@@ -277,13 +296,14 @@ def create_case(
     creator: User,
     data: CaseCreateRequest,
 ) -> SddCase:
+    prefill_product, prefill_version = _workspace_product_prefill(db, workspace_id)
     case = SddCase(
         workspace_id=workspace_id,
         creator_id=creator.id,
         title=_clean(data.title) or "未命名案例",
         problem_description=data.problem_description,
-        product_name=_clean(data.product_name),
-        product_version=_clean(data.product_version),
+        product_name=_clean(data.product_name) or prefill_product,
+        product_version=_clean(data.product_version) or prefill_version,
         site_name=_clean(data.site_name),
         code_context=data.code_context,
         analysis_process=data.analysis_process,
@@ -546,30 +566,6 @@ def _format_code_context_items(items) -> Optional[str]:
     return "相关代码上下文:\n" + "\n".join(lines) if lines else None
 
 
-def capture_conversation_snapshot(db: Session, task: SddTask) -> Optional[list]:
-    """从任务会话历史生成对话回放快照（精简字段）。"""
-    history = task_service.get_task_history(
-        db,
-        task.id,
-        task.workspace_id,
-        page=1,
-        page_size=2000,
-    )
-    messages = history.get("messages") or []
-    snapshot = []
-    for msg in messages:
-        snapshot.append(
-            {
-                "role": msg.get("role"),
-                "content": msg.get("content"),
-                "message_type": msg.get("type") or msg.get("message_type"),
-                "created_at": msg.get("created_at"),
-                "creator_display_name": msg.get("creator_display_name"),
-            }
-        )
-    return snapshot or None
-
-
 def _workspace_product_prefill(db: Session, workspace_id: str) -> Tuple[Optional[str], Optional[str]]:
     from app.domains.auth.models.user import Workspace
     from app.domains.management.models.management import (
@@ -590,7 +586,7 @@ def _workspace_product_prefill(db: Session, workspace_id: str) -> Tuple[Optional
     if not workspace or not workspace.project:
         return None, None
     products = workspace_service.serialize_workspace_products(workspace.project)
-    if len(products) == 1:
+    if products:
         return products[0].get("name"), products[0].get("version_no")
     return None, None
 
@@ -603,7 +599,7 @@ def create_case_draft_from_task(
     workspace_id: str,
     data: CaseDraftCreateRequest,
 ) -> SddCase:
-    """问题定位任务「确认采纳 → 一键转案例」：生成案例草稿并携带对话快照。"""
+    """问题定位任务「确认采纳 → 一键转案例」：生成案例草稿。"""
     if task.task_type != TaskType.DIAGNOSIS.value:
         raise CaseError("Only diagnosis tasks can be converted to cases", status_code=403)
 
@@ -620,14 +616,12 @@ def create_case_draft_from_task(
 
     task_meta = task.task_meta_json if isinstance(task.task_meta_json, dict) else {}
     phenomenon = _clean(str(task_meta.get("phenomenon") or ""))
-    description_parts = [part for part in [task.description, phenomenon] if part]
-    problem_description = "\n\n".join(description_parts) or None
+    # 问题描述仅使用创建问题定位任务时填写的问题现象；无现象的旧数据回退到任务描述。
+    problem_description = phenomenon or _clean(str(task.description or "")) or None
 
     prefill_product, prefill_version = _workspace_product_prefill(db, workspace_id)
     product_name = _clean(data.product_name) or prefill_product
     product_version = _clean(data.product_version) or prefill_version
-
-    snapshot = capture_conversation_snapshot(db, task)
 
     repo_slugs = get_workspace_repo_slugs(db, workspace_id)
     code_context = None
@@ -651,7 +645,6 @@ def create_case_draft_from_task(
         priority=data.priority,
         status=CaseStatus.DRAFT.value,
         review_round=1,
-        conversation_snapshot_json=snapshot,
     )
     db.add(case)
     db.flush()
@@ -660,12 +653,10 @@ def create_case_draft_from_task(
     if diagnosis_result is not None:
         diagnosis_result.status = "CONFIRMED"
         # 定位结果 → 案例结构化字段映射：
-        # 证据链+调用链路 → 分析过程；根因结论 → 根因；修复建议+修复代码 → 方案；
+        # 证据链+置信度 → 分析过程；调用链路 → diagnosis_detail_json；
+        # 根因结论 → 根因；修复建议+修复代码 → 方案；
         # 相关代码上下文 → 代码上下文；结构化明细 → diagnosis_detail_json。
         analysis_parts = [part for part in [diagnosis_result.evidence_chain] if part]
-        chain_text = _format_call_chain(diagnosis_result.call_chain_json)
-        if chain_text:
-            analysis_parts.append(chain_text)
         confidence = diagnosis_result.confidence if diagnosis_result.confidence is not None else 0
         analysis_parts.append(f"置信度: {confidence}%")
         case.analysis_process = "\n\n".join(analysis_parts) or None
@@ -684,6 +675,13 @@ def create_case_draft_from_task(
         case.code_context = "\n\n".join(context_parts) or None
 
         case.diagnosis_detail_json = {
+            # 保留定位结果的完整 RAG 导出字段，使会话内导出与案例详情导出内容一致。
+            "summary": diagnosis_result.summary,
+            "root_cause": diagnosis_result.root_cause,
+            "evidence_chain": diagnosis_result.evidence_chain,
+            "fix_suggestion": diagnosis_result.fix_suggestion,
+            "fix_code": diagnosis_result.fix_code,
+            "confidence": int(diagnosis_result.confidence or 0),
             "similar_cases": (
                 diagnosis_result.similar_cases_json
                 if isinstance(diagnosis_result.similar_cases_json, list)
@@ -699,7 +697,6 @@ def create_case_draft_from_task(
                 if isinstance(diagnosis_result.code_context_json, list)
                 else []
             ),
-            "fix_code": diagnosis_result.fix_code,
         }
 
     db.commit()

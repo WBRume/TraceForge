@@ -1,0 +1,175 @@
+# TraceForge 内部部署编排
+# 用法：
+#   cp .env.example .env && 修改其中的密钥 / 域名（模板由 backend/.env.example 派生）
+#   docker compose up -d --build
+#
+# 拓扑：mysql + redis + api(单副本) + web(nginx) + migrate(一次性)
+# 注意：api 严禁扩副本 —— 依赖进程内运行态与 CLI 会话状态。
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: traceforge-mysql
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-sdd_platform}
+      TZ: Asia/Shanghai
+    volumes:
+      - ./volumes/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-change-me}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    container_name: traceforge-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+    command:
+      - sh
+      - -c
+      - >-
+        if [ -n "$$REDIS_PASSWORD" ]; then
+          exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD";
+        else
+          exec redis-server --appendonly yes;
+        fi
+    volumes:
+      - ./volumes/redis:/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          if [ -n "$$REDIS_PASSWORD" ]; then
+            redis-cli --no-auth-warning -a "$$REDIS_PASSWORD" ping;
+          else
+            redis-cli ping;
+          fi | grep -q PONG
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # 一次性数据库迁移（alembic upgrade head），跑完即退出
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    container_name: traceforge-migrate
+    command: ["alembic", "upgrade", "head"]
+    working_dir: /app
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    container_name: traceforge-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # 运行态与资产卷：这些目录丢了 = 会话断 / 资产丢，必须持久化
+      - ./volumes/storage:/app/storage
+      - ./volumes/uploads:/app/uploads
+      - ./volumes/tmp:/app/tmp
+      - ./volumes/logs:/app/logs
+      # Claude CLI 登录态。若改用 API Key，删除此挂载并在 .env 配 ANTHROPIC_API_KEY
+      - ./volumes/claude:/root/.claude
+      # git 凭据（工作区 clone / skill 导入需要）：SSH 方式用下面这行
+      # - ./volumes/ssh:/root/.ssh:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      replicas: 1      # 硬约束，勿改
+
+  search-worker:
+    profiles: ["search"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["python", "-m", "app.domains.search.worker", "--kind", "search"]
+    env_file: [.env]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  embedding-worker:
+    profiles: ["search"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["python", "-m", "app.domains.search.worker", "--kind", "embedding"]
+    env_file: [.env]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
+  elasticsearch:
+    profiles: ["search-local-es"]
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ELASTIC_PASSWORD: ${SEARCH_ES_PASSWORD:-}
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ports: ["127.0.0.1:9200:9200"]
+    volumes: ["./volumes/elasticsearch:/usr/share/elasticsearch/data"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/frontend.Dockerfile
+    container_name: traceforge-web
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy

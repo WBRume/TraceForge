@@ -113,7 +113,7 @@ function submitLink() {
             v-for="link in linkedTasks"
             :key="link.link_id"
             class="linked-task-row"
-            :to="`/ws/${props.workspaceId}/assets/tasks/${link.task_id}`"
+            :to="`/workspaces/${props.workspaceId}/assets/tasks/${link.task_id}`"
           >
             <span>
               <strong>{{ link.task_name || link.task_id }}</strong>

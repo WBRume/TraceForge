@@ -4,12 +4,15 @@ FastAPI 主入口
 """
 
 import asyncio
-import uuid
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from jose import JWTError
 
 from app.config import settings
+from app.domains.search import router as search_router
+from app.core.offload import run_db, shutdown_offload_executors
 from app.core.redis_client import close_redis_client
 from app.core.logging import (
     bind_log_context,
@@ -20,19 +23,19 @@ from app.core.logging import (
 
 setup_logging()
 logger = get_logger(__name__)
-task_logger = get_logger(__name__, category="task_execution")
 api_mock_logger = get_logger(__name__, category="api_mock")
 
 from app.database import SessionLocal
-from app.domains.api_mock.models.api_mock import ApiMockCollabEventType
-from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.auth.models.user import User
-from app.engine.workflow_engine import WorkflowEngine, get_engine
-from app.agents.selection import resolve_task_backend
+from app.domains.api_mock.models.api_mock import ApiMockCollabEventType, SddApiMockProject
+from app.domains.task.models.task import SddTask
+from app.domains.auth.models.user import User, WorkspaceMember
+from app.domains.asset.models.asset import SddAsset
 from app.middleware.logging_middleware import LoggingMiddleware
 from app.domains.ai.routers import agent
-from app.domains.auth.routers import auth
+from app.domains.auth.routers import auth, oauth
+from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
 from app.domains.workspace.routers import workspace
+from app.domains.workspace.routers import invite_join
 from app.domains.task.routers import task
 from app.domains.dashboard.routers import dashboard
 from app.domains.asset.routers import asset
@@ -51,22 +54,25 @@ from app.domains.management.routers import (
     repositories_router,
     repo_groups_router,
 )
-from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services import ai_job_service
+from app.engine.workflow_engine import shutdown_active_engines
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
-from app.domains.ai.services import chat_message_idempotency_service
-from app.domains.task.services import task_service
-from app.domains.task.services import task_session_control_service
-from app.domains.workspace.services import workspace_service
+from app.domains.system_config.routers import system_config
 from app.domains.websocket.ws.manager import manager
+from app.domains.websocket.ws.connection import (
+    ConnectionEvicted,
+    receive_json_until_evicted,
+    receive_text_until_evicted,
+)
+from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
 from app.domains.notification.routers import notification as notification_router
 from app.domains.notification.ws.notification_manager import notification_ws_manager
-from app.domains.task.services import pre_input_service
 from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
+from app.domains.task.services import task_cli_state_service
 from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
-from app.domains.rag.services import ingest_worker as rag_ingest_worker
+from app.domains.rag.routers import outbox as rag_outbox_router
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -74,8 +80,8 @@ app = FastAPI(
     description="规范驱动开发基础平台 API"
 )
 
-_rag_ingest_task: asyncio.Task | None = None
 _pre_input_worker_task: asyncio.Task | None = None
+app.state.ai_runtime_ready = False
 
 # ── CORS ──
 app.add_middleware(
@@ -89,36 +95,72 @@ app.add_middleware(
 
 app.add_middleware(LoggingMiddleware)
 
+# ── OAuth 统一业务异常输出：{"detail": ..., "code": "OAUTH_XXX", **extra}（§4.5）──
+app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
+
 
 @app.on_event("startup")
 async def _on_startup() -> None:
-    global _rag_ingest_task, _pre_input_worker_task
-    if settings.RAG_ENABLED:
-        _rag_ingest_task = asyncio.create_task(rag_ingest_worker.run_ingest_worker())
+    global _pre_input_worker_task
+    app.state.ai_runtime_ready = False
+    await search_router.start(app)
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
+    recovered_queue_count = await ai_job_service.start_runtime_workers()
+    app.state.ai_runtime_ready = True
+    if recovered_queue_count:
+        logger.info("Recovered {} pending AI job queues", recovered_queue_count)
 
 
 @app.on_event("shutdown")
 async def _on_shutdown() -> None:
-    global _rag_ingest_task, _pre_input_worker_task
-    if _rag_ingest_task is not None:
-        _rag_ingest_task.cancel()
-        _rag_ingest_task = None
+    global _pre_input_worker_task
+    app.state.ai_runtime_ready = False
     if _pre_input_worker_task is not None:
         _pre_input_worker_task.cancel()
+        await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
         _pre_input_worker_task = None
+    # Stop new durable claims and queue runners first.  The service then
+    # terminates every locally supervised process before infrastructure closes.
+    try:
+        await ai_job_service.shutdown_runtime_workers()
+    except Exception:
+        logger.exception("Failed to shutdown AI job runtime")
+    try:
+        await shutdown_active_engines()
+    except Exception:
+        logger.exception("Failed to shutdown active workflow engines")
     try:
         await api_mock_ws_manager.shutdown()
     except Exception:
         logger.warning("Failed to shutdown API MOCK redis listener")
+    for ws_manager, label in (
+        (manager, "task"),
+        (notification_ws_manager, "notification"),
+        (asset_discussion_ws_manager, "asset discussion"),
+    ):
+        try:
+            await ws_manager.shutdown()
+        except Exception:
+            logger.warning("Failed to shutdown %s websocket hubs", label)
+    await search_router.stop(app)
     try:
         await close_redis_client()
     except Exception:
         logger.warning("Failed to close redis client on shutdown")
+    try:
+        # 在线程中执行有限等待的 executor 关闭，避免阻塞事件循环
+        await asyncio.get_running_loop().run_in_executor(
+            None, shutdown_offload_executors, True
+        )
+    except Exception:
+        logger.warning("Failed to shutdown offload executors")
 
 # ── 路由挂载 ──
+app.include_router(search_router.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
+app.include_router(oauth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
+app.include_router(invite_join.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
 app.include_router(task_closeout.router, prefix="/api")
 app.include_router(case_center_router.router, prefix="/api")
@@ -138,87 +180,68 @@ app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(repositories_router, prefix="/api")
 app.include_router(repo_groups_router, prefix="/api")
+app.include_router(system_config.router, prefix="/api")
+app.include_router(rag_outbox_router.router, prefix="/api")
 app.include_router(api_mock.gateway_router)
 
 # ── 静态文件挂载 ──
 # app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
-def _serialize_chat_ack(
-    *,
-    task_id: str,
-    status: str,
-    client_message_id: str,
-    content: str = "",
-    chat_message_id: str | None = None,
-    ai_job_id: str | None = None,
-    user_id: str | None = None,
-    display_name: str | None = None,
-    is_workspace_expert: bool = False,
-    created_at: str | None = None,
-    message: str | None = None,
-) -> dict:
-    return {
-        "task_id": task_id,
-        "status": status,
-        "client_message_id": client_message_id,
-        "id": chat_message_id,
-        "chat_message_id": chat_message_id,
-        "ai_job_id": ai_job_id,
-        "role": "user",
-        "content": content,
-        "message_type": "text",
-        "creator_id": user_id,
-        "creator_display_name": display_name,
-        "creator_is_workspace_expert": bool(is_workspace_expert),
-        "created_at": created_at,
-        "message": message,
-    }
-
-
-async def _send_chat_ack(websocket: WebSocket, payload: dict) -> None:
-    await websocket.send_json({"type": "chat_message_ack", "payload": payload})
-
-
-def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
+async def _authenticate_task_ws(websocket: WebSocket, task_id: str) -> dict | None:
+    """连接即鉴权（每连接一次）：JWT 解码留事件循环，单条 join 查询经 DB executor。"""
     token = str(websocket.query_params.get("token") or "").strip()
     if not token:
         return None
 
-    db = SessionLocal()
     try:
+        payload = auth_service.decode_token(token, expected_type="access")
+    except JWTError:
+        return None
+
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        return None
+
+    def _load() -> dict | None:
+        # 单条 join：user × task × workspace_member 一次往返完成三项校验
+        db = SessionLocal()
         try:
-            payload = auth_service.decode_token(token, expected_type="access")
-        except JWTError:
-            return None
+            row = (
+                db.query(
+                    User.id,
+                    User.display_name,
+                    User.avatar_url,
+                    User.avatar_svg,
+                    SddTask.workspace_id,
+                    WorkspaceMember.is_expert,
+                )
+                .filter(
+                    User.id == user_id,
+                    SddTask.id == task_id,
+                    WorkspaceMember.workspace_id == SddTask.workspace_id,
+                    WorkspaceMember.user_id == User.id,
+                )
+                .first()
+            )
+            if not row:
+                return None
+            return {
+                "user_id": row[0],
+                "display_name": row[1],
+                "avatar_url": row[2],
+                "avatar_svg": row[3],
+                "workspace_id": row[4],
+                "is_workspace_expert": bool(row[5]),
+            }
+        finally:
+            db.close()
 
-        user_id = str(payload.get("sub") or "").strip()
-        if not user_id:
-            return None
-
-        user = db.query(User).filter(User.id == user_id).first()
-        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-        if not user or not task_obj:
-            return None
-
-        member = workspace_service.get_workspace_member(db, task_obj.workspace_id, user.id)
-        if not member:
-            return None
-
-        return {
-            "user_id": user.id,
-            "display_name": user.display_name,
-            "avatar_url": user.avatar_url,
-            "avatar_svg": user.avatar_svg,
-            "workspace_id": task_obj.workspace_id,
-            "is_workspace_expert": bool(member.is_expert),
-        }
-    finally:
-        db.close()
+    return await run_db(_load)
 
 
-def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
-    """按用户维度认证（通知通道）：仅校验 JWT，不绑定工作区。"""
+async def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
+    """按用户维度认证（通知通道）：仅校验 JWT，不绑定工作区；DB 查询经 DB executor。"""
     token = str(websocket.query_params.get("token") or "").strip()
     if not token:
         return None
@@ -229,420 +252,187 @@ def _authenticate_user_ws(websocket: WebSocket) -> dict | None:
     user_id = str(payload.get("sub") or "").strip()
     if not user_id:
         return None
+
+    def _load() -> dict | None:
+        db = SessionLocal()
+        try:
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                return None
+            return {"user_id": user.id, "display_name": user.display_name}
+        finally:
+            db.close()
+
+    return await run_db(_load)
+
+
+async def _authenticate_resource_ws(
+    websocket: WebSocket,
+    *,
+    resource_kind: str,
+    resource_id: str,
+) -> dict | None:
+    """Authenticate resource sockets before any manager can accept them.
+
+    The token subject is authoritative.  The resource-to-workspace membership
+    check is deliberately a single synchronous DB query executed off-loop.
+    """
+    token = str(websocket.query_params.get("token") or "").strip()
+    if not token:
+        return None
+    try:
+        payload = auth_service.decode_token(token, expected_type="access")
+    except JWTError:
+        return None
+    user_id = str(payload.get("sub") or "").strip()
+    if not user_id:
+        return None
+
+    def _load() -> dict | None:
+        db = SessionLocal()
+        try:
+            resource_model = {
+                "api_mock": SddApiMockProject,
+                "asset": SddAsset,
+            }.get(resource_kind)
+            if resource_model is None:
+                return None
+            row = (
+                db.query(User.id, User.display_name, WorkspaceMember.is_expert)
+                .join(WorkspaceMember, WorkspaceMember.user_id == User.id)
+                .join(resource_model, resource_model.workspace_id == WorkspaceMember.workspace_id)
+                .filter(
+                    User.id == user_id,
+                    resource_model.id == resource_id,
+                )
+                .first()
+            )
+            if not row:
+                return None
+            return {
+                "user_id": str(row[0]),
+                "display_name": row[1],
+                "is_workspace_expert": bool(row[2]),
+            }
+        finally:
+            db.close()
+
+    return await run_db(_load)
+
+
+def _ws_resume_query(websocket: WebSocket) -> tuple[str | None, str | None, int | None]:
+    """Read a tab-scoped cursor; never substitute user_id for client_id."""
+    client_id = str(websocket.query_params.get("client_id") or "").strip() or None
+    epoch = str(websocket.query_params.get("epoch") or "").strip() or None
+    raw_sequence = websocket.query_params.get("last_sequence")
+    if raw_sequence in (None, ""):
+        last_sequence = None
+    else:
+        try:
+            last_sequence = int(raw_sequence)
+        except (TypeError, ValueError):
+            last_sequence = -1
+    return client_id, epoch, last_sequence
+
+
+def _persist_api_mock_collab_event(
+    project_id: str,
+    user_id: str,
+    event_enum,
+    endpoint_id,
+    normalized_payload: dict,
+) -> None:
+    """api-mock 协作事件落库（线程内执行，由 run_db 包装）。"""
     db = SessionLocal()
     try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return None
-        return {"user_id": user.id, "display_name": user.display_name}
+        project = api_mock_service.get_project_by_id(db, project_id)
+        if project:
+            try:
+                api_mock_service.create_collab_event(
+                    db,
+                    project,
+                    user_id=user_id,
+                    event_type=event_enum,
+                    endpoint_id=str(endpoint_id) if endpoint_id else None,
+                    payload=normalized_payload,
+                )
+            except Exception:
+                api_mock_logger.exception("Failed to persist API MOCK collab event")
     finally:
         db.close()
 
 
 # ── WebSocket 端点 ──
 @app.websocket("/ws/task/{task_id}")
-async def websocket_endpoint(websocket: WebSocket, task_id: str):
-    ws_context = _authenticate_task_ws(websocket, task_id)
+async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
+    ws_context = await _authenticate_task_ws(websocket, task_id)
     if not ws_context:
         await websocket.close(code=1008, reason="Unauthorized task websocket")
         return
 
-    user_id = str(ws_context["user_id"])
-    user_display_name = str(ws_context.get("display_name") or "")
-    user_is_expert = bool(ws_context.get("is_workspace_expert"))
-    user_avatar_url = ws_context.get("avatar_url") or None
-    user_avatar_svg = ws_context.get("avatar_svg") or None
+    user = TaskWebSocketUser(
+        id=str(ws_context["user_id"]),
+        display_name=str(ws_context.get("display_name") or ""),
+        is_workspace_expert=bool(ws_context.get("is_workspace_expert")),
+        avatar_url=ws_context.get("avatar_url") or None,
+        avatar_svg=ws_context.get("avatar_svg") or None,
+    )
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
 
     with bind_task_context(
         task_id=task_id,
         workspace_id=str(ws_context.get("workspace_id") or ""),
-        user_id=user_id,
+        user_id=user.id,
     ):
-        await manager.connect(websocket, task_id)
-        try:
-            while True:
-                data = await websocket.receive_json()
-                msg_type = data.get("type")
-
-                if msg_type == "chat_message":
-                    # 用户发送消息 → Redis 幂等门禁 → 保存并创建异步 AI 作业
-                    payload = data.get("payload", {})
-                    user_content = str(payload.get("content", "") or "")
-                    client_message_id = str(
-                        payload.get("client_message_id")
-                        or data.get("client_message_id")
-                        or uuid.uuid4()
-                    ).strip()
-                    if not user_content.strip():
-                        continue
-
-                    task_logger.info(f"User chat for task {task_id}: {user_content[:80]}")
-
-                    task_meta = None
-                    job_id = None
-                    saved_message = None
-                    claim = None
-                    db = SessionLocal()
-                    try:
-                        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-                        if not task_obj:
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status="failed",
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    message="Task not found",
-                                ),
-                            )
-                            continue
-
-                        task_meta = {
-                            "id": task_obj.id,
-                            "workspace_id": task_obj.workspace_id,
-                        }
-
-                        try:
-                            claim = await chat_message_idempotency_service.claim_message(
-                                task_id=task_obj.id,
-                                user_id=user_id,
-                                client_message_id=client_message_id,
-                                content=user_content,
-                            )
-                        except chat_message_idempotency_service.ChatMessageIdempotencyUnavailable as exc:
-                            task_logger.warning(f"Chat idempotency unavailable for task {task_id}: {exc}")
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status="failed",
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    message="Chat idempotency service is unavailable. Please retry.",
-                                ),
-                            )
-                            continue
-
-                        if not claim.claimed:
-                            existing = claim.existing or {}
-                            duplicate_status = "duplicate" if claim.status == "done" else claim.status
-                            await _send_chat_ack(
-                                websocket,
-                                _serialize_chat_ack(
-                                    task_id=task_id,
-                                    status=duplicate_status,
-                                    client_message_id=client_message_id,
-                                    content=user_content,
-                                    chat_message_id=existing.get("chat_message_id"),
-                                    ai_job_id=existing.get("ai_job_id"),
-                                    user_id=user_id,
-                                    display_name=user_display_name,
-                                    is_workspace_expert=user_is_expert,
-                                    created_at=existing.get("finished_at"),
-                                    message=(
-                                        "client_message_id was reused with different content"
-                                        if claim.status == "conflict"
-                                        else None
-                                    ),
-                                ),
-                            )
-                            continue
-
-                        try:
-                            if task_obj.status == TaskStatus.INTERRUPTED:
-                                await task_session_control_service.resume_interrupted_task(
-                                    db,
-                                    task=task_obj,
-                                    actor_user_id=user_id,
-                                    prompt=user_content,
-                                    confirm_continue=False,
-                                )
-                                await chat_message_idempotency_service.mark_message_done(
-                                    claim,
-                                    chat_message_id="",
-                                    ai_job_id=None,
-                                )
-                                await _send_chat_ack(
-                                    websocket,
-                                    _serialize_chat_ack(
-                                        task_id=task_id,
-                                        status="accepted",
-                                        client_message_id=client_message_id,
-                                        content=user_content,
-                                        user_id=user_id,
-                                        display_name=user_display_name,
-                                        is_workspace_expert=user_is_expert,
-                                    ),
-                                )
-                                continue
-
-                            saved_message = task_service.save_chat_message(
-                                db,
-                                task_id,
-                                task_meta["workspace_id"],
-                                user_id,
-                                role="user",
-                                content=user_content,
-                                metadata_json={"client_message_id": client_message_id},
-                            )
-                            job = ai_job_service.create_task_chat_job(
-                                db,
-                                workspace_id=task_meta["workspace_id"],
-                                task_id=task_meta["id"],
-                                creator_id=user_id,
-                                prompt_text=user_content,
-                                context_json={"client_message_id": client_message_id},
-                                chat_message_id=saved_message.id,
-                            )
-                            job_id = job.id
-                            await chat_message_idempotency_service.mark_message_done(
-                                claim,
-                                chat_message_id=saved_message.id,
-                                ai_job_id=job_id,
-                            )
-                        except Exception:
-                            if claim:
-                                try:
-                                    await chat_message_idempotency_service.mark_message_failed(claim)
-                                except Exception:
-                                    task_logger.warning(
-                                        f"Failed to clear chat idempotency claim for task {task_id}"
-                                    )
-                            raise
-                    finally:
-                        db.close()
-
-                    if not task_meta or not job_id or not saved_message:
-                        task_logger.warning(f"Task {task_id} not found, message ignored")
-                        continue
-                    await _send_chat_ack(
-                        websocket,
-                        _serialize_chat_ack(
-                            task_id=task_id,
-                            status="accepted",
-                            client_message_id=client_message_id,
-                            content=user_content,
-                            chat_message_id=saved_message.id,
-                            ai_job_id=job_id,
-                            user_id=user_id,
-                            display_name=user_display_name,
-                            is_workspace_expert=user_is_expert,
-                            created_at=saved_message.created_at.isoformat(),
-                        ),
-                    )
-                    await manager.send_message_to_room(
-                        task_id,
-                        WSMessage(
-                            type="chat_message",
-                            payload=WSChatPayload(
-                                task_id=task_id,
-                                role="user",
-                                content=user_content,
-                                message_type="text",
-                                id=saved_message.id,
-                                client_message_id=client_message_id,
-                                creator_id=user_id,
-                                creator_display_name=user_display_name,
-                                creator_is_workspace_expert=user_is_expert,
-                                creator_avatar_url=user_avatar_url,
-                                creator_avatar_svg=user_avatar_svg,
-                                created_at=saved_message.created_at.isoformat(),
-                            ).model_dump(),
-                        ),
-                    )
-                    await ai_job_service.enqueue_task_chat_job(job_id)
-
-                elif msg_type == "hitl_response":
-                    # HITL 回复 → 以用户回答恢复 CLI 会话
-                    payload = data.get("payload", {})
-                    response = payload.get("response", "")
-                    job_id = payload.get("job_id")
-                    if not response.strip():
-                        continue
-
-                    task_logger.info(f"HITL response for task {task_id}: {response[:80]}")
-                    resumed = await ai_job_service.resume_waiting_hitl_job(
-                        task_id=task_id,
-                        response=response.strip(),
-                        job_id=str(job_id) if job_id else None,
-                    )
-                    if resumed:
-                        continue
-
-                    engine = get_engine(task_id)
-                    if engine:
-                        asyncio.create_task(engine.send_message(response))
-                    else:
-                        task_meta = None
-                        db = SessionLocal()
-                        try:
-                            task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-                            if task_obj:
-                                task_meta = {
-                                    "id": task_obj.id,
-                                    "workspace_id": task_obj.workspace_id,
-                                    "creator_id": user_id,
-                                    "agent_backend": resolve_task_backend(db, task_obj.id),
-                                }
-                        finally:
-                            db.close()
-                        if not task_meta:
-                            task_logger.warning(
-                                f"No engine and task not found for HITL task {task_id}, response ignored"
-                            )
-                            continue
-                        task_logger.warning(
-                            f"No engine for HITL task {task_id}, rebuilding engine from DB and running response"
-                        )
-                        recovered_engine = WorkflowEngine(
-                            task_id=task_meta["id"],
-                            ws_id=task_meta["workspace_id"],
-                            user_id=user_id,
-                            backend_name=task_meta.get("agent_backend"),
-                        )
-                        asyncio.create_task(recovered_engine.run(response))
-
-                elif msg_type and msg_type.startswith("pre_input_"):
-                    # 协作预输入：发起 / 贡献 / 编辑 / 提交 / 取消，逻辑封装在 pre_input_service
-                    payload = data.get("payload", {}) or {}
-                    db = SessionLocal()
-                    try:
-                        task_obj = db.query(SddTask).filter(SddTask.id == task_id).first()
-                        if not task_obj:
-                            await websocket.send_json({
-                                "type": "pre_input_error",
-                                "payload": {"task_id": task_id, "message": "Task not found"},
-                            })
-                            continue
-
-                        error_payload: dict | None = None
-                        if msg_type == "pre_input_create":
-                            try:
-                                await pre_input_service.create_pre_input(
-                                    db,
-                                    task=task_obj,
-                                    creator_id=user_id,
-                                    main_text=str(payload.get("main_text") or ""),
-                                    mentioned_user_ids=payload.get("mentioned_user_ids") or [],
-                                    edit_permission=str(payload.get("edit_permission") or "NONE"),
-                                    wait_seconds=int(payload.get("wait_seconds") or 180),
-                                )
-                            except pre_input_service.PreInputError as exc:
-                                error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_edit_document":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.edit_pre_input_document(
-                                        db,
-                                        pre_input=pre_input,
-                                        user_id=user_id,
-                                        is_expert=user_is_expert,
-                                        new_text=str(payload.get("text") or ""),
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_replace_span":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.replace_pre_input_span(
-                                        db,
-                                        pre_input=pre_input,
-                                        user_id=user_id,
-                                        is_expert=user_is_expert,
-                                        start=int(payload.get("start") or 0),
-                                        end=int(payload.get("end") or 0),
-                                        anchor_text=str(payload.get("anchor_text") or ""),
-                                        replacement=str(payload.get("replacement") or ""),
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_mark_done":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.mark_pre_input_done(
-                                        db,
-                                        pre_input=pre_input,
-                                        user_id=user_id,
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_submit":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            elif user_id != pre_input.creator_id:
-                                error_payload = {"action": msg_type, "message": "Only the creator can submit"}
-                            else:
-                                try:
-                                    await pre_input_service.submit_pre_input(
-                                        db,
-                                        pre_input=pre_input,
-                                        actor_user_id=user_id,
-                                        reason="manual",
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        elif msg_type == "pre_input_cancel":
-                            pre_input = pre_input_service.get_active_pre_input(db, task_id)
-                            if not pre_input:
-                                error_payload = {"action": msg_type, "message": "No collecting pre input"}
-                            else:
-                                try:
-                                    await pre_input_service.cancel_pre_input(
-                                        db,
-                                        pre_input=pre_input,
-                                        actor_user_id=user_id,
-                                    )
-                                except pre_input_service.PreInputError as exc:
-                                    error_payload = {"action": msg_type, "message": exc.message}
-                        else:
-                            error_payload = {"action": msg_type, "message": f"Unknown pre input action"}
-
-                        if error_payload:
-                            await websocket.send_json({
-                                "type": "pre_input_error",
-                                "payload": {"task_id": task_id, **error_payload},
-                            })
-                    finally:
-                        db.close()
-
-        except WebSocketDisconnect:
-            manager.disconnect(websocket, task_id)
-        except Exception:
-            task_logger.exception("Task websocket endpoint failed")
-            manager.disconnect(websocket, task_id)
+        handler = TaskWebSocketHandler(
+            websocket,
+            task_id,
+            user,
+            session_factory=SessionLocal,
+            connection_manager=manager,
+            client_key=client_id,
+            resume_epoch=resume_epoch,
+            last_sequence=last_sequence,
+        )
+        await handler.run()
 
 
 @app.websocket("/ws/notifications")
 async def notification_websocket_endpoint(websocket: WebSocket):
     """站内信实时通道：按用户维度推送，前端断线重连时以 REST 未读数兜底。"""
-    context = _authenticate_user_ws(websocket)
+    context = await _authenticate_user_ws(websocket)
     if not context:
         await websocket.close(code=1008, reason="Unauthorized notification websocket")
         return
     user_id = str(context["user_id"])
-    await notification_ws_manager.connect(websocket, user_id)
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
+    connection = await notification_ws_manager.connect(
+        websocket,
+        user_id,
+        client_id=client_id,
+        epoch=resume_epoch,
+        last_sequence=last_sequence,
+    )
     try:
         while True:
-            # 通道只下行；忽略客户端上行（保活 ping 等）
-            await websocket.receive_text()
-    except WebSocketDisconnect:
+            # 通道只下行；仅处理 resync_complete 控制帧。
+            raw = await receive_text_until_evicted(websocket, connection)
+            try:
+                data = json.loads(raw)
+            except (TypeError, ValueError):
+                continue
+            if data.get("type") == "resync_complete":
+                payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+                try:
+                    await notification_ws_manager.complete_resync(
+                        websocket,
+                        user_id,
+                        epoch=str(payload.get("epoch") or ""),
+                        barrier_sequence=int(payload.get("barrier_sequence")),
+                    )
+                except (TypeError, ValueError):
+                    continue
+    except (WebSocketDisconnect, ConnectionEvicted):
         notification_ws_manager.disconnect(websocket, user_id)
     except Exception:
         logger.exception("Notification websocket endpoint failed")
@@ -651,9 +441,25 @@ async def notification_websocket_endpoint(websocket: WebSocket):
 
 @app.websocket("/ws/api-mock/{project_id}")
 async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
-    user_id = websocket.query_params.get("userId", "anonymous")
+    ws_context = await _authenticate_resource_ws(
+        websocket,
+        resource_kind="api_mock",
+        resource_id=project_id,
+    )
+    if not ws_context:
+        await websocket.close(code=1008, reason="Unauthorized API mock websocket")
+        return
+    user_id = str(ws_context["user_id"])
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(project_id=project_id, user_id=user_id):
-        await api_mock_ws_manager.connect(websocket, project_id, user_id)
+        connection = await api_mock_ws_manager.connect(
+            websocket,
+            project_id,
+            user_id,
+            client_id=client_id,
+            epoch=resume_epoch,
+            last_sequence=last_sequence,
+        )
         await api_mock_ws_manager.broadcast(
             project_id,
             {
@@ -664,7 +470,19 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
         )
         try:
             while True:
-                data = await websocket.receive_json()
+                data = await receive_json_until_evicted(websocket, connection)
+                if data.get("type") == "resync_complete":
+                    payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+                    try:
+                        await api_mock_ws_manager.complete_resync(
+                            websocket,
+                            project_id,
+                            epoch=str(payload.get("epoch") or ""),
+                            barrier_sequence=int(payload.get("barrier_sequence")),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                    continue
                 event_type = str(data.get("type") or "draft").lower()
                 payload = data.get("payload")
                 endpoint_id = data.get("endpoint_id") or (payload or {}).get("endpoint_id")
@@ -679,23 +497,10 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
                 event_enum = event_mapping.get(event_type, ApiMockCollabEventType.DRAFT)
 
                 if user_id != "anonymous":
-                    db = SessionLocal()
-                    try:
-                        project = api_mock_service.get_project_by_id(db, project_id)
-                        if project:
-                            try:
-                                api_mock_service.create_collab_event(
-                                    db,
-                                    project,
-                                    user_id=user_id,
-                                    event_type=event_enum,
-                                    endpoint_id=str(endpoint_id) if endpoint_id else None,
-                                    payload=normalized_payload,
-                                )
-                            except Exception:
-                                api_mock_logger.exception("Failed to persist API MOCK collab event")
-                    finally:
-                        db.close()
+                    await run_db(
+                        _persist_api_mock_collab_event,
+                        project_id, user_id, event_enum, endpoint_id, normalized_payload,
+                    )
 
                 await api_mock_ws_manager.broadcast(
                     project_id,
@@ -709,7 +514,7 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
                         "online_users": api_mock_ws_manager.online_users(project_id),
                     },
                 )
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, ConnectionEvicted):
             api_mock_ws_manager.disconnect(websocket, project_id)
             await api_mock_ws_manager.broadcast(
                 project_id,
@@ -726,9 +531,25 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
 
 @app.websocket("/ws/assets/{asset_id}/discussion")
 async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: str):
-    user_id = websocket.query_params.get("userId", "anonymous")
+    ws_context = await _authenticate_resource_ws(
+        websocket,
+        resource_kind="asset",
+        resource_id=asset_id,
+    )
+    if not ws_context:
+        await websocket.close(code=1008, reason="Unauthorized asset discussion websocket")
+        return
+    user_id = str(ws_context["user_id"])
+    client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(asset_id=asset_id, user_id=user_id):
-        await asset_discussion_ws_manager.connect(websocket, asset_id, user_id)
+        connection = await asset_discussion_ws_manager.connect(
+            websocket,
+            asset_id,
+            user_id,
+            client_id=client_id,
+            epoch=resume_epoch,
+            last_sequence=last_sequence,
+        )
         await asset_discussion_ws_manager.broadcast(
             asset_id,
             {
@@ -739,7 +560,19 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
         )
         try:
             while True:
-                data = await websocket.receive_json()
+                data = await receive_json_until_evicted(websocket, connection)
+                if data.get("type") == "resync_complete":
+                    payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
+                    try:
+                        await asset_discussion_ws_manager.complete_resync(
+                            websocket,
+                            asset_id,
+                            epoch=str(payload.get("epoch") or ""),
+                            barrier_sequence=int(payload.get("barrier_sequence")),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                    continue
                 msg_type = str(data.get("type") or "").lower()
                 payload = data.get("payload")
 
@@ -765,7 +598,7 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
                         "online_users": asset_discussion_ws_manager.online_users(asset_id),
                     },
                 )
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, ConnectionEvicted):
             asset_discussion_ws_manager.disconnect(websocket, asset_id)
             await asset_discussion_ws_manager.broadcast(
                 asset_id,
@@ -783,6 +616,29 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
 @app.get("/health")
 def health_check():
     return {"status": "ok", "app": settings.APP_NAME}
+
+
+@app.get("/health/ready")
+def readiness_check():
+    worker_health = ai_job_service.runtime_worker_health()
+    containment = ai_job_service.process_containment_readiness()
+    runtime_ready = bool(getattr(app.state, "ai_runtime_ready", False))
+    ready = (
+        runtime_ready
+        and bool(worker_health.get("healthy", False))
+        and bool(containment.get("ok", True))
+    )
+    status = "ready" if ready else ("degraded" if runtime_ready else "starting")
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": status,
+            "ready": ready,
+            "app": settings.APP_NAME,
+            "workers": worker_health,
+            "process_containment": containment,
+        },
+    )
 
 if __name__ == "__main__":
     import uvicorn

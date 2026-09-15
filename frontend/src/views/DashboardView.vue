@@ -12,6 +12,14 @@ import {
 } from 'lucide-vue-next'
 import api from '@/utils/api'
 import NewTaskModal from '@/components/NewTaskModal.vue'
+import {
+  buildDurationChartOption,
+  buildHeatmapOption,
+  buildSuccessChartOption,
+  type DashboardPhaseDurationItem,
+  type DashboardRetryHeatmapItem,
+  type DashboardSuccessRateItem
+} from '@/utils/dashboardCharts'
 
 // ECharts imports
 import VChart from 'vue-echarts'
@@ -43,8 +51,15 @@ const route = useRoute()
 const router = useRouter()
 const wsId = route.params.wsId
 
-const overview = ref<any>({ total_tasks: 0, success_rate: 0, active_tasks: 0 })
+const overview = ref<any>({
+  total_tasks: 0,
+  success_rate: 0,
+  active_tasks: 0,
+  time_saved_hours: 0,
+  total_cost_usd: 0
+})
 const loading = ref(true)
+const loadError = ref(false)
 const workspace = ref<any>(null)
 const workspacePermissions = ref<any>(null)
 const canCreateTask = computed(() => Boolean(workspacePermissions.value?.create_task))
@@ -52,10 +67,22 @@ const canCreateTask = computed(() => Boolean(workspacePermissions.value?.create_
 // Task creation state
 const showTaskModal = ref(false)
 
+// Raw dashboard data (kept separate from chart options so locale switches
+// only rebuild the options instead of re-fetching every endpoint)
+const statusData = ref<DashboardSuccessRateItem[]>([])
+const durationData = ref<DashboardPhaseDurationItem[]>([])
+const heatmapData = ref<DashboardRetryHeatmapItem[]>([])
+
 // Chart Options
 const successChartOptions = ref<any>({})
 const durationChartOptions = ref<any>({})
 const heatmapOptions = ref<any>({})
+
+const buildCharts = () => {
+  successChartOptions.value = buildSuccessChartOption(statusData.value, t)
+  durationChartOptions.value = buildDurationChartOption(durationData.value, t)
+  heatmapOptions.value = buildHeatmapOption(heatmapData.value, locale.value)
+}
 
 const loadDashboardData = async () => {
   loading.value = true
@@ -66,185 +93,16 @@ const loadDashboardData = async () => {
       api.get(`/workspaces/${wsId}/dashboard/phase-duration`),
       api.get(`/workspaces/${wsId}/dashboard/retry-heatmap`)
     ])
-    
+
     overview.value = resOverview.data
-
-    // Pie Chart: Success Rate
-    successChartOptions.value = {
-      tooltip: { 
-        trigger: 'item',
-        backgroundColor: 'rgba(255, 255, 255, 0.9)',
-        textStyle: { color: '#1e293b' },
-        borderWidth: 0,
-        boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'
-      },
-      legend: { bottom: '0%', left: 'center', icon: 'circle', textStyle: { color: '#64748b' } },
-      color: [
-        {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: '#10B981' }, { offset: 1, color: '#059669' }]
-        },
-        {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: '#EF4444' }, { offset: 1, color: '#DC2626' }]
-        },
-        {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: '#60A5FA' }, { offset: 1, color: '#2563EB' }]
-        },
-        {
-          type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-          colorStops: [{ offset: 0, color: '#FDBA74' }, { offset: 1, color: '#EA580C' }]
-        }
-      ],
-      series: [
-        {
-          name: 'Task Status',
-          type: 'pie',
-          radius: ['50%', '75%'],
-          center: ['50%', '45%'],
-          avoidLabelOverlap: false,
-          itemStyle: {
-            borderRadius: 8,
-            borderColor: '#fff',
-            borderWidth: 2
-          },
-          label: { show: false },
-          emphasis: {
-            scale: true,
-            scaleSize: 10,
-          },
-          data: resSuccess.data.map((item: any) => ({
-            value: item.count,
-            name: t(`dashboard.status.${item.status}`)
-          }))
-        }
-      ]
-    }
-
-    // Bar Chart: Phase Duration
-    const phaseOrder = ['REQUIREMENT_DURATION', 'DURATION']
-    const normalizedDuration = phaseOrder.map(phase => {
-      const found = resDuration.data.find((i: any) => i.phase === phase)
-      return {
-        phase,
-        avg_minutes: found ? found.avg_minutes : 0
-      }
-    })
-
-    durationChartOptions.value = {
-      tooltip: { 
-        trigger: 'axis', 
-        axisPointer: { type: 'shadow' },
-        formatter: (params: any) => {
-          const p = params[0]
-          return `${p.name}<br/>${p.seriesName}: <b>${p.value}</b> ${t('dashboard.phases.UNIT_MIN')}`
-        }
-      },
-      grid: { left: '3%', right: '4%', bottom: '8%', containLabel: true, top: '15%' },
-      xAxis: { 
-        type: 'category', 
-        data: normalizedDuration.map((i: any) => t(`dashboard.phases.${i.phase}`)),
-        axisLine: { lineStyle: { color: '#e2e8f0' } },
-        axisLabel: { color: '#64748b' }
-      },
-      yAxis: { 
-        type: 'value', 
-        name: `${t('dashboard.avg_phase')} (${t('dashboard.phases.UNIT_MIN')})`,
-        axisLine: { show: false },
-        splitLine: { lineStyle: { type: 'dashed', color: '#f1f5f9' } },
-        nameTextStyle: { color: '#64748b', padding: [0, 0, 0, 40] }
-      },
-      series: [
-        {
-          name: t('dashboard.avg_phase'),
-          type: 'bar',
-          barWidth: '40%',
-          itemStyle: { 
-            color: {
-              type: 'linear',
-              x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: '#3b82f6' },
-                { offset: 1, color: '#1d4ed8' }
-              ]
-            },
-            borderRadius: [6, 6, 0, 0]
-          },
-          data: normalizedDuration.map((i: any) => i.avg_minutes)
-        }
-      ]
-    }
-
-    // 4. Heatmap: 2D Data (Retries & Failures)
-    const last7Days: string[] = []
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date()
-      d.setDate(d.getDate() - i)
-      last7Days.push(d.toISOString().split('T')[0])
-    }
-
-    const yCategories = locale.value === 'zh' ? ['失败', '重试'] : ['Failures', 'Retries']
-    const heatmapSeriesData: any[] = []
-
-    last7Days.forEach((dateStr, xIdx) => {
-      const dayData = resHeatmap.data.find((d: any) => d.date === dateStr)
-      
-      // yIdx 0: Failure, yIdx 1: Retry
-      heatmapSeriesData.push([xIdx, 0, dayData ? dayData.failure_count : 0])
-      heatmapSeriesData.push([xIdx, 1, dayData ? dayData.retry_count : 0])
-    })
-
-    heatmapOptions.value = {
-      tooltip: {
-        position: 'top',
-        formatter: (params: any) => {
-          const xIdx = params.data[0]
-          const yIdx = params.data[1]
-          const val = params.data[2]
-          const date = last7Days[xIdx].split('-').slice(1).join('/')
-          return `${date}<br/>${yCategories[yIdx]}: <b>${val}</b>`
-        }
-      },
-      grid: { top: 20, bottom: 40, left: 60, right: 20 },
-      xAxis: { 
-        type: 'category', 
-        data: last7Days.map(d => d.split('-').slice(1).join('/')),
-        axisLine: { lineStyle: { color: '#e2e8f0' } }
-      },
-      yAxis: { 
-        type: 'category', 
-        data: yCategories,
-        splitArea: { show: true },
-        axisLine: { lineStyle: { color: '#e2e8f0' } }
-      },
-      visualMap: { 
-        min: 0, 
-        max: Math.max(...heatmapSeriesData.map(d => d[2]), 5), 
-        calculable: true, 
-        orient: 'horizontal', 
-        left: 'center', 
-        bottom: 0,
-        inRange: { color: ['#eff6ff', '#60a5fa', '#1e40af'] },
-        text: [locale.value === 'zh' ? '高' : 'High', locale.value === 'zh' ? '低' : 'Low'],
-        textStyle: { color: '#64748b' }
-      },
-      series: [{
-        name: '波动统计',
-        type: 'heatmap',
-        data: heatmapSeriesData,
-        label: { show: true, color: '#1e293b' },
-        emphasis: {
-          itemStyle: {
-            shadowBlur: 10,
-            shadowColor: 'rgba(0, 0, 0, 0.5)'
-          }
-        }
-      }]
-    }
-
+    statusData.value = Array.isArray(resSuccess.data) ? resSuccess.data : []
+    durationData.value = Array.isArray(resDuration.data) ? resDuration.data : []
+    heatmapData.value = Array.isArray(resHeatmap.data) ? resHeatmap.data : []
+    buildCharts()
+    loadError.value = false
   } catch (e) {
     console.error('Failed to load dashboard metrics', e)
+    loadError.value = true
   } finally {
     loading.value = false
   }
@@ -281,9 +139,9 @@ onMounted(() => {
   loadWorkspace()
 })
 
-// 监听语言变化，重新生成图表配置（主要是 Title 和 Legend）
+// 监听语言变化：只重建图表配置（含 Title / Legend / Tooltip），不重复请求接口
 watch(locale, () => {
-  loadDashboardData()
+  buildCharts()
 })
 </script>
 
@@ -300,6 +158,11 @@ watch(locale, () => {
       <button class="btn-primary flex items-center gap-2" :disabled="!canCreateTask" @click="openNewTaskModal">
         <Plus class="w-4 h-4" /> {{ $t('dashboard.new_task') }}
       </button>
+    </div>
+
+    <div v-if="loadError" class="error-banner">
+      <span>{{ $t('dashboard.load_error') }}</span>
+      <button class="btn-secondary" @click="loadDashboardData">{{ $t('dashboard.retry') }}</button>
     </div>
 
     <!-- KPI Banner -->
@@ -344,7 +207,7 @@ watch(locale, () => {
             <CheckCircle class="w-5 h-5" />
             <span class="font-medium text-sm text-uppercase tracking-wide">{{ $t('dashboard.time_saved') }}</span>
           </div>
-          <div class="text-3xl font-bold">{{ overview.avg_duration_minutes?.toFixed(1) || '0.0' }}h</div>
+          <div class="text-3xl font-bold">{{ overview.time_saved_hours?.toFixed(1) || '0.0' }}h</div>
         </div>
         <!-- Abstract shape -->
         <div class="absolute right-0 bottom-0 opacity-20 transform translate-x-4 translate-y-4">
@@ -432,6 +295,21 @@ watch(locale, () => {
 .opacity-20 { opacity: 0.2; }
 .h-\[300px\] { height: 300px; }
 .text-center { text-align: center; }
+
+/* Error banner */
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #FECACA;
+  border-radius: 0.5rem;
+  background: #FEF2F2;
+  color: #B91C1C;
+  font-size: 0.875rem;
+}
 
 @media (min-width: 768px) {
   .md\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
@@ -594,14 +472,5 @@ watch(locale, () => {
 
 .hidden-input {
   display: none;
-}
-
-.spin {
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
 }
 </style>

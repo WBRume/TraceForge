@@ -307,3 +307,58 @@ export const formatApiError = (error: unknown, fallback: string, t?: Translator)
 
   return fallback
 }
+
+/* ------------------------------------------------------------------ */
+/* OAuth 错误码 → i18n key 映射（T04 / F-19，§3.8.3 / §4.5）            */
+/* ------------------------------------------------------------------ */
+
+const OAUTH_ERROR_KEY_MAP: Record<string, string> = {
+  // 回调 302 语义化错误码（接口 3）。E-4d：state_invalid 与 state_expired 文案必须一致
+  access_denied: 'auth.oauth.errors.access_denied',
+  state_expired: 'auth.oauth.errors.session_invalid',
+  state_invalid: 'auth.oauth.errors.session_invalid',
+  code_invalid: 'auth.oauth.errors.session_invalid',
+  provider_unavailable: 'auth.oauth.errors.provider_unavailable',
+  provider_disabled: 'auth.oauth.errors.provider_disabled',
+  // API 错误码（§4.5 错误码全表）
+  OAUTH_TICKET_INVALID: 'auth.oauth.errors.ticket_invalid',
+  OAUTH_TICKET_EXPIRED: 'auth.oauth.errors.ticket_expired',
+  OAUTH_TICKET_LOCKED: 'auth.oauth.errors.ticket_locked',
+  OAUTH_PASSWORD_REQUIRED: 'auth.oauth.errors.password_invalid',
+  OAUTH_PASSWORD_INVALID: 'auth.oauth.errors.password_invalid',
+  OAUTH_EMAIL_TAKEN: 'auth.oauth.errors.email_taken',
+  OAUTH_IDENTITY_CONFLICT: 'auth.oauth.errors.identity_conflict',
+  OAUTH_NO_PASSWORD: 'auth.oauth.errors.no_password',
+  REGISTER_EMAIL_NOT_ALLOWED: 'auth.oauth.errors.email_not_allowed',
+  OAUTH_PROVIDER_NOT_FOUND: 'auth.oauth.errors.provider_not_found',
+  OAUTH_PROVIDER_DISABLED: 'auth.oauth.errors.provider_disabled',
+  OAUTH_UPSTREAM_ERROR: 'auth.oauth.errors.provider_unavailable',
+}
+
+/** 后端 code / 回调 error → i18n key；未识别返回 null（调用方自行兜底） */
+export const getOAuthErrorKey = (code: string | null | undefined): string | null => {
+  if (!code) return null
+  return OAUTH_ERROR_KEY_MAP[code] ?? null
+}
+
+/** 从任意错误中提取后端 OAuth code（{ detail, code } 错误体或回调 error 参数） */
+export const getOAuthErrorCode = (error: unknown): string | null => {
+  if (typeof error === 'string') {
+    return error || null
+  }
+  const axiosError = error as AxiosError<ApiErrorBody & { code?: unknown }>
+  const code = axiosError?.response?.data?.code
+  return typeof code === 'string' && code.trim() ? code : null
+}
+
+/**
+ * OAuth API 错误 → 用户文案。
+ * 优先按 code 映射 §3.8.3 文案；无 code 时回退到 formatApiError（读 detail）。
+ */
+export const formatOAuthApiError = (error: unknown, fallback: string, t: Translator): string => {
+  const key = getOAuthErrorKey(getOAuthErrorCode(error))
+  if (key) {
+    return t(key)
+  }
+  return formatApiError(error, fallback, t)
+}

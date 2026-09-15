@@ -5,7 +5,17 @@ User / workspace models.
 import uuid
 from enum import Enum as PyEnum
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, Text, Boolean, func
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Enum,
+    ForeignKey,
+    String,
+    Text,
+    Boolean,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -66,6 +76,13 @@ class User(Base):
         foreign_keys="SddAiJob.creator_id",
         back_populates="creator",
     )
+    # 三方登录身份绑定（OAuth 增量）：仅 ORM 层关系，users 表零 DDL 改动（K-2）。
+    # 级联策略 delete-orphan 与 DB 层 FK ON DELETE CASCADE 对应。
+    oauth_identities = relationship(
+        "OAuthIdentity",
+        cascade="all, delete-orphan",
+        back_populates="user",
+    )
 
 
 class Workspace(Base):
@@ -85,6 +102,9 @@ class Workspace(Base):
     owner_id = Column(String(36), ForeignKey("users.id"), nullable=False)
     # 工作区级 agent backend 覆盖（claude-code | opencode | dsh）；空则回退全局 .env
     agent_backend = Column(String(40), nullable=True)
+    # 独立模式（未关联管理项目）下手动填写的项目/产品名称；不与项目管理/产品管理数据绑定
+    custom_project_name = Column(String(200), nullable=True)
+    custom_product_name = Column(String(200), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -105,6 +125,14 @@ class Workspace(Base):
 
 class WorkspaceMember(Base):
     __tablename__ = "workspace_members"
+    # doc 审计 0c381413 §4.2：同一用户在同一工作区最多一条成员记录（幂等
+    # 依赖的数据库兜底）。增量迁移先做只读重复审计；发现重复时必须先给出
+    # 明确数据处理方案，禁止自动删除开发数据。
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "user_id", name="uq_workspace_members_workspace_user"
+        ),
+    )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -122,3 +150,4 @@ class WorkspaceMember(Base):
 # that create_all / autogenerate always see the complete schema.
 from app.domains.management.models import management as _management_models  # noqa: E402,F401
 from app.domains.workspace.models import workspace_repository as _workspace_repo_models  # noqa: E402,F401
+from app.domains.workspace.models import invite_link as _workspace_invite_link_models  # noqa: E402,F401

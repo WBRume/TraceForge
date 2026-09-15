@@ -2,6 +2,8 @@
 Workspace API routes.
 """
 
+import asyncio
+import time
 from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
@@ -13,6 +15,7 @@ from app.core.distributed_lock import (
     make_resource_busy_error,
 )
 from app.core.logging import audit_log, get_logger
+from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.ai_job import AiJobResponse
@@ -20,11 +23,18 @@ from app.domains.asset.schemas.asset import (
     WorkspaceAgentBackendResponse,
     WorkspaceAgentBackendUpdate,
     WorkspaceCreate,
+    WorkspaceAgentBackendTestRequest,
+    WorkspaceAgentBackendTestResponse,
+    WorkspaceCreate,
+    WorkspaceInviteLinkCreate,
+    WorkspaceInviteLinkListResponse,
+    WorkspaceInviteLinkResponse,
     WorkspaceMemberAdd,
     WorkspaceMemberListResponse,
     WorkspaceMemberResponse,
     WorkspaceMemberUpdate,
     WorkspaceMyPermissionsResponse,
+    WorkspacePreflight,
     WorkspaceResponse,
 )
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
@@ -63,7 +73,36 @@ async def create_workspace(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 配置项：新建工作区时是否启用“项目管理/产品管理”选择功能。
+    # 关闭时进入独立模式：不关联管理项目/产品，直接填写名称，并可选手动选择仓库分支。
+    from app.domains.system_config.services import system_config_service
+
+    mgmt_selection_enabled = system_config_service.get_config_bool(
+        db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED
+    )
     try:
+        if not mgmt_selection_enabled:
+            if data.project_id or (data.product_ids or []):
+                raise ValueError(
+                    "Project/product selection is disabled by system config; "
+                    "provide project_name/product_name; repositories are optional"
+                )
+            if not str(data.project_name or "").strip() or not str(data.product_name or "").strip():
+                raise ValueError("project_name and product_name are required")
+            missing_branch = [
+                item.repository_id
+                for item in (data.repositories or [])
+                if not str(item.branch_name or "").strip()
+            ]
+            if missing_branch:
+                raise ValueError("branch_name is required for every selected repository")
+
+        # 工作区根目录配置：为空保持原有逻辑；非空时默认填充 根目录/workspace/工作区名称，
+        # 并在受理阶段拒绝位于 根目录/workspace 之外的路径（快速失败返回 400）。
+        data.project_path = workspace_service.apply_workspace_root_dir_policy(
+            db, data.name, data.project_path
+        )
+
         job = provision_job_service.create_job(
             db,
             job_type=provision_job_service.ProvisionJobType.CREATE_WORKSPACE,
@@ -75,6 +114,8 @@ async def create_workspace(
                 "git_repo_url": data.git_repo_url,
                 "project_id": data.project_id,
                 "product_ids": list(data.product_ids or []),
+                "project_name": data.project_name,
+                "product_name": data.product_name,
                 "repositories": [
                     {"repository_id": item.repository_id, "branch_name": item.branch_name}
                     for item in (data.repositories or [])
@@ -132,6 +173,18 @@ async def create_workspace(
             data.git_repo_url,
         )
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.post("/preflight")
+def preflight_workspace(
+    data: WorkspacePreflight,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """创建工作区前的冲突预检：重名 / 目标目录已被其他工作区引用（仅供参考，不阻断创建）。"""
+    return workspace_service.preflight_workspace_conflicts(
+        db, name=data.name, project_path=data.project_path
+    )
 
 
 @router.get("", response_model=List[WorkspaceResponse])
@@ -194,6 +247,59 @@ def get_workspace_agent_backends(
         default_agent_backend=default_backend_name(),
         options=list_backends(),
     )
+
+
+@router.post("/{ws_id}/agent-backends/test", response_model=WorkspaceAgentBackendTestResponse)
+async def test_workspace_agent_backend(
+    ws_id: str,
+    data: WorkspaceAgentBackendTestRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_workspace_member(db, ws_id, current_user.id)
+    from app.agents.selection import (
+        SELECTABLE_AGENT_BACKENDS,
+        create_agent_backend_by_name,
+        normalize_backend_name,
+    )
+
+    backend_name = normalize_backend_name(data.backend)
+    if not backend_name or backend_name not in SELECTABLE_AGENT_BACKENDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported agent backend: {data.backend!r}; expected one of {list(SELECTABLE_AGENT_BACKENDS)}",
+        )
+
+    backend = None
+    started = time.monotonic()
+    try:
+        backend = create_agent_backend_by_name(backend_name)
+        probe = getattr(backend, "probe", None)
+        if probe is None:
+            message = f"{backend_name} backend created successfully"
+        else:
+            message = await asyncio.wait_for(probe(), timeout=15)
+        return WorkspaceAgentBackendTestResponse(
+            backend=backend_name,
+            success=True,
+            message=message,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except Exception as exc:
+        return WorkspaceAgentBackendTestResponse(
+            backend=backend_name,
+            success=False,
+            message=str(exc),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    finally:
+        if backend is not None:
+            close = getattr(backend, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception:
+                    logger.exception("Agent backend close failed during test")
 
 
 @router.put("/{ws_id}/agent-backend", response_model=WorkspaceAgentBackendResponse)
@@ -320,30 +426,28 @@ async def cancel_ai_job(
     ws_id: str,
     job_id: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    _ensure_workspace_member(db, ws_id, current_user.id)
-    job = ai_job_service.get_job(db, job_id=job_id)
-    if not job or str(job.workspace_id) != str(ws_id):
-        raise HTTPException(status_code=404, detail="AI job not found")
-    can_manage = workspace_service.user_has_permission(db, ws_id, current_user.id, "MANAGE_TASK_STATUS")
-    is_owner = str(job.creator_id or "") == str(current_user.id)
-    if not (can_manage or is_owner):
-        raise HTTPException(status_code=403, detail="No permission to cancel AI jobs")
-
     try:
-        job = ai_job_service.cancel_job(
-            db,
-            workspace_id=ws_id,
-            job_id=job_id,
-        )
+        def cancel_sync(db: Session):
+            _ensure_workspace_member(db, ws_id, current_user.id)
+            job = ai_job_service.get_job(db, job_id=job_id)
+            if not job or str(job.workspace_id) != str(ws_id):
+                raise HTTPException(status_code=404, detail="AI job not found")
+            can_manage = workspace_service.user_has_permission(db, ws_id, current_user.id, "MANAGE_TASK_STATUS")
+            is_owner = str(job.creator_id or "") == str(current_user.id)
+            if not (can_manage or is_owner):
+                raise HTTPException(status_code=403, detail="No permission to cancel AI jobs")
+            cancelled = ai_job_service.cancel_job(db, workspace_id=ws_id, job_id=job_id)
+            if not cancelled:
+                raise HTTPException(status_code=404, detail="AI job not found")
+            return ai_job_service.serialize_job(cancelled)
+
+        payload = await run_db_txn(cancel_sync)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    if not job:
-        raise HTTPException(status_code=404, detail="AI job not found")
 
-    await ai_job_service.publish_job(job.id, final=True)
-    return AiJobResponse(**ai_job_service.serialize_job(job))
+    await ai_job_service.publish_job(str(payload["id"]))
+    return AiJobResponse(**payload)
 
 
 @router.get("/{ws_id}/members", response_model=WorkspaceMemberListResponse)
@@ -525,3 +629,84 @@ def remove_workspace_member(
         operation="remove_member",
     )
     return {"msg": "Member removed"}
+
+
+@router.post("/{ws_id}/invite-links", response_model=WorkspaceInviteLinkResponse, status_code=201)
+def create_workspace_invite_link(
+    ws_id: str,
+    data: WorkspaceInviteLinkCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_member_manager(db, ws_id, current_user.id)
+
+    try:
+        link = workspace_service.create_invite_link(
+            db,
+            ws_id,
+            creator_user_id=current_user.id,
+            role=data.role,
+            permissions_flags=(data.permissions.model_dump() if data.permissions else None),
+            is_expert=data.is_expert,
+            valid_days=data.valid_days,
+            max_uses=data.max_uses,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    audit_log(
+        action="create_workspace_invite_link",
+        outcome="success",
+        resource_type="workspace_invite_link",
+        resource_id=link.id,
+        user_id=current_user.id,
+        workspace_id=ws_id,
+        operation="create_invite_link",
+        invite_role=data.role,
+        invite_valid_days=data.valid_days,
+        invite_max_uses=data.max_uses,
+    )
+    return WorkspaceInviteLinkResponse(**workspace_service.serialize_invite_link(link))
+
+
+@router.get("/{ws_id}/invite-links", response_model=WorkspaceInviteLinkListResponse)
+def list_workspace_invite_links(
+    ws_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_member_manager(db, ws_id, current_user.id)
+    links = workspace_service.list_invite_links(db, ws_id)
+    return WorkspaceInviteLinkListResponse(
+        items=[WorkspaceInviteLinkResponse(**workspace_service.serialize_invite_link(link)) for link in links],
+        total=len(links),
+    )
+
+
+@router.delete("/{ws_id}/invite-links/{link_id}", response_model=WorkspaceInviteLinkResponse)
+def revoke_workspace_invite_link(
+    ws_id: str,
+    link_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _ensure_member_manager(db, ws_id, current_user.id)
+
+    # 服务只加锁并 flush（与 accept 相同的锁顺序 Workspace → Link）；
+    # commit/rollback 归路由（doc 审计 0c381413 §4.2）。
+    link = workspace_service.revoke_invite_link_in_txn(db, ws_id, link_id)
+    if not link:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Invite link not found")
+    db.commit()
+
+    audit_log(
+        action="create_workspace_invite_link",
+        outcome="success",
+        resource_type="workspace_invite_link",
+        resource_id=link.id,
+        user_id=current_user.id,
+        workspace_id=ws_id,
+        operation="revoke_invite_link",
+    )
+    return WorkspaceInviteLinkResponse(**workspace_service.serialize_invite_link(link))

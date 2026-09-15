@@ -41,6 +41,10 @@ dist/
 .coverage.*
 htmlcov/
 
+# 本地验证/截图产物（不入库）
+/.verify/
+/.verify-smoke/
+
 # Editors / OS
 .vscode/*
 !.vscode/extensions.json
@@ -54,3 +58,15 @@ Thumbs.db
 *.log
 .agents/
 /.zcode/
+
+# Docs
+/docs/
+
+# database backups / scratch dumps (not source)
+/backups/
+backend/_backup_*.json
+codebuddy-sdk-doc.txt
+/.workbuddy/
+/.playwright-cli/
+/output/
+/frontend/demos/

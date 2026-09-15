@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  ShieldCheck,
   Bot,
+  Copy,
+  Check,
+  Undo2,
+  Loader2,
 } from 'lucide-vue-next'
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
@@ -14,6 +17,10 @@ import type { ChatDecisionPayload } from '@/composables/useChatDecision'
 const props = defineProps<{
   msg: Record<string, any>
   vm: any
+}>()
+
+const emit = defineEmits<{
+  (event: 'undo-request', message: Record<string, any>): void
 }>()
 
 const { t } = useI18n()
@@ -38,7 +45,6 @@ const diagnosisExtractedFromAi = computed(() => {
 })
 
 const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
-const isFromCurrentUser = computed(() => Boolean(props.vm?.isMessageFromCurrentUser?.(props.msg)))
 const memberColor = computed(() => props.vm?.messageAuthorColor?.(props.msg) || '#0EA5E9')
 
 const metadata = computed(() => {
@@ -85,17 +91,78 @@ const segmentTitle = (seg: any) => (
     : String(seg.created_by_name || '')
 )
 
-// 头像内联在“时间+姓名”元信息行内：他人消息行首、本人/协作消息行尾；assistant 用原小图标
-const showLeadingAvatar = computed(() => (
-  msgRole.value === 'user' && !isFromCurrentUser.value && !isCollabPreInput.value
-))
+// 头像内联在“时间+姓名”元信息行内：用户消息一律行尾；assistant 用原小图标
 const showTrailingAvatar = computed(() => (
-  msgRole.value === 'user' && !isCollabPreInput.value && isFromCurrentUser.value
-) || isCollabPreInput.value)
+  msgRole.value === 'user' || isCollabPreInput.value
+))
 
 function handleOpenPopover() {
   isPopoverOpen.value = true
 }
+
+// 气泡复制：AI / 人工消息均可一键复制会话内容
+const canCopyMessage = computed(() => {
+  if (isDiagnosisResult.value) return false
+  if (msgRole.value !== 'user' && msgRole.value !== 'assistant') return false
+  return Boolean(String(props.msg?.content || '').trim())
+})
+
+const canUndoMessage = computed(() => Boolean(props.vm?.canUndoMessage?.(props.msg)))
+const isUndoingMessage = computed(() => String(props.vm?.undoingMessageId || '') === String(props.msg?.id || ''))
+const showUndoAction = computed(() => canUndoMessage.value || isUndoingMessage.value)
+
+function handleUndoMessage() {
+  if (!canUndoMessage.value || isUndoingMessage.value || Boolean(props.vm?.isUndoing)) return
+  emit('undo-request', props.msg)
+}
+
+const copyState = ref<'idle' | 'done' | 'failed'>('idle')
+let copyResetTimer: number | undefined
+
+const copyTitle = computed(() => {
+  if (copyState.value === 'done') return t('chat.copied')
+  if (copyState.value === 'failed') return t('chat.copy_failed')
+  return t('chat.copy')
+})
+
+async function writeClipboardText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 剪贴板 API 不可用时退回旧式复制
+  }
+  try {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.setAttribute('readonly', '')
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(textarea)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+async function handleCopyMessage() {
+  if (!canCopyMessage.value || copyState.value === 'done') return
+  const ok = await writeClipboardText(String(props.msg?.content || ''))
+  copyState.value = ok ? 'done' : 'failed'
+  window.clearTimeout(copyResetTimer)
+  copyResetTimer = window.setTimeout(() => {
+    copyState.value = 'idle'
+  }, 1600)
+}
+
+onBeforeUnmount(() => {
+  window.clearTimeout(copyResetTimer)
+})
 
 function handleClosePopover() {
   isPopoverOpen.value = false
@@ -123,7 +190,7 @@ function handleRegenerateDiagnosis() {
 }
 
 function openDiagnosisCase(caseId: string) {
-  props.vm.router.push(`/ws/${props.vm.route.params.wsId}/cases/${caseId}`)
+  props.vm.router.push(`/workspaces/${props.vm.route.params.wsId}/cases/${caseId}`)
 }
 </script>
 
@@ -138,23 +205,14 @@ function openDiagnosisCase(caseId: string) {
         'from-workspace-expert': vm.isMessageWorkspaceExpert(msg),
         'is-highlighted': vm.highlightedMessageId === msg.id,
         'is-collab-preinput': isCollabPreInput,
+        'is-diagnosis-result': isDiagnosisResult,
       }
     ]"
     :style="{ '--member-color': memberColor }"
   >
     <div class="message-stack">
       <div class="message-meta">
-        <UserAvatar
-          v-if="showLeadingAvatar"
-          class="meta-avatar"
-          :display-name="msg.creator_display_name"
-          :user-id="msg.creator_id"
-          :avatar-svg="msg.creator_avatar_svg"
-          :avatar-url="msg.creator_avatar_url"
-          size="xs"
-          :accent-color="memberColor"
-        />
-        <Bot v-else-if="msgRole === 'assistant' || msgRole === 'system'" class="w-3 h-3 message-role-icon" />
+        <Bot v-if="msgRole === 'assistant' || msgRole === 'system'" class="w-3 h-3 message-role-icon" />
         <time class="message-time">{{ vm.formatMessageTime(msg.created_at) }}</time>
         <span
           v-if="isCollabPreInput"
@@ -165,8 +223,9 @@ function openDiagnosisCase(caseId: string) {
           <span class="collab-count">{{ collabParticipants.length }}</span>
         </span>
         <span class="message-author" :style="msgRole === 'user' ? { color: memberColor } : undefined">{{ vm.messageAuthorLabel(msg) }}</span>
-        <span v-if="vm.isMessageWorkspaceExpert(msg)" class="message-pm-badge">PM</span>
-        <ShieldCheck v-if="vm.isMessageWorkspaceExpert(msg)" class="w-3 h-3 message-expert-icon" />
+        <span v-if="vm.isMessageWorkspaceExpert(msg)" class="message-expert-badge">
+          {{ $t('settings.members.expert_badge') }}
+        </span>
         <UserAvatar
           v-if="showTrailingAvatar"
           class="meta-avatar"
@@ -216,12 +275,12 @@ function openDiagnosisCase(caseId: string) {
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
 
-      <!-- Mark Decision Action (Under the bubble) -->
-      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id" class="message-actions-row">
+      <!-- Bubble Actions (Under the bubble): Mark Decision / Undo / Copy -->
+      <div v-if="vm.canMarkMessageAsDecision(msg) || msg.decision_id || canCopyMessage || showUndoAction" class="message-actions-row">
         <div class="decision-action-wrapper" v-if="vm.canMarkMessageAsDecision(msg)">
           <button
             type="button"
-            class="message-decision-btn"
+            class="message-action-btn message-decision-btn"
             :class="{ 'is-active': isPopoverOpen }"
             :title="$t('chat.decision.mark')"
             @click.stop="handleOpenPopover"
@@ -270,21 +329,58 @@ function openDiagnosisCase(caseId: string) {
             </svg>
           <span>{{ $t('chat.decision.marked') }}</span>
         </span>
+
+        <button
+          v-if="showUndoAction"
+          type="button"
+          class="message-action-btn message-undo-btn"
+          :disabled="Boolean(vm.isUndoing)"
+          :class="{ 'is-loading': isUndoingMessage }"
+          :aria-busy="isUndoingMessage"
+          :aria-label="isUndoingMessage ? $t('chat.undo.in_progress') : $t('chat.undo.message')"
+          :title="$t('chat.undo.message')"
+          @click.stop="handleUndoMessage"
+        >
+          <Loader2 v-if="isUndoingMessage" class="undo-icon undo-spin" />
+          <Undo2 v-else class="undo-icon" />
+        </button>
+
+        <button
+          v-if="canCopyMessage"
+          type="button"
+          class="message-action-btn message-copy-btn"
+          :class="{ 'is-done': copyState === 'done', 'is-failed': copyState === 'failed' }"
+          :title="copyTitle"
+          @click.stop="handleCopyMessage"
+        >
+          <Check v-if="copyState === 'done'" class="copy-icon" />
+          <Copy v-else class="copy-icon" />
+        </button>
       </div>
     </div>
   </div>
+
 </template>
 
 <style scoped>
 .message-wrapper {
   display: flex;
+  min-width: 0;
   max-width: min(78%, 720px);
 }
-/* 多人会话：仅本人消息右对齐，其他成员与 assistant 一律左对齐 */
-.role-user.from-current-user {
+
+.message-wrapper.is-diagnosis-result {
+  width: min(78%, 720px);
+  max-width: 100%;
+}
+
+.message-wrapper.is-diagnosis-result .message-stack {
+  width: 100%;
+}
+/* 用户消息一律右对齐；assistant/system 左对齐 */
+.role-user {
   align-self: flex-end;
 }
-.role-user:not(.from-current-user),
 .role-system,
 .role-assistant {
   align-self: flex-start;
@@ -301,11 +397,10 @@ function openDiagnosisCase(caseId: string) {
   min-width: 0;
 }
 
-.role-user.from-current-user .message-stack {
+.role-user .message-stack {
   align-items: flex-end;
 }
 
-.role-user:not(.from-current-user) .message-stack,
 .role-system .message-stack,
 .role-assistant .message-stack {
   align-items: flex-start;
@@ -322,11 +417,10 @@ function openDiagnosisCase(caseId: string) {
   flex-wrap: wrap;
 }
 
-.role-user.from-current-user .message-meta {
+.role-user .message-meta {
   justify-content: flex-end;
 }
 
-.role-user:not(.from-current-user) .message-meta,
 .role-system .message-meta,
 .role-assistant .message-meta {
   justify-content: flex-start;
@@ -372,17 +466,12 @@ function openDiagnosisCase(caseId: string) {
   text-align: center;
 }
 
-.message-role-icon,
-.message-expert-icon {
+.message-role-icon {
   flex: 0 0 auto;
   color: #475569;
 }
 
-.message-expert-icon {
-  color: #166534;
-}
-
-.message-pm-badge {
+.message-expert-badge {
   display: inline-flex;
   align-items: center;
   height: 18px;
@@ -407,16 +496,10 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
 }
 
-.role-user.from-current-user .message-bubble {
+.role-user .message-bubble {
   border-top-right-radius: 14px;
   border-color: var(--member-color, #0EA5E9);
   background: #ffffff;
-}
-
-.role-user:not(.from-current-user) .message-bubble {
-  border-top-left-radius: 14px;
-  background: #F8FAFC;
-  border-color: #E2E8F0;
 }
 
 .role-system .message-bubble,
@@ -435,7 +518,7 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 10px 24px rgba(22, 101, 52, 0.08);
 }
 
-.role-user.from-current-user.from-workspace-expert .message-bubble {
+.role-user.from-workspace-expert .message-bubble {
   border-color: #166534;
 }
 
@@ -506,8 +589,7 @@ function openDiagnosisCase(caseId: string) {
 }
 
 .role-assistant .message-actions-row,
-.role-system .message-actions-row,
-.role-user:not(.from-current-user) .message-actions-row {
+.role-system .message-actions-row {
   justify-content: flex-start;
 }
 
@@ -516,8 +598,9 @@ function openDiagnosisCase(caseId: string) {
   display: inline-flex;
 }
 
-.message-decision-btn,
-.message-decision-badge {
+.message-action-btn,
+.message-decision-badge,
+.message-decision-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -528,7 +611,7 @@ function openDiagnosisCase(caseId: string) {
   transition: all 0.15s ease;
 }
 
-.message-decision-btn {
+.message-action-btn {
   width: 22px;
   height: 22px;
   border: 1px solid rgba(255, 255, 255, 0.4);
@@ -541,9 +624,65 @@ function openDiagnosisCase(caseId: string) {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
-.message-wrapper:hover .message-decision-btn,
-.message-decision-btn.is-active {
+.message-wrapper:hover .message-action-btn,
+.message-action-btn.is-active,
+.message-action-btn.is-done,
+.message-action-btn.is-failed,
+.message-action-btn.is-loading {
   opacity: 1;
+}
+
+.message-action-btn:hover:not(:disabled),
+.message-wrapper:hover .message-action-btn {
+  color: #64748b;
+  border-color: rgba(203, 213, 225, 0.6);
+  background: rgba(241, 245, 249, 0.85);
+}
+
+.message-action-btn:disabled {
+  cursor: wait;
+  opacity: 0.8;
+}
+
+.message-undo-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%) !important;
+  border-color: rgba(251, 191, 36, 0.68) !important;
+  color: #d97706 !important;
+  transform: scale(1.08) translateY(-1px);
+  box-shadow: 0 4px 10px -2px rgba(245, 158, 11, 0.18), 0 2px 4px -2px rgba(245, 158, 11, 0.12) !important;
+}
+
+.message-copy-btn:hover,
+.message-copy-btn.is-done {
+  background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%) !important;
+  border-color: rgba(134, 239, 172, 0.6) !important;
+  color: #16a34a !important;
+  transform: scale(1.08) translateY(-1px);
+  box-shadow: 0 4px 10px -2px rgba(22, 163, 74, 0.15), 0 2px 4px -2px rgba(22, 163, 74, 0.1) !important;
+}
+
+.message-copy-btn.is-failed {
+  background: rgba(254, 242, 242, 0.92) !important;
+  border-color: rgba(252, 165, 165, 0.6) !important;
+  color: #dc2626 !important;
+}
+
+.copy-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.undo-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.undo-spin {
+  animation: undo-spin 0.9s linear infinite;
+}
+
+@keyframes undo-spin {
+  to { transform: rotate(360deg); }
 }
 
 .message-wrapper:hover .message-decision-btn {

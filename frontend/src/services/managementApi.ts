@@ -182,7 +182,6 @@ export const listRepositories = async (params: {
   repo_type?: RepositoryType | ''
   group_id?: string | null
   repository_id?: string | null
-  unassigned_only?: boolean
   page?: number
   page_size?: number
 } = {}): Promise<Paginated<Repository>> => {
@@ -193,6 +192,12 @@ export const listRepositories = async (params: {
 export const getRepository = async (repositoryId: string): Promise<Repository> => {
   const res = await api.get('/management/repositories/' + repositoryId)
   return res.data as Repository
+}
+
+// 列出仓库远端分支/tag（用于新建工作区与会话创建的分支选择器）
+export const getRepositoryRefs = async (repositoryId: string): Promise<RemoteRefsPayload> => {
+  const res = await api.get(`/management/repositories/${repositoryId}/refs`)
+  return res.data as RemoteRefsPayload
 }
 
 export const createRepository = async (payload: {
@@ -236,7 +241,7 @@ export const validateRepositoryRef = async (repositoryId: string, payload: {
   return res.data
 }
 
-export const moveRepositoryToGroup = async (repositoryId: string, groupId: string | null): Promise<Repository> => {
+export const moveRepositoryToGroup = async (repositoryId: string, groupId: string): Promise<Repository> => {
   const res = await api.post('/management/repo-groups/repositories/' + repositoryId + '/move', { group_id: groupId })
   return res.data as Repository
 }

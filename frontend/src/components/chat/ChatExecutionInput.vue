@@ -65,10 +65,9 @@ const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabl
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
-    if (canSend.value) {
-      if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
-      else emit('submit')
-    }
+    if (!canSend.value || props.running) return
+    if (props.preInputMode) emit('start-pre-input', buildPreInputPayload())
+    else emit('submit')
   }
 }
 
@@ -218,7 +217,12 @@ const resetPreInputForm = () => {
   waitSeconds.value = 180
 }
 
-defineExpose({ resetPreInputForm })
+const focusInput = async () => {
+  await nextTick()
+  textareaRef.value?.focus()
+}
+
+defineExpose({ resetPreInputForm, focusInput })
 </script>
 
 <template>
@@ -247,8 +251,14 @@ defineExpose({ resetPreInputForm })
             size="xs"
           />
           <span class="chip-name">{{ m.display_name }}</span>
-          <button type="button" class="chip-remove" @click="removeMention(m.user_id)">
-            <X class="w-2 h-2" />
+          <button
+            type="button"
+            class="chip-remove"
+            :title="$t('common.remove', '移除') || '移除'"
+            aria-label="移除提及成员"
+            @click="removeMention(m.user_id)"
+          >
+            <X :size="10" :stroke-width="2.5" class="chip-remove-icon" />
           </button>
         </span>
       </div>
@@ -259,7 +269,7 @@ defineExpose({ resetPreInputForm })
           type="button"
           class="tool-toggle"
           :class="{ 'is-active': isPreInput }"
-          :disabled="props.canStartPreInput === false || props.disabled"
+          :disabled="props.canStartPreInput === false || props.disabled || props.running"
           :title="t('preInput.toggle_title')"
           @click="togglePreInputMode"
         >
@@ -277,7 +287,7 @@ defineExpose({ resetPreInputForm })
 
               <div v-if="mentionPickerOpen" class="mention-dropdown">
                 <div class="mention-search">
-                  <Search class="w-2.5 h-2.5" />
+                  <Search :size="13" class="mention-search-icon" />
                   <input
                     ref="mentionSearchRef"
                     v-model="mentionKeyword"
@@ -305,8 +315,8 @@ defineExpose({ resetPreInputForm })
                       size="xs"
                     />
                     <span class="mention-name">{{ member.display_name }}</span>
-                    <ShieldCheck v-if="member.is_expert" class="w-2 h-2 mention-expert" />
-                    <Check v-if="selectedIds.has(member.user_id)" class="w-2 h-2 mention-check" />
+                    <ShieldCheck v-if="member.is_expert" :size="13" class="mention-expert" />
+                    <Check v-if="selectedIds.has(member.user_id)" :size="13" class="mention-check" />
                   </button>
                 </div>
               </div>
@@ -343,8 +353,8 @@ defineExpose({ resetPreInputForm })
             :title="props.interruptTitle"
             @click="emit('interrupt')"
           >
-            <Loader2 v-if="props.interrupting" class="w-3.5 h-3.5 spin" />
-            <Square v-else class="w-3 h-3 stop-icon" />
+            <Loader2 v-if="props.interrupting" :size="16" class="spin" />
+            <Square v-else :size="13" class="stop-icon" />
           </button>
           <button
             v-else
@@ -356,7 +366,7 @@ defineExpose({ resetPreInputForm })
             :title="isPreInput ? $t('preInput.start_button') : props.sendTitle"
             @click="handleSendClick"
           >
-            <Send class="w-4 h-4" />
+            <Send :size="16" />
           </button>
         </Transition>
       </div>
@@ -367,6 +377,7 @@ defineExpose({ resetPreInputForm })
 <style scoped>
 .chat-execution-row {
   margin: var(--space-4) var(--space-6);
+  min-width: 0;
   display: flex;
   align-items: flex-end;
   gap: 10px;
@@ -432,43 +443,74 @@ defineExpose({ resetPreInputForm })
 .mention-chips-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 6px;
   padding: 0 0 6px;
 }
 
 .mention-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   padding: 2px 4px 2px 3px;
+  height: 24px;
+  box-sizing: border-box;
   border-radius: var(--radius-full, 999px);
   background: var(--color-primary-50, #F0F9FF);
-  border: 1px solid var(--color-primary-100, #E0F2FE);
+  border: 1px solid #BAE6FD;
   color: var(--color-primary-700, #0369A1);
-  font-size: 0.7rem;
+  font-size: 0.72rem;
   font-weight: 500;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgba(14, 165, 233, 0.05);
+  transition: all var(--transition-fast);
+}
+
+.mention-chip:hover {
+  background: #E0F2FE;
+  border-color: #7DD3FC;
 }
 
 .chip-name {
-  max-width: 100px;
+  max-width: 110px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1;
+  user-select: none;
 }
 
 .chip-remove {
   border: none;
   background: transparent;
-  color: var(--color-primary-600, #0284C7);
+  color: var(--color-primary-500, #0EA5E9);
   cursor: pointer;
-  padding: 2px;
-  border-radius: var(--radius-full, 999px);
+  padding: 0;
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+  border-radius: 50%;
   display: inline-flex;
-  transition: background var(--transition-fast);
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-left: 1px;
+  transition: all var(--transition-fast);
+}
+
+.chip-remove svg,
+.chip-remove-icon {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
 
 .chip-remove:hover {
-  background: var(--color-primary-100, #E0F2FE);
+  background: var(--color-primary-500, #0EA5E9);
+  color: #FFFFFF;
+}
+
+.chip-remove:active {
+  transform: scale(0.9);
 }
 
 /* ── 工具栏 ── */
@@ -633,6 +675,11 @@ defineExpose({ resetPreInputForm })
   color: var(--color-text-muted, #64748B);
 }
 
+.mention-search-icon {
+  flex-shrink: 0;
+  color: #94A3B8;
+}
+
 .mention-search input {
   flex: 1;
   min-width: 0;
@@ -691,11 +738,16 @@ defineExpose({ resetPreInputForm })
 
 .mention-expert {
   color: #059669;
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
 }
 
 .mention-check {
   color: var(--color-primary-600, #0284C7);
   flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
 }
 
 /* ── 发送按钮：圆形 ── */
@@ -727,6 +779,11 @@ defineExpose({ resetPreInputForm })
   background: var(--color-primary-600, #0284C7);
 }
 
+.send-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* ── 停止按钮：运行中替换发送位置，呼吸动效提示可中断 ── */
 .stop-btn {
   position: relative;
@@ -743,6 +800,11 @@ defineExpose({ resetPreInputForm })
   flex: 0 0 auto;
   transition: background var(--transition-fast), color var(--transition-fast), transform var(--transition-fast);
   animation: stop-breathe 1.8s ease-in-out infinite;
+}
+
+.stop-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .stop-btn:hover:not(:disabled) {

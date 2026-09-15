@@ -20,6 +20,16 @@ def _index_item() -> RuntimeSkillIndexItem:
     )
 
 
+def _opencode_index_item() -> RuntimeSkillIndexItem:
+    return RuntimeSkillIndexItem(
+        skill_id="skill-2",
+        skill_name="frontend-api",
+        materialized_dir="frontend-api-87654321",
+        runtime_root_abs=os.path.abspath(os.path.join("C:\\proj\\task", ".agents", "skills", "frontend-api-87654321")),
+        runtime_root_rel=".agents/skills/frontend-api-87654321",
+    )
+
+
 class SkillRuntimeTraceMatcherTest(unittest.TestCase):
     def _events(self, tool_name, tool_input):
         return detect_tool_use_events(
@@ -44,6 +54,20 @@ class SkillRuntimeTraceMatcherTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["event_type"].value, "FILE_READ")
         self.assertEqual(events[0]["relative_path"], "workflow.md")
+
+    def test_opencode_agents_skills_path_records_file_read(self):
+        events = detect_tool_use_events(
+            workspace_id="ws-1",
+            task_id="task-1",
+            ai_job_id="job-1",
+            runtime_index=[_opencode_index_item()],
+            tool_name="Read",
+            tool_input={"file_path": ".agents/skills/frontend-api-87654321/SKILL.md"},
+            tool_use_id="tool-1",
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"].value, "ENTRY_READ")
+        self.assertEqual(events[0]["relative_path"], "SKILL.md")
 
     def test_ls_grep_glob_and_write_are_mapped(self):
         cases = [

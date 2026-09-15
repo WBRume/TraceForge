@@ -18,6 +18,14 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.agents.contract import (
+    EXECUTION_KIND_REMOTE_SESSION,
+    AgentRunRequest,
+    AgentStopResult,
+    record_attempt_remote_session_started,
+    record_attempt_remote_stop,
+)
+from app.agents.run_logging import run_agent_backend_with_logging
 from app.config import settings
 from app.core.logging import get_logger
 from app.engine.claude_bridge import create_cli_bridge
@@ -45,9 +53,9 @@ AGENT_BACKEND_META: Dict[str, Dict[str, Any]] = {
     },
     "dsh": {
         "value": "dsh",
-        "label": "DSH CLI",
-        "supports_resume": False,
-        "preferred_mode": "subprocess",
+        "label": "DSH (Web Host)",
+        "supports_resume": True,
+        "preferred_mode": "server",
     },
 }
 
@@ -82,14 +90,6 @@ def list_agent_backends() -> list[Dict[str, Any]]:
     for meta in AGENT_BACKEND_META.values():
         item = dict(meta)
         item["supports_fork"] = backend_supports_fork(meta["value"])
-        if meta["value"] == "dsh" and dsh_server_mode_enabled():
-            # server 模式下 dsh 能力完整（resume / usage / 工具事件）
-            item = {
-                **item,
-                "label": "DSH (Web Host)",
-                "supports_resume": True,
-                "preferred_mode": "server",
-            }
         options.append(item)
     return options
 
@@ -123,16 +123,14 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
     return resolved
 
 
-def dsh_server_mode_enabled() -> bool:
-    return bool(str(getattr(settings, "DSH_SERVER_URL", "") or "").strip())
-
-
 def create_agent_backend_by_name(backend_name: Optional[str] = None):
     """按名称创建统一 AgentBackend 实例（engine 路径使用）。
 
-    claude-code 返回双接口 ClaudeCodeAdapter；dsh 在配置 DSH_SERVER_URL 时
-    走 Web Host server 模式（支持 resume/事件/usage），否则 headless CLI。
+    claude-code 返回双接口 ClaudeCodeAdapter；dsh 固定走 Web Host server 模式
+    （支持 resume/事件/usage/流式），不会再回退 headless CLI。
     """
+    from app.agents.registry import get_agent_backend
+
     name = normalize_backend_name(backend_name) or default_backend_name()
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
@@ -142,11 +140,7 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None):
             server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
         )
     if name == "dsh":
-        if dsh_server_mode_enabled():
-            from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
-
-            return DshServerAdapter(server_url=str(settings.DSH_SERVER_URL).strip())
-        return get_agent_backend("dsh", dsh_cli=getattr(settings, "DSH_CLI_PATH", "dsh"))
+        return get_agent_backend("dsh", server_url=str(settings.DSH_SERVER_URL).strip())
     return get_agent_backend(name)
 
 
@@ -217,12 +211,31 @@ class LegacyBridgeShim:
         event_callback: Callable[[Dict[str, Any]], Any],
         session_id: Optional[str] = None,
         env_overrides: Optional[Dict[str, str]] = None,
+        fork_session: bool = False,
+        permission_mode: str = "default",
+        on_process_started=None,
     ) -> str:
         from app.agents.contract import AgentRunRequest
+        from app.agents.errors import AgentError
 
         resume_id = session_id
+        if fork_session:
+            if not resume_id:
+                raise AgentError("fork-on-resume requires an existing session id")
+            if not getattr(self.backend.capabilities, "supports_fork", False):
+                raise AgentError(
+                    f"agent backend {self.backend_name!r} does not support session fork"
+                )
+            # Server backends fork eagerly and then resume the child.  Claude's
+            # native --fork-session path is handled by ClaudeCodeAdapter itself
+            # and therefore never reaches this shim.
+            resume_id = await self.backend.fork_session(
+                resume_id,
+                source_dir=project_path,
+                target_dir=project_path,
+            )
         if resume_id and not getattr(self.backend.capabilities, "supports_resume", True):
-            # 例：DSH headless 不支持 resume；降级为新会话而非报错
+            # 后端不支持 resume 时降级为新会话而非报错
             logger.warning(
                 "agent backend {} does not support resume; starting fresh session (dropped session_id={})",
                 self.backend_name,
@@ -236,12 +249,37 @@ class LegacyBridgeShim:
             project_path=project_path,
             session_id=resume_id,
             env=dict(env_overrides or {}),
-            # 外层调用方通过 asyncio.wait_for(bridge.wait()) 控制超时；
-            # 内层给足上限避免双重超时误杀。
-            timeout_seconds=float(getattr(settings, "CLAUDE_CLI_TIMEOUT", 3600) or 3600) + 600.0,
+            # 显式执行类别（doc §7 数据流）：与 backend capability 声明一致。
+            execution_kind=getattr(
+                self.backend.capabilities, "execution_kind", "LOCAL_PROCESS"
+            ) or "LOCAL_PROCESS",
+            metadata={
+                "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
+                "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
+                "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
+                "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
+            },
+            timeout_seconds=float(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200),
+            startup_timeout_seconds=float(
+                getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
+            ),
+            idle_timeout_seconds=float(
+                getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+            ),
+            # Supervisor-side attach timeout (real DB attach) so the outer
+            # startup watchdog is not the only ownership guarantee.
+            process_attach_timeout_seconds=float(
+                getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
+            ) or None,
+            permission_mode=permission_mode,
+            on_process_started=on_process_started,
         )
 
         async def _on_event(agent_event) -> None:
+            # 远程会话建立标记：供取消/收尾路径区分“从未建立会话”与
+            # “会话存在但停止未被确认”（doc §8.3 REMOTE 分支）。
+            if getattr(agent_event, "type", "") == "session_started":
+                record_attempt_remote_session_started()
             legacy = agent_event_to_legacy_payload(agent_event)
             if legacy is None:
                 return
@@ -250,7 +288,7 @@ class LegacyBridgeShim:
                 await result
 
         async def _run() -> None:
-            result = await self.backend.run(request, _on_event)
+            result = await run_agent_backend_with_logging(self.backend, request, _on_event)
             if result and result.session_id:
                 self._session_id = result.session_id
 
@@ -261,12 +299,8 @@ class LegacyBridgeShim:
         if self._run_task is not None:
             try:
                 await self._run_task
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # 失败细节已经通过事件流下发，这里保持与旧 bridge 一致的静默语义；
-                # 外层根据 result 事件中的 is_error 判定失败。
-                pass
+            finally:
+                await self.backend.close()
 
     @property
     def session_id(self) -> Optional[str]:
@@ -278,19 +312,71 @@ class LegacyBridgeShim:
         # server 模式无本地进程，返回 None 即可。
         return None
 
-    async def cancel(self) -> None:
+    def _execution_kind(self) -> str:
+        declared = str(
+            getattr(self.backend.capabilities, "execution_kind", "") or ""
+        ).strip()
+        return declared if declared in ("LOCAL_PROCESS", "REMOTE_SESSION") else EXECUTION_KIND_REMOTE_SESSION
+
+    @staticmethod
+    def _unacknowledged_stop(kind: str, *, failure_code: str, error_message: str) -> AgentStopResult:
+        return AgentStopResult(
+            execution_kind=kind,
+            stop_acknowledged=False,
+            failure_code=failure_code,
+            error_message=error_message,
+        )
+
+    async def cancel(self) -> AgentStopResult:
+        """取消当前回合；必须返回结构化停止结果，禁止吞掉远程取消错误。
+
+        服务端明确成功响应才返回 stop_acknowledged=True；方法未抛异常或
+        返回 None 一律视为未确认（doc §5.1/§5.2）。
+        """
+        kind = self._execution_kind()
         if self._run_task is not None and not self._run_task.done():
             self._run_task.cancel()
         try:
-            await self.backend.cancel()
-        except Exception:
-            logger.warning("agent backend {} cancel failed", self.backend_name)
+            result = await self.backend.cancel()
+        except Exception as exc:
+            logger.warning("agent backend {} cancel failed: {}", self.backend_name, exc)
+            result = self._unacknowledged_stop(
+                kind,
+                failure_code="REMOTE_CANCEL_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        if not isinstance(result, AgentStopResult):
+            result = self._unacknowledged_stop(
+                str(getattr(result, "execution_kind", "") or kind),
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="backend cancel returned no structured acknowledgement",
+            )
+        record_attempt_remote_stop(result)
+        return result
 
-    async def interrupt(self) -> None:
+    async def interrupt(self) -> AgentStopResult:
+        """中断当前回合（保留会话）；停止结果必须显式可见。"""
+        kind = self._execution_kind()
         try:
-            await self.backend.interrupt()
-        except Exception:
-            logger.warning("agent backend {} interrupt failed", self.backend_name)
+            result = await self.backend.interrupt()
+        except Exception as exc:
+            logger.warning("agent backend {} interrupt failed: {}", self.backend_name, exc)
+            result = self._unacknowledged_stop(
+                kind,
+                failure_code="REMOTE_INTERRUPT_FAILED",
+                error_message=str(exc) or type(exc).__name__,
+            )
+        if not isinstance(result, AgentStopResult):
+            result = self._unacknowledged_stop(
+                str(getattr(result, "execution_kind", "") or kind),
+                failure_code="REMOTE_STOP_UNCONFIRMED",
+                error_message="backend interrupt returned no structured acknowledgement",
+            )
+        record_attempt_remote_stop(result)
+        return result
+
+    async def close(self) -> None:
+        await self.backend.close()
 
     def is_running(self) -> bool:
         return bool(self._run_task and not self._run_task.done())
@@ -333,7 +419,14 @@ async def fork_session_for_backend(
     fork = getattr(bridge, "fork_session", None)
     if fork is None:
         raise SessionForkError(f"agent backend {name!r} does not support session fork")
-    return await fork(session_id, source_dir=source_dir, target_dir=target_dir)
+    try:
+        return await fork(session_id, source_dir=source_dir, target_dir=target_dir)
+    finally:
+        close = getattr(bridge, "close", None)
+        if close is not None:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
 
 
 async def probe_session_fork(
@@ -364,11 +457,12 @@ async def probe_session_fork(
                 shutil.rmtree(drill_store, ignore_errors=True)
             return True
         if name == "opencode":
+            drill_dir = os.path.abspath(os.path.join(source_dir, ".fork-drill"))
             new_id = await fork_session_for_backend(
                 name,
                 session_id,
                 source_dir=source_dir,
-                target_dir=os.path.abspath(os.path.join(source_dir, ".fork-drill")),
+                target_dir=drill_dir,
             )
             from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
@@ -381,6 +475,7 @@ async def probe_session_fork(
                         "opencode fork drill left orphan session {} (delete API unavailable)",
                         new_id,
                     )
+            shutil.rmtree(drill_dir, ignore_errors=True)
             return True
         if name == "dsh":
             from app.agents.adapters.dsh import session_files

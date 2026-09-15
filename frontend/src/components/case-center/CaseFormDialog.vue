@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, FilePlus2 } from 'lucide-vue-next'
+import BaseSelect from '@/components/BaseSelect.vue'
 
 const props = defineProps<{
   visible: boolean
@@ -16,8 +18,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-const categoryOptions = ['PUBLIC', 'PRODUCT', 'SITE', 'TEMPORARY']
 const priorityOptions = ['P0', 'P1', 'P2', 'P3']
+
+const prioritySelectOptions = computed(() =>
+  priorityOptions.map((p) => ({ label: p, value: p })),
+)
 </script>
 
 <template>
@@ -37,18 +42,10 @@ const priorityOptions = ['P0', 'P1', 'P2', 'P3']
         </div>
       </div>
 
-      <div class="form-row three-col">
-        <div class="form-field">
-          <label>{{ t('case_center.field.category') }}</label>
-          <el-select v-model="model.category" class="field-full">
-            <el-option v-for="c in categoryOptions" :key="c" :label="t(`case_center.category.${c}`)" :value="c" />
-          </el-select>
-        </div>
+      <div class="form-row two-col">
         <div class="form-field">
           <label>{{ t('case_center.field.priority') }}</label>
-          <el-select v-model="model.priority" class="field-full">
-            <el-option v-for="p in priorityOptions" :key="p" :label="p" :value="p" />
-          </el-select>
+          <BaseSelect v-model="model.priority" :options="prioritySelectOptions" class="field-full" />
         </div>
         <div class="form-field">
           <label>{{ t('case_center.field.site_name') }}</label>
@@ -101,12 +98,12 @@ const priorityOptions = ['P0', 'P1', 'P2', 'P3']
     </div>
 
     <template #footer>
-      <el-button :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</el-button>
-      <el-button type="primary" :loading="saving" @click="emit('save')">
-        <Loader2 v-if="false" class="w-4 h-4" />
-        <FilePlus2 class="w-4 h-4" />
+      <button class="btn-secondary" type="button" :disabled="saving" @click="emit('close')">{{ t('common.cancel') }}</button>
+      <button class="btn-primary" type="button" :disabled="saving" @click="emit('save')">
+        <Loader2 v-if="saving" :size="16" class="spin" />
+        <FilePlus2 v-else :size="16" />
         {{ t('common.save') }}
-      </el-button>
+      </button>
     </template>
   </el-dialog>
 </template>
@@ -124,11 +121,6 @@ const priorityOptions = ['P0', 'P1', 'P2', 'P3']
 }
 
 .form-row.two-col > .form-field {
-  flex: 1;
-  min-width: 0;
-}
-
-.form-row.three-col > .form-field {
   flex: 1;
   min-width: 0;
 }
@@ -155,5 +147,14 @@ const priorityOptions = ['P0', 'P1', 'P2', 'P3']
 
 .field-full {
   width: 100%;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 </style>

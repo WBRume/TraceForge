@@ -40,5 +40,8 @@ class UserResponse(BaseModel):
     avatar_svg: Optional[str] = None
     is_admin: bool = False
     created_at: datetime
+    # OAuth 增量（接口 11 / GET /auth/me）：已绑定的三方 provider 名列表，如 ["github"]。
+    # 纯增量字段，现有前端无感；由 router 从 current_user.oauth_identities 组装。
+    bound_providers: list[str] = []
 
     model_config = {"from_attributes": True}
