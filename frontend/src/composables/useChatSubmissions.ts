@@ -1,0 +1,148 @@
+import { computed, ref } from 'vue'
+import api from '@/utils/api'
+
+export interface ChatSubmission {
+  id?: string
+  task_id: string
+  client_message_id: string
+  content: string
+  status: string
+  creator_id?: string
+  chat_message_id?: string | null
+  ai_job_id?: string | null
+  error_message?: string | null
+  created_at?: string
+  metadata?: Record<string, any>
+}
+
+const rank: Record<string, number> = { SENDING: 0, UNKNOWN: 0, PREPARING: 1, EXECUTING: 2, FAILED: 3, SUCCEEDED: 4 }
+
+/** Task-scoped receipts survive route switches; REST is also available without a WS. */
+export function useChatSubmissions(options: {
+  workspaceId: () => string
+  taskId: () => string
+  userId: () => string
+}) {
+  const receipts = ref<Record<string, ChatSubmission>>({})
+  const storageKey = `traceforge.chat-submissions:${options.userId()}`
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(storageKey) || '{}')
+    for (const [id, row] of Object.entries(saved)) {
+      const item = row as ChatSubmission
+      if (item?.task_id && item.client_message_id && typeof item.content === 'string') {
+        receipts.value[id] = { ...item, status: 'UNKNOWN' }
+      }
+    }
+  } catch { /* Storage is optional; durable receipts still recover through REST. */ }
+  const persistUnconfirmed = () => {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(Object.entries(receipts.value)
+        .filter(([, row]) => ['SENDING', 'UNKNOWN'].includes(row.status)))))
+    } catch { /* A full or disabled session store must not fail a send. */ }
+  }
+  const invalidated = new Set<string>()
+  const provisional = new Set<string>()
+  const revisions = new Map<string, number>()
+  const key = (task: string, client: string) => `${options.workspaceId()}:${task}:${client}`
+  const current = computed(() => Object.values(receipts.value).filter(row => row.task_id === options.taskId()
+    && receipts.value[key(row.task_id, row.client_message_id)] === row))
+  const busy = computed(() => current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)))
+  const put = (row: ChatSubmission) => {
+    const identity = key(row.task_id, row.client_message_id)
+    if (invalidated.has(identity)) return
+    const old = receipts.value[identity]
+    if (old && (rank[old.status] ?? 0) > (rank[row.status] ?? 0)) return
+    receipts.value[identity] = { ...old, ...row }
+    if (['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)) provisional.add(identity)
+    persistUnconfirmed()
+  }
+  const refresh = async (taskId: string) => {
+    const workspace = options.workspaceId()
+    const revision = revisions.get(taskId) || 0
+    const beforeRequest = new Map(Object.entries(receipts.value).filter(([, row]) => row.task_id === taskId))
+    const { data } = await api.get(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`)
+    if (options.workspaceId() !== workspace || revision !== (revisions.get(taskId) || 0)) return false
+    let changed = false
+    for (const row of data.items || []) {
+      const old = receipts.value[key(taskId, row.client_message_id)]
+      if (!old || old.status !== row.status || old.chat_message_id !== row.chat_message_id) changed = true
+      put(row)
+    }
+    const present = new Set((data.items || []).map((row: ChatSubmission) => row.client_message_id))
+    for (const [identity, row] of beforeRequest) {
+      if (!['SENDING', 'UNKNOWN'].includes(row.status) && !present.has(row.client_message_id)
+        && receipts.value[identity] === row) {
+        // The server always includes its active receipt. Absence therefore
+        // clears stale state after undo/initialization/history deletion elsewhere.
+        delete receipts.value[identity]
+        provisional.delete(identity)
+        changed = true
+      }
+    }
+    for (const row of Object.values(receipts.value)) {
+      if (row.task_id === taskId && row.status === 'UNKNOWN' && !present.has(row.client_message_id)) {
+        // Same idempotency key resolves an ambiguous HTTP failure without a second turn.
+        changed = (await send(taskId, row.client_message_id, row.content, row.metadata)) || changed
+      }
+    }
+    return changed
+  }
+  const send = async (taskId: string, clientId: string, content: string, metadata?: Record<string, any>) => {
+    const workspace = options.workspaceId()
+    put({ task_id: taskId, client_message_id: clientId, content, metadata, status: 'SENDING',
+      creator_id: options.userId(), created_at: new Date().toISOString() })
+    try {
+      const { data } = await api.post(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`, {
+        client_message_id: clientId, content, metadata,
+      })
+      if (options.workspaceId() === workspace) put(data)
+      return true
+    } catch (error: any) {
+      if (options.workspaceId() !== workspace) return false
+      const row = receipts.value[key(taskId, clientId)]
+      if (row?.id) return true // A server receipt received over WS takes precedence.
+      const status = error.response?.status
+      const definitive = status >= 400 && status < 500 && ![408, 429].includes(status)
+      put({ ...row!, status: definitive ? 'FAILED' : 'UNKNOWN',
+        error_message: definitive ? (error.response?.data?.detail?.message || '消息未被接收，请重试') : '正在确认发送结果，请勿重复发送' })
+      // Keep an ambiguous send in its recoverable bubble, rather than leaving
+      // the same prompt in the composer to be sent again under a new key.
+      return !definitive
+    }
+  }
+  const clear = (taskId: string) => {
+    revisions.set(taskId, (revisions.get(taskId) || 0) + 1)
+    for (const [id, row] of Object.entries(receipts.value)) if (row.task_id === taskId) {
+      invalidated.add(id)
+      delete receipts.value[id]
+    }
+    persistUnconfirmed()
+  }
+  const removeMessages = (taskId: string, messageIds: Set<string>) => {
+    revisions.set(taskId, (revisions.get(taskId) || 0) + 1)
+    for (const [id, row] of Object.entries(receipts.value)) if (row.task_id === taskId && row.chat_message_id && messageIds.has(row.chat_message_id)) {
+      invalidated.add(id)
+      delete receipts.value[id]
+    }
+    persistUnconfirmed()
+  }
+  const bubbles = (messages: any[]) => {
+    const mapped = messages.map(message => {
+      const row = current.value.find(item => item.chat_message_id === message.id)
+      if (row) provisional.delete(key(row.task_id, row.client_message_id))
+      return row ? { ...message, delivery_status: row.status.toLowerCase(), delivery_error: row.error_message } : message
+    })
+    for (const row of current.value) {
+      const awaitingHistory = provisional.has(key(row.task_id, row.client_message_id))
+      if ((row.status === 'SUCCEEDED' && !awaitingHistory)
+        || (row.status === 'FAILED' && row.chat_message_id && !awaitingHistory)
+        || mapped.some(message => message.id === row.chat_message_id
+        || message.client_message_id === row.client_message_id)) continue
+      mapped.push({ id: `submission-${row.client_message_id}`, role: 'user', content: row.content,
+        client_message_id: row.client_message_id, creator_id: row.creator_id, created_at: row.created_at,
+        message_type: 'text', can_undo: false, delivery_status: row.status.toLowerCase(), delivery_error: row.error_message })
+    }
+    return mapped
+  }
+  return { current, busy, put, send, refresh, clear, removeMessages, bubbles }
+}

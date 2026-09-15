@@ -141,6 +141,7 @@ def _prepare_chat_turn_sync(
     prompt: str,
     session_id: Optional[str],
     fresh_session: bool,
+    submission_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """回合准备段（线程内执行）：活跃 job 互斥 + generation/revision 推进 + backend 解析。
 
@@ -148,9 +149,11 @@ def _prepare_chat_turn_sync(
     checkpoint 失败仅留下一次多余的 revision 推进（单调、无 job 引用，无副作用），
     消息/turn/job 仍只在持久化段可见，维持"checkpoint 先于消息可见"的边界。
     """
-    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
     if not task:
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
+    assert_no_preparing_submission(db, task_id, allowed_id=submission_id)
     active_job = db.query(SddAiJob).filter(
         SddAiJob.task_id == task_id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
@@ -180,6 +183,13 @@ def _prepare_chat_turn_sync(
         # undoing a not-yet-started fresh turn cannot target the old session.
         task.session_id = None
     task.session_revision = int(getattr(task, "session_revision", 0) or 0) + 1
+    if submission_id:
+        from app.domains.task.models.chat_submission import TaskChatSubmission
+        submission = db.query(TaskChatSubmission).filter_by(id=submission_id, task_id=task_id).with_for_update().one()
+        if submission.status != "PREPARING":
+            raise TaskSessionUndoError("Submission is no longer preparing", code="MESSAGE_ALREADY_PROCESSED")
+        submission.session_generation = int(task.session_generation)
+        submission.session_revision = int(task.session_revision)
 
     from app.agents.selection import resolve_task_backend
 
@@ -215,6 +225,17 @@ def _persist_chat_turn_sync(
     workspace_id = str(prepared["workspace_id"])
     generation = int(prepared["generation"])
     revision = int(prepared["revision"])
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    task = db.query(SddTask).filter_by(id=task_id).with_for_update().one()
+    if int(task.session_generation or 0) != generation or int(task.session_revision or 0) != revision:
+        raise TaskSessionUndoError("Session changed while preparing message", code="TASK_SESSION_CHANGED")
+    submission_id = (context_json or {}).get("submission_id")
+    if submission_id and _enum_text(task.status) in {"PENDING", "PROVISIONING", "DONE", "FAILED", "BASELINED", "INTERRUPTED"}:
+        raise TaskSessionUndoError("Task state changed while preparing message", code="TASK_SESSION_CHANGED")
+    submission = db.query(TaskChatSubmission).filter_by(id=submission_id).with_for_update().one() if submission_id else None
+    if submission is not None and (submission.status != "PREPARING" or submission.ai_job_id
+            or submission.task_id != task_id or submission.creator_id != prepared["actor_user_id"]):
+        raise TaskSessionUndoError("Message has already been processed", code="MESSAGE_ALREADY_PROCESSED")
     provider = prepared["provider"]
     provider_session_id = prepared["provider_session_id"]
     checkpoint_root = str(prepared.get("checkpoint_root") or "").strip() or None
@@ -269,9 +290,22 @@ def _persist_chat_turn_sync(
         session_turn_id=turn.id,
         session_generation=generation,
         session_revision=revision,
+        commit=False,
     )
     turn.ai_job_id = job.id
+    if submission is not None:
+        submission.ai_job_id = job.id
+        submission.chat_message_id = message.id
+        submission.status = "EXECUTING"
     db.commit()
+    try:
+        from app.domains.task.services import context_token_service
+        context_token_service.seed_snapshot_for_job(
+            db, job=job, prompt_text=prompt, chat_message_id=message.id,
+        )
+    except Exception as exc:
+        db.rollback()
+        logger.warning("Failed to seed context token snapshot for job {}: {}", job.id, exc)
     # commit 过期属性后立即读取（session 尚在），组装纯数据结果
     return CreatedChatTurn(
         task_id=task_id,
@@ -320,6 +354,7 @@ async def create_task_chat_turn(
             prompt=prompt,
             session_id=session_id,
             fresh_session=fresh_session,
+            submission_id=(context_json or {}).get("submission_id"),
         )
     )
     prepared["actor_user_id"] = str(actor_user_id)
@@ -350,7 +385,19 @@ async def create_task_chat_turn(
             )
         )
     except Exception:
-        if checkpoint_root:
+        committed_or_unknown = False
+        submission_id = (context_json or {}).get("submission_id")
+        if submission_id:
+            from app.domains.task.models.chat_submission import TaskChatSubmission
+            try:
+                committed_or_unknown = await run_db_txn(lambda db: bool(
+                    db.query(TaskChatSubmission.ai_job_id).filter_by(id=submission_id).scalar()
+                ))
+            except Exception:
+                # A lost database response is not proof that commit failed.
+                # Preserve the checkpoint until the durable job can be recovered.
+                committed_or_unknown = True
+        if checkpoint_root and not committed_or_unknown:
             try:
                 await task_session_snapshot_service.cleanup_checkpoint(checkpoint_root)
             except Exception as cleanup_exc:
@@ -414,9 +461,13 @@ def _persist_confirmation_reply_sync(
             "reply_to_message_id": reply_to_message_id,
             "interaction_id": interaction_id,
             "confirmation_value": confirmation_value,
+            **({"submission_id": parent_metadata["submission_id"],
+                "knowledge_state": parent_metadata.get("knowledge_state", "pending")}
+               if parent_metadata.get("submission_id") else {}),
         },
         session_generation=int(getattr(task, "session_generation", 0) or 0),
     )
+    message.session_turn_id = parent.session_turn_id
     db.commit()
     db.refresh(message)
     return CreatedConfirmationReply(
@@ -629,6 +680,9 @@ async def _restore_provider_for_suffix(
 
 
 def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], message_ids: list[str]) -> None:
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    db.query(TaskChatSubmission).filter(TaskChatSubmission.task_id == task.id,
+        TaskChatSubmission.chat_message_id.in_(message_ids)).delete(synchronize_session=False)
     from app.domains.search.capture import enqueue_scope
     enqueue_scope(db, task_id=task.id, workspace_id=task.workspace_id)
     job_ids = [turn.ai_job_id for turn in suffix if turn.ai_job_id]
@@ -713,9 +767,14 @@ def _prepare_undo_sync(
     operation_id: str,
 ) -> dict[str, Any]:
     """Create the undo fence and return only detached scalar snapshots."""
-    task = db.query(SddTask).filter(SddTask.id == task_id).first()
+    task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
     if not task:
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise TaskSessionUndoError(str(exc), code=exc.code) from exc
     existing = db.query(TaskSessionOperation).filter(
         TaskSessionOperation.task_id == task.id,
         TaskSessionOperation.operation_id == operation_id,

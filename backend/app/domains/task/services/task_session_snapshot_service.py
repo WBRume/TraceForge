@@ -514,10 +514,20 @@ async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider:
                             *, workspace_id: str, workspace_name: str, task_id: str, task_name: str) -> dict[str, Any]:
     from app.core.offload import run_git_job
 
-    return await run_git_job(
+    import asyncio
+    operation = asyncio.create_task(run_git_job(
         _create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id,
         workspace_id, workspace_name, task_id, task_name,
-    )
+    ))
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        # Cancelling an executor future does not stop its filesystem writes.
+        # Keep the task lock until the worker really finishes; never publish the result.
+        result = await asyncio.gather(operation, return_exceptions=True)
+        if result and isinstance(result[0], dict):
+            await cleanup_checkpoint(result[0]["root"])
+        raise
 
 
 async def restore_provider(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:

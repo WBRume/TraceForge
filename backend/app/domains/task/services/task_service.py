@@ -1142,6 +1142,14 @@ def save_chat_message(
     from app.domains.search.capture import allocate_chat_seq
     order_index = allocate_chat_seq(db, task_id)
     merged_metadata = dict(metadata_json or {})
+    if session_turn_id:
+        from app.domains.task.models.chat_submission import TaskChatSubmission
+        from app.domains.task.models.session_turn import TaskSessionTurn
+        turn = db.get(TaskSessionTurn, session_turn_id)
+        submission = db.query(TaskChatSubmission).filter_by(ai_job_id=turn.ai_job_id).first() if turn and turn.ai_job_id else None
+        if submission:
+            merged_metadata["submission_id"] = submission.id
+            merged_metadata["knowledge_state"] = "published" if submission.status == "SUCCEEDED" else "pending"
     merged_metadata["order_index"] = order_index
     msg = ChatMessage(
         task_id=task_id,
@@ -1338,6 +1346,12 @@ def clear_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
     if not task:
         raise ValueError("Task not found")
 
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    assert_no_preparing_submission(db, task_id)
+    if db.query(TaskChatSubmission.id).filter_by(active_task_id=task_id).first():
+        raise SubmissionError("当前消息正在执行，请等待完成")
+    db.query(TaskChatSubmission).filter_by(task_id=task_id).delete(synchronize_session=False)
     deleted_messages = db.query(ChatMessage).filter(
         ChatMessage.task_id == task_id,
         ChatMessage.workspace_id == workspace_id,

@@ -1,6 +1,5 @@
 """协作预输入 WebSocket 全链路集成测试：发起 → 框选 → 手动提交 / 非发起人提交报错。"""
 
-import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -29,9 +28,6 @@ from app.domains.auth.models.user import (  # noqa: E402
 )
 from app.domains.auth.services import auth_service  # noqa: E402
 from app.domains.ai.services import ai_job_service  # noqa: E402
-from app.domains.ai.services.chat_message_idempotency_service import (  # noqa: E402
-    ChatMessageClaim,
-)
 from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
 import app.main as main_module  # noqa: E402
 from app.domains.task.services import pre_input_worker  # noqa: E402
@@ -97,6 +93,7 @@ def _seed(db, project_path: str):
 
 @pytest.fixture()
 def ws_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "SEARCH_WORKERS_ENABLED", False)
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -187,71 +184,59 @@ def test_ws_pre_input_full_flow(ws_env):
             assert done_evt["payload"]["status"] == "SUBMITTED"
 
 
-def test_ws_chat_message_acknowledges_broadcasts_and_enqueues(ws_env, monkeypatch):
-    completed_claims = []
-    enqueued_jobs = []
-
-    async def _claim_message(**kwargs):
-        assert kwargs["task_id"] == "task-1"
-        assert kwargs["user_id"] == "u-owner"
-        assert kwargs["client_message_id"] == "client-1"
-        assert kwargs["content"] == "hello agent"
-        return ChatMessageClaim(
-            status="claimed",
-            key="claim-1",
-            client_message_id="client-1",
-            content_hash="content-hash",
-        )
-
-    async def _mark_message_done(claim, **kwargs):
-        completed_claims.append((claim, kwargs))
-
-    async def _enqueue(job_id):
-        enqueued_jobs.append(job_id)
-
-    @asynccontextmanager
-    async def _unlocked(_task_id):
-        yield
-
-    monkeypatch.setattr(
-        task_handler.chat_message_idempotency_service,
-        "claim_message",
-        _claim_message,
-    )
-    monkeypatch.setattr(
-        task_handler.chat_message_idempotency_service,
-        "mark_message_done",
-        _mark_message_done,
-    )
-    monkeypatch.setattr(task_handler, "lock_task", _unlocked)
-    monkeypatch.setattr(ai_job_service, "enqueue_task_chat_job", _enqueue)
-
+def test_ws_chat_message_persists_receipt_before_background_preparation(ws_env, monkeypatch):
+    from app.domains.task.services import chat_submission_service
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.ai.models.ai_job import SddAiJob
+    scheduled = []
+    monkeypatch.setattr(chat_submission_service, "schedule", scheduled.append)
     with TestClient(main_module.app) as client:
         with client.websocket_connect("/ws/task/task-1?token=u-owner") as owner_ws:
             _complete_initial_sync(owner_ws)
-            owner_ws.send_json(
-                {
-                    "type": "chat_message",
-                    "payload": {
-                        "content": "hello agent",
-                        "client_message_id": "client-1",
-                    },
-                }
-            )
-            ack = owner_ws.receive_json()
-            chat_event = _receive_business(owner_ws)
+            owner_ws.send_json({"type": "chat_message", "payload": {
+                "content": "hello agent", "client_message_id": "client-1",
+            }})
+            event = _receive_business(owner_ws)
+            assert event["type"] == "chat_submission_update"
+            assert event["payload"]["status"] == "PREPARING"
+            assert event["payload"]["client_message_id"] == "client-1"
+            receipt_id = event["payload"]["id"]
+            assert ws_env.get(TaskChatSubmission, receipt_id).content == "hello agent"
+            assert ws_env.query(ChatMessage).count() == ws_env.query(SddAiJob).count() == 0
+    assert receipt_id in scheduled
 
-    assert ack["type"] == "chat_message_ack"
-    assert ack["payload"]["status"] == "accepted"
-    assert ack["payload"]["client_message_id"] == "client-1"
-    assert ack["payload"]["chat_message_id"]
-    assert ack["payload"]["ai_job_id"]
-    assert chat_event["type"] == "chat_message"
-    assert chat_event["payload"]["id"] == ack["payload"]["chat_message_id"]
-    assert chat_event["payload"]["content"] == "hello agent"
-    assert completed_claims[0][1]["chat_message_id"] == ack["payload"]["chat_message_id"]
-    assert completed_claims[0][1]["ai_job_id"] == ack["payload"]["ai_job_id"]
-    assert enqueued_jobs == [ack["payload"]["ai_job_id"]]
+
+def test_ws_chat_message_broadcasts_submission_to_second_client(ws_env, monkeypatch):
+    from app.domains.task.services import chat_submission_service
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    from app.domains.task.models.chat import ChatMessage
+    from app.domains.ai.models.ai_job import SddAiJob
+
+    scheduled = []
+    monkeypatch.setattr(chat_submission_service, "schedule", scheduled.append)
+    with TestClient(main_module.app) as client:
+        with client.websocket_connect("/ws/task/task-1?token=u-owner") as sender_ws:
+            _complete_initial_sync(sender_ws)
+            with client.websocket_connect("/ws/task/task-1?token=u-member") as observer_ws:
+                _complete_initial_sync(observer_ws)
+                sender_ws.send_json({"type": "chat_message", "payload": {
+                    "content": "hello from client A", "client_message_id": "client-a-message",
+                }})
+
+                # Read from B: a sender-only acknowledgement cannot satisfy this.
+                event = _receive_business(observer_ws)
+                assert event["type"] == "chat_submission_update"
+                payload = event["payload"]
+                assert payload["task_id"] == "task-1"
+                assert payload["client_message_id"] == "client-a-message"
+                assert payload["creator_id"] == "u-owner"
+                assert payload["content"] == "hello from client A"
+                assert payload["status"] == "PREPARING"
+                receipt = ws_env.get(TaskChatSubmission, payload["id"])
+                assert receipt is not None and receipt.client_message_id == "client-a-message"
+                assert ws_env.query(ChatMessage).count() == ws_env.query(SddAiJob).count() == 0
+    assert payload["id"] in scheduled
 
 
 def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):

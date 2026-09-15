@@ -375,9 +375,38 @@ class RedisLockProvider(DistributedLockProvider):
                 backend=self.backend_name,
             )
 
+        owner = asyncio.current_task()
+        lease_lost = False
+
+        async def renew_lease():
+            nonlocal lease_lost
+            try:
+                while True:
+                    await asyncio.sleep(max(0.1, context.ttl / 3))
+                    await lock.extend(context.ttl, replace_ttl=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                lease_lost = True
+                logger.warning("redis lock renewal failed: lock_key={}, error={}", context.lock_key, str(exc))
+                if owner is not None:
+                    owner.cancel()
+
+        renewal = asyncio.create_task(renew_lease())
         try:
-            yield context
+            try:
+                yield context
+            except asyncio.CancelledError:
+                if not lease_lost:
+                    raise
+                if owner is not None and hasattr(owner, "uncancel"):
+                    owner.uncancel()
+                raise LockAcquireTimeout(lock_key=context.lock_key,
+                    resource_type=context.resource_type, resource_id=context.resource_id,
+                    backend=self.backend_name, message="Redis lock ownership lost") from None
         finally:
+            renewal.cancel()
+            await asyncio.gather(renewal, return_exceptions=True)
             try:
                 await lock.release()
             except Exception as exc:

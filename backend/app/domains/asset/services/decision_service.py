@@ -84,6 +84,9 @@ def _ensure_chat_message(db: Session, workspace_id: str, task_id: str, message_i
     )
     if not message:
         raise DecisionSourceError("Chat message source not found for this Task.", status_code=404)
+    source_metadata = message.metadata_json or {}
+    if source_metadata.get("submission_id") and source_metadata.get("knowledge_state") != "published":
+        raise DecisionSourceError("本轮尚未成功，不能沉淀为决策。", status_code=409)
     return message
 
 

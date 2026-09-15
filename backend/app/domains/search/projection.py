@@ -24,6 +24,10 @@ def digest(data):
 
 def build_search_projection(source, kind):
     if kind == "message":
+        # Execution records are not knowledge sources until the owning job succeeds.
+        meta = source.metadata_json or {}
+        if meta.get("submission_id") and meta.get("knowledge_state") != "published":
+            return None
         role, message_type = value(source.role), value(source.message_type)
         if role not in ("user", "assistant") or message_type not in ("text", "error", "diagnosis_result"):
             return None

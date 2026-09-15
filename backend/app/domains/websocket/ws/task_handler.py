@@ -162,10 +162,13 @@ class TaskWebSocketHandler:
             or uuid.uuid4()
         ).strip()
         metadata = payload.get("metadata")
+        metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        for key in ("submission_id", "knowledge_state"):
+            metadata.pop(key, None)
         return _ChatMessageRequest(
             content=content,
             client_message_id=client_message_id,
-            metadata=metadata if isinstance(metadata, dict) else {},
+            metadata=metadata,
         )
 
     async def _handle_chat_message(self, message: dict[str, Any]) -> None:
@@ -180,6 +183,21 @@ class TaskWebSocketHandler:
         task_status = await run_db(self._load_task_status_sync, self._task_id)
         if task_status is None:
             await self._send_chat_ack(request, status="failed", message="Task not found")
+            return
+
+        # Ordinary chat is durably accepted before any slow checkpoint. HITL and
+        # interrupted-session recovery retain their existing specialised protocol.
+        if task_status != TaskStatus.INTERRUPTED.value and not request.metadata.get("interaction_id"):
+            from app.domains.task.services import chat_submission_service
+            try:
+                receipt = await chat_submission_service.accept(
+                    task_id=self._task_id, actor_id=self._user.id,
+                    client_message_id=request.client_message_id, content=request.content,
+                    metadata=request.metadata,
+                )
+                self._send_to_self({"type": "chat_submission_update", "payload": receipt})
+            except chat_submission_service.SubmissionError as exc:
+                await self._send_chat_ack(request, status="failed", message=str(exc))
             return
 
         claim = await self._claim_chat_message(self._task_id, request)
