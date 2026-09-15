@@ -12,8 +12,11 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.domains.websocket.ws.connection import (  # noqa: E402
+    ConnectionEvicted,
     ConnectionRegistry,
     OutboundConnection,
+    receive_json_until_evicted,
+    receive_text_until_evicted,
 )
 
 
@@ -29,6 +32,30 @@ class _FakeSocket:
         if self.fail:
             raise RuntimeError("connection gone")
         self.sent_texts.append(payload)
+
+
+class _ReceiveSocket:
+    def __init__(self, *, value=None, error: Exception | None = None):
+        self.value = value
+        self.error = error
+        self.calls = 0
+
+    async def _receive(self):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.value
+
+    async def receive_json(self):
+        return await self._receive()
+
+    async def receive_text(self):
+        return await self._receive()
+
+
+class _ConnectedFlag:
+    def __init__(self, dropped: bool = False):
+        self.dropped = dropped
 
 
 class OutboundConnectionTest(unittest.IsolatedAsyncioTestCase):
@@ -142,6 +169,41 @@ class ConnectionRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(frame["payload"], "hello")
         await bad_conn.close()
         await registry.shutdown()
+
+
+class ReceiveGuardTest(unittest.IsolatedAsyncioTestCase):
+    """淘汰后 Starlette 的 receive_* 会误报“未 accept”，读取器需转成安静退出。"""
+
+    async def test_evicted_before_read_skips_socket(self):
+        socket = _ReceiveSocket(value={"type": "noop"})
+        with self.assertRaises(ConnectionEvicted):
+            await receive_json_until_evicted(socket, _ConnectedFlag(dropped=True))
+        self.assertEqual(socket.calls, 0)
+
+    async def test_runtime_error_after_eviction_becomes_connection_evicted(self):
+        flag = _ConnectedFlag(dropped=False)
+        error = RuntimeError('WebSocket is not connected. Need to call "accept" first.')
+
+        class _EvictingSocket(_ReceiveSocket):
+            async def receive_json(self):
+                self.calls += 1
+                flag.dropped = True
+                raise error
+
+        socket = _EvictingSocket(error=error)
+        with self.assertRaises(ConnectionEvicted):
+            await receive_json_until_evicted(socket, flag)
+        self.assertEqual(socket.calls, 1)
+
+    async def test_unrelated_runtime_error_is_reraised(self):
+        socket = _ReceiveSocket(error=RuntimeError("boom"))
+        with self.assertRaises(RuntimeError):
+            await receive_json_until_evicted(socket, _ConnectedFlag(dropped=False))
+
+    async def test_text_frame_is_returned_while_connected(self):
+        socket = _ReceiveSocket(value="raw")
+        frame = await receive_text_until_evicted(socket, _ConnectedFlag(dropped=False))
+        self.assertEqual(frame, "raw")
 
 
 async def good_conn_wait(registry, socket):

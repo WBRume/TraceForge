@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import WebSocket
 
@@ -50,6 +50,48 @@ class ConnectionState(str, Enum):
     LIVE = "LIVE"
     CLOSING = "CLOSING"
     CLOSED = "CLOSED"
+
+
+class ConnectionEvicted(Exception):
+    """The outbound sender already evicted this connection.
+
+    Once the server closes the socket (slow client / send failure), Starlette's
+    ``receive_*`` helpers raise a misleading "WebSocket is not connected. Need
+    to call accept first." ``RuntimeError`` because ``close()`` flipped the
+    application state. Reader loops translate that race into this signal so an
+    already-dead connection does not surface as an endpoint failure.
+    """
+
+
+async def _receive_or_raise_evicted(
+    receiver: Callable[[], Awaitable[Any]],
+    connection: Optional["OutboundConnection"],
+) -> Any:
+    while True:
+        if connection is not None and connection.dropped:
+            raise ConnectionEvicted()
+        try:
+            return await receiver()
+        except RuntimeError:
+            if connection is not None and connection.dropped:
+                raise ConnectionEvicted() from None
+            raise
+
+
+async def receive_json_until_evicted(
+    websocket: WebSocket,
+    connection: Optional["OutboundConnection"],
+) -> Any:
+    """Receive one JSON frame; raise :class:`ConnectionEvicted` once evicted."""
+    return await _receive_or_raise_evicted(websocket.receive_json, connection)
+
+
+async def receive_text_until_evicted(
+    websocket: WebSocket,
+    connection: Optional["OutboundConnection"],
+) -> str:
+    """Receive one text frame; raise :class:`ConnectionEvicted` once evicted."""
+    return await _receive_or_raise_evicted(websocket.receive_text, connection)
 
 
 class OutboundConnection:
@@ -308,7 +350,9 @@ class OutboundConnection:
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
-                        logger.warning(f"WS send failed/timeout ({exc}), evicting connection")
+                        logger.warning(
+                            f"WS send failed/timeout ({type(exc).__name__}: {exc}), evicting connection"
+                        )
                         self.evict("send_failed")
                         return
                 finally:

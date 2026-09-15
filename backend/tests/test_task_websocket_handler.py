@@ -45,6 +45,36 @@ class _DisconnectedWebSocket(_FakeWebSocket):
         raise WebSocketDisconnect()
 
 
+class _EvictedWebSocket(_FakeWebSocket):
+    """Sender evicts the connection between frames; Starlette then refuses reads."""
+
+    def __init__(self, manager):
+        super().__init__()
+        self._manager = manager
+        self.receive_calls = 0
+
+    async def receive_json(self):
+        self.receive_calls += 1
+        self._manager.outbound.dropped = True
+        raise RuntimeError('WebSocket is not connected. Need to call "accept" first.')
+
+
+class _BrokenReadWebSocket(_FakeWebSocket):
+    async def receive_json(self):
+        raise RuntimeError("unexpected reader failure")
+
+
+class _RecordingLogger:
+    def __init__(self):
+        self.errors = []
+
+    def exception(self, *args, **kwargs):
+        self.errors.append(args)
+
+    def warning(self, *args, **kwargs):
+        pass
+
+
 class _FakeOutbound:
     """单连接发送器替身：记录 submit_json 的回执。"""
 
@@ -110,6 +140,47 @@ async def test_run_disconnects_once_when_client_disconnects():
     assert manager.disconnect_calls == [(websocket, "task-1")]
     # handler 持有单连接发送器（单写契约）
     assert handler._outbound is manager.outbound
+
+
+@pytest.mark.asyncio
+async def test_run_exits_quietly_when_connection_evicted_between_frames(monkeypatch):
+    manager = _FakeConnectionManager()
+    websocket = _EvictedWebSocket(manager)
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(task_handler, "task_logger", recorder)
+    handler = _handler(websocket=websocket, manager=manager)
+
+    await handler.run()
+
+    assert websocket.receive_calls == 1
+    assert recorder.errors == []
+    assert manager.disconnect_calls == [(websocket, "task-1")]
+
+
+@pytest.mark.asyncio
+async def test_run_stops_reading_once_sender_evicted():
+    manager = _FakeConnectionManager()
+    manager.outbound.dropped = True
+    websocket = _EvictedWebSocket(manager)
+    handler = _handler(websocket=websocket, manager=manager)
+
+    await handler.run()
+
+    assert websocket.receive_calls == 0
+    assert manager.disconnect_calls == [(websocket, "task-1")]
+
+
+@pytest.mark.asyncio
+async def test_run_still_reports_unexpected_read_failure(monkeypatch):
+    manager = _FakeConnectionManager()
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(task_handler, "task_logger", recorder)
+    handler = _handler(websocket=_BrokenReadWebSocket(), manager=manager)
+
+    await handler.run()
+
+    assert len(recorder.errors) == 1
+    assert manager.disconnect_calls == [(handler._websocket, "task-1")]
 
 
 @pytest.mark.asyncio

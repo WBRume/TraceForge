@@ -60,6 +60,11 @@ from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
 from app.domains.system_config.routers import system_config
 from app.domains.websocket.ws.manager import manager
+from app.domains.websocket.ws.connection import (
+    ConnectionEvicted,
+    receive_json_until_evicted,
+    receive_text_until_evicted,
+)
 from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
 from app.domains.notification.routers import notification as notification_router
 from app.domains.notification.ws.notification_manager import notification_ws_manager
@@ -401,7 +406,7 @@ async def notification_websocket_endpoint(websocket: WebSocket):
         return
     user_id = str(context["user_id"])
     client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
-    await notification_ws_manager.connect(
+    connection = await notification_ws_manager.connect(
         websocket,
         user_id,
         client_id=client_id,
@@ -411,7 +416,7 @@ async def notification_websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             # 通道只下行；仅处理 resync_complete 控制帧。
-            raw = await websocket.receive_text()
+            raw = await receive_text_until_evicted(websocket, connection)
             try:
                 data = json.loads(raw)
             except (TypeError, ValueError):
@@ -427,7 +432,7 @@ async def notification_websocket_endpoint(websocket: WebSocket):
                     )
                 except (TypeError, ValueError):
                     continue
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, ConnectionEvicted):
         notification_ws_manager.disconnect(websocket, user_id)
     except Exception:
         logger.exception("Notification websocket endpoint failed")
@@ -447,7 +452,7 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
     user_id = str(ws_context["user_id"])
     client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(project_id=project_id, user_id=user_id):
-        await api_mock_ws_manager.connect(
+        connection = await api_mock_ws_manager.connect(
             websocket,
             project_id,
             user_id,
@@ -465,7 +470,7 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
         )
         try:
             while True:
-                data = await websocket.receive_json()
+                data = await receive_json_until_evicted(websocket, connection)
                 if data.get("type") == "resync_complete":
                     payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
                     try:
@@ -509,7 +514,7 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
                         "online_users": api_mock_ws_manager.online_users(project_id),
                     },
                 )
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, ConnectionEvicted):
             api_mock_ws_manager.disconnect(websocket, project_id)
             await api_mock_ws_manager.broadcast(
                 project_id,
@@ -537,7 +542,7 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
     user_id = str(ws_context["user_id"])
     client_id, resume_epoch, last_sequence = _ws_resume_query(websocket)
     with bind_log_context(asset_id=asset_id, user_id=user_id):
-        await asset_discussion_ws_manager.connect(
+        connection = await asset_discussion_ws_manager.connect(
             websocket,
             asset_id,
             user_id,
@@ -555,7 +560,7 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
         )
         try:
             while True:
-                data = await websocket.receive_json()
+                data = await receive_json_until_evicted(websocket, connection)
                 if data.get("type") == "resync_complete":
                     payload = data.get("payload") if isinstance(data.get("payload"), dict) else data
                     try:
@@ -593,7 +598,7 @@ async def asset_discussion_websocket_endpoint(websocket: WebSocket, asset_id: st
                         "online_users": asset_discussion_ws_manager.online_users(asset_id),
                     },
                 )
-        except WebSocketDisconnect:
+        except (WebSocketDisconnect, ConnectionEvicted):
             asset_discussion_ws_manager.disconnect(websocket, asset_id)
             await asset_discussion_ws_manager.broadcast(
                 asset_id,
