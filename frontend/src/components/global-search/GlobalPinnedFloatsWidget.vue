@@ -5,7 +5,6 @@ import {
   Minus,
   Copy,
   Check,
-  Pin,
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { usePinnedFloatsStore, type PinnedSearchItem } from '@/stores/pinnedFloats'
@@ -198,7 +197,19 @@ const onPillPointerUp = () => {
           @pointerdown="onPanelHeaderPointerDown($event, item)"
         >
           <div class="header-left">
-            <span class="panel-badge">{{ item.kind === 'task' ? '会话' : '消息' }}</span>
+            <span
+              class="panel-badge"
+              :class="{
+                'badge-task': item.kind === 'task',
+                'badge-user': item.kind === 'message' && item.role === 'user',
+                'badge-assistant': item.kind === 'message' && item.role !== 'user',
+              }"
+            >
+              {{ item.kind === 'task' ? '会话' : (item.role === 'user' ? '用户发言' : 'AI 回复') }}
+            </span>
+            <span v-if="item.workspaceName" class="panel-ws-badge" :title="`工作区: ${item.workspaceName}`">
+              {{ item.workspaceName }}
+            </span>
             <span class="panel-title" :title="item.taskName || item.workspaceName">
               {{ item.taskName || item.workspaceName }}
             </span>
@@ -276,20 +287,32 @@ const onPillPointerUp = () => {
         />
       </div>
 
-      <!-- 2. 最小化状态：如图紧贴在屏幕右侧的悬浮胶囊 / 悬浮球，支持沿右侧贴边上下拖拽 -->
+      <!-- 2. 最小化状态：方案 1.1 双行高辨识度微卡片胶囊，紧贴在屏幕右侧，支持沿右侧贴边上下拖拽 -->
       <div
         v-else
         class="right-docked-pill"
         :style="{ top: `${item.dockTop || 180}px` }"
-        :title="`【${item.kind === 'task' ? '会话' : '消息'}】${item.taskName}（按住拖拽定位，点击展开）`"
+        :title="`【${item.kind === 'task' ? '会话' : (item.role === 'user' ? '用户发言' : 'AI 回复')}】${item.workspaceName} / ${item.taskName}（按住上下拖拽，轻点展开）`"
         @pointerdown="onPillPointerDown($event, item)"
       >
-        <div
-          class="docked-pill-inner"
-          :class="item.kind === 'task' ? 'pill-task' : 'pill-message'"
-        >
-          <Pin class="w-4 h-4" />
-          <span class="pill-mini-dot" />
+        <div class="docked-pill-inner">
+          <!-- 类别微标 -->
+          <div
+            class="pill-type-dot"
+            :class="{
+              'is-task': item.kind === 'task',
+              'is-user': item.kind === 'message' && item.role === 'user',
+              'is-assistant': item.kind === 'message' && item.role !== 'user',
+            }"
+          >
+            {{ item.kind === 'task' ? '会' : (item.role === 'user' ? '言' : 'AI') }}
+          </div>
+
+          <!-- 双行文本：上行工作区，下行任务标题 -->
+          <div class="pill-info">
+            <span class="pill-ws-name" :title="item.workspaceName">{{ item.workspaceName }}</span>
+            <span class="pill-task-title" :title="item.taskName">{{ item.taskName }}</span>
+          </div>
         </div>
       </div>
     </template>
@@ -361,7 +384,7 @@ const onPillPointerUp = () => {
   padding: 2px 7px;
   border-radius: 6px;
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 600;
   flex-shrink: 0;
   background: #f1f5f9;
   color: #475569;
@@ -369,10 +392,46 @@ const onPillPointerUp = () => {
   line-height: 1.3;
 }
 
+.panel-badge.badge-task {
+  background: #f0f9ff;
+  color: #0284c7;
+  border-color: #bae6fd;
+}
+
+.panel-badge.badge-user {
+  background: #fffbeb;
+  color: #b45309;
+  border-color: #fde68a;
+}
+
+.panel-badge.badge-assistant {
+  background: #faf5ff;
+  color: #7e22ce;
+  border-color: #e9d5ff;
+}
+
+.panel-ws-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1.5px 5px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-family: monospace;
+  font-weight: 500;
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  flex-shrink: 0;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .panel-title {
   font-size: 12.5px;
   font-weight: 600;
-  color: #1e293b;
+  color: #0f172a;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -507,29 +566,29 @@ const onPillPointerUp = () => {
   opacity: 0.7;
 }
 
-/* ---------------- 最小化贴右悬浮徽章胶囊（Pill） ---------------- */
+/* ---------------- 最小化贴右悬浮徽章胶囊（Pill）- 方案 1.1 双行微卡片 ---------------- */
 .right-docked-pill {
   position: fixed;
-  right: 0; /* 紧贴右侧边缘，如同用户截图 */
+  right: 0; /* 紧贴右侧边缘 */
   pointer-events: auto;
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 22px 0 0 22px; /* 贴右半圆形态 */
+  height: 40px;
+  max-width: 170px;
+  border-radius: 20px 0 0 20px; /* 贴右半圆形态 */
   background: #ffffff !important;
   background-color: #ffffff !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   border: 1px solid #e2e8f0;
   border-right: none;
-  box-shadow: -4px 4px 16px rgba(15, 23, 42, 0.12);
+  box-shadow: -4px 6px 16px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(15, 23, 42, 0.05);
   cursor: grab;
   touch-action: none;
   transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.18s ease;
   user-select: none;
   z-index: 3000;
+  padding: 3px 6px 3px 8px;
 }
 
 .right-docked-pill:active {
@@ -537,42 +596,75 @@ const onPillPointerUp = () => {
 }
 
 .right-docked-pill:hover {
-  transform: translateX(-3px);
-  box-shadow: -6px 6px 20px rgba(14, 165, 233, 0.25);
+  transform: translateX(-4px);
+  box-shadow: -6px 8px 22px rgba(15, 23, 42, 0.18);
   background: #ffffff !important;
   background-color: #ffffff !important;
 }
 
 .docked-pill-inner {
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pill-type-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
-.docked-pill-inner.pill-task {
-  background: linear-gradient(135deg, #eff6ff, #dbeafe);
+.pill-type-dot.is-task {
+  background: #e0f2fe;
   color: #0284c7;
-  border: 1px solid rgba(14, 165, 233, 0.2);
+  border: 1px solid #bae6fd;
 }
 
-.docked-pill-inner.pill-message {
-  background: linear-gradient(135deg, #f0fdf4, #dcfce7);
-  color: #15803d;
-  border: 1px solid rgba(22, 163, 74, 0.2);
+.pill-type-dot.is-user {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #fde68a;
 }
 
-.pill-mini-dot {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #0ea5e9;
-  border: 1px solid #ffffff;
+.pill-type-dot.is-assistant {
+  background: #f3e8ff;
+  color: #7e22ce;
+  border: 1px solid #e9d5ff;
+}
+
+.pill-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.pill-ws-name {
+  font-size: 9.5px;
+  font-family: monospace;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 105px;
+}
+
+.pill-task-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 105px;
 }
 </style>
