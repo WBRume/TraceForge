@@ -1205,6 +1205,7 @@ def create_task_chat_job(
     session_turn_id: Optional[str] = None,
     session_generation: Optional[int] = None,
     session_revision: Optional[int] = None,
+    commit: bool = True,
 ) -> SddAiJob:
     payload_context = {"source": "task_chat"}
     if isinstance(context_json, dict):
@@ -1228,6 +1229,11 @@ def create_task_chat_job(
         session_revision=session_revision,
     )
     db.add(job)
+    if not commit:
+        # The turn owner commits message, job and submission together and seeds
+        # token accounting afterwards (that helper performs its own commits).
+        db.flush()
+        return job
     db.commit()
     db.refresh(job)
     try:
@@ -2145,6 +2151,8 @@ async def shutdown_runtime_workers() -> None:
     """Stop dispatch/queue/heartbeat tasks before infrastructure shutdown."""
     global _REAPER_TASK, _DISPATCHER_TASK, _SHUTTING_DOWN
     _SHUTTING_DOWN = True
+    from app.domains.task.services import chat_submission_service
+    await chat_submission_service.shutdown()
     background = [task for task in (_REAPER_TASK, _DISPATCHER_TASK) if task is not None]
     for task in background:
         task.cancel()
@@ -2204,6 +2212,8 @@ async def shutdown_runtime_workers() -> None:
 async def recover_pending_queues() -> int:
     """Schedule durable PENDING jobs after an API process restart."""
     await reap_stale_jobs()
+    from app.domains.task.services import chat_submission_service
+    await chat_submission_service.recover()
     queue_keys = await run_db(_list_pending_queue_keys_sync)
     for queue_key in queue_keys:
         schedule_queue(queue_key)
@@ -4608,6 +4618,9 @@ def _collect_diagnosis_transcript(task_id: str, max_chars: int = 60000) -> str:
         parts: List[str] = []
         for row in rows:
             role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)
+            meta = row.metadata_json or {}
+            if meta.get("submission_id") and meta.get("knowledge_state") != "published":
+                continue
             if role == "user":
                 label = "用户"
             elif role == "system":
@@ -4663,6 +4676,15 @@ def _prepare_diagnosis_summary_sync(
     source_session_id = str(
         job_context.get("source_session_id") or job.session_id or task.session_id or ""
     ).strip()
+    from app.domains.task.models.chat_submission import TaskChatSubmission
+    if db.query(TaskChatSubmission.id).filter(
+        TaskChatSubmission.task_id == task.id,
+        TaskChatSubmission.chat_message_id.isnot(None),
+        TaskChatSubmission.status != "SUCCEEDED",
+    ).first():
+        # Provider history can contain failed turns that the filtered database
+        # transcript excludes. Do not reintroduce them through a native fork.
+        source_session_id = ""
     project_path = _resolve_task_project_path(task)
     transcript = _collect_diagnosis_transcript_sync(db, task.id)
     prompt = diagnosis_result_service.build_diagnosis_summary_prompt(task, transcript)
@@ -4697,6 +4719,9 @@ def _collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int
     parts: List[str] = []
     for row in rows:
         role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)
+        meta = row.metadata_json or {}
+        if meta.get("submission_id") and meta.get("knowledge_state") != "published":
+            continue
         if role == "user":
             label = "用户"
         elif role == "system":

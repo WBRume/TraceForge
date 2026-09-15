@@ -5,6 +5,7 @@ Late imports register cross-domain tables into Base.metadata so that
 create_all / autogenerate always see the complete schema.
 """
 from app.domains.task.models import chat as _chat_models  # noqa: E402,F401
+from app.domains.task.models import chat_submission as _submission_models  # noqa: E402,F401
 from app.domains.task.models import diagnosis as _diagnosis_models  # noqa: E402,F401
 from app.domains.task.models import pre_input as _pre_input_models  # noqa: E402,F401
 from app.domains.task.models import task as _task_models  # noqa: E402,F401

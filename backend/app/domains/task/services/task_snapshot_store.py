@@ -54,8 +54,15 @@ def store_lock(root: str):
                     time.sleep(0.05)
         else:
             import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            deadline = time.monotonic() + 180
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Task snapshot store is busy")
+                    time.sleep(0.05)
         try:
             yield
         finally:

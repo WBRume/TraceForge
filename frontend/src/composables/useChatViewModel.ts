@@ -1,4 +1,5 @@
 import { useChatMessageContext } from '@/composables/useChatMessageContext'
+import { useChatSubmissions } from '@/composables/useChatSubmissions'
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -123,6 +124,29 @@ export function useChatViewModel() {
   
   // Chat bubbles: 仅自然语言 (user / assistant text)
   const messages = ref<any[]>([])
+  const submissions = useChatSubmissions({
+    workspaceId: () => String(route.params.wsId || ''),
+    taskId: () => String(currentTask.value?.id || ''),
+    userId: () => String(authStore.user?.id || ''),
+  })
+  const recoveringSubmissions = ref(false)
+  const visibleMessages = computed(() => submissions.bubbles(messages.value))
+  let submissionPoll: ReturnType<typeof setInterval> | null = null
+  let submissionRefreshRunning = false
+  const refreshSubmissions = async (taskId: string) => {
+    try {
+      const changed = await submissions.refresh(taskId)
+      if (currentTask.value?.id === taskId) {
+        recoveringSubmissions.value = false
+        if (changed) {
+          await loadHistory(taskId)
+          await loadActiveChatJobs(taskId)
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to recover chat submissions', error)
+    }
+  }
   const historyContext = useChatMessageContext()
   let historyGeneration = 0
   
@@ -645,6 +669,7 @@ export function useChatViewModel() {
   }
   
   const upsertChatJob = (job: ChatAiJob) => {
+    activeChatJobsRequestSeq += 1
     if (!job?.id) return
     const nextJobs = { ...activeChatJobs.value }
     if (isJobActive(job.status)) {
@@ -694,6 +719,10 @@ export function useChatViewModel() {
       currentTask.value.session_id = payload.session_id
     }
     if (payload?.session_generation !== undefined) {
+      if (Number(currentTask.value.session_generation) !== Number(payload.session_generation)) {
+        historyGeneration++
+        submissions.clear(String(currentTask.value.id))
+      }
       currentTask.value.session_generation = Number(payload.session_generation || 0)
     }
     if (payload?.interrupt_reason !== undefined) {
@@ -1413,6 +1442,8 @@ export function useChatViewModel() {
     clearContextWindowRefreshTimer()
     specDrawerTab.value = task.task_type === 'DIAGNOSIS' ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
     currentTask.value = task
+    recoveringSubmissions.value = true
+    void refreshSubmissions(String(task.id))
     showTaskSkillsDrawer.value = false
     messages.value = []
     terminalLogs.value = []
@@ -1908,9 +1939,9 @@ export function useChatViewModel() {
     try {
       if (reset) {
         currentPage.value = 1
-        messages.value = []
-        terminalLogs.value = []
       }
+
+      const initialMessages = new Map(messages.value.map(item => [messageIdentity(item), item]))
 
       const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/history`, {
         params: { page: currentPage.value, page_size: 50 }
@@ -1922,7 +1953,8 @@ export function useChatViewModel() {
       const mapped = mapHistoryMessages(hMessages)
 
       if (reset) {
-        messages.value = dedupeMessages(mapped)
+        const duringRequest = messages.value.filter(item => initialMessages.get(messageIdentity(item)) !== item)
+        messages.value = dedupeMessages([...mapped, ...duringRequest])
         syncConfirmationCardsFromMessages()
         // 还原终端日志（仅首次加载�?
         terminalLogs.value = hLogs.map((l: any) => {
@@ -2153,6 +2185,8 @@ export function useChatViewModel() {
   }
 
   const canMarkMessageAsDecision = (msg: any): boolean => {
+    if (String(msg?.id || '').startsWith('submission-')) return false
+    if (msg?.metadata?.submission_id && msg.metadata.knowledge_state !== 'published') return false
     const id = String(msg?.id || '').trim()
     if (!id || id.startsWith('local-')) return false
     if (!currentTask.value?.id || !canManageTaskStatus.value) return false
@@ -2166,6 +2200,7 @@ export function useChatViewModel() {
     const id = String(msg?.id || '').trim()
     if (!id || id.startsWith('local-')) return false
     if (!currentTask.value?.id || !canManageTaskStatus.value || sendingChat.value) return false
+    if (recoveringSubmissions.value || submissions.current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING'].includes(row.status))) return false
     if (String(msg?.role || '').toLowerCase() !== 'user') return false
     if (msg?.decision_id || msg?.message_type === 'init_reason') return false
     if (!msg?.session_turn_id || !String(msg?.content || '')) return false
@@ -2188,6 +2223,8 @@ export function useChatViewModel() {
         (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
       )
       removedIds.add(messageId)
+      historyGeneration++
+      submissions.removeMessages(String(currentTask.value.id), removedIds as Set<string>)
       if (historyContext.anchored.value && removedIds.has(String(route.query.messageId || ''))) ElMessage.warning('定位的消息已被撤销，请回到最新')
       messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
       terminalLogs.value = []
@@ -2333,6 +2370,7 @@ export function useChatViewModel() {
         currentTask.value.skill_ids = normalizedSkillIds
       }
   
+      submissions.clear(String(currentTask.value.id))
       // 加载初始化时保存的消息（用户初始消息 + 可能�?init_reason 分隔线）
       await loadHistory(currentTask.value.id)
       await loadActiveChatJobs(currentTask.value.id)
@@ -2458,6 +2496,8 @@ export function useChatViewModel() {
     if (!currentTask.value) return null
     try {
       const res = await api.delete(`/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/history`)
+      historyGeneration++
+      submissions.clear(String(currentTask.value.id))
       messages.value = []
       terminalLogs.value = []
       pinnedCards.value = []
@@ -2809,6 +2849,14 @@ export function useChatViewModel() {
         }
         break
       }
+
+      case 'chat_submission_update': {
+        if (String(payload?.task_id || '') === String(currentTask.value?.id || '')) {
+          submissions.put(payload)
+          void refreshSubmissions(payload.task_id)
+        }
+        break
+      }
   
       case 'chat_job_done':
       case 'chat_job_failed': {
@@ -2834,9 +2882,11 @@ export function useChatViewModel() {
 
       case 'task_session_reverted': {
         if (String(payload?.task_id || '') !== String(currentTask.value?.id || '')) break
+        historyGeneration++
         const removedIds = new Set(
           (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
         )
+        submissions.removeMessages(String(currentTask.value.id), removedIds as Set<string>)
         if (historyContext.anchored.value && removedIds.has(String(route.query.messageId || ''))) ElMessage.warning('定位的消息已被撤销，请回到最新')
       messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
         terminalLogs.value = []
@@ -2896,7 +2946,7 @@ export function useChatViewModel() {
   
       case 'result': {
         // 执行结果 �?汇总卡�?+ 标记引擎停止
-        engineRunning.value = false
+        syncEngineRunningFromJobs()
         pinnedCards.value = pinnedCards.value.filter(c => c.type !== 'status')
         
         resultsSummary.value.visible = true
@@ -2914,7 +2964,7 @@ export function useChatViewModel() {
   
         // 更新任务状态（自动执行异常保留为 INTERRUPTED 以便继续会话；
         // FAILED 只能由用户通过失败复盘显式标记。）
-        if (currentTask.value) {
+        if (currentTask.value && !engineRunning.value && !submissions.busy.value) {
           const terminalStatus = ['DONE', 'FAILED', 'BASELINED'].includes(currentTask.value.status)
           currentTask.value.status = terminalStatus ? currentTask.value.status : (payload.success ? 'IDLE' : 'INTERRUPTED')
           const targetTask = tasks.value.find((task) => task.id === currentTask.value.id)
@@ -2956,12 +3006,26 @@ export function useChatViewModel() {
       return false
     }
     if (sendingChat.value || isUndoing.value) return false
+    if (!options.metadata?.interaction_id && (submissions.busy.value || recoveringSubmissions.value)) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
     if (historyContext.anchored.value) await returnToLatest()
     const displayContent = String(options.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
     sendingChat.value = true
+    if (!isTaskInterrupted.value && !options.metadata?.interaction_id && currentTask.value?.id) {
+      const taskId = String(currentTask.value.id)
+      try {
+        const accepted = await submissions.send(taskId, clientMessageId, normalized, options.metadata)
+        if (currentTask.value?.id === taskId) {
+          if (accepted) void refreshSubmissions(taskId)
+          scrollToBottom('chat')
+        }
+        return accepted
+      } finally {
+        sendingChat.value = false
+      }
+    }
     if (isTaskInterrupted.value && currentTask.value?.id) {
       try {
         const payload = await taskSessionControls.resumeInterruptedTask(currentTask.value.id, {
@@ -3032,9 +3096,13 @@ export function useChatViewModel() {
   const sendChat = async () => {
     if (!chatInput.value.trim()) return
     const content = chatInput.value
+    const taskId = currentTask.value?.id
+    // The submission bubble owns this text during the request. Clearing now
+    // also prevents a slow response from carrying the sent prompt into another task.
+    chatInput.value = ''
     const sent = await sendChatContent(content)
-    if (sent) {
-      chatInput.value = ''
+    if (!sent && currentTask.value?.id === taskId && !chatInput.value) {
+      chatInput.value = content
     }
   }
 
@@ -3313,6 +3381,12 @@ export function useChatViewModel() {
   
   // ─── Lifecycle ───
   onMounted(() => {
+    submissionPoll = setInterval(async () => {
+      const taskId = String(currentTask.value?.id || '')
+      if (!taskId || submissionRefreshRunning || (!submissions.busy.value && !recoveringSubmissions.value && !engineRunning.value)) return
+      submissionRefreshRunning = true
+      try { await refreshSubmissions(taskId) } finally { submissionRefreshRunning = false }
+    }, 2500)
     window.addEventListener('blur', cancelAllInlineOverlayClose)
     restoreChatWorkbenchMode()
     if (authStore.token) void authStore.fetchCurrentUser()
@@ -3321,6 +3395,7 @@ export function useChatViewModel() {
   })
   
   onUnmounted(() => {
+    if (submissionPoll) clearInterval(submissionPoll)
     historyGeneration++
     historyContext.reset()
     window.removeEventListener('blur', cancelAllInlineOverlayClose)
@@ -3401,7 +3476,7 @@ export function useChatViewModel() {
     deletingTask,
     deletedRuntimeSkillsForInitialize,
     deletedRuntimeSkillNamesForInitialize,
-    engineRunning,
+    engineRunning: computed(() => engineRunning.value || submissions.busy.value || recoveringSubmissions.value),
     finishInlineOverlayClose,
     formatMessageTime,
     formatTime,
@@ -3467,7 +3542,7 @@ export function useChatViewModel() {
     messageAuthorColor,
     memberColorFor,
     memberColorRgba,
-    messages,
+    messages: visibleMessages,
     // 协作预输入
     activePreInput,
     preInputBusy,

@@ -183,6 +183,11 @@ def _prepare_task_undo_context_sync(
     task = task_service.get_task(db, task_id, ws_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
     _ensure_task_not_baselined(task)
     return {"task_id": str(task.id)}
 
@@ -216,6 +221,11 @@ def _load_start_task_context_sync(
     task = task_service.get_task(db, task_id, ws_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
     _ensure_task_not_baselined(task)
     if task.status == TaskStatus.PROVISIONING:
         raise HTTPException(
@@ -345,6 +355,11 @@ def _prepare_initialize_sync(
     task = task_service.get_task(db, task_id, ws_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(409, str(exc)) from exc
     _ensure_task_not_baselined(task)
     if task.status == TaskStatus.PROVISIONING:
         raise HTTPException(
@@ -1323,6 +1338,37 @@ def get_task_history(
     return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
 
+@router.get("/{task_id}/chat-submissions")
+def list_chat_submissions(ws_id: str, task_id: str,
+                         current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.domains.task.services import chat_submission_service
+    verify_workspace_access(ws_id, current_user, db)
+    if not task_service.get_task(db, task_id, ws_id):
+        raise HTTPException(404, "Task not found")
+    return {"items": chat_submission_service.list_for_task(db, task_id)}
+
+
+@router.post("/{task_id}/chat-submissions", status_code=202)
+async def submit_chat(ws_id: str, task_id: str, payload: dict = Body(...),
+                      current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.domains.task.services import chat_submission_service
+    bind = _get_db_bind(db)
+    actor_id = str(current_user.id)
+    def authorize(session):
+        if not workspace_service.get_workspace_member(session, ws_id, actor_id):
+            raise HTTPException(403, "No access to this workspace")
+        if not task_service.get_task(session, task_id, ws_id):
+            raise HTTPException(404, "Task not found")
+    await _run_route_db_txn(db, bind, authorize)
+    db.close()
+    try:
+        return await chat_submission_service.accept(task_id=task_id, actor_id=actor_id,
+            client_message_id=payload.get("client_message_id"), content=payload.get("content"),
+            metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {})
+    except chat_submission_service.SubmissionError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+
+
 @router.post("/{task_id}/messages/{message_id}/undo")
 async def undo_task_message(
     ws_id: str,
@@ -1400,7 +1446,11 @@ async def clear_task_history(
             engine = get_engine(task_id)
             if (engine and engine.running) or task.status == TaskStatus.CODING:
                 raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
-            return task_service.clear_task_history(db, task_id, ws_id)
+            from app.domains.task.services.chat_submission_service import SubmissionError
+            try:
+                return task_service.clear_task_history(db, task_id, ws_id)
+            except SubmissionError as exc:
+                raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -1675,6 +1725,11 @@ def _prepare_diagnosis_summary_sync(
         "No permission to summarize diagnosis cases",
     )
     task = _require_diagnosis_task(db, task_id, ws_id)
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
     existing_case = (
         db.query(SddCase)
         .filter(
