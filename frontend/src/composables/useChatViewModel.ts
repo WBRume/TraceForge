@@ -250,6 +250,7 @@ export function useChatViewModel() {
   
   // WebSocket
   let ws: WebSocket | null = null
+  let wsTaskId = ''
   let wsReconnectTimer: number | null = null
   let wsManualClose = false
   let taskWsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
@@ -2499,6 +2500,16 @@ export function useChatViewModel() {
   }
 
   const connectWebSocket = (taskId: string) => {
+    // 同一任务的连接已建立（或正在建立）时不再重建，避免重复 select/重复挂载
+    // 触发 socket 抖动，服务端会把旧连接判定为 send_failed 后淘汰。
+    if (
+      ws
+      && wsTaskId === taskId
+      && taskWsConsumer
+      && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return
+    }
     clearWsReconnectTimer()
     wsManualClose = false
     taskWsConsumer?.close()
@@ -2512,6 +2523,7 @@ export function useChatViewModel() {
       ws = null
     }
     ws = new WebSocket(buildTaskWsUrl(taskId))
+    wsTaskId = taskId
     const socket = ws
     const consumer = createSerializedWsConsumer({
       room: `task:${taskId}`,

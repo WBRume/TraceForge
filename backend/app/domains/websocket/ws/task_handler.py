@@ -22,7 +22,11 @@ from app.domains.task.services import (
     task_session_control_service,
     task_session_service,
 )
-from app.domains.websocket.ws.connection import OutboundConnection
+from app.domains.websocket.ws.connection import (
+    ConnectionEvicted,
+    OutboundConnection,
+    receive_json_until_evicted,
+)
 from app.domains.websocket.ws.manager import ConnectionManager, manager
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 
@@ -87,7 +91,12 @@ class TaskWebSocketHandler:
         self._outbound = await self._manager.connect(self._websocket, self._task_id, **connect_kwargs)
         try:
             while True:
-                message = await self._websocket.receive_json()
+                try:
+                    message = await receive_json_until_evicted(self._websocket, self._outbound)
+                except ConnectionEvicted:
+                    # The sender evicted this connection (slow client, send
+                    # failure). Nothing left to read; end quietly.
+                    break
                 try:
                     await self._dispatch(message)
                 except WebSocketDisconnect:
