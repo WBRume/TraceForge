@@ -567,4 +567,4 @@ alembic revision --autogenerate -m "message"  # 创建迁移
 
 ## License
 
-本项目基于 [MIT License](./LICENSE) 开源。
+本项目基于 [Apache License 2.0](./LICENSE) 开源。
