@@ -11,6 +11,7 @@ import WorkspaceCreateWorkflowDialog from '@/components/workspace/create-workflo
 import api from '@/utils/api'
 import UserIdentityBadge from '@/components/user/UserIdentityBadge.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
+import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
 
 const { locale } = useI18n()
 const router = useRouter()
@@ -115,6 +116,7 @@ const confirmDeleteWorkspace = async () => {
           <Languages class="w-4 h-4" />
           <span>{{ locale === 'zh' ? 'EN' : 'ZH' }}</span>
         </button>
+        <GlobalSearchTrigger />
       </div>
     </nav>
 

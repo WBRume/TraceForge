@@ -384,7 +384,8 @@ API Mock 模块用于帮助团队在接口尚未完全实现时提前开展前�
 - **MySQL**: 5.7+ 或 8.0+
 - **Git**: 用于 Skills 的 Git 集成
 - **Claude CLI**: 需要预先安装并配置到系统 PATH
-- **Redis**: 可选，仅在使用分布式锁功能时需要
+- **Redis**: 可选；启用全局历史搜索或分布式锁功能时需要
+- **Elasticsearch**: 可选，9.x；仅在启用全局历史搜索时需要
 
 ## 后端启动
 
@@ -483,6 +484,51 @@ alembic revision --autogenerate -m "migration message"
 ```
 
 > **前提**：确保 MySQL 数据库已创建（`CREATE DATABASE sdd_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`）
+
+## 全局历史搜索
+
+全局历史搜索实现 BM25 + nested kNN + Python RRF：两路召回共用短期 PIT，分别取最多 200 个父实体，以 `1/(60+rank)` 等权融合，保留最多 200 个候选。首次检索后的分页只读用户隔离的 Redis 快照并重新授权，不再调用 embedding 或 ES。无需 Elastic Enterprise / 原生 RRF 授权。
+
+验证基线：ES 9.5.2、官方 Python 客户端 9.3.0、Python 3.11、MySQL、Redis、硅基流动 BAAI/bge-m3（1024 维）。生产要求认证、TLS 或受控内网；Compose 中 `search-local-es` 仅为本机单节点开发配置，不是高可用部署。
+
+### 搜索配置
+
+在 `backend/.env` 中按 `backend/.env.example` 的 SEARCH 字段配置。密钥不能提交 Git。`SEARCH_CONFIG_ENCRYPTION_KEY` 是 Fernet 密钥，与 MySQL 中加密后的配置一同备份；`SEARCH_CURSOR_SECRET` 使用独立随机值。API、两个 worker 必须配置相同的加密密钥、数据库和 Redis 命名空间。
+
+| 变量名 | 说明 | 默认值 / 示例 |
+|---|---|---|
+| SEARCH_ENABLED | 是否启用全局搜索（先迁移并回填再开启） | false |
+| SEARCH_WORKERS_ENABLED | 搜索与向量 worker 是否随 backend 运行；仅在使用独立 worker 时设为 false | true |
+| SEARCH_ES_URL | Elasticsearch 地址 | http://127.0.0.1:9200 |
+| SEARCH_ES_USERNAME | ES 用户名 | elastic |
+| SEARCH_ES_PASSWORD | ES 密码 | 空 |
+| SEARCH_ES_CA_CERTS | ES CA 证书路径（TLS 时配置） | 空 |
+| SEARCH_CONFIG_ENCRYPTION_KEY | Fernet 密钥，用于加密保存 embedding profile 配置；`cryptography.fernet.Fernet.generate_key()` 生成 | 空 |
+| SEARCH_CURSOR_SECRET | 分页游标签名密钥（使用独立随机值） | 空 |
+| SEARCH_EMBEDDING_API_KEY | 一次性硅基流动 profile 引导密钥，不会通过公开配置返回 | 空 |
+| SEARCH_SESSION_NAMESPACE | Redis 命名空间（API 与 worker 必须一致） | traceforge:search |
+| SEARCH_EMBEDDING_TIMEOUT | 文档 embedding 请求超时（秒） | 10 |
+| SEARCH_QUERY_EMBEDDING_TIMEOUT | 初始查询 embedding 预算（秒） | 0.8 |
+| SEARCH_QUERY_RPS | 查询请求速率上限（请求/秒） | 16 |
+| SEARCH_DOCUMENT_RPS | 每 profile 后台文档请求速率上限（请求/秒） | 2 |
+| SEARCH_WORKER_POLL_SECONDS | worker 轮询间隔（秒） | 1 |
+
+### 日常启动
+
+已经完成初始化的环境，只需照常启动 backend。`SEARCH_ENABLED=true` 时，backend 默认自动运行搜索和向量两个异步 worker，关闭 backend 时一并停止；不再需要额外终端或进程命令。当前单机环境沿用这种方式。
+
+### 首次配置
+
+1. 备份现有数据库，检查 `python -m alembic current` 和 `heads`。新增迁移 `d5f60718293a` 接续 `c4e5f6a7b8d9`，仅增加搜索表和 nullable 排序列，不清空业务数据。
+2. 在 backend 目录安装 requirements 并执行 `python -m alembic upgrade head`，先保持 `SEARCH_ENABLED=false`。新应用需要新 schema；不要先启动新代码再迁移。
+3. 使用管理员页面配置 endpoint/key/model 并测试；也可使用 `python -m app.domains.search.cli configure` 从本地 `SEARCH_EMBEDDING_API_KEY` 创建已探测且加密保存的硅基流动 profile。配置完成后可清除环境中的 bootstrap API key，保留 Fernet 密钥。
+4. 创建目标：`python -m app.domains.search.cli create-index --target traceforge-search-v1-000001 --embedding-profile PROFILE_ID`。物理索引绑定不可变模型空间；仅轮换 API key 无需重建。
+5. 设置 `SEARCH_ENABLED=true` 后照常启动 backend，正文与向量 worker 自动运行；未激活索引时页面会显示准备状态。系统配置页可完成模型测试、建立索引、验证和激活，下面的 CLI 命令是可选方式。
+6. 执行 `python -m app.domains.search.cli backfill --target traceforge-search-v1-000001 --batch-size 100`。断线可 `resume --run-id RUN_ID`，search worker 也会继续 pending 回填。管理员“建立新索引”会创建持久化回填记录。回填走相同版本协议并分批补齐 sort_seq。
+7. 使用 `status` 查看 outbox、embedding job、回填状态；`retry` 显式重试 dead 作业。首次回填和向量完成后执行 `verify --target INDEX`，再 `activate --target INDEX`。
+8. 激活完成后即可通过顶部入口或双 Shift 搜索；无需为 worker 再启动进程。输入框与 IME 中不触发快捷键。
+
+管理员的模型测试会发送两条合成文本；回填会向配置的供应商发送收录的可见正文分段。默认每 profile 后台 2 请求/秒（每批最多 16 段），查询 16 请求/秒、API 同时最多 8 次搜索。按实际供应商配额调小，不能视为供应商保证值。初始查询 embedding 预算 800ms、搜索总预算 2s；provider 超时会明确回退关键词。连接探测的 10s 预算不等于在线延迟目标。
 
 ## 常用开发命令
 
