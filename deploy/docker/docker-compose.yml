@@ -106,6 +106,62 @@ services:
     deploy:
       replicas: 1      # 硬约束，勿改
 
+  search-worker:
+    profiles: ["search"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["python", "-m", "app.domains.search.worker", "--kind", "search"]
+    env_file: [.env]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
+  embedding-worker:
+    profiles: ["search"]
+    build:
+      context: ../..
+      dockerfile: deploy/docker/backend.Dockerfile
+    command: ["python", "-m", "app.domains.search.worker", "--kind", "embedding"]
+    env_file: [.env]
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+
+  elasticsearch:
+    profiles: ["search-local-es"]
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.2
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ELASTIC_PASSWORD: ${SEARCH_ES_PASSWORD:-}
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ports: ["127.0.0.1:9200:9200"]
+    volumes: ["./volumes/elasticsearch:/usr/share/elasticsearch/data"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
+
   web:
     build:
       context: ../..

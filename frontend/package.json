@@ -2,7 +2,7 @@
   "name": "frontend",
   "private": true,
   "version": "0.0.0",
-  "description": "SDD Native Electron desktop client",
+  "description": "TraceForge Electron desktop client",
   "author": "SDD Native",
   "type": "module",
   "main": "dist-electron/main.js",

@@ -5,7 +5,7 @@
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, func
+    Column, String, DateTime, ForeignKey, Enum, Text, JSON, Integer, BigInteger, Index, func
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -51,6 +51,9 @@ class ChatMessage(Base):
     )
     session_generation = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    sort_seq = Column(BigInteger, nullable=True)
+    __table_args__ = (Index("ix_chat_message_context", "task_id", "created_at", "sort_seq", "id"),)
 
     # Relationships
     task = relationship("SddTask", back_populates="messages")

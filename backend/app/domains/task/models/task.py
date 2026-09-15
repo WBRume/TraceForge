@@ -64,6 +64,7 @@ class SddTask(Base):
     # generation 隔离初始化前历史；revision 用来拒绝迟到 provider 事件。
     session_generation = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     session_revision = Column(Integer, nullable=False, default=0, server_default="0", index=True)
+    next_chat_seq = Column(BigInteger, nullable=True)
     # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
     agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)

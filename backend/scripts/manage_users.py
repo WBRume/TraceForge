@@ -45,7 +45,7 @@ def reset_password(email: str, new_password: str):
         db.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SDD Native Platform User Management CLI")
+    parser = argparse.ArgumentParser(description="TraceForge Platform User Management CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # List command

@@ -86,10 +86,8 @@ def _new_chat_message(
     metadata_json: Optional[dict[str, Any]],
     session_generation: int,
 ) -> ChatMessage:
-    order_index = int(
-        db.query(ChatMessage.id).filter(ChatMessage.task_id == task_id).count()
-        or 0
-    )
+    from app.domains.search.capture import allocate_chat_seq
+    order_index = allocate_chat_seq(db, task_id)
     metadata = dict(metadata_json or {})
     metadata["order_index"] = order_index
     message = ChatMessage(
@@ -100,6 +98,7 @@ def _new_chat_message(
         content=content,
         message_type="text",
         metadata_json=metadata,
+        sort_seq=order_index,
         session_generation=session_generation,
     )
     db.add(message)
@@ -630,6 +629,8 @@ async def _restore_provider_for_suffix(
 
 
 def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], message_ids: list[str]) -> None:
+    from app.domains.search.capture import enqueue_scope
+    enqueue_scope(db, task_id=task.id, workspace_id=task.workspace_id)
     job_ids = [turn.ai_job_id for turn in suffix if turn.ai_job_id]
     trace_paths: list[str] = []
     for turn in suffix:

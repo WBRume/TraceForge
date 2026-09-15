@@ -1,3 +1,4 @@
+import { useChatMessageContext } from '@/composables/useChatMessageContext'
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -122,6 +123,8 @@ export function useChatViewModel() {
   
   // Chat bubbles: 仅自然语言 (user / assistant text)
   const messages = ref<any[]>([])
+  const historyContext = useChatMessageContext()
+  let historyGeneration = 0
   
   // 终端日志面板：tool_use, tool_result, raw logs
   const terminalLogs = ref<any[]>([])
@@ -366,6 +369,10 @@ export function useChatViewModel() {
   }
 
   const upsertChatMessage = (item: any) => {
+    if (historyContext.anchored.value && !messages.value.some(m => messageIdentity(m) === messageIdentity(item))) {
+      historyContext.hasNew.value = true
+      return
+    }
     const key = messageIdentity(item)
     if (!key) {
       messages.value.push(item)
@@ -1827,21 +1834,7 @@ export function useChatViewModel() {
     requestSpecDrawerLevel(lastOpenSpecDrawerLevel.value)
   }
   
-  const loadHistory = async (taskId: string, reset: boolean = true) => {
-    try {
-      if (reset) {
-        currentPage.value = 1
-        messages.value = []
-        terminalLogs.value = []
-      }
-  
-      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/history`, {
-        params: { page: currentPage.value, page_size: 50 }
-      })
-      const { messages: hMessages, logs: hLogs, has_more } = res.data
-      hasMore.value = has_more
-  
-      const mapped = hMessages.map((m: any) => ({
+  const mapHistoryMessages = (hMessages: any[]) => hMessages.map((m: any) => ({
         id: m.id,
         role: m.role,
         content: m.content,
@@ -1859,7 +1852,74 @@ export function useChatViewModel() {
         session_generation: m.session_generation ?? null,
         can_undo: Boolean(m.can_undo),
       }))
-  
+
+  const loadAnchorContext = async (messageId: string) => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return
+    historyGeneration++
+    messages.value = []
+    try {
+      const result = await historyContext.load(String(route.params.wsId), taskId, messageId)
+      if (!result || String(currentTask.value?.id) !== taskId) return
+      messages.value = mapHistoryMessages(result.messages)
+      hasMore.value = result.has_before
+      await highlightMessageFromRouteQuery()
+    } catch (error: any) {
+      if (error.code !== 'ERR_CANCELED') ElMessage.warning(error.response?.status === 404 ? '该消息已被撤销或删除' : '历史上下文暂不可用，请回到最新会话')
+    }
+  }
+  const loadContextDirection = async (direction: 'before' | 'after') => {
+    if (!currentTask.value || historyContext.loading.value) return
+    const container = chatContainer.value
+    const oldHeight = container?.scrollHeight || 0
+    const oldTop = container?.scrollTop || 0
+    try {
+      const result = await historyContext.more(String(route.params.wsId), currentTask.value.id, direction)
+      if (!result) return
+      const mapped = mapHistoryMessages(result.messages)
+      messages.value = dedupeMessages(direction === 'before' ? [...mapped, ...messages.value] : [...messages.value, ...mapped])
+      hasMore.value = Boolean(historyContext.context.value?.has_before)
+      await nextTick()
+      if (container && direction === 'before') container.scrollTop = oldTop + container.scrollHeight - oldHeight
+    } catch { ElMessage.warning('历史窗口已失效，请重新定位或回到最新') }
+  }
+  const returnToLatest = async () => {
+    historyContext.reset()
+    const query = { ...route.query }
+    delete query.messageId
+    await router.replace({ query })
+    if (currentTask.value) await loadHistory(currentTask.value.id, true)
+    await nextTick()
+    scrollToBottom('chat')
+  }
+  watch(() => String(route.query.messageId || ''), (messageId, old) => {
+    if (messageId && messageId !== old && String(currentTask.value?.id) === String(route.params.taskId)) void loadAnchorContext(messageId)
+    else if (!messageId && historyContext.anchored.value) { historyContext.reset(); if (currentTask.value) void loadHistory(currentTask.value.id, true) }
+  })
+
+  const loadHistory = async (taskId: string, reset: boolean = true) => {
+    if (reset && route.query.messageId && String(route.params.taskId) === taskId) {
+      await loadAnchorContext(String(route.query.messageId))
+      return
+    }
+    if (reset) historyContext.reset()
+    const requestGeneration = ++historyGeneration
+    try {
+      if (reset) {
+        currentPage.value = 1
+        messages.value = []
+        terminalLogs.value = []
+      }
+
+      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/history`, {
+        params: { page: currentPage.value, page_size: 50 }
+      })
+      if (requestGeneration !== historyGeneration || String(currentTask.value?.id) !== taskId) return
+      const { messages: hMessages, logs: hLogs, has_more } = res.data
+      hasMore.value = has_more
+
+      const mapped = mapHistoryMessages(hMessages)
+
       if (reset) {
         messages.value = dedupeMessages(mapped)
         syncConfirmationCardsFromMessages()
@@ -1901,7 +1961,7 @@ export function useChatViewModel() {
             timestamp: new Date(createdAt).toLocaleTimeString(),
           }
         })
-  
+
         await nextTick()
         if (route.query.messageId) {
           await highlightMessageFromRouteQuery()
@@ -1916,8 +1976,9 @@ export function useChatViewModel() {
       console.error('Failed to load history', e)
     }
   }
-  
+
   const loadOlderMessages = async () => {
+    if (historyContext.anchored.value) { await loadContextDirection('before'); return }
     if (!hasMore.value || loadingMore.value || !currentTask.value) return
   
     loadingMore.value = true
@@ -2087,7 +2148,7 @@ export function useChatViewModel() {
       created_at: new Date().toISOString(),
       message_type: 'text',
     })
-    scrollToBottom('chat')
+    if (!historyContext.anchored.value) scrollToBottom('chat')
   }
 
   const canMarkMessageAsDecision = (msg: any): boolean => {
@@ -2126,6 +2187,7 @@ export function useChatViewModel() {
         (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
       )
       removedIds.add(messageId)
+      if (historyContext.anchored.value && removedIds.has(String(route.query.messageId || ''))) ElMessage.warning('定位的消息已被撤销，请回到最新')
       messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
       terminalLogs.value = []
       resetChatJobState()
@@ -2562,7 +2624,7 @@ export function useChatViewModel() {
           delivery_status: 'sent',
         })
         syncConfirmationCardsFromMessages()
-        scrollToBottom('chat')
+        if (!historyContext.anchored.value) scrollToBottom('chat')
         scheduleContextWindowRefresh()
         break
       }
@@ -2763,7 +2825,8 @@ export function useChatViewModel() {
         const removedIds = new Set(
           (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),
         )
-        messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
+        if (historyContext.anchored.value && removedIds.has(String(route.query.messageId || ''))) ElMessage.warning('定位的消息已被撤销，请回到最新')
+      messages.value = messages.value.filter((item) => !removedIds.has(String(item.id)))
         terminalLogs.value = []
         pinnedCards.value = []
         resetThinkingPanel()
@@ -2883,6 +2946,7 @@ export function useChatViewModel() {
     if (sendingChat.value || isUndoing.value) return false
     const normalized = String(content || '').trim()
     if (!normalized) return false
+    if (historyContext.anchored.value) await returnToLatest()
     const displayContent = String(options.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
     sendingChat.value = true
@@ -2905,7 +2969,7 @@ export function useChatViewModel() {
         })
         applyTaskSessionPayload(payload)
         engineRunning.value = true
-        scrollToBottom('chat')
+        if (!historyContext.anchored.value) scrollToBottom('chat')
         return true
       } catch (e) {
         console.error('Resume interrupted task failed', e)
@@ -2946,7 +3010,7 @@ export function useChatViewModel() {
         }
       }))
       engineRunning.value = true
-      scrollToBottom('chat')
+      if (!historyContext.anchored.value) scrollToBottom('chat')
       return true
     } finally {
       releaseSendingChatSoon()
@@ -3208,7 +3272,7 @@ export function useChatViewModel() {
       // The API persists the exact user-visible initial prompt. Reload it so
       // start and initialize share the same durable transcript behavior.
       await loadHistory(currentTask.value.id)
-      scrollToBottom('chat')
+      if (!historyContext.anchored.value) scrollToBottom('chat')
       return true
     } catch (e) {
       console.error('Start task failed', e)
@@ -3245,6 +3309,8 @@ export function useChatViewModel() {
   })
   
   onUnmounted(() => {
+    historyGeneration++
+    historyContext.reset()
     window.removeEventListener('blur', cancelAllInlineOverlayClose)
     wsManualClose = true
     clearWsReconnectTimer()
@@ -3259,6 +3325,12 @@ export function useChatViewModel() {
   })
 
   return {
+    historyAnchored: historyContext.anchored,
+    historyHasNew: historyContext.hasNew,
+    historyContextLoading: historyContext.loading,
+    historyHasAfter: computed(() => Boolean(historyContext.context.value?.has_after)),
+    loadContextDirection,
+    returnToLatest,
     activeChatJobs,
     activeHitlCards,
     activeInitialSpecAssetId,

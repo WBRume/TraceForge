@@ -1139,12 +1139,8 @@ def save_chat_message(
 ) -> ChatMessage:
     # 落库序号：同一秒内多条消息的稳定顺序依据（解决历史重载时气泡乱序）。
     # followers 与 task_name 合并为一条 join 查询，减少每条消息的 DB 往返。
-    order_index = (
-        db.query(sqlfunc.count(ChatMessage.id))
-        .filter(ChatMessage.task_id == task_id)
-        .scalar()
-        or 0
-    )
+    from app.domains.search.capture import allocate_chat_seq
+    order_index = allocate_chat_seq(db, task_id)
     merged_metadata = dict(metadata_json or {})
     merged_metadata["order_index"] = order_index
     msg = ChatMessage(
@@ -1155,6 +1151,7 @@ def save_chat_message(
         content=content,
         message_type=message_type,
         metadata_json=merged_metadata,
+        sort_seq=order_index,
         session_turn_id=session_turn_id,
         session_generation=session_generation,
     )
@@ -1260,6 +1257,7 @@ def get_task_history(
     # order_index 存于 metadata_json（JSON 列），用可移植的 JSON 下标提取，
     # 缺失时 coalesce 0，与 _message_order_index 的兜底一致。
     order_index_expr = sqlfunc.coalesce(
+        ChatMessage.sort_seq,
         ChatMessage.metadata_json["order_index"].as_integer(),
         0,
     )
@@ -1282,6 +1280,83 @@ def get_task_history(
         .all()
     )
     msg_query = list(reversed(rows_desc))
+    messages = serialize_history_messages(db, task, msg_query, workspace_id, task_id)
+
+    has_more = offset_from_end + len(msg_query) < total
+
+    # 终端历史只返回可回放的结构化事件。provider debug、assistant 文本副本等
+    # 已在文件日志/聊天消息中有权威来源，不应放大 CLI 历史响应。
+    log_limit = max(1, int(log_limit or TERMINAL_LOG_HISTORY_LIMIT))
+    log_rows_desc = (
+        db.query(SddExecutionLog)
+        .filter(
+            SddExecutionLog.task_id == task_id,
+            SddExecutionLog.workspace_id == workspace_id,
+            _terminal_execution_log_filter(),
+        )
+        .order_by(
+            SddExecutionLog.event_order.desc(),
+            SddExecutionLog.created_at.desc(),
+            SddExecutionLog.id.desc(),
+        )
+        .limit(log_limit + 1)
+        .all()
+    )
+    logs_has_more = len(log_rows_desc) > log_limit
+    log_rows = list(reversed(log_rows_desc[:log_limit]))
+    logs = [
+        {
+            "id": log.id,
+            "type": log.log_type.value if hasattr(log.log_type, 'value') else log.log_type,
+            "content": log.content,
+            "created_at": log.created_at.isoformat()
+        } for log in log_rows
+    ]
+
+    return {
+        "messages": messages,
+        "logs": logs,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "has_more": has_more,
+        "logs_has_more": logs_has_more,
+    }
+
+
+def clear_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
+    from app.domains.search.capture import enqueue_scope
+    enqueue_scope(db, task_id=task_id, workspace_id=workspace_id)
+    """
+    Clear chat history and execution logs for a task.
+    Old-data compatibility is intentionally not required.
+    """
+    task = db.query(SddTask).filter(
+        SddTask.id == task_id,
+        SddTask.workspace_id == workspace_id,
+    ).first()
+    if not task:
+        raise ValueError("Task not found")
+
+    deleted_messages = db.query(ChatMessage).filter(
+        ChatMessage.task_id == task_id,
+        ChatMessage.workspace_id == workspace_id,
+    ).delete(synchronize_session=False)
+
+    deleted_logs = db.query(SddExecutionLog).filter(
+        SddExecutionLog.task_id == task_id,
+        SddExecutionLog.workspace_id == workspace_id,
+    ).delete(synchronize_session=False)
+
+    db.commit()
+    return {
+        "deleted_chat_messages": int(deleted_messages),
+        "deleted_execution_logs": int(deleted_logs),
+        "deleted_total": int(deleted_messages + deleted_logs),
+    }
+
+
+def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
     creator_ids = sorted({str(msg.creator_id or "") for msg in msg_query if str(msg.creator_id or "").strip()})
     message_ids = [msg.id for msg in msg_query]
     creators_by_id = {
@@ -1344,73 +1419,4 @@ def get_task_history(
             ),
         })
 
-    has_more = offset_from_end + len(msg_query) < total
-
-    # 终端历史只返回可回放的结构化事件。provider debug、assistant 文本副本等
-    # 已在文件日志/聊天消息中有权威来源，不应放大 CLI 历史响应。
-    log_limit = max(1, int(log_limit or TERMINAL_LOG_HISTORY_LIMIT))
-    log_rows_desc = (
-        db.query(SddExecutionLog)
-        .filter(
-            SddExecutionLog.task_id == task_id,
-            SddExecutionLog.workspace_id == workspace_id,
-            _terminal_execution_log_filter(),
-        )
-        .order_by(
-            SddExecutionLog.event_order.desc(),
-            SddExecutionLog.created_at.desc(),
-            SddExecutionLog.id.desc(),
-        )
-        .limit(log_limit + 1)
-        .all()
-    )
-    logs_has_more = len(log_rows_desc) > log_limit
-    log_rows = list(reversed(log_rows_desc[:log_limit]))
-    logs = [
-        {
-            "id": log.id,
-            "type": log.log_type.value if hasattr(log.log_type, 'value') else log.log_type,
-            "content": log.content,
-            "created_at": log.created_at.isoformat()
-        } for log in log_rows
-    ]
-
-    return {
-        "messages": messages,
-        "logs": logs,
-        "page": page,
-        "page_size": page_size,
-        "total": total,
-        "has_more": has_more,
-        "logs_has_more": logs_has_more,
-    }
-
-
-def clear_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
-    """
-    Clear chat history and execution logs for a task.
-    Old-data compatibility is intentionally not required.
-    """
-    task = db.query(SddTask).filter(
-        SddTask.id == task_id,
-        SddTask.workspace_id == workspace_id,
-    ).first()
-    if not task:
-        raise ValueError("Task not found")
-
-    deleted_messages = db.query(ChatMessage).filter(
-        ChatMessage.task_id == task_id,
-        ChatMessage.workspace_id == workspace_id,
-    ).delete(synchronize_session=False)
-
-    deleted_logs = db.query(SddExecutionLog).filter(
-        SddExecutionLog.task_id == task_id,
-        SddExecutionLog.workspace_id == workspace_id,
-    ).delete(synchronize_session=False)
-
-    db.commit()
-    return {
-        "deleted_chat_messages": int(deleted_messages),
-        "deleted_execution_logs": int(deleted_logs),
-        "deleted_total": int(deleted_messages + deleted_logs),
-    }
+    return messages

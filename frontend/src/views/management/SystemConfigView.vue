@@ -9,6 +9,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { FolderRoot, SlidersHorizontal } from 'lucide-vue-next'
+import SearchEmbeddingConfig from '@/components/global-search/SearchEmbeddingConfig.vue'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import { formatApiError } from '@/utils/error'
 import { useSystemConfigStore } from '@/stores/systemConfig'
@@ -162,6 +163,7 @@ onMounted(() => {
       </AdminGuard>
     </div>
   </div>
+  <AdminGuard><SearchEmbeddingConfig /></AdminGuard>
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
