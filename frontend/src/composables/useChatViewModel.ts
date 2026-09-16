@@ -262,6 +262,20 @@ export function useChatViewModel() {
   const runtimeActiveFileOriginalContent = ref('')
   const runtimeActiveFileBinary = ref(false)
   let runtimeUsageRefreshTimer: number | null = null
+  // 技能面板按需加载：列表只在面板打开时拉取，关闭期间只标记失效，首屏用任务摘要显示数量
+  const taskRuntimeSkillsLoaded = ref(false)
+  let runtimeSkillsLoadedKey = ''
+  let runtimeSkillsFlightKey = ''
+  let runtimeSkillsFlight: Promise<boolean> | null = null
+  let runtimeSkillsStale = false
+  let runtimeSkillsAbort: AbortController | null = null
+  let runtimeTraceFlightKey = ''
+  let runtimeTraceFlight: Promise<void> | null = null
+  const runtimeSkillsKeyFor = (taskId: string) => `${String(route.params.wsId || '')}:${taskId}`
+  const runtimeSkillsSignal = (): AbortSignal | undefined => {
+    if (!runtimeSkillsAbort) runtimeSkillsAbort = new AbortController()
+    return runtimeSkillsAbort.signal
+  }
   const {
     runtimeTraceEvents,
     runtimeTraceLoading,
@@ -294,6 +308,22 @@ export function useChatViewModel() {
   let wsManualClose = false
   let taskWsConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
   let activeChatJobsRequestSeq = 0
+
+  // 会话初始化/恢复屏障：按 workspace + task + 连接代次单飞，避免首屏重复快照
+  const SESSION_STATE_FALLBACK_MS = 4000
+  let sessionStateGeneration = 0
+  let sessionStateFlightKey = ''
+  let sessionStateFlight: Promise<void> | null = null
+  let sessionStateSettledKey = ''
+  let sessionStateFallbackTimer: number | null = null
+  let sessionStateAbort: AbortController | null = null
+  let wsSubscriptionReady = false
+  let wsSubscriptionReadyTaskId = ''
+
+  const isCanceledRequest = (error: unknown): boolean => (
+    (error as { code?: string })?.code === 'ERR_CANCELED'
+    || (error as { name?: string })?.name === 'CanceledError'
+  )
   
   const hasTaskSpecDoc = (task: any): boolean => {
     return Boolean(String(task?.spec_doc_path || '').trim())
@@ -542,7 +572,12 @@ export function useChatViewModel() {
   const canEditTaskRuntimeSkills = computed(() => (
     Boolean(currentTask.value) && canManageTaskStatus.value
   ))
-  const taskRuntimeSkillCount = computed(() => taskRuntimeSkills.value.length)
+  // 首屏只依赖任务摘要（skill_ids）显示数量，完整 runtime 列表在面板打开时加载
+  const taskRuntimeSkillCount = computed(() => {
+    if (taskRuntimeSkillsLoaded.value) return taskRuntimeSkills.value.length
+    const configured = currentTask.value?.skill_ids
+    return Array.isArray(configured) ? configured.length : 0
+  })
   const runtimeActiveSkill = computed(() => (
     taskRuntimeSkills.value.find((item) => item.skill_id === runtimeActiveSkillId.value) || null
   ))
@@ -746,17 +781,18 @@ export function useChatViewModel() {
     }
   }
   
-  const loadActiveChatJobs = async (taskId: string) => {
+  const loadActiveChatJobs = async (taskId: string): Promise<boolean> => {
     const requestSeq = ++activeChatJobsRequestSeq
     try {
       const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/ai-jobs`, {
         params: { active_only: true },
+        signal: sessionStateAbort?.signal,
       })
       const items = (res.data?.items || []) as ChatAiJob[]
       if (
         requestSeq !== activeChatJobsRequestSeq
         || String(currentTask.value?.id || '') !== String(taskId)
-      ) return
+      ) return false
       activeChatJobs.value = {}
       for (const job of items) {
         upsertChatJob(job)
@@ -767,7 +803,7 @@ export function useChatViewModel() {
         pinnedCards.value = pinnedCards.value.filter(card => card.type !== 'status')
         resetThinkingPanel()
         taskRuntimePanels.clear(taskId)
-        return
+        return true
       }
       if (!pinnedCards.value.some(card => card.type === 'status')) {
         const job = executingJobs.find(item => Boolean(item.session_id)) || executingJobs[0]
@@ -781,8 +817,10 @@ export function useChatViewModel() {
           created_at: job.started_at || job.created_at || new Date().toISOString(),
         })
       }
+      return true
     } catch (e) {
-      console.warn('Failed to load active AI jobs', e)
+      if (!isCanceledRequest(e)) console.warn('Failed to load active AI jobs', e)
+      return false
     }
   }
   
@@ -795,15 +833,17 @@ export function useChatViewModel() {
     specBootstrapLoading.value = true
     try {
       const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/spec-bootstrap`)
+      if (String(currentTask.value?.id || '') !== String(taskId)) return
       specBootstrap.value = res.data as TaskSpecBootstrap
     } catch (e: any) {
+      if (String(currentTask.value?.id || '') !== String(taskId)) return
       if (e?.response?.status === 404) {
         specBootstrap.value = null
         return
       }
       console.warn('Failed to load spec bootstrap snapshot', e)
     } finally {
-      specBootstrapLoading.value = false
+      if (String(currentTask.value?.id || '') === String(taskId)) specBootstrapLoading.value = false
     }
   }
   
@@ -955,8 +995,18 @@ export function useChatViewModel() {
   }
 
   const resetRuntimeSkillEditorState = () => {
+    runtimeSkillsAbort?.abort()
+    runtimeSkillsAbort = null
+    taskRuntimeSkillsLoaded.value = false
+    runtimeSkillsLoadedKey = ''
+    runtimeSkillsFlightKey = ''
+    runtimeSkillsFlight = null
+    runtimeSkillsStale = false
+    runtimeTraceFlightKey = ''
+    runtimeTraceFlight = null
     taskRuntimeSkills.value = []
     taskRuntimeSkillsUsageScopeStartAt.value = null
+    taskRuntimeSkillsLoading.value = false
     runtimeActiveSkillId.value = ''
     runtimeFileTree.value = []
     runtimeFileTreeLoading.value = false
@@ -1029,19 +1079,23 @@ export function useChatViewModel() {
   }
 
   const loadRuntimeSkillFileContent = async (skillId: string, filePath: string) => {
-    if (!currentTask.value?.id || !skillId || !filePath) return
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId || !skillId || !filePath) return
     runtimeActiveFileLoading.value = true
     try {
       const res = await api.get(
-        `/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/skills/${skillId}/files/content`,
-        { params: { path: filePath } },
+        `/workspaces/${route.params.wsId}/tasks/${taskId}/skills/${skillId}/files/content`,
+        { params: { path: filePath }, signal: runtimeSkillsSignal() },
       )
+      if (String(currentTask.value?.id || '') !== taskId || runtimeActiveSkillId.value !== skillId) return
       runtimeActiveFilePath.value = res.data?.path || filePath
       runtimeActiveFileBinary.value = Boolean(res.data?.is_binary)
       const text = runtimeActiveFileBinary.value ? '' : String(res.data?.content ?? '')
       runtimeActiveFileContent.value = text
       runtimeActiveFileOriginalContent.value = text
     } catch (e) {
+      if (isCanceledRequest(e)) return
+      if (String(currentTask.value?.id || '') !== taskId) return
       console.error('Failed to load runtime skill file content', e)
       runtimeActiveFilePath.value = filePath
       runtimeActiveFileBinary.value = false
@@ -1049,7 +1103,7 @@ export function useChatViewModel() {
       runtimeActiveFileOriginalContent.value = ''
       ElMessage.error(t('chat.task_skills_file_load_failed'))
     } finally {
-      runtimeActiveFileLoading.value = false
+      if (String(currentTask.value?.id || '') === taskId) runtimeActiveFileLoading.value = false
     }
   }
 
@@ -1057,12 +1111,15 @@ export function useChatViewModel() {
     skillId: string,
     options?: { keepCurrentFile?: boolean },
   ) => {
-    if (!currentTask.value?.id || !skillId) return
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId || !skillId) return
     runtimeFileTreeLoading.value = true
     try {
       const res = await api.get(
-        `/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/skills/${skillId}/files/tree`,
+        `/workspaces/${route.params.wsId}/tasks/${taskId}/skills/${skillId}/files/tree`,
+        { signal: runtimeSkillsSignal() },
       )
+      if (String(currentTask.value?.id || '') !== taskId || runtimeActiveSkillId.value !== skillId) return
       const nodes = Array.isArray(res.data?.nodes) ? res.data.nodes : []
       runtimeFileTree.value = nodes
       const keepCurrent = Boolean(options?.keepCurrentFile)
@@ -1079,6 +1136,8 @@ export function useChatViewModel() {
       }
       await loadRuntimeSkillFileContent(skillId, nextFilePath)
     } catch (e) {
+      if (isCanceledRequest(e)) return
+      if (String(currentTask.value?.id || '') !== taskId) return
       console.error('Failed to load runtime skill file tree', e)
       runtimeFileTree.value = []
       runtimeActiveFilePath.value = ''
@@ -1087,22 +1146,31 @@ export function useChatViewModel() {
       runtimeActiveFileOriginalContent.value = ''
       ElMessage.error(t('chat.task_skills_tree_load_failed'))
     } finally {
-      runtimeFileTreeLoading.value = false
+      if (String(currentTask.value?.id || '') === taskId) runtimeFileTreeLoading.value = false
     }
   }
 
-  const loadTaskRuntimeSkills = async (options?: { silent?: boolean; hydrateEditor?: boolean }) => {
-    if (!currentTask.value?.id) return
+  const fetchTaskRuntimeSkills = async (options?: { silent?: boolean; hydrateEditor?: boolean }): Promise<boolean> => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return false
+    const key = runtimeSkillsKeyFor(taskId)
     const silent = Boolean(options?.silent)
     const hydrateEditor = Boolean(options?.hydrateEditor)
     if (!silent) {
       taskRuntimeSkillsLoading.value = true
     }
     try {
-      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/skills/runtime`)
+      const res = await api.get(
+        `/workspaces/${route.params.wsId}/tasks/${taskId}/skills/runtime`,
+        { signal: runtimeSkillsSignal() },
+      )
+      if (String(currentTask.value?.id || '') !== taskId) return false
       const items = Array.isArray(res.data?.items) ? res.data.items : []
       taskRuntimeSkills.value = items
       taskRuntimeSkillsUsageScopeStartAt.value = res.data?.usage_scope_start_at || null
+      taskRuntimeSkillsLoaded.value = true
+      runtimeSkillsLoadedKey = key
+      runtimeSkillsStale = false
 
       const hasActive = items.some((item: RuntimeSkillItem) => item.skill_id === runtimeActiveSkillId.value)
       if (!hasActive) {
@@ -1114,32 +1182,86 @@ export function useChatViewModel() {
         runtimeActiveFileContent.value = ''
         runtimeActiveFileOriginalContent.value = ''
         runtimeActiveFileBinary.value = false
-        return
+        return true
       }
       if (hydrateEditor || showTaskSkillsDrawer.value) {
         await loadRuntimeSkillFileTree(runtimeActiveSkillId.value, { keepCurrentFile: true })
       }
+      return true
     } catch (e) {
+      if (isCanceledRequest(e)) return false
       console.error('Failed to load task runtime skills', e)
       if (!silent) {
         ElMessage.error(t('chat.task_skills_runtime_load_failed'))
       }
-      taskRuntimeSkills.value = []
-      taskRuntimeSkillsUsageScopeStartAt.value = null
+      if (String(currentTask.value?.id || '') === taskId) {
+        taskRuntimeSkills.value = []
+        taskRuntimeSkillsUsageScopeStartAt.value = null
+        taskRuntimeSkillsLoaded.value = false
+        runtimeSkillsLoadedKey = ''
+      }
+      return false
     } finally {
-      if (!silent) {
+      if (!silent && String(currentTask.value?.id || '') === taskId) {
         taskRuntimeSkillsLoading.value = false
       }
     }
   }
 
-  const loadTaskRuntimeTrace = async (options?: { silent?: boolean }) => {
-    if (!currentTask.value?.id) return
-    await loadRuntimeTraceEvents(
+  /**
+   * 技能面板按需加载入口：面板打开/手动刷新时才拉取；进行中的请求合并复用；
+   * 列表仍新鲜时直接用（force 强制刷新），runtimeSkillsStale 表示关闭期间事件已使其失效。
+   */
+  const loadTaskRuntimeSkills = (options?: { silent?: boolean; hydrateEditor?: boolean; force?: boolean }): Promise<boolean> => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return Promise.resolve(false)
+    const key = runtimeSkillsKeyFor(taskId)
+    if (runtimeSkillsFlight && runtimeSkillsFlightKey === key) return runtimeSkillsFlight
+    const fresh = taskRuntimeSkillsLoaded.value && runtimeSkillsLoadedKey === key && !runtimeSkillsStale
+    if (fresh && !options?.force) {
+      const skillId = runtimeActiveSkillId.value
+      if (options?.hydrateEditor && skillId) {
+        return loadRuntimeSkillFileTree(skillId, { keepCurrentFile: true }).then(() => true)
+      }
+      return Promise.resolve(true)
+    }
+    const flight = fetchTaskRuntimeSkills({
+      silent: options?.silent ?? false,
+      hydrateEditor: options?.hydrateEditor,
+    })
+    runtimeSkillsFlight = flight
+    runtimeSkillsFlightKey = key
+    void flight.then(() => {
+      if (runtimeSkillsFlight === flight) {
+        runtimeSkillsFlight = null
+        runtimeSkillsFlightKey = ''
+      }
+    })
+    return flight
+  }
+
+  const loadTaskRuntimeTrace = (options?: { silent?: boolean }): Promise<void> => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return Promise.resolve()
+    const key = runtimeSkillsKeyFor(taskId)
+    if (runtimeTraceFlight && runtimeTraceFlightKey === key) return runtimeTraceFlight
+    const flight = loadRuntimeTraceEvents(
       String(route.params.wsId || ''),
-      currentTask.value.id,
-      { limit: 100, silent: options?.silent },
-    )
+      taskId,
+      {
+        limit: 100,
+        silent: options?.silent,
+        isCurrent: () => String(currentTask.value?.id || '') === taskId,
+      },
+    ).finally(() => {
+      if (runtimeTraceFlight === flight) {
+        runtimeTraceFlight = null
+        runtimeTraceFlightKey = ''
+      }
+    })
+    runtimeTraceFlight = flight
+    runtimeTraceFlightKey = key
+    return flight
   }
 
   const openTaskSkillsDrawer = async () => {
@@ -1150,6 +1272,13 @@ export function useChatViewModel() {
       loadTaskRuntimeTrace(),
     ])
   }
+
+  // 技能面板打开时才加载（合并进行中请求；失效/未加载则刷新）；首屏只显示任务摘要数量
+  watch([() => String(currentTask.value?.id || ''), showTaskSkillsDrawer], ([taskId, visible]) => {
+    if (!taskId || !visible) return
+    void loadTaskRuntimeSkills({ hydrateEditor: true })
+    void loadTaskRuntimeTrace()
+  })
 
   const closeTaskSkillsDrawer = () => {
     showTaskSkillsDrawer.value = false
@@ -1172,7 +1301,10 @@ export function useChatViewModel() {
   }
 
   const saveRuntimeSkillFileContent = async () => {
-    if (!currentTask.value?.id || !runtimeActiveSkillId.value || !runtimeActiveFilePath.value) return
+    const taskId = String(currentTask.value?.id || '')
+    const skillId = runtimeActiveSkillId.value
+    const filePath = runtimeActiveFilePath.value
+    if (!taskId || !skillId || !filePath) return
     if (!canEditTaskRuntimeSkills.value) {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return
@@ -1185,19 +1317,25 @@ export function useChatViewModel() {
     runtimeActiveFileSaving.value = true
     try {
       const res = await api.put(
-        `/workspaces/${route.params.wsId}/tasks/${currentTask.value.id}/skills/${runtimeActiveSkillId.value}/files/content`,
-        { path: runtimeActiveFilePath.value, content: runtimeActiveFileContent.value },
+        `/workspaces/${route.params.wsId}/tasks/${taskId}/skills/${skillId}/files/content`,
+        { path: filePath, content: runtimeActiveFileContent.value },
+        { signal: runtimeSkillsSignal() },
       )
+      if (String(currentTask.value?.id || '') !== taskId
+        || runtimeActiveSkillId.value !== skillId
+        || runtimeActiveFilePath.value !== filePath) return
       const text = String(res.data?.content ?? runtimeActiveFileContent.value)
       runtimeActiveFileContent.value = text
       runtimeActiveFileOriginalContent.value = text
       runtimeActiveFileBinary.value = Boolean(res.data?.is_binary)
       ElMessage.success(t('chat.task_skills_file_saved'))
     } catch (e) {
+      if (isCanceledRequest(e)) return
+      if (String(currentTask.value?.id || '') !== taskId) return
       console.error('Failed to save runtime skill file', e)
       ElMessage.error(t('chat.task_skills_file_save_failed'))
     } finally {
-      runtimeActiveFileSaving.value = false
+      if (String(currentTask.value?.id || '') === taskId) runtimeActiveFileSaving.value = false
     }
   }
 
@@ -1206,11 +1344,17 @@ export function useChatViewModel() {
   }
 
   const scheduleRuntimeUsageRefresh = () => {
-    if (!currentTask.value?.id || taskRuntimeSkills.value.length === 0) return
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return
+    if (taskRuntimeSkillsLoaded.value && runtimeSkillsLoadedKey === runtimeSkillsKeyFor(taskId)) {
+      runtimeSkillsStale = true
+    }
+    // 面板未打开时只标记失效：runtime 列表与追踪等面板打开后再刷新
+    if (!showTaskSkillsDrawer.value) return
     clearRuntimeUsageRefreshTimer()
     runtimeUsageRefreshTimer = window.setTimeout(() => {
       runtimeUsageRefreshTimer = null
-      void loadTaskRuntimeSkills({ silent: true, hydrateEditor: false })
+      void loadTaskRuntimeSkills({ silent: true, hydrateEditor: false, force: true })
       void loadTaskRuntimeTrace({ silent: true })
     }, 1200)
   }
@@ -1437,6 +1581,11 @@ export function useChatViewModel() {
   
   const selectTask = async (task: any) => {
     if (!task) return
+    // 切换会话即开启新的初始化代次：取消旧请求，旧快照不再写回新会话
+    sessionStateGeneration += 1
+    sessionStateAbort?.abort()
+    sessionStateAbort = new AbortController()
+    clearSessionStateFallbackTimer()
     persistCurrentRuntimePanels()
     workbenchScroll.rememberScrollPosition()
     if (task.id !== preferredSpecTaskId.value) {
@@ -1474,16 +1623,14 @@ export function useChatViewModel() {
     if (route.path !== chatPath || String(route.params.taskId || '') !== String(task.id)) {
       router.push(chatPath)
     }
-    loadHistory(task.id)
-    loadActiveChatJobs(task.id)
-    void loadActivePreInput(task.id)
+    // history / ai-jobs / pre-input 由统一入口在「首次订阅就绪」或「连接不可用兜底」时加载（单飞），
+    // 避免 selectTask 与 WS onopen / resync 恢复各自重复拉取。
     if (isDiagnosisTask.value) {
       void loadDiagnosisResult()
     } else {
       diagnosisResult.value = null
       diagnosisCaseLink.value = ''
     }
-    loadTaskRuntimeSkills({ silent: true, hydrateEditor: false })
     if (hasTaskSpecification(task)) {
       loadTaskSpecBootstrap(task.id, task)
     }
@@ -2555,6 +2702,12 @@ export function useChatViewModel() {
       && taskWsConsumer
       && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)
     ) {
+      // 复用既有连接：订阅已就绪则补齐快照，否则等就绪事件或兜底超时
+      if (ws.readyState === WebSocket.OPEN && wsSubscriptionReady && wsSubscriptionReadyTaskId === taskId) {
+        void loadSessionStateOnce(taskId)
+      } else {
+        armSessionStateFallback(taskId)
+      }
       return
     }
     clearWsReconnectTimer()
@@ -2569,8 +2722,18 @@ export function useChatViewModel() {
       ws.close()
       ws = null
     }
-    ws = new WebSocket(buildTaskWsUrl(taskId))
+    wsSubscriptionReady = false
+    wsSubscriptionReadyTaskId = ''
+    try {
+      ws = new WebSocket(buildTaskWsUrl(taskId))
+    } catch (error) {
+      console.error('Failed to open task WebSocket', error)
+      wsTaskId = taskId
+      onInitialConnectionUnavailable(taskId)
+      return
+    }
     wsTaskId = taskId
+    armSessionStateFallback(taskId)
     const socket = ws
     const consumer = createSerializedWsConsumer({
       room: `task:${taskId}`,
@@ -2582,14 +2745,22 @@ export function useChatViewModel() {
           context.socket.close(4000, 'sequence_gap')
           return
         }
-        await loadHistory(taskId, true)
-        await loadActiveChatJobs(taskId)
+        // 恢复屏障：快照完成后才发 resync_complete，WS 增量必然晚于快照落地
+        wsSubscriptionReady = true
+        wsSubscriptionReadyTaskId = taskId
+        await restoreSessionState(taskId)
         if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
           sendResyncComplete(context.socket, frame, `task:${taskId}`)
         }
       },
       onControl: (frame) => {
-        if (!['resume_ok', 'resync_ok'].includes(String(frame?.type || ''))) handleWsMessage(frame)
+        const frameType = String(frame?.type || '')
+        if (frameType === 'resume_ok' || frameType === 'resync_ok') {
+          // 首次订阅就绪：replay/屏障已完成，此时 HTTP 快照不会被旧的 WS 增量覆盖
+          onInitialSubscriptionReady(taskId)
+          return
+        }
+        handleWsMessage(frame)
       },
       onFailure: (_error, context) => {
         if (context.socket.readyState === WebSocket.OPEN) context.socket.close(4002, 'ws_consumer_failed')
@@ -2600,12 +2771,8 @@ export function useChatViewModel() {
     ws.onopen = () => {
       console.log(`WS Connected: task=${taskId}`)
       wsReconnectAttempt = 0
-      if (currentTask.value?.id === taskId) {
-        void loadActiveChatJobs(taskId)
-        void loadActivePreInput(taskId)
-        if (hasTaskSpecification(currentTask.value)) {
-          void loadTaskSpecBootstrap(taskId)
-        }
+      if (currentTask.value?.id === taskId && hasTaskSpecification(currentTask.value)) {
+        void loadTaskSpecBootstrap(taskId)
       }
     }
     ws.onmessage = (event) => {
@@ -2627,6 +2794,10 @@ export function useChatViewModel() {
         return
       }
       if (currentTask.value?.id !== taskId) return
+      if (!wsSubscriptionReady || wsSubscriptionReadyTaskId !== taskId) {
+        // 首次订阅未就绪即断开：HTTP 兜底，重连后仍走恢复协议刷新
+        onInitialConnectionUnavailable(taskId)
+      }
       scheduleWsReconnect(taskId)
     }
   }
@@ -2740,6 +2911,7 @@ export function useChatViewModel() {
 
       case 'pre_input_update': {
         if (payload?.task_id && String(payload.task_id) !== String(currentTask.value?.id || '')) break
+        preInputRevision += 1
         if (payload?.status === 'COLLECTING') {
           activePreInput.value = payload
         } else if (activePreInput.value?.id === payload?.id) {
@@ -2750,6 +2922,7 @@ export function useChatViewModel() {
 
       case 'pre_input_submitted': {
         // 合并后的消息由随后的 chat_message 事件 upsert 进消息列表
+        preInputRevision += 1
         if (activePreInput.value?.id === payload?.id) {
           activePreInput.value = null
         }
@@ -3153,6 +3326,8 @@ export function useChatViewModel() {
 
   const activePreInput = ref<ActivePreInput | null>(null)
   const preInputBusy = ref(false)
+  // WS pre_input_* 事件版本号：HTTP 初始快照返回时若已被增量事件改写则丢弃旧快照
+  let preInputRevision = 0
 
   const sendPreInputAction = (action: string, payload: Record<string, any> = {}): boolean => {
     if (isUndoing.value) return false
@@ -3164,20 +3339,118 @@ export function useChatViewModel() {
     return true
   }
 
-  const loadActivePreInput = async (taskId: string) => {
-    if (!taskId) return
+  const loadActivePreInput = async (taskId: string): Promise<boolean> => {
+    if (!taskId) return false
+    const workspace = String(route.params.wsId || '')
+    const revision = preInputRevision
     try {
-      const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/pre-input/active`)
-      if (currentTask.value?.id !== taskId) return
+      const res = await api.get(`/workspaces/${workspace}/tasks/${taskId}/pre-input/active`, {
+        signal: sessionStateAbort?.signal,
+      })
+      if (
+        revision !== preInputRevision
+        || String(currentTask.value?.id || '') !== String(taskId)
+        || String(route.params.wsId || '') !== workspace
+      ) return false
       const pre = res.data?.pre_input || null
       if (pre && pre.status === 'COLLECTING') {
         activePreInput.value = pre
       } else if (activePreInput.value?.task_id === taskId) {
         activePreInput.value = null
       }
+      return true
     } catch (e) {
-      console.warn('Failed to load active pre input', e)
+      if (!isCanceledRequest(e)) console.warn('Failed to load active pre input', e)
+      return false
     }
+  }
+
+  // ─── 初始化/恢复统一入口（单飞） ───
+  const sessionStateKeyFor = (taskId: string) => (
+    `${String(route.params.wsId || '')}:${taskId}:${sessionStateGeneration}`
+  )
+
+  const clearSessionStateFallbackTimer = () => {
+    if (sessionStateFallbackTimer !== null) {
+      window.clearTimeout(sessionStateFallbackTimer)
+      sessionStateFallbackTimer = null
+    }
+  }
+
+  /**
+   * 会话初始快照：历史先落地，再补齐任务与预输入；顺序与恢复屏障一致
+   * （屏障期间事件被服务端暂存，快照完成后才放行，故增量不会被子集覆盖）。
+   */
+  const loadSessionSnapshot = async (taskId: string): Promise<boolean> => {
+    await loadHistory(taskId, true)
+    const [jobsLoaded, preInputLoaded] = await Promise.all([
+      loadActiveChatJobs(taskId),
+      loadActivePreInput(taskId),
+    ])
+    return jobsLoaded && preInputLoaded
+  }
+
+  /**
+   * 首屏/恢复快照单飞：同一 workspace + task + 连接代次内只发一组 history/ai-jobs/pre-input；
+   * 进行中的请求合并复用，force 用于重连/序列缺口后的恢复刷新。
+   */
+  const loadSessionStateOnce = (taskId: string, options?: { force?: boolean }): Promise<void> => {
+    if (!taskId) return Promise.resolve()
+    const key = sessionStateKeyFor(taskId)
+    if (sessionStateFlight && sessionStateFlightKey === key) return sessionStateFlight
+    if (!options?.force && sessionStateSettledKey === key) return Promise.resolve()
+    const flight = loadSessionSnapshot(taskId)
+      .then((succeeded) => {
+        if (succeeded && sessionStateKeyFor(taskId) === key) sessionStateSettledKey = key
+      })
+      .then(() => undefined)
+    sessionStateFlight = flight
+    sessionStateFlightKey = key
+    void flight.finally(() => {
+      if (sessionStateFlight === flight) {
+        sessionStateFlight = null
+        sessionStateFlightKey = ''
+      }
+    })
+    return flight
+  }
+
+  /**
+   * 重连/序列缺口的既有恢复协议：恢复屏障期间重建统一快照，
+   * 完成后才由调用方发送 resync_complete，保证 WS 增量晚于快照落地。
+   */
+  const restoreSessionState = async (taskId: string) => {
+    await loadSessionStateOnce(taskId, { force: true })
+    if (hasTaskSpecification(currentTask.value)) {
+      void loadTaskSpecBootstrap(taskId, currentTask.value)
+    }
+  }
+
+  const armSessionStateFallback = (taskId: string) => {
+    clearSessionStateFallbackTimer()
+    const key = sessionStateKeyFor(taskId)
+    sessionStateFallbackTimer = window.setTimeout(() => {
+      sessionStateFallbackTimer = null
+      if (sessionStateKeyFor(taskId) !== key || String(currentTask.value?.id || '') !== taskId) return
+      void loadSessionStateOnce(taskId)
+    }, SESSION_STATE_FALLBACK_MS)
+  }
+
+  /** 首次订阅就绪（resume_ok/resync_ok）：replay/屏障已完成，快照不会覆盖 WS 增量 */
+  const onInitialSubscriptionReady = (taskId: string) => {
+    clearSessionStateFallbackTimer()
+    const wasReady = wsSubscriptionReady && wsSubscriptionReadyTaskId === taskId
+    wsSubscriptionReady = true
+    wsSubscriptionReadyTaskId = taskId
+    // 若兜底快照早于首次就绪落地，就绪后再对齐一次，确保快照不早于 replay 增量
+    const force = !wasReady && sessionStateSettledKey === sessionStateKeyFor(taskId)
+    void loadSessionStateOnce(taskId, { force })
+  }
+
+  /** 首次连接不可用（未就绪即断开）：HTTP 兜底，重连后仍走恢复协议刷新 */
+  const onInitialConnectionUnavailable = (taskId: string) => {
+    clearSessionStateFallbackTimer()
+    void loadSessionStateOnce(taskId)
   }
 
   const startPreInput = (opts: {
@@ -3409,6 +3682,11 @@ export function useChatViewModel() {
     window.removeEventListener('blur', cancelAllInlineOverlayClose)
     wsManualClose = true
     clearWsReconnectTimer()
+    clearSessionStateFallbackTimer()
+    sessionStateAbort?.abort()
+    sessionStateAbort = null
+    runtimeSkillsAbort?.abort()
+    runtimeSkillsAbort = null
     clearRuntimeUsageRefreshTimer()
     clearContextWindowRefreshTimer()
     clearReferenceHighlight()
