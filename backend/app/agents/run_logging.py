@@ -29,10 +29,25 @@ _TEXT_LIMIT = 2000
 _PROMPT_LIMIT = 300
 _RESULT_LIMIT = 500
 _ERROR_LIMIT = 1000
+_TRACE_SUPPRESSED_LOG_LEVELS = {"trace", "debug"}
 
 
 def _safe_text(value: Any, limit: int = _TEXT_LIMIT) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _trace_includes_debug() -> bool:
+    return str(settings.LOG_LEVEL or "").strip().upper() == "DEBUG"
+
+
+def _visible_in_trace(event: AgentEvent, payload: dict[str, Any]) -> bool:
+    """provider debug/trace 心跳（如 thinking_tokens 进度）不写入会话 trace。"""
+    if event.type != "log":
+        return True
+    if _trace_includes_debug():
+        return True
+    level = str(payload.get("level") or "info").strip().lower()
+    return level not in _TRACE_SUPPRESSED_LOG_LEVELS
 
 
 def _usage_payload(usage: Any) -> dict[str, Any]:
@@ -134,7 +149,11 @@ class _AgentSessionTrace:
         if self._request.permission_mode:
             self._write(f"permission_mode: {self._request.permission_mode}")
         self._write("----- USER PROMPT BEGIN -----")
-        self._write(f"prompt_length: {len(str(self._request.prompt or ''))}")
+        prompt_text = str(self._request.prompt or "")
+        self._write(f"prompt_length: {len(prompt_text)}")
+        prompt_body = _safe_text(prompt_text)
+        if prompt_body:
+            self._write(prompt_body)
         self._write("----- USER PROMPT END -----")
 
     def _flush_pending(self) -> None:
@@ -146,6 +165,8 @@ class _AgentSessionTrace:
 
     def event(self, event: AgentEvent) -> None:
         payload = event.payload if isinstance(event.payload, dict) else {}
+        if not _visible_in_trace(event, payload):
+            return
         if self._fp is None:
             sid: Optional[str] = None
             if event.type == "session_started":
@@ -291,6 +312,7 @@ async def run_agent_backend_with_logging(
         logger.bind(
             **base_extra,
             prompt_length=len(str(request.prompt or "")),
+            prompt=_safe_text(request.prompt, _PROMPT_LIMIT) or "-",
         ).info("agent run start")
 
         async def _logged_event(event: AgentEvent) -> None:

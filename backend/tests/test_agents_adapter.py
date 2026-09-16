@@ -215,6 +215,29 @@ class ClaudeEventMapperTest(unittest.TestCase):
         events = map_claude_event({"type": "result", "is_error": True, "result": "boom"})
         self.assertTrue(any(e.type == "error" for e in events))
 
+    def test_drops_thinking_token_progress_events(self):
+        events = map_claude_event({
+            "type": "system",
+            "subtype": "thinking_tokens",
+            "estimated_tokens": 3,
+            "estimated_tokens_delta": 1,
+            "session_id": "s-1",
+        })
+        self.assertEqual(events, [])
+
+    def test_downgrades_hook_events_to_debug_logs(self):
+        events = map_claude_event({
+            "type": "system",
+            "subtype": "hook_started",
+            "hook_name": "SessionStart:startup",
+            "session_id": "s-1",
+        })
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].type, "log")
+        self.assertEqual(events[0].payload["level"], "debug")
+        self.assertIn("hook_started", events[0].payload["message"])
+        self.assertIn("SessionStart:startup", events[0].payload["message"])
+
 
 class ClaudeEventMapperFixtureTest(unittest.TestCase):
     """读取 golden fixtures，验证 Claude 原始事件到统一事件映射。"""

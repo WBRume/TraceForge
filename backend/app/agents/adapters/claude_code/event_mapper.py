@@ -14,6 +14,9 @@ from app.engine.claude_event_adapter import (
 
 PROVIDER = "claude-code"
 
+_SILENT_SYSTEM_SUBTYPES = {"thinking_tokens"}
+_DEBUG_SYSTEM_SUBTYPES = {"hook_started", "hook_response"}
+
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
@@ -136,6 +139,21 @@ def map_claude_event(event: dict[str, Any]) -> List[AgentEvent]:
             raw=event,
             time=_iso_time(),
         )]
+
+    if event_type == "system" and subtype in _SILENT_SYSTEM_SUBTYPES:
+        return events
+
+    if event_type == "system" and subtype in _DEBUG_SYSTEM_SUBTYPES:
+        hook_name = _text(event.get("hook_name"))
+        detail = f" hook={hook_name}" if hook_name else ""
+        events.append(AgentEvent(
+            type="log",
+            payload={"level": "debug", "message": f"[system:{subtype}]{detail}"},
+            provider=PROVIDER,
+            raw=event,
+            time=_iso_time(),
+        ))
+        return events
 
     if event_type == "assistant":
         message = event.get("message") if isinstance(event.get("message"), dict) else {}
