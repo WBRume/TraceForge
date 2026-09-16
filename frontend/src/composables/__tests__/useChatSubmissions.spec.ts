@@ -46,6 +46,22 @@ describe('durable chat submissions', () => {
     expect(items).toHaveLength(1)
     expect(items[0].delivery_status).toBe('executing')
   })
+  it('renders a pending bubble with the local creator profile and metadata', () => {
+    const { model } = setup()
+    model.put({ ...receipt, creator_id: 'u', status: 'SENDING', metadata: { participants: ['u'] } })
+    const [bubble] = model.bubbles([], {
+      creator_display_name: 'Alice', creator_is_workspace_expert: true, creator_avatar_svg: '<svg/>',
+    })
+    expect(bubble.creator_display_name).toBe('Alice')
+    expect(bubble.creator_is_workspace_expert).toBe(true)
+    expect(bubble.metadata).toEqual({ participants: ['u'] })
+  })
+  it('does not decorate a receipt owned by another member with the local profile', () => {
+    const { model } = setup()
+    model.put({ ...receipt, creator_id: 'other', status: 'SENDING' })
+    const [bubble] = model.bubbles([], { creator_is_workspace_expert: true })
+    expect(bubble.creator_is_workspace_expert).toBeUndefined()
+  })
   it('shows a failure without keeping the task busy', () => {
     const { model } = setup()
     model.put({ ...receipt, status: 'FAILED', error_message: 'snapshot failed' })
