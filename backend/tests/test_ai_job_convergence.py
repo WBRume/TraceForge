@@ -57,6 +57,25 @@ def _identity(pid: int) -> AgentProcessIdentity:
     )
 
 
+@pytest.mark.parametrize("owner_field", [None, "run_token", "worker_boot_id", "process_pid", "lease_expires_at"])
+def test_cancel_interrupted_attempt_only_finishes_when_ownership_is_clear(owner_field):
+    factory = _session_factory()
+    with factory() as db:
+        job = _job(db, status=AiJobStatus.INTERRUPTED)
+        if owner_field:
+            value = datetime.utcnow() if owner_field == "lease_expires_at" else (123 if owner_field == "process_pid" else "old-owner")
+            setattr(job, owner_field, value)
+            db.commit()
+        result = convergence.request_attempt_termination_in_txn(
+            db, convergence.AttemptTerminationRequest(job_id=job.id, mode="CANCEL"),
+        )
+        db.commit()
+        assert result.changed
+        assert job.status == (AiJobStatus.TERMINATING if owner_field else AiJobStatus.CANCELLED)
+        if owner_field:
+            assert getattr(job, owner_field) == value
+
+
 def _session_factory():
     engine = create_engine(
         "sqlite://",

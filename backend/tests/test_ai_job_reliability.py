@@ -77,6 +77,18 @@ def test_reaper_converges_legacy_running_without_in_memory_state(monkeypatch):
     assert recovered.failure_code == "WORKER_RESTART"
 
 
+def test_task_scoped_recovery_does_not_select_other_tasks(monkeypatch):
+    factory = _session_factory()
+    with factory() as db:
+        job = _job(db, status=AiJobStatus.RUNNING, run_token="old-token")
+        job.task_id = "target-task"
+        db.commit()
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    assert ai_job_service._list_reclaimable_jobs_sync("other-task") == []
+    rows = ai_job_service._list_reclaimable_jobs_sync("target-task")
+    assert [row["job_id"] for row in rows] == ["reliability-job"]
+
+
 def test_cancel_running_job_is_not_reported_as_finished(monkeypatch):
     factory = _session_factory()
     db = factory()

@@ -447,9 +447,6 @@ async def resume_interrupted_task(
             raise TaskSessionControlError("No interrupted AI job found for this task", status_code=409)
 
         session_id = str(task.session_id or job.session_id or "").strip()
-        if not session_id:
-            raise TaskSessionControlError("Interrupted task has no Claude session id to resume", status_code=409)
-
         return {
             "duplicate_payload": None,
             "task_status": _as_text(task.status),
@@ -457,13 +454,19 @@ async def resume_interrupted_task(
             "interrupted_by_id": task.interrupted_by_id,
             "interrupted_at": task.interrupted_at.isoformat() if task.interrupted_at else None,
             "old_job_id": str(job.id),
-            "session_id": session_id,
+            "session_id": session_id or None,
             "prompt_text": prompt_text,
         }
 
     prepared = await run_db_txn(_prepare_resume_sync)
     if prepared.get("duplicate_payload") is not None:
         return prepared["duplicate_payload"]
+
+    from app.domains.task.services import chat_submission_service
+    from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
+
+    await recover_task_attempts(task_id, run_txn=run_db_txn)
+    await run_db_txn(lambda db: chat_submission_service._reconcile_sync(db, task_id=task_id))
 
     engine = get_engine(task_id)
     if engine and engine.running:

@@ -1710,13 +1710,14 @@ def _row_has_leaked_interrupted_ownership(job: SddAiJob) -> bool:
     )
 
 
-def _list_reclaimable_jobs_sync() -> List[Dict[str, Any]]:
+def _list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
     db = SessionLocal()
     try:
         now = datetime.utcnow()
         rows = (
             db.query(SddAiJob)
             .filter(
+                SddAiJob.task_id == task_id if task_id is not None else True,
                 or_(
                     and_(
                         SddAiJob.status.in_([
@@ -1965,9 +1966,12 @@ async def _stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
     return result
 
 
-async def reap_stale_jobs() -> int:
+async def reap_stale_jobs(*, task_id: Optional[str] = None) -> int:
     """Reclaim attempts whose owner disappeared or whose lease expired."""
-    rows = await run_db(_list_reclaimable_jobs_sync)
+    if task_id is None:
+        rows = await run_db(_list_reclaimable_jobs_sync)
+    else:
+        rows = await run_db(_list_reclaimable_jobs_sync, task_id)
     reclaimed = 0
     for row in rows:
         token = row["run_token"] or str(uuid.uuid4())

@@ -16,6 +16,158 @@ from app.domains.search.models import SearchOutbox, SearchDocumentState
 from app.domains.search.projection import build_search_projection
 
 
+@pytest.fixture(autouse=True)
+def local_submission_locks(monkeypatch):
+    from app.core import distributed_lock
+    monkeypatch.setattr(distributed_lock, "_PROVIDER", distributed_lock.LocalLockProvider())
+
+
+@pytest.fixture
+def recovery_env(task_db, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    from app.domains.ai.services import ai_job_service
+    from app.domains.websocket.ws.manager import manager
+    factory = sessionmaker(bind=task_db.get_bind())
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr(manager, "send_message_to_room", AsyncMock())
+    scheduled = []
+    monkeypatch.setattr(service, "schedule", scheduled.append)
+    monkeypatch.setattr(service.settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 0.05)
+    return ai_job_service, scheduled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [AiJobStatus.FAILED, AiJobStatus.CANCELLED, AiJobStatus.SUCCESS])
+async def test_send_releases_terminal_receipt_and_keeps_session(task_db, recovery_env, status):
+    row = accepted(task_db)
+    execution(task_db, row, status)
+    task = task_db.get(SddTask, "t")
+    task.session_id = "original-session"
+    task_db.commit()
+    receipt = await service.accept(task_id="t", actor_id="u", client_message_id="next", content="continue")
+    task_db.expire_all()
+    assert receipt["status"] == "PREPARING"
+    assert task_db.get(TaskChatSubmission, row.id).active_task_id is None
+    assert task_db.get(SddTask, "t").session_id == "original-session"
+    assert task_db.get(SddTask, "t").session_generation == 1
+
+
+@pytest.mark.asyncio
+async def test_send_after_restart_reclaims_persisted_attempt(task_db, recovery_env, monkeypatch):
+    from app.agents.process_supervisor import TerminationResult
+    ai_jobs, scheduled = recovery_env
+    row = accepted(task_db)
+    job = execution(task_db, row)
+    job.run_token, job.worker_boot_id, job.process_pid = "old-token", "previous-worker", 4321
+    task_db.commit()
+    monkeypatch.setattr(ai_jobs.process_supervisor, "stop_attempt", AsyncMock(return_value=None))
+    stop = AsyncMock(return_value=TerminationResult(True, None))
+    monkeypatch.setattr(ai_jobs.process_supervisor, "stop_persisted", stop)
+    receipt = await service.accept(task_id="t", actor_id="u", client_message_id="after-restart", content="continue")
+    task_db.expire_all()
+    assert receipt["status"] == "PREPARING"
+    assert task_db.get(SddAiJob, "job").status not in service.BLOCKING
+    assert task_db.get(TaskChatSubmission, row.id).active_task_id is None
+    assert scheduled == [receipt["id"]]
+    stop.assert_awaited_once()
+    assert stop.call_args.kwargs["run_token"] == "old-token"
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_cancel_healthy_attempt(task_db, recovery_env, monkeypatch):
+    from datetime import datetime, timedelta
+    ai_jobs, scheduled = recovery_env
+    row = accepted(task_db)
+    job = execution(task_db, row)
+    job.worker_boot_id, job.run_token = ai_jobs.WORKER_BOOT_ID, "live-token"
+    job.lease_expires_at = datetime.utcnow() + timedelta(minutes=5)
+    task_db.commit()
+    stop = AsyncMock()
+    monkeypatch.setattr(ai_jobs.process_supervisor, "stop_attempt", stop)
+    with pytest.raises(service.SubmissionError) as exc:
+        await service.accept(task_id="t", actor_id="u", client_message_id="next", content="continue")
+    assert exc.value.status_code == 409
+    task_db.expire_all()
+    assert task_db.get(SddAiJob, "job").status == AiJobStatus.RUNNING
+    assert task_db.get(SddAiJob, "job").cancel_requested_at is None
+    stop.assert_not_awaited()
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_process_remains_blocking_on_send(task_db, recovery_env, monkeypatch):
+    from app.agents.process_supervisor import TerminationResult
+    ai_jobs, scheduled = recovery_env
+    row = accepted(task_db)
+    job = execution(task_db, row)
+    job.worker_boot_id, job.run_token = "previous-worker", "unknown-token"
+    task_db.commit()
+    monkeypatch.setattr(ai_jobs.process_supervisor, "stop_attempt", AsyncMock(return_value=TerminationResult(None, None)))
+    with pytest.raises(service.SubmissionError) as exc:
+        await service.accept(task_id="t", actor_id="u", client_message_id="next", content="continue")
+    assert exc.value.status_code == 409
+    task_db.expire_all()
+    assert task_db.get(SddAiJob, "job").status == AiJobStatus.ORPHANED
+    assert task_db.get(SddAiJob, "job").run_token == "unknown-token"
+    assert task_db.query(TaskChatSubmission).count() == 1
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_send_skips_recovery_and_conflicting_payload_is_rejected(task_db, recovery_env, monkeypatch):
+    row = accepted(task_db)
+    execution(task_db, row)
+    recover = AsyncMock()
+    monkeypatch.setattr(service, "recover_task_attempts", recover)
+    receipt = await service.accept(task_id="t", actor_id="u", client_message_id="c", content="private prompt")
+    assert receipt["id"] == row.id
+    with pytest.raises(service.SubmissionError) as exc:
+        await service.accept(task_id="t", actor_id="u", client_message_id="c", content="different")
+    assert exc.value.code == "MESSAGE_CONFLICT"
+    recover.assert_not_awaited()
+    assert task_db.query(TaskChatSubmission).count() == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_id", [True, False])
+async def test_concurrent_sends_accept_only_one_new_receipt(task_db, recovery_env, same_id):
+    results = await asyncio.gather(
+        service.accept(task_id="t", actor_id="u", client_message_id="first", content="continue"),
+        service.accept(task_id="t", actor_id="u", client_message_id="first" if same_id else "second", content="continue"),
+        return_exceptions=True,
+    )
+    assert task_db.query(TaskChatSubmission).count() == 1
+    if same_id:
+        assert results[0]["id"] == results[1]["id"]
+    else:
+        assert sum(isinstance(result, service.SubmissionError) for result in results) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovered_send_creates_one_turn_using_existing_provider_session(task_db, recovery_env, monkeypatch):
+    from app.domains.task.services import context_token_service
+    ai_jobs, _ = recovery_env
+    row = accepted(task_db)
+    execution(task_db, row, AiJobStatus.FAILED)
+    task_db.get(SddTask, "t").session_id = "preserved-session"
+    task_db.commit()
+    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", AsyncMock(return_value={"root": "/fake/checkpoint"}))
+    monkeypatch.setattr(context_token_service, "seed_snapshot_for_job", lambda *args, **kwargs: None)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(ai_jobs, "enqueue_task_chat_job", enqueue)
+    receipt = await service.accept(task_id="t", actor_id="u", client_message_id="continue", content="try again")
+    await service._run(receipt["id"])
+    task_db.expire_all()
+    new = task_db.get(TaskChatSubmission, receipt["id"])
+    assert new.status == "EXECUTING"
+    job = task_db.get(SddAiJob, new.ai_job_id)
+    assert job.session_id == "preserved-session"
+    assert job.prompt_text == "try again"
+    assert task_db.query(SddAiJob).count() == 2
+    enqueue.assert_awaited_once_with(job.id)
+
+
 @pytest.fixture
 def task_db(db):
     db.add(User(id="u", email="submission@test.local", hashed_password="x", display_name="User"))

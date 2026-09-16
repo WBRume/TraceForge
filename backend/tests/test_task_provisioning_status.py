@@ -5,9 +5,11 @@
 准备完成后回到 PENDING、PROVISIONING 期间 start 接口拒绝。
 """
 
+import asyncio
 import os
 import sys
 from types import SimpleNamespace
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,10 +23,18 @@ if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
 from app.domains.task.models.task import TaskStatus  # noqa: E402
-from app.domains.ai.models.ai_job import SddAiJob  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob  # noqa: E402
 from app.domains.task.models.chat import ChatMessage  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from test_workspace_asset_boundary import _build_db, _session, _seed_workspace  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def local_task_locks(monkeypatch):
+    # These route tests use SQLite and a single event loop, not live Redis.
+    from app.core import distributed_lock
+    monkeypatch.setattr(distributed_lock, "_PROVIDER", distributed_lock.LocalLockProvider())
 
 
 def _build_app(SessionLocal, user):
@@ -177,5 +187,119 @@ def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
         assert captured["content"] == "用户编辑后的初始化提示"
         assert captured["prompt_text"] == "用户编辑后的初始化提示"
         assert captured["context_json"]["initialize_reason"] == "重新开始"
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("old_status", [AiJobStatus.FAILED, AiJobStatus.INTERRUPTED, AiJobStatus.RUNNING])
+def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, old_status):
+    engine, factory = _build_db()
+    try:
+        with _session(factory) as db:
+            user, workspace, task = _seed_workspace(db, workspace_id="ws-recover", task_id="task-recover")
+            task.project_path = str(tmp_path)
+            task.status = TaskStatus.INTERRUPTED
+            task.session_id = "old-session"
+            old = task_router.ai_job_service.create_task_chat_job(
+                db, workspace_id=workspace.id, task_id=task.id,
+                creator_id=user.id, prompt_text="old prompt",
+            )
+            old.status = old_status
+            if old_status == AiJobStatus.RUNNING:
+                old.run_token = "before-restart"
+                old.worker_boot_id = "previous-worker"
+                old.process_pid = 4321
+            db.commit()
+            old_id, task_id, ws_id = old.id, task.id, workspace.id
+
+        async def noop(*args, **kwargs):
+            pass
+
+        async def stop_attempt(token, reason):
+            assert token == "before-restart"
+            return None  # A new worker has no in-memory process registration.
+
+        async def stop_persisted(pid, started_at, reason, **kwargs):
+            from app.agents.process_supervisor import TerminationResult
+            assert pid == 4321
+            assert kwargs["run_token"] == "before-restart"
+            return TerminationResult(confirmed_dead=True, root_return_code=None)
+
+        monkeypatch.setattr("app.database.SessionLocal", factory)
+        monkeypatch.setattr(task_router.ai_job_service, "SessionLocal", factory)
+        monkeypatch.setattr(task_router.ai_job_service.process_supervisor, "stop_attempt", stop_attempt)
+        monkeypatch.setattr(task_router.ai_job_service.process_supervisor, "stop_persisted", stop_persisted)
+        monkeypatch.setattr(task_router, "get_engine", lambda _: None)
+        monkeypatch.setattr(task_router.ai_job_service, "publish_job", noop)
+        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", noop)
+        client = TestClient(_build_app(factory, user))
+        response = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/initialize", json={"prompt": "restart"})
+        assert response.status_code == 200, response.text
+        with _session(factory) as db:
+            from app.domains.task.models.task import SddTask
+            task = db.get(SddTask, task_id)
+            assert task.session_id is None
+            assert task.session_generation == 1
+            jobs = db.query(SddAiJob).filter_by(task_id=task_id).all()
+            assert len(jobs) == 2
+            assert db.get(SddAiJob, old_id).status in {AiJobStatus.FAILED, AiJobStatus.CANCELLED}
+            assert next(j for j in jobs if j.id != old_id).status == AiJobStatus.PENDING
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("recovery", ["unresolved", "late_finalizer", "stop_failure"])
+def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, recovery):
+    monkeypatch.setattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 0.3)
+    engine, factory = _build_db()
+    try:
+        with _session(factory) as db:
+            user, workspace, task = _seed_workspace(db, workspace_id="ws-blocked", task_id="task-blocked")
+            task.session_id = "preserve-session"
+            task.session_generation = 7
+            task.error_message = "original failure"
+            job = task_router.ai_job_service.create_task_chat_job(
+                db, workspace_id=workspace.id, task_id=task.id,
+                creator_id=user.id, prompt_text="old prompt",
+            )
+            job.status = AiJobStatus.ORPHANED
+            job.run_token = "persisted-owner"
+            db.commit()
+            ws_id, task_id = workspace.id, task.id
+
+        async def noop(*args, **kwargs):
+            pass
+
+        async def reap(*args, **kwargs):
+            if recovery == "late_finalizer":
+                async def finish():
+                    await asyncio.sleep(0.02)
+                    with _session(factory) as db:
+                        old = db.query(SddAiJob).filter_by(task_id=task_id).one()
+                        old.status = AiJobStatus.CANCELLED
+                        old.run_token = None
+                        db.commit()
+                asyncio.create_task(finish())
+
+        async def stop():
+            raise RuntimeError("provider stop failed")
+
+        monkeypatch.setattr("app.database.SessionLocal", factory)
+        monkeypatch.setattr(task_router, "get_engine", lambda _: SimpleNamespace(stop=stop) if recovery == "stop_failure" else None)
+        monkeypatch.setattr(task_router.ai_job_service, "publish_job", noop)
+        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", noop)
+        monkeypatch.setattr(task_router.ai_job_service, "reap_stale_jobs", reap)
+        client = TestClient(_build_app(factory, user), raise_server_exceptions=False)
+        response = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/initialize", json={})
+        assert response.status_code == (200 if recovery == "late_finalizer" else 409), response.text
+        with _session(factory) as db:
+            from app.domains.task.models.task import SddTask
+            task = db.get(SddTask, task_id)
+            if recovery == "late_finalizer":
+                assert (task.session_id, task.session_generation, task.error_message) == (None, 8, None)
+                assert db.query(SddAiJob).filter_by(task_id=task_id, status=AiJobStatus.PENDING).count() == 1
+            else:
+                assert (task.session_id, task.session_generation, task.error_message) == ("preserve-session", 7, "original failure")
+                assert db.query(ChatMessage).filter_by(task_id=task_id).count() == 0
     finally:
         engine.dispose()

@@ -129,6 +129,25 @@ def _handler(*, websocket=None, manager=None, session=None):
 
 
 @pytest.mark.asyncio
+async def test_interrupted_retry_busy_returns_failed_ack_and_releases_claim(monkeypatch):
+    manager = _FakeConnectionManager()
+    handler = _handler(manager=manager)
+    claim = SimpleNamespace(claimed=True)
+    monkeypatch.setattr(task_handler, "run_db", AsyncMock(return_value="INTERRUPTED"))
+    monkeypatch.setattr(handler, "_claim_chat_message", AsyncMock(return_value=claim))
+    release = AsyncMock()
+    monkeypatch.setattr(handler, "_mark_chat_claim_failed", release)
+    monkeypatch.setattr(handler, "_resume_interrupted_task", AsyncMock(side_effect=
+        task_session_service.TaskSessionUndoError("Old attempt still stopping", code="TASK_SESSION_BUSY")))
+    await handler._dispatch({"type": "chat_message", "payload": {
+        "content": "continue", "client_message_id": "retry-1"}})
+    release.assert_awaited_once_with(claim)
+    ack = manager.outbound.sent_json[-1]
+    assert ack["payload"]["status"] == "failed"
+    assert ack["payload"]["message"] == "Old attempt still stopping"
+
+
+@pytest.mark.asyncio
 async def test_run_disconnects_once_when_client_disconnects():
     websocket = _FakeWebSocket(incoming=[{"type": "unknown"}])
     manager = _FakeConnectionManager()

@@ -1049,7 +1049,15 @@ def request_attempt_termination_in_txn(
         request.interrupt_session_id or (job.session_id or "")
     ).strip() or None
 
-    if job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL} and (
+    clean_interrupted = job.status == AiJobStatus.INTERRUPTED and not any(
+        getattr(job, field, None) is not None
+        for field in (
+            "run_token", "worker_id", "worker_boot_id", "process_pid",
+            "process_started_at", "process_group_id", "process_containment_id",
+            "heartbeat_at", "lease_expires_at",
+        )
+    )
+    if (job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL} or clean_interrupted) and (
         request.mode != "WORKER_SHUTDOWN"
         and not _job_active_ownership(job)
     ):

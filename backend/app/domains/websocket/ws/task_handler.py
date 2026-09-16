@@ -204,7 +204,13 @@ class TaskWebSocketHandler:
         if claim is None:
             return
         if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
-            await self._resume_interrupted_task(request, claim)
+            from app.domains.task.services.chat_submission_service import SubmissionError
+            try:
+                await self._resume_interrupted_task(request, claim)
+            except (task_session_control_service.TaskSessionControlError,
+                    task_session_service.TaskSessionUndoError, SubmissionError, LockAcquireTimeout) as exc:
+                await self._mark_chat_claim_failed(claim)
+                await self._send_chat_ack(request, status="failed", message=str(exc))
             return
         interaction_id = str(request.metadata.get("interaction_id") or "").strip()
         reply_to_message_id = str(request.metadata.get("reply_to_message_id") or "").strip()
