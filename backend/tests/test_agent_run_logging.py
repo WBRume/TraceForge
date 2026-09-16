@@ -159,6 +159,60 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("trace-session-1", content)
         self.assertIn("=== END SESSION TRACE ===", content)
 
+    async def test_trace_records_prompt_and_skips_debug_logs(self):
+        class _Backend:
+            name = "fake"
+
+            async def run(self, request: AgentRunRequest, on_event):
+                await on_event(AgentEvent(
+                    type="log",
+                    payload={"level": "debug", "message": "noisy progress tick"},
+                    provider="fake",
+                ))
+                await on_event(AgentEvent(
+                    type="log",
+                    payload={"level": "info", "message": "auditable provider event"},
+                    provider="fake",
+                ))
+                await on_event(AgentEvent(
+                    type="session_started",
+                    payload={"provider_session_id": "prompt-session-1", "provider": "fake"},
+                    provider="fake",
+                ))
+                await on_event(AgentEvent(
+                    type="log",
+                    payload={"level": "debug", "message": "post-session progress tick"},
+                    provider="fake",
+                ))
+                return AgentRunResult(
+                    run_id=request.run_id,
+                    session_id="prompt-session-1",
+                    success=True,
+                    result_text="ok",
+                    finish_reason="completed",
+                )
+
+        request = AgentRunRequest(run_id="run-prompt", prompt="请解释这个 bug")
+        with patch("app.agents.run_logging.logger") as mock_logger:
+            mock_logger.bind.return_value = mock_logger
+            await run_agent_backend_with_logging(_Backend(), request, lambda _: asyncio.sleep(0))
+
+        files = [
+            name
+            for name in os.listdir(settings.AI_SESSION_LOG_DIR)
+            if name.endswith(".log") and "prompt-session-1" in name
+        ]
+        self.assertTrue(files, "session trace file was not created")
+        content = open(
+            os.path.join(settings.AI_SESSION_LOG_DIR, files[0]),
+            encoding="utf-8",
+        ).read()
+        self.assertIn("请解释这个 bug", content)
+        self.assertIn("prompt_length: 9", content)
+        self.assertIn("auditable provider event", content)
+        self.assertNotIn("noisy progress tick", content)
+        self.assertNotIn("post-session progress tick", content)
+
     async def test_trace_file_waits_for_session_id_before_opening(self):
         events: list[AgentEvent] = []
 
