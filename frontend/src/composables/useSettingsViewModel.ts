@@ -499,13 +499,32 @@ export function useSettingsViewModel() {
 
   const buildInviteJoinUrl = (token: string) => `${window.location.origin}/join/${token}`
 
-  const copyInviteLinkUrl = async (token: string) => {
+  const writeClipboardText = async (text: string): Promise<boolean> => {
     try {
-      await navigator.clipboard.writeText(buildInviteJoinUrl(token))
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return true
+      }
     } catch {
-      /* 剪贴板不可用时静默失败，用户可手动选择链接文本复制 */
+      /* 剪贴板 API 不可用时退回旧式复制 */
+    }
+    try {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const ok = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      return ok
+    } catch {
+      return false
     }
   }
+
+  const copyInviteLinkUrl = async (token: string) => writeClipboardText(buildInviteJoinUrl(token))
   
   const seedMemberDrafts = () => {
     const nextDrafts: Record<string, MemberDraft> = {}

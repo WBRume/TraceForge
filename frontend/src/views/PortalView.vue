@@ -323,7 +323,7 @@ onBeforeUnmount(() => {
           <p>{{ $t('portal.footer_tagline') }}</p>
         </div>
         <div class="footer-copy">
-          &copy; 2026 Native SDD. Built for Professionals.
+          &copy; 2026 TraceForge. Built for Professionals.
         </div>
       </div>
     </footer>

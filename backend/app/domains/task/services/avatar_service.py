@@ -152,14 +152,24 @@ def _strip_tag_namespace(element: ET.Element) -> None:
         _strip_tag_namespace(child)
 
 
+def _seed_digest(seed: str) -> str:
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
 def _pick_palette(seed: str, base_color: Optional[str] = None) -> tuple[str, str, str]:
     if base_color:
         normalized = normalize_hex_color(base_color, fallback="#0ea5e9")
         return (normalized, "#0f172a", "#ffffff")
 
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    digest = _seed_digest(seed)
     index = int(digest[:8], 16) % len(_SVG_PALETTES)
     return _SVG_PALETTES[index]
+
+
+def _pick_gradient_id(seed: str) -> str:
+    # Inline avatar SVGs share one document, so a fixed id like "bg" makes
+    # every url(#bg) resolve to the first avatar in the page.
+    return f"avatar-bg-{_seed_digest(seed)[:8]}"
 
 
 def _pick_initial(display_name: str, email: str, user_id: str) -> str:
@@ -187,17 +197,18 @@ def build_default_avatar_svg(
     initial = html.escape(_pick_initial(display_name, email, user_id))
     seed = f"{display_name}|{email}|{user_id}"
     start_color, end_color, text_color = _pick_palette(seed, base_color=base_color)
+    gradient_id = _pick_gradient_id(seed)
 
     if style == "soft":
         return (
             "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" role=\"img\" aria-hidden=\"true\">"
             "<defs>"
-            "<linearGradient id=\"bg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
+            f"<linearGradient id=\"{gradient_id}\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
             f"<stop offset=\"0%\" stop-color=\"{start_color}\" stop-opacity=\"0.92\"/>"
             f"<stop offset=\"100%\" stop-color=\"{end_color}\" stop-opacity=\"0.86\"/>"
             "</linearGradient>"
             "</defs>"
-            "<rect x=\"2\" y=\"2\" width=\"60\" height=\"60\" rx=\"30\" fill=\"url(#bg)\"/>"
+            f"<rect x=\"2\" y=\"2\" width=\"60\" height=\"60\" rx=\"30\" fill=\"url(#{gradient_id})\"/>"
             "<circle cx=\"32\" cy=\"32\" r=\"27\" fill=\"#ffffff\" fill-opacity=\"0.12\"/>"
             f"<text x=\"32\" y=\"34\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"{text_color}\" font-size=\"28\" font-family=\"'Segoe UI', 'PingFang SC', sans-serif\" font-weight=\"700\">{initial}</text>"
             "</svg>"
@@ -216,12 +227,12 @@ def build_default_avatar_svg(
     return (
         "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" role=\"img\" aria-hidden=\"true\">"
         "<defs>"
-        "<linearGradient id=\"bg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
+        f"<linearGradient id=\"{gradient_id}\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
         f"<stop offset=\"0%\" stop-color=\"{start_color}\"/>"
         f"<stop offset=\"100%\" stop-color=\"{end_color}\"/>"
         "</linearGradient>"
         "</defs>"
-        "<rect x=\"0\" y=\"0\" width=\"64\" height=\"64\" rx=\"32\" fill=\"url(#bg)\"/>"
+        f"<rect x=\"0\" y=\"0\" width=\"64\" height=\"64\" rx=\"32\" fill=\"url(#{gradient_id})\"/>"
         "<circle cx=\"32\" cy=\"32\" r=\"28\" fill=\"#ffffff\" fill-opacity=\"0.1\"/>"
         f"<text x=\"32\" y=\"34\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"{text_color}\" font-size=\"28\" font-family=\"'Segoe UI', 'PingFang SC', sans-serif\" font-weight=\"700\">{initial}</text>"
         "</svg>"

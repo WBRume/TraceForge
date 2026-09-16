@@ -30,7 +30,7 @@ const maxUsesOptions = [
   { value: 0, label: props.vm.t('settings.members.invite_uses_unlimited') },
 ]
 
-const statusText = (status: string) => props.vm.t(`settings.members.invite_status_${status}`)
+const statusText = (status: string) => props.vm.t(`settings.members.invite_status_${status.toLowerCase()}`)
 
 const formatDate = (value: string | null) => (
   value ? new Date(value).toLocaleDateString() : ''
@@ -43,7 +43,8 @@ const usageText = (link: { used_count: number; max_uses: number | null }) => (
 )
 
 const copyLink = async (token: string) => {
-  await props.vm.copyInviteLinkUrl(token)
+  const ok = await props.vm.copyInviteLinkUrl(token)
+  if (!ok) return
   copiedToken.value = token
   setTimeout(() => {
     if (copiedToken.value === token) copiedToken.value = ''
@@ -188,14 +189,6 @@ const copyLink = async (token: string) => {
                 {{ vm.inviteLinkCreating ? $t('settings.members.invite_link_creating') : $t('settings.members.invite_link_create') }}
               </button>
             </div>
-          </div>
-
-          <div v-if="vm.inviteLinkJustCreated" class="link-result-box">
-            <span class="link-result-url">{{ vm.buildInviteJoinUrl(vm.inviteLinkJustCreated.token) }}</span>
-            <button class="btn-secondary link-copy-btn" @click="copyLink(vm.inviteLinkJustCreated.token)">
-              <Copy class="w-4 h-4" />
-              {{ copiedToken === vm.inviteLinkJustCreated.token ? $t('settings.members.invite_link_copied') : $t('settings.members.invite_link_copy') }}
-            </button>
           </div>
 
           <div class="link-list-section">

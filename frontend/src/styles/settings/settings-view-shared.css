@@ -1588,7 +1588,6 @@ select.input-field {
   overflow: auto;
   background: #ffffff;
   border-radius: 18px;
-  border-top: 4px solid var(--color-primary-500);
   box-shadow: 0 30px 60px -18px rgba(15, 23, 42, 0.45);
   display: flex;
   flex-direction: column;
@@ -1709,34 +1708,6 @@ select.input-field {
   margin-left: auto;
 }
 
-.link-result-box {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.65rem 0.75rem;
-  border: 1px solid #bae6fd;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #f0f9ff 0%, #ffffff 100%);
-}
-
-.link-result-url {
-  flex: 1;
-  min-width: 0;
-  font-family: 'Consolas', ui-monospace, monospace;
-  font-size: 0.76rem;
-  color: #0369a1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.link-copy-btn {
-  padding: 0.4rem 0.7rem;
-  font-size: 0.76rem;
-  border-radius: 9px;
-  flex-shrink: 0;
-}
-
 .link-list-section {
   display: flex;
   flex-direction: column;
@@ -1840,10 +1811,16 @@ select.input-field {
   gap: 0.4rem;
 }
 
-.link-item-acts .permission-toggle-btn {
+.link-item-acts .permission-toggle-btn,
+.link-item-acts .btn-compact-danger {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
+  justify-content: center;
+  gap: 0.28rem;
+  padding: 0.34rem 0.68rem;
+  font-size: 0.74rem;
+  line-height: 1.2;
+  border-radius: 9px;
 }
 
 .modal-field-label {
