@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { scopeAvatarSvgIds } from '@/utils/avatar'
 
 type AvatarSize = 'xs' | 'sm' | 'md' | 'lg'
 
@@ -34,10 +35,11 @@ const normalizeSvgMarkup = (value: string) => (
     .replaceAll(/<\s*\/?\s*ns\d+:/g, match => match.replace(/ns\d+:/, ''))
     .replaceAll(/xmlns:ns\d+="http:\/\/www\.w3\.org\/2000\/svg"/g, '')
 )
+
 const avatarSvgContent = computed(() => {
   const raw = props.avatarSvg?.trim() || ''
   if (!raw) return ''
-  return normalizeSvgMarkup(raw)
+  return scopeAvatarSvgIds(normalizeSvgMarkup(raw))
 })
 const avatarUrlContent = computed(() => props.avatarUrl?.trim() || '')
 const showFallbackInitial = computed(() => !avatarSvgContent.value && !avatarUrlContent.value)
