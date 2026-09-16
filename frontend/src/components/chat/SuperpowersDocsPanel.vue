@@ -54,11 +54,14 @@ type DocRow =
       entry: SuperpowersDocEntry
     }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   wsId: string
   taskId: string
   readonly?: boolean
-}>()
+  visible?: boolean
+}>(), {
+  visible: true,
+})
 
 const { t } = useI18n()
 
@@ -263,6 +266,8 @@ const ensureSelection = () => {
 const loadDocContent = async () => {
   const section = selectedSection.value
   const path = selectedPath.value
+  const wsId = props.wsId
+  const taskId = props.taskId
   if (!section || !path) {
     clearEditor()
     return
@@ -274,10 +279,10 @@ const loadDocContent = async () => {
   loadError.value = ''
 
   try {
-    const res = await api.get(`/workspaces/${props.wsId}/tasks/${props.taskId}/superpowers-docs/content`, {
+    const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}/superpowers-docs/content`, {
       params: { section, path },
     })
-    if (requestId !== contentRequestId.value) return
+    if (requestId !== contentRequestId.value || wsId !== props.wsId || taskId !== props.taskId) return
     const payload = res.data as SuperpowersDocContentResponse
     const markdown = String(payload.content || '')
     content.value = markdown
@@ -298,13 +303,20 @@ const loadDocContent = async () => {
   }
 }
 
+let indexRequestId = 0
+
 const loadIndex = async () => {
+  const wsId = props.wsId
+  const taskId = props.taskId
+  if (!wsId || !taskId || !props.visible) return
+  const requestId = ++indexRequestId
   loadingIndex.value = true
   loadError.value = ''
   const previousKey = selectedDocKey.value
 
   try {
-    const res = await api.get(`/workspaces/${props.wsId}/tasks/${props.taskId}/superpowers-docs`)
+    const res = await api.get(`/workspaces/${wsId}/tasks/${taskId}/superpowers-docs`)
+    if (requestId !== indexRequestId || wsId !== props.wsId || taskId !== props.taskId) return
     const payload = res.data as SuperpowersDocsIndexResponse
     rootRelativePath.value = payload.root_relative_path || 'docs/superpowers'
     plans.value = normalizeEntries(payload.plans, 'plans')
@@ -322,6 +334,7 @@ const loadIndex = async () => {
       await loadDocContent()
     }
   } catch (error) {
+    if (requestId !== indexRequestId) return
     plans.value = []
     specs.value = []
     loadError.value = formatApiError(
@@ -331,7 +344,9 @@ const loadIndex = async () => {
     )
     clearEditor()
   } finally {
-    loadingIndex.value = false
+    if (requestId === indexRequestId) {
+      loadingIndex.value = false
+    }
   }
 }
 
@@ -352,15 +367,18 @@ const selectDoc = async (entry: SuperpowersDocEntry) => {
 const saveDoc = async () => {
   const section = selectedSection.value
   const path = selectedPath.value
+  const wsId = props.wsId
+  const taskId = props.taskId
   if (!section || !path || !canSave.value) return
 
   saving.value = true
   try {
-    const res = await api.put(`/workspaces/${props.wsId}/tasks/${props.taskId}/superpowers-docs/content`, {
+    const res = await api.put(`/workspaces/${wsId}/tasks/${taskId}/superpowers-docs/content`, {
       section,
       path,
       content: content.value,
     })
+    if (wsId !== props.wsId || taskId !== props.taskId) return
     const payload = res.data as SuperpowersDocContentResponse
     originalContent.value = String(payload.content || '')
     content.value = originalContent.value
@@ -389,12 +407,24 @@ const formatDateTime = (value?: string | null) => {
 }
 
 watch(
-  () => [props.wsId, props.taskId] as const,
-  async () => {
-    selectedSection.value = ''
-    selectedPath.value = ''
-    rootRelativePath.value = ''
-    clearEditor()
+  () => [props.wsId, props.taskId, Boolean(props.visible)] as const,
+  async ([wsId, taskId, visible], previous) => {
+    const [previousWsId, previousTaskId] = previous || []
+    if (previousTaskId !== undefined && (previousTaskId !== taskId || previousWsId !== wsId)) {
+      // 会话切换：使进行中的请求失效并清空旧内容，避免旧响应回写
+      indexRequestId += 1
+      contentRequestId.value += 1
+      selectedSection.value = ''
+      selectedPath.value = ''
+      rootRelativePath.value = ''
+      plans.value = []
+      specs.value = []
+      clearEditor()
+      loadingIndex.value = false
+      loadingDoc.value = false
+    }
+    // 面板隐藏时不加载（首屏零请求）；打开时按需拉取目录索引
+    if (!visible || !taskId || !wsId) return
     await loadIndex()
   },
   { immediate: true },

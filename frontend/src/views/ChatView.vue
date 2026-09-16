@@ -896,6 +896,7 @@ const hitlOptionLabel = (option: unknown): string => {
               :ws-id="String(vm.route.params.wsId || '')"
               :task-id="vm.currentTask.id"
               :readonly="!vm.canEditSuperpowersDocs"
+              :visible="vm.isSpecPanelOpen && vm.specDrawerTab === 'superpowers_docs'"
             />
           </div>
         </div>
@@ -1099,7 +1100,7 @@ const hitlOptionLabel = (option: unknown): string => {
       :trace-events="vm.runtimeTraceEvents"
       :trace-loading="vm.runtimeTraceLoading"
       @close="vm.closeTaskSkillsDrawer"
-      @refresh-skills="vm.loadTaskRuntimeSkills({ hydrateEditor: vm.showTaskSkillsDrawer })"
+      @refresh-skills="vm.loadTaskRuntimeSkills({ force: true, hydrateEditor: vm.showTaskSkillsDrawer })"
       @refresh-trace="vm.loadTaskRuntimeTrace()"
       @select-skill="vm.selectRuntimeSkill"
       @refresh-tree="vm.loadRuntimeSkillFileTree(vm.runtimeActiveSkillId, { keepCurrentFile: true })"

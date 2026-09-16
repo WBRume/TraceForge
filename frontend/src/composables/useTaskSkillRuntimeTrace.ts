@@ -10,7 +10,7 @@ export function useTaskSkillRuntimeTrace() {
   const loadRuntimeTraceEvents = async (
     workspaceId: string,
     taskId: string,
-    options?: { skillId?: string; eventType?: string; limit?: number; silent?: boolean },
+    options?: { skillId?: string; eventType?: string; limit?: number; silent?: boolean; isCurrent?: () => boolean },
   ) => {
     if (!workspaceId || !taskId) return
     if (!options?.silent) runtimeTraceLoading.value = true
@@ -23,14 +23,18 @@ export function useTaskSkillRuntimeTrace() {
           limit: options?.limit || 100,
         },
       })
+      if (options?.isCurrent && !options.isCurrent()) return
       runtimeTraceEvents.value = Array.isArray(res.data?.items) ? res.data.items : []
     } catch (error) {
+      if (options?.isCurrent && !options.isCurrent()) return
       runtimeTraceError.value = error instanceof Error ? error.message : 'Failed to load runtime trace'
       if (!options?.silent) {
         runtimeTraceEvents.value = []
       }
     } finally {
-      if (!options?.silent) runtimeTraceLoading.value = false
+      if (!options?.silent && (!options?.isCurrent || options.isCurrent())) {
+        runtimeTraceLoading.value = false
+      }
     }
   }
 
