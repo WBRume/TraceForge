@@ -292,11 +292,13 @@ def test_task_resume_requires_interrupted_status(monkeypatch):
     assert exc.value.status_code == 409
 
 
-def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(monkeypatch):
+@pytest.mark.parametrize("session_id", ["session-1", None])
+def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(monkeypatch, session_id):
     SessionLocal = _build_session()
     db = SessionLocal()
     task, job = _seed_task(db, task_status=TaskStatus.INTERRUPTED, job_status=AiJobStatus.INTERRUPTED)
-    task.session_id = "session-1"
+    task.session_id = session_id
+    job.session_id = session_id
     db.commit()
 
     published = []
@@ -344,10 +346,10 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
     db.refresh(job)
     resume_job = db.query(SddAiJob).filter(SddAiJob.id != job.id).one()
     assert task.status == TaskStatus.CODING
-    assert task.session_id == "session-1"
+    assert task.session_id == session_id
     assert job.status == AiJobStatus.CANCELLED
     assert resume_job.status == AiJobStatus.PENDING
-    assert resume_job.session_id == "session-1"
+    assert resume_job.session_id == session_id
     assert resume_job.prompt_text == "use this correction"
     assert resume_job.context_json["resumed_from_job_id"] == job.id
     assert resume_job.context_json["client_message_id"] == "client-resume-1"

@@ -59,6 +59,7 @@ from app.domains.ai.services import ai_job_service
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
 from app.domains.task.services import (
+    chat_submission_service,
     git_patch_service,
     task_cli_state_service,
     task_service,
@@ -392,6 +393,13 @@ def _apply_initialize_sync(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     _ensure_task_not_baselined(task)
+    # Cancellation is a request, not proof that the old attempt has exited.
+    # Check before clearing the session or advancing its generation.
+    if _initialize_has_active_jobs_sync(db, task_id=task_id):
+        raise HTTPException(
+            status_code=409,
+            detail="旧任务执行尚未清理完成，请稍后重试初始化；无需删除任务。",
+        )
     if skill_ids is not None:
         task_service.replace_task_skills_for_initialize(
             db,
@@ -400,7 +408,7 @@ def _apply_initialize_sync(
             skill_ids=skill_ids,
             keep_deleted_runtime_skills=keep_deleted_runtime_skills,
         )
-    task.retry_count += 1
+    task.retry_count = int(task.retry_count or 0) + 1
     task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
     task.status = TaskStatus.CODING
     task.error_message = None
@@ -415,6 +423,16 @@ def _apply_initialize_sync(
         "task_description": task.description,
         "task_spec_doc_path": task.spec_doc_path,
     }
+
+
+def _initialize_has_active_jobs_sync(db: Session, *, task_id: str) -> bool:
+    from app.domains.task.services.chat_submission_service import BLOCKING
+
+    return db.query(ai_job_service.SddAiJob.id).filter(
+        ai_job_service.SddAiJob.task_id == task_id,
+        ai_job_service.SddAiJob.channel == ai_job_service.AiJobChannel.TASK_CHAT,
+        ai_job_service.SddAiJob.status.in_(BLOCKING),
+    ).first() is not None
 
 
 def _serialize_job_by_id_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
@@ -903,9 +921,24 @@ async def initialize_task(
             )
             engine = get_engine(task_id)
             if engine:
-                await engine.stop()
+                try:
+                    await engine.stop()
+                except Exception as exc:
+                    logger.exception("Failed to stop old engine before initialization: task_id={}", task_id)
+                    raise HTTPException(
+                        status_code=409,
+                        detail="旧引擎尚未停止，请稍后重试初始化；原会话已保留。",
+                    ) from exc
             for old_job_id in prepared["cancelled_job_ids"]:
                 await ai_job_service.publish_job(old_job_id)
+
+            from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
+
+            await recover_task_attempts(
+                task_id,
+                run_txn=lambda body: _run_route_db_txn(db, db_bind, body),
+                wait_for_running=True,
+            )
 
             try:
                 state = await _run_route_db_txn(
@@ -972,6 +1005,8 @@ async def initialize_task(
             )
 
             return {"msg": "Task initialized", "job": job_payload}
+    except task_session_service.TaskSessionUndoError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
 
@@ -1222,6 +1257,10 @@ async def resume_interrupted_task(
                 confirm_continue=body.confirm_continue,
                 client_message_id=body.client_message_id,
             )
+    except chat_submission_service.SubmissionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except task_session_service.TaskSessionUndoError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
     except task_session_control_service.TaskSessionControlError as exc:

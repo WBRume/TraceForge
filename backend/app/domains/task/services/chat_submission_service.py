@@ -21,11 +21,10 @@ from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask
+from app.domains.task.services.task_attempt_recovery_service import BLOCKING, recover_task_attempts
 
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
-BLOCKING = [AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL,
-            AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]
 
 
 class SubmissionError(ValueError):
@@ -52,7 +51,7 @@ def assert_no_preparing_submission(db, task_id, allowed_id=None):
         raise SubmissionError("当前消息正在准备，请等待完成")
 
 
-def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
+def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadata):
     task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
@@ -66,6 +65,20 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
         return serialize(previous)
     if str(getattr(task.status, "value", task.status)) in {"PENDING", "PROVISIONING", "DONE", "FAILED", "BASELINED", "INTERRUPTED"}:
         raise SubmissionError("当前任务状态不允许发送普通消息")
+    return None
+
+
+def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
+    previous = _existing_submission_sync(db, task_id, actor_id, client_id, content, metadata)
+    if previous is not None:
+        return previous
+    task = db.get(SddTask, task_id)
+    fingerprint = hashlib.sha256(json.dumps([content, metadata], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    if db.query(SddAiJob.id).filter(
+        SddAiJob.task_id == task_id, SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        SddAiJob.status.in_([AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]),
+    ).first():
+        raise SubmissionError("旧回合尚未清理完成，请稍后重试", "TASK_ATTEMPT_RECOVERY_PENDING")
     if db.query(TaskChatSubmission.id).filter_by(active_task_id=task_id).first():
         raise SubmissionError("当前消息正在准备或执行，请等待完成")
     from app.domains.task.models.session_turn import TaskSessionOperation, TaskSessionOperationStatus
@@ -94,13 +107,25 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
     for key in ("submission_id", "knowledge_state", "client_message_id"):
         clean.pop(key, None)
     try:
-        receipt = await run_db_txn(lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean))
-    except IntegrityError as exc:
-        # A concurrent insert won; the task/client uniqueness remains authoritative.
-        try:
-            receipt = await run_db_txn(lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean))
-        except IntegrityError:
-            raise SubmissionError("当前消息正在准备或执行，请稍后重试") from exc
+        # Return a durable duplicate even when its runner holds the task lock.
+        receipt = await run_db_txn(lambda db: _existing_submission_sync(db, task_id, actor_id, client_id, text, clean))
+        if receipt is None:
+            async with lock_task(task_id):
+                receipt = await run_db_txn(lambda db: _existing_submission_sync(db, task_id, actor_id, client_id, text, clean))
+                if receipt is None:
+                    await recover_task_attempts(task_id, run_txn=run_db_txn)
+                    # Commit receipt cleanup even if a separate blocker still
+                    # prevents accepting this message in the next transaction.
+                    await run_db_txn(lambda db: _reconcile_sync(db, task_id=task_id))
+                    try:
+                        receipt = await run_db_txn(lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean))
+                    except IntegrityError as exc:
+                        try:
+                            receipt = await run_db_txn(lambda db: _accept_sync(db, task_id, actor_id, client_id, text, clean))
+                        except IntegrityError:
+                            raise SubmissionError("当前消息正在准备或执行，请稍后重试") from exc
+    except LockAcquireTimeout as exc:
+        raise SubmissionError("当前任务正在处理其他请求，请稍后重试") from exc
     schedule(receipt["id"])
     try:
         from app.domains.websocket.ws.manager import manager
@@ -183,12 +208,14 @@ def schedule(submission_id):
     task.add_done_callback(finished)
 
 
-def _reconcile_sync(db):
-    pending = [row.id for row in db.query(TaskChatSubmission.id).filter_by(status="PREPARING").order_by(
+def _reconcile_sync(db, task_id=None):
+    scope = TaskChatSubmission.task_id == task_id if task_id is not None else True
+    pending = [row.id for row in db.query(TaskChatSubmission.id).filter_by(status="PREPARING").filter(scope).order_by(
         TaskChatSubmission.created_at, TaskChatSubmission.id).limit(100).all()]
     # Long-running jobs must not occupy the entire recovery page and starve
     # terminal receipts belonging to later tasks.
     rows = db.query(TaskChatSubmission).outerjoin(SddAiJob, SddAiJob.id == TaskChatSubmission.ai_job_id).filter(
+        scope,
         TaskChatSubmission.active_task_id.isnot(None), TaskChatSubmission.status == "EXECUTING",
         or_(SddAiJob.id.is_(None), SddAiJob.status.notin_(BLOCKING)),
     ).order_by(
