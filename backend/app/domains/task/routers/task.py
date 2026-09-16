@@ -1377,14 +1377,22 @@ def get_task_history(
     return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
 
-@router.get("/{task_id}/chat-submissions")
-def list_chat_submissions(ws_id: str, task_id: str,
-                         current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.get("/{task_id}/session-state")
+def get_task_session_state(ws_id: str, task_id: str,
+                           client_message_ids: str = Query(default=""),
+                           current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Initialization and exception-recovery snapshot: active receipt, receipts for
+    the caller's unconfirmed idempotency keys, active jobs and their messages."""
     from app.domains.task.services import chat_submission_service
     verify_workspace_access(ws_id, current_user, db)
     if not task_service.get_task(db, task_id, ws_id):
         raise HTTPException(404, "Task not found")
-    return {"items": chat_submission_service.list_for_task(db, task_id)}
+    keys = [value for value in (client_message_ids or "").split(",") if value.strip()]
+    state = chat_submission_service.build_session_state(
+        db, task_id, actor_id=str(current_user.id), client_message_ids=keys)
+    if state is None:
+        raise HTTPException(404, "Task not found")
+    return state
 
 
 @router.post("/{task_id}/chat-submissions", status_code=202)

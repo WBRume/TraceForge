@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     AI_JOB_LEASE_SECONDS: int = 45
     AI_JOB_REAPER_INTERVAL_SECONDS: int = 10
     AI_JOB_DISPATCH_INTERVAL_SECONDS: int = 2
+    # Transactional task-event outbox publisher: wake-driven, this interval is
+    # only the idle safety net between wakes.
+    TASK_EVENT_PUBLISH_INTERVAL_SECONDS: int = 2
     AI_JOB_WORKER_FAILURE_ALERT_THRESHOLD: int = 3
     AI_JOB_WORKER_MAX_BACKOFF_SECONDS: int = 60
     AI_JOB_WORKER_JITTER_SECONDS: float = 0.5

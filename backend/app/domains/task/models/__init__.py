@@ -10,6 +10,7 @@ from app.domains.task.models import diagnosis as _diagnosis_models  # noqa: E402
 from app.domains.task.models import pre_input as _pre_input_models  # noqa: E402,F401
 from app.domains.task.models import task as _task_models  # noqa: E402,F401
 from app.domains.task.models import task_cli_bootstrap as _task_cli_bootstrap_models  # noqa: E402,F401
+from app.domains.task.models import task_event_outbox as _task_event_outbox_models  # noqa: E402,F401
 from app.domains.task.models import task_repository as _task_repo_models  # noqa: E402,F401
 from app.domains.task.models import session_turn as _session_turn_models  # noqa: E402,F401
 from app.domains.task.models import test_result as _test_result_models  # noqa: E402,F401

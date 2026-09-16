@@ -8,6 +8,7 @@ export interface ChatSubmission {
   content: string
   status: string
   creator_id?: string
+  version?: number
   chat_message_id?: string | null
   ai_job_id?: string | null
   error_message?: string | null
@@ -30,7 +31,7 @@ export function useChatSubmissions(options: {
     for (const [id, row] of Object.entries(saved)) {
       const item = row as ChatSubmission
       if (item?.task_id && item.client_message_id && typeof item.content === 'string') {
-        receipts.value[id] = { ...item, status: 'UNKNOWN' }
+        receipts.value[id] = { ...item, status: 'UNKNOWN', version: 0 }
       }
     }
   } catch { /* Storage is optional; durable receipts still recover through REST. */ }
@@ -47,45 +48,27 @@ export function useChatSubmissions(options: {
   const current = computed(() => Object.values(receipts.value).filter(row => row.task_id === options.taskId()
     && receipts.value[key(row.task_id, row.client_message_id)] === row))
   const busy = computed(() => current.value.some(row => ['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)))
+  /** Unconfirmed idempotency keys (SENDING/UNKNOWN) for recovery snapshots. */
+  const unconfirmedKeys = (): string[] => current.value
+    .filter(row => ['SENDING', 'UNKNOWN'].includes(row.status))
+    .map(row => row.client_message_id)
   const put = (row: ChatSubmission) => {
     const identity = key(row.task_id, row.client_message_id)
     if (invalidated.has(identity)) return
     const old = receipts.value[identity]
-    if (old && (rank[old.status] ?? 0) > (rank[row.status] ?? 0)) return
+    // Server receipts carry a monotonically increasing version; a stale or
+    // out-of-order update never downgrades applied state. Rank remains the
+    // fallback for locally seeded rows that have no version yet.
+    if (old) {
+      const oldVersion = Number(old.version || 0)
+      const nextVersion = Number(row.version || 0)
+      if (oldVersion > 0 || nextVersion > 0) {
+        if (nextVersion < oldVersion) return
+      } else if ((rank[old.status] ?? 0) > (rank[row.status] ?? 0)) return
+    }
     receipts.value[identity] = { ...old, ...row }
     if (['SENDING', 'UNKNOWN', 'PREPARING', 'EXECUTING'].includes(row.status)) provisional.add(identity)
     persistUnconfirmed()
-  }
-  const refresh = async (taskId: string) => {
-    const workspace = options.workspaceId()
-    const revision = revisions.get(taskId) || 0
-    const beforeRequest = new Map(Object.entries(receipts.value).filter(([, row]) => row.task_id === taskId))
-    const { data } = await api.get(`/workspaces/${workspace}/tasks/${taskId}/chat-submissions`)
-    if (options.workspaceId() !== workspace || revision !== (revisions.get(taskId) || 0)) return false
-    let changed = false
-    for (const row of data.items || []) {
-      const old = receipts.value[key(taskId, row.client_message_id)]
-      if (!old || old.status !== row.status || old.chat_message_id !== row.chat_message_id) changed = true
-      put(row)
-    }
-    const present = new Set((data.items || []).map((row: ChatSubmission) => row.client_message_id))
-    for (const [identity, row] of beforeRequest) {
-      if (!['SENDING', 'UNKNOWN'].includes(row.status) && !present.has(row.client_message_id)
-        && receipts.value[identity] === row) {
-        // The server always includes its active receipt. Absence therefore
-        // clears stale state after undo/initialization/history deletion elsewhere.
-        delete receipts.value[identity]
-        provisional.delete(identity)
-        changed = true
-      }
-    }
-    for (const row of Object.values(receipts.value)) {
-      if (row.task_id === taskId && row.status === 'UNKNOWN' && !present.has(row.client_message_id)) {
-        // Same idempotency key resolves an ambiguous HTTP failure without a second turn.
-        changed = (await send(taskId, row.client_message_id, row.content, row.metadata)) || changed
-      }
-    }
-    return changed
   }
   const send = async (taskId: string, clientId: string, content: string, metadata?: Record<string, any>) => {
     const workspace = options.workspaceId()
@@ -149,5 +132,5 @@ export function useChatSubmissions(options: {
     }
     return mapped
   }
-  return { current, busy, put, send, refresh, clear, removeMessages, bubbles }
+  return { current, busy, put, send, clear, removeMessages, bubbles, unconfirmedKeys }
 }

@@ -8,6 +8,7 @@ from app.domains.auth.models.user import User, Workspace
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
+from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.ai.models.ai_job import SddAiJob, AiJobStatus, AiJobChannel
 from app.domains.task.services import chat_submission_service as service, task_session_service
@@ -207,10 +208,17 @@ def test_receipt_durable_without_message_job_or_search_event(task_db):
     install_capture()
     before = task_db.query(SearchOutbox).count()
     row = accepted(task_db)
-    assert service.list_for_task(task_db, "t")[0]["status"] == "PREPARING"
+    state = service.build_session_state(task_db, "t", actor_id="u")
+    assert state["receipts"][0]["status"] == "PREPARING"
+    assert state["receipts"][0]["version"] == 1
     assert task_db.query(ChatMessage).count() == task_db.query(SddAiJob).count() == 0
     assert task_db.query(SearchOutbox).count() == before
     assert row.active_task_id == "t"
+    events = task_db.query(TaskEventOutbox).all()
+    assert len(events) == 1
+    assert events[0].receipt_id == row.id
+    assert events[0].payload_json["receipt"]["status"] == "PREPARING"
+    assert events[0].status == "pending"
 
 
 def test_duplicate_reuses_receipt_and_other_message_is_busy(task_db):
@@ -307,7 +315,7 @@ async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, 
     runner = asyncio.create_task(service._run(row.id))
     await started.wait()
     try:
-        assert service.list_for_task(task_db, "t")[0]["status"] == "PREPARING"
+        assert service.build_session_state(task_db, "t", actor_id="u")["receipts"][0]["status"] == "PREPARING"
         with pytest.raises(service.SubmissionError):
             service._accept_sync(task_db, "t", "u", "second", "again", {})
         task_db.rollback()
@@ -365,6 +373,111 @@ def test_pending_message_cannot_be_used_by_generic_decision_source(task_db):
     execution(task_db, row, AiJobStatus.FAILED)
     with pytest.raises(DecisionSourceError, match="本轮尚未成功"):
         _ensure_chat_message(task_db, "w", "t", "user")
+
+
+def test_every_state_change_queues_one_outbox_event(task_db):
+    row = accepted(task_db)
+    assert task_db.query(TaskEventOutbox).count() == 1
+    # execution() seeds the EXECUTING row directly (its turn owner commits the
+    # same transition with message/job in _persist_chat_turn_sync); emulate the
+    # event that owner writes by transitioning a fresh receipt instead.
+    row.status = "EXECUTING"
+    row.ai_job_id = None
+    task_db.commit()
+    job = execution(task_db, row)
+    service._transition(task_db, row, "SUCCEEDED")
+    task_db.commit()
+    assert row.status == "SUCCEEDED" and row.version == 2
+    latest = task_db.query(TaskEventOutbox).order_by(TaskEventOutbox.id.desc()).first()
+    assert latest.payload_json["receipt"]["status"] == "SUCCEEDED"
+    assert latest.payload_json["receipt"]["version"] == 2
+    assert latest.receipt_version == 2
+
+
+def test_terminal_receipt_rejects_further_transitions(task_db):
+    row = accepted(task_db)
+    execution(task_db, row)  # seeds EXECUTING directly, as the turn owner does
+    job = task_db.get(SddAiJob, "job")
+    job.status = AiJobStatus.SUCCESS
+    task_db.commit()
+    service._transition(task_db, row, "SUCCEEDED")
+    task_db.commit()
+    with pytest.raises(service.SubmissionError):
+        service._transition(task_db, row, "FAILED")
+    task_db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_publisher_relays_outbox_and_backs_off(task_db, recovery_env, monkeypatch):
+    from app.domains.task.services import task_event_publisher as publisher
+    from app.domains.websocket.ws.manager import manager
+    row = accepted(task_db)
+    task_db.commit()
+    sent = []
+    async def record(task_id, message):
+        sent.append((task_id, message.type, message.payload))
+        return 1
+    monkeypatch.setattr(manager, "send_message_to_room", record)
+    published = await publisher.publish_once()
+    assert published == 1
+    assert sent[0][0] == "t" and sent[0][1] == "chat_submission_update"
+    assert sent[0][2]["receipt"]["id"] == row.id
+    assert sent[0][2]["event_id"]
+    assert task_db.query(TaskEventOutbox).one().status == "published"
+    # A failed publish defers with backoff instead of dropping the event.
+    row.status, row.active_task_id = "FAILED", None  # release the active slot
+    task_db.commit()
+    row2 = accepted(task_db, "again")
+    task_db.commit()
+    async def boom(task_id, message):
+        raise RuntimeError("room unavailable")
+    monkeypatch.setattr(manager, "send_message_to_room", boom)
+    published = await publisher.publish_once()
+    assert published == 0
+    deferred = task_db.query(TaskEventOutbox).filter_by(status="pending").one()
+    assert deferred.last_error_code == "RuntimeError"
+    assert deferred.available_at is not None
+
+
+@pytest.mark.asyncio
+async def test_convergence_finalizes_receipt_in_same_transaction(task_db, monkeypatch):
+    from app.domains.ai.services import ai_job_convergence_service as convergence
+    row = accepted(task_db)
+    execution(task_db, row)  # seeds EXECUTING directly, as the turn owner does
+    task_db.commit()
+    request = convergence.AttemptConvergenceRequest(
+        job_id="job", run_token="", worker_boot_id="",
+        requested_status=AiJobStatus.SUCCESS, reason="turn done",
+        evidence=convergence.resolve_attempt_evidence(
+            execution_kind="remote_session", fallback_dead=True),
+        intent=convergence.ConvergenceIntent.NORMAL_FINALIZE,
+    )
+    result = convergence.converge_job_attempt_sync(task_db, request)
+    assert result.changed and result.is_final
+    task_db.expire_all()
+    assert row.status == "SUCCEEDED"
+    assert row.active_task_id is None
+    events = task_db.query(TaskEventOutbox).all()
+    assert events[-1].payload_json["receipt"]["status"] == "SUCCEEDED"
+    for message in task_db.query(ChatMessage).all():
+        if message.metadata_json.get("submission_id") == row.id:
+            assert message.metadata_json["knowledge_state"] == "published"
+
+
+def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):
+    row = accepted(task_db, "ancient-key")
+    execution(task_db, row, AiJobStatus.FAILED)
+    task_db.get(SddTask, "t").session_generation = 9  # receipt is from an old generation
+    task_db.commit()
+    state = service.build_session_state(task_db, "t", actor_id="u",
+                                        client_message_ids=["ancient-key", "never-seen"])
+    ids = {receipt["id"] for receipt in state["receipts"]}
+    assert row.id in ids
+    by_client = {receipt["client_message_id"]: receipt for receipt in state["receipts"]}
+    assert "ancient-key" in by_client
+    assert "never-seen" not in by_client
+    assert state["session_generation"] == 9
+    assert any(message["id"] == "user" for message in state["messages"])
 
 
 @pytest.mark.asyncio
@@ -465,10 +578,9 @@ def test_http_acceptance_recovery_idempotency_and_access(task_db, monkeypatch):
     factory = sessionmaker(bind=task_db.get_bind())
     monkeypatch.setattr("app.database.SessionLocal", factory)
     monkeypatch.setattr(service, "schedule", lambda receipt_id: None)
-    async def no_broadcast(*args, **kwargs):
+    async def no_wake():
         pass
-    from app.domains.websocket.ws.manager import manager
-    monkeypatch.setattr(manager, "send_message_to_room", no_broadcast)
+    monkeypatch.setattr(service, "wake_event_publisher", no_wake)
     app = FastAPI()
     app.include_router(router.router, prefix="/api")
     def get_db():
@@ -483,7 +595,12 @@ def test_http_acceptance_recovery_idempotency_and_access(task_db, monkeypatch):
         assert first.status_code == 202, first.text
         assert first.json()["status"] == "PREPARING"
         assert client.post(url, json=payload).json()["id"] == first.json()["id"]
-        assert client.get(url).json()["items"][0]["id"] == first.json()["id"]
+        state_url = "/api/workspaces/w/tasks/t/session-state?client_message_ids=http"
+        state = client.get(state_url)
+        assert state.status_code == 200, state.text
+        assert state.json()["receipts"][0]["id"] == first.json()["id"]
+        other = client.get("/api/workspaces/other/tasks/t/session-state")
+        assert other.status_code == 403
         assert client.post(url, json={**payload, "client_message_id": "second"}).status_code == 409
         assert client.post(url.replace("/w/", "/other/"), json=payload).status_code == 403
     assert task_db.query(ChatMessage).count() == task_db.query(SddAiJob).count() == 0

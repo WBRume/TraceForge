@@ -106,6 +106,35 @@ def _new_chat_message(
     return message
 
 
+def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]:
+    """Formal user-message DTO for receipt events; field-compatible with WSChatPayload."""
+    from app.domains.auth.models.user import User, WorkspaceMember
+    creator = db.query(User).filter(User.id == message.creator_id).first() if message.creator_id else None
+    member = db.query(WorkspaceMember).filter(
+        WorkspaceMember.workspace_id == message.workspace_id,
+        WorkspaceMember.user_id == message.creator_id,
+    ).first() if message.creator_id else None
+    metadata = message.metadata_json if isinstance(message.metadata_json, dict) else None
+    return {
+        "task_id": message.task_id,
+        "role": _enum_text(message.role) if message.role else "user",
+        "content": message.content,
+        "message_type": _enum_text(message.message_type) if message.message_type else "text",
+        "metadata": metadata,
+        "id": message.id,
+        "client_message_id": (metadata or {}).get("client_message_id"),
+        "creator_id": message.creator_id,
+        "creator_display_name": creator.display_name if creator else None,
+        "creator_is_workspace_expert": bool(member.is_expert) if member else False,
+        "creator_avatar_url": creator.avatar_url if creator else None,
+        "creator_avatar_svg": creator.avatar_svg if creator else None,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "session_turn_id": message.session_turn_id,
+        "session_generation": message.session_generation,
+        "can_undo": bool(message.session_turn_id),
+    }
+
+
 @dataclass(frozen=True)
 class CreatedChatTurn:
     """回合创建结果的纯数据快照。
@@ -297,6 +326,15 @@ def _persist_chat_turn_sync(
         submission.ai_job_id = job.id
         submission.chat_message_id = message.id
         submission.status = "EXECUTING"
+        submission.version = int(submission.version or 1) + 1
+        # Same transaction carries the receipt's EXECUTING event with the formal
+        # user message and job; the publisher relays both into the task room.
+        from app.domains.task.services import chat_submission_service
+        chat_submission_service.save_task_event_outbox(
+            db, row=submission,
+            message=_chat_message_event_dto(db, message),
+            job=ai_job_service.serialize_job(job),
+        )
     db.commit()
     try:
         from app.domains.task.services import context_token_service

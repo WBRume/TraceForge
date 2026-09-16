@@ -467,6 +467,7 @@ async def resume_interrupted_task(
 
     await recover_task_attempts(task_id, run_txn=run_db_txn)
     await run_db_txn(lambda db: chat_submission_service._reconcile_sync(db, task_id=task_id))
+    await chat_submission_service.wake_event_publisher()
 
     engine = get_engine(task_id)
     if engine and engine.running:

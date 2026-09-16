@@ -89,7 +89,9 @@ const resolveByUrl = (target: string) => {
   if (target.endsWith('/tasks')) return Promise.resolve({ data: { items: [], total: 0, page: 1, page_size: 20 } })
   if (target.includes('/permissions/me')) return Promise.resolve({ data: { permissions: {} } })
   if (target.endsWith('/history')) return Promise.resolve({ data: { messages: [], logs: [], has_more: false } })
-  if (target.includes('/chat-submissions')) return Promise.resolve({ data: { items: [] } })
+  if (target.includes('/session-state')) return Promise.resolve({
+    data: { task_id: 't1', session_generation: 1, session_revision: 0, receipts: [], jobs: [], messages: [] },
+  })
   if (target.includes('/ai-jobs')) return Promise.resolve({ data: { items: [] } })
   if (target.includes('/pre-input/active')) return Promise.resolve({ data: { pre_input: null } })
   if (target.endsWith('/skills/runtime')) return Promise.resolve({ data: { items: [] } })
@@ -141,7 +143,7 @@ describe('useChatViewModel session state single flight', () => {
     wrapper = null
   })
 
-  it('loads history, ai-jobs and pre-input once, only after the first subscription is ready', async () => {
+  it('loads history, session-state and pre-input once, only after the first subscription is ready', async () => {
     await mountViewModel()
     await vm.selectTask(task('t1', ['s1', 's2']))
     const socket = lastSocket()
@@ -149,18 +151,21 @@ describe('useChatViewModel session state single flight', () => {
     expect(countCalls('/ai-jobs')).toBe(0)
     expect(countCalls('/pre-input/active')).toBe(0)
     expect(countCalls('/history')).toBe(0)
+    expect(countCalls('/session-state')).toBe(0)
 
     socket.receive({ type: 'resume_ok', epoch: 'e', to_sequence: 0, high_watermark: 0 })
     await flushPromises()
     expect(countCalls('/history')).toBe(1)
-    expect(countCalls('/ai-jobs')).toBe(1)
+    expect(countCalls('/session-state')).toBe(1)
     expect(countCalls('/pre-input/active')).toBe(1)
+    // jobs now ride on the session-state snapshot; no separate ai-jobs request
+    expect(countCalls('/ai-jobs')).toBe(0)
 
     // 重复就绪事件（reconnect 后同代次）不再重复请求快照
     socket.receive({ type: 'resume_ok', epoch: 'e', to_sequence: 1, high_watermark: 1 })
     await flushPromises()
     expect(countCalls('/history')).toBe(1)
-    expect(countCalls('/ai-jobs')).toBe(1)
+    expect(countCalls('/session-state')).toBe(1)
     expect(countCalls('/pre-input/active')).toBe(1)
   })
 
@@ -171,13 +176,13 @@ describe('useChatViewModel session state single flight', () => {
       type: 'resync_required', epoch: 'e', barrier_sequence: 0, high_watermark: 0, reason: 'initial_sync',
     })
     expect(countCalls('/history')).toBe(1)
-    expect(countCalls('/ai-jobs')).toBe(1)
+    expect(countCalls('/session-state')).toBe(1)
     expect(countCalls('/pre-input/active')).toBe(1)
 
     socket.receive({ type: 'resync_ok', epoch: 'e', to_sequence: 0, high_watermark: 0 })
     await flushPromises()
     expect(countCalls('/history')).toBe(1)
-    expect(countCalls('/ai-jobs')).toBe(1)
+    expect(countCalls('/session-state')).toBe(1)
     expect(countCalls('/pre-input/active')).toBe(1)
   })
 
@@ -189,7 +194,7 @@ describe('useChatViewModel session state single flight', () => {
     socket.onclose?.({ code: 1006 })
     await flushPromises()
     expect(countCalls('/history')).toBe(1)
-    expect(countCalls('/ai-jobs')).toBe(1)
+    expect(countCalls('/session-state')).toBe(1)
     expect(countCalls('/pre-input/active')).toBe(1)
   })
 
@@ -198,7 +203,7 @@ describe('useChatViewModel session state single flight', () => {
     let t1Signal: AbortSignal | undefined
     apiMock.get.mockImplementation((url: string, config?: { signal?: AbortSignal }) => {
       const target = String(url)
-      if (target.includes('/tasks/t1/ai-jobs')) {
+      if (target.includes('/tasks/t1/session-state')) {
         t1Signal = config?.signal
         return pending as unknown as Promise<{ data: unknown }>
       }
@@ -214,8 +219,8 @@ describe('useChatViewModel session state single flight', () => {
     expect(t1Signal?.aborted).toBe(true)
 
     await readySocket()
-    expect(countCalls('/ai-jobs')).toBe(2)
-    expect(apiMock.get.mock.calls.filter(([url]) => String(url).includes('/tasks/t1/ai-jobs'))).toHaveLength(1)
+    expect(countCalls('/session-state')).toBe(2)
+    expect(apiMock.get.mock.calls.filter(([url]) => String(url).includes('/tasks/t1/session-state'))).toHaveLength(1)
   })
 
   it('defers runtime skills until the drawer opens and shows the summary count meanwhile', async () => {
@@ -230,5 +235,53 @@ describe('useChatViewModel session state single flight', () => {
     await flushPromises()
     expect(apiMock.get.mock.calls.filter(([url]) => String(url).endsWith('/skills/runtime'))).toHaveLength(1)
     expect(apiMock.get.mock.calls.filter(([url]) => String(url).endsWith('/skills/runtime/events'))).toHaveLength(1)
+  })
+
+  it('applies submission events directly without a REST requery', async () => {
+    await mountViewModel()
+    await vm.selectTask(task('t1'))
+    const socket = await readySocket()
+    const before = countCalls('/session-state')
+
+    socket.receive({ type: 'event', room: 'task:t1', epoch: 'e', sequence: 1, event_id: 'ev-1',
+      event_type: 'chat_submission_update', payload: {
+        task_id: 't1', session_generation: 1, session_revision: 1, event_id: 'ev-1',
+        receipt: { id: 'r1', task_id: 't1', client_message_id: 'c1', content: 'hello', status: 'PREPARING', version: 1 },
+      } })
+    await flushPromises()
+    expect(vm.messages.value.some(item => String(item.client_message_id || '') === 'c1')).toBe(true)
+    expect(vm.engineRunning.value).toBe(true)
+
+    socket.receive({ type: 'event', room: 'task:t1', epoch: 'e', sequence: 2, event_id: 'ev-2',
+      event_type: 'chat_submission_update', payload: {
+        task_id: 't1', session_generation: 1, session_revision: 1, event_id: 'ev-2',
+        receipt: { id: 'r1', task_id: 't1', client_message_id: 'c1', status: 'EXECUTING', version: 2,
+          chat_message_id: 'm1', ai_job_id: 'j1' },
+        message: { id: 'm1', task_id: 't1', role: 'user', content: 'hello', message_type: 'text',
+          client_message_id: 'c1', session_generation: 1, session_turn_id: 'turn1' },
+        job: { id: 'j1', task_id: 't1', status: 'PENDING', progress: 0 },
+      } })
+    await flushPromises()
+    expect(vm.messages.value.some(item => String(item.id || '') === 'm1')).toBe(true)
+    expect(vm.activeChatJobs.value.j1?.id).toBe('j1')
+
+    // 事件路径零 REST 反查
+    expect(countCalls('/session-state')).toBe(before)
+    expect(countCalls('/history')).toBe(1)
+    expect(countCalls('/ai-jobs')).toBe(0)
+  })
+
+  it('does not poll submissions on a timer while a receipt is executing', async () => {
+    vi.useFakeTimers()
+    try {
+      await mountViewModel()
+      await vm.selectTask(task('t1'))
+      await readySocket()
+      const baseline = apiMock.get.mock.calls.length
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(apiMock.get.mock.calls.length).toBe(baseline)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

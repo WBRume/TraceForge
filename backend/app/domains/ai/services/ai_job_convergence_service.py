@@ -697,6 +697,30 @@ def _apply_business_status_in_txn(
         job.failure_code = request.evidence.failure_code or reason or job.failure_code
         job.last_reap_verified_at = now
         job.next_reap_at = None
+    _finalize_submission_in_txn(db, job, final_status)
+
+
+def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobStatus) -> None:
+    """Converge the owning submission in the same commit as the job's final status.
+
+    Only ordinary TASK_CHAT turns carry a receipt; initialize/resume/HITL paths
+    have none and this is a no-op.  CANCELLED/REVERTED turns already had their
+    receipts removed by undo redaction, so no event resurrects deleted content.
+    """
+    if job.channel != AiJobChannel.TASK_CHAT or not job.session_turn_id:
+        return
+    if final_status not in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
+        return
+    from app.domains.task.services import chat_submission_service
+    try:
+        chat_submission_service.finalize_submission_in_txn(db, job, final_status)
+    except Exception as exc:
+        # Submission convergence must never block the job's own final status;
+        # the reconciler picks the receipt up on the next send/recover pass.
+        logger.warning(
+            "Submission finalize alongside job convergence deferred: job_id={}, error={}",
+            job.id, exc,
+        )
 
 
 def _apply_orphaned_in_txn(
