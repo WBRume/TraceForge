@@ -126,7 +126,7 @@ export function useChatSubmissions(options: {
     }
     persistUnconfirmed()
   }
-  const bubbles = (messages: any[]) => {
+  const bubbles = (messages: any[], creatorMeta?: Record<string, any>) => {
     const mapped = messages.map(message => {
       const row = current.value.find(item => item.chat_message_id === message.id)
       if (row) provisional.delete(key(row.task_id, row.client_message_id))
@@ -138,9 +138,14 @@ export function useChatSubmissions(options: {
         || (row.status === 'FAILED' && row.chat_message_id && !awaitingHistory)
         || mapped.some(message => message.id === row.chat_message_id
         || message.client_message_id === row.client_message_id)) continue
+      // The pending bubble must render exactly like the eventual server message:
+      // creator profile decides the expert badge/avatar, metadata decides the body.
+      const creator = creatorMeta && String(row.creator_id || '') === options.userId() ? creatorMeta : null
       mapped.push({ id: `submission-${row.client_message_id}`, role: 'user', content: row.content,
         client_message_id: row.client_message_id, creator_id: row.creator_id, created_at: row.created_at,
-        message_type: 'text', can_undo: false, delivery_status: row.status.toLowerCase(), delivery_error: row.error_message })
+        message_type: 'text', can_undo: false, metadata: row.metadata || null,
+        delivery_status: row.status.toLowerCase(), delivery_error: row.error_message,
+        ...(creator || {}) })
     }
     return mapped
   }

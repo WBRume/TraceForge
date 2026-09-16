@@ -122,6 +122,14 @@ export function useChatViewModel() {
   const taskListLoadingMore = ref(false)
   const TASK_LIST_PAGE_SIZE = 20
   
+  const localUserMessageMeta = () => ({
+    creator_id: authStore.user?.id || null,
+    creator_display_name: authStore.user?.display_name || 'You',
+    creator_is_workspace_expert: workspaceCurrentUserIsExpert.value || Boolean(currentWorkspace.value?.my_is_expert),
+    creator_avatar_url: authStore.user?.avatar_url || null,
+    creator_avatar_svg: authStore.user?.avatar_svg || null,
+  })
+
   // Chat bubbles: 仅自然语言 (user / assistant text)
   const messages = ref<any[]>([])
   const submissions = useChatSubmissions({
@@ -130,7 +138,14 @@ export function useChatViewModel() {
     userId: () => String(authStore.user?.id || ''),
   })
   const recoveringSubmissions = ref(false)
-  const visibleMessages = computed(() => submissions.bubbles(messages.value))
+  // 服务端落库时间可能比本地发送晚数秒；本次会话内按发送时刻固定显示，避免气泡时间跳变
+  const localSentTimes = new Map<string, string>()
+  const visibleMessages = computed(() => submissions.bubbles(messages.value, localUserMessageMeta())
+    .map((message: any) => {
+      const clientId = String(message?.client_message_id || '')
+      const sentAt = clientId ? localSentTimes.get(clientId) : undefined
+      return sentAt && sentAt !== message.created_at ? { ...message, created_at: sentAt } : message
+    }))
   let submissionPoll: ReturnType<typeof setInterval> | null = null
   let submissionRefreshRunning = false
   const refreshSubmissions = async (taskId: string) => {
@@ -342,14 +357,6 @@ export function useChatViewModel() {
     specDrawerLevel.value = 1
     lastOpenSpecDrawerLevel.value = 1
   }
-
-  const localUserMessageMeta = () => ({
-    creator_id: authStore.user?.id || null,
-    creator_display_name: authStore.user?.display_name || 'You',
-    creator_is_workspace_expert: workspaceCurrentUserIsExpert.value || Boolean(currentWorkspace.value?.my_is_expert),
-    creator_avatar_url: authStore.user?.avatar_url || null,
-    creator_avatar_svg: authStore.user?.avatar_svg || null,
-  })
 
   const generateClientMessageId = (): string => {
     const cryptoApi = globalThis.crypto
@@ -3012,6 +3019,7 @@ export function useChatViewModel() {
     if (historyContext.anchored.value) await returnToLatest()
     const displayContent = String(options.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
+    localSentTimes.set(clientMessageId, new Date().toISOString())
     sendingChat.value = true
     if (!isTaskInterrupted.value && !options.metadata?.interaction_id && currentTask.value?.id) {
       const taskId = String(currentTask.value.id)
