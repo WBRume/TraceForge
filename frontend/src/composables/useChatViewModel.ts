@@ -146,22 +146,6 @@ export function useChatViewModel() {
       const sentAt = clientId ? localSentTimes.get(clientId) : undefined
       return sentAt && sentAt !== message.created_at ? { ...message, created_at: sentAt } : message
     }))
-  let submissionPoll: ReturnType<typeof setInterval> | null = null
-  let submissionRefreshRunning = false
-  const refreshSubmissions = async (taskId: string) => {
-    try {
-      const changed = await submissions.refresh(taskId)
-      if (currentTask.value?.id === taskId) {
-        recoveringSubmissions.value = false
-        if (changed) {
-          await loadHistory(taskId)
-          await loadActiveChatJobs(taskId)
-        }
-      }
-    } catch (error) {
-      console.warn('Failed to recover chat submissions', error)
-    }
-  }
   const historyContext = useChatMessageContext()
   let historyGeneration = 0
   
@@ -797,31 +781,36 @@ export function useChatViewModel() {
       for (const job of items) {
         upsertChatJob(job)
       }
-      const executingJobs = items.filter(job => isJobExecuting(job.status))
-      if (!executingJobs.length) {
-        engineRunning.value = false
-        pinnedCards.value = pinnedCards.value.filter(card => card.type !== 'status')
-        resetThinkingPanel()
-        taskRuntimePanels.clear(taskId)
-        return true
-      }
-      if (!pinnedCards.value.some(card => card.type === 'status')) {
-        const job = executingJobs.find(item => Boolean(item.session_id)) || executingJobs[0]
-        const isSessionStarted = Boolean(job.session_id) && !job.context_json?.job_kind
-        pinnedCards.value.push({
-          id: `job-status-${job.id}`,
-          type: 'status',
-          status: isSessionStarted ? 'INIT' : 'RUNNING',
-          message: isSessionStarted ? t('chat.agent_session_started') : (job.message || t('chat.ai_job_running')),
-          model: String(job.context_json?.model || '').trim() || null,
-          created_at: job.started_at || job.created_at || new Date().toISOString(),
-        })
-      }
-      return true
+      return seedStatusCardsFromJobs(taskId, items)
     } catch (e) {
       if (!isCanceledRequest(e)) console.warn('Failed to load active AI jobs', e)
       return false
     }
+  }
+
+  /** 用活跃 job 列表种子运行态：执行中保持状态卡片与 engineRunning，全部结束则收敛。 */
+  const seedStatusCardsFromJobs = (taskId: string, items: ChatAiJob[]): boolean => {
+    const executingJobs = items.filter(job => isJobExecuting(job.status))
+    if (!executingJobs.length) {
+      engineRunning.value = false
+      pinnedCards.value = pinnedCards.value.filter(card => card.type !== 'status')
+      resetThinkingPanel()
+      taskRuntimePanels.clear(taskId)
+      return true
+    }
+    if (!pinnedCards.value.some(card => card.type === 'status')) {
+      const job = executingJobs.find(item => Boolean(item.session_id)) || executingJobs[0]
+      const isSessionStarted = Boolean(job.session_id) && !job.context_json?.job_kind
+      pinnedCards.value.push({
+        id: `job-status-${job.id}`,
+        type: 'status',
+        status: isSessionStarted ? 'INIT' : 'RUNNING',
+        message: isSessionStarted ? t('chat.agent_session_started') : (job.message || t('chat.ai_job_running')),
+        model: String(job.context_json?.model || '').trim() || null,
+        created_at: job.started_at || job.created_at || new Date().toISOString(),
+      })
+    }
+    return true
   }
   
   const loadTaskSpecBootstrap = async (taskId: string, taskSnapshot?: any) => {
@@ -1586,6 +1575,10 @@ export function useChatViewModel() {
     sessionStateAbort?.abort()
     sessionStateAbort = new AbortController()
     clearSessionStateFallbackTimer()
+    clearRecoverSessionRetryTimer()
+    // 会话切换：旧任务的恢复请求已被 abort，新的 session-state 快照不再复用旧 flight
+    recoverSessionFlight = null
+    recoverSessionAttempt = 0
     persistCurrentRuntimePanels()
     workbenchScroll.rememberScrollPosition()
     if (task.id !== preferredSpecTaskId.value) {
@@ -1598,8 +1591,7 @@ export function useChatViewModel() {
     clearContextWindowRefreshTimer()
     specDrawerTab.value = task.task_type === 'DIAGNOSIS' ? 'diag_docs' : (hasTaskSpecification(task) ? 'spec_doc' : 'superpowers_docs')
     currentTask.value = task
-    recoveringSubmissions.value = true
-    void refreshSubmissions(String(task.id))
+    // 未确认回执的恢复由首屏 session-state 快照统一落地（loadSessionStateOnce 单飞链）
     showTaskSkillsDrawer.value = false
     messages.value = []
     terminalLogs.value = []
@@ -2794,6 +2786,8 @@ export function useChatViewModel() {
         return
       }
       if (currentTask.value?.id !== taskId) return
+      // 断线期间仍有待处理回执：连接恢复前先以数据库快照收敛一次。
+      if (submissions.busy.value) void recoverSession('ws-closed-pending-receipts')
       if (!wsSubscriptionReady || wsSubscriptionReadyTaskId !== taskId) {
         // 首次订阅未就绪即断开：HTTP 兜底，重连后仍走恢复协议刷新
         onInitialConnectionUnavailable(taskId)
@@ -3031,9 +3025,40 @@ export function useChatViewModel() {
       }
 
       case 'chat_submission_update': {
-        if (String(payload?.task_id || '') === String(currentTask.value?.id || '')) {
-          submissions.put(payload)
-          void refreshSubmissions(payload.task_id)
+        // 事务 outbox 事件直接应用：回执按版本合并，EXECUTING 事件同时携带
+        // 正式用户消息与 Job；不做 REST 反查，也不重刷 history / ai-jobs。
+        if (String(payload?.task_id || '') !== String(currentTask.value?.id || '')) break
+        if (payload?.session_generation !== undefined
+          && Number(payload.session_generation || 0) < Number(currentTask.value?.session_generation || 0)) break
+        const receipt = payload?.receipt
+        if (!receipt?.client_message_id) break
+        submissions.put(receipt)
+        if (payload.message) {
+          upsertChatMessage({
+            id: payload.message.id || `local-${receipt.client_message_id}`,
+            role: payload.message.role || 'user',
+            content: payload.message.content,
+            created_at: payload.message.created_at || new Date().toISOString(),
+            message_type: payload.message.message_type || 'text',
+            creator_id: payload.message.creator_id || null,
+            creator_display_name: payload.message.creator_display_name || null,
+            creator_is_workspace_expert: Boolean(payload.message.creator_is_workspace_expert),
+            creator_avatar_url: payload.message.creator_avatar_url || null,
+            creator_avatar_svg: payload.message.creator_avatar_svg || null,
+            client_message_id: payload.message.client_message_id || receipt.client_message_id,
+            decision_id: payload.message.decision_id || null,
+            metadata: payload.message.metadata || null,
+            session_turn_id: payload.message.session_turn_id || null,
+            session_generation: payload.message.session_generation ?? null,
+            can_undo: payload.message.can_undo,
+            delivery_status: 'sent',
+          })
+          syncConfirmationCardsFromMessages()
+          if (!historyContext.anchored.value) scrollToBottom('chat')
+        }
+        if (payload.job) {
+          upsertChatJob(payload.job)
+          refreshDiagnosisSummaryResult(payload.job)
         }
         break
       }
@@ -3197,10 +3222,12 @@ export function useChatViewModel() {
     if (!isTaskInterrupted.value && !options.metadata?.interaction_id && currentTask.value?.id) {
       const taskId = String(currentTask.value.id)
       try {
+        // POST 回执直接应用；后续状态由 outbox 事件（chat_submission_update）驱动。
         const accepted = await submissions.send(taskId, clientMessageId, normalized, options.metadata)
-        if (currentTask.value?.id === taskId) {
-          if (accepted) void refreshSubmissions(taskId)
-          scrollToBottom('chat')
+        if (currentTask.value?.id === taskId && accepted) scrollToBottom('chat')
+        if (!accepted && submissions.current.value.some(row =>
+          row.client_message_id === clientMessageId && row.status === 'UNKNOWN')) {
+          void recoverSession('send-unknown')
         }
         return accepted
       } finally {
@@ -3370,6 +3397,106 @@ export function useChatViewModel() {
     `${String(route.params.wsId || '')}:${taskId}:${sessionStateGeneration}`
   )
 
+  /**
+   * 任务级恢复协调器：仅异常路径（首屏、WS 恢复、发送 UNKNOWN、断线后仍有
+   * 待处理回执、回到页面发现连接失效）触发；单请求串行、指数退避，事件驱动
+   * 的正常更新不经过这里。未确认回执按幂等键精确查询，网络超时绝不视为未接收。
+   */
+  let recoverSessionFlight: Promise<boolean> | null = null
+  let recoverSessionAttempt = 0
+  let recoverSessionRetryTimer: number | null = null
+
+  const clearRecoverSessionRetryTimer = () => {
+    if (recoverSessionRetryTimer !== null) {
+      window.clearTimeout(recoverSessionRetryTimer)
+      recoverSessionRetryTimer = null
+    }
+  }
+
+  const scheduleRecoverSessionRetry = (taskId: string, reason: string) => {
+    if (recoverSessionRetryTimer !== null) return
+    const delay = wsBackoffDelay(recoverSessionAttempt)
+    recoverSessionRetryTimer = window.setTimeout(() => {
+      recoverSessionRetryTimer = null
+      void recoverSession(reason)
+    }, delay)
+  }
+
+  const fetchSessionState = async (taskId: string, unconfirmed: string[]) => {
+    const params: Record<string, string> = {}
+    if (unconfirmed.length) params.client_message_ids = unconfirmed.join(',')
+    const res = await api.get(`/workspaces/${route.params.wsId}/tasks/${taskId}/session-state`, {
+      params, signal: sessionStateAbort?.signal,
+    })
+    return res.data
+  }
+
+  const applySessionSnapshot = (snapshot: any): boolean => {
+    const taskId = String(snapshot?.task_id || '')
+    if (String(currentTask.value?.id || '') !== taskId) return false
+    if (Number(snapshot?.session_generation || 0) < Number(currentTask.value?.session_generation || 0)) return false
+    let changed = false
+    for (const receipt of (snapshot?.receipts || []) as any[]) {
+      submissions.put(receipt)
+      changed = true
+    }
+    const jobs = (snapshot?.jobs || []) as ChatAiJob[]
+    for (const job of jobs) {
+      upsertChatJob(job)
+      changed = true
+    }
+    seedStatusCardsFromJobs(taskId, jobs)
+    for (const message of (snapshot?.messages || []) as any[]) {
+      upsertChatMessage(mapHistoryMessages([message])[0])
+      changed = true
+    }
+    if (jobs.length) syncConfirmationCardsFromMessages()
+    return changed
+  }
+
+  const resolveUnknownReceipts = async (snapshot: any): Promise<void> => {
+    const taskId = String(snapshot?.task_id || '')
+    if (String(currentTask.value?.id || '') !== taskId) return
+    const present = new Set((snapshot?.receipts || []).map((row: any) => String(row.client_message_id)))
+    for (const row of submissions.current.value) {
+      if (row.task_id !== taskId || row.status !== 'UNKNOWN' || present.has(row.client_message_id)) continue
+      // The server has no record of this key; re-submit with the original
+      // idempotency key — a lost response is never treated as "not received".
+      await submissions.send(taskId, row.client_message_id, row.content, row.metadata)
+    }
+  }
+
+  const recoverSession = (reason: string, options?: { silent?: boolean }): Promise<boolean> => {
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return Promise.resolve(false)
+    if (recoverSessionFlight) return recoverSessionFlight
+    clearRecoverSessionRetryTimer()
+    const workspace = String(route.params.wsId || '')
+    const unconfirmed = submissions.unconfirmedKeys()
+    const flight = (async (): Promise<boolean> => {
+      try {
+        const snapshot = await fetchSessionState(taskId, unconfirmed)
+        if (String(route.params.wsId || '') !== workspace || String(currentTask.value?.id || '') !== taskId) return false
+        applySessionSnapshot(snapshot)
+        await resolveUnknownReceipts(snapshot)
+        recoverSessionAttempt = 0
+        if (currentTask.value?.id === taskId) recoveringSubmissions.value = false
+        return true
+      } catch (error) {
+        if (isCanceledRequest(error)) return false
+        if (!options?.silent) console.warn('Failed to recover session state', reason, error)
+        // 指数退避 + 抖动重试；恢复正常（成功落地）即停止。
+        recoverSessionAttempt += 1
+        scheduleRecoverSessionRetry(taskId, reason)
+        return false
+      } finally {
+        if (recoverSessionFlight === flight) recoverSessionFlight = null
+      }
+    })()
+    recoverSessionFlight = flight
+    return flight
+  }
+
   const clearSessionStateFallbackTimer = () => {
     if (sessionStateFallbackTimer !== null) {
       window.clearTimeout(sessionStateFallbackTimer)
@@ -3378,16 +3505,17 @@ export function useChatViewModel() {
   }
 
   /**
-   * 会话初始快照：历史先落地，再补齐任务与预输入；顺序与恢复屏障一致
-   * （屏障期间事件被服务端暂存，快照完成后才放行，故增量不会被子集覆盖）。
+   * 会话初始快照：历史先落地，再以一个 session-state 请求补齐回执/活跃 Job/
+   * 关联消息与预输入；顺序与恢复屏障一致（屏障期间事件被服务端暂存，
+   * 快照完成后才放行，故增量不会被子集覆盖）。
    */
   const loadSessionSnapshot = async (taskId: string): Promise<boolean> => {
     await loadHistory(taskId, true)
-    const [jobsLoaded, preInputLoaded] = await Promise.all([
-      loadActiveChatJobs(taskId),
+    const [stateLoaded, preInputLoaded] = await Promise.all([
+      recoverSession('initial-snapshot', { silent: true }),
       loadActivePreInput(taskId),
     ])
-    return jobsLoaded && preInputLoaded
+    return stateLoaded && preInputLoaded
   }
 
   /**
@@ -3425,7 +3553,6 @@ export function useChatViewModel() {
       void loadTaskSpecBootstrap(taskId, currentTask.value)
     }
   }
-
   const armSessionStateFallback = (taskId: string) => {
     clearSessionStateFallbackTimer()
     const key = sessionStateKeyFor(taskId)
@@ -3661,28 +3788,36 @@ export function useChatViewModel() {
   }
   
   // ─── Lifecycle ───
+  const handleVisibilityRecovery = () => {
+    if (document.visibilityState !== 'visible') return
+    const taskId = String(currentTask.value?.id || '')
+    if (!taskId) return
+    // 回到页面时发现连接或恢复状态失效：仅异常路径（断开 + 仍有待处理回执）触发
+    const wsHealthy = Boolean(ws && ws.readyState === WebSocket.OPEN
+      && wsSubscriptionReady && wsSubscriptionReadyTaskId === taskId)
+    if (!wsHealthy && (submissions.busy.value || recoveringSubmissions.value)) {
+      void recoverSession('visibility-unavailable')
+    }
+  }
+
   onMounted(() => {
-    submissionPoll = setInterval(async () => {
-      const taskId = String(currentTask.value?.id || '')
-      if (!taskId || submissionRefreshRunning || (!submissions.busy.value && !recoveringSubmissions.value && !engineRunning.value)) return
-      submissionRefreshRunning = true
-      try { await refreshSubmissions(taskId) } finally { submissionRefreshRunning = false }
-    }, 2500)
+    document.addEventListener('visibilitychange', handleVisibilityRecovery)
     window.addEventListener('blur', cancelAllInlineOverlayClose)
     restoreChatWorkbenchMode()
     if (authStore.token) void authStore.fetchCurrentUser()
     loadTasks()
     loadWorkspace()
   })
-  
+
   onUnmounted(() => {
-    if (submissionPoll) clearInterval(submissionPoll)
+    document.removeEventListener('visibilitychange', handleVisibilityRecovery)
     historyGeneration++
     historyContext.reset()
     window.removeEventListener('blur', cancelAllInlineOverlayClose)
     wsManualClose = true
     clearWsReconnectTimer()
     clearSessionStateFallbackTimer()
+    clearRecoverSessionRetryTimer()
     sessionStateAbort?.abort()
     sessionStateAbort = null
     runtimeSkillsAbort?.abort()

@@ -100,7 +100,6 @@ def ws_env(monkeypatch, tmp_path):
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-    test_session = sessionmaker(bind=engine, expire_on_commit=False)()
 
     task_root = tmp_path / "task-1"
     task_root.mkdir()
@@ -113,11 +112,24 @@ def ws_env(monkeypatch, tmp_path):
     # manager 是进程级单例：清掉此前用例留下的连接与房间 journal，避免事件串扰
     main_module.manager.registry.reset()
 
-    monkeypatch.setattr(main_module, "SessionLocal", lambda: test_session)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", lambda: test_session)
-    monkeypatch.setattr(pre_input_worker, "SessionLocal", lambda: test_session)
+    # 每次调用返回独立 session（与 recovery_env 一致）：offload 线程与测试主线程
+    # 各自持有 session 对象，避免共享单 session 在并发事务下进入 prepared 状态。
+    # StaticPool 单连接把语句排队串行化，语义上等价于原来的共享 session。
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    test_session = factory()
+
+    monkeypatch.setattr(main_module, "SessionLocal", factory)
+    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr(pre_input_worker, "SessionLocal", factory)
     # offload 层（run_db/run_db_txn）在线程内从 app.database 惰性导入 SessionLocal
-    monkeypatch.setattr("app.database.SessionLocal", lambda: test_session)
+    monkeypatch.setattr("app.database.SessionLocal", factory)
+
+    # outbox 发布器：测试不跑后台循环，wake 即同步补发一轮
+    async def _publish_on_wake():
+        from app.domains.task.services import task_event_publisher
+        await task_event_publisher.publish_once()
+    from app.domains.task.services import chat_submission_service
+    monkeypatch.setattr(chat_submission_service, "wake_event_publisher", _publish_on_wake)
 
     async def _noop_enqueue(job_id):
         return None
@@ -199,9 +211,9 @@ def test_ws_chat_message_persists_receipt_before_background_preparation(ws_env, 
             }})
             event = _receive_business(owner_ws)
             assert event["type"] == "chat_submission_update"
-            assert event["payload"]["status"] == "PREPARING"
-            assert event["payload"]["client_message_id"] == "client-1"
-            receipt_id = event["payload"]["id"]
+            assert event["payload"]["receipt"]["status"] == "PREPARING"
+            assert event["payload"]["receipt"]["client_message_id"] == "client-1"
+            receipt_id = event["payload"]["receipt"]["id"]
             assert ws_env.get(TaskChatSubmission, receipt_id).content == "hello agent"
             assert ws_env.query(ChatMessage).count() == ws_env.query(SddAiJob).count() == 0
     assert receipt_id in scheduled
@@ -229,14 +241,16 @@ def test_ws_chat_message_broadcasts_submission_to_second_client(ws_env, monkeypa
                 assert event["type"] == "chat_submission_update"
                 payload = event["payload"]
                 assert payload["task_id"] == "task-1"
-                assert payload["client_message_id"] == "client-a-message"
-                assert payload["creator_id"] == "u-owner"
-                assert payload["content"] == "hello from client A"
-                assert payload["status"] == "PREPARING"
-                receipt = ws_env.get(TaskChatSubmission, payload["id"])
-                assert receipt is not None and receipt.client_message_id == "client-a-message"
+                assert payload["event_id"]
+                receipt = payload["receipt"]
+                assert receipt["client_message_id"] == "client-a-message"
+                assert receipt["creator_id"] == "u-owner"
+                assert receipt["status"] == "PREPARING"
+                assert receipt["version"] == 1
+                row = ws_env.get(TaskChatSubmission, receipt["id"])
+                assert row is not None and row.client_message_id == "client-a-message"
                 assert ws_env.query(ChatMessage).count() == ws_env.query(SddAiJob).count() == 0
-    assert payload["id"] in scheduled
+    assert receipt["id"] in scheduled
 
 
 def test_ws_pre_input_unexpected_error_returns_error_event(ws_env, monkeypatch):

@@ -1055,6 +1055,10 @@ async def _update_job_state(
     await _broadcast_job_payload(payload)
     if is_final:
         _clear_cancel_event(job_id)
+        # The convergence transaction may have converged the turn's receipt and
+        # queued its outbox event; relay it promptly instead of waiting a poll.
+        from app.domains.task.services.chat_submission_service import wake_event_publisher
+        await wake_event_publisher()
         queue_key = str(payload.get("queue_key") or "")
         if queue_key:
             schedule_queue(queue_key)
@@ -2083,6 +2087,8 @@ async def start_runtime_workers() -> int:
     if _DISPATCHER_TASK is None or _DISPATCHER_TASK.done():
         _DISPATCHER_TASK = asyncio.create_task(_dispatcher_loop())
         _DISPATCHER_TASK.add_done_callback(lambda task: _runtime_worker_done("dispatcher", task))
+    from app.domains.task.services import task_event_publisher
+    task_event_publisher.start()
     return count
 
 
@@ -2157,6 +2163,8 @@ async def shutdown_runtime_workers() -> None:
     _SHUTTING_DOWN = True
     from app.domains.task.services import chat_submission_service
     await chat_submission_service.shutdown()
+    from app.domains.task.services import task_event_publisher
+    await task_event_publisher.shutdown()
     background = [task for task in (_REAPER_TASK, _DISPATCHER_TASK) if task is not None]
     for task in background:
         task.cancel()

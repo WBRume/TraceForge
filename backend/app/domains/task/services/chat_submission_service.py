@@ -2,6 +2,10 @@
 
 Preparation retains the existing checkpoint-before-message boundary.  Execution
 messages are private to the conversation until the owning job succeeds.
+
+Every receipt state change commits one ``task_event_outbox`` row in the same
+transaction; a background publisher relays it into the task WebSocket room so
+clients converge from events instead of periodic polling.
 """
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ import asyncio
 import hashlib
 import json
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import or_
@@ -21,10 +26,18 @@ from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
 from app.domains.task.models.task import SddTask
+from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services.task_attempt_recovery_service import BLOCKING, recover_task_attempts
 
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
+
+# PREPARING → {EXECUTING, FAILED}; EXECUTING → {SUCCEEDED, FAILED}.  Terminal
+# states are final; the fallback reconciler re-validates before converging.
+_ALLOWED_TRANSITIONS = {
+    "PREPARING": {"EXECUTING", "FAILED"},
+    "EXECUTING": {"SUCCEEDED", "FAILED"},
+}
 
 
 class SubmissionError(ValueError):
@@ -37,8 +50,48 @@ def serialize(row):
     return dict(id=row.id, task_id=row.task_id, client_message_id=row.client_message_id,
                 content=row.content, status=row.status, creator_id=row.creator_id,
                 ai_job_id=row.ai_job_id, chat_message_id=row.chat_message_id,
-                error_message=row.error_message,
+                error_message=row.error_message, version=int(row.version or 1),
                 created_at=row.created_at.isoformat() if row.created_at else None)
+
+
+def validate_transition(row, target_status):
+    allowed = _ALLOWED_TRANSITIONS.get(str(row.status or ""))
+    if not allowed or target_status not in allowed:
+        raise SubmissionError("受理状态不允许该变更", "SUBMISSION_INVALID_TRANSITION")
+
+
+def _event_payload(row, *, message=None, job=None):
+    payload = dict(
+        event_id=str(uuid4()),
+        task_id=row.task_id,
+        session_generation=int(row.session_generation or 0),
+        session_revision=int(row.session_revision or 0),
+        receipt=serialize(row),
+    )
+    if message is not None:
+        payload["message"] = message
+    if job is not None:
+        payload["job"] = job
+    return payload
+
+
+def save_task_event_outbox(db, *, row, message=None, job=None):
+    """Queue the publish for the receipt's committed state; same transaction as the change.
+
+    The caller has already advanced ``row.status``/``row.version``; this helper
+    only records the event so a crash between commit and broadcast still
+    recovers through the publisher.
+    """
+    payload = _event_payload(row, message=message, job=job)
+    db.add(TaskEventOutbox(event_id=payload["event_id"], task_id=row.task_id,
+                           receipt_id=row.id, receipt_version=int(row.version or 1),
+                           payload_json=payload))
+
+
+async def wake_event_publisher():
+    """Best-effort prompt after a transaction that wrote outbox rows committed."""
+    from app.domains.task.services import task_event_publisher
+    task_event_publisher.wake()
 
 
 def assert_no_preparing_submission(db, task_id, allowed_id=None):
@@ -91,10 +144,11 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
     row = TaskChatSubmission(task_id=task_id, workspace_id=task.workspace_id,
         creator_id=actor_id, client_message_id=client_id, content=content,
         metadata_json=metadata, payload_hash=fingerprint, active_task_id=task_id,
-        status="PREPARING", session_generation=int(task.session_generation or 0),
+        status="PREPARING", version=1, session_generation=int(task.session_generation or 0),
         session_revision=int(task.session_revision or 0))
     db.add(row)
     db.flush()
+    save_task_event_outbox(db, row=row)
     return serialize(row)
 
 
@@ -127,12 +181,7 @@ async def accept(*, task_id, actor_id, client_message_id, content, metadata=None
     except LockAcquireTimeout as exc:
         raise SubmissionError("当前任务正在处理其他请求，请稍后重试") from exc
     schedule(receipt["id"])
-    try:
-        from app.domains.websocket.ws.manager import manager
-        from app.domains.ai.schemas.websocket import WSMessage
-        await manager.send_message_to_room(task_id, WSMessage(type="chat_submission_update", payload=receipt))
-    except Exception:
-        logger.warning("Chat receipt broadcast deferred: submission_id={}", receipt["id"])
+    await wake_event_publisher()
     return receipt
 
 
@@ -143,8 +192,7 @@ def _load_preparation(db, submission_id):
     task = db.get(SddTask, row.task_id)
     if not task or str(getattr(task.status, "value", task.status)) in {"DONE", "FAILED", "BASELINED", "INTERRUPTED"} or (int(task.session_generation or 0), int(task.session_revision or 0)) != (
             row.session_generation, row.session_revision):
-        row.status, row.active_task_id = "FAILED", None
-        row.error_message = "会话已改变，本次发送未执行"
+        _transition(db, row, "FAILED", error_message="会话已改变，本次发送未执行")
         return None
     return dict(task_id=row.task_id, actor_user_id=row.creator_id, content=row.content,
                 client_message_id=row.client_message_id,
@@ -152,11 +200,24 @@ def _load_preparation(db, submission_id):
                               "knowledge_state": "pending"})
 
 
+def _transition(db, row, target_status, *, error_message=None):
+    """Advance one receipt inside the caller's transaction and queue its event."""
+    validate_transition(row, target_status)
+    row.status = target_status
+    row.version = int(row.version or 1) + 1
+    if target_status in {"FAILED", "SUCCEEDED"}:
+        row.active_task_id = None
+    if error_message is not None:
+        row.error_message = error_message
+    save_task_event_outbox(db, row=row)
+    return row
+
+
 def _fail_sync(db, submission_id, message):
     row = db.query(TaskChatSubmission).filter_by(id=submission_id).with_for_update().one_or_none()
     # A commit may have completed despite a lost caller. Never mark a durable job unsent.
     if row and row.status == "PREPARING" and not row.ai_job_id:
-        row.status, row.active_task_id, row.error_message = "FAILED", None, message
+        _transition(db, row, "FAILED", error_message=message)
 
 
 async def _run(submission_id):
@@ -169,10 +230,12 @@ async def _run(submission_id):
         async with lock_task(task_id):
             prepared = await run_db_txn(lambda db: _load_preparation(db, submission_id))
             if prepared is None:
+                await wake_event_publisher()
                 return
             logger.info("Chat preparation started: task_id={}, submission_id={}", task_id, submission_id)
             created = await task_session_service.create_task_chat_turn(**prepared)
         await ai_job_service.enqueue_task_chat_job(created.job_id)
+        await wake_event_publisher()
         logger.info("Chat preparation completed: task_id={}, submission_id={}, job_id={}",
                     task_id, submission_id, created.job_id)
     except LockAcquireTimeout:
@@ -185,6 +248,7 @@ async def _run(submission_id):
     except Exception:
         logger.exception("Chat preparation failed: submission_id={}", submission_id)
         await run_db_txn(lambda db: _fail_sync(db, submission_id, "消息准备失败，请重试"))
+        await wake_event_publisher()
 
 
 def _task_id_sync(submission_id):
@@ -206,6 +270,37 @@ def schedule(submission_id):
         if not done.cancelled() and done.exception():
             logger.error("Chat submission runner failed: submission_id={}, error={}", submission_id, done.exception())
     task.add_done_callback(finished)
+
+
+def _publish_knowledge(db, task, job, row):
+    """Mark the turn's messages published; search capture creates its outbox atomically."""
+    if task and job.session_turn_id and int(task.session_generation or 0) == int(job.session_generation or 0):
+        for message in db.query(ChatMessage).filter(ChatMessage.session_turn_id == job.session_turn_id).all():
+            meta = dict(message.metadata_json or {})
+            if meta.get("submission_id") == row.id:
+                message.metadata_json = {**meta, "knowledge_state": "published"}
+
+
+def finalize_submission_in_txn(db, job, final_status):
+    """Converge the job's receipt inside the convergence transaction; returns the row or None.
+
+    Called from the single business-finalize point so a normally finished job
+    updates its submission and queues the event in the same commit.  No new
+    ChatMessage is invented on failure.
+    """
+    success = str(final_status) == str(AiJobStatus.SUCCESS.value) or final_status == AiJobStatus.SUCCESS
+    row = (
+        db.query(TaskChatSubmission).filter_by(ai_job_id=job.id).with_for_update().one_or_none()
+        if job.id else None
+    )
+    if row is None or row.status != "EXECUTING":
+        return None
+    task = db.query(SddTask).filter_by(id=row.task_id).first()
+    _transition(db, row, "SUCCEEDED" if success else "FAILED",
+                error_message=None if success else "本轮执行未成功，内容未进入知识检索")
+    if success:
+        _publish_knowledge(db, task, job, row)
+    return row
 
 
 def _reconcile_sync(db, task_id=None):
@@ -230,18 +325,10 @@ def _reconcile_sync(db, task_id=None):
         if job is not None and job.status in BLOCKING:
             continue
         success = job is not None and job.status == AiJobStatus.SUCCESS
-        row.status = "SUCCEEDED" if success else "FAILED"
-        row.active_task_id = None
-        if not success:
-            row.error_message = "本轮执行未成功，内容未进入知识检索"
-        # No new ChatMessage is invented on failure. Publishing is an ORM update
-        # in this transaction, so the existing search capture creates its outbox atomically.
+        _transition(db, row, "SUCCEEDED" if success else "FAILED",
+                    error_message=None if success else "本轮执行未成功，内容未进入知识检索")
         if success:
-            if task and job.session_turn_id and int(task.session_generation or 0) == int(job.session_generation or 0):
-                for message in db.query(ChatMessage).filter(ChatMessage.session_turn_id == job.session_turn_id).all():
-                    meta = dict(message.metadata_json or {})
-                    if meta.get("submission_id") == row.id:
-                        message.metadata_json = {**meta, "knowledge_state": "published"}
+            _publish_knowledge(db, task, job, row)
         row.updated_at = datetime.utcnow()
     return pending
 
@@ -249,19 +336,55 @@ def _reconcile_sync(db, task_id=None):
 async def recover():
     for submission_id in await run_db_txn(_reconcile_sync):
         schedule(submission_id)
+    await wake_event_publisher()
 
 
-def list_for_task(db, task_id):
+def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
+    """One snapshot for initialization and exception recovery.
+
+    The active receipt plus any receipts addressed by the caller's unconfirmed
+    idempotency keys are returned with their jobs and formal messages, so a
+    client never depends on a "recent 50" window to resolve an old UNKNOWN.
+    """
     task = db.get(SddTask, task_id)
-    rows = db.query(TaskChatSubmission).filter(TaskChatSubmission.task_id == task_id,
-        TaskChatSubmission.session_generation == int(task.session_generation or 0)).order_by(
-        TaskChatSubmission.created_at.desc(), TaskChatSubmission.id.desc()).limit(50).all()
-    result = [serialize(row) for row in rows]
-    # Do not let many failed sends hide an older active receipt beyond the page.
+    if not task:
+        return None
+    receipts = {}
     active = db.query(TaskChatSubmission).filter_by(active_task_id=task_id).first()
-    if active and all(row["id"] != active.id for row in result):
-        result.append(serialize(active))
-    return result
+    if active:
+        receipts[active.id] = active
+    keys = [str(value or "").strip() for value in (client_message_ids or []) if str(value or "").strip()]
+    if keys:
+        for row in db.query(TaskChatSubmission).filter(
+                TaskChatSubmission.task_id == task_id,
+                TaskChatSubmission.creator_id == actor_id,
+                TaskChatSubmission.client_message_id.in_(keys)).all():
+            receipts.setdefault(row.id, row)
+    jobs = {}
+    messages = {}
+    for row in receipts.values():
+        if row.ai_job_id and row.ai_job_id not in jobs:
+            job = db.get(SddAiJob, row.ai_job_id)
+            if job:
+                jobs[job.id] = job
+        if row.chat_message_id and row.chat_message_id not in messages:
+            message = db.get(ChatMessage, row.chat_message_id)
+            if message:
+                messages[message.id] = message
+    from app.domains.ai.services import ai_job_service
+    for job in ai_job_service.list_task_jobs(db, task_id=task_id, active_only=True):
+        jobs.setdefault(job.id, job)
+    from app.domains.task.services import task_service
+    ordered = task_service.sort_chat_messages(list(messages.values()))
+    return {
+        "task_id": task_id,
+        "session_generation": int(task.session_generation or 0),
+        "session_revision": int(task.session_revision or 0),
+        "receipts": [serialize(row) for row in receipts.values()],
+        "jobs": [ai_job_service.serialize_job(job) for job in jobs.values()],
+        "messages": task_service.serialize_history_messages(
+            db, task, ordered, task.workspace_id, task_id),
+    }
 
 
 async def shutdown():
