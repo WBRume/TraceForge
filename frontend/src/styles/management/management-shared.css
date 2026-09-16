@@ -174,6 +174,69 @@
   color: var(--color-primary-900);
 }
 
+/* System config rows (system config page and its tab panels). */
+.sys-config-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+}
+
+.sys-config-info {
+  min-width: 0;
+}
+
+.sys-config-name {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.sys-config-effects {
+  margin: 0.6rem 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.8rem;
+  color: #64748b;
+  line-height: 1.7;
+}
+
+.sys-config-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 1rem;
+}
+
+.sys-config-field > label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.sys-config-field .mgmt-input {
+  max-width: 480px;
+}
+
+.sys-config-input-error {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: #b91c1c;
+}
+
+.sys-config-actions {
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.6rem;
+}
+
 .mgmt-table {
   width: 100%;
   border-collapse: collapse;

@@ -1,22 +1,26 @@
 <!--
-SystemConfigView: 系统配置项（管理员）。每个配置项一张卡片：
+SystemConfigView: 系统配置项（管理员）。三项配置以 Tab 切换，每个 Tab 一张卡片：
 1. 新建工作区时是否启用“项目管理/产品管理”选择功能。
 2. 工作区根目录：默认取 env（WORKSPACE_ROOT_DIR）；界面保存非空值后覆盖 env，清空后回退 env。
    生效时新建工作区路径默认为 根目录/workspace/工作区名称，且仅允许位于该目录之内。
+3. 历史搜索 · 向量模型：Embeddings 配置、索引构建与目标核验/切换。
 -->
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { FolderRoot, SlidersHorizontal } from 'lucide-vue-next'
+import { BrainCircuit, FolderRoot, SlidersHorizontal } from 'lucide-vue-next'
 import SearchEmbeddingConfig from '@/components/global-search/SearchEmbeddingConfig.vue'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import { formatApiError } from '@/utils/error'
 import { useSystemConfigStore } from '@/stores/systemConfig'
 
+type ConfigTab = 'mgmt' | 'root' | 'embedding'
+
 const { t } = useI18n()
 const systemConfigStore = useSystemConfigStore()
 
+const activeTab = ref<ConfigTab>('mgmt')
 const enabled = ref(false)
 const rootDir = ref('')
 const loading = ref(false)
@@ -87,8 +91,44 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- 卡片 1：项目管理/产品管理选择开关 -->
-    <div class="mgmt-card mgmt-compact-card">
+    <div class="sys-tabs" role="tablist" :aria-label="$t('system_config.title')">
+      <button
+        type="button"
+        role="tab"
+        class="sys-tab"
+        :class="{ active: activeTab === 'mgmt' }"
+        :aria-selected="activeTab === 'mgmt'"
+        @click="activeTab = 'mgmt'"
+      >
+        <SlidersHorizontal class="w-4 h-4" />
+        <span>{{ $t('system_config.tab_mgmt_selection') }}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="sys-tab"
+        :class="{ active: activeTab === 'root' }"
+        :aria-selected="activeTab === 'root'"
+        @click="activeTab = 'root'"
+      >
+        <FolderRoot class="w-4 h-4" />
+        <span>{{ $t('system_config.tab_workspace_root') }}</span>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        class="sys-tab"
+        :class="{ active: activeTab === 'embedding' }"
+        :aria-selected="activeTab === 'embedding'"
+        @click="activeTab = 'embedding'"
+      >
+        <BrainCircuit class="w-4 h-4" />
+        <span>{{ $t('system_config.tab_embedding') }}</span>
+      </button>
+    </div>
+
+    <!-- Tab 1：项目管理/产品管理选择开关 -->
+    <div v-show="activeTab === 'mgmt'" class="mgmt-card mgmt-compact-card">
       <div class="sys-config-row">
         <div class="sys-config-info">
           <h3 class="sys-config-name">
@@ -124,8 +164,8 @@ onMounted(() => {
       </AdminGuard>
     </div>
 
-    <!-- 卡片 2：工作区根目录 -->
-    <div class="mgmt-card mgmt-compact-card">
+    <!-- Tab 2：工作区根目录 -->
+    <div v-show="activeTab === 'root'" class="mgmt-card mgmt-compact-card">
       <div class="sys-config-row">
         <div class="sys-config-info">
           <h3 class="sys-config-name">
@@ -162,63 +202,55 @@ onMounted(() => {
         </div>
       </AdminGuard>
     </div>
+
+    <!-- Tab 3：历史搜索 · 向量模型 -->
+    <AdminGuard v-if="activeTab === 'embedding'" show-hint>
+      <SearchEmbeddingConfig />
+    </AdminGuard>
   </div>
-  <AdminGuard><SearchEmbeddingConfig /></AdminGuard>
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
 
 <style scoped>
-.sys-config-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1.5rem;
+.sys-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  margin-bottom: 1.25rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(12px);
 }
 
-.sys-config-info {
-  min-width: 0;
-}
-
-.sys-config-name {
-  display: flex;
+.sys-tab {
+  display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  margin: 0 0 0.35rem;
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: #0f172a;
-}
-
-.sys-config-effects {
-  margin: 0.6rem 0 0;
-  padding-left: 1.1rem;
-  font-size: 0.8rem;
+  min-height: 36px;
+  padding: 0.4rem 0.9rem;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
   color: #64748b;
-  line-height: 1.7;
-}
-
-.sys-config-field {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  margin-top: 1rem;
-}
-
-.sys-config-field label {
+  font-family: inherit;
   font-size: 0.85rem;
   font-weight: 600;
-  color: #334155;
+  cursor: pointer;
+  transition: all 0.2s;
 }
 
-.sys-config-field .mgmt-input {
-  max-width: 480px;
+.sys-tab:hover {
+  color: #0f172a;
+  background: #ffffff;
 }
 
-.sys-config-input-error {
-  margin: 0.35rem 0 0;
-  font-size: 0.78rem;
-  color: #b91c1c;
+.sys-tab.active {
+  color: #075985;
+  background: linear-gradient(135deg, #e0f2fe 0%, #ecfeff 100%);
+  box-shadow: 0 1px 3px rgba(14, 165, 233, 0.18);
 }
 
 .sys-switch {
@@ -273,14 +305,6 @@ onMounted(() => {
 
 .sys-switch-state.on {
   color: #0369a1;
-}
-
-.sys-config-actions {
-  margin-top: 1rem;
-  padding-top: 0.9rem;
-  border-top: 1px solid #e2e8f0;
-  display: flex;
-  justify-content: flex-end;
 }
 
 .w-4 {
