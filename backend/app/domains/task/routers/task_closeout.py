@@ -14,7 +14,7 @@ from app.domains.ai.services.jobs import attempts as ai_job_attempts
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.task.services import task_cli_state_service, task_closeout_service, task_service
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_asset.services.workspace_task_detail_service import TaskDetailWriteError
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 
 
 router = APIRouter(prefix="/workspaces/{ws_id}/tasks/{task_id}/closeout", tags=["Task Closeout"])
@@ -46,7 +46,7 @@ async def _stop_active_task_session(db: Session, ws_id: str, task_id: str, messa
 def _raise_closeout_error(exc: Exception) -> None:
     if isinstance(exc, task_closeout_service.TaskCloseoutError):
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
-    if isinstance(exc, TaskDetailWriteError):
+    if isinstance(exc, WorkspaceAssetError):
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
     raise exc
 
@@ -72,7 +72,7 @@ async def complete_task_closeout(
                 raise HTTPException(status_code=404, detail="Task not found")
             try:
                 result = task_closeout_service.complete_task_closeout(db, ws_id, task_id, current_user.id, payload)
-            except (task_closeout_service.TaskCloseoutError, TaskDetailWriteError) as exc:
+            except (task_closeout_service.TaskCloseoutError, WorkspaceAssetError) as exc:
                 _raise_closeout_error(exc)
             await _stop_active_task_session(db, ws_id, task_id, "Task completed through closeout")
             return result
@@ -96,7 +96,7 @@ async def fail_task_closeout(
                 raise HTTPException(status_code=404, detail="Task not found")
             try:
                 result = task_closeout_service.fail_task_closeout(db, ws_id, task_id, current_user.id, payload)
-            except (task_closeout_service.TaskCloseoutError, TaskDetailWriteError) as exc:
+            except (task_closeout_service.TaskCloseoutError, WorkspaceAssetError) as exc:
                 _raise_closeout_error(exc)
             await _stop_active_task_session(db, ws_id, task_id, "Task failed through closeout")
             return result

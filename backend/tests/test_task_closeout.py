@@ -17,7 +17,7 @@ from app.domains.workspace_asset.models.workspace_asset import SddEvidence, SddH
 from app.domains.task.routers import task as task_router
 from app.domains.task.routers import task_closeout as task_closeout_router
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
-from app.domains.workspace_asset.services import workspace_asset_service  # noqa: E402
+from app.domains.workspace_asset.services.tasks.detail import get_task_detail  # noqa: E402
 from test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
 
@@ -110,7 +110,7 @@ def test_complete_closeout_records_evidence_summary_and_done_status():
             evidence = db.query(SddEvidence).filter(SddEvidence.task_id == "task-closeout").one()
             review = db.query(SddHumanReview).filter(SddHumanReview.task_id == "task-closeout").one()
             summary = db.query(SddTaskFinalSummary).filter(SddTaskFinalSummary.task_id == "task-closeout").one()
-            detail_task = workspace_asset_service.get_task_detail(db, "ws-closeout", "task-closeout")
+            detail_task = get_task_detail(db, "ws-closeout", "task-closeout")
             assert task is not None
             assert task.status == TaskStatus.DONE
             assert evidence.source_ref == "abc1234"

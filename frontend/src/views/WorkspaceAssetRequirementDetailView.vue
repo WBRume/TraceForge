@@ -127,6 +127,7 @@ async function openSplit(requirement: RequirementSummary) {
     (job) => {
       if (runId === splitPreviewRunId.value) splitPreviewJob.value = job
     },
+    () => runId === splitPreviewRunId.value,
   )
   if (batch && runId === splitPreviewRunId.value) splitBatch.value = batch
 }

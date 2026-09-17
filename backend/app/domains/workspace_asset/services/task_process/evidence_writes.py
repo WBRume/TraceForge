@@ -1,8 +1,4 @@
-"""
-Evidence write operations.
-
-Extracted from workspace_task_detail_service.py.
-"""
+"""Evidence 的写操作（含 phase 门禁与专家评审联动）。"""
 
 from __future__ import annotations
 
@@ -23,22 +19,23 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     EvidenceCreateRequest,
     EvidenceUpdateRequest,
 )
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _ensure_task_not_baselined,
+from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
-    evidence_response,
     json_dict,
     normalize_enum,
     payload_has_field,
-    _add_process_audit,
-    _ensure_ai_job,
-    _ensure_evidence,
-    _ensure_human_review,
-    _ensure_requirement,
-    _get_task_or_error,
-    _validate_evidence_for_phase,
-    _validate_evidence_source,
+)
+from app.domains.workspace_asset.services.common.process_presenters import evidence_response
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_ai_job,
+    ensure_evidence,
+    ensure_human_review,
+    ensure_requirement,
+    ensure_task_not_baselined,
+    get_task_or_error,
+    validate_evidence_for_phase,
+    validate_evidence_source,
 )
 
 
@@ -51,16 +48,16 @@ def create_evidence(
     *,
     _skip_phase_check: bool = False,
 ) -> str:
-    task = _get_task_or_error(db, workspace_id, task_id)
-    _ensure_task_not_baselined(task)
-    _ensure_requirement(db, workspace_id, payload.requirement_id)
-    _ensure_ai_job(db, workspace_id, task_id, payload.ai_job_id)
-    _ensure_human_review(db, workspace_id, task_id, payload.human_review_id)
+    task = get_task_or_error(db, workspace_id, task_id)
+    ensure_task_not_baselined(task)
+    ensure_requirement(db, workspace_id, payload.requirement_id)
+    ensure_ai_job(db, workspace_id, task_id, payload.ai_job_id)
+    ensure_human_review(db, workspace_id, task_id, payload.human_review_id)
     evidence_type = normalize_enum(EvidenceType, payload.evidence_type, EvidenceType.CODE, "Evidence type")
     if not _skip_phase_check:
-        _validate_evidence_for_phase(task.status, evidence_type)
+        validate_evidence_for_phase(task.status, evidence_type)
     source_type = normalize_enum(EvidenceSourceType, payload.source_type, None, "Evidence source type")
-    _validate_evidence_source(
+    validate_evidence_source(
         source_type=source_type,
         source_uri=payload.source_uri,
         source_ref=payload.source_ref,
@@ -91,7 +88,7 @@ def create_evidence(
     )
     db.add(evidence)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -119,18 +116,18 @@ def update_evidence(
     actor_id: Optional[str],
     payload: EvidenceUpdateRequest,
 ) -> None:
-    evidence = _ensure_evidence(db, workspace_id, task_id, evidence_id)
+    evidence = ensure_evidence(db, workspace_id, task_id, evidence_id)
     assert evidence is not None
-    _ensure_task_not_baselined(evidence.task)
+    ensure_task_not_baselined(evidence.task)
     before = evidence_response(evidence).model_dump(mode="json")
     if payload_has_field(payload, "requirement_id"):
-        _ensure_requirement(db, workspace_id, payload.requirement_id)
+        ensure_requirement(db, workspace_id, payload.requirement_id)
         evidence.requirement_id = payload.requirement_id
     if payload_has_field(payload, "ai_job_id"):
-        _ensure_ai_job(db, workspace_id, task_id, payload.ai_job_id)
+        ensure_ai_job(db, workspace_id, task_id, payload.ai_job_id)
         evidence.ai_job_id = payload.ai_job_id
     if payload_has_field(payload, "human_review_id"):
-        _ensure_human_review(db, workspace_id, task_id, payload.human_review_id)
+        ensure_human_review(db, workspace_id, task_id, payload.human_review_id)
         evidence.human_review_id = payload.human_review_id
     source_type = evidence.source_type
     if payload_has_field(payload, "source_type") and payload.source_type is not None:
@@ -139,7 +136,7 @@ def update_evidence(
     source_ref = payload.source_ref if payload_has_field(payload, "source_ref") else evidence.source_ref
     source_path = payload.source_path if payload_has_field(payload, "source_path") else evidence.source_path
     source_metadata = payload.source_metadata if payload_has_field(payload, "source_metadata") else evidence.source_metadata_json
-    _validate_evidence_source(
+    validate_evidence_source(
         source_type=source_type,
         source_uri=source_uri,
         source_ref=source_ref,
@@ -173,7 +170,7 @@ def update_evidence(
             evidence.confirmed_by_id = None
             evidence.confirmed_at = None
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,

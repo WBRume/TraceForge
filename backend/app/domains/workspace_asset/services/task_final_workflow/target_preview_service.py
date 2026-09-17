@@ -21,9 +21,10 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     FinalWorkflowReviewTargetPreviewMetadata,
     FinalWorkflowReviewTargetPreviewResponse,
 )
-from app.domains.workspace_asset.services import workspace_task_detail_section
+from app.domains.workspace_asset.services.tasks import sections
 from app.domains.workspace_asset.services.task_final_workflow import workflow_state
-from app.domains.workspace_asset.services.workspace_task_detail_shared import TaskDetailWriteError, enum_value
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import enum_value
 
 
 TARGET_TYPES = {"SPEC", "PLAN", "AI_CHANGE", "HUMAN_DELTA", "EVIDENCE", "DECISION", "TASK_FILE"}
@@ -98,7 +99,7 @@ def _target_from_task(db: Session, workspace_id: str, task_id: str, target_type:
     for target in targets:
         if target.target_id == target_id:
             return target
-    raise TaskDetailWriteError("Review target not found for this Task.", status_code=404)
+    raise WorkspaceAssetError("Review target not found for this Task.", status_code=404)
 
 
 def _asset_preview(
@@ -118,13 +119,13 @@ def _asset_preview(
         .first()
     )
     if not asset:
-        raise TaskDetailWriteError("Review target not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("Review target not found for this Task.", status_code=404)
 
     version_text = asset.active_version.normalized_markdown if asset.active_version else None
     content = asset.content_text or version_text
     asset_type = enum_value(asset.asset_type)
     diff = (
-        workspace_task_detail_section.get_task_file_diff(db, workspace_id, task_id, asset.id)
+        sections.get_task_file_diff(db, workspace_id, task_id, asset.id)
         if asset_type == AssetType.CODE_DIFF.value
         else None
     )
@@ -168,7 +169,7 @@ def _ai_change_preview(
         .first()
     )
     if not output:
-        raise TaskDetailWriteError("Review target not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("Review target not found for this Task.", status_code=404)
 
     blocks: list[FinalWorkflowReviewTargetPreviewBlock] = []
     _append(blocks, _block(key="content", title="Content", kind="markdown", content=output.content_text))
@@ -209,10 +210,10 @@ def _human_delta_preview(
         .first()
     )
     if not delta:
-        raise TaskDetailWriteError("Review target not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("Review target not found for this Task.", status_code=404)
 
-    detail = workspace_task_detail_section.get_task_human_delta_detail(db, workspace_id, task_id, target.target_id)
-    workbench = workspace_task_detail_section.get_task_delta_workbench(db, workspace_id, task_id, target.target_id)
+    detail = sections.get_task_human_delta_detail(db, workspace_id, task_id, target.target_id)
+    workbench = sections.get_task_delta_workbench(db, workspace_id, task_id, target.target_id)
     blocks: list[FinalWorkflowReviewTargetPreviewBlock] = []
     _append(blocks, _block(key="summary", title="Summary", kind="text", content=delta.comparison_summary))
     _append(
@@ -266,7 +267,7 @@ def _evidence_preview(
         .first()
     )
     if not evidence:
-        raise TaskDetailWriteError("Review target not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("Review target not found for this Task.", status_code=404)
 
     source_items = [
         {"key": "source_type", "label": "Source type", "value": enum_value(evidence.source_type)},
@@ -315,7 +316,7 @@ def _decision_preview(
         .first()
     )
     if not decision:
-        raise TaskDetailWriteError("Review target not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("Review target not found for this Task.", status_code=404)
 
     blocks: list[FinalWorkflowReviewTargetPreviewBlock] = []
     _append(blocks, _block(key="body", title="Decision", kind="text", content=decision.body))
@@ -354,7 +355,7 @@ def get_review_target_preview(
 ) -> FinalWorkflowReviewTargetPreviewResponse:
     normalized_type = str(target_type or "").upper()
     if normalized_type not in TARGET_TYPES:
-        raise TaskDetailWriteError("Unsupported review target type.", status_code=422)
+        raise WorkspaceAssetError("Unsupported review target type.", status_code=422)
 
     target = _target_from_task(db, workspace_id, task_id, normalized_type, target_id)
     if normalized_type in {AssetType.SPEC.value, AssetType.PLAN.value, "TASK_FILE"}:
@@ -367,4 +368,4 @@ def get_review_target_preview(
         return _evidence_preview(db, workspace_id, task_id, target)
     if normalized_type == "DECISION":
         return _decision_preview(db, workspace_id, task_id, target)
-    raise TaskDetailWriteError("Unsupported review target type.", status_code=422)
+    raise WorkspaceAssetError("Unsupported review target type.", status_code=422)

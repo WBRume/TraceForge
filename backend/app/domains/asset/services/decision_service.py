@@ -299,9 +299,10 @@ def mark_chat_message_as_decision(
         source_metadata=metadata,
         change_reason=payload.change_reason or "Marked chat message as Decision.",
     )
-    from app.domains.workspace_asset.services import workspace_task_detail_service
+    from app.domains.workspace_asset.services.common.process_presenters import decision_response
+    from app.domains.workspace_asset.services.task_process import decision_writes
 
-    decision_id = workspace_task_detail_service.create_decision(
+    decision_id = decision_writes.create_decision(
         db,
         workspace_id,
         task_id,
@@ -311,4 +312,4 @@ def mark_chat_message_as_decision(
     decision = db.query(SddDecision).filter(SddDecision.id == decision_id).first()
     if not decision:
         raise DecisionSourceError("Decision was not created.", status_code=500)
-    return workspace_task_detail_service.decision_response(decision)
+    return decision_response(decision)

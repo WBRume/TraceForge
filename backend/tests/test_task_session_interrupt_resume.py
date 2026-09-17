@@ -613,12 +613,12 @@ def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
         async def run_requirement_split_preview_job(job_id):
             calls.append(("split", job_id))
 
-    import app.domains.workspace_asset.services.workspace_asset_service as workspace_asset_service
+    from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner
 
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-    monkeypatch.setattr(workspace_asset_service, "run_requirement_import_preview_job", _FakePreviewService.run_requirement_import_preview_job)
-    monkeypatch.setattr(workspace_asset_service, "run_requirement_split_preview_job", _FakePreviewService.run_requirement_split_preview_job)
+    monkeypatch.setattr(preview_runner, "run_requirement_import_preview_job", _FakePreviewService.run_requirement_import_preview_job)
+    monkeypatch.setattr(preview_runner, "run_requirement_split_preview_job", _FakePreviewService.run_requirement_split_preview_job)
 
     asyncio.run(ai_executors.execute_job("preview-job-1"))
     assert calls == [("import", "preview-job-1")]

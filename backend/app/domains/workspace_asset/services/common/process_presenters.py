@@ -1,20 +1,17 @@
-"""
-Shared utilities, response builders, file-item builders, and entity validators
-for Task Detail write operations.
+"""过程资产（Evidence / Review / Delta / Decision / Clarification / Final
+Summary / Process Audit / Task 文件项）的统一响应构建器。
 
-Extracted from workspace_task_detail_service.py to enable domain-based splitting.
+读侧（Task Detail、分节查询、Requirement 关联任务、追溯视图）与写侧
+（创建/更新后回显）共用本模块，任何子域不得各自复制展示逻辑。
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
-from sqlalchemy.orm import Session
-
+from app.domains.asset.services import decision_service
 from app.domains.asset.models.asset import SddAsset
-from app.domains.ai.models.ai_job import SddAiJob
-from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.workflow.models.task_change import (
     SddTaskChangeProposal,
     SddTaskChangeProposalFile,
@@ -22,15 +19,6 @@ from app.domains.workflow.models.task_change import (
     SddTaskVerificationRun,
 )
 from app.domains.workspace_asset.models.workspace_asset import (
-    ClarificationBlockingLevel,
-    ClarificationStatus,
-    DecisionStatus,
-    EvidenceSourceType,
-    EvidenceStatus,
-    EvidenceType,
-    HumanDeltaStatus,
-    HumanReviewOutcome,
-    HumanReviewStatus,
     SddAiOutput,
     SddClarification,
     SddDecision,
@@ -38,12 +26,8 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddHumanDelta,
     SddHumanReview,
     SddHumanReviewComment,
-    SddRequirement,
     SddTaskFinalSummary,
     SddTaskProcessAuditLog,
-    TaskFinalStatus,
-    TaskProcessAuditAction,
-    TaskProcessRecordType,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationResponse,
@@ -58,66 +42,11 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     TaskFinalSummaryResponse,
     TaskProcessAuditLogResponse,
 )
-from app.domains.asset.services import decision_service
-
-
-class TaskDetailWriteError(Exception):
-    def __init__(self, message: str, *, status_code: int = 400):
-        super().__init__(message)
-        self.status_code = status_code
-
-
-def enum_value(value: Any) -> str:
-    return value.value if hasattr(value, "value") else str(value)
-
-
-def clean_optional(value: Optional[str], *, limit: Optional[int] = None) -> Optional[str]:
-    normalized = str(value or "").strip()
-    if not normalized:
-        return None
-    return normalized[:limit] if limit else normalized
-
-
-def normalize_list(values: Optional[Iterable[Any]]) -> List[str]:
-    if not values:
-        return []
-    return [text for value in values if (text := str(value or "").strip())]
-
-
-def json_dict(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    return value if isinstance(value, dict) and value else None
-
-
-def payload_has_field(payload: Any, field_name: str) -> bool:
-    fields_set = getattr(payload, "model_fields_set", None)
-    if fields_set is None:
-        fields_set = getattr(payload, "__fields_set__", set())
-    return field_name in fields_set
-
-
-def normalize_enum(enum_cls: Any, value: Optional[str], default: Optional[Any] = None, label: str = "value") -> Any:
-    raw = str(value or (default.value if hasattr(default, "value") else default) or "").strip().upper()
-    if not raw:
-        return None
-    try:
-        return enum_cls(raw)
-    except ValueError as exc:
-        raise TaskDetailWriteError(f"Unsupported {label}: {value}", status_code=422) from exc
-
-
-def short_text(value: Any, limit: int = 280) -> Optional[str]:
-    if value is None:
-        return None
-    text = value if isinstance(value, str) else str(value)
-    text = text.strip()
-    if not text:
-        return None
-    return text if len(text) <= limit else f"{text[:limit].rstrip()}..."
-
-
-# ---------------------------------------------------------------------------
-# Response builders
-# ---------------------------------------------------------------------------
+from app.domains.workspace_asset.services.common.primitives import (
+    enum_value,
+    normalize_list,
+    short_text,
+)
 
 
 def external_evidence_ref(evidence: SddEvidence) -> ExternalEvidenceRef:
@@ -344,7 +273,7 @@ def process_audit_response(log: SddTaskProcessAuditLog) -> TaskProcessAuditLogRe
 
 
 # ---------------------------------------------------------------------------
-# File-item builders
+# Task 文件项（Spec / Plan / AI Output / Change Proposal / Verification / Conflict）
 # ---------------------------------------------------------------------------
 
 
@@ -358,17 +287,17 @@ def task_file_items(
     conflict_reports: List[SddTaskConflictReport],
 ) -> List[TaskFileItemResponse]:
     items: List[TaskFileItemResponse] = []
-    items.extend(_task_file_from_asset(asset) for asset in [*specs, *plans])
-    items.extend(_task_file_from_ai_output(output) for output in ai_outputs)
+    items.extend(task_file_from_asset(asset) for asset in [*specs, *plans])
+    items.extend(task_file_from_ai_output(output) for output in ai_outputs)
     for proposal in change_proposals:
-        items.append(_task_file_from_change_proposal(proposal))
-        items.extend(_task_file_from_change_file(file_item) for file_item in (proposal.files or []))
-    items.extend(_task_file_from_verification(run) for run in verification_runs)
-    items.extend(_task_file_from_conflict(report) for report in conflict_reports)
+        items.append(task_file_from_change_proposal(proposal))
+        items.extend(task_file_from_change_file(file_item) for file_item in (proposal.files or []))
+    items.extend(task_file_from_verification(run) for run in verification_runs)
+    items.extend(task_file_from_conflict(report) for report in conflict_reports)
     return sorted(items, key=lambda item: item.created_at or datetime.min, reverse=True)
 
 
-def _task_file_from_asset(asset: SddAsset) -> TaskFileItemResponse:
+def task_file_from_asset(asset: SddAsset) -> TaskFileItemResponse:
     return TaskFileItemResponse(
         id=asset.id,
         file_type=enum_value(asset.asset_type),
@@ -384,7 +313,7 @@ def _task_file_from_asset(asset: SddAsset) -> TaskFileItemResponse:
     )
 
 
-def _task_file_from_ai_output(output: SddAiOutput) -> TaskFileItemResponse:
+def task_file_from_ai_output(output: SddAiOutput) -> TaskFileItemResponse:
     return TaskFileItemResponse(
         id=output.id,
         file_type=f"AI_OUTPUT:{enum_value(output.output_type)}",
@@ -399,7 +328,7 @@ def _task_file_from_ai_output(output: SddAiOutput) -> TaskFileItemResponse:
     )
 
 
-def _task_file_from_change_proposal(proposal: SddTaskChangeProposal) -> TaskFileItemResponse:
+def task_file_from_change_proposal(proposal: SddTaskChangeProposal) -> TaskFileItemResponse:
     return TaskFileItemResponse(
         id=proposal.id,
         file_type="GIT_PATCH",
@@ -424,7 +353,7 @@ def _task_file_from_change_proposal(proposal: SddTaskChangeProposal) -> TaskFile
     )
 
 
-def _task_file_from_change_file(file_item: SddTaskChangeProposalFile) -> TaskFileItemResponse:
+def task_file_from_change_file(file_item: SddTaskChangeProposalFile) -> TaskFileItemResponse:
     return TaskFileItemResponse(
         id=file_item.id,
         file_type="GIT_PATCH_FILE",
@@ -445,7 +374,7 @@ def _task_file_from_change_file(file_item: SddTaskChangeProposalFile) -> TaskFil
     )
 
 
-def _task_file_from_verification(run: SddTaskVerificationRun) -> TaskFileItemResponse:
+def task_file_from_verification(run: SddTaskVerificationRun) -> TaskFileItemResponse:
     return TaskFileItemResponse(
         id=run.id,
         file_type="VERIFICATION_LOG",
@@ -466,7 +395,7 @@ def _task_file_from_verification(run: SddTaskVerificationRun) -> TaskFileItemRes
     )
 
 
-def _task_file_from_conflict(report: SddTaskConflictReport) -> TaskFileItemResponse:
+def task_file_from_conflict(report: SddTaskConflictReport) -> TaskFileItemResponse:
     return TaskFileItemResponse(
         id=report.id,
         file_type="CONFLICT_REPORT",
@@ -487,260 +416,21 @@ def _task_file_from_conflict(report: SddTaskConflictReport) -> TaskFileItemRespo
     )
 
 
-# ---------------------------------------------------------------------------
-# Entity validators
-# ---------------------------------------------------------------------------
-
-
-def _get_task_or_error(db: Session, workspace_id: str, task_id: str) -> SddTask:
-    task = db.query(SddTask).filter(SddTask.workspace_id == workspace_id, SddTask.id == task_id).first()
-    if not task:
-        raise TaskDetailWriteError("Task not found.", status_code=404)
-    return task
-
-
-def _ensure_task_not_baselined(task: SddTask) -> None:
-    if enum_value(task.status) == TaskStatus.BASELINED.value:
-        raise TaskDetailWriteError(
-            "Task is BASELINED and locked for process changes.",
-            status_code=403,
-        )
-
-
-def _ensure_requirement(db: Session, workspace_id: str, requirement_id: Optional[str]) -> Optional[SddRequirement]:
-    if not requirement_id:
-        return None
-    requirement = (
-        db.query(SddRequirement)
-        .filter(SddRequirement.workspace_id == workspace_id, SddRequirement.id == requirement_id)
-        .first()
-    )
-    if not requirement:
-        raise TaskDetailWriteError("Requirement not found.", status_code=404)
-    return requirement
-
-
-def _ensure_ai_job(db: Session, workspace_id: str, task_id: str, ai_job_id: Optional[str]) -> Optional[SddAiJob]:
-    if not ai_job_id:
-        return None
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.workspace_id == workspace_id, SddAiJob.task_id == task_id, SddAiJob.id == ai_job_id)
-        .first()
-    )
-    if not job:
-        raise TaskDetailWriteError("AI Run not found for this Task.", status_code=404)
-    return job
-
-
-def _ensure_ai_output(db: Session, workspace_id: str, task_id: str, output_id: Optional[str]) -> Optional[SddAiOutput]:
-    if not output_id:
-        return None
-    output = (
-        db.query(SddAiOutput)
-        .filter(SddAiOutput.workspace_id == workspace_id, SddAiOutput.task_id == task_id, SddAiOutput.id == output_id)
-        .first()
-    )
-    if not output:
-        raise TaskDetailWriteError("AI Output not found for this Task.", status_code=404)
-    return output
-
-
-def _ensure_human_review(
-    db: Session,
-    workspace_id: str,
-    task_id: str,
-    review_id: Optional[str],
-) -> Optional[SddHumanReview]:
-    if not review_id:
-        return None
-    review = (
-        db.query(SddHumanReview)
-        .filter(
-            SddHumanReview.workspace_id == workspace_id,
-            SddHumanReview.task_id == task_id,
-            SddHumanReview.id == review_id,
-        )
-        .first()
-    )
-    if not review:
-        raise TaskDetailWriteError("Human Review not found for this Task.", status_code=404)
-    return review
-
-
-def _ensure_human_delta(
-    db: Session,
-    workspace_id: str,
-    task_id: str,
-    delta_id: Optional[str],
-) -> Optional[SddHumanDelta]:
-    if not delta_id:
-        return None
-    delta = (
-        db.query(SddHumanDelta)
-        .filter(
-            SddHumanDelta.workspace_id == workspace_id,
-            SddHumanDelta.task_id == task_id,
-            SddHumanDelta.id == delta_id,
-        )
-        .first()
-    )
-    if not delta:
-        raise TaskDetailWriteError("Human Delta not found for this Task.", status_code=404)
-    return delta
-
-
-def _ensure_evidence(db: Session, workspace_id: str, task_id: str, evidence_id: Optional[str]) -> Optional[SddEvidence]:
-    if not evidence_id:
-        return None
-    evidence = (
-        db.query(SddEvidence)
-        .filter(SddEvidence.workspace_id == workspace_id, SddEvidence.task_id == task_id, SddEvidence.id == evidence_id)
-        .first()
-    )
-    if not evidence:
-        raise TaskDetailWriteError("Evidence not found for this Task.", status_code=404)
-    return evidence
-
-
-def _validate_evidence_source(
-    *,
-    source_type: EvidenceSourceType,
-    source_uri: Optional[str],
-    source_ref: Optional[str],
-    source_path: Optional[str],
-    source_metadata: Optional[Dict[str, Any]],
-) -> None:
-    # All attachment fields are optional; source_type alone is sufficient.
-    return
-
-
-_RUNNING_STATUSES = {
-    TaskStatus.PENDING,
-    TaskStatus.BRAINSTORMING,
-    TaskStatus.PLANNING,
-    TaskStatus.CODING,
-    TaskStatus.TESTING,
-    TaskStatus.REVIEWING,
-    TaskStatus.DEPLOYING,
-    TaskStatus.SUSPENDED,
-    TaskStatus.INTERRUPTED,
-}
-
-
-def _validate_evidence_for_phase(task_status: TaskStatus, evidence_type: EvidenceType) -> None:
-    """Running tasks cannot have evidence; DONE allows CODE/BUSINESS/HUMAN_CONFIRMATION; FAILED allows FAILURE/RUNTIME/AI."""
-    if task_status == TaskStatus.BASELINED:
-        raise TaskDetailWriteError("Task is BASELINED and locked for process changes.", status_code=403)
-    if task_status in _RUNNING_STATUSES:
-        raise TaskDetailWriteError(
-            "Evidence can only be created after task reaches DONE or FAILED status.",
-            status_code=422,
-        )
-    if task_status == TaskStatus.FAILED and evidence_type not in (
-        EvidenceType.FAILURE,
-        EvidenceType.RUNTIME,
-        EvidenceType.AI,
-    ):
-        raise TaskDetailWriteError(
-            f"Evidence type '{evidence_type.value}' is not applicable for a failed task.",
-            status_code=422,
-        )
-
-
-def _add_process_audit(
-    db: Session,
-    *,
-    workspace_id: str,
-    task_id: str,
-    record_type: TaskProcessRecordType,
-    record_id: str,
-    action: TaskProcessAuditAction,
-    actor_id: Optional[str] = None,
-    before: Optional[Dict[str, Any]] = None,
-    after: Optional[Dict[str, Any]] = None,
-    reason: Optional[str] = None,
-) -> None:
-    db.add(
-        SddTaskProcessAuditLog(
-            workspace_id=workspace_id,
-            task_id=task_id,
-            actor_id=actor_id,
-            record_type=record_type,
-            record_id=record_id,
-            action=action,
-            before_json=before,
-            after_json=after,
-            reason=clean_optional(reason),
-        )
-    )
-
-
-def _has_accepting_review(task: SddTask) -> bool:
-    accepting = {
-        HumanReviewOutcome.ACCEPT.value,
-        HumanReviewOutcome.ACCEPT_WITH_MODIFICATION.value,
-    }
-    return any(
-        enum_value(review.outcome) in accepting
-        and enum_value(review.status) in {HumanReviewStatus.RESOLVED.value, HumanReviewStatus.CLOSED.value}
-        for review in (task.human_reviews or [])
-    )
-
-
-def _is_human_confirmation(evidence: SddEvidence) -> bool:
-    return (
-        enum_value(evidence.source_type) == EvidenceSourceType.HUMAN_CONFIRMATION.value
-        and enum_value(evidence.status) == EvidenceStatus.CONFIRMED.value
-        and bool(evidence.confirmed_by_id)
-        and evidence.confirmed_at is not None
-    )
-
-
-def _task_coverage_status(task: SddTask) -> str:
-    if not task.requirement_links:
-        return "not_available"
-    evidence_items = list(task.evidence_items or [])
-    if not evidence_items:
-        return "waiting_evidence"
-    if not any(_is_human_confirmation(item) for item in evidence_items):
-        return "waiting_human_confirmation"
-    return "verified"
-
-
-def _has_open_blocking_clarification(task: SddTask) -> bool:
-    terminal_statuses = {
-        ClarificationStatus.ACCEPTED.value,
-        ClarificationStatus.CLOSED.value,
-        ClarificationStatus.CANCELLED.value,
-    }
-    return any(
-        enum_value(item.status) not in terminal_statuses
-        and enum_value(item.blocking_level) == ClarificationBlockingLevel.BLOCKING.value
-        for item in (task.clarifications or [])
-    )
-
-
-def _ensure_final_summary_verified_allowed(task: SddTask) -> None:
-    if _task_coverage_status(task) != "verified":
-        raise TaskDetailWriteError(
-            "Final Summary cannot be VERIFIED until Coverage is backed by human confirmation Evidence.",
-            status_code=409,
-        )
-    from app.domains.workspace_asset.services.task_final_workflow import review_service
-
-    expert_reviews = [
-        review
-        for review in (task.human_reviews or [])
-        if review.review_type == review_service.EXPERT_REVIEW_TYPE
-    ]
-    if not expert_reviews:
-        raise TaskDetailWriteError(
-            "Final Summary cannot be VERIFIED without at least one expert review item.",
-            status_code=409,
-        )
-    if _has_open_blocking_clarification(task):
-        raise TaskDetailWriteError(
-            "Final Summary cannot be VERIFIED while a blocking Clarification is unresolved.",
-            status_code=409,
-        )
+__all__ = [
+    "clarification_response",
+    "decision_response",
+    "evidence_response",
+    "external_evidence_ref",
+    "final_summary_response",
+    "human_delta_response",
+    "human_review_comment_response",
+    "human_review_response",
+    "process_audit_response",
+    "task_file_from_ai_output",
+    "task_file_from_asset",
+    "task_file_from_change_file",
+    "task_file_from_change_proposal",
+    "task_file_from_conflict",
+    "task_file_from_verification",
+    "task_file_items",
+]

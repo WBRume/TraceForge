@@ -2496,7 +2496,7 @@
           "eyebrow": "Task File",
           "title": "Real Task output and file records",
           "empty_title": "No real Task File records",
-          "empty": "Waiting for Spec, Plan, AI Output, change proposals, verification logs, or conflict reports. The page does not fabricate generated files or code changes."
+          "empty": "Waiting for Spec, Plan, AI Output, change proposals, verification logs, or conflict reports."
         },
         "human_review": {
           "eyebrow": "Human Review",

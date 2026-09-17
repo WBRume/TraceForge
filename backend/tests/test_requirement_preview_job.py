@@ -37,12 +37,14 @@ from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from ai_job_test_utils import patch_ai_job_db
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.database import Base  # noqa: E402
-from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob  # noqa: E402
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
 from app.domains.workspace_asset.models.workspace_asset import (  # noqa: E402
     SddRequirementImportBatch,
 )
-from app.domains.workspace_asset.services import workspace_asset_service as service  # noqa: E402
+from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service  # noqa: E402
+from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner  # noqa: E402
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError  # noqa: E402
 
 
 def _build_session(*, expire_on_commit=False):
@@ -65,7 +67,7 @@ def _seed_workspace(db, project_path):
 
 
 def _create_preview_job(db, raw: bytes, *, file_name="requirements.md"):
-    return service.create_requirement_import_preview_job(
+    return preview_job_service.create_requirement_import_preview_job(
         db,
         "ws-1",
         "user-1",
@@ -84,7 +86,7 @@ def test_create_import_preview_job_persists_parsed_content(tmp_path):
     job = db.query(SddAiJob).filter(SddAiJob.id == response.job_id).one()
     context = job.context_json
     assert job.queue_key == "REQUIREMENT_PREVIEW:ws-1"
-    assert job.status == service.AiJobStatus.PENDING
+    assert job.status == AiJobStatus.PENDING
     assert context["job_kind"] == "REQUIREMENT_IMPORT_PREVIEW"
     assert "Feature A" in str(context["normalized_markdown"])
     assert context["source_ext"] == ".md"
@@ -98,18 +100,18 @@ def test_create_import_preview_job_rejects_unsupported_and_oversize(tmp_path):
     db = SessionLocal()
     _seed_workspace(db, tmp_path)
 
-    with pytest.raises(service.WorkspaceAssetWriteError) as unsupported:
+    with pytest.raises(WorkspaceAssetError) as unsupported:
         _create_preview_job(db, b"# x\n", file_name="requirements.pdf")
     assert unsupported.value.status_code == 415
 
-    original_limit = service.REQUIREMENT_IMPORT_MAX_BYTES
-    service.REQUIREMENT_IMPORT_MAX_BYTES = 10
+    original_limit = preview_job_service.REQUIREMENT_IMPORT_MAX_BYTES
+    preview_job_service.REQUIREMENT_IMPORT_MAX_BYTES = 10
     try:
-        with pytest.raises(service.WorkspaceAssetWriteError) as oversize:
+        with pytest.raises(WorkspaceAssetError) as oversize:
             _create_preview_job(db, b"# too large content beyond limit\n")
         assert oversize.value.status_code == 413
     finally:
-        service.REQUIREMENT_IMPORT_MAX_BYTES = original_limit
+        preview_job_service.REQUIREMENT_IMPORT_MAX_BYTES = original_limit
 
 
 def test_run_import_preview_job_executes_from_persisted_context(tmp_path, monkeypatch):
@@ -128,14 +130,14 @@ def test_run_import_preview_job_executes_from_persisted_context(tmp_path, monkey
             "session_id": "sess-1",
         }
 
-    monkeypatch.setattr(service, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
-    asyncio.run(service.run_requirement_import_preview_job(job_id))
+    asyncio.run(preview_runner.run_requirement_import_preview_job(job_id))
 
     db.expire_all()
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
-    assert job.status == service.AiJobStatus.SUCCESS
+    assert job.status == AiJobStatus.SUCCESS
     assert len(prompts) == 1
     assert "Feature A" in prompts[0]["prompt"]
 
@@ -158,9 +160,9 @@ def test_run_import_preview_job_fails_when_content_missing(tmp_path, monkeypatch
     job = SddAiJob(
         id="legacy-job",
         workspace_id="ws-1",
-        channel=service.AiJobChannel.ASSET_THREAD,
+        channel=AiJobChannel.ASSET_THREAD,
         queue_key="REQUIREMENT_PREVIEW:ws-1",
-        status=service.AiJobStatus.PENDING,
+        status=AiJobStatus.PENDING,
         context_json={"job_kind": "REQUIREMENT_IMPORT_PREVIEW", "source_filename": "requirements.md"},
         creator_id="user-1",
     )
@@ -170,14 +172,14 @@ def test_run_import_preview_job_fails_when_content_missing(tmp_path, monkeypatch
     async def unexpected_cli(*_args, **_kwargs):
         raise AssertionError("CLI must not be called without persisted content")
 
-    monkeypatch.setattr(service, "run_cli_single_turn", unexpected_cli)
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", unexpected_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
-    asyncio.run(service.run_requirement_import_preview_job(job.id))
+    asyncio.run(preview_runner.run_requirement_import_preview_job(job.id))
 
     db.expire_all()
     failed = db.query(SddAiJob).filter(SddAiJob.id == job.id).one()
-    assert failed.status == service.AiJobStatus.FAILED
+    assert failed.status == AiJobStatus.FAILED
     assert "re-upload" in str(failed.error_message)
 
 
@@ -189,9 +191,9 @@ def test_execute_job_dispatches_split_preview(monkeypatch):
     job = SddAiJob(
         id="split-job-1",
         workspace_id="ws-1",
-        channel=service.AiJobChannel.ASSET_THREAD,
+        channel=AiJobChannel.ASSET_THREAD,
         queue_key="REQUIREMENT_PREVIEW:ws-1",
-        status=service.AiJobStatus.RUNNING,
+        status=AiJobStatus.RUNNING,
         context_json={"job_kind": "REQUIREMENT_SPLIT_PREVIEW"},
         creator_id="user-1",
     )
@@ -213,12 +215,12 @@ def test_execute_job_dispatches_split_preview(monkeypatch):
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(
-        service,
+        preview_runner,
         "run_requirement_split_preview_job",
         _FakePreviewService.run_requirement_split_preview_job,
     )
     monkeypatch.setattr(
-        service,
+        preview_runner,
         "run_requirement_import_preview_job",
         _FakePreviewService.run_requirement_import_preview_job,
     )
@@ -243,7 +245,7 @@ def _seed_split_preview_target(db, tmp_path):
     )
     db.add(requirement)
     db.commit()
-    job = service.create_requirement_split_preview_job(
+    job = preview_job_service.create_requirement_split_preview_job(
         db, "ws-1", "req-1", "user-1"
     )
     return job.job_id
@@ -254,9 +256,9 @@ def _claim_running(job_id, SessionLocal, *, pid=4242):
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
-        job.status = service.AiJobStatus.RUNNING
+        job.status = AiJobStatus.RUNNING
         job.run_token = "run-1"
-        job.worker_boot_id = service.WORKER_BOOT_ID
+        job.worker_boot_id = ai_registry.WORKER_BOOT_ID
         job.process_pid = pid
         job.process_group_id = pid
         job.process_execution_kind = "LOCAL_PROCESS"
@@ -280,7 +282,7 @@ def _make_bound_attempt(job_id, runtime):
         queue_key="REQUIREMENT_PREVIEW:ws-1",
         run_token="run-1",
         worker_id="w-1",
-        worker_boot_id=service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
         execution_kind="LOCAL_PROCESS",
     )
@@ -311,7 +313,7 @@ def test_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatc
         # 确定性解析失败：split preview 至少需要两个 item。
         return {"text": '{"items": [{"title": "Only one"}]}', "session_id": "sess-1"}
 
-    monkeypatch.setattr(service, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     from app.agents.contract import (
@@ -334,13 +336,13 @@ def test_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatc
     _, runner = _make_bound_attempt(job_id, runtime)
 
     async def _job():
-        return await service.run_requirement_split_preview_job(job_id, run_token="run-1")
+        return await preview_runner.run_requirement_split_preview_job(job_id, run_token="run-1")
 
     runner(_job())
 
     db.expire_all()
     saved = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
-    assert saved.status == service.AiJobStatus.FAILED
+    assert saved.status == AiJobStatus.FAILED
     assert saved.run_token is None
     assert saved.process_pid is None
     assert saved.process_group_id is None
@@ -356,7 +358,7 @@ def test_preview_unknown_death_failure_stays_orphaned(tmp_path, monkeypatch):
     async def fake_cli(*_args, **_kwargs):
         return {"text": '{"items": [{"title": "Only one"}]}', "session_id": "sess-1"}
 
-    monkeypatch.setattr(service, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     from app.agents.contract import (
@@ -382,13 +384,13 @@ def test_preview_unknown_death_failure_stays_orphaned(tmp_path, monkeypatch):
     _, runner = _make_bound_attempt(job_id, runtime)
 
     async def _job():
-        return await service.run_requirement_split_preview_job(job_id, run_token="run-1")
+        return await preview_runner.run_requirement_split_preview_job(job_id, run_token="run-1")
 
     runner(_job())
 
     db.expire_all()
     saved = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
-    assert saved.status == service.AiJobStatus.ORPHANED
+    assert saved.status == AiJobStatus.ORPHANED
     # 防止修复变成乐观终态：ownership 必须完整保留。
     assert saved.run_token == "run-1"
     assert saved.process_pid == 4242
@@ -408,7 +410,7 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
         # normalize 阶段抛错（非 JSON 且不可兜底的内容）。
         return {"text": "not json at all", "session_id": "sess-1"}
 
-    monkeypatch.setattr(service, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
     from app.agents.contract import (
@@ -430,13 +432,13 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
     _, runner = _make_bound_attempt(job_id, runtime)
 
     async def _job():
-        return await service.run_requirement_import_preview_job(job_id, run_token="run-1")
+        return await preview_runner.run_requirement_import_preview_job(job_id, run_token="run-1")
 
     runner(_job())
 
     db.expire_all()
     saved = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
-    assert saved.status == service.AiJobStatus.FAILED
+    assert saved.status == AiJobStatus.FAILED
     assert saved.run_token is None
     assert saved.process_pid is None
 
@@ -545,16 +547,16 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
         monkeypatch.setattr(
-            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
         )
-        monkeypatch.setattr(service, "_finalize_requirement_split_sync", capture)
+        monkeypatch.setattr(preview_runner, "finalize_requirement_split_sync", capture)
         with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
-            assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
+                patch.object(preview_runner, "run_db_txn", _async_txn), \
+                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+            assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
-        assert _decide_status(evidence, service.AiJobStatus.SUCCESS) == service.AiJobStatus.SUCCESS
+        assert _decide_status(evidence, AiJobStatus.SUCCESS) == AiJobStatus.SUCCESS
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
         reset_agent_attempt_runtime(binding)
@@ -587,19 +589,19 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
         }
         prepared = {"backend_name": "dsh", "prompt": "import", "project_path": "/tmp"}
         monkeypatch.setattr(
-            service, "_load_requirement_import_context_sync", lambda db, job_id: context
+        preview_runner, "load_requirement_import_context_sync", lambda db, job_id: context
         )
         monkeypatch.setattr(
-            service, "_prepare_requirement_import_sync", lambda db, **kw: prepared
+        preview_runner, "prepare_requirement_import_sync", lambda db, **kw: prepared
         )
-        monkeypatch.setattr(service, "_finalize_requirement_import_sync", capture)
+        monkeypatch.setattr(preview_runner, "finalize_requirement_import_sync", capture)
         with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
-            assert asyncio.run(service.run_requirement_import_preview_job("audit-job")) is True
+                patch.object(preview_runner, "run_db_txn", _async_txn), \
+                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+            assert asyncio.run(preview_runner.run_requirement_import_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
-        assert _decide_status(evidence, service.AiJobStatus.SUCCESS) == service.AiJobStatus.SUCCESS
+        assert _decide_status(evidence, AiJobStatus.SUCCESS) == AiJobStatus.SUCCESS
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
         reset_agent_attempt_runtime(binding)
@@ -628,17 +630,17 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
         monkeypatch.setattr(
-            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
         )
-        monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
+        monkeypatch.setattr(preview_runner, "fail_requirement_preview_sync", capture_fail)
         with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
-            assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
+                patch.object(preview_runner, "run_db_txn", _async_txn), \
+                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+            assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
         # provider outcome 已见：解析失败落 FAILED，绝不是 ORPHANED（远程已停）。
-        assert _decide_status(evidence, service.AiJobStatus.FAILED) == service.AiJobStatus.FAILED
+        assert _decide_status(evidence, AiJobStatus.FAILED) == AiJobStatus.FAILED
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
         reset_agent_attempt_runtime(binding)
@@ -666,19 +668,19 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
         monkeypatch.setattr(
-            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
         )
-        monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
+        monkeypatch.setattr(preview_runner, "fail_requirement_preview_sync", capture_fail)
         with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+                patch.object(preview_runner, "run_db_txn", _async_txn), \
+                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
             # 返回协议保持既有语义（异常路径返回 outcome 局部布尔）；
             # 收敛正确性由 finalizer evidence 决定。
-            asyncio.run(service.run_requirement_split_preview_job("audit-job"))
+            asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job"))
         evidence = captured["evidence"]
         # provider 明确失败 result 也是终局 outcome：FAILED，不是 ORPHANED。
         assert evidence.provider_outcome_seen is True
-        assert _decide_status(evidence, service.AiJobStatus.FAILED) == service.AiJobStatus.FAILED
+        assert _decide_status(evidence, AiJobStatus.FAILED) == AiJobStatus.FAILED
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
         reset_agent_attempt_runtime(binding)
@@ -706,17 +708,17 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
         monkeypatch.setattr(
-            service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
+        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
         )
-        monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
+        monkeypatch.setattr(preview_runner, "fail_requirement_preview_sync", capture_fail)
         with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
-            assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is False
+                patch.object(preview_runner, "run_db_txn", _async_txn), \
+                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+            assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is False
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is False
         assert evidence.remote_session_started is True
-        assert _decide_status(evidence, service.AiJobStatus.FAILED) == service.AiJobStatus.ORPHANED
+        assert _decide_status(evidence, AiJobStatus.FAILED) == AiJobStatus.ORPHANED
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
         reset_agent_attempt_runtime(binding)

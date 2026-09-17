@@ -22,17 +22,19 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
 )
 from app.domains.workspace_asset.schemas.workspace_asset import ClarificationCreateRequest
 from app.domains.workspace_asset.services.task_final_workflow import baseline_service
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _add_process_audit,
-    _ensure_evidence,
-    _ensure_human_review,
-    _ensure_requirement,
-    _get_task_or_error,
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
-    clarification_response,
     json_dict,
     normalize_enum,
+)
+from app.domains.workspace_asset.services.common.process_presenters import clarification_response
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_evidence,
+    ensure_human_review,
+    ensure_requirement,
+    get_task_or_error,
 )
 
 
@@ -50,7 +52,7 @@ def _ensure_clarification(db: Session, workspace_id: str, task_id: str, clarific
         .first()
     )
     if not clarification:
-        raise TaskDetailWriteError("Clarification not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("Clarification not found for this Task.", status_code=404)
     return clarification
 
 
@@ -104,14 +106,14 @@ def create_clarification_for_review(
     actor_id: Optional[str],
     payload: ClarificationCreateRequest,
 ) -> SddClarification:
-    task = _get_task_or_error(db, workspace_id, task_id)
+    task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
-    _ensure_requirement(db, workspace_id, payload.requirement_id)
-    _ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
-    source_review = review or _ensure_human_review(db, workspace_id, task_id, payload.source_review_id)
+    ensure_requirement(db, workspace_id, payload.requirement_id)
+    ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
+    source_review = review or ensure_human_review(db, workspace_id, task_id, payload.source_review_id)
     question = clean_optional(payload.question)
     if not question:
-        raise TaskDetailWriteError("Clarification question is required.", status_code=422)
+        raise WorkspaceAssetError("Clarification question is required.", status_code=422)
 
     clarification = SddClarification(
         workspace_id=workspace_id,
@@ -160,7 +162,7 @@ def create_clarification_for_review(
     )
     db.flush()
     _sync_source_review(clarification)
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -215,7 +217,7 @@ def _apply_message_status(
     elif entry_type == "SYSTEM":
         return
     else:
-        raise TaskDetailWriteError(f"Unsupported clarification message type: {entry_type}", status_code=422)
+        raise WorkspaceAssetError(f"Unsupported clarification message type: {entry_type}", status_code=422)
 
 
 def add_message(
@@ -230,7 +232,7 @@ def add_message(
     baseline_service.ensure_task_mutable(clarification.task)
     body = clean_optional(payload.body)
     if not body:
-        raise TaskDetailWriteError("Clarification message body is required.", status_code=422)
+        raise WorkspaceAssetError("Clarification message body is required.", status_code=422)
     before = clarification_response(clarification).model_dump(mode="json")
     entry_type = payload.entry_type
     thread = SddClarificationThread(
@@ -247,7 +249,7 @@ def add_message(
     db.flush()
     _sync_source_review(clarification)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,

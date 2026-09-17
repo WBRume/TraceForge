@@ -1,8 +1,4 @@
-"""
-Decision write operations.
-
-Extracted from workspace_task_detail_service.py.
-"""
+"""Decision 的写操作。"""
 
 from __future__ import annotations
 
@@ -20,22 +16,24 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     DecisionCreateRequest,
     DecisionUpdateRequest,
 )
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _ensure_task_not_baselined,
+from app.domains.asset.services import decision_service
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
-    decision_response,
     enum_value,
     json_dict,
     normalize_enum,
     payload_has_field,
-    _add_process_audit,
-    _ensure_evidence,
-    _ensure_human_delta,
-    _ensure_requirement,
-    _get_task_or_error,
 )
-from app.domains.asset.services import decision_service
+from app.domains.workspace_asset.services.common.process_presenters import decision_response
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_evidence,
+    ensure_human_delta,
+    ensure_requirement,
+    ensure_task_not_baselined,
+    get_task_or_error,
+)
 
 
 def create_decision(
@@ -45,14 +43,14 @@ def create_decision(
     actor_id: Optional[str],
     payload: DecisionCreateRequest,
 ) -> str:
-    task = _get_task_or_error(db, workspace_id, task_id)
-    _ensure_task_not_baselined(task)
-    _ensure_requirement(db, workspace_id, payload.requirement_id)
-    _ensure_human_delta(db, workspace_id, task_id, payload.human_delta_id)
-    _ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
+    task = get_task_or_error(db, workspace_id, task_id)
+    ensure_task_not_baselined(task)
+    ensure_requirement(db, workspace_id, payload.requirement_id)
+    ensure_human_delta(db, workspace_id, task_id, payload.human_delta_id)
+    ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
     title = clean_optional(payload.title, limit=300)
     if not title:
-        raise TaskDetailWriteError("Decision title is required.", status_code=422)
+        raise WorkspaceAssetError("Decision title is required.", status_code=422)
     try:
         source_type = decision_service.normalize_source_type(payload.source_type)
         decision_service.validate_decision_source(
@@ -68,7 +66,7 @@ def create_decision(
             source_final_summary_id=payload.source_final_summary_id,
         )
     except decision_service.DecisionSourceError as exc:
-        raise TaskDetailWriteError(str(exc), status_code=exc.status_code) from exc
+        raise WorkspaceAssetError(str(exc), status_code=exc.status_code) from exc
     decision = SddDecision(
         workspace_id=workspace_id,
         task_id=task_id,
@@ -95,7 +93,7 @@ def create_decision(
     )
     db.add(decision)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -127,19 +125,19 @@ def update_decision(
         .first()
     )
     if not decision:
-        raise TaskDetailWriteError("Decision not found for this Task.", status_code=404)
-    _ensure_task_not_baselined(decision.task)
+        raise WorkspaceAssetError("Decision not found for this Task.", status_code=404)
+    ensure_task_not_baselined(decision.task)
     before = decision_response(decision).model_dump(mode="json")
     if payload_has_field(payload, "requirement_id"):
-        _ensure_requirement(db, workspace_id, payload.requirement_id)
+        ensure_requirement(db, workspace_id, payload.requirement_id)
         decision.requirement_id = payload.requirement_id
     if payload_has_field(payload, "human_delta_id"):
-        _ensure_human_delta(db, workspace_id, task_id, payload.human_delta_id)
+        ensure_human_delta(db, workspace_id, task_id, payload.human_delta_id)
         decision.human_delta_id = payload.human_delta_id
     if payload_has_field(payload, "delta_region_id"):
         decision.delta_region_id = payload.delta_region_id
     if payload_has_field(payload, "source_evidence_id"):
-        _ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
+        ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
         decision.source_evidence_id = payload.source_evidence_id
     if payload_has_field(payload, "source_type") and payload.source_type is not None:
         decision.source_type = decision_service.normalize_source_type(payload.source_type)
@@ -169,7 +167,7 @@ def update_decision(
             source_final_summary_id=decision.source_final_summary_id,
         )
     except decision_service.DecisionSourceError as exc:
-        raise TaskDetailWriteError(str(exc), status_code=exc.status_code) from exc
+        raise WorkspaceAssetError(str(exc), status_code=exc.status_code) from exc
     if payload_has_field(payload, "status") and payload.status is not None:
         decision.status = normalize_enum(DecisionStatus, payload.status, DecisionStatus.PROPOSED, "Decision status")
     if payload_has_field(payload, "title"):
@@ -187,7 +185,7 @@ def update_decision(
     if payload_has_field(payload, "delta_line_refs"):
         decision.delta_line_refs_json = json_dict(payload.delta_line_refs)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,

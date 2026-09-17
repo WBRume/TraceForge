@@ -55,7 +55,8 @@ from app.domains.asset.services import asset_discussion_service, asset_document_
 from app.domains.auth.services import auth_service
 from app.domains.task.services import task_cli_state_service, task_service
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_asset.services import workspace_task_detail_service
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.task_process import decision_writes
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 
 router = APIRouter(prefix="/workspaces/{ws_id}/assets", tags=["Assets"])
@@ -1330,7 +1331,7 @@ async def apply_thread_resolution(
                 if not thread.task_id:
                     raise HTTPException(status_code=422, detail="Decision source requires a Task-bound Spec / Plan asset")
                 try:
-                    workspace_task_detail_service.create_decision(
+                    decision_writes.create_decision(
                         db,
                         ws_id,
                         thread.task_id,
@@ -1356,7 +1357,7 @@ async def apply_thread_resolution(
                             change_reason="Recorded from Spec / Plan resolution apply.",
                         ),
                     )
-                except workspace_task_detail_service.TaskDetailWriteError as exc:
+                except WorkspaceAssetError as exc:
                     raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
             db.commit()

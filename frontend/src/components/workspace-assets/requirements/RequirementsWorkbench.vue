@@ -202,6 +202,7 @@ async function previewImport(payload: Parameters<typeof createRequirementImportP
     (job) => {
       if (runId === createPreviewRunId.value) createPreviewJob.value = job
     },
+    () => runId === createPreviewRunId.value,
   )
   if (batch && runId === createPreviewRunId.value) createBatch.value = batch
 }
@@ -253,6 +254,7 @@ async function openSplit(requirement: RequirementSummary) {
     (job) => {
       if (runId === splitPreviewRunId.value) splitPreviewJob.value = job
     },
+    () => runId === splitPreviewRunId.value,
   )
   if (batch && runId === splitPreviewRunId.value) splitBatch.value = batch
 }

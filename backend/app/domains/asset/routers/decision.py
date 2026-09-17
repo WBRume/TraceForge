@@ -8,7 +8,7 @@ from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.workspace_asset.schemas.workspace_asset import ChatMessageDecisionCreateRequest, DecisionResponse
 from app.domains.asset.services import decision_service
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_asset.services import workspace_task_detail_service
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 
 
 router = APIRouter(prefix="/workspaces/{ws_id}/tasks/{task_id}/messages", tags=["Task Decisions"])
@@ -43,5 +43,5 @@ def mark_chat_message_as_decision(
         )
     except decision_service.DecisionSourceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

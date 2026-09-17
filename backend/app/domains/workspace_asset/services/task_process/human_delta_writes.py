@@ -1,8 +1,4 @@
-"""
-Human Review and Human Delta write operations.
-
-Extracted from workspace_task_detail_service.py.
-"""
+"""Human Review 与 Human Delta 的写操作。"""
 
 from __future__ import annotations
 
@@ -25,20 +21,24 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     HumanDeltaCreateRequest,
     HumanDeltaUpdateRequest,
 )
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _ensure_task_not_baselined,
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
-    human_review_comment_response,
-    human_review_response,
-    human_delta_response,
     json_dict,
     normalize_enum,
     payload_has_field,
-    _add_process_audit,
-    _ensure_human_review,
-    _ensure_human_delta,
-    _get_task_or_error,
+)
+from app.domains.workspace_asset.services.common.process_presenters import (
+    human_delta_response,
+    human_review_comment_response,
+    human_review_response,
+)
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_human_delta,
+    ensure_human_review,
+    ensure_task_not_baselined,
+    get_task_or_error,
 )
 
 
@@ -49,8 +49,8 @@ def create_human_review(
     actor_id: Optional[str],
     payload: HumanReviewCreateRequest,
 ) -> None:
-    task = _get_task_or_error(db, workspace_id, task_id)
-    _ensure_task_not_baselined(task)
+    task = get_task_or_error(db, workspace_id, task_id)
+    ensure_task_not_baselined(task)
     review = SddHumanReview(
         workspace_id=workspace_id,
         task_id=task_id,
@@ -68,7 +68,7 @@ def create_human_review(
     )
     db.add(review)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -90,9 +90,9 @@ def update_human_review(
     actor_id: Optional[str],
     payload: HumanReviewUpdateRequest,
 ) -> None:
-    review = _ensure_human_review(db, workspace_id, task_id, review_id)
+    review = ensure_human_review(db, workspace_id, task_id, review_id)
     assert review is not None
-    _ensure_task_not_baselined(review.task)
+    ensure_task_not_baselined(review.task)
     before = human_review_response(review).model_dump(mode="json")
     if payload_has_field(payload, "status") and payload.status is not None:
         review.status = normalize_enum(HumanReviewStatus, payload.status, HumanReviewStatus.OPEN, "Human Review status")
@@ -115,7 +115,7 @@ def update_human_review(
     if payload_has_field(payload, "due_date"):
         review.due_date = payload.due_date
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -138,12 +138,12 @@ def create_human_review_comment(
     actor_id: Optional[str],
     payload: HumanReviewCommentCreateRequest,
 ) -> None:
-    _ensure_human_review(db, workspace_id, task_id, review_id)
-    task = _get_task_or_error(db, workspace_id, task_id)
-    _ensure_task_not_baselined(task)
+    ensure_human_review(db, workspace_id, task_id, review_id)
+    task = get_task_or_error(db, workspace_id, task_id)
+    ensure_task_not_baselined(task)
     body = clean_optional(payload.body)
     if not body:
-        raise TaskDetailWriteError("Review comment body is required.", status_code=422)
+        raise WorkspaceAssetError("Review comment body is required.", status_code=422)
     comment = SddHumanReviewComment(
         workspace_id=workspace_id,
         task_id=task_id,
@@ -155,7 +155,7 @@ def create_human_review_comment(
     )
     db.add(comment)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -189,7 +189,7 @@ def _ensure_proposal(
         .first()
     )
     if not proposal:
-        raise TaskDetailWriteError("ChangeProposal not found for this Task.", status_code=404)
+        raise WorkspaceAssetError("ChangeProposal not found for this Task.", status_code=404)
     return proposal
 
 
@@ -202,8 +202,8 @@ def create_human_delta(
 ) -> str:
     from app.domains.workspace_asset.services.human_delta_compare_service import create_delta
 
-    task = _get_task_or_error(db, workspace_id, task_id)
-    _ensure_task_not_baselined(task)
+    task = get_task_or_error(db, workspace_id, task_id)
+    ensure_task_not_baselined(task)
     return create_delta(
         db,
         workspace_id=workspace_id,
@@ -222,9 +222,9 @@ def update_human_delta(
     actor_id: Optional[str],
     payload: HumanDeltaUpdateRequest,
 ) -> None:
-    delta = _ensure_human_delta(db, workspace_id, task_id, delta_id)
+    delta = ensure_human_delta(db, workspace_id, task_id, delta_id)
     assert delta is not None
-    _ensure_task_not_baselined(delta.task)
+    ensure_task_not_baselined(delta.task)
     before = human_delta_response(delta).model_dump(mode="json")
     if payload_has_field(payload, "change_category"):
         delta.change_category = clean_optional(payload.change_category, limit=100)
@@ -233,7 +233,7 @@ def update_human_delta(
     if payload_has_field(payload, "promote_candidate") and payload.promote_candidate is not None:
         delta.promote_candidate = bool(payload.promote_candidate)
     db.flush()
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,

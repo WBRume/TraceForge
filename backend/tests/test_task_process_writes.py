@@ -1,5 +1,5 @@
 """
-Regression tests for workspace_task_detail_service write operations.
+Regression tests for task process asset write operations (task_process package).
 
 These tests exercise all CRUD write paths through the router endpoints.
 They must pass BEFORE and AFTER the service file refactoring.
@@ -24,7 +24,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddTaskRequirement,
     TaskRequirementRelationType,
 )
-from app.domains.workspace_asset.services import workspace_asset_service  # noqa: E402
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError  # noqa: E402
 
 from test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session  # noqa: E402
 
