@@ -23,7 +23,11 @@ from app.agents import current_agent_attempt
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db, run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.asset.models.asset import SddAssetResolutionProposal, SddAssetThread
+from app.domains.asset.models.asset import (
+    AssetThreadMessageRole,
+    SddAssetResolutionProposal,
+    SddAssetThread,
+)
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.ai.services.jobs import provider_turn, state

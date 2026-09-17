@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 from app.database import SessionLocal
+from sqlalchemy.orm import Session
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs.constants import FINAL_STATUSES
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID

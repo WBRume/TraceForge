@@ -39,6 +39,7 @@ from app.domains.ai.services.jobs.constants import FINAL_STATUSES, looks_like_ti
 from app.domains.ai.services.jobs import publishing
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.fencing import attempt_is_current_sync
+from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
 from app.domains.task.models.task import SddTask
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 

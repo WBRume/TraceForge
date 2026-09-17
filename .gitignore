@@ -3,6 +3,7 @@
 .env
 .env.*
 !.env.example
+!backend/tests/.env.test
 /test/
 /backend/venv/
 /backend/.venv/

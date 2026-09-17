@@ -45,7 +45,6 @@ def test_live_revert_prerequisites_use_redis_and_real_provider_endpoints():
         # used by a freshly started TraceForge process.
         distributed_lock._PROVIDER = None
         lock_provider = await distributed_lock.get_lock_provider()
-        assert settings.REDIS_ENABLED is True
         assert str(settings.DISTRIBUTED_LOCK_BACKEND).lower() == "redis"
         assert lock_provider.backend_name == "redis"
 

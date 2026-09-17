@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.agents import (
     AgentProcessIdentity,

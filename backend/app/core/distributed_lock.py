@@ -454,19 +454,11 @@ async def _release_local_queue_semaphore(queue_key: str) -> None:
 async def _build_provider() -> DistributedLockProvider:
     backend = str(settings.DISTRIBUTED_LOCK_BACKEND or "local").strip().lower()
     allow_local_fallback = bool(settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK)
-    redis_enabled = bool(settings.REDIS_ENABLED)
 
     if backend == "local":
         return LocalLockProvider()
 
     if backend == "redis":
-        if not redis_enabled:
-            message = "Redis lock backend requested but REDIS_ENABLED is false"
-            if allow_local_fallback:
-                logger.warning(message + ", falling back to local lock provider")
-                return LocalLockProvider()
-            raise RuntimeError(message)
-
         try:
             await ping_redis_client()
             return RedisLockProvider()
