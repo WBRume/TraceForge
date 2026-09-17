@@ -311,6 +311,18 @@ export function useWorkspaceAssets() {
     })
   }
 
+  async function loadImportBatch(
+    workspaceId: string,
+    batchId: string,
+  ): Promise<RequirementImportBatch | null> {
+    return mutate(async () => {
+      const response = await api.get<RequirementImportBatch>(
+        `/workspaces/${workspaceId}/workspace-assets/requirements/import-batches/${batchId}`,
+      )
+      return response.data
+    })
+  }
+
   async function loadTasks(
     workspaceId: string,
     query?: TaskListQuery,
@@ -398,6 +410,7 @@ export function useWorkspaceAssets() {
     confirmRequirementImport,
     createRequirementSplitPreviewJob,
     confirmRequirementSplit,
+    loadImportBatch,
     loadTasks,
     loadTaskDetail,
     loadTraceability,

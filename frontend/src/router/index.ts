@@ -267,6 +267,11 @@ const router = createRouter({
           component: () => import('../views/WorkspaceAssetRequirementDetailView.vue')
         },
         {
+          path: 'assets/requirements/:requirementId/split-review/:batchId',
+          name: 'workspaceAssetRequirementSplitReview',
+          component: () => import('../views/WorkspaceAssetRequirementSplitReviewView.vue')
+        },
+        {
           path: 'assets/tasks',
           name: 'workspaceAssetsTasks',
           component: () => import('../views/AssetView.vue')

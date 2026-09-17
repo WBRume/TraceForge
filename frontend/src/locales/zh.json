@@ -1839,10 +1839,12 @@
         "back_to_list": "返回需求资产",
         "back_to_task": "返回任务过程资产",
         "link_task": "关联 Task",
-        "unlink_task": "取消关联 Task"
+        "unlink_task": "取消关联 Task",
+        "delete": "删除"
       },
       "fields": {
         "title": "标题",
+        "body": "描述",
         "description": "描述",
         "acceptance_criteria": "验收标准",
         "status": "状态",
@@ -1922,6 +1924,28 @@
         "create_failed": "发起 AI 预览失败，请稍后重试。",
         "minimize": "缩小",
         "boundary": "AI Preview 只是草稿预览；不会创建 Task、Evidence、Coverage、Verified 状态或代码提交。"
+      },
+      "split_review": {
+        "title": "子需求拆分录入",
+        "back_to_parent": "返回需求详情",
+        "parent_spec_title": "母需求规格参考",
+        "parent_criteria_title": "母需求验收准则",
+        "sub_requirements_title": "拆分子需求列表",
+        "select_all": "全选",
+        "selected_count": "已选 {selected} / {total} 项",
+        "add_item": "添加子需求",
+        "add_criterion": "添加准则",
+        "criterion_placeholder": "输入验收准则，按回车添加",
+        "task_prompt_label": "任务提示词 (Prompt)",
+        "confirm_action": "确认录入 ({count})",
+        "discard_action": "取消",
+        "include_in_import": "纳入录入",
+        "submitting": "提交中...",
+        "change_reason_placeholder": "填写本次拆分录入原因（可选）",
+        "confirm_success": "子需求已成功录入",
+        "no_items": "当前批次无子需求项",
+        "no_parent_spec": "暂无母需求规格描述",
+        "no_parent_criteria": "暂无母需求验收准则"
       },
       "edit": {
         "aria_label": "需求编辑抽屉",
