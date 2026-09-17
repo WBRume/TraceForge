@@ -62,11 +62,12 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
 
     <p class="boundary-note">{{ t('workspace_assets.requirements.preview_progress.boundary') }}</p>
 
-    <footer class="progress-footer">
+    <!-- 进行中：缩小/关闭都是标题栏图标；失败才需要底部操作 -->
+    <footer v-if="isFailed" class="progress-footer">
       <button type="button" class="ghost-action" @click="emit('cancel')">
         {{ t('workspace_assets.requirements.actions.close') }}
       </button>
-      <button v-if="isFailed && !props.split" type="button" class="secondary-action" @click="emit('back')">
+      <button v-if="!props.split" type="button" class="secondary-action" @click="emit('back')">
         {{ t('workspace_assets.requirements.actions.back') }}
       </button>
     </footer>

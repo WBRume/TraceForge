@@ -339,38 +339,20 @@ describe('useWorkspaceAssets', () => {
     expect(result?.requirement.coverage_summary.coverage_status).toBe('not_available')
   })
 
-  it('creates AI preview through the async job response and preserves task prompts', async () => {
+  it('creates the AI preview job non-blockingly and leaves polling to the floating widget', async () => {
     const { useWorkspaceAssets } = await import('@/composables/useWorkspaceAssets')
     apiMock.post.mockResolvedValueOnce({
       data: {
         job_id: 'job-preview-1',
         workspace_id: 'ws-1',
-        status: 'SUCCESS',
-        progress: 100,
-        message: 'Requirement AI preview created',
-        batch: {
-          id: 'batch-1',
-          workspace_id: 'ws-1',
-          status: 'PREVIEW',
-          item_count: 1,
-          confirmed_count: 0,
-          items: [
-            {
-              id: 'item-1',
-              title: 'Payment validation',
-              body: 'Validate payment state.',
-              acceptance_criteria: ['Reject invalid payment state'],
-              task_prompt: 'Implement payment validation task.',
-              order_index: 0,
-              status: 'PENDING',
-            },
-          ],
-        },
+        status: 'RUNNING',
+        progress: 16,
+        message: 'Running agent CLI requirement preview',
       },
     })
 
     const assets = useWorkspaceAssets()
-    const result = await assets.createRequirementImportPreview('ws-1', {
+    const result = await assets.createRequirementImportPreviewJob('ws-1', {
       text: '# Payment validation',
       source_kind: 'document',
     })
@@ -379,7 +361,10 @@ describe('useWorkspaceAssets', () => {
       '/workspaces/ws-1/workspace-assets/requirements/imports',
       expect.any(FormData),
     )
-    expect(result?.items[0].task_prompt).toBe('Implement payment validation task.')
+    expect(result?.job_id).toBe('job-preview-1')
+    expect(result?.status).toBe('RUNNING')
+    // 预览等待不阻塞全局 loading（白遮罩根修）：创建作业不触碰 loading 状态
+    expect(assets.loading.value).toBe(false)
     expect(apiMock.get).not.toHaveBeenCalled()
   })
 

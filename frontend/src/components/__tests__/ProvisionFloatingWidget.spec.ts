@@ -13,12 +13,19 @@ const routerMock = vi.hoisted(() => ({
   push: vi.fn(),
 }))
 
+const ElMessageMock = vi.hoisted(() => ({
+  success: vi.fn(),
+  error: vi.fn(),
+  warning: vi.fn(),
+  info: vi.fn(),
+}))
+
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string, params?: Record<string, unknown>) => (params ? `${key}:${JSON.stringify(params)}` : key) }),
 }))
 
 vi.mock('element-plus', () => ({
-  ElMessage: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  ElMessage: ElMessageMock,
 }))
 
 vi.mock('vue-router', () => ({
@@ -197,5 +204,221 @@ describe('ProvisionFloatingWidget', () => {
     expect(store.expanded).toBe(false)
 
     store.dismiss('job-2')
+  })
+
+  it('tracks a requirement split preview job and shows progress only after minimize', async () => {
+    apiMock.get.mockResolvedValue({
+      data: {
+        job_id: 'pjob-1',
+        workspace_id: 'ws-1',
+        status: 'RUNNING',
+        progress: 42,
+        message: 'Running Claude Code CLI split preview',
+        job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+        requirement_id: 'req-1',
+        requirement_title: 'Big requirement',
+      },
+    })
+
+    const store = useProvisioningStore()
+    store.trackRequirementPreviewJob({
+      jobId: 'pjob-1',
+      workspaceId: 'ws-1',
+      kind: 'requirement_split_preview',
+      requirementId: 'req-1',
+      requirementTitle: 'Big requirement',
+    })
+    await flushPromises()
+
+    expect(apiMock.get).toHaveBeenCalledWith(
+      '/workspaces/ws-1/workspace-assets/requirements/preview-jobs/pjob-1',
+    )
+    expect(store.jobs['pjob-1'].kind).toBe('requirement_split_preview')
+    expect(store.jobs['pjob-1'].terminal).toBe(false)
+
+    // 弹窗还在展示进度：浮窗不出现卡片
+    const before = mountWidget()
+    expect(before.text()).not.toContain('Big requirement')
+    before.unmount()
+
+    // 点「缩小」后才出现在右下角（展开面板承接）
+    store.minimizePreviewJob('pjob-1')
+    expect(store.expanded).toBe(true)
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('Big requirement')
+    expect(wrapper.text()).toContain('42%')
+    expect(wrapper.text()).toContain('provisioning.preview_stage_running')
+    // 预览作业不提供取消按钮
+    const cancelButton = wrapper.findAll('button').find((btn) => btn.text().includes('common.cancel'))
+    expect(cancelButton).toBeUndefined()
+    wrapper.unmount()
+    store.dismiss('pjob-1')
+  })
+
+  it('shows the open-preview action on success without the error style, and hides the card once viewed', async () => {
+    apiMock.get.mockResolvedValue({
+      data: {
+        job_id: 'pjob-2',
+        workspace_id: 'ws-1',
+        status: 'SUCCESS',
+        progress: 100,
+        message: 'Requirement split preview created',
+        job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+        requirement_id: 'req-2',
+        requirement_title: 'Split me',
+        batch: { id: 'batch-1', workspace_id: 'ws-1', status: 'PREVIEW', item_count: 2, confirmed_count: 0, items: [] },
+      },
+    })
+
+    const store = useProvisioningStore()
+    store.trackRequirementPreviewJob({
+      jobId: 'pjob-2',
+      workspaceId: 'ws-1',
+      kind: 'requirement_split_preview',
+      requirementId: 'req-2',
+      requirementTitle: 'Split me',
+    })
+    store.minimizePreviewJob('pjob-2')
+    await flushPromises()
+
+    expect(store.jobs['pjob-2'].terminal).toBe(true)
+    expect(store.jobs['pjob-2'].batch?.id).toBe('batch-1')
+
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('provisioning.preview_success_hint')
+    // 成功卡片不得套用红色错误背景
+    const card = wrapper.find('.widget-job')
+    expect(card.classes()).not.toContain('widget-job-error')
+    const openButton = wrapper.findAll('button').find((btn) => btn.text().includes('provisioning.preview_open_action'))
+    expect(openButton).toBeTruthy()
+    await openButton!.trigger('click')
+    await flushPromises()
+    expect(routerMock.push).toHaveBeenCalledWith({
+      path: '/workspaces/ws-1/assets/requirements/req-2',
+      query: { previewJob: 'pjob-2' },
+    })
+    // 跳转不丢数据：store 保留作业供弹窗绑定，标记 viewed 后浮窗隐藏卡片
+    expect(store.jobs['pjob-2']).toBeTruthy()
+    expect(store.jobs['pjob-2'].viewed).toBe(false)
+
+    store.markPreviewJobViewed('pjob-2')
+    const hidden = mountWidget()
+    expect(hidden.text()).not.toContain('Split me')
+    hidden.unmount()
+    wrapper.unmount()
+    store.dismiss('pjob-2')
+  })
+
+  it('restores active requirement preview jobs from the global endpoint', async () => {
+    apiMock.get.mockImplementation((url: string) => {
+      if (url === '/provision-jobs/active') return Promise.resolve({ data: [] })
+      if (url === '/requirement-preview-jobs/active') {
+        return Promise.resolve({
+          data: [
+            {
+              job_id: 'pjob-9',
+              workspace_id: 'ws-1',
+              status: 'RUNNING',
+              progress: 8,
+              job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+              requirement_id: 'req-9',
+              requirement_title: 'R9',
+            },
+          ],
+        })
+      }
+      return Promise.resolve({ data: {} })
+    })
+
+    const store = useProvisioningStore()
+    await store.restoreFromServer()
+    await flushPromises()
+
+    expect(apiMock.get).toHaveBeenCalledWith('/requirement-preview-jobs/active')
+    expect(store.jobs['pjob-9']).toBeTruthy()
+    expect(store.jobs['pjob-9'].kind).toBe('requirement_split_preview')
+    expect(store.jobs['pjob-9'].requirementTitle).toBe('R9')
+    // 刷新恢复的作业没有弹窗承接：直接出现在浮窗
+    expect(store.jobs['pjob-9'].handedOver).toBe(true)
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('R9')
+    wrapper.unmount()
+
+    store.dismiss('pjob-9')
+  })
+
+  it('closing a running preview card cancels the backend CLI job and removes the card', async () => {
+    apiMock.get.mockResolvedValue({
+      data: {
+        job_id: 'pjob-3',
+        workspace_id: 'ws-1',
+        status: 'RUNNING',
+        progress: 20,
+        message: 'Running Claude Code CLI split preview',
+        job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+        requirement_id: 'req-3',
+        requirement_title: 'Cancel me',
+      },
+    })
+    apiMock.post.mockResolvedValue({ data: {} })
+
+    const store = useProvisioningStore()
+    store.trackRequirementPreviewJob({
+      jobId: 'pjob-3',
+      workspaceId: 'ws-1',
+      kind: 'requirement_split_preview',
+      requirementId: 'req-3',
+      requirementTitle: 'Cancel me',
+    })
+    store.minimizePreviewJob('pjob-3')
+    await flushPromises()
+
+    const wrapper = mountWidget()
+    const closeButton = wrapper.find('.widget-job-actions .widget-icon-btn')
+    expect(closeButton.exists()).toBe(true)
+    await closeButton.trigger('click')
+    await flushPromises()
+
+    // 复用任务会话的 ai-jobs cancel 通道：终止 CLI 进程（各 backend 统一收敛）
+    expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/ai-jobs/pjob-3/cancel')
+    expect(store.jobs['pjob-3']).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('keeps the preview card when the cancel request fails', async () => {
+    apiMock.get.mockResolvedValue({
+      data: {
+        job_id: 'pjob-4',
+        workspace_id: 'ws-1',
+        status: 'RUNNING',
+        progress: 30,
+        job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+        requirement_id: 'req-4',
+        requirement_title: 'Sticky',
+      },
+    })
+    apiMock.post.mockRejectedValue({ response: { status: 403 } })
+
+    const store = useProvisioningStore()
+    store.trackRequirementPreviewJob({
+      jobId: 'pjob-4',
+      workspaceId: 'ws-1',
+      kind: 'requirement_split_preview',
+      requirementId: 'req-4',
+      requirementTitle: 'Sticky',
+    })
+    store.minimizePreviewJob('pjob-4')
+    await flushPromises()
+
+    const wrapper = mountWidget()
+    const closeButton = wrapper.find('.widget-job-actions .widget-icon-btn')
+    await closeButton.trigger('click')
+    await flushPromises()
+
+    // 取消失败：卡片保留（进程仍在跑），提示用户重试
+    expect(store.jobs['pjob-4']).toBeTruthy()
+    expect(ElMessageMock.error).toHaveBeenCalledWith('provisioning.preview_cancel_failed')
+    wrapper.unmount()
+    store.dismiss('pjob-4')
   })
 })

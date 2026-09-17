@@ -123,7 +123,7 @@ def test_run_import_preview_job_executes_from_persisted_context(tmp_path, monkey
 
     prompts = []
 
-    async def fake_cli(prompt, project_path, max_attempts=1, backend_name=None):
+    async def fake_cli(prompt, project_path, max_attempts=1, should_cancel=None, backend_name=None):
         prompts.append({"prompt": prompt, "project_path": project_path})
         return {
             "text": '{"items": [{"title": "Feature A", "body": "Body text", "acceptance_criteria": [], "source_ref": "r1"}]}',
@@ -346,6 +346,68 @@ def test_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatc
     assert saved.run_token is None
     assert saved.process_pid is None
     assert saved.process_group_id is None
+
+
+def test_split_preview_cancel_keeps_termination_state(tmp_path, monkeypatch):
+    """统一取消通道（doc §9.1）：用户取消 → runner 清内存信号直接返回，
+    不写 FAILED（TERMINATING 交由 runner 退出收敛 CANCELLED），不落批次。"""
+    from app.agents.errors import AgentCancelledError
+
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    job_id = _seed_split_preview_target(db, tmp_path)
+    _claim_running(job_id, SessionLocal)
+
+    async def cancelled_cli(*_args, **_kwargs):
+        raise AgentCancelledError(
+            "AI job cancelled by user",
+            termination_confirmed_dead=True,
+            process_started=True,
+            failure_code="USER_CANCELLED",
+        )
+
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", cancelled_cli)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+
+    ai_runtime.request_cancel(job_id)
+    try:
+        asyncio.run(preview_runner.run_requirement_split_preview_job(job_id, run_token="run-1"))
+
+        db.expire_all()
+        saved = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
+        assert saved.status != AiJobStatus.FAILED
+        assert saved.status != AiJobStatus.SUCCESS
+        assert db.query(SddRequirementImportBatch).filter(
+            SddRequirementImportBatch.workspace_id == "ws-1"
+        ).count() == 0
+    finally:
+        ai_runtime.clear_cancel(job_id)
+
+
+def test_split_preview_wires_cancel_signal_into_cli(tmp_path, monkeypatch):
+    """should_cancel 必须接到统一取消信号：cancel 请求后 CLI 侧立即可见。"""
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    job_id = _seed_split_preview_target(db, tmp_path)
+    _claim_running(job_id, SessionLocal)
+
+    captured: dict = {}
+
+    async def fake_cli(prompt, project_path, *, max_attempts=1, should_cancel=None, backend_name=None, **_kw):
+        captured["should_cancel"] = should_cancel
+        return {"text": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}', "session_id": "s1"}
+
+    monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
+    monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
+
+    asyncio.run(preview_runner.run_requirement_split_preview_job(job_id, run_token="run-1"))
+    assert callable(captured.get("should_cancel"))
+    assert captured["should_cancel"]() is False
+    ai_runtime.request_cancel(job_id)
+    try:
+        assert captured["should_cancel"]() is True
+    finally:
+        ai_runtime.clear_cancel(job_id)
 
 
 def test_preview_unknown_death_failure_stays_orphaned(tmp_path, monkeypatch):
@@ -723,3 +785,58 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
         reset_agent_attempt_runtime(binding)
         reset_agent_attempt(owner)
+
+
+# ── 浮窗支撑：响应字段（job_kind/requirement_*）与 active 恢复列表 ──
+
+
+def test_preview_job_response_includes_kind_and_title(tmp_path):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    _seed_split_preview_target(db, tmp_path)
+
+    response = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-1"
+    )
+    assert response.job_kind == "REQUIREMENT_SPLIT_PREVIEW"
+    assert response.requirement_id == "req-1"
+    assert response.requirement_title == "Big requirement"
+
+    # 导入预览：requirement_title 回退为来源文件名
+    import_response = _create_preview_job(db, b"# Feature A\n", file_name="imported.md")
+    assert import_response.job_kind == "REQUIREMENT_IMPORT_PREVIEW"
+    assert import_response.requirement_id is None
+    assert import_response.requirement_title == "imported.md"
+
+
+def test_list_active_requirement_preview_jobs_filters_creator_and_status(tmp_path):
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    _seed_split_preview_target(db, tmp_path)
+
+    pending = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-1"
+    )
+    finished = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-1"
+    )
+    other_user = User(id="user-2", email="u2@example.com", hashed_password="x", display_name="U2")
+    db.add(other_user)
+    db.commit()
+    foreign = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-2"
+    )
+
+    db.expire_all()
+    done = db.query(SddAiJob).filter(SddAiJob.id == finished.job_id).one()
+    done.status = AiJobStatus.SUCCESS
+    db.commit()
+
+    active = preview_job_service.list_active_requirement_preview_jobs(db, "user-1")
+    active_ids = {item.job_id for item in active}
+    assert pending.job_id in active_ids
+    assert finished.job_id not in active_ids
+    assert foreign.job_id not in active_ids
+    item = next(i for i in active if i.job_id == pending.job_id)
+    assert item.status in (AiJobStatus.PENDING.value, AiJobStatus.RUNNING.value)
+    assert item.requirement_title == "Big requirement"

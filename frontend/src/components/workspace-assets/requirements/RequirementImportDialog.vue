@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Sparkles, X } from 'lucide-vue-next'
+import { Minus, Sparkles, X } from 'lucide-vue-next'
 import RequirementCreateMethodStep from './RequirementCreateMethodStep.vue'
 import RequirementImportContentStep from './RequirementImportContentStep.vue'
 import RequirementManualCreateStep from './RequirementManualCreateStep.vue'
@@ -36,6 +36,7 @@ const emit = defineEmits<{
   confirm: [payload: RequirementPreviewConfirmPayload]
   discardPreview: []
   clearPreviewJob: []
+  minimize: []
 }>()
 
 const { t } = useI18n()
@@ -60,6 +61,14 @@ const stepLabel = computed(() => {
   return t(`workspace_assets.requirements.create.steps.${step.value}`)
 })
 const showingPreviewProgress = computed(() => Boolean(props.previewJob && !props.batch))
+
+// 进行中的预览作业：标题栏提供「缩小」图标（转入右下角浮窗继续执行）
+const runningPreviewJob = computed(() => {
+  const job = props.previewJob
+  if (!job || props.batch) return null
+  const status = String(job.status || '').toUpperCase()
+  return status === 'PENDING' || status === 'RUNNING' ? job : null
+})
 
 watch(
   () => props.open,
@@ -124,7 +133,20 @@ function close() {
             <h2>{{ dialogTitle }}</h2>
             <p class="step-label">{{ stepLabel }}</p>
           </div>
-          <button type="button" class="close-btn" @click="close" :title="t('workspace_assets.requirements.actions.close')">
+          <template v-if="runningPreviewJob">
+            <button
+              type="button"
+              class="close-btn"
+              :title="t('workspace_assets.requirements.preview_progress.minimize')"
+              @click="emit('minimize')"
+            >
+              <Minus :size="20" />
+            </button>
+            <button type="button" class="close-btn" @click="close" :title="t('workspace_assets.requirements.actions.close')">
+              <X :size="20" />
+            </button>
+          </template>
+          <button v-else type="button" class="close-btn" @click="close" :title="t('workspace_assets.requirements.actions.close')">
             <X :size="20" />
           </button>
         </header>

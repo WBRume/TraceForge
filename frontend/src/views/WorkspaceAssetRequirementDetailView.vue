@@ -2,11 +2,14 @@
 import { computed, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 import { ArrowLeft } from 'lucide-vue-next'
 import RequirementDetailContent from '@/components/workspace-assets/requirements/RequirementDetailContent.vue'
 import RequirementEditDrawer from '@/components/workspace-assets/requirements/RequirementEditDrawer.vue'
 import RequirementImportDialog from '@/components/workspace-assets/requirements/RequirementImportDialog.vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
+import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
+import { formatApiError } from '@/utils/error'
 import type {
   RequirementDetail,
   RequirementImportBatch,
@@ -31,9 +34,11 @@ const {
   updateRequirement,
   linkRequirementTask,
   unlinkRequirementTask,
-  createRequirementSplitPreview,
+  createRequirementSplitPreviewJob,
+  fetchRequirementPreviewJob,
   confirmRequirementSplit,
 } = useWorkspaceAssets()
+const provisioningStore = useProvisioningStore()
 
 const wsId = computed(() => String(route.params.wsId || ''))
 const requirementId = computed(() => String(route.params.requirementId || ''))
@@ -55,10 +60,8 @@ const detail = shallowRef<RequirementDetail | null>(null)
 const editorOpen = shallowRef(false)
 const editingRequirement = shallowRef<RequirementSummary | null>(null)
 const childParent = shallowRef<RequirementSummary | null>(null)
-const splitBatch = shallowRef<RequirementImportBatch | null>(null)
-const splitPreviewJob = shallowRef<RequirementPreviewJob | null>(null)
-const splitPreviewRunId = shallowRef(0)
-const splitRequirement = shallowRef<RequirementSummary | null>(null)
+const splitDialogOpen = shallowRef(false)
+const splitRequirementId = shallowRef('')
 let detailLoadSeq = 0
 
 const currentRequirement = computed(() => detail.value?.requirement || null)
@@ -114,43 +117,139 @@ async function submitEditor(payload: RequirementMutationPayload) {
   }
 }
 
-async function openSplit(requirement: RequirementSummary) {
-  splitPreviewRunId.value += 1
-  const runId = splitPreviewRunId.value
-  splitRequirement.value = requirement
-  splitBatch.value = null
-  splitPreviewJob.value = null
-  const batch = await createRequirementSplitPreview(
-    wsId.value,
-    requirement.id,
-    null,
-    (job) => {
-      if (runId === splitPreviewRunId.value) splitPreviewJob.value = job
-    },
-    () => runId === splitPreviewRunId.value,
+// 拆分预览作业绑定：优先非终态（进行中），否则最近一条（SUCCESS 带批次可确认）
+const splitTrackedJob = computed<ProvisionJobView | null>(() => {
+  const reqId = splitRequirementId.value
+  if (!reqId) return null
+  const matched = provisioningStore.jobList.filter(
+    (job) => job.kind === 'requirement_split_preview' && job.requirementId === reqId,
   )
-  if (batch && runId === splitPreviewRunId.value) splitBatch.value = batch
+  return matched.find((job) => !job.terminal) || matched[matched.length - 1] || null
+})
+
+const splitPreviewJob = computed<RequirementPreviewJob | null>(() => {
+  const job = splitTrackedJob.value
+  if (!job) return null
+  return {
+    job_id: job.jobId,
+    workspace_id: job.workspaceId,
+    status: job.status,
+    progress: job.progress,
+    message: job.message || null,
+    error: job.errorMessage || null,
+    batch: job.batch,
+  }
+})
+
+const splitBatch = computed<RequirementImportBatch | null>(() => (
+  splitTrackedJob.value?.status === 'SUCCESS' ? splitTrackedJob.value.batch : null
+))
+
+async function openSplit(requirement: RequirementSummary) {
+  splitRequirementId.value = requirement.id
+  // 同一需求已有进行中的预览：直接回绑弹窗，不重复发起作业
+  const active = provisioningStore.findActivePreviewJob(requirement.id, 'requirement_split_preview')
+  if (active) {
+    splitDialogOpen.value = true
+    return
+  }
+  // 已完成但未查看的结果：直接展示，免重跑 CLI
+  const finished = provisioningStore.findLatestPreviewResult(requirement.id, 'requirement_split_preview')
+  if (finished) {
+    splitDialogOpen.value = true
+    return
+  }
+  try {
+    const job = await createRequirementSplitPreviewJob(wsId.value, requirement.id)
+    if (!job) return
+    provisioningStore.trackRequirementPreviewJob({
+      jobId: job.job_id,
+      workspaceId: job.workspace_id || wsId.value,
+      kind: 'requirement_split_preview',
+      requirementId: requirement.id,
+      requirementTitle: requirement.title,
+    })
+    splitDialogOpen.value = true
+  } catch (err) {
+    ElMessage.error(formatApiError(
+      err,
+      t('workspace_assets.requirements.preview_progress.create_failed'),
+      t,
+    ))
+  }
+}
+
+/** 弹窗点「缩小」：作业收起到右下角浮窗（卡片才出现），关闭弹窗 */
+function minimizeSplitPreview() {
+  const job = splitTrackedJob.value
+  if (job) provisioningStore.minimizePreviewJob(job.jobId)
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
 }
 
 async function confirmSplit(payload: RequirementImportConfirmPayload) {
-  if (!splitBatch.value || !splitRequirement.value) return
+  if (!splitBatch.value || !splitRequirementId.value) return
   const splitPayload: RequirementSplitPayload = {
     batch_id: splitBatch.value.id,
     items: payload.items,
     change_reason: payload.change_reason,
   }
-  const batch = await confirmRequirementSplit(wsId.value, splitRequirement.value.id, splitPayload)
+  const batch = await confirmRequirementSplit(wsId.value, splitRequirementId.value, splitPayload)
   if (!batch) return
-  closeSplitDialog()
+  discardSplitPreview()
   await reloadDetail()
 }
 
-function closeSplitDialog() {
-  splitPreviewRunId.value += 1
-  splitBatch.value = null
-  splitPreviewJob.value = null
-  splitRequirement.value = null
+/** 丢弃/确认后清理：关弹窗 + 移除浮窗作业卡片 */
+function discardSplitPreview() {
+  const job = splitTrackedJob.value
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
+  if (job) provisioningStore.dismiss(job.jobId)
 }
+
+/** 关闭对话框 = 取消后台预览（「缩小」才是转入后台继续执行） */
+function closeSplitDialog() {
+  const job = splitTrackedJob.value
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
+  if (job && !job.terminal) {
+    void cancelRunningPreview(job.jobId)
+  }
+}
+
+async function cancelRunningPreview(jobId: string) {
+  const ok = await provisioningStore.cancelPreviewJob(jobId)
+  if (!ok) {
+    ElMessage.error(t('provisioning.preview_cancel_failed'))
+  }
+}
+
+// 浮窗「查看预览」深链：?previewJob=<jobId> → 打开拆分预览弹窗
+watch(
+  () => route.query.previewJob,
+  async (previewJobId) => {
+    if (typeof previewJobId !== 'string' || !previewJobId || !wsId.value) return
+    const jobId = previewJobId
+    const nextQuery = { ...route.query }
+    delete nextQuery.previewJob
+    await router.replace({ query: nextQuery })
+    let job = provisioningStore.getTrackedJob(jobId)
+    if (!job) {
+      try {
+        const fetched = await fetchRequirementPreviewJob(wsId.value, jobId)
+        job = provisioningStore.ingestPreviewJobPayload(fetched)
+      } catch {
+        return
+      }
+    }
+    if (!job) return
+    provisioningStore.markPreviewJobViewed(jobId)
+    splitRequirementId.value = job.requirementId || requirementId.value
+    splitDialogOpen.value = true
+  },
+  { immediate: true },
+)
 
 async function linkTask(payload: { taskId: string; relationType: 'RELATES_TO' | 'COVERS'; reason?: string | null }) {
   if (!currentRequirement.value) return
@@ -225,15 +324,16 @@ watch(
     />
 
     <RequirementImportDialog
-      :open="Boolean(splitBatch || splitPreviewJob)"
+      :open="splitDialogOpen"
       mode="split"
       :batch="splitBatch"
       :preview-job="splitPreviewJob"
       :loading="loading"
       @close="closeSplitDialog"
-      @preview="closeSplitDialog"
+      @minimize="minimizeSplitPreview"
+      @discard-preview="discardSplitPreview"
       @confirm="confirmSplit"
-      @clear-preview-job="closeSplitDialog"
+      @clear-preview-job="discardSplitPreview"
     />
   </div>
 </template>

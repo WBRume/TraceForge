@@ -14,16 +14,77 @@ const { t } = useI18n()
 
 const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'failed_fallback', 'job_not_found'])
 
-const jobs = computed(() => store.jobList)
+// 预览作业只在弹窗点「缩小」后才出现在浮窗；查看结果后隐藏
+const jobs = computed(() => store.jobList.filter((job) => job.kind === 'provision' || (job.handedOver && !job.viewed)))
 const activeJobs = computed(() => jobs.value.filter((job) => !job.terminal))
 const terminalJobs = computed(() => jobs.value.filter((job) => job.terminal))
 const pillVisible = computed(() => jobs.value.length > 0)
+
+// ── Requirement AI 预览作业（拆分/导入）分支 ──
+const isPreviewJob = (job: ProvisionJobView) => job.kind !== 'provision'
+const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.terminal && job.status === 'SUCCESS'
+
+const previewStageText = (job: ProvisionJobView) => {
+  const status = String(job.status || '').toUpperCase()
+  if (status === 'PENDING') return t('provisioning.preview_stage_queued')
+  if (status === 'SUCCESS') return t('provisioning.preview_stage_completed')
+  if (status === 'FAILED' || status === 'CANCELLED') return t('provisioning.preview_stage_failed')
+  return t('provisioning.preview_stage_running')
+}
+
+const previewTitle = (job: ProvisionJobView) => {
+  const name = String(job.requirementTitle || '').trim()
+  if (name) return name
+  return t(
+    job.kind === 'requirement_split_preview'
+      ? 'provisioning.preview_split_title'
+      : 'provisioning.preview_import_title',
+  )
+}
+
+/** 预览完成后跳回需求页（?previewJob= 由目标视图消费并绑定弹窗、清理卡片） */
+const handleOpenPreview = (job: ProvisionJobView) => {
+  const workspaceId = String(job.workspaceId || '').trim()
+  if (!workspaceId) return
+  if (job.kind === 'requirement_split_preview' && job.requirementId) {
+    router.push({
+      path: `/workspaces/${workspaceId}/assets/requirements/${job.requirementId}`,
+      query: { previewJob: job.jobId },
+    })
+  } else {
+    router.push({
+      path: `/workspaces/${workspaceId}/assets/requirements`,
+      query: { previewJob: job.jobId },
+    })
+  }
+}
 
 // 取消确认弹窗（沿用 ConfirmActionModal 全局风格）
 const cancelTarget = ref<ProvisionJobView | null>(null)
 const cancelling = ref(false)
 
+// 预览作业卡片 X：请求后端取消 CLI（进行中）或直接移除（已终态）
+const cancellingPreviewId = ref('')
+
+const handleDismiss = async (job: ProvisionJobView) => {
+  if (isPreviewJob(job) && !job.terminal) {
+    if (cancellingPreviewId.value) return
+    cancellingPreviewId.value = job.jobId
+    try {
+      const ok = await store.cancelPreviewJob(job.jobId)
+      if (!ok) {
+        ElMessage.error(t('provisioning.preview_cancel_failed'))
+      }
+    } finally {
+      cancellingPreviewId.value = ''
+    }
+    return
+  }
+  store.dismiss(job.jobId)
+}
+
 const stageText = (job: ProvisionJobView) => {
+  if (isPreviewJob(job)) return previewStageText(job)
   if (job.ready) return t('provisioning.stage_completed')
   const stage = String(job.cancelRequested && !job.terminal ? 'CANCELLING' : job.stage || '').toUpperCase()
   const map: Record<string, string> = {
@@ -50,7 +111,10 @@ const jobErrorText = (job: ProvisionJobView) => {
   return KNOWN_ERROR_KEYS.has(job.errorMessage) ? t(`provisioning.${job.errorMessage}`) : job.errorMessage
 }
 
-const jobTitle = (job: ProvisionJobView) => job.taskName || t('provisioning.task_provision_title')
+const jobTitle = (job: ProvisionJobView) => {
+  if (isPreviewJob(job)) return previewTitle(job)
+  return job.taskName || t('provisioning.task_provision_title')
+}
 
 const aggregateProgress = computed(() => {
   if (activeJobs.value.length === 0) return 100
@@ -59,7 +123,7 @@ const aggregateProgress = computed(() => {
 })
 
 const hasTerminalAttention = computed(() =>
-  terminalJobs.value.some((job) => !job.ready),
+  terminalJobs.value.some((job) => !job.ready && !isPreviewSuccess(job)),
 )
 
 const pillIcon = computed(() => {
@@ -106,10 +170,6 @@ const handleEnterSession = (job: ProvisionJobView) => {
     router.push(`/workspaces/${workspaceId}/chat/${taskId}`)
   }
 }
-
-const handleDismiss = (job: ProvisionJobView) => {
-  store.dismiss(job.jobId)
-}
 </script>
 
 <template>
@@ -149,7 +209,12 @@ const handleDismiss = (job: ProvisionJobView) => {
       </p>
 
       <div class="widget-body">
-        <div v-for="job in jobs" :key="job.jobId" class="widget-job" :class="{ 'widget-job-error': job.terminal && !job.ready }">
+        <div
+          v-for="job in jobs"
+          :key="job.jobId"
+          class="widget-job"
+          :class="{ 'widget-job-error': job.terminal && !job.ready && !isPreviewSuccess(job) }"
+        >
           <div class="widget-job-head">
             <span class="widget-job-name" :title="jobTitle(job)">{{ jobTitle(job) }}</span>
             <span class="widget-job-stage">{{ stageText(job) }}</span>
@@ -167,9 +232,11 @@ const handleDismiss = (job: ProvisionJobView) => {
             </div>
           </div>
 
-          <div v-else-if="job.ready" class="widget-job-success">
+          <div v-else-if="job.ready || isPreviewSuccess(job)" class="widget-job-success">
             <CheckCircle2 class="w-4 h-4 widget-ok" />
-            <span>{{ t('provisioning.job_ready') }}</span>
+            <span>{{ isPreviewJob(job)
+              ? t('provisioning.preview_success_hint')
+              : t('provisioning.job_ready') }}</span>
           </div>
 
           <div v-else class="widget-job-error-box">
@@ -179,7 +246,15 @@ const handleDismiss = (job: ProvisionJobView) => {
 
           <div class="widget-job-actions">
             <button
-              v-if="job.ready"
+              v-if="isPreviewSuccess(job)"
+              type="button"
+              class="widget-btn-primary"
+              @click="handleOpenPreview(job)"
+            >
+              {{ t('provisioning.preview_open_action') }}
+            </button>
+            <button
+              v-else-if="job.ready"
               type="button"
               class="widget-btn-primary"
               @click="handleEnterSession(job)"
@@ -187,7 +262,7 @@ const handleDismiss = (job: ProvisionJobView) => {
               {{ t('provisioning.task_provision_enter_session') }}
             </button>
             <button
-              v-else-if="!job.terminal"
+              v-else-if="!job.terminal && !isPreviewJob(job)"
               type="button"
               class="widget-btn-secondary"
               :disabled="job.cancelRequested"
@@ -203,7 +278,8 @@ const handleDismiss = (job: ProvisionJobView) => {
               :title="t('common.close')"
               @click="handleDismiss(job)"
             >
-              <X class="w-4 h-4" />
+              <Loader2 v-if="cancellingPreviewId === job.jobId" class="w-4 h-4 widget-spin" />
+              <X v-else class="w-4 h-4" />
             </button>
           </div>
         </div>

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.agents import current_agent_attempt, current_agent_attempt_runtime
+from app.agents.errors import AgentCancelledError
 from app.agents.selection import resolve_workspace_backend
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
@@ -29,7 +30,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
     resolve_attempt_evidence,
 )
 from app.domains.ai.services.jobs.provider_turn import run_cli_single_turn
-from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
+from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime as ai_job_runtime
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.requirements.preview.job_service import (
     create_requirement_preview_batch,
@@ -548,11 +549,13 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
         )
         if prepared is None:
             return False
-        # CLI 调用期间不持有任何 DB session
+        # CLI 调用期间不持有任何 DB session；should_cancel 走统一取消信号
+        # （ai-jobs cancel 通道），各 backend 由 bridge.cancel() 收敛
         ai_result = await run_cli_single_turn(
             prepared["prompt"],
             prepared["project_path"],
             max_attempts=1,
+            should_cancel=lambda: ai_job_runtime.is_cancel_requested(job_id),
             backend_name=prepared["backend_name"],
             **({"run_token": run_token} if run_token else {}),
         )
@@ -614,6 +617,12 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
         # 重试（doc 修复方案 §10.2/§10.4）。
         if attempt_evidence is None:
             attempt_evidence = _resolve_evidence_or_none(resolved_execution_kind, exc)
+        # 统一取消路径（doc §9.1）：cancel 事务已写 TERMINATING 并触发内存
+        # 取消信号；这里清掉信号即可，CANCELLED 终态由 runner 退出收敛
+        # （queue_runner._converge_runner_exit）负责，绝不写成 FAILED。
+        if isinstance(exc, AgentCancelledError) or ai_job_runtime.is_cancel_requested(job_id):
+            ai_job_runtime.clear_cancel(job_id)
+            return provider_outcome_seen
         try:
             await run_db_txn(
                 lambda db: fail_requirement_preview_sync(
@@ -647,11 +656,13 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
         if prepared is None:
             return False
         backend_name = prepared["backend_name"]
-        # CLI 调用期间不持有任何 DB session
+        # CLI 调用期间不持有任何 DB session；should_cancel 走统一取消信号
+        # （ai-jobs cancel 通道），各 backend 由 bridge.cancel() 收敛
         ai_result = await run_cli_single_turn(
             prepared["prompt"],
             prepared["project_path"],
             max_attempts=1,
+            should_cancel=lambda: ai_job_runtime.is_cancel_requested(job_id),
             backend_name=backend_name,
             **({"run_token": run_token} if run_token else {}),
         )
@@ -690,6 +701,11 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
         # 失败 → ORPHANED 保留 ownership。
         if attempt_evidence is None:
             attempt_evidence = _resolve_evidence_or_none(resolved_execution_kind, exc)
+        # 统一取消路径（doc §9.1）：与 import preview 相同，CANCELLED 终态
+        # 由 runner 退出收敛负责，绝不把用户取消写成 FAILED。
+        if isinstance(exc, AgentCancelledError) or ai_job_runtime.is_cancel_requested(job_id):
+            ai_job_runtime.clear_cancel(job_id)
+            return provider_outcome_seen
         try:
             await run_db_txn(
                 lambda db: fail_requirement_preview_sync(

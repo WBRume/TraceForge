@@ -1067,7 +1067,16 @@
     "cancel_confirm_title": "取消任务创建",
     "cancel_confirm": "确定取消创建「{name}」吗？正在准备的资源将被清理，任务不会保留。",
     "cancel_failed": "取消失败，请稍后重试。",
-    "job_not_found": "任务准备记录不存在（可能已被取消或清理）。"
+    "job_not_found": "任务准备记录不存在（可能已被取消或清理）。",
+    "preview_split_title": "AI 拆分预览",
+    "preview_import_title": "AI 导入预览",
+    "preview_stage_queued": "排队中",
+    "preview_stage_running": "生成中",
+    "preview_stage_completed": "已完成",
+    "preview_stage_failed": "未完成",
+    "preview_open_action": "查看预览",
+    "preview_success_hint": "AI 预览已生成，可查看并确认。",
+    "preview_cancel_failed": "取消预览失败，请稍后重试。"
   },
   "skills": {
     "entry": "技能配置",
@@ -1910,6 +1919,8 @@
         "progress": "进度",
         "message": "消息",
         "waiting_message": "等待后端进度更新",
+        "create_failed": "发起 AI 预览失败，请稍后重试。",
+        "minimize": "缩小",
         "boundary": "AI Preview 只是草稿预览；不会创建 Task、Evidence、Coverage、Verified 状态或代码提交。"
       },
       "edit": {
