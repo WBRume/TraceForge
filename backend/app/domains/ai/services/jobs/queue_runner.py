@@ -21,7 +21,7 @@ from app.agents import (
     reset_agent_attempt,
     reset_agent_attempt_runtime,
 )
-from app.agents.process_supervisor import agent_stop_result_from_termination, process_supervisor
+from app.agents.supervision import agent_stop_result_from_termination, process_supervisor
 from app.config import settings
 from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
 from app.core.logging import get_logger

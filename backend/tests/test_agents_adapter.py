@@ -23,7 +23,7 @@ from app.agents.adapters.mock.mock_adapter import MockAdapter
 from app.agents.adapters.opencode.event_mapper import map_opencode_event
 from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.registry import create_agent_backend
-from app.agents.process_supervisor import TerminationResult
+from app.agents.supervision import TerminationResult
 from app.config import settings
 from app.domains.ai.services.jobs import (
     attempts as ai_attempts,

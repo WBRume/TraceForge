@@ -27,7 +27,7 @@ from app.agents import (
     current_agent_attempt_runtime,
     record_attempt_provider_call_stop,
 )
-from app.agents.process_supervisor import (
+from app.agents.supervision import (
     agent_stop_result_from_termination,
     process_supervisor,
 )

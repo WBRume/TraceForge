@@ -19,7 +19,7 @@ from typing import Optional, Callable, Any, Dict
 from app.config import settings
 from app.core.logging import get_logger
 from app.agents.contract import record_attempt_termination
-from app.agents.process_supervisor import (
+from app.agents.supervision import (
     ManagedAgentProcess,
     ProcessWaitResult,
     TerminationResult,

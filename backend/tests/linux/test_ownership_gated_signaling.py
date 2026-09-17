@@ -1,4 +1,4 @@
-"""bc6ca89 审计回归（doc: docs/agent-job-bc6ca89-remaining-code-audit.md）。
+"""归属门控信号发送回归。
 
 从审计复现脚本迁入正式测试目录，保留 Linux skip、受控故障与 finally 清理：
 
@@ -25,14 +25,18 @@ import sys
 import threading
 import uuid
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import psutil
 import pytest
 
-import app.agents.process_supervisor as ps
-from app.agents.process_supervisor import ProcessSupervisor
+import app.agents.supervision.discovery as discovery_mod
+import app.agents.supervision.identity as identity_mod
+import app.agents.supervision.persisted as persisted_mod
+import app.agents.supervision.reclaim as reclaim_mod
+import app.agents.supervision.spawn as spawn_mod
+from app.agents.supervision import ProcessProbeState, ProcessSupervisor
+from app.agents.supervision.managed import monitor_tree
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
@@ -53,17 +57,16 @@ def alive(pid: int) -> bool:
 @pytest.mark.asyncio
 async def test_unknown_root_must_not_authorize_group_signal():
     """root 探测 UNKNOWN（非明确消失）：数字 PGID 不能凭组非空整组 killpg。"""
-    supervisor = ProcessSupervisor()
-    unknown = ps.PersistedProcessSnapshot(state=ps.ProcessProbeState.UNKNOWN)
-    live = ps.PersistedProcessSnapshot(
-        state=ps.ProcessProbeState.LIVE, live_pids=(999991,)
+    unknown = persisted_mod.PersistedProcessSnapshot(state=ProcessProbeState.UNKNOWN)
+    live = persisted_mod.PersistedProcessSnapshot(
+        state=ProcessProbeState.LIVE, live_pids=(999991,)
     )
-    dead = ps.PersistedProcessSnapshot(state=ps.ProcessProbeState.CONFIRMED_DEAD)
-    with patch.object(supervisor, "_persisted_root_snapshot", AsyncMock(return_value=unknown)), \
-         patch.object(supervisor, "_persisted_group_snapshot", AsyncMock(return_value=live)), \
-         patch.object(supervisor, "_wait_persisted_group_gone", AsyncMock(return_value=dead)), \
-         patch.object(ps.os, "killpg") as send:
-        result = await supervisor.stop_persisted(
+    dead = persisted_mod.PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=unknown)), \
+         patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=live)), \
+         patch.object(reclaim_mod, "wait_group_gone", AsyncMock(return_value=dead)), \
+         patch.object(os, "killpg") as send:
+        result = await reclaim_mod.stop_persisted(
             999991, datetime.now(timezone.utc), "audit", process_group_id=999991
         )
     assert not send.called, send.call_args_list
@@ -74,70 +77,67 @@ async def test_unknown_root_must_not_authorize_group_signal():
 @pytest.mark.asyncio
 async def test_verified_member_identity_must_be_compared_again_before_signal():
     """已验证成员身份发送前必须重新比较原身份；PID 复用后绝不发送。"""
-    supervisor = ProcessSupervisor()
     # 初次归属验证看到旧身份；发送前该 PID 已被新进程复用。
     identities = [
-        ps._MemberIdentity(create_time=150.0),
-        ps._MemberIdentity(
-            state=ps.MemberBindingState.BOUND, create_time=300.0, pidfd=777
+        identity_mod.MemberIdentity(create_time=150.0),
+        identity_mod.MemberIdentity(
+            state=identity_mod.MemberBindingState.BOUND, create_time=300.0, pidfd=777
         ),
-        ps._MemberIdentity(state=ps.MemberBindingState.GONE),
+        identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE),
     ]
-    with patch.object(ps.ProcessSupervisor, "_probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
-         patch.object(ps.os, "close"):
-        snapshot = await supervisor._stop_reused_group_members(
+    with patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)), \
+         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
+         patch.object(os, "close"):
+        snapshot = await reclaim_mod.stop_reused_group_members(
             (999992,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
             reused_create_time=200.0,
             signals=[],
         )
     assert not send.called, send.call_args_list
-    assert snapshot.state == ps.ProcessProbeState.UNKNOWN
+    assert snapshot.state == ProcessProbeState.UNKNOWN
     assert 999992 in snapshot.live_pids
 
 
 @pytest.mark.asyncio
 async def test_unreadable_identity_before_signal_must_not_send():
     """发送前身份不可读（create time 无法读取）：绝不发送，保持未确认。"""
-    supervisor = ProcessSupervisor()
-    identities = [ps._MemberIdentity(create_time=150.0),
-                  ps._MemberIdentity(create_time=None),
-                  ps._MemberIdentity(state=ps.MemberBindingState.GONE)]
-    with patch.object(ps.ProcessSupervisor, "_probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send:
-        snapshot = await supervisor._stop_reused_group_members(
+    identities = [identity_mod.MemberIdentity(create_time=150.0),
+                  identity_mod.MemberIdentity(create_time=None),
+                  identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE)]
+    with patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)), \
+         patch.object(identity_mod, "signal_verified_member", return_value=True) as send:
+        snapshot = await reclaim_mod.stop_reused_group_members(
             (999993,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
             reused_create_time=200.0,
             signals=[],
         )
     assert not send.called, send.call_args_list
-    assert snapshot.state == ps.ProcessProbeState.UNKNOWN
+    assert snapshot.state == ProcessProbeState.UNKNOWN
 
 
 @pytest.mark.asyncio
 async def test_matching_identity_still_sends_after_recheck():
     """对照：发送前身份与原身份一致时仍允许单独发送（不过度收紧）。"""
-    supervisor = ProcessSupervisor()
     identities = [
-        ps._MemberIdentity(create_time=150.0),
-        ps._MemberIdentity(
-            state=ps.MemberBindingState.BOUND, create_time=150.0, pidfd=778
+        identity_mod.MemberIdentity(create_time=150.0),
+        identity_mod.MemberIdentity(
+            state=identity_mod.MemberBindingState.BOUND, create_time=150.0, pidfd=778
         ),
-        ps._MemberIdentity(state=ps.MemberBindingState.GONE),
+        identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE),
     ]
-    with patch.object(ps.ProcessSupervisor, "_probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
-         patch.object(ps.os, "close"):
-        snapshot = await supervisor._stop_reused_group_members(
+    with patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)), \
+         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
+         patch.object(os, "close"):
+        snapshot = await reclaim_mod.stop_reused_group_members(
             (999994,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
             reused_create_time=200.0,
             signals=[],
         )
     assert send.called
-    assert snapshot.state == ps.ProcessProbeState.CONFIRMED_DEAD
+    assert snapshot.state == ProcessProbeState.CONFIRMED_DEAD
 
 
 # ─────────────────────────────── P0-2 ───────────────────────────────
@@ -164,8 +164,7 @@ time.sleep(120)
     try:
         children = json.loads(await asyncio.wait_for(asyncio.to_thread(parent.stdout.readline), 5))
         target, control = children
-        supervisor = ProcessSupervisor()
-        await supervisor.stop_by_run_token_discovery(token, "audit",
+        await reclaim_mod.stop_by_run_token_discovery(token, "audit",
             not_before=datetime.now(timezone.utc))
         await asyncio.sleep(0.05)
         assert alive(control), (target, control, "other-token control was killed")
@@ -184,31 +183,29 @@ time.sleep(120)
 @pytest.mark.asyncio
 async def test_token_send_revalidates_identity_captured_at_scan():
     """扫描到发送之间 PID/身份改变：跳过发送（不盲杀复用后的新进程）。"""
-    match = ps.DiscoveredTokenProcess(pid=999995, process_group_id=999995, create_time=100.0)
-    supervisor = ProcessSupervisor()
-    with patch.object(ps.ProcessSupervisor, "_probe_member_identity",
-                      AsyncMock(return_value=ps._MemberIdentity(
-                          state=ps.MemberBindingState.BOUND,
+    match = discovery_mod.DiscoveredTokenProcess(pid=999995, process_group_id=999995, create_time=100.0)
+    with patch.object(identity_mod, "probe_member_identity",
+                      AsyncMock(return_value=identity_mod.MemberIdentity(
+                          state=identity_mod.MemberBindingState.BOUND,
                           create_time=900.0, pidfd=779))), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
-         patch.object(ps.os, "killpg") as killpg, patch.object(ps.os, "kill") as kill, \
-         patch.object(ps.os, "close"):
-        await ProcessSupervisor._kill_token_matches((match,), [])
+         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
+         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill, \
+         patch.object(os, "close"):
+        await discovery_mod.kill_token_matches((match,), [])
     assert not send.called and not killpg.called and not kill.called
 
 
 @pytest.mark.asyncio
 async def test_token_send_with_matching_identity_still_kills():
     """对照：发送前身份与扫描身份一致时照常逐个发送（无整组信号）。"""
-    match = ps.DiscoveredTokenProcess(pid=999996, process_group_id=999996, create_time=100.0)
-    supervisor = ProcessSupervisor()
-    with patch.object(ps.ProcessSupervisor, "_probe_member_identity",
-                      AsyncMock(return_value=ps._MemberIdentity(
-                          state=ps.MemberBindingState.BOUND,
+    match = discovery_mod.DiscoveredTokenProcess(pid=999996, process_group_id=999996, create_time=100.0)
+    with patch.object(identity_mod, "probe_member_identity",
+                      AsyncMock(return_value=identity_mod.MemberIdentity(
+                          state=identity_mod.MemberBindingState.BOUND,
                           create_time=100.0, pidfd=780))), \
-         patch.object(ps.ProcessSupervisor, "_signal_verified_member", return_value=True) as send, \
-         patch.object(ps.os, "killpg") as killpg, patch.object(ps.os, "close"):
-        await ProcessSupervisor._kill_token_matches((match,), [])
+         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
+         patch.object(os, "killpg") as killpg, patch.object(os, "close"):
+        await discovery_mod.kill_token_matches((match,), [])
     assert send.called
     assert not killpg.called, "token 命中禁止升级整组 killpg"
 
@@ -221,7 +218,7 @@ async def test_managed_wait_must_not_forget_unsampled_detached_child():
     """未采样脱组后代：wait 绝不能出具 confirmed_dead=True（受控调度缺口）。"""
     supervisor = ProcessSupervisor()
     gate = asyncio.Event()
-    original_monitor = supervisor._monitor_tree
+    original_monitor = monitor_tree
 
     async def delayed_monitor(managed):
         await gate.wait()
@@ -235,7 +232,7 @@ print(p.pid, flush=True)
     child_pid = None
     managed = None
     try:
-        with patch.object(supervisor, "_monitor_tree", side_effect=delayed_monitor):
+        with patch.object(spawn_mod, "monitor_tree", side_effect=delayed_monitor):
             managed = await supervisor.spawn([sys.executable, "-c", source], cwd=os.getcwd(),
                 env=os.environ.copy(), run_token=str(uuid.uuid4()))
         child_pid = int(await asyncio.wait_for(managed.process.stdout.readline(), 5))
@@ -304,12 +301,11 @@ async def test_cancelled_running_identity_probe_must_close_returned_pidfd():
     """取消正在执行的探测：迟到的 pidfd 必须被回收任务恰好关闭一次。"""
     if not hasattr(os, "pidfd_open"):
         pytest.skip("pidfd_open unavailable")
-    supervisor = ProcessSupervisor()
     entered = threading.Event()
     release = threading.Event()
     completed = threading.Event()
     captured: list[int] = []
-    original = ps._probe_member_identity_sync
+    original = identity_mod.probe_member_identity_sync
 
     def delayed(*args, **kwargs):
         entered.set()
@@ -320,8 +316,8 @@ async def test_cancelled_running_identity_probe_must_close_returned_pidfd():
         return identity
 
     try:
-        with patch.object(ps, "_probe_member_identity_sync", side_effect=delayed):
-            task = asyncio.create_task(supervisor._probe_member_identity(os.getpid(), want_pidfd=True))
+        with patch.object(identity_mod, "probe_member_identity_sync", side_effect=delayed):
+            task = asyncio.create_task(identity_mod.probe_member_identity(os.getpid(), want_pidfd=True))
             while not entered.is_set():
                 await asyncio.sleep(0.001)
             task.cancel()

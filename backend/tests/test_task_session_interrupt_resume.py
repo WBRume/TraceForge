@@ -160,7 +160,7 @@ def test_task_interrupt_with_claimed_attempt_converges_to_resumable_interrupted(
         session_id = "session-1"
 
         async def interrupt(self):
-            from app.agents.process_supervisor import TerminationResult
+            from app.agents.supervision import TerminationResult
 
             return TerminationResult(confirmed_dead=True, root_return_code=0)
 

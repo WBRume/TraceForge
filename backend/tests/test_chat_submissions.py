@@ -24,7 +24,7 @@ from app.domains.ai.services.jobs.executors import (
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from ai_job_test_utils import patch_ai_job_db
 from app.domains.task.services import diagnosis_result_service
-from app.agents.process_supervisor import process_supervisor
+from app.agents.supervision import process_supervisor
 from app.domains.auth.models.user import User, Workspace
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.chat import ChatMessage
@@ -76,7 +76,7 @@ async def test_send_releases_terminal_receipt_and_keeps_session(task_db, recover
 
 @pytest.mark.asyncio
 async def test_send_after_restart_reclaims_persisted_attempt(task_db, recovery_env, monkeypatch):
-    from app.agents.process_supervisor import TerminationResult
+    from app.agents.supervision import TerminationResult
     scheduled = recovery_env
     row = accepted(task_db)
     job = execution(task_db, row)
@@ -118,7 +118,7 @@ async def test_send_does_not_cancel_healthy_attempt(task_db, recovery_env, monke
 
 @pytest.mark.asyncio
 async def test_unconfirmed_process_remains_blocking_on_send(task_db, recovery_env, monkeypatch):
-    from app.agents.process_supervisor import TerminationResult
+    from app.agents.supervision import TerminationResult
     scheduled = recovery_env
     row = accepted(task_db)
     job = execution(task_db, row)

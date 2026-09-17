@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.dependencies import get_current_user, get_db, require_admin
 from app.core.logging import audit_log
 from app.core.offload import run_db, run_db_txn
-from app.agents.process_supervisor import process_supervisor
+from app.agents.supervision import process_supervisor
 from app.domains.auth.models.user import User
 from app.domains.ai.schemas.queue import (
     QueueActionValue,
