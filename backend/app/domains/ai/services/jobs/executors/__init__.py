@@ -124,13 +124,14 @@ def load_failure_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
 async def _run_requirement_preview_job(job_id: str, job_kind: str) -> bool:
     # Requirement preview 作业（import/split）：输入内容持久化在
     # job.context_json，走独立队列 runner，可跨重启恢复。
-    from app.domains.workspace_asset.services import workspace_asset_service
+    # 运行时经模块属性取 runner，测试可用 monkeypatch 替换。
+    from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner
 
     attempt = current_agent_attempt()
     runner = (
-        workspace_asset_service.run_requirement_split_preview_job
+        preview_runner.run_requirement_split_preview_job
         if job_kind == "REQUIREMENT_SPLIT_PREVIEW"
-        else workspace_asset_service.run_requirement_import_preview_job
+        else preview_runner.run_requirement_import_preview_job
     )
     if attempt and "run_token" in inspect.signature(runner).parameters:
         return bool(await runner(job_id, run_token=attempt.run_token))

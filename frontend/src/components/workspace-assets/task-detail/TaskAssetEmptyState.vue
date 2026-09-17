@@ -17,7 +17,6 @@ defineProps<{
       <strong class="empty-title">{{ title }}</strong>
       <p class="empty-message">{{ message }}</p>
     </div>
-    <span v-if="boundary" class="empty-boundary">{{ boundary }}</span>
     <div v-if="$slots.action" class="empty-action">
       <slot name="action" />
     </div>
@@ -82,16 +81,6 @@ defineProps<{
   color: #64748b;
   font-size: 0.875rem;
   line-height: 1.6;
-}
-
-.empty-boundary {
-  padding: 4px 12px;
-  background: #f0f9ff;
-  color: #0369a1;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
 }
 
 .empty-action {

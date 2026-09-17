@@ -30,12 +30,12 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     BaselineCheckItem,
     TaskBaselineResponse,
 )
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _add_process_audit,
-    _ensure_task_not_baselined,
-    _task_coverage_status,
-    enum_value,
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import enum_value
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_task_not_baselined,
+    task_coverage_status,
 )
 
 
@@ -47,7 +47,7 @@ TERMINAL_CLARIFICATION_STATUSES = {
 
 
 def ensure_task_mutable(task: SddTask) -> None:
-    _ensure_task_not_baselined(task)
+    ensure_task_not_baselined(task)
 
 
 def latest_baseline(db: Session, task_id: str) -> Optional[SddTaskBaseline]:
@@ -139,7 +139,7 @@ def _expert_reviews_clear(task: SddTask) -> bool:
 
 def build_baseline_checklist(db: Session, task: SddTask) -> List[BaselineCheckItem]:
     confirmed_evidence_count = _confirmed_evidence_count(db, task.workspace_id, task.id)
-    coverage_status = _task_coverage_status(task)
+    coverage_status = task_coverage_status(task)
     active_job_count = _active_job_count(db, task.workspace_id, task.id)
     final_status = enum_value(task.final_summary.final_status) if task.final_summary else None
     decision_count = len(task.decisions or [])
@@ -217,7 +217,7 @@ def ensure_baseline_allowed(db: Session, task: SddTask) -> None:
     blockers = [item for item in build_baseline_checklist(db, task) if item.blocking]
     if blockers:
         first = blockers[0]
-        raise TaskDetailWriteError(
+        raise WorkspaceAssetError(
             f"Task cannot be baselined: {first.label}. {first.detail or ''}".strip(),
             status_code=409,
         )
@@ -303,7 +303,7 @@ def baseline_task(db: Session, task: SddTask, actor_id: Optional[str]) -> SddTas
     task.interrupted_by_id = None
     task.interrupted_at = None
 
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=task.workspace_id,
         task_id=task.id,

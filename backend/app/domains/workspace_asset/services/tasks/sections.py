@@ -44,7 +44,6 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     DeltaRegionResponse,
     EvidenceLightResponse,
     EvidenceResponse,
-    ExternalEvidenceRef,
     HumanDeltaFileDiff,
     HumanDeltaLightResponse,
     HumanDeltaResponse,
@@ -54,7 +53,6 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     HumanReviewResponse,
     TaskClarificationsSectionResponse,
     TaskDecisionsSectionResponse,
-    TaskDetailSummaryResponse,
     TaskEvidenceSectionResponse,
     TaskFileDiffResponse,
     TaskFileItemLightResponse,
@@ -69,14 +67,12 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     WorkbenchDeltaResponse,
 )
 
+from app.domains.workspace_asset.services.common.primitives import enum_value
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _enum_value(value: Any) -> str:
-    return value.value if hasattr(value, "value") else str(value)
-
 
 def _short_text(value: Any, limit: int = 280) -> Optional[str]:
     if value is None:
@@ -101,7 +97,7 @@ def _paginated(query, page: int, page_size: int):
 def _task_file_from_asset_light(asset: SddAsset) -> TaskFileItemLightResponse:
     return TaskFileItemLightResponse(
         id=asset.id,
-        file_type=_enum_value(asset.asset_type),
+        file_type=enum_value(asset.asset_type),
         title=asset.name,
         status="AVAILABLE",
         source_kind="asset",
@@ -116,7 +112,7 @@ def _task_file_from_asset_light(asset: SddAsset) -> TaskFileItemLightResponse:
 def _task_file_from_ai_output_light(output: SddAiOutput) -> TaskFileItemLightResponse:
     return TaskFileItemLightResponse(
         id=output.id,
-        file_type=f"AI_OUTPUT:{_enum_value(output.output_type)}",
+        file_type=f"AI_OUTPUT:{enum_value(output.output_type)}",
         title=output.title or f"AI Output {output.id}",
         status="AVAILABLE",
         source_kind="ai_output",
@@ -132,7 +128,7 @@ def _task_file_from_change_proposal_light(proposal: SddTaskChangeProposal) -> Ta
         id=proposal.id,
         file_type="GIT_PATCH",
         title=f"Change Proposal #{proposal.proposal_no} Patch Set {proposal.patch_set_no}",
-        status=_enum_value(proposal.status),
+        status=enum_value(proposal.status),
         source_kind="change_proposal",
         source_id=proposal.id,
         source_version_id=proposal.patch_asset_version_id,
@@ -147,7 +143,7 @@ def _task_file_from_change_file_light(file_item: SddTaskChangeProposalFile) -> T
         id=file_item.id,
         file_type="GIT_PATCH_FILE",
         title=file_item.file_path,
-        status=_enum_value(file_item.change_type),
+        status=enum_value(file_item.change_type),
         source_kind="change_proposal_file",
         source_id=file_item.proposal_id,
         source_path=file_item.file_path,
@@ -161,7 +157,7 @@ def _task_file_from_verification_light(run: SddTaskVerificationRun) -> TaskFileI
         id=run.id,
         file_type="VERIFICATION_LOG",
         title=run.command or f"Verification Run {run.id}",
-        status=_enum_value(run.status),
+        status=enum_value(run.status),
         source_kind="verification_run",
         source_id=run.proposal_id,
         source_version_id=run.log_asset_version_id,
@@ -175,7 +171,7 @@ def _task_file_from_conflict_light(report: SddTaskConflictReport) -> TaskFileIte
         id=report.id,
         file_type="CONFLICT_REPORT",
         title=f"Conflict Report {report.id}",
-        status=_enum_value(report.status),
+        status=enum_value(report.status),
         source_kind="conflict_report",
         source_id=report.proposal_id,
         summary=_short_text(report.stderr_excerpt, limit=500),
@@ -283,13 +279,13 @@ def get_task_file_detail(
     file_id: str,
 ) -> Optional[TaskFileItemResponse]:
     """Load full task file item with metadata."""
-    from app.domains.workspace_asset.services.workspace_task_detail_service import (
-        _task_file_from_asset,
-        _task_file_from_ai_output,
-        _task_file_from_change_file,
-        _task_file_from_change_proposal,
-        _task_file_from_conflict,
-        _task_file_from_verification,
+    from app.domains.workspace_asset.services.common.process_presenters import (
+        task_file_from_ai_output,
+        task_file_from_asset,
+        task_file_from_change_file,
+        task_file_from_change_proposal,
+        task_file_from_conflict,
+        task_file_from_verification,
     )
 
     task = db.query(SddTask).filter(SddTask.workspace_id == workspace_id, SddTask.id == task_id).first()
@@ -300,12 +296,12 @@ def get_task_file_detail(
     # Check assets (specs/plans)
     asset = db.query(SddAsset).filter(SddAsset.id == file_id, SddAsset.workspace_id == workspace_id).first()
     if asset:
-        return _task_file_from_asset(asset)
+        return task_file_from_asset(asset)
 
     # Check AI outputs
     ai_output = db.query(SddAiOutput).filter(SddAiOutput.id == file_id, SddAiOutput.workspace_id == workspace_id).first()
     if ai_output:
-        return _task_file_from_ai_output(ai_output)
+        return task_file_from_ai_output(ai_output)
 
     # Check change proposals
     proposal = (
@@ -315,7 +311,7 @@ def get_task_file_detail(
         .first()
     )
     if proposal:
-        return _task_file_from_change_proposal(proposal)
+        return task_file_from_change_proposal(proposal)
 
     # Check change proposal files
     change_file = (
@@ -324,7 +320,7 @@ def get_task_file_detail(
         .first()
     )
     if change_file:
-        return _task_file_from_change_file(change_file)
+        return task_file_from_change_file(change_file)
 
     # Check verification runs
     run = (
@@ -333,7 +329,7 @@ def get_task_file_detail(
         .first()
     )
     if run:
-        return _task_file_from_verification(run)
+        return task_file_from_verification(run)
 
     # Check conflict reports
     report = (
@@ -342,7 +338,7 @@ def get_task_file_detail(
         .first()
     )
     if report:
-        return _task_file_from_conflict(report)
+        return task_file_from_conflict(report)
 
     return None
 
@@ -421,8 +417,8 @@ def get_task_human_reviews(
             workspace_id=review.workspace_id,
             task_id=review.task_id,
             reviewer_id=review.reviewer_id,
-        status=_enum_value(review.status),
-        outcome=_enum_value(review.outcome) if review.outcome else None,
+        status=enum_value(review.status),
+        outcome=enum_value(review.outcome) if review.outcome else None,
         review_type=review.review_type,
         review_scope=review.review_scope,
         priority=review.priority,
@@ -458,8 +454,8 @@ def get_task_human_review_detail(db: Session, workspace_id: str, task_id: str, r
         workspace_id=review.workspace_id,
         task_id=review.task_id,
         reviewer_id=review.reviewer_id,
-        status=_enum_value(review.status),
-        outcome=_enum_value(review.outcome) if review.outcome else None,
+        status=enum_value(review.status),
+        outcome=enum_value(review.outcome) if review.outcome else None,
         review_type=review.review_type,
         title=review.title,
         body=review.body,
@@ -525,7 +521,7 @@ def get_task_human_deltas(
             task_id=delta.task_id,
             proposal_id=delta.proposal_id,
             final_evidence_id=delta.final_evidence_id,
-            status=_enum_value(delta.status),
+            status=enum_value(delta.status),
             diff_asset_id=delta.diff_asset_id,
             changed_files_count=delta.changed_files_count,
             insertions=delta.insertions,
@@ -545,7 +541,7 @@ def get_task_human_deltas(
 
 
 def get_task_human_delta_detail(db: Session, workspace_id: str, task_id: str, delta_id: str) -> Optional[HumanDeltaResponse]:
-    from app.domains.workspace_asset.services.workspace_task_detail_service import human_delta_response
+    from app.domains.workspace_asset.services.common.process_presenters import human_delta_response
     from app.domains.workspace_asset.services.human_delta_compare_service import _parse_patch_to_files
 
     delta = (
@@ -634,8 +630,8 @@ def get_task_delta_workbench(
                 delta_id=region.delta_id,
                 file_path=region.file_path,
                 old_file_path=region.old_file_path,
-                region_type=_enum_value(region.region_type),
-                region_source=_enum_value(region.region_source),
+                region_type=enum_value(region.region_type),
+                region_source=enum_value(region.region_source),
                 ai_line_start=region.ai_line_start,
                 ai_line_end=region.ai_line_end,
                 human_line_start=region.human_line_start,
@@ -701,7 +697,7 @@ def get_task_delta_workbench(
         id=delta.id,
         workspace_id=delta.workspace_id,
         task_id=delta.task_id,
-        status=_enum_value(delta.status),
+        status=enum_value(delta.status),
         change_category=delta.change_category,
         change_reason=delta.change_reason,
         promote_candidate=bool(delta.promote_candidate),
@@ -732,9 +728,9 @@ def _evidence_light(evidence: SddEvidence) -> EvidenceLightResponse:
         task_id=evidence.task_id,
         ai_job_id=evidence.ai_job_id,
         human_review_id=evidence.human_review_id,
-        status=_enum_value(evidence.status),
-        evidence_type=_enum_value(evidence.evidence_type),
-        source_type=_enum_value(evidence.source_type),
+        status=enum_value(evidence.status),
+        evidence_type=enum_value(evidence.evidence_type),
+        source_type=enum_value(evidence.source_type),
         source_uri=evidence.source_uri,
         source_label=evidence.source_label,
         source_ref=evidence.source_ref,
@@ -770,7 +766,7 @@ def get_task_evidence(
 
 
 def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evidence_id: str) -> Optional[EvidenceResponse]:
-    from app.domains.workspace_asset.services.workspace_asset_service import _evidence_response
+    from app.domains.workspace_asset.services.common.process_presenters import evidence_response
 
     evidence = (
         db.query(SddEvidence)
@@ -783,7 +779,7 @@ def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evide
     )
     if not evidence:
         return None
-    return _evidence_response(evidence)
+    return evidence_response(evidence)
 
 
 # ---------------------------------------------------------------------------
@@ -798,11 +794,11 @@ def _decision_light(decision: SddDecision) -> DecisionLightResponse:
         requirement_id=decision.requirement_id,
         human_delta_id=decision.human_delta_id,
         delta_region_id=decision.delta_region_id,
-        status=_enum_value(decision.status),
+        status=enum_value(decision.status),
         title=decision.title,
         impact_scope=decision.impact_scope,
         source_evidence_id=decision.source_evidence_id,
-        source_type=_enum_value(decision.source_type),
+        source_type=enum_value(decision.source_type),
         source=decision_source_response(decision),
         decided_by_id=decision.decided_by_id,
         promote_candidate=decision.promote_candidate,
@@ -834,7 +830,7 @@ def get_task_decisions(
 
 
 def get_task_decision_detail(db: Session, workspace_id: str, task_id: str, decision_id: str) -> Optional[DecisionResponse]:
-    from app.domains.workspace_asset.services.workspace_asset_service import _decision_response
+    from app.domains.workspace_asset.services.common.process_presenters import decision_response
 
     decision = (
         db.query(SddDecision)
@@ -847,7 +843,7 @@ def get_task_decision_detail(db: Session, workspace_id: str, task_id: str, decis
     )
     if not decision:
         return None
-    return _decision_response(decision)
+    return decision_response(decision)
 
 
 # ---------------------------------------------------------------------------
@@ -860,8 +856,8 @@ def _clarification_light(clarification: SddClarification) -> ClarificationLightR
         workspace_id=clarification.workspace_id,
         task_id=clarification.task_id,
         requirement_id=clarification.requirement_id,
-        status=_enum_value(clarification.status),
-        blocking_level=_enum_value(clarification.blocking_level),
+        status=enum_value(clarification.status),
+        blocking_level=enum_value(clarification.blocking_level),
         question=clarification.question,
         requester_id=clarification.requester_id,
         responder_id=clarification.responder_id,
@@ -900,7 +896,7 @@ def get_task_clarifications(
 
 
 def get_task_clarification_detail(db: Session, workspace_id: str, task_id: str, clarification_id: str) -> Optional[ClarificationResponse]:
-    from app.domains.workspace_asset.services.workspace_asset_service import _clarification_response
+    from app.domains.workspace_asset.services.common.process_presenters import clarification_response
 
     clarification = (
         db.query(SddClarification)
@@ -913,7 +909,7 @@ def get_task_clarification_detail(db: Session, workspace_id: str, task_id: str, 
     )
     if not clarification:
         return None
-    return _clarification_response(clarification)
+    return clarification_response(clarification)
 
 
 # ---------------------------------------------------------------------------
@@ -925,7 +921,7 @@ def get_task_final_summary(
     workspace_id: str,
     task_id: str,
 ) -> Optional[TaskFinalSummaryResponse]:
-    from app.domains.workspace_asset.services.workspace_asset_service import _final_summary_response
+    from app.domains.workspace_asset.services.common.process_presenters import final_summary_response
 
     summary = (
         db.query(SddTaskFinalSummary)
@@ -937,7 +933,7 @@ def get_task_final_summary(
     )
     if not summary:
         return None
-    return _final_summary_response(summary)
+    return final_summary_response(summary)
 
 
 # ---------------------------------------------------------------------------
@@ -950,9 +946,9 @@ def _audit_log_light(log: SddTaskProcessAuditLog) -> TaskProcessAuditLogLightRes
         workspace_id=log.workspace_id,
         task_id=log.task_id,
         actor_id=log.actor_id,
-        record_type=_enum_value(log.record_type),
+        record_type=enum_value(log.record_type),
         record_id=log.record_id,
-        action=_enum_value(log.action),
+        action=enum_value(log.action),
         reason=log.reason,
         created_at=log.created_at,
     )
@@ -988,7 +984,7 @@ def get_task_process_audit_detail(
     task_id: str,
     log_id: str,
 ) -> Optional[TaskProcessAuditLogResponse]:
-    from app.domains.workspace_asset.services.workspace_task_detail_service import process_audit_response
+    from app.domains.workspace_asset.services.common.process_presenters import process_audit_response
 
     log = (
         db.query(SddTaskProcessAuditLog)

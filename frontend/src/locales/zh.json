@@ -2498,7 +2498,7 @@
           "eyebrow": "Task File",
           "title": "Task File 真实产出与文件记录",
           "empty_title": "暂无真实 Task File 记录",
-          "empty": "等待 Spec、Plan、AI Output、change proposal、验证日志或冲突报告接入；不会伪造生成文件或代码变更。"
+          "empty": "等待 Spec、Plan、AI Output、change proposal、验证日志或冲突报告接入。"
         },
         "human_review": {
           "eyebrow": "Human Review",

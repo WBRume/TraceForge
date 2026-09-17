@@ -26,6 +26,9 @@ export const isWorkspaceAssetTaskDetailSkeleton = (taskId: string): boolean =>
 
 const emptyConnectionStatus: WorkspaceAssetConnectionStatus[] = []
 const previewFinalStatuses = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
+// 真实 agent CLI 执行可能持续数分钟；2s × 300 ≈ 10 分钟等待上限。
+const PREVIEW_POLL_INTERVAL_MS = 2000
+const PREVIEW_POLL_MAX_ATTEMPTS = 300
 type RequirementPreviewJobUpdate = (job: RequirementPreviewJob) => void
 
 function wait(ms: number): Promise<void> {
@@ -218,6 +221,7 @@ export function useWorkspaceAssets() {
       source_ref?: string | null
     },
     onJobUpdate?: RequirementPreviewJobUpdate,
+    shouldContinue?: () => boolean,
   ): Promise<RequirementImportBatch | null> {
     return mutate(async () => {
       const form = new FormData()
@@ -234,7 +238,7 @@ export function useWorkspaceAssets() {
         form,
       )
       onJobUpdate?.(response.data)
-      const job = await waitRequirementPreviewJob(workspaceId, response.data, onJobUpdate)
+      const job = await waitRequirementPreviewJob(workspaceId, response.data, onJobUpdate, shouldContinue)
       if (job.status === 'FAILED' || job.status === 'CANCELLED') {
         throw new Error(job.error || job.message || 'Requirement AI preview failed')
       }
@@ -295,13 +299,25 @@ export function useWorkspaceAssets() {
     workspaceId: string,
     initialJob: RequirementPreviewJob,
     onJobUpdate?: RequirementPreviewJobUpdate,
+    shouldContinue?: () => boolean,
   ): Promise<RequirementPreviewJob> {
     let job = initialJob
     onJobUpdate?.(job)
-    for (let attempt = 0; attempt < 60 && !previewFinalStatuses.has(job.status); attempt += 1) {
-      await wait(1000)
+    for (let attempt = 0; attempt < PREVIEW_POLL_MAX_ATTEMPTS && !previewFinalStatuses.has(job.status); attempt += 1) {
+      // 对话框已关闭或新一轮预览已启动：静默停止轮询，交还控制权。
+      if (shouldContinue && !shouldContinue()) return job
+      await wait(PREVIEW_POLL_INTERVAL_MS)
       job = await fetchRequirementPreviewJob(workspaceId, job.job_id)
       onJobUpdate?.(job)
+    }
+    if (!previewFinalStatuses.has(job.status)) {
+      // 轮询达到上限仍非终态（真实 CLI 执行可能超过旧版 60s 等待）：
+      // 以明确的超时失败态呈现，避免对话框永远停留在“生成中”。
+      const message = `AI Preview 等待超时（${Math.round(
+        (PREVIEW_POLL_INTERVAL_MS * PREVIEW_POLL_MAX_ATTEMPTS) / 1000,
+      )}s），作业可能仍在后台执行；请稍后刷新确认结果。`
+      onJobUpdate?.({ ...job, status: 'FAILED', error: message })
+      throw new Error(message)
     }
     return job
   }
@@ -353,6 +369,7 @@ export function useWorkspaceAssets() {
     requirementId: string,
     changeReason?: string | null,
     onJobUpdate?: RequirementPreviewJobUpdate,
+    shouldContinue?: () => boolean,
   ): Promise<RequirementImportBatch | null> {
     return mutate(async () => {
       const response = await api.post<RequirementPreviewJob>(
@@ -360,7 +377,7 @@ export function useWorkspaceAssets() {
         { change_reason: changeReason || undefined },
       )
       onJobUpdate?.(response.data)
-      const job = await waitRequirementPreviewJob(workspaceId, response.data, onJobUpdate)
+      const job = await waitRequirementPreviewJob(workspaceId, response.data, onJobUpdate, shouldContinue)
       if (job.status === 'FAILED' || job.status === 'CANCELLED') {
         throw new Error(job.error || job.message || 'Requirement split preview failed')
       }

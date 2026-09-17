@@ -42,7 +42,8 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddRequirementAuditLog,
     SddTaskRequirement,
 )
-from app.domains.workspace_asset.services import workspace_asset_service  # noqa: E402
+from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service  # noqa: E402
+from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner  # noqa: E402
 
 from test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session  # noqa: E402
 
@@ -57,7 +58,7 @@ def _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, workspace_id):
     """preview 作业改走 AI 任务队列后，测试中同步驱动队列执行以便断言终态。"""
     scheduled = []
     monkeypatch.setattr(
-        workspace_asset_service,
+        preview_job_service,
         "schedule_requirement_preview_queue",
         lambda ws_id: scheduled.append(ws_id),
     )
@@ -177,9 +178,8 @@ def test_requirement_create_edit_and_audit_history_are_real_records():
 def test_requirement_import_preview_requires_confirm_before_creating_requirements(monkeypatch, tmp_path):
     engine, SessionLocal = _build_db()
     try:
-        monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_preview_cli)
+        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import", task_id="task-import")
             _use_project_path(db, workspace, task, tmp_path)
@@ -240,9 +240,8 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
 def test_requirement_import_preview_keeps_simple_requirement_as_single_item(monkeypatch, tmp_path):
     engine, SessionLocal = _build_db()
     try:
-        monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_preview_cli)
+        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-simple-import", task_id="task-simple-import")
             _use_project_path(db, workspace, task, tmp_path)
@@ -275,7 +274,6 @@ def test_requirement_import_preview_keeps_simple_requirement_as_single_item(monk
 def test_requirement_ai_preview_requires_configured_project_path(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
-        monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         with _session(SessionLocal) as db:
             user, _workspace, _task = _seed_workspace(db, workspace_id="ws-import-no-path", task_id="task-import-no-path")
@@ -427,9 +425,8 @@ def test_parent_requirement_with_children_rejects_new_task_links_but_child_can_l
 def test_requirement_import_preview_multiple_items_creates_parent_with_children(monkeypatch, tmp_path):
     engine, SessionLocal = _build_db()
     try:
-        monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_preview_cli)
+        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_preview_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-import-tree", task_id="task-import-tree")
             _use_project_path(db, workspace, task, tmp_path)
@@ -532,9 +529,8 @@ def test_requirement_task_link_unlink_and_duplicate_conflict_write_audit():
 def test_requirement_split_preview_and_confirm_create_child_requirements(monkeypatch, tmp_path):
     engine, SessionLocal = _build_db()
     try:
-        monkeypatch.setattr(workspace_asset_service, "SessionLocal", SessionLocal)
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(workspace_asset_service, "run_cli_single_turn", _fake_requirement_split_cli)
+        monkeypatch.setattr(preview_runner, "run_cli_single_turn", _fake_requirement_split_cli)
         with _session(SessionLocal) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-split", task_id="task-split")
             _use_project_path(db, workspace, task, tmp_path)

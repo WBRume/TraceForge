@@ -113,7 +113,6 @@ function fileIcon(kind: string) {
       v-else
       :title="t('workspace_assets.task_detail.workbench.task_file.empty_title')"
       :message="t('workspace_assets.task_detail.workbench.task_file.empty')"
-      :boundary="t('workspace_assets.task_detail.no_auto_commit')"
     />
     <el-pagination
       v-if="(props.total ?? 0) > 0"

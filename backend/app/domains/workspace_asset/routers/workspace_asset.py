@@ -69,8 +69,12 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     WorkflowFinalSummaryUpsertRequest,
 )
 from app.domains.workspace.services import workspace_service
-from app.domains.workspace_asset.services import workspace_asset_service, workspace_asset_task_query, workspace_task_detail_service
-from app.domains.workspace_asset.services import workspace_task_detail_query, workspace_task_detail_section
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.overview import get_overview, list_knowledge_assets
+from app.domains.workspace_asset.services.requirements import import_service
+from app.domains.workspace_asset.services.requirements import queries as requirement_queries
+from app.domains.workspace_asset.services.requirements import writes as requirement_writes
+from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service
 from app.domains.workspace_asset.services.task_final_workflow import (
     clarification_service,
     review_service,
@@ -78,6 +82,16 @@ from app.domains.workspace_asset.services.task_final_workflow import (
     target_preview_service,
     workflow_state,
 )
+from app.domains.workspace_asset.services.task_process import (
+    clarification_writes,
+    decision_writes,
+    evidence_writes,
+    human_delta_writes,
+)
+from app.domains.workspace_asset.services.tasks import detail as task_detail_read
+from app.domains.workspace_asset.services.tasks import list_query, sections
+from app.domains.workspace_asset.services.tasks import summary_query as task_summary_query
+from app.domains.workspace_asset.services.traceability import get_traceability
 
 
 router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspace Assets"])
@@ -125,16 +139,16 @@ def _workflow_state_for_user(
     )
 
 
-def _raise_write_error(exc: workspace_asset_service.WorkspaceAssetWriteError) -> None:
+def _raise_write_error(exc: WorkspaceAssetError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
-def _raise_task_detail_write_error(exc: workspace_task_detail_service.TaskDetailWriteError) -> None:
+def _raise_task_detail_write_error(exc: WorkspaceAssetError) -> None:
     raise HTTPException(status_code=exc.status_code, detail=str(exc))
 
 
 def _task_detail_or_404(db: Session, ws_id: str, task_id: str) -> TaskDetailResponse:
-    result = workspace_asset_service.get_task_detail(db, ws_id, task_id)
+    result = task_detail_read.get_task_detail(db, ws_id, task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Task not found")
     return result
@@ -147,7 +161,7 @@ def get_workspace_assets_overview(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_asset_service.get_overview(db, ws_id)
+    return get_overview(db, ws_id)
 
 
 @router.get("/requirements", response_model=WorkspaceAssetsRequirementsResponse)
@@ -167,7 +181,7 @@ def list_workspace_asset_requirements(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_asset_service.list_requirements(
+    return requirement_queries.list_requirements(
         db,
         ws_id,
         q=q,
@@ -192,8 +206,8 @@ def create_workspace_asset_requirement(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        return workspace_asset_service.create_requirement(db, ws_id, current_user.id, payload)
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+        return requirement_writes.create_requirement(db, ws_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
 
 
@@ -222,7 +236,7 @@ async def create_workspace_asset_requirement_import_preview(
     if not raw:
         raise HTTPException(status_code=422, detail="Requirement import content is required")
     try:
-        response = workspace_asset_service.create_requirement_import_preview_job(
+        response = preview_job_service.create_requirement_import_preview_job(
             db,
             ws_id,
             current_user.id,
@@ -232,9 +246,9 @@ async def create_workspace_asset_requirement_import_preview(
             source_uri=source_uri,
             source_ref=source_ref,
         )
-        workspace_asset_service.schedule_requirement_preview_queue(ws_id)
+        preview_job_service.schedule_requirement_preview_queue(ws_id)
         return response
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
 
 
@@ -264,7 +278,7 @@ async def create_workspace_asset_requirement_direct_import(
     if not raw:
         raise HTTPException(status_code=422, detail="Requirement import content is required")
     try:
-        return workspace_asset_service.create_requirement_direct_import(
+        return import_service.create_requirement_direct_import(
             db,
             ws_id,
             current_user.id,
@@ -275,7 +289,7 @@ async def create_workspace_asset_requirement_direct_import(
             source_ref=source_ref,
             change_reason=change_reason,
         )
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
 
 
@@ -287,7 +301,7 @@ def get_workspace_asset_requirement_preview_job(
     db: Session = Depends(get_db),
 ):
     _verify_manage_requirements(ws_id, current_user, db)
-    result = workspace_asset_service.get_requirement_preview_job(db, ws_id, job_id)
+    result = preview_job_service.get_requirement_preview_job(db, ws_id, job_id)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement preview job not found")
     return result
@@ -303,8 +317,8 @@ def confirm_workspace_asset_requirement_import(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        result = workspace_asset_service.confirm_requirement_import(db, ws_id, batch_id, current_user.id, payload)
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+        result = import_service.confirm_requirement_import(db, ws_id, batch_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement import batch not found")
@@ -319,7 +333,7 @@ def get_workspace_asset_requirement_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_asset_service.get_requirement_detail(db, ws_id, requirement_id)
+    result = requirement_queries.get_requirement_detail(db, ws_id, requirement_id)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
     return result
@@ -335,8 +349,8 @@ def update_workspace_asset_requirement(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        result = workspace_asset_service.update_requirement(db, ws_id, requirement_id, current_user.id, payload)
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+        result = requirement_writes.update_requirement(db, ws_id, requirement_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
@@ -353,8 +367,8 @@ def link_workspace_asset_requirement_task(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        result = workspace_asset_service.link_requirement_task(db, ws_id, requirement_id, current_user.id, payload)
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+        result = requirement_writes.link_requirement_task(db, ws_id, requirement_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
@@ -372,7 +386,7 @@ def unlink_workspace_asset_requirement_task(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        result = workspace_asset_service.unlink_requirement_task(
+        result = requirement_writes.unlink_requirement_task(
             db,
             ws_id,
             requirement_id,
@@ -380,7 +394,7 @@ def unlink_workspace_asset_requirement_task(
             current_user.id,
             change_reason=change_reason,
         )
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
@@ -401,18 +415,18 @@ async def create_workspace_asset_requirement_split_preview(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        result = workspace_asset_service.create_requirement_split_preview_job(
+        result = preview_job_service.create_requirement_split_preview_job(
             db,
             ws_id,
             requirement_id,
             current_user.id,
             change_reason=payload.change_reason,
         )
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
-    workspace_asset_service.schedule_requirement_preview_queue(ws_id)
+    preview_job_service.schedule_requirement_preview_queue(ws_id)
     return result
 
 
@@ -426,8 +440,8 @@ def confirm_workspace_asset_requirement_split(
 ):
     _verify_manage_requirements(ws_id, current_user, db)
     try:
-        result = workspace_asset_service.confirm_requirement_split(db, ws_id, requirement_id, current_user.id, payload)
-    except workspace_asset_service.WorkspaceAssetWriteError as exc:
+        result = import_service.confirm_requirement_split(db, ws_id, requirement_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_write_error(exc)
     if not result:
         raise HTTPException(status_code=404, detail="Requirement not found")
@@ -450,7 +464,7 @@ def list_workspace_asset_tasks(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_asset_task_query.list_tasks(
+    return list_query.list_tasks(
         db,
         ws_id,
         q=q,
@@ -467,7 +481,7 @@ def list_workspace_asset_tasks(
 
 
 def _task_summary_or_404(db: Session, ws_id: str, task_id: str) -> TaskDetailSummaryResponse:
-    result = workspace_task_detail_query.get_task_detail_summary(db, ws_id, task_id)
+    result = task_summary_query.get_task_detail_summary(db, ws_id, task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Task not found")
     return result
@@ -494,7 +508,7 @@ def list_workspace_asset_task_files(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_files(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_files(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/files/{file_id}", response_model=TaskFileItemResponse)
@@ -506,7 +520,7 @@ def get_workspace_asset_task_file_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_file_detail(db, ws_id, task_id, file_id)
+    result = sections.get_task_file_detail(db, ws_id, task_id, file_id)
     if not result:
         raise HTTPException(status_code=404, detail="File not found")
     return result
@@ -521,7 +535,7 @@ def get_workspace_asset_task_file_diff(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_file_diff(db, ws_id, task_id, file_id)
+    result = sections.get_task_file_diff(db, ws_id, task_id, file_id)
     if not result:
         raise HTTPException(status_code=404, detail="Diff not available for this file")
     return result
@@ -537,7 +551,7 @@ def list_workspace_asset_task_human_reviews(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_human_reviews(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_human_reviews(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/human-reviews/{review_id}", response_model=HumanReviewResponse)
@@ -549,7 +563,7 @@ def get_workspace_asset_task_human_review_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_human_review_detail(db, ws_id, task_id, review_id)
+    result = sections.get_task_human_review_detail(db, ws_id, task_id, review_id)
     if not result:
         raise HTTPException(status_code=404, detail="Review not found")
     return result
@@ -565,7 +579,7 @@ def list_workspace_asset_task_human_deltas(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_human_deltas(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_human_deltas(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/human-deltas/suggestions", response_model=HumanDeltaSuggestionsResponse)
@@ -591,7 +605,7 @@ def get_workspace_asset_task_human_delta_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_human_delta_detail(db, ws_id, task_id, delta_id)
+    result = sections.get_task_human_delta_detail(db, ws_id, task_id, delta_id)
     if not result:
         raise HTTPException(status_code=404, detail="Delta not found")
     return result
@@ -606,7 +620,7 @@ def get_workspace_asset_task_delta_workbench(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_delta_workbench(db, ws_id, task_id, delta_id)
+    result = sections.get_task_delta_workbench(db, ws_id, task_id, delta_id)
     if not result:
         raise HTTPException(status_code=404, detail="Delta not found")
     return result
@@ -645,7 +659,7 @@ def list_workspace_asset_task_evidence(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_evidence(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_evidence(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/evidence/{evidence_id}", response_model=EvidenceResponse)
@@ -657,7 +671,7 @@ def get_workspace_asset_task_evidence_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_evidence_detail(db, ws_id, task_id, evidence_id)
+    result = sections.get_task_evidence_detail(db, ws_id, task_id, evidence_id)
     if not result:
         raise HTTPException(status_code=404, detail="Evidence not found")
     return result
@@ -673,7 +687,7 @@ def list_workspace_asset_task_decisions(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_decisions(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_decisions(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/decisions/{decision_id}", response_model=DecisionResponse)
@@ -685,7 +699,7 @@ def get_workspace_asset_task_decision_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_decision_detail(db, ws_id, task_id, decision_id)
+    result = sections.get_task_decision_detail(db, ws_id, task_id, decision_id)
     if not result:
         raise HTTPException(status_code=404, detail="Decision not found")
     return result
@@ -701,7 +715,7 @@ def list_workspace_asset_task_clarifications(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_clarifications(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_clarifications(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/clarifications/{clarification_id}", response_model=ClarificationResponse)
@@ -713,7 +727,7 @@ def get_workspace_asset_task_clarification_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_clarification_detail(db, ws_id, task_id, clarification_id)
+    result = sections.get_task_clarification_detail(db, ws_id, task_id, clarification_id)
     if not result:
         raise HTTPException(status_code=404, detail="Clarification not found")
     return result
@@ -727,7 +741,7 @@ def get_workspace_asset_task_final_summary(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_final_summary(db, ws_id, task_id)
+    result = sections.get_task_final_summary(db, ws_id, task_id)
     if not result:
         raise HTTPException(status_code=404, detail="Final summary not found")
     return result
@@ -743,7 +757,7 @@ def get_workspace_asset_task_final_workflow(
     _verify_view_assets(ws_id, current_user, db)
     try:
         return _workflow_state_for_user(db, ws_id, task_id, current_user)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -762,7 +776,7 @@ def get_workspace_asset_task_final_workflow_review_target_preview(
     _verify_view_assets(ws_id, current_user, db)
     try:
         return target_preview_service.get_review_target_preview(db, ws_id, task_id, target_type, target_id)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -782,7 +796,7 @@ def create_workspace_asset_task_final_workflow_review(
     try:
         review_service.create_review(db, ws_id, task_id, current_user.id, payload)
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -799,7 +813,7 @@ def update_workspace_asset_task_final_workflow_review(
     try:
         review_service.update_review(db, ws_id, task_id, review_id, current_user.id, payload)
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -831,7 +845,7 @@ def create_workspace_asset_task_final_workflow_clarification(
             ),
         )
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -852,7 +866,7 @@ def create_workspace_asset_task_final_workflow_clarification_message(
     try:
         clarification_service.add_message(db, ws_id, task_id, clarification_id, current_user.id, payload)
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -868,7 +882,7 @@ def create_workspace_asset_task_final_summary_draft(
     try:
         summary_service.draft_final_summary(db, ws_id, task_id, current_user.id, payload)
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -884,7 +898,7 @@ def upsert_workspace_asset_task_final_workflow_summary(
     try:
         summary_service.upsert_final_summary(db, ws_id, task_id, current_user.id, payload)
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -899,7 +913,7 @@ def baseline_workspace_asset_task_final_workflow(
     try:
         summary_service.baseline_task(db, ws_id, task_id, current_user.id)
         return _workflow_state_for_user(db, ws_id, task_id, current_user, can_manage=True)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
 
 
@@ -913,7 +927,7 @@ def list_workspace_asset_task_process_audit(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_task_detail_section.get_task_process_audit(db, ws_id, task_id, page=page, page_size=page_size)
+    return sections.get_task_process_audit(db, ws_id, task_id, page=page, page_size=page_size)
 
 
 @router.get("/tasks/{task_id}/process-audit/{log_id}", response_model=TaskProcessAuditLogResponse)
@@ -925,7 +939,7 @@ def get_workspace_asset_task_process_audit_detail(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    result = workspace_task_detail_section.get_task_process_audit_detail(db, ws_id, task_id, log_id)
+    result = sections.get_task_process_audit_detail(db, ws_id, task_id, log_id)
     if not result:
         raise HTTPException(status_code=404, detail="Audit log not found")
     return result
@@ -952,8 +966,8 @@ def create_workspace_asset_task_human_review(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.create_human_review(db, ws_id, task_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        human_delta_writes.create_human_review(db, ws_id, task_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -969,8 +983,8 @@ def update_workspace_asset_task_human_review(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.update_human_review(db, ws_id, task_id, review_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        human_delta_writes.update_human_review(db, ws_id, task_id, review_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -990,8 +1004,8 @@ def create_workspace_asset_task_human_review_comment(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.create_human_review_comment(db, ws_id, task_id, review_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        human_delta_writes.create_human_review_comment(db, ws_id, task_id, review_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1009,13 +1023,13 @@ async def create_workspace_asset_task_human_delta(
         async with queue_workspace_compare_jobs(workspace_id=ws_id):
             def create_delta_sync(db: Session):
                 _verify_manage_task_process_assets(ws_id, current_user, db)
-                workspace_task_detail_service.create_human_delta(
+                human_delta_writes.create_human_delta(
                     db, ws_id, task_id, current_user.id, payload,
                 )
                 return _task_summary_or_404(db, ws_id, task_id)
 
             return await run_db_txn(create_delta_sync)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     except LockAcquireTimeout as exc:
         busy = make_resource_busy_error(exc, "Compare queue busy, please retry later.")
@@ -1033,8 +1047,8 @@ def update_workspace_asset_task_human_delta(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.update_human_delta(db, ws_id, task_id, delta_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        human_delta_writes.update_human_delta(db, ws_id, task_id, delta_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1049,8 +1063,8 @@ def create_workspace_asset_task_evidence(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.create_evidence(db, ws_id, task_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        evidence_writes.create_evidence(db, ws_id, task_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1066,8 +1080,8 @@ def update_workspace_asset_task_evidence(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.update_evidence(db, ws_id, task_id, evidence_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        evidence_writes.update_evidence(db, ws_id, task_id, evidence_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1082,8 +1096,8 @@ def create_workspace_asset_task_decision(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.create_decision(db, ws_id, task_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        decision_writes.create_decision(db, ws_id, task_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1099,8 +1113,8 @@ def update_workspace_asset_task_decision(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.update_decision(db, ws_id, task_id, decision_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        decision_writes.update_decision(db, ws_id, task_id, decision_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1115,8 +1129,8 @@ def create_workspace_asset_task_clarification(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.create_clarification(db, ws_id, task_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        clarification_service.create_workflow_clarification(db, ws_id, task_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1132,7 +1146,7 @@ def update_workspace_asset_task_clarification(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.update_clarification(
+        clarification_writes.update_clarification(
             db,
             ws_id,
             task_id,
@@ -1140,7 +1154,7 @@ def update_workspace_asset_task_clarification(
             current_user.id,
             payload,
         )
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1155,8 +1169,8 @@ def upsert_workspace_asset_task_final_summary(
 ):
     _verify_manage_task_process_assets(ws_id, current_user, db)
     try:
-        workspace_task_detail_service.upsert_final_summary(db, ws_id, task_id, current_user.id, payload)
-    except workspace_task_detail_service.TaskDetailWriteError as exc:
+        summary_service.upsert_final_summary(db, ws_id, task_id, current_user.id, payload)
+    except WorkspaceAssetError as exc:
         _raise_task_detail_write_error(exc)
     return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1168,7 +1182,7 @@ def get_workspace_assets_traceability(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_asset_service.get_traceability(db, ws_id)
+    return get_traceability(db, ws_id)
 
 
 @router.get("/knowledge-assets", response_model=WorkspaceAssetsKnowledgeResponse)
@@ -1178,4 +1192,4 @@ def list_workspace_assets_knowledge_assets(
     db: Session = Depends(get_db),
 ):
     _verify_view_assets(ws_id, current_user, db)
-    return workspace_asset_service.list_knowledge_assets(db, ws_id)
+    return list_knowledge_assets(db, ws_id)

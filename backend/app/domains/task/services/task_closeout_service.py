@@ -2,7 +2,7 @@
 
 This service records the key local-development facts produced when a user
 finishes or fails a Task. It deliberately delegates process-asset writes to
-workspace_task_detail_service and does not mutate Traceability directly.
+workspace_asset task_process writes and does not mutate Traceability directly.
 """
 
 from __future__ import annotations
@@ -23,7 +23,8 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     EvidenceCreateRequest,
     TaskFinalSummaryUpsertRequest,
 )
-from app.domains.workspace_asset.services import workspace_task_detail_service
+from app.domains.workspace_asset.services.task_final_workflow import summary_service
+from app.domains.workspace_asset.services.task_process import evidence_writes
 
 
 class TaskCloseoutError(Exception):
@@ -183,11 +184,11 @@ def complete_task_closeout(
     evidence_payloads = _complete_evidence_payloads(payload)
 
     evidence_ids = [
-        workspace_task_detail_service.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
+        evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
         for evidence_payload in evidence_payloads
     ]
 
-    final_summary_id = workspace_task_detail_service.upsert_final_summary(
+    final_summary_id = summary_service.upsert_final_summary(
         db,
         workspace_id,
         task_id,
@@ -226,11 +227,11 @@ def fail_task_closeout(
     evidence_payloads = _failure_evidence_payloads(payload)
 
     evidence_ids = [
-        workspace_task_detail_service.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
+        evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
         for evidence_payload in evidence_payloads
     ]
 
-    final_summary_id = workspace_task_detail_service.upsert_final_summary(
+    final_summary_id = summary_service.upsert_final_summary(
         db,
         workspace_id,
         task_id,

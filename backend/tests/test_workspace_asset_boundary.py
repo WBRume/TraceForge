@@ -58,8 +58,12 @@ from app.domains.workspace_asset.models.workspace_asset import (
     TaskRequirementRelationType,
 )
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
-from app.domains.workspace_asset.services import workspace_asset_service  # noqa: E402
-from app.domains.workspace_asset.services.workspace_asset_task_query import list_tasks
+from app.domains.workspace_asset.services.overview import list_knowledge_assets  # noqa: E402
+from app.domains.workspace_asset.services.requirements.queries import list_requirements  # noqa: E402
+from app.domains.workspace_asset.services.tasks.detail import get_task_detail  # noqa: E402
+from app.domains.workspace_asset.services.tasks.presenters import task_summary  # noqa: E402
+from app.domains.workspace_asset.services.traceability import get_traceability  # noqa: E402
+from app.domains.workspace_asset.services.tasks.list_query import list_tasks
 
 
 def _build_db():
@@ -221,7 +225,7 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
             db.add_all([requirement, link, spec_asset, plan_asset, ai_job, ai_output, review, delta, evidence, knowledge])
             db.commit()
 
-            detail = workspace_asset_service.get_task_detail(db, workspace.id, task.id)
+            detail = get_task_detail(db, workspace.id, task.id)
             assert detail is not None
             assert detail.task.requirement_count == 1
             assert detail.task.coverage_status == "waiting_human_confirmation"
@@ -238,7 +242,7 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
             assert detail.ai_runs[0].output_summary == "Proposed checkout validation patch."
             assert detail.ai_runs[0].adoption_status == "not_available"
 
-            requirements_response = workspace_asset_service.list_requirements(db, workspace.id)
+            requirements_response = list_requirements(db, workspace.id)
             linked_task = requirements_response.items[0].linked_tasks[0]
             assert linked_task.task_id == task.id
             assert linked_task.relation_type == "COVERS"
@@ -252,7 +256,7 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
             assert api_linked_task["relation_type"] == "COVERS"
             assert api_linked_task["coverage_status"] == "waiting_human_confirmation"
 
-            traceability = workspace_asset_service.get_traceability(db, workspace.id)
+            traceability = get_traceability(db, workspace.id)
             view_totals = {view.key: view.total for view in traceability.views}
             assert view_totals["spec_coverage_matrix"] == 1
             assert view_totals["evidence_registry"] == 1
@@ -273,7 +277,7 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
             assert matrix_row["coverage_status"] == "human_modified"
             assert matrix_row["trace_refs"]["human_delta_ids"] == ["delta-1"]
 
-            knowledge_response = workspace_asset_service.list_knowledge_assets(db, workspace.id)
+            knowledge_response = list_knowledge_assets(db, workspace.id)
             assert knowledge_response.total == 1
             assert knowledge_response.items[0].source_human_delta_id == "delta-1"
     finally:
@@ -509,7 +513,7 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
             ])
             db.commit()
 
-            traceability = workspace_asset_service.get_traceability(db, workspace.id)
+            traceability = get_traceability(db, workspace.id)
             matrix = next(view for view in traceability.views if view.key == "spec_coverage_matrix")
             rows = {item["id"]: item for item in matrix.items}
 
@@ -674,7 +678,7 @@ def test_workspace_asset_tasks_stats_evidence_missing_uses_sql():
             # 批量 GROUP BY 与逐任务 count 的单任务路径结果一致
             assert by_id["task-a"].spec_count == 2
             assert by_id["task-a"].plan_count == 3
-            fallback = workspace_asset_service._task_summary(db, db.query(SddTask).filter(SddTask.id == "task-a").one())
+            fallback = task_summary(db, db.query(SddTask).filter(SddTask.id == "task-a").one())
             assert fallback.spec_count == by_id["task-a"].spec_count
             assert fallback.plan_count == by_id["task-a"].plan_count
     finally:

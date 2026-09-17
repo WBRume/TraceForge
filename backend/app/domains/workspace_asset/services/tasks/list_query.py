@@ -21,7 +21,8 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     TaskListSummaryStats,
     WorkspaceAssetsTasksResponse,
 )
-from app.domains.workspace_asset.services.workspace_asset_service import _task_summary, _enum_value
+from app.domains.workspace_asset.services.common.primitives import enum_value
+from app.domains.workspace_asset.services.tasks.presenters import task_summary
 
 
 def _task_count_subqueries() -> Dict[str, Any]:
@@ -110,7 +111,7 @@ def _page_asset_counts(
         .all()
     )
     for row_task_id, row_asset_type, row_count in asset_count_rows:
-        type_value = _enum_value(row_asset_type)
+        type_value = enum_value(row_asset_type)
         if type_value == AssetType.SPEC.value:
             spec_counts[str(row_task_id)] = int(row_count)
         elif type_value == AssetType.PLAN.value:
@@ -318,7 +319,7 @@ def list_tasks(
     return WorkspaceAssetsTasksResponse(
         workspace_id=workspace_id,
         items=[
-            _task_summary(
+            task_summary(
                 db,
                 item,
                 is_following=item.id in following_ids,

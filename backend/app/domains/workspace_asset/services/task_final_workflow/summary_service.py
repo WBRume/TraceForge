@@ -19,17 +19,18 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
 )
 from app.domains.workspace_asset.schemas.workspace_asset import TaskFinalSummaryUpsertRequest
 from app.domains.workspace_asset.services.task_final_workflow import baseline_service
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _add_process_audit,
-    _ensure_evidence,
-    _ensure_final_summary_verified_allowed,
-    _ensure_human_review,
-    _get_task_or_error,
+from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
-    final_summary_response,
     normalize_enum,
     normalize_list,
+)
+from app.domains.workspace_asset.services.common.process_presenters import final_summary_response
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_evidence,
+    ensure_final_summary_verified_allowed,
+    ensure_human_review,
+    get_task_or_error,
 )
 
 
@@ -40,7 +41,7 @@ def draft_final_summary(
     actor_id: Optional[str],
     payload: FinalSummaryDraftRequest,
 ) -> str:
-    task = _get_task_or_error(db, workspace_id, task_id)
+    task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
     evidence_ids = [item.id for item in (task.evidence_items or [])]
     review_count = len(task.human_reviews or [])
@@ -97,15 +98,15 @@ def upsert_final_summary(
     actor_id: Optional[str],
     payload: TaskFinalSummaryUpsertRequest | WorkflowFinalSummaryUpsertRequest,
 ) -> str:
-    task = _get_task_or_error(db, workspace_id, task_id)
+    task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
     workflow_payload = _coerce_workflow_payload(payload)
     status = normalize_enum(TaskFinalStatus, workflow_payload.final_status, TaskFinalStatus.PENDING, "Task final status")
     for evidence_id in workflow_payload.final_evidence_ids:
-        _ensure_evidence(db, workspace_id, task_id, evidence_id)
-    _ensure_human_review(db, workspace_id, task_id, workflow_payload.human_confirmation_review_id)
+        ensure_evidence(db, workspace_id, task_id, evidence_id)
+    ensure_human_review(db, workspace_id, task_id, workflow_payload.human_confirmation_review_id)
     if status == TaskFinalStatus.VERIFIED:
-        _ensure_final_summary_verified_allowed(task)
+        ensure_final_summary_verified_allowed(task)
 
     summary = task.final_summary
     before = final_summary_response(summary).model_dump(mode="json") if summary else None
@@ -134,7 +135,7 @@ def upsert_final_summary(
         summary.verified_by_id = actor_id
     db.flush()
 
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -156,7 +157,7 @@ def upsert_final_summary(
 
 
 def baseline_task(db: Session, workspace_id: str, task_id: str, actor_id: Optional[str]) -> str:
-    task = _get_task_or_error(db, workspace_id, task_id)
+    task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
     baseline = baseline_service.baseline_task(db, task, actor_id)
     db.commit()

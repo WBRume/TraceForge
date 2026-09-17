@@ -1591,7 +1591,7 @@ def test_requirement_preview_fence_rolls_back_batch_and_items(monkeypatch):
         SddRequirementImportBatch,
         SddRequirementImportItem,
     )
-    from app.domains.workspace_asset.services import workspace_asset_service as was
+    from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner
 
     factory = _session_factory()
     db = factory()
@@ -1601,7 +1601,7 @@ def test_requirement_preview_fence_rolls_back_batch_and_items(monkeypatch):
 
     async def _run():
         await run_db_txn(
-            lambda session: was._finalize_requirement_import_sync(
+            lambda session: preview_runner.finalize_requirement_import_sync(
                 session,
                 job_id="preview-job",
                 file_name="requirements.md",
@@ -1634,7 +1634,7 @@ def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
         SddRequirementImportBatch,
         SddRequirementImportItem,
     )
-    from app.domains.workspace_asset.services import workspace_asset_service as was
+    from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner
 
     factory = _session_factory()
     db = factory()
@@ -1655,7 +1655,7 @@ def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
 
     async def _run():
         return await run_db_txn(
-            lambda session: was._finalize_requirement_import_sync(
+            lambda session: preview_runner.finalize_requirement_import_sync(
                 session,
                 job_id="preview-job",
                 file_name="requirements.md",

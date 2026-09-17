@@ -7,7 +7,7 @@ All counts use database COUNT queries instead of len() on loaded collections.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
@@ -19,38 +19,24 @@ from app.domains.task.models.task import SddPlanNode, SddTask
 from app.domains.workspace_asset.models.workspace_asset import (
     EvidenceSourceType,
     EvidenceStatus,
-    SddAiOutput,
     SddClarification,
     SddDecision,
     SddEvidence,
     SddHumanDelta,
     SddHumanReview,
-    SddTaskFinalSummary,
-    SddTaskProcessAuditLog,
     SddTaskRequirement,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import (
     TaskDetailSummaryResponse,
     TaskProcessSummary,
-    TaskRequirementLinkResponse,
     TaskSummary,
-    WorkspaceAssetConnectionStatus,
 )
-
-
-def _enum_value(value: Any) -> str:
-    return value.value if hasattr(value, "value") else str(value)
-
-
-def _count(db: Session, model: Any, workspace_id: str, **filters: Any) -> int:
-    query = db.query(func.count(model.id)).filter(model.workspace_id == workspace_id)
-    for field, value in filters.items():
-        query = query.filter(getattr(model, field) == value)
-    return int(query.scalar() or 0)
-
-
-def _connection(key: str, label: str, state: str, detail: str) -> WorkspaceAssetConnectionStatus:
-    return WorkspaceAssetConnectionStatus(key=key, label=label, state=state, detail=detail)
+from app.domains.workspace_asset.services.common.primitives import (
+    count_rows,
+    enum_value,
+    make_connection,
+)
+from app.domains.workspace_asset.services.requirements.presenters import task_requirement_link
 
 
 def _coverage_status_from_db(db: Session, workspace_id: str, task_id: str, requirement_count: int) -> str:
@@ -92,21 +78,21 @@ def _coverage_status_from_db(db: Session, workspace_id: str, task_id: str, requi
     return "verified"
 
 
-def _task_summary_from_counts(db: Session, task: SddTask) -> TaskSummary:
+def task_summary_from_counts(db: Session, task: SddTask) -> TaskSummary:
     """Build TaskSummary using COUNT queries instead of loading collections."""
     ws_id = task.workspace_id
     task_id = task.id
 
-    requirement_count = _count(db, SddTaskRequirement, ws_id, task_id=task_id)
-    spec_count = _count(db, SddAsset, ws_id, task_id=task_id, asset_type=AssetType.SPEC)
-    plan_asset_count = _count(db, SddAsset, ws_id, task_id=task_id, asset_type=AssetType.PLAN)
-    plan_node_count = _count(db, SddPlanNode, ws_id, task_id=task_id)
-    ai_run_count = _count(db, SddAiJob, ws_id, task_id=task_id)
-    human_review_count = _count(db, SddHumanReview, ws_id, task_id=task_id)
-    human_delta_count = _count(db, SddHumanDelta, ws_id, task_id=task_id)
-    evidence_count = _count(db, SddEvidence, ws_id, task_id=task_id)
-    decision_count = _count(db, SddDecision, ws_id, task_id=task_id)
-    clarification_count = _count(db, SddClarification, ws_id, task_id=task_id)
+    requirement_count = count_rows(db, SddTaskRequirement, ws_id, task_id=task_id)
+    spec_count = count_rows(db, SddAsset, ws_id, task_id=task_id, asset_type=AssetType.SPEC)
+    plan_asset_count = count_rows(db, SddAsset, ws_id, task_id=task_id, asset_type=AssetType.PLAN)
+    plan_node_count = count_rows(db, SddPlanNode, ws_id, task_id=task_id)
+    ai_run_count = count_rows(db, SddAiJob, ws_id, task_id=task_id)
+    human_review_count = count_rows(db, SddHumanReview, ws_id, task_id=task_id)
+    human_delta_count = count_rows(db, SddHumanDelta, ws_id, task_id=task_id)
+    evidence_count = count_rows(db, SddEvidence, ws_id, task_id=task_id)
+    decision_count = count_rows(db, SddDecision, ws_id, task_id=task_id)
+    clarification_count = count_rows(db, SddClarification, ws_id, task_id=task_id)
 
     coverage_status = _coverage_status_from_db(db, ws_id, task_id, requirement_count)
 
@@ -123,7 +109,7 @@ def _task_summary_from_counts(db: Session, task: SddTask) -> TaskSummary:
         creator_display_name=creator_display_name,
         name=task.name,
         description=task.description,
-        status=_enum_value(task.status),
+        status=enum_value(task.status),
         current_phase=task.current_phase,
         requirement_count=requirement_count,
         spec_count=spec_count,
@@ -140,19 +126,6 @@ def _task_summary_from_counts(db: Session, task: SddTask) -> TaskSummary:
         baselined_by_id=task.baselined_by_id,
         created_at=task.created_at,
         updated_at=task.updated_at,
-    )
-
-
-def _task_requirement_link(link: SddTaskRequirement) -> TaskRequirementLinkResponse:
-    from app.domains.workspace_asset.services.workspace_asset_service import _requirement_summary
-
-    return TaskRequirementLinkResponse(
-        id=link.id,
-        requirement_id=link.requirement_id,
-        task_id=link.task_id,
-        relation_type=_enum_value(link.relation_type),
-        requirement=_requirement_summary(link.requirement) if link.requirement else None,
-        created_at=link.created_at,
     )
 
 
@@ -179,7 +152,7 @@ def get_task_detail_summary(
     if not task:
         return None
 
-    task_summary = _task_summary_from_counts(db, task)
+    task_summary = task_summary_from_counts(db, task)
     requirement_links = sorted(task.requirement_links or [], key=lambda item: item.created_at, reverse=True)
 
     # Process summary using count-based status checks
@@ -203,7 +176,7 @@ def get_task_detail_summary(
 
     has_any_process = any([spec_count, plan_count, ai_run_count, review_count, delta_count, evidence_count])
     connection_status = [
-        _connection(
+        make_connection(
             "task_process_assets",
             "Task process assets",
             "AVAILABLE" if has_any_process else "EMPTY",
@@ -211,7 +184,7 @@ def get_task_detail_summary(
             if has_any_process
             else "No process assets are connected for this task yet.",
         ),
-        _connection(
+        make_connection(
             "coverage_verification",
             "Coverage verification",
             "AVAILABLE" if task_summary.coverage_status == "verified" else "EMPTY",
@@ -223,7 +196,7 @@ def get_task_detail_summary(
 
     return TaskDetailSummaryResponse(
         task=task_summary,
-        requirement_links=[_task_requirement_link(link) for link in requirement_links],
+        requirement_links=[task_requirement_link(link) for link in requirement_links],
         process_summary=process_summary,
         connection_status=connection_status,
     )

@@ -24,14 +24,13 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
 )
 from app.domains.workspace_asset.schemas.workspace_asset import ClarificationCreateRequest
 from app.domains.workspace_asset.services.task_final_workflow import baseline_service
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
-    _add_process_audit,
-    _ensure_human_review,
-    _get_task_or_error,
-    clean_optional,
-    enum_value,
-    human_review_response,
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import clean_optional, enum_value
+from app.domains.workspace_asset.services.common.process_presenters import human_review_response
+from app.domains.workspace_asset.services.task_process.writes_support import (
+    add_process_audit,
+    ensure_human_review,
+    get_task_or_error,
 )
 
 
@@ -140,7 +139,7 @@ def _normalize_target_refs(refs: Iterable[FinalWorkflowReviewTargetRef]) -> list
         item["target_id"] = target_id
         normalized.append(item)
     if not normalized:
-        raise TaskDetailWriteError("At least one review target is required.", status_code=422)
+        raise WorkspaceAssetError("At least one review target is required.", status_code=422)
     return normalized
 
 
@@ -218,7 +217,7 @@ def ensure_expert_review_for_task(
     db.add(review)
     db.flush()
     setattr(review, "_derived_status", derive_review_status(review))
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=task.workspace_id,
         task_id=task.id,
@@ -239,11 +238,11 @@ def create_review(
     actor_id: Optional[str],
     payload: FinalWorkflowReviewUpsertRequest,
 ) -> SddHumanReview:
-    task = _get_task_or_error(db, workspace_id, task_id)
+    task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
     title = clean_optional(payload.title, limit=300)
     if not title:
-        raise TaskDetailWriteError("Review title is required.", status_code=422)
+        raise WorkspaceAssetError("Review title is required.", status_code=422)
     target_refs = _normalize_target_refs(payload.target_refs)
 
     review = SddHumanReview(
@@ -282,7 +281,7 @@ def create_review(
     )
     db.flush()
     setattr(review, "_derived_status", derive_review_status(review))
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -305,12 +304,12 @@ def update_review(
     actor_id: Optional[str],
     payload: FinalWorkflowReviewUpsertRequest,
 ) -> SddHumanReview:
-    review = _ensure_human_review(db, workspace_id, task_id, review_id)
+    review = ensure_human_review(db, workspace_id, task_id, review_id)
     assert review is not None
     baseline_service.ensure_task_mutable(review.task)
     title = clean_optional(payload.title, limit=300)
     if not title:
-        raise TaskDetailWriteError("Review title is required.", status_code=422)
+        raise WorkspaceAssetError("Review title is required.", status_code=422)
     before = human_review_response(review).model_dump(mode="json")
 
     review.title = title
@@ -321,7 +320,7 @@ def update_review(
     sync_review_status_from_clarifications(review)
     db.flush()
     setattr(review, "_derived_status", derive_review_status(review))
-    _add_process_audit(
+    add_process_audit(
         db,
         workspace_id=workspace_id,
         task_id=task_id,

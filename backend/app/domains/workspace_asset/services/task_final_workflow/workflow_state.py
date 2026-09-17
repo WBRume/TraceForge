@@ -23,11 +23,11 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     TaskFinalWorkflowStep,
 )
 from app.domains.workspace_asset.services.task_final_workflow import baseline_service, review_service
-from app.domains.workspace_asset.services.workspace_task_detail_query import _task_summary_from_counts
-from app.domains.workspace_asset.services.workspace_task_detail_shared import (
-    TaskDetailWriteError,
+from app.domains.workspace_asset.services.tasks.summary_query import task_summary_from_counts
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.common.primitives import enum_value
+from app.domains.workspace_asset.services.common.process_presenters import (
     clarification_response,
-    enum_value,
     final_summary_response,
     human_review_response,
 )
@@ -53,7 +53,7 @@ def _load_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
         .first()
     )
     if not task:
-        raise TaskDetailWriteError("Task not found.", status_code=404)
+        raise WorkspaceAssetError("Task not found.", status_code=404)
     return task
 
 
@@ -309,7 +309,7 @@ def get_workflow_state(
         setattr(review, "_derived_status", review_service.derive_review_status(review, task_is_baselined=readonly))
 
     return TaskFinalWorkflowResponse(
-        task=_task_summary_from_counts(db, task),
+        task=task_summary_from_counts(db, task),
         steps=_workflow_step_status(task),
         reviews=[human_review_response(item) for item in reviews],
         review_targets=_review_targets(task),
