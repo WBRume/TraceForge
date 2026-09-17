@@ -51,7 +51,27 @@ for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
 
 from app.database import Base  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.ai.services import ai_job_service  # noqa: E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.ai.services.jobs import fencing as ai_fencing
+from ai_job_test_utils import patched_ai_job_db
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.ai.services.ai_job_convergence_service import (  # noqa: E402
     AttemptConvergenceRequest,
     AttemptFinalizerEvidence,
@@ -103,7 +123,7 @@ def _seed_running_job(db, *, token="run-1"):
         status=AiJobStatus.RUNNING,
         creator_id="user-1",
         run_token=token,
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         process_execution_kind="LOCAL_PROCESS",
         process_pid=5151,
         process_group_id=5151,
@@ -160,7 +180,7 @@ def test_finalizer_locks_row_cancel_waits_then_idempotent(mysql_factory):
     def _cancel():
         db = factory()
         try:
-            return ai_job_service.cancel_job(db, workspace_id="ws-1", job_id=job_id)
+            return ai_attempts.cancel_job(db, workspace_id="ws-1", job_id=job_id)
         finally:
             db.close()
 
@@ -211,7 +231,7 @@ def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
     def _cancel():
         db = factory()
         try:
-            return ai_job_service.cancel_job(db, workspace_id="ws-1", job_id=job_id)
+            return ai_attempts.cancel_job(db, workspace_id="ws-1", job_id=job_id)
         finally:
             db.close()
 
@@ -229,7 +249,7 @@ def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
             AttemptConvergenceRequest(
                 job_id=job_id,
                 run_token="run-lock-b",
-                worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+                worker_boot_id=ai_registry.WORKER_BOOT_ID,
                 requested_status=AiJobStatus.SUCCESS,
                 reason="late finalizer",
                 evidence=_dead_evidence(),
@@ -244,7 +264,7 @@ def test_cancel_locks_row_finalizer_fences_then_terminates(mysql_factory):
     # termination finalizer 依据死亡证据写 CANCELLED 并清 ownership。
     finish_db = factory()
     try:
-        payload = ai_job_service._finish_termination_sync(
+        payload = ai_attempts.finish_termination_sync(
             job_id,
             "run-lock-b",
             confirmed_dead=True,
@@ -281,7 +301,7 @@ def test_late_progress_after_cancel_affects_zero_rows(mysql_factory):
     def _cancel():
         db = factory()
         try:
-            return ai_job_service.cancel_job(db, workspace_id="ws-1", job_id=job_id)
+            return ai_attempts.cancel_job(db, workspace_id="ws-1", job_id=job_id)
         finally:
             db.close()
 
@@ -290,8 +310,8 @@ def test_late_progress_after_cancel_affects_zero_rows(mysql_factory):
     assert "error" not in result
 
     # Session A 依据旧快照继续写 progress：CAS 谓词必须拦下（affected=0）。
-    with mock.patch.object(ai_job_service, "SessionLocal", factory):
-        outcome = ai_job_service._update_job_state_sync(
+    with patched_ai_job_db(factory):
+        outcome = ai_fencing.update_job_state_sync(
             job_id,
             progress=77,
             message="late progress",
@@ -318,8 +338,8 @@ def test_stale_token_cannot_write_new_attempt(mysql_factory):
     job_id = job.id
     seed_db.close()
 
-    with mock.patch.object(ai_job_service, "SessionLocal", factory):
-        outcome = ai_job_service._update_job_state_sync(
+    with patched_ai_job_db(factory):
+        outcome = ai_fencing.update_job_state_sync(
             job_id,
             progress=55,
             run_token="run-old-attempt",

@@ -18,7 +18,9 @@ from app.core.logging import get_logger
 from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import constants as ai_job_constants
+from app.domains.ai.services.jobs import registry as ai_job_registry
+from app.domains.ai.services.jobs import store as ai_job_store
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.context_token import SddContextTokenSegment, SddContextTokenSnapshot
 from app.domains.task.models.log import SddExecutionLog
@@ -196,7 +198,7 @@ def _prepare_chat_turn_sync(
     ).first()
     if active_job:
         active_context = active_job.context_json if isinstance(active_job.context_json, dict) else {}
-        if str(active_context.get("job_kind") or "").strip().upper() == ai_job_service.JOB_KIND_DIAGNOSIS_SUMMARY:
+        if str(active_context.get("job_kind") or "").strip().upper() == ai_job_constants.JOB_KIND_DIAGNOSIS_SUMMARY:
             # 会话/总结互斥：总结进行中禁止发送新的聊天消息
             raise TaskSessionUndoError(
                 "一键总结问题案例进行中，请等待完成或停止后再发送消息",
@@ -307,7 +309,7 @@ def _persist_chat_turn_sync(
     # rely on this column to expose the undo action.
     message.session_turn_id = turn.id
     metadata.update({"session_turn_id": turn.id, "chat_message_id": message.id})
-    job = ai_job_service.create_task_chat_job(
+    job = ai_job_store.create_task_chat_job(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -333,7 +335,7 @@ def _persist_chat_turn_sync(
         chat_submission_service.save_task_event_outbox(
             db, row=submission,
             message=_chat_message_event_dto(db, message),
-            job=ai_job_service.serialize_job(job),
+            job=ai_job_store.serialize_job(job),
         )
     db.commit()
     try:
@@ -749,7 +751,7 @@ def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], me
             job.message = "Session turn reverted"
             job.finished_at = datetime.utcnow()
             try:
-                ai_job_service._clear_cancel_event(job.id)
+                ai_job_registry.runtime.clear_cancel(job.id)
             except Exception:
                 pass
         # Runtime skill events can contain tool input/result previews and are

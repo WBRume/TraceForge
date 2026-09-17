@@ -37,7 +37,30 @@ from app.agents.errors import AgentError
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services import ai_job_convergence_service as convergence
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.ai.services.jobs import fencing as ai_fencing
+from ai_job_test_utils import patch_ai_job_db
+from app.agents.process_supervisor import process_supervisor
+from app.domains.websocket.ws.manager import manager as task_ws_manager
+from app.core.offload import run_db_txn
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
     ConvergenceIntent,
@@ -126,7 +149,7 @@ def _owned_job(db, *, status=AiJobStatus.RUNNING, token="run-1", kind=EXECUTION_
         db,
         status=status,
         run_token=token,
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=kind,
         pid=pid,
         cancel_requested=cancel_requested,
@@ -140,7 +163,7 @@ def _make_attempt(*, token="run-1", kind=EXECUTION_KIND_LOCAL_PROCESS):
         queue_key="TASK_CHAT:task-1",
         run_token=token,
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
         execution_kind=kind,
     )
@@ -273,7 +296,7 @@ def _terminate_request(
     return AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=None,
         reason="USER_CANCEL",
         evidence=evidence,
@@ -286,9 +309,9 @@ def test_running_cancel_with_dead_proof_converges_cancelled_immediately(monkeypa
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING, cancel_requested=True)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    payload = ai_job_service._finish_termination_sync(
+    payload = ai_attempts.finish_termination_sync(
         "convergence-job",
         "run-1",
         confirmed_dead=True,
@@ -303,13 +326,65 @@ def test_running_cancel_with_dead_proof_converges_cancelled_immediately(monkeypa
     assert saved.run_token is None
 
 
+def test_interrupt_mode_converges_resumable_interrupted(monkeypatch):
+    """INTERRUPT 模式（用户临时中断）+ 死亡已证明：TASK_CHAT 落可恢复
+    INTERRUPTED，而不是被 cancel_requested_at 推导成 CANCELLED。"""
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.TERMINATING, cancel_requested=True)
+    patch_ai_job_db(monkeypatch, factory)
+
+    row = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    evidence = ai_attempts.termination_evidence_for_row(
+        row, confirmed_dead=True, failure_code="USER_INTERRUPT", reason="pause for edits",
+    )
+    payload = ai_attempts.converge_termination_sync(
+        "convergence-job",
+        "run-1",
+        evidence=evidence,
+        reason="pause for edits",
+        failure_code="USER_INTERRUPT",
+        termination_mode="INTERRUPT",
+    )
+
+    assert payload["status"] == AiJobStatus.INTERRUPTED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    assert saved.status == AiJobStatus.INTERRUPTED
+    # ownership 已清空：恢复流程可以直接重建 attempt。
+    assert saved.run_token is None
+    assert saved.process_pid is None
+
+
+def test_cancel_mode_still_converges_cancelled(monkeypatch):
+    """CANCEL 模式行为不变：取消请求 + 死亡已证明 → CANCELLED。"""
+    factory = _session_factory()
+    db = factory()
+    _owned_job(db, status=AiJobStatus.TERMINATING, cancel_requested=True)
+    patch_ai_job_db(monkeypatch, factory)
+
+    row = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
+    evidence = ai_attempts.termination_evidence_for_row(
+        row, confirmed_dead=True, failure_code="CANCEL_REQUESTED", reason="USER_CANCEL",
+    )
+    payload = ai_attempts.converge_termination_sync(
+        "convergence-job",
+        "run-1",
+        evidence=evidence,
+        reason="USER_CANCEL",
+        failure_code="CANCEL_REQUESTED",
+    )
+
+    assert payload["status"] == AiJobStatus.CANCELLED.value
+
+
 def test_running_cancel_unconfirmed_tree_keeps_ownership(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING, pid=5151, cancel_requested=True)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    payload = ai_job_service._finish_termination_sync(
+    payload = ai_attempts.finish_termination_sync(
         "convergence-job",
         "run-1",
         confirmed_dead=False,
@@ -321,7 +396,7 @@ def test_running_cancel_unconfirmed_tree_keeps_ownership(monkeypatch):
     saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
     assert saved.process_pid == 5151
     assert saved.run_token == "run-1"
-    assert saved.worker_boot_id == ai_job_service.WORKER_BOOT_ID
+    assert saved.worker_boot_id == ai_registry.WORKER_BOOT_ID
     assert saved.next_reap_at is not None
 
 
@@ -332,7 +407,7 @@ def test_running_cancel_never_started_local_process_converges_cancelled():
         db,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
         pid=None,
         cancel_requested=True,
@@ -351,18 +426,18 @@ def test_runner_convergence_consumes_runtime_before_reset(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING, cancel_requested=True)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _fake_stop(token, reason):
         return None
 
-    monkeypatch.setattr(ai_job_service.process_supervisor, "stop_attempt", _fake_stop)
+    monkeypatch.setattr(process_supervisor, "stop_attempt", _fake_stop)
 
     async def _run():
         attempt = _make_attempt()
@@ -375,8 +450,8 @@ def test_runner_convergence_consumes_runtime_before_reset(monkeypatch):
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
-                attempt, runtime, ai_job_service.JobExecutionOutcome(requested_status=None)
+            await ai_queue_runner._converge_runner_exit(
+                attempt, runtime, ai_executors.JobExecutionOutcome(requested_status=None)
             )
         finally:
             reset_agent_attempt_runtime(runtime_token)
@@ -395,18 +470,18 @@ def test_runner_convergence_unconfirmed_cancel_becomes_orphaned(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING, pid=5151, cancel_requested=True)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _fake_stop(token, reason):
         return None
 
-    monkeypatch.setattr(ai_job_service.process_supervisor, "stop_attempt", _fake_stop)
+    monkeypatch.setattr(process_supervisor, "stop_attempt", _fake_stop)
 
     async def _run():
         attempt = _make_attempt()
@@ -421,8 +496,8 @@ def test_runner_convergence_unconfirmed_cancel_becomes_orphaned(monkeypatch):
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
-                attempt, runtime, ai_job_service.JobExecutionOutcome(requested_status=None)
+            await ai_queue_runner._converge_runner_exit(
+                attempt, runtime, ai_executors.JobExecutionOutcome(requested_status=None)
             )
         finally:
             reset_agent_attempt_runtime(runtime_token)
@@ -445,16 +520,16 @@ def test_runner_convergence_leaves_running_job_safe_terminal(monkeypatch):
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         pid=None,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _run():
         attempt = _make_attempt()
@@ -462,10 +537,10 @@ def test_runner_convergence_leaves_running_job_safe_terminal(monkeypatch):
         runtime = AgentAttemptRuntimeState()
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
+            await ai_queue_runner._converge_runner_exit(
                 attempt,
                 runtime,
-                ai_job_service.JobExecutionOutcome(
+                ai_executors.JobExecutionOutcome(
                     requested_status=None,
                     error=RuntimeError("no finalizer ran"),
                 ),
@@ -489,7 +564,7 @@ def _remote_job(db, *, status=AiJobStatus.TERMINATING, cancel_requested=False):
         db,
         status=status,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_REMOTE_SESSION,
         pid=None,
         cancel_requested=cancel_requested,
@@ -511,7 +586,7 @@ def _remote_termination_request(*, ack, remote_started=True, intent=ConvergenceI
     return AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=None,
         reason="USER_CANCEL",
         evidence=evidence,
@@ -568,7 +643,7 @@ def test_remote_normal_success_finalizes_success():
     request = AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=AiJobStatus.SUCCESS,
         reason="",
         evidence=evidence,
@@ -598,7 +673,7 @@ def test_remote_provider_error_finalizes_failed():
     request = AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=AiJobStatus.FAILED,
         reason="provider down",
         evidence=evidence,
@@ -649,10 +724,10 @@ def test_broadcast_terminating_never_emits_final_event(monkeypatch):
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING, cancel_requested=True)
     capture = _RoomCapture()
-    monkeypatch.setattr(ai_job_service.task_ws_manager, "send_message_to_room", capture.send_message_to_room)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr(task_ws_manager, "send_message_to_room", capture.send_message_to_room)
+    patch_ai_job_db(monkeypatch, factory)
 
-    asyncio.run(ai_job_service._publish_job_state("convergence-job"))
+    asyncio.run(ai_publishing.publish_job_state("convergence-job"))
 
     types = [message[1] for message in capture.messages]
     assert types and all(t == "chat_job_update" for t in types)
@@ -664,10 +739,10 @@ def test_broadcast_cancelled_emits_exactly_one_final_event(monkeypatch):
     db = factory()
     _owned_job(db, status=AiJobStatus.CANCELLED)
     capture = _RoomCapture()
-    monkeypatch.setattr(ai_job_service.task_ws_manager, "send_message_to_room", capture.send_message_to_room)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr(task_ws_manager, "send_message_to_room", capture.send_message_to_room)
+    patch_ai_job_db(monkeypatch, factory)
 
-    asyncio.run(ai_job_service._publish_job_state("convergence-job"))
+    asyncio.run(ai_publishing.publish_job_state("convergence-job"))
 
     types = [message[1] for message in capture.messages]
     assert types.count("chat_job_update") == 1
@@ -680,10 +755,10 @@ def test_broadcast_success_emits_exactly_one_done_event(monkeypatch):
     db = factory()
     _owned_job(db, status=AiJobStatus.SUCCESS)
     capture = _RoomCapture()
-    monkeypatch.setattr(ai_job_service.task_ws_manager, "send_message_to_room", capture.send_message_to_room)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr(task_ws_manager, "send_message_to_room", capture.send_message_to_room)
+    patch_ai_job_db(monkeypatch, factory)
 
-    asyncio.run(ai_job_service._publish_job_state("convergence-job"))
+    asyncio.run(ai_publishing.publish_job_state("convergence-job"))
 
     types = [message[1] for message in capture.messages]
     assert types.count("chat_job_update") == 1
@@ -695,10 +770,10 @@ def test_broadcast_orphaned_never_emits_final_event(monkeypatch):
     db = factory()
     _owned_job(db, status=AiJobStatus.ORPHANED)
     capture = _RoomCapture()
-    monkeypatch.setattr(ai_job_service.task_ws_manager, "send_message_to_room", capture.send_message_to_room)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    monkeypatch.setattr(task_ws_manager, "send_message_to_room", capture.send_message_to_room)
+    patch_ai_job_db(monkeypatch, factory)
 
-    asyncio.run(ai_job_service._publish_job_state("convergence-job"))
+    asyncio.run(ai_publishing.publish_job_state("convergence-job"))
 
     types = [message[1] for message in capture.messages]
     assert types and all(t == "chat_job_update" for t in types)
@@ -712,9 +787,9 @@ def test_cancel_locks_row_before_finalize_sees_terminating(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.RUNNING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    cancelled = ai_job_service.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
+    cancelled = ai_attempts.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
     assert cancelled.status == AiJobStatus.TERMINATING
 
     evidence = convergence.AttemptFinalizerEvidence(
@@ -730,7 +805,7 @@ def test_cancel_locks_row_before_finalize_sees_terminating(monkeypatch):
     request = AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=AiJobStatus.SUCCESS,
         reason="",
         evidence=evidence,
@@ -749,7 +824,7 @@ def test_finalize_wins_lock_cancel_becomes_idempotent(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.RUNNING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     evidence = convergence.AttemptFinalizerEvidence(
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
@@ -764,7 +839,7 @@ def test_finalize_wins_lock_cancel_becomes_idempotent(monkeypatch):
     request = AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=AiJobStatus.SUCCESS,
         reason="",
         evidence=evidence,
@@ -773,7 +848,7 @@ def test_finalize_wins_lock_cancel_becomes_idempotent(monkeypatch):
     result = convergence.converge_job_attempt_sync(db, request)
     assert result.changed is True
 
-    cancelled = ai_job_service.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
+    cancelled = ai_attempts.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
 
     assert cancelled.status == AiJobStatus.SUCCESS
     saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
@@ -785,7 +860,7 @@ def test_two_finalizers_only_first_writes(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.RUNNING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     evidence = convergence.AttemptFinalizerEvidence(
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
@@ -802,7 +877,7 @@ def test_two_finalizers_only_first_writes(monkeypatch):
         request = AttemptConvergenceRequest(
             job_id="convergence-job",
             run_token="run-1",
-            worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+            worker_boot_id=ai_registry.WORKER_BOOT_ID,
             requested_status=status,
             reason="",
             evidence=evidence,
@@ -823,7 +898,7 @@ def test_stale_run_token_cannot_converge_new_attempt(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.RUNNING, token="current-run")
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     evidence = convergence.AttemptFinalizerEvidence(
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
@@ -838,7 +913,7 @@ def test_stale_run_token_cannot_converge_new_attempt(monkeypatch):
     request = AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="old-run",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=AiJobStatus.SUCCESS,
         reason="",
         evidence=evidence,
@@ -914,9 +989,9 @@ def test_claim_persists_execution_kind_for_task_backend(monkeypatch):
     )
     db.add_all([user, workspace, task, job])
     db.commit()
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    job_id = ai_job_service._take_next_pending_job_id_sync("TASK_CHAT:task-1")
+    job_id = ai_store.take_next_pending_job_id_sync("TASK_CHAT:task-1")
 
     assert job_id == "convergence-job"
     claimed = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
@@ -953,9 +1028,9 @@ def test_claim_persists_local_kind_for_claude_backend(monkeypatch):
     )
     db.add_all([user, workspace, task, job])
     db.commit()
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    job_id = ai_job_service._take_next_pending_job_id_sync("TASK_CHAT:task-1")
+    job_id = ai_store.take_next_pending_job_id_sync("TASK_CHAT:task-1")
 
     assert job_id == "convergence-job"
     claimed = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
@@ -966,9 +1041,9 @@ def test_attempt_context_carries_execution_kind(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.RUNNING, kind=EXECUTION_KIND_REMOTE_SESSION, pid=None)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    context = ai_job_service._load_attempt_context_sync("convergence-job")
+    context = ai_attempts.load_attempt_context_sync("convergence-job")
 
     assert context is not None
     assert context.execution_kind == EXECUTION_KIND_REMOTE_SESSION
@@ -984,7 +1059,7 @@ def test_remote_cancel_via_convergence_requires_ack_not_pid_empty():
         db,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
         pid=None,
         cancel_requested=True,
@@ -1002,7 +1077,7 @@ def test_remote_cancel_via_convergence_requires_ack_not_pid_empty():
         db2,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
         pid=None,
         cancel_requested=True,
@@ -1220,7 +1295,7 @@ def _seed_owned_running(db, *, token="run-1", status=AiJobStatus.RUNNING, cancel
         db,
         status=status,
         run_token=token,
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         pid=5151,
         cancel_requested=cancel_requested,
     )
@@ -1232,12 +1307,12 @@ def test_active_state_write_without_run_token_is_rejected(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_owned_running(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    cancelled = ai_job_service.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
+    cancelled = ai_attempts.cancel_job(db, workspace_id="ws-1", job_id="convergence-job")
     assert cancelled.status == AiJobStatus.TERMINATING
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "convergence-job",
         status=AiJobStatus.RUNNING,
         progress=33,
@@ -1260,9 +1335,9 @@ def test_late_progress_after_cancel_affects_zero_rows(monkeypatch):
     original_context = dict(
         db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first().context_json or {}
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "convergence-job",
         progress=80,
         message="late progress",
@@ -1283,9 +1358,9 @@ def test_old_token_cannot_modify_new_attempt(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_owned_running(db, token="run-2")
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "convergence-job",
         progress=10,
         run_token="run-1",
@@ -1301,9 +1376,9 @@ def test_cas_progress_write_succeeds_for_current_owner(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_owned_running(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "convergence-job",
         progress=42,
         run_token="run-1",
@@ -1326,7 +1401,7 @@ def _remote_attempt():
         queue_key="TASK_CHAT:task-1",
         run_token="run-1",
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
         execution_kind=EXECUTION_KIND_REMOTE_SESSION,
     )
@@ -1340,17 +1415,17 @@ def test_remote_runner_exit_nack_with_swallowed_error_stays_orphaned(monkeypatch
         db,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_REMOTE_SESSION,
         pid=None,
         cancel_requested=True,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _run():
         attempt = _remote_attempt()
@@ -1367,10 +1442,10 @@ def test_remote_runner_exit_nack_with_swallowed_error_stays_orphaned(monkeypatch
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
+            await ai_queue_runner._converge_runner_exit(
                 attempt,
                 runtime,
-                ai_job_service.JobExecutionOutcome(
+                ai_executors.JobExecutionOutcome(
                     requested_status=None,
                     error=RuntimeError("swallowed engine exception"),
                     provider_outcome_seen=False,
@@ -1395,17 +1470,17 @@ def test_remote_runner_exit_ack_converges_and_clears_ownership(monkeypatch):
         db,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_REMOTE_SESSION,
         pid=None,
         cancel_requested=True,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _run():
         attempt = _remote_attempt()
@@ -1417,10 +1492,10 @@ def test_remote_runner_exit_ack_converges_and_clears_ownership(monkeypatch):
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
+            await ai_queue_runner._converge_runner_exit(
                 attempt,
                 runtime,
-                ai_job_service.JobExecutionOutcome(requested_status=None),
+                ai_executors.JobExecutionOutcome(requested_status=None),
             )
         finally:
             reset_agent_attempt_runtime(runtime_token)
@@ -1441,17 +1516,17 @@ def test_remote_runner_exit_nack_with_provider_outcome_allows_terminal(monkeypat
         db,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         execution_kind=EXECUTION_KIND_REMOTE_SESSION,
         pid=None,
         cancel_requested=True,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _run():
         attempt = _remote_attempt()
@@ -1467,10 +1542,10 @@ def test_remote_runner_exit_nack_with_provider_outcome_allows_terminal(monkeypat
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
+            await ai_queue_runner._converge_runner_exit(
                 attempt,
                 runtime,
-                ai_job_service.JobExecutionOutcome(
+                ai_executors.JobExecutionOutcome(
                     requested_status=None,
                     provider_outcome_seen=True,
                 ),
@@ -1497,7 +1572,7 @@ def _seed_preview_job(db, *, token="run-1", cancel_requested=False):
         status=AiJobStatus.RUNNING,
         creator_id="user-1",
         run_token=token,
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         process_execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
         cancel_requested_at=datetime.utcnow() if cancel_requested else None,
     )
@@ -1521,11 +1596,11 @@ def test_requirement_preview_fence_rolls_back_batch_and_items(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_preview_job(db, cancel_requested=True)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _run():
-        await ai_job_service.run_db_txn(
+        await run_db_txn(
             lambda session: was._finalize_requirement_import_sync(
                 session,
                 job_id="preview-job",
@@ -1537,7 +1612,7 @@ def test_requirement_preview_fence_rolls_back_batch_and_items(monkeypatch):
                 items=[{"title": "Item 1", "body": "b"}],
                 metadata={},
                 run_token="run-1",
-                worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+                worker_boot_id=ai_registry.WORKER_BOOT_ID,
             )
         )
 
@@ -1564,7 +1639,7 @@ def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_preview_job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     evidence = convergence.AttemptFinalizerEvidence(
@@ -1579,7 +1654,7 @@ def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
     )
 
     async def _run():
-        return await ai_job_service.run_db_txn(
+        return await run_db_txn(
             lambda session: was._finalize_requirement_import_sync(
                 session,
                 job_id="preview-job",
@@ -1591,7 +1666,7 @@ def test_requirement_preview_success_commits_batch_with_job(monkeypatch):
                 items=[{"title": "Item 1", "body": "b"}],
                 metadata={},
                 run_token="run-1",
-                worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+                worker_boot_id=ai_registry.WORKER_BOOT_ID,
                 evidence=evidence,
             )
         )
@@ -1615,16 +1690,16 @@ def test_unknown_death_evidence_converges_orphaned_and_keeps_ownership(monkeypat
         db,
         status=AiJobStatus.TERMINATING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         pid=5151,
         cancel_requested=True,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     async def _run():
         attempt = _make_attempt()
@@ -1639,10 +1714,10 @@ def test_unknown_death_evidence_converges_orphaned_and_keeps_ownership(monkeypat
         )
         runtime_token = bind_agent_attempt_runtime(runtime)
         try:
-            await ai_job_service._converge_runner_exit(
+            await ai_queue_runner._converge_runner_exit(
                 attempt,
                 runtime,
-                ai_job_service.JobExecutionOutcome(requested_status=None),
+                ai_executors.JobExecutionOutcome(requested_status=None),
             )
         finally:
             reset_agent_attempt_runtime(runtime_token)
@@ -1707,7 +1782,7 @@ def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_orphaned_remote_job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     fake_backend = _FakeRemoteBackend(acknowledged=True)
@@ -1719,9 +1794,9 @@ def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
-    reclaimed = asyncio.run(ai_job_service.reap_stale_jobs())
+    reclaimed = asyncio.run(ai_reaper.reap_stale_jobs())
     assert reclaimed == 1
     # 调用参数来自持久化行，而不是内存 runtime（doc §10.4.2）。
     assert fake_backend.calls == ["persisted-session-1"]
@@ -1731,7 +1806,7 @@ def test_remote_reaper_uses_persisted_backend_and_session_id(monkeypatch):
     assert saved.status == AiJobStatus.INTERRUPTED
     assert saved.run_token is None
     # ACK 后不再反复进入 reaper。
-    rows = ai_job_service._list_reclaimable_jobs_sync()
+    rows = ai_reaper.list_reclaimable_jobs_sync()
     assert all(row["job_id"] != "remote-reap-job" for row in rows)
 
 
@@ -1739,7 +1814,7 @@ def test_remote_reaper_nack_remains_orphaned(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_orphaned_remote_job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     fake_backend = _FakeRemoteBackend(acknowledged=False, failure_code=REMOTE_STOP_UNCONFIRMED)
@@ -1751,9 +1826,9 @@ def test_remote_reaper_nack_remains_orphaned(monkeypatch):
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
-    reclaimed = asyncio.run(ai_job_service.reap_stale_jobs())
+    reclaimed = asyncio.run(ai_reaper.reap_stale_jobs())
     # NACK 也算完成一轮收割 bookkeeping，但 job 保持 ORPHANED。
     assert reclaimed == 1
 
@@ -1770,13 +1845,13 @@ def test_remote_reaper_missing_locator_never_claims_remote_death(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_orphaned_remote_job(db, backend=None, session_id=None)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _no_broadcast(payload):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     row = {
         "job_id": "remote-reap-job",
@@ -1786,7 +1861,7 @@ def test_remote_reaper_missing_locator_never_claims_remote_death(monkeypatch):
         "agent_backend": None,
         "session_id": None,
     }
-    result = asyncio.run(ai_job_service._stop_attempt_processes(row, "run-remote"))
+    result = asyncio.run(ai_reaper.stop_attempt_processes(row, "run-remote"))
     assert isinstance(result, AgentStopResult)
     assert result.stop_acknowledged is False
     assert result.failure_code == "REMOTE_STOP_LOCATOR_MISSING"
@@ -1819,7 +1894,7 @@ def _remote_normal_request(
     return AttemptConvergenceRequest(
         job_id="convergence-job",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         requested_status=requested_status,
         reason="transport disconnected",
         evidence=evidence,
@@ -1836,7 +1911,7 @@ def _seed_running_remote_job(db):
         status=AiJobStatus.RUNNING,
         creator_id="user-1",
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         process_execution_kind=EXECUTION_KIND_REMOTE_SESSION,
         agent_backend="dsh",
         session_id="persisted-session-1",

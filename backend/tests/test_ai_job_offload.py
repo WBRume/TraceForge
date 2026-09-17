@@ -22,7 +22,26 @@ from app.database import Base  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
 from app.domains.task.models.task import SddTask  # noqa: E402
-from app.domains.ai.services import ai_job_service  # noqa: E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patched_ai_job_db
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 
 
 def _build_session_factory():
@@ -53,7 +72,7 @@ def _seed(SessionLocal):
             session_revision=3,
             # 生产 claim 事务会写入 durable run token（CAS fence 前提）。
             run_token="run-1",
-            worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+            worker_boot_id=ai_registry.WORKER_BOOT_ID,
         )
         db.add_all([user, workspace, task, job])
         db.commit()
@@ -73,7 +92,7 @@ def _bound_attempt():
         queue_key=f"{AiJobChannel.TASK_CHAT.value}:task-1",
         run_token="run-1",
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
         execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
     )
@@ -92,13 +111,13 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             broadcasted.append(payload["id"])
 
         with (
-            mock.patch.object(ai_job_service, "SessionLocal", SessionLocal),
-            mock.patch.object(ai_job_service, "_broadcast_job_payload", _broadcast),
-            mock.patch.object(ai_job_service, "schedule_queue", lambda key: scheduled.append(key)),
+            patched_ai_job_db(SessionLocal),
+            mock.patch.object(ai_publishing, "broadcast_job_payload", _broadcast),
+            mock.patch.object(ai_runtime, "schedule_queue", lambda key: scheduled.append(key)),
         ):
             attempt_token = _bound_attempt()
             try:
-                payload = await ai_job_service._update_job_state(
+                payload = await ai_state.update_job_state(
                     "job-1", status=AiJobStatus.RUNNING, progress=30,
                 )
             finally:
@@ -127,16 +146,16 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             broadcasted.append(payload["id"])
 
         with (
-            mock.patch.object(ai_job_service, "SessionLocal", SessionLocal),
-            mock.patch.object(ai_job_service, "_broadcast_job_payload", _broadcast),
-            mock.patch.object(ai_job_service, "schedule_queue", lambda key: scheduled.append(key)),
+            patched_ai_job_db(SessionLocal),
+            mock.patch.object(ai_publishing, "broadcast_job_payload", _broadcast),
+            mock.patch.object(ai_runtime, "schedule_queue", lambda key: scheduled.append(key)),
         ):
             attempt_token = _bound_attempt()
             try:
-                await ai_job_service._update_job_state(
+                await ai_state.update_job_state(
                     "job-1", status=AiJobStatus.RUNNING, progress=30,
                 )
-                payload = await ai_job_service._update_job_state(
+                payload = await ai_state.update_job_state(
                     "job-1", status=AiJobStatus.SUCCESS, progress=100, finalize=True,
                 )
             finally:
@@ -164,10 +183,10 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             broadcasted.append(payload["id"])
 
         with (
-            mock.patch.object(ai_job_service, "SessionLocal", SessionLocal),
-            mock.patch.object(ai_job_service, "_broadcast_job_payload", _broadcast),
+            patched_ai_job_db(SessionLocal),
+            mock.patch.object(ai_publishing, "broadcast_job_payload", _broadcast),
         ):
-            payload = await ai_job_service._update_job_state(
+            payload = await ai_state.update_job_state(
                 "job-1", status=AiJobStatus.RUNNING,
             )
 
@@ -184,8 +203,8 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
     async def test_take_next_pending_job_id_via_run_db(self):
         engine, SessionLocal = _build_session_factory()
         _seed(SessionLocal)
-        with mock.patch.object(ai_job_service, "SessionLocal", SessionLocal):
-            job_id = await ai_job_service._take_next_pending_job_id(
+        with patched_ai_job_db(SessionLocal):
+            job_id = await ai_queue_runner.claim_next_pending_job_id(
                 f"{AiJobChannel.TASK_CHAT.value}:task-1"
             )
         self.assertEqual(job_id, "job-1")

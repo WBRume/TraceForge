@@ -54,7 +54,8 @@ from app.domains.management.routers import (
     repositories_router,
     repo_groups_router,
 )
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import attempts as ai_job_attempts
+from app.domains.ai.services.jobs import workers as ai_job_workers
 from app.engine.workflow_engine import shutdown_active_engines
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
@@ -105,7 +106,7 @@ async def _on_startup() -> None:
     app.state.ai_runtime_ready = False
     await search_router.start(app)
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
-    recovered_queue_count = await ai_job_service.start_runtime_workers()
+    recovered_queue_count = await ai_job_workers.start_runtime_workers()
     app.state.ai_runtime_ready = True
     if recovered_queue_count:
         logger.info("Recovered {} pending AI job queues", recovered_queue_count)
@@ -122,7 +123,7 @@ async def _on_shutdown() -> None:
     # Stop new durable claims and queue runners first.  The service then
     # terminates every locally supervised process before infrastructure closes.
     try:
-        await ai_job_service.shutdown_runtime_workers()
+        await ai_job_workers.shutdown_runtime_workers()
     except Exception:
         logger.exception("Failed to shutdown AI job runtime")
     try:
@@ -620,8 +621,8 @@ def health_check():
 
 @app.get("/health/ready")
 def readiness_check():
-    worker_health = ai_job_service.runtime_worker_health()
-    containment = ai_job_service.process_containment_readiness()
+    worker_health = ai_job_workers.runtime_worker_health()
+    containment = ai_job_workers.process_containment_readiness()
     runtime_ready = bool(getattr(app.state, "ai_runtime_ready", False))
     ready = (
         runtime_ready

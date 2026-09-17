@@ -15,7 +15,26 @@ if TEST_ROOT not in sys.path:
 
 from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patch_ai_job_db
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
     RequirementStatus,
@@ -42,11 +61,11 @@ def _capture_schedule_and_drive_queue(monkeypatch, SessionLocal, workspace_id):
         "schedule_requirement_preview_queue",
         lambda ws_id: scheduled.append(ws_id),
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    patch_ai_job_db(monkeypatch, SessionLocal)
 
     def _drive():
         assert scheduled == [workspace_id]
-        asyncio.run(ai_job_service._run_queue(f"REQUIREMENT_PREVIEW:{workspace_id}"))
+        asyncio.run(ai_queue_runner.run_queue(f"REQUIREMENT_PREVIEW:{workspace_id}"))
 
     return _drive
 

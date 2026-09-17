@@ -519,6 +519,10 @@ class AttemptConvergenceRequest:
     mark_task_interrupted: bool = False
     interrupt_session_id: Optional[str] = None
     reap_bookkeeping: bool = False
+    # 终止请求的模式（CANCEL/INTERRUPT/WORKER_SHUTDOWN），仅 termination 意图
+    # 收敛时由调用方传入；INTERRUPT 表示用户临时中断，job 落可恢复的
+    # INTERRUPTED 而不是 CANCELLED。
+    termination_mode: Optional[str] = None
 
 
 @dataclass
@@ -571,6 +575,12 @@ def _derive_termination_business_status(
         job.max_attempts or 1
     ):
         return AiJobStatus.PENDING
+    if request.termination_mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
+        # 用户临时中断（可恢复）：与 legacy 无 token 路径
+        # （``_finalize_legacy_interrupt_sync``）语义一致，job 落 INTERRUPTED。
+        # ``cancel_requested_at`` 在 INTERRUPT 模式下只承担写入 fence 职责，
+        # 不把临时中断判定为 CANCELLED。
+        return AiJobStatus.INTERRUPTED
     if job.cancel_requested_at is not None:
         return AiJobStatus.CANCELLED
     if queue_key.startswith("TASK_BASELINE:"):

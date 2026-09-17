@@ -16,6 +16,26 @@ import app.domains.api_mock.models.api_mock  # noqa: F401,E402
 import app.domains.task.models.test_result  # noqa: F401,E402
 import app.domains.workflow.models.task_change  # noqa: F401,E402
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patch_ai_job_db
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.database import Base  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
@@ -189,9 +209,8 @@ def test_execute_job_dispatches_split_preview(monkeypatch):
         async def run_requirement_import_preview_job(job_id):
             raise AssertionError("import runner must not be used for split jobs")
 
-    from app.domains.ai.services import ai_job_service
 
-    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+    patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(
         service,
@@ -204,7 +223,7 @@ def test_execute_job_dispatches_split_preview(monkeypatch):
         _FakePreviewService.run_requirement_import_preview_job,
     )
 
-    asyncio.run(ai_job_service._execute_job("split-job-1"))
+    asyncio.run(ai_executors.execute_job("split-job-1"))
     assert calls == ["split-job-1"]
 
 
@@ -502,7 +521,6 @@ async def _async_txn(fn):
 
 from unittest.mock import patch  # noqa: E402
 
-from app.domains.ai.services import ai_job_service as jobs  # noqa: E402
 
 
 def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
@@ -530,9 +548,9 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
             service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
         )
         monkeypatch.setattr(service, "_finalize_requirement_split_sync", capture)
-        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
                 patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
             assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
@@ -575,9 +593,9 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
             service, "_prepare_requirement_import_sync", lambda db, **kw: prepared
         )
         monkeypatch.setattr(service, "_finalize_requirement_import_sync", capture)
-        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
                 patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
             assert asyncio.run(service.run_requirement_import_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
@@ -613,9 +631,9 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
             service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
         )
         monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
-        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
                 patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
             assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
@@ -651,9 +669,9 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
             service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
         )
         monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
-        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
                 patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
             # 返回协议保持既有语义（异常路径返回 outcome 局部布尔）；
             # 收敛正确性由 finalizer evidence 决定。
             asyncio.run(service.run_requirement_split_preview_job("audit-job"))
@@ -691,9 +709,9 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
             service, "_prepare_requirement_split_sync", lambda db, **kw: prepared
         )
         monkeypatch.setattr(service, "_fail_requirement_preview_sync", capture_fail)
-        with patch.object(jobs, "create_legacy_bridge", return_value=stub), \
+        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
                 patch.object(service, "run_db_txn", _async_txn), \
-                patch.object(service, "run_cli_single_turn", jobs.run_cli_single_turn):
+                patch.object(service, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
             assert asyncio.run(service.run_requirement_split_preview_job("audit-job")) is False
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is False

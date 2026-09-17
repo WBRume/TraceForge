@@ -1,3 +1,24 @@
+from ai_job_test_utils import patch_ai_job_db
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patch_ai_job_db
+from app.agents.process_supervisor import process_supervisor
 """
 任务创建准备态（PROVISIONING）测试
 
@@ -119,7 +140,7 @@ def test_start_task_persists_user_initial_prompt_and_links_job(tmp_path, monkeyp
             return None
 
         monkeypatch.setattr(task_router, "get_engine", lambda _task_id: None)
-        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", _enqueue)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue)
         client = TestClient(_build_app(SessionLocal, user))
 
         resp = client.post(
@@ -159,7 +180,7 @@ def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
         async def _create_task_chat_turn(**kwargs):
             captured.update(kwargs)
             with _session(SessionLocal) as db:
-                job = task_router.ai_job_service.create_task_chat_job(
+                job = ai_store.create_task_chat_job(
                     db,
                     workspace_id=workspace.id,
                     task_id=task_id,
@@ -174,7 +195,7 @@ def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
 
         monkeypatch.setattr(task_router, "run_db_txn", _run_db_txn)
         monkeypatch.setattr(task_router.task_session_service, "create_task_chat_turn", _create_task_chat_turn)
-        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", _enqueue)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue)
         monkeypatch.setattr(task_router, "get_engine", lambda _task_id: None)
         client = TestClient(_build_app(SessionLocal, user))
 
@@ -200,7 +221,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
             task.project_path = str(tmp_path)
             task.status = TaskStatus.INTERRUPTED
             task.session_id = "old-session"
-            old = task_router.ai_job_service.create_task_chat_job(
+            old = ai_store.create_task_chat_job(
                 db, workspace_id=workspace.id, task_id=task.id,
                 creator_id=user.id, prompt_text="old prompt",
             )
@@ -226,12 +247,14 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
             return TerminationResult(confirmed_dead=True, root_return_code=None)
 
         monkeypatch.setattr("app.database.SessionLocal", factory)
-        monkeypatch.setattr(task_router.ai_job_service, "SessionLocal", factory)
-        monkeypatch.setattr(task_router.ai_job_service.process_supervisor, "stop_attempt", stop_attempt)
-        monkeypatch.setattr(task_router.ai_job_service.process_supervisor, "stop_persisted", stop_persisted)
+        patch_ai_job_db(monkeypatch, factory)
+        monkeypatch.setattr("app.domains.ai.services.jobs.reaper.process_supervisor.stop_attempt", stop_attempt)
+        monkeypatch.setattr("app.domains.ai.services.jobs.reaper.process_supervisor.stop_persisted", stop_persisted)
+        monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_attempt", stop_attempt)
+        monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_persisted", stop_persisted)
         monkeypatch.setattr(task_router, "get_engine", lambda _: None)
-        monkeypatch.setattr(task_router.ai_job_service, "publish_job", noop)
-        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", noop)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
         client = TestClient(_build_app(factory, user))
         response = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/initialize", json={"prompt": "restart"})
         assert response.status_code == 200, response.text
@@ -258,7 +281,7 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
             task.session_id = "preserve-session"
             task.session_generation = 7
             task.error_message = "original failure"
-            job = task_router.ai_job_service.create_task_chat_job(
+            job = ai_store.create_task_chat_job(
                 db, workspace_id=workspace.id, task_id=task.id,
                 creator_id=user.id, prompt_text="old prompt",
             )
@@ -286,9 +309,9 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
 
         monkeypatch.setattr("app.database.SessionLocal", factory)
         monkeypatch.setattr(task_router, "get_engine", lambda _: SimpleNamespace(stop=stop) if recovery == "stop_failure" else None)
-        monkeypatch.setattr(task_router.ai_job_service, "publish_job", noop)
-        monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", noop)
-        monkeypatch.setattr(task_router.ai_job_service, "reap_stale_jobs", reap)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
+        monkeypatch.setattr(ai_reaper, "reap_stale_jobs", reap)
         client = TestClient(_build_app(factory, user), raise_server_exceptions=False)
         response = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/initialize", json={})
         assert response.status_code == (200 if recovery == "late_finalizer" else 409), response.text

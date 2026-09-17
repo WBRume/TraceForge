@@ -26,6 +26,10 @@ from sqlalchemy.pool import StaticPool
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
+# 允许测试之间互相导入共享工具（如 ai_job_test_utils）。
+TESTS_ROOT = os.path.abspath(os.path.dirname(__file__))
+if TESTS_ROOT not in sys.path:
+    sys.path.insert(0, TESTS_ROOT)
 
 # 补全 ORM mapper / FK 注册表：User 及各域模型的 relationship / ForeignKey
 # 指向跨域表，必须全量导入 models 包后才能 create_all（与生产 app 全量加载等价）

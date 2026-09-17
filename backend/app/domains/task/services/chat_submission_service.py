@@ -221,7 +221,7 @@ def _fail_sync(db, submission_id, message):
 
 
 async def _run(submission_id):
-    from app.domains.ai.services import ai_job_service
+    from app.domains.ai.services.jobs.publishing import enqueue_task_chat_job
     from app.domains.task.services import task_session_service
     try:
         task_id = await run_db(lambda: _task_id_sync(submission_id))
@@ -234,7 +234,7 @@ async def _run(submission_id):
                 return
             logger.info("Chat preparation started: task_id={}, submission_id={}", task_id, submission_id)
             created = await task_session_service.create_task_chat_turn(**prepared)
-        await ai_job_service.enqueue_task_chat_job(created.job_id)
+        await enqueue_task_chat_job(created.job_id)
         await wake_event_publisher()
         logger.info("Chat preparation completed: task_id={}, submission_id={}, job_id={}",
                     task_id, submission_id, created.job_id)
@@ -371,8 +371,8 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
             message = db.get(ChatMessage, row.chat_message_id)
             if message:
                 messages[message.id] = message
-    from app.domains.ai.services import ai_job_service
-    for job in ai_job_service.list_task_jobs(db, task_id=task_id, active_only=True):
+    from app.domains.ai.services.jobs.store import list_task_jobs, serialize_job
+    for job in list_task_jobs(db, task_id=task_id, active_only=True):
         jobs.setdefault(job.id, job)
     from app.domains.task.services import task_service
     ordered = task_service.sort_chat_messages(list(messages.values()))
@@ -381,7 +381,7 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
         "session_generation": int(task.session_generation or 0),
         "session_revision": int(task.session_revision or 0),
         "receipts": [serialize(row) for row in receipts.values()],
-        "jobs": [ai_job_service.serialize_job(job) for job in jobs.values()],
+        "jobs": [serialize_job(job) for job in jobs.values()],
         "messages": task_service.serialize_history_messages(
             db, task, ordered, task.workspace_id, task_id),
     }

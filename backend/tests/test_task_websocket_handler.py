@@ -292,14 +292,8 @@ async def test_unexpected_chat_failure_acks_failed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deprecated_hitl_response_is_ignored(monkeypatch):
-    resume_job = AsyncMock(return_value=True)
-    monkeypatch.setattr(
-        task_handler.ai_job_service,
-        "resume_waiting_hitl_job",
-        resume_job,
-    )
-
+async def test_deprecated_hitl_response_is_ignored():
+    """旧 hitl_response 帧只记录告警，不再触发任何恢复逻辑。"""
     await _handler()._dispatch(
         {
             "type": "hitl_response",
@@ -307,17 +301,11 @@ async def test_deprecated_hitl_response_is_ignored(monkeypatch):
         }
     )
 
-    resume_job.assert_not_awaited()
-
 
 @pytest.mark.asyncio
 async def test_durable_chat_turn_is_enqueued_when_ack_connection_is_closed(monkeypatch):
     enqueue = AsyncMock()
-    monkeypatch.setattr(
-        task_handler.ai_job_service,
-        "enqueue_task_chat_job",
-        enqueue,
-    )
+    monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", enqueue)
     created = task_session_service.CreatedChatTurn(
         task_id="task-1",
         workspace_id="ws-1",

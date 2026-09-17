@@ -18,6 +18,24 @@ import app.domains.task.models.test_result  # noqa: F401,E402
 import app.domains.workflow.models.provision_job  # noqa: F401,E402
 import app.domains.workflow.models.task_change  # noqa: F401,E402
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from app.database import Base  # noqa: E402
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
 from app.domains.notification.models.notification import SddUserNotification  # noqa: E402
@@ -127,7 +145,7 @@ def _noop_enqueue(monkeypatch, tmp_path):
     async def _fake_cleanup(_path):
         return None
 
-    monkeypatch.setattr(pre_input_service.ai_job_service, "enqueue_task_chat_job", _noop)
+    monkeypatch.setattr(ai_publishing, "enqueue_task_chat_job", _noop)
     monkeypatch.setattr(
         pre_input_service.task_session_service.task_session_snapshot_service,
         "create_checkpoint",

@@ -25,6 +25,24 @@ from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.registry import create_agent_backend
 from app.agents.process_supervisor import TerminationResult
 from app.config import settings
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 
 
 class MockAdapterTest(unittest.IsolatedAsyncioTestCase):
@@ -139,7 +157,6 @@ class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(adapter._legacy_run_task)
 
     async def test_run_cli_single_turn_cleans_up_when_start_session_raises(self):
-        from app.domains.ai.services import ai_job_service
 
         class FailingBridge:
             def __init__(self):
@@ -162,9 +179,9 @@ class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
                 return not self.cancelled
 
         bridge = FailingBridge()
-        with patch.object(ai_job_service, "create_cli_bridge", return_value=bridge):
+        with patch("app.engine.claude_bridge.create_cli_bridge", return_value=bridge):
             with self.assertRaises(RuntimeError):
-                await ai_job_service.run_cli_single_turn(
+                await ai_provider_turn.run_cli_single_turn(
                     "hello",
                     os.getcwd(),
                     max_attempts=1,
@@ -779,7 +796,6 @@ class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
             EXECUTION_KIND_REMOTE_SESSION,
             AgentStopResult,
         )
-        from app.domains.ai.services import ai_job_service
 
         class _CloseTrackingBackend:
             def __init__(self, *, acknowledged: bool, raise_error: bool = False):
@@ -809,17 +825,17 @@ class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
             "app.agents.selection.create_agent_backend_by_name",
             lambda name: backend,
         ):
-            ack = await ai_job_service._stop_remote_session(dict(row))
+            ack = await ai_reaper.stop_remote_session(dict(row))
             self.assertTrue(ack.stop_acknowledged)
             self.assertEqual(backend.close_calls, 1)
 
             backend = _CloseTrackingBackend(acknowledged=False)
-            nack = await ai_job_service._stop_remote_session(dict(row))
+            nack = await ai_reaper.stop_remote_session(dict(row))
             self.assertFalse(nack.stop_acknowledged)
             self.assertEqual(backend.close_calls, 1)
 
             backend = _CloseTrackingBackend(acknowledged=False, raise_error=True)
-            error = await ai_job_service._stop_remote_session(dict(row))
+            error = await ai_reaper.stop_remote_session(dict(row))
             self.assertFalse(error.stop_acknowledged)
             self.assertEqual(error.failure_code, "REMOTE_CANCEL_FAILED")
             self.assertEqual(backend.close_calls, 1)

@@ -71,7 +71,7 @@ _active_engines: Dict[str, "WorkflowEngine"] = {}
 # 空闲引擎收割：非 running 引擎超过 ENGINE_IDLE_TTL_SECONDS 后由周期任务摘除。
 # 正常结束后立即摘除（成功即删）；INTERRUPTED/WAITING_HITL 等可恢复态保留以便
 # 快速 resume，但用户不再回来时由本收割器兜底，避免注册表只增不减。
-# resume 正确性不依赖内存引擎：ai_job_service 的两条恢复路径都会以 DB 持久化的
+# resume 正确性不依赖内存引擎：ai jobs 的两条恢复路径都会以 DB 持久化的
 # session_id 重建引擎。
 ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = 60.0
 _idle_sweeper_task: Optional[asyncio.Task] = None
@@ -290,6 +290,7 @@ class WorkflowEngine:
         on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
         on_session: Optional[Callable[[str, str], Any]] = None,
         on_error: Optional[Callable[[str, str], Any]] = None,
+        on_process_started: Optional[Callable[[Any, Optional[AgentAttemptContext]], Any]] = None,
         attempt: Optional[AgentAttemptContext] = None,
     ):
         self.task_id = task_id
@@ -322,6 +323,9 @@ class WorkflowEngine:
         self.on_hitl = on_hitl
         self.on_session = on_session
         self.on_error = on_error
+        # 进程身份 attach 钩子由调用方（AI 作业层）注入，引擎不反向依赖
+        # 具体持久化实现（依赖倒置）。
+        self.on_process_started = on_process_started
         self.last_result_success: Optional[bool] = None
         self.last_result_text: str = ""
         self.last_result_interrupted = False
@@ -367,14 +371,13 @@ class WorkflowEngine:
         """Attach a local process before its stdout/stderr readers are created."""
         if getattr(identity, "pid", None) is None or self.attempt is None:
             return True
-        from app.domains.ai.services import ai_job_service
-
-        return await run_db(
-            ai_job_service._persist_process_identity_sync,
-            self.attempt.job_id,
-            self.attempt.run_token,
-            identity,
-        )
+        hook = self.on_process_started
+        if hook is None:
+            return True
+        result = hook(identity, self.attempt)
+        if asyncio.iscoroutine(result):
+            return await result
+        return bool(result)
 
     async def _emit_hook(self, callback: Optional[Callable], *args):
         if not callback:
@@ -394,6 +397,7 @@ class WorkflowEngine:
         on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
         on_session: Optional[Callable[[str, str], Any]] = None,
         on_error: Optional[Callable[[str, str], Any]] = None,
+        on_process_started: Optional[Callable[[Any, Optional[AgentAttemptContext]], Any]] = None,
         attempt: Optional[AgentAttemptContext] = None,
     ) -> None:
         if job_id is not None:
@@ -406,6 +410,8 @@ class WorkflowEngine:
             self.on_session = on_session
         if on_error is not None:
             self.on_error = on_error
+        if on_process_started is not None:
+            self.on_process_started = on_process_started
         if attempt is not None:
             self.attempt = attempt
 

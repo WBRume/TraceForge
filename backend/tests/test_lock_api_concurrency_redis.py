@@ -153,9 +153,9 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         _ = job_id
         return {"id": "job-start-1", "status": "PENDING"}
 
-    monkeypatch.setattr(task_router.ai_job_service, "create_task_chat_job", _create_task_chat_job)
-    monkeypatch.setattr(task_router.ai_job_service, "enqueue_task_chat_job", _enqueue_task_chat_job)
-    monkeypatch.setattr(task_router.ai_job_service, "serialize_job", lambda job: {"id": job.id, "status": job.status})
+    monkeypatch.setattr(task_router, "create_task_chat_job", _create_task_chat_job)
+    monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue_task_chat_job)
+    monkeypatch.setattr(task_router, "serialize_job", lambda job: {"id": job.id, "status": job.status})
 
     async def _run() -> None:
         await _ensure_redis_provider()

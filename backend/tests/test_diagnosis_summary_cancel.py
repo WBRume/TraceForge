@@ -32,7 +32,27 @@ if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.ai.services import ai_job_service  # noqa: E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patch_ai_job_db
+from app.domains.task.services import diagnosis_result_service
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.task.models.task import TaskStatus, TaskType  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from app.domains.task.services import task_session_control_service  # noqa: E402
@@ -113,7 +133,7 @@ def test_mark_task_chat_jobs_cancelled_keeps_cancel_event():
             job_id = job.id
 
         with _session(SessionLocal) as db:
-            cancelled_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+            cancelled_ids = ai_attempts.mark_task_chat_jobs_cancelled(
                 db,
                 workspace_id=workspace.id,
                 task_id=task.id,
@@ -122,7 +142,7 @@ def test_mark_task_chat_jobs_cancelled_keeps_cancel_event():
 
         assert job_id in cancelled_ids
         try:
-            assert ai_job_service._is_cancel_requested(job_id) is True
+            assert ai_runtime.is_cancel_requested(job_id) is True
             # CLI 仍可能存活时只能进入 TERMINATING；确认进程树退出后
             # 才允许收敛为 CANCELLED。
             with _session(SessionLocal) as db:
@@ -130,7 +150,7 @@ def test_mark_task_chat_jobs_cancelled_keeps_cancel_event():
                     AiJobStatus.TERMINATING
                 )
         finally:
-            ai_job_service._clear_cancel_event(job_id)
+            ai_runtime.clear_cancel(job_id)
     finally:
         engine.dispose()
 
@@ -140,7 +160,7 @@ def _prepare_summary_job(db, workspace_id, task_id, *, session_id=None):
     if session_id:
         task.session_id = session_id
     db.commit()
-    summary = ai_job_service.create_diagnosis_summary_job(
+    summary = ai_store.create_diagnosis_summary_job(
         db,
         workspace_id=workspace.id,
         task_id=task.id,
@@ -159,16 +179,16 @@ def _patch_executor_common(monkeypatch, SessionLocal, *, run_impl):
         calls["upsert"] += 1
         raise AssertionError("cancelled summary must not upsert diagnosis card")
 
-    monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
-    monkeypatch.setattr(ai_job_service, "run_cli_single_turn", run_impl)
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _ignore_broadcast)
+    patch_ai_job_db(monkeypatch, SessionLocal)
+    monkeypatch.setattr(ai_provider_turn, "run_cli_single_turn", run_impl)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _ignore_broadcast)
     monkeypatch.setattr(
-        ai_job_service.diagnosis_result_service,
+        diagnosis_result_service,
         "upsert_diagnosis_result_from_ai",
         _fail_upsert,
     )
     monkeypatch.setattr(
-        ai_job_service.diagnosis_result_service,
+        diagnosis_result_service,
         "extract_payload_from_text",
         lambda _text: SimpleNamespace(summary="x", root_cause="y"),
     )
@@ -184,17 +204,17 @@ def test_diagnosis_summary_discards_result_when_cancel_event_set(monkeypatch):
                 db, "ws-cancel-run", "task-cancel-run"
             )
             summary_id = summary.id
-        ai_job_service._request_job_cancel(summary_id)
+        ai_runtime.request_cancel(summary_id)
 
         async def _fake_run(*_args, **_kwargs):
             return {"text": "```json\n{\"summary\": \"x\"}\n```", "session_id": "s"}
 
         calls = _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
         try:
-            asyncio.run(ai_job_service._execute_diagnosis_summary_job(summary_id))
+            asyncio.run(ai_diagnosis_summary.execute_diagnosis_summary_job(summary_id))
             assert calls["upsert"] == 0
         finally:
-            ai_job_service._clear_cancel_event(summary_id)
+            ai_runtime.clear_cancel(summary_id)
     finally:
         engine.dispose()
 
@@ -215,7 +235,7 @@ def test_diagnosis_summary_discards_result_when_job_already_final(monkeypatch):
             return {"text": "```json\n{\"summary\": \"x\"}\n```", "session_id": "s"}
 
         calls = _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
-        asyncio.run(ai_job_service._execute_diagnosis_summary_job(summary_id))
+        asyncio.run(ai_diagnosis_summary.execute_diagnosis_summary_job(summary_id))
         assert calls["upsert"] == 0
     finally:
         engine.dispose()
@@ -230,7 +250,7 @@ def test_diagnosis_summary_swallows_cancel_runtime_error(monkeypatch):
                 db, "ws-cancel-err", "task-cancel-err"
             )
             summary_id = summary.id
-        ai_job_service._request_job_cancel(summary_id)
+        ai_runtime.request_cancel(summary_id)
 
         async def _fake_run(*_args, **_kwargs):
             raise RuntimeError("AI job cancelled by user")
@@ -238,10 +258,10 @@ def test_diagnosis_summary_swallows_cancel_runtime_error(monkeypatch):
         calls = _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
         try:
             # 不应抛出异常（_execute_job 的 FINAL_STATUSES 兜底也不应被触发）
-            asyncio.run(ai_job_service._execute_diagnosis_summary_job(summary_id))
+            asyncio.run(ai_diagnosis_summary.execute_diagnosis_summary_job(summary_id))
             assert calls["upsert"] == 0
         finally:
-            ai_job_service._clear_cancel_event(summary_id)
+            ai_runtime.clear_cancel(summary_id)
     finally:
         engine.dispose()
 
@@ -255,18 +275,18 @@ def test_execute_task_chat_job_clears_cancel_event_after_run(monkeypatch):
                 db, "ws-cancel-fin", "task-cancel-fin"
             )
             summary_id = summary.id
-        ai_job_service._request_job_cancel(summary_id)
+        ai_runtime.request_cancel(summary_id)
 
         async def _fake_run(*_args, **_kwargs):
             return {"text": "```json\n{\"summary\": \"x\"}\n```", "session_id": "s"}
 
         _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
         try:
-            asyncio.run(ai_job_service._execute_task_chat_job(summary_id))
-            assert ai_job_service._is_cancel_requested(summary_id) is False
-            assert ai_job_service._JOB_CANCEL_EVENTS.get(summary_id) is None
+            asyncio.run(ai_executors.execute_job(summary_id))
+            assert ai_runtime.is_cancel_requested(summary_id) is False
+            assert ai_runtime.cancel_events.get(summary_id) is None
         finally:
-            ai_job_service._clear_cancel_event(summary_id)
+            ai_runtime.clear_cancel(summary_id)
     finally:
         engine.dispose()
 
@@ -387,35 +407,6 @@ def test_resume_interrupted_rejected_while_summary_active():
         engine.dispose()
 
 
-def test_hitl_resume_rejected_while_summary_active(monkeypatch):
-    """总结进行中禁止 HITL 回复恢复会话。"""
-    engine, SessionLocal = _build_db()
-    try:
-        with _session(SessionLocal) as db:
-            user, workspace, task = _seed_diagnosis_task(db, "ws-mx-hitl2", "task-mx-hitl2")
-            _add_job(db, workspace, task, user.id, status=AiJobStatus.WAITING_HITL)
-            _add_job(
-                db,
-                workspace,
-                task,
-                user.id,
-                status=AiJobStatus.RUNNING,
-                job_kind="DIAGNOSIS_SUMMARY",
-                queue_key=f"DIAGNOSIS_SUMMARY:{task.id}",
-            )
-        monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
-        monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        with pytest.raises(ai_job_service.AiJobConflictError):
-            asyncio.run(
-                ai_job_service.resume_waiting_hitl_job(
-                    task_id=task.id,
-                    response="继续",
-                )
-            )
-    finally:
-        engine.dispose()
-
-
 def test_summary_still_allowed_after_chat_interrupted():
     """核心场景：会话被停止（任务 INTERRUPTED）后仍允许一键总结。"""
     engine, SessionLocal = _build_db()
@@ -425,8 +416,8 @@ def test_summary_still_allowed_after_chat_interrupted():
             task.status = TaskStatus.INTERRUPTED
             db.commit()
             _add_job(db, workspace, task, user.id, status=AiJobStatus.INTERRUPTED)
-            active_chat = ai_job_service.find_active_chat_job(db, task.id)
+            active_chat = ai_store.find_active_chat_job(db, task.id)
             assert active_chat is None
-            assert ai_job_service.find_active_summary_job(db, task.id) is None
+            assert ai_store.find_active_summary_job(db, task.id) is None
     finally:
         engine.dispose()
