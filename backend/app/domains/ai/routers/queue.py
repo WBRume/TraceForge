@@ -118,7 +118,8 @@ async def _recover_orphaned_job(
     evidence: Optional[str],
     confirm_cleanup: bool,
 ) -> OrphanedJobRecoveryResponse:
-    from app.domains.ai.services import ai_job_service
+    from app.domains.ai.services.jobs import attempts as ai_job_attempts
+    from app.domains.ai.services.jobs.publishing import broadcast_job_payload, reschedule_if_pending
 
     try:
         if confirm_cleanup:
@@ -175,7 +176,7 @@ async def _recover_orphaned_job(
 
     confirmed_dead = bool(result is not None and result.confirmed_dead)
     payload = await run_db(
-        ai_job_service._finish_termination_sync,
+        ai_job_attempts.finish_termination_sync,
         adopted["job_id"],
         adopted["run_token"],
         confirmed_dead=confirmed_dead,
@@ -191,13 +192,9 @@ async def _recover_orphaned_job(
         ),
     )
     if payload:
-        status = str(payload.get("status") or "")
-        await ai_job_service._broadcast_job_payload(
-            payload,
-            final=status in {item.value for item in ai_job_service.FINAL_STATUSES},
-        )
-        if status == ai_job_service.AiJobStatus.PENDING.value:
-            ai_job_service.schedule_queue(str(payload.get("queue_key") or ""))
+        # final 判定由 payload 状态决定（doc §5 C5/§9.2）。
+        await broadcast_job_payload(payload)
+        reschedule_if_pending(payload)
     audit_log(
         action=(
             "orphaned_job_cleanup_confirmed"
@@ -357,9 +354,9 @@ async def act_queue_job(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     if action == "retry" and source == "bootstrap" and payload.get("queue_key"):
-        from app.domains.ai.services import ai_job_service
+        from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
 
-        ai_job_service.schedule_queue(str(payload["queue_key"]))
+        ai_job_runtime.schedule_queue(str(payload["queue_key"]))
     return QueueJobActionResponse(
         ok=True,
         action=action,

@@ -12,7 +12,12 @@ from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import attempts as ai_job_attempts
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.store import (
+    find_active_summary_job,
+    serialize_job,
+)
 from app.domains.task.services import context_token_service
 from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.domains.websocket.ws.manager import manager as task_ws_manager
@@ -174,8 +179,8 @@ def _load_interrupt_state_sync(
         raise TaskSessionControlError("Task not found", status_code=404)
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first() if job_id else None
     return {
-        "task": _task_payload(task, ai_job_service.serialize_job(job) if job else None),
-        "job": ai_job_service.serialize_job(job) if job else None,
+        "task": _task_payload(task, serialize_job(job) if job else None),
+        "job": serialize_job(job) if job else None,
     }
 
 
@@ -188,7 +193,7 @@ def _cancel_active_jobs_sync(
             "No running Claude CLI session or active AI job to interrupt",
             status_code=409,
         )
-    cancelled_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+    cancelled_ids = ai_job_attempts.mark_task_chat_jobs_cancelled(
         db,
         workspace_id=workspace_id,
         task_id=task_id,
@@ -200,8 +205,8 @@ def _cancel_active_jobs_sync(
     job = db.query(SddAiJob).filter(SddAiJob.id == active.id).first()
     return {
         "cancelled_ids": cancelled_ids,
-        "task": _task_payload(task, ai_job_service.serialize_job(job) if job else None),
-        "job": ai_job_service.serialize_job(job) if job else None,
+        "task": _task_payload(task, serialize_job(job) if job else None),
+        "job": serialize_job(job) if job else None,
     }
 
 
@@ -326,7 +331,7 @@ async def interrupt_task(
             )
             evidence = None
         if run_token:
-            await ai_job_service.finalize_attempt_termination(
+            await ai_job_attempts.finalize_attempt_termination(
                 prepared["job_id"],
                 run_token,
                 confirmed_dead=confirmed_dead,
@@ -337,6 +342,7 @@ async def interrupt_task(
                     )
                 ),
                 evidence=evidence,
+                termination_mode="INTERRUPT",
             )
         else:
             await run_interrupt_txn(
@@ -354,7 +360,7 @@ async def interrupt_task(
             )
         )
 
-        await ai_job_service.publish_job(prepared["job_id"])
+        await ai_job_publishing.publish_job(prepared["job_id"])
         if task is not None:
             await _broadcast_task_event("task_interrupted", task, state["job"])
         else:
@@ -377,7 +383,7 @@ async def interrupt_task(
     )
     for job_id in state["cancelled_ids"]:
         # final 判定由 publish_job 依据 payload 状态计算（doc §9.2）。
-        await ai_job_service.publish_job(job_id)
+        await ai_job_publishing.publish_job(job_id)
     if task is not None:
         await _broadcast_task_event("task_interrupted", task, state["job"])
     else:
@@ -421,7 +427,7 @@ async def resume_interrupted_task(
                 if context.get("client_message_id") == idempotency_key:
                     task = db.query(SddTask).filter(SddTask.id == task_id).first()
                     if task is not None:
-                        return {"duplicate_payload": _task_payload(task, ai_job_service.serialize_job(existing))}
+                        return {"duplicate_payload": _task_payload(task, serialize_job(existing))}
 
         task = db.query(SddTask).filter(SddTask.id == task_id).first()
         if task is None:
@@ -430,7 +436,7 @@ async def resume_interrupted_task(
             raise TaskSessionControlError("Only interrupted tasks can be resumed", status_code=409)
 
         # 会话/总结互斥：总结进行中禁止恢复会话
-        if ai_job_service.find_active_summary_job(db, task_id) is not None:
+        if find_active_summary_job(db, task_id) is not None:
             raise TaskSessionControlError(
                 "一键总结问题案例进行中，请等待完成或停止后再恢复会话",
                 status_code=409,
@@ -538,16 +544,16 @@ async def resume_interrupted_task(
             pass
 
         db.commit()
-        job_payload = ai_job_service.serialize_job(resume_job) if resume_job is not None else {}
+        job_payload = serialize_job(resume_job) if resume_job is not None else {}
         task_payload = _task_payload(task, job_payload)
         return {"task_payload": task_payload, "job_payload": job_payload}
 
     finalized = await run_db_txn(_finalize_resume_sync)
 
-    await ai_job_service.publish_job(prepared["old_job_id"])
+    await ai_job_publishing.publish_job(prepared["old_job_id"])
     await task_ws_manager.send_message_to_room(
         task_id,
         WSMessage(type="task_resumed", payload=finalized["task_payload"]),
     )
-    await ai_job_service.enqueue_task_chat_job(created.job_id)
+    await ai_job_publishing.enqueue_task_chat_job(created.job_id)
     return finalized["task_payload"]

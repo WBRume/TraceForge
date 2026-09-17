@@ -20,7 +20,25 @@ if BACKEND_ROOT not in sys.path:
 from app.config import settings  # noqa: E402
 from app.agents import AgentBackend, AgentRunRequest, AgentRunResult  # noqa: E402
 from app.core import distributed_lock as dl  # noqa: E402
-from app.domains.ai.services import ai_job_service  # noqa: E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.engine import workflow_engine as we  # noqa: E402
 
 
@@ -155,58 +173,58 @@ class EngineRegistryReclaimTest(unittest.IsolatedAsyncioTestCase):
 
 class QueueRunnerReclaimTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        ai_job_service._QUEUE_RUNNERS.clear()
-        ai_job_service._QUEUE_LOCKS.clear()
+        ai_runtime.queue_runners.clear()
+        ai_runtime.queue_locks.clear()
 
     def tearDown(self) -> None:
-        ai_job_service._QUEUE_RUNNERS.clear()
-        ai_job_service._QUEUE_LOCKS.clear()
+        ai_runtime.queue_runners.clear()
+        ai_runtime.queue_locks.clear()
 
     async def _settle(self) -> None:
         for _ in range(6):
             await asyncio.sleep(0)
 
     async def test_runner_and_lock_reaped_after_queue_drain(self):
-        with patch.object(ai_job_service, "_take_next_pending_job_id", new=AsyncMock(return_value=None)):
-            ai_job_service.schedule_queue("TESTQ:task-drain")
-            runner = ai_job_service._QUEUE_RUNNERS.get("TESTQ:task-drain")
+        with patch.object(ai_queue_runner, "claim_next_pending_job_id", new=AsyncMock(return_value=None)):
+            ai_runtime.schedule_queue("TESTQ:task-drain")
+            runner = ai_runtime.queue_runners.get("TESTQ:task-drain")
             self.assertIsNotNone(runner)
             await asyncio.sleep(0)
-            self.assertIn("TESTQ:task-drain", ai_job_service._QUEUE_LOCKS)
+            self.assertIn("TESTQ:task-drain", ai_runtime.queue_locks)
             await runner
             await self._settle()
 
-        self.assertNotIn("TESTQ:task-drain", ai_job_service._QUEUE_RUNNERS)
-        self.assertNotIn("TESTQ:task-drain", ai_job_service._QUEUE_LOCKS)
+        self.assertNotIn("TESTQ:task-drain", ai_runtime.queue_runners)
+        self.assertNotIn("TESTQ:task-drain", ai_runtime.queue_locks)
 
     async def test_runner_reaped_after_error_and_exception_consumed(self):
         async def _boom(queue_key):
             raise RuntimeError("queue boom")
 
-        with patch.object(ai_job_service, "_take_next_pending_job_id", new=_boom):
-            ai_job_service.schedule_queue("TESTQ:task-error")
-            runner = ai_job_service._QUEUE_RUNNERS.get("TESTQ:task-error")
+        with patch.object(ai_queue_runner, "claim_next_pending_job_id", new=_boom):
+            ai_runtime.schedule_queue("TESTQ:task-error")
+            runner = ai_runtime.queue_runners.get("TESTQ:task-error")
             self.assertIsNotNone(runner)
             # 异常由回调消费；此处仅等待完成，不重复 raise
             while not runner.done():
                 await asyncio.sleep(0)
             await self._settle()
 
-        self.assertNotIn("TESTQ:task-error", ai_job_service._QUEUE_RUNNERS)
-        self.assertNotIn("TESTQ:task-error", ai_job_service._QUEUE_LOCKS)
+        self.assertNotIn("TESTQ:task-error", ai_runtime.queue_runners)
+        self.assertNotIn("TESTQ:task-error", ai_runtime.queue_locks)
         # 异常已被回调消费，不会残留未检视告警
         self.assertTrue(runner.done())
 
     async def test_reaper_skips_entry_owned_by_successor(self):
         successor = MagicMock()
-        ai_job_service._QUEUE_RUNNERS["TESTQ:task-race"] = successor
-        ai_job_service._QUEUE_LOCKS["TESTQ:task-race"] = asyncio.Lock()
+        ai_runtime.queue_runners["TESTQ:task-race"] = successor
+        ai_runtime.queue_locks["TESTQ:task-race"] = asyncio.Lock()
         done_task = MagicMock()
 
-        ai_job_service._reap_queue_runner("TESTQ:task-race", done_task)
+        ai_runtime.reap_queue_runner("TESTQ:task-race", done_task)
 
-        self.assertIs(ai_job_service._QUEUE_RUNNERS.get("TESTQ:task-race"), successor)
-        self.assertIn("TESTQ:task-race", ai_job_service._QUEUE_LOCKS)
+        self.assertIs(ai_runtime.queue_runners.get("TESTQ:task-race"), successor)
+        self.assertIn("TESTQ:task-race", ai_runtime.queue_locks)
 
 
 class LocalLockProviderReclaimTest(unittest.IsolatedAsyncioTestCase):

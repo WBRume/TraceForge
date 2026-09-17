@@ -164,7 +164,7 @@ def _adopt_orphaned_job_for_manual_action(
             f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})"
         )
 
-    from app.domains.ai.services import ai_job_service
+    from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
 
     previous_run_token = str(job.run_token or "") or None
     adopted_run_token = str(uuid.uuid4())
@@ -176,8 +176,8 @@ def _adopt_orphaned_job_for_manual_action(
         evidence=normalized_evidence,
     )
     job.status = AiJobStatus.TERMINATING
-    job.worker_id = ai_job_service.WORKER_ID
-    job.worker_boot_id = ai_job_service.WORKER_BOOT_ID
+    job.worker_id = WORKER_ID
+    job.worker_boot_id = WORKER_BOOT_ID
     job.run_token = adopted_run_token
     job.termination_attempts = int(job.termination_attempts or 0) + 1
     job.terminal_reason = normalized_reason
@@ -1261,9 +1261,9 @@ def retry_queue_job(
         record.error_message = None
         db.commit()
         db.refresh(record)
-        from app.domains.ai.services import ai_job_service
+        from app.domains.ai.services.jobs.store import create_task_baseline_job
 
-        baseline_job = ai_job_service.create_task_baseline_job(
+        baseline_job = create_task_baseline_job(
             db,
             workspace_id=record.workspace_id,
             task_id=record.task_id,

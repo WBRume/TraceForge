@@ -38,7 +38,9 @@ from app.domains.asset.schemas.asset import (
     WorkspaceResponse,
 )
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import attempts as ai_job_attempts
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.store import get_job, serialize_job
 from app.domains.workspace.services import workspace_service
 from app.domains.workflow.services import provision_job_service
 
@@ -430,23 +432,23 @@ async def cancel_ai_job(
     try:
         def cancel_sync(db: Session):
             _ensure_workspace_member(db, ws_id, current_user.id)
-            job = ai_job_service.get_job(db, job_id=job_id)
+            job = get_job(db, job_id=job_id)
             if not job or str(job.workspace_id) != str(ws_id):
                 raise HTTPException(status_code=404, detail="AI job not found")
             can_manage = workspace_service.user_has_permission(db, ws_id, current_user.id, "MANAGE_TASK_STATUS")
             is_owner = str(job.creator_id or "") == str(current_user.id)
             if not (can_manage or is_owner):
                 raise HTTPException(status_code=403, detail="No permission to cancel AI jobs")
-            cancelled = ai_job_service.cancel_job(db, workspace_id=ws_id, job_id=job_id)
+            cancelled = ai_job_attempts.cancel_job(db, workspace_id=ws_id, job_id=job_id)
             if not cancelled:
                 raise HTTPException(status_code=404, detail="AI job not found")
-            return ai_job_service.serialize_job(cancelled)
+            return serialize_job(cancelled)
 
         payload = await run_db_txn(cancel_sync)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    await ai_job_service.publish_job(str(payload["id"]))
+    await ai_job_publishing.publish_job(str(payload["id"]))
     return AiJobResponse(**payload)
 
 

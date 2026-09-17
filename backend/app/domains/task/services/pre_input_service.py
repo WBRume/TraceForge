@@ -19,7 +19,7 @@ from app.core.distributed_lock import lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db, run_db_txn
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.auth.models.user import User
 from app.domains.auth.models.user import WorkspaceMember
 from app.domains.notification.services import delivery
@@ -974,7 +974,7 @@ async def submit_pre_input(
 
     if job_id:
         try:
-            await ai_job_service.enqueue_task_chat_job(job_id)
+            await ai_job_publishing.enqueue_task_chat_job(job_id)
         except Exception:
             logger.exception(f"Failed to enqueue job {job_id} for pre input {pre_input_id}")
 

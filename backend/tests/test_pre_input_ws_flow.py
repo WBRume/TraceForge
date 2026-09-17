@@ -27,7 +27,26 @@ from app.domains.auth.models.user import (  # noqa: E402
     User, Workspace, WorkspaceMember, WorkspaceRole,
 )
 from app.domains.auth.services import auth_service  # noqa: E402
-from app.domains.ai.services import ai_job_service  # noqa: E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patch_ai_job_db
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
 import app.main as main_module  # noqa: E402
 from app.domains.task.services import pre_input_worker  # noqa: E402
@@ -119,7 +138,7 @@ def ws_env(monkeypatch, tmp_path):
     test_session = factory()
 
     monkeypatch.setattr(main_module, "SessionLocal", factory)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr(pre_input_worker, "SessionLocal", factory)
     # offload 层（run_db/run_db_txn）在线程内从 app.database 惰性导入 SessionLocal
     monkeypatch.setattr("app.database.SessionLocal", factory)
@@ -134,7 +153,7 @@ def ws_env(monkeypatch, tmp_path):
     async def _noop_enqueue(job_id):
         return None
 
-    monkeypatch.setattr(ai_job_service, "enqueue_task_chat_job", _noop_enqueue)
+    monkeypatch.setattr(ai_publishing, "enqueue_task_chat_job", _noop_enqueue)
 
     async def _noop_worker(stop_event=None):
         return None

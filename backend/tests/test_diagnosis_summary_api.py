@@ -23,7 +23,27 @@ if TEST_ROOT not in sys.path:
 from app.domains.task.models.task import TaskStatus, TaskType  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.ai.services import ai_job_service  # noqa: E402
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from ai_job_test_utils import patch_ai_job_db
+from app.domains.task.services import diagnosis_result_service
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
 
@@ -136,15 +156,15 @@ def test_diagnosis_summary_job_marker_blocks_auto_fill():
                 workspace_id="ws-summary-marker",
                 task_id="task-summary-marker",
             )
-            assert ai_job_service._has_diagnosis_summary_job(db, task.id) is False
-            job = ai_job_service.create_diagnosis_summary_job(
+            assert ai_store.has_diagnosis_summary_job(db, task.id) is False
+            job = ai_store.create_diagnosis_summary_job(
                 db,
                 workspace_id=workspace.id,
                 task_id=task.id,
                 creator_id=user.id,
             )
             assert job is not None
-            assert ai_job_service._has_diagnosis_summary_job(db, task.id) is True
+            assert ai_store.has_diagnosis_summary_job(db, task.id) is True
     finally:
         engine.dispose()
 
@@ -172,7 +192,7 @@ def test_diagnosis_summary_independent_queue_runs_while_chat_is_interrupted(monk
             )
             db.add(interrupted)
             db.commit()
-            summary = ai_job_service.create_diagnosis_summary_job(
+            summary = ai_store.create_diagnosis_summary_job(
                 db,
                 workspace_id=workspace.id,
                 task_id=task.id,
@@ -182,8 +202,8 @@ def test_diagnosis_summary_independent_queue_runs_while_chat_is_interrupted(monk
             queue_key = summary.queue_key
             summary_id = summary.id
 
-        monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
-        assert ai_job_service._take_next_pending_job_id_sync(queue_key) == summary_id
+        patch_ai_job_db(monkeypatch, SessionLocal)
+        assert ai_store.take_next_pending_job_id_sync(queue_key) == summary_id
     finally:
         engine.dispose()
 
@@ -201,7 +221,7 @@ def test_diagnosis_summary_forks_source_session_read_only(monkeypatch, tmp_path)
             task.session_id = "source-session"
             task.project_path = str(tmp_path)
             db.commit()
-            summary = ai_job_service.create_diagnosis_summary_job(
+            summary = ai_store.create_diagnosis_summary_job(
                 db,
                 workspace_id=workspace.id,
                 task_id=task.id,
@@ -219,31 +239,26 @@ def test_diagnosis_summary_forks_source_session_read_only(monkeypatch, tmp_path)
         async def _ignore_broadcast(*_args, **_kwargs):
             return None
 
-        monkeypatch.setattr(ai_job_service, "SessionLocal", SessionLocal)
+        patch_ai_job_db(monkeypatch, SessionLocal)
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-        monkeypatch.setattr(ai_job_service, "resolve_task_backend", lambda *_args: "opencode")
-        monkeypatch.setattr(ai_job_service, "backend_supports_fork", lambda *_args: True)
-        monkeypatch.setattr(ai_job_service, "fork_session_for_backend", _fake_fork)
-        monkeypatch.setattr(ai_job_service, "_collect_diagnosis_transcript", lambda *_args: "history")
+        monkeypatch.setattr(ai_diagnosis_summary, "resolve_task_backend", lambda *_args: "opencode")
+        monkeypatch.setattr(ai_diagnosis_summary, "backend_supports_fork", lambda *_args: True)
+        monkeypatch.setattr(ai_diagnosis_summary, "fork_session_for_backend", _fake_fork)
+        monkeypatch.setattr(ai_diagnosis_summary, "collect_diagnosis_transcript_sync", lambda *_args: "history")
+        monkeypatch.setattr(ai_provider_turn, "run_cli_single_turn", _fake_run)
+        monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _ignore_broadcast)
         monkeypatch.setattr(
-            ai_job_service,
-            "_collect_diagnosis_transcript_sync",
-            lambda *_args, **_kwargs: "history",
-        )
-        monkeypatch.setattr(ai_job_service, "run_cli_single_turn", _fake_run)
-        monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _ignore_broadcast)
-        monkeypatch.setattr(
-            ai_job_service.diagnosis_result_service,
+            diagnosis_result_service,
             "extract_payload_from_text",
             lambda _text: SimpleNamespace(summary="summary", root_cause="cause"),
         )
         monkeypatch.setattr(
-            ai_job_service.diagnosis_result_service,
+            diagnosis_result_service,
             "upsert_diagnosis_result_from_ai",
             lambda *_args, **_kwargs: SimpleNamespace(source_chat_message_id=None),
         )
 
-        asyncio.run(ai_job_service._execute_diagnosis_summary_job(summary_id))
+        asyncio.run(ai_diagnosis_summary.execute_diagnosis_summary_job(summary_id))
 
         assert captured["session_id"] == "forked-session"
         assert captured["fork_session"] is False

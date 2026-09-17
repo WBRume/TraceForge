@@ -16,7 +16,32 @@ import app.domains.task.models.task  # noqa: F401
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+    constants as ai_constants,
+    executors as ai_executors,
+    publishing as ai_publishing,
+    provider_turn as ai_provider_turn,
+    queue_runner as ai_queue_runner,
+    reaper as ai_reaper,
+    registry as ai_registry,
+    state as ai_state,
+    store as ai_store,
+    workers as ai_workers,
+)
+from app.domains.ai.services.jobs.executors import (
+    diagnosis_summary as ai_diagnosis_summary,
+    task_chat as ai_task_chat,
+)
+from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.ai.services.jobs import fencing as ai_fencing
+from ai_job_test_utils import patch_ai_job_db
+from app.config import settings
+from app.agents import AgentAttemptContext
+from app.agents import bind_agent_attempt
+from app.agents import reset_agent_attempt_runtime
+from app.agents import reset_agent_attempt
+from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 
 
 def _session_factory():
@@ -50,10 +75,10 @@ def test_two_claims_only_one_gets_run_token(monkeypatch):
     factory = _session_factory()
     db = factory()
     _job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    first = ai_job_service._take_next_pending_job_id_sync("TASK_CHAT:task-1")
-    second = ai_job_service._take_next_pending_job_id_sync("TASK_CHAT:task-1")
+    first = ai_store.take_next_pending_job_id_sync("TASK_CHAT:task-1")
+    second = ai_store.take_next_pending_job_id_sync("TASK_CHAT:task-1")
 
     assert first == "reliability-job"
     assert second is None
@@ -67,10 +92,10 @@ def test_reaper_converges_legacy_running_without_in_memory_state(monkeypatch):
     factory = _session_factory()
     db = factory()
     _job(db, status=AiJobStatus.RUNNING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
-    asyncio.run(ai_job_service.reap_stale_jobs())
+    asyncio.run(ai_reaper.reap_stale_jobs())
 
     recovered = db.get(SddAiJob, "reliability-job")
     assert recovered.status == AiJobStatus.ORPHANED
@@ -83,9 +108,9 @@ def test_task_scoped_recovery_does_not_select_other_tasks(monkeypatch):
         job = _job(db, status=AiJobStatus.RUNNING, run_token="old-token")
         job.task_id = "target-task"
         db.commit()
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
-    assert ai_job_service._list_reclaimable_jobs_sync("other-task") == []
-    rows = ai_job_service._list_reclaimable_jobs_sync("target-task")
+    patch_ai_job_db(monkeypatch, factory)
+    assert ai_reaper.list_reclaimable_jobs_sync("other-task") == []
+    rows = ai_reaper.list_reclaimable_jobs_sync("target-task")
     assert [row["job_id"] for row in rows] == ["reliability-job"]
 
 
@@ -96,9 +121,9 @@ def test_cancel_running_job_is_not_reported_as_finished(monkeypatch):
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
-    result = ai_job_service.cancel_job(db, workspace_id="ws-1", job_id="reliability-job")
+    result = ai_attempts.cancel_job(db, workspace_id="ws-1", job_id="reliability-job")
 
     assert result is not None
     assert result.status == AiJobStatus.TERMINATING
@@ -110,7 +135,7 @@ def _owned_job(db, *, status=AiJobStatus.TERMINATING, token="run-1"):
         db,
         status=status,
         run_token=token,
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
     job.process_pid = 4242
     job.process_started_at = datetime.utcnow()
@@ -123,9 +148,9 @@ def test_late_termination_cannot_overwrite_success(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.SUCCESS)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._finish_termination_sync(
+    result = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-1",
         confirmed_dead=True,
@@ -141,9 +166,9 @@ def test_late_termination_cannot_overwrite_cancelled(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.CANCELLED)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._finish_termination_sync(
+    result = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-1",
         confirmed_dead=True,
@@ -155,40 +180,13 @@ def test_late_termination_cannot_overwrite_cancelled(monkeypatch):
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.CANCELLED
 
 
-def test_old_run_token_cannot_interrupt_current_attempt(monkeypatch):
-    factory = _session_factory()
-    db = factory()
-    _job(
-        db,
-        status=AiJobStatus.RUNNING,
-        run_token="current-run",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
-    )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
-    monkeypatch.setattr("app.database.SessionLocal", factory)
-
-    result = ai_job_service._mark_task_chat_job_interrupted_sync(
-        db,
-        job_id="reliability-job",
-        reason="old attempt",
-        message=None,
-        session_id=None,
-        context_patch=None,
-        result_patch=None,
-        run_token="old-run",
-    )
-
-    assert result is None
-    assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.RUNNING
-
-
 def test_terminating_job_cannot_be_downgraded_by_engine_error(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -205,9 +203,9 @@ def test_task_chat_success_clears_active_process_ownership(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.RUNNING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.SUCCESS,
         finalize=True,
@@ -227,9 +225,9 @@ def test_interrupted_job_clears_ownership_only_after_confirmed_death(monkeypatch
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    orphaned = ai_job_service._finish_termination_sync(
+    orphaned = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-1",
         confirmed_dead=False,
@@ -241,7 +239,7 @@ def test_interrupted_job_clears_ownership_only_after_confirmed_death(monkeypatch
     assert saved.process_pid == 4242
     assert saved.run_token == "run-1"
 
-    interrupted = ai_job_service._finish_termination_sync(
+    interrupted = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-1",
         confirmed_dead=True,
@@ -259,9 +257,9 @@ def test_orphaned_job_retains_process_identity(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    result = ai_job_service._finish_termination_sync(
+    result = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-1",
         confirmed_dead=False,
@@ -278,8 +276,8 @@ def test_orphaned_job_retains_process_identity(monkeypatch):
 def test_runtime_worker_survives_one_iteration_failure_and_honors_cancel(monkeypatch):
     calls = 0
     holder = {}
-    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {})
-    monkeypatch.setattr(ai_job_service, "_SHUTTING_DOWN", False)
+    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {})
+    monkeypatch.setattr(ai_runtime, "shutting_down", False)
 
     async def operation():
         nonlocal calls
@@ -289,7 +287,7 @@ def test_runtime_worker_survives_one_iteration_failure_and_honors_cancel(monkeyp
         asyncio.get_running_loop().call_soon(holder["task"].cancel)
 
     async def run():
-        task = asyncio.create_task(ai_job_service._run_runtime_worker_loop("test", operation, 1))
+        task = asyncio.create_task(ai_workers.run_runtime_worker_loop("test", operation, 1))
         holder["task"] = task
         try:
             await task
@@ -298,7 +296,7 @@ def test_runtime_worker_survives_one_iteration_failure_and_honors_cancel(monkeyp
 
     asyncio.run(run())
 
-    health = ai_job_service._RUNTIME_WORKER_HEALTH["test"]
+    health = ai_workers._RUNTIME_WORKER_HEALTH["test"]
     assert calls == 2
     assert health["consecutive_failures"] == 0
     assert health["last_success_at"]
@@ -312,9 +310,9 @@ def test_runtime_worker_health_rejects_stale_last_success(monkeypatch):
             return False
 
     now = time.monotonic()
-    monkeypatch.setattr(ai_job_service, "_REAPER_TASK", _LiveTask())
-    monkeypatch.setattr(ai_job_service, "_DISPATCHER_TASK", _LiveTask())
-    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {
+    monkeypatch.setitem(ai_runtime.worker_tasks, "reaper", _LiveTask())
+    monkeypatch.setitem(ai_runtime.worker_tasks, "dispatcher", _LiveTask())
+    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {
         "reaper": {
             "state": "healthy",
             "failure_count": 0,
@@ -326,9 +324,9 @@ def test_runtime_worker_health_rejects_stale_last_success(monkeypatch):
             "last_success_monotonic": now,
         },
     })
-    monkeypatch.setattr(ai_job_service.settings, "AI_JOB_REAPER_STALE_SECONDS", 1)
+    monkeypatch.setattr(settings, "AI_JOB_REAPER_STALE_SECONDS", 1)
 
-    health = ai_job_service.runtime_worker_health()
+    health = ai_workers.runtime_worker_health()
 
     assert health["reaper"]["healthy"] is False
     assert health["reaper"]["alive"] is True
@@ -341,9 +339,9 @@ def test_runtime_worker_reports_stalled_live_task(monkeypatch):
             return False
 
     now = time.monotonic()
-    monkeypatch.setattr(ai_job_service, "_REAPER_TASK", _LiveTask())
-    monkeypatch.setattr(ai_job_service, "_DISPATCHER_TASK", _LiveTask())
-    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {
+    monkeypatch.setitem(ai_runtime.worker_tasks, "reaper", _LiveTask())
+    monkeypatch.setitem(ai_runtime.worker_tasks, "dispatcher", _LiveTask())
+    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {
         "reaper": {
             "state": "running",
             "failure_count": 0,
@@ -356,9 +354,9 @@ def test_runtime_worker_reports_stalled_live_task(monkeypatch):
             "last_success_monotonic": now,
         },
     })
-    monkeypatch.setattr(ai_job_service.settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 1)
 
-    health = ai_job_service.runtime_worker_health()
+    health = ai_workers.runtime_worker_health()
 
     assert health["reaper"]["state"] == "stalled"
     assert health["reaper"]["healthy"] is False
@@ -380,18 +378,18 @@ def test_stalled_operation_does_not_spawn_overlapping_iterations(monkeypatch):
         return 1
 
     async def run():
-        worker = asyncio.create_task(ai_job_service._run_runtime_worker_loop("reaper", operation, 1))
-        monkeypatch.setattr(ai_job_service, "_REAPER_TASK", worker)
+        worker = asyncio.create_task(ai_workers.run_runtime_worker_loop("reaper", operation, 1))
+        monkeypatch.setitem(ai_runtime.worker_tasks, "reaper", worker)
         await started.wait()
         await asyncio.sleep(0.2)
         assert calls == 1
-        stalled = ai_job_service.runtime_worker_health()
+        stalled = ai_workers.runtime_worker_health()
         assert stalled["reaper"]["healthy"] is False
         assert stalled["reaper"]["state"] == "stalled"
 
         release.set()
         await asyncio.sleep(0.05)
-        recovered = ai_job_service.runtime_worker_health()
+        recovered = ai_workers.runtime_worker_health()
         assert recovered["reaper"]["healthy"] is True
         assert calls == 1
         worker.cancel()
@@ -400,15 +398,15 @@ def test_stalled_operation_does_not_spawn_overlapping_iterations(monkeypatch):
         except asyncio.CancelledError:
             pass
 
-    monkeypatch.setattr(ai_job_service, "_SHUTTING_DOWN", False)
-    monkeypatch.setattr(ai_job_service, "_RUNTIME_WORKER_HEALTH", {
+    monkeypatch.setattr(ai_runtime, "shutting_down", False)
+    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {
         "dispatcher": {
             "state": "healthy",
             "failure_count": 0,
             "last_success_monotonic": time.monotonic(),
         },
     })
-    monkeypatch.setattr(ai_job_service.settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 0.1)
     asyncio.run(run())
 
 
@@ -421,21 +419,21 @@ def test_start_runtime_workers_is_idempotent(monkeypatch):
     async def recover():
         return 0
 
-    monkeypatch.setattr(ai_job_service, "_REAPER_TASK", None)
-    monkeypatch.setattr(ai_job_service, "_DISPATCHER_TASK", None)
-    monkeypatch.setattr(ai_job_service, "_SHUTTING_DOWN", False)
-    monkeypatch.setattr(ai_job_service, "_reaper_loop", idle_loop)
-    monkeypatch.setattr(ai_job_service, "_dispatcher_loop", idle_loop)
-    monkeypatch.setattr(ai_job_service, "recover_pending_queues", recover)
-    monkeypatch.setattr(ai_job_service, "_mark_worker_jobs_terminating_sync", lambda reason: [])
+    monkeypatch.setitem(ai_runtime.worker_tasks, "reaper", None)
+    monkeypatch.setitem(ai_runtime.worker_tasks, "dispatcher", None)
+    monkeypatch.setattr(ai_runtime, "shutting_down", False)
+    monkeypatch.setattr(ai_workers, "_reaper_loop", idle_loop)
+    monkeypatch.setattr(ai_workers, "_dispatcher_loop", idle_loop)
+    monkeypatch.setattr(ai_workers, "recover_pending_queues", recover)
+    monkeypatch.setattr(ai_reaper, "mark_worker_jobs_terminating_sync", lambda reason: [])
 
     async def run():
-        await ai_job_service.start_runtime_workers()
-        first = (ai_job_service._REAPER_TASK, ai_job_service._DISPATCHER_TASK)
-        await ai_job_service.start_runtime_workers()
-        second = (ai_job_service._REAPER_TASK, ai_job_service._DISPATCHER_TASK)
+        await ai_workers.start_runtime_workers()
+        first = (ai_runtime.worker_tasks.get("reaper"), ai_runtime.worker_tasks.get("dispatcher"))
+        await ai_workers.start_runtime_workers()
+        second = (ai_runtime.worker_tasks.get("reaper"), ai_runtime.worker_tasks.get("dispatcher"))
         assert first == second
-        await ai_job_service.shutdown_runtime_workers()
+        await ai_workers.shutdown_runtime_workers()
 
     asyncio.run(run())
 
@@ -464,7 +462,7 @@ def _owned_running_job(db, *, token="run-1", pid=5151):
         db,
         status=AiJobStatus.RUNNING,
         run_token=token,
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
     job.process_pid = pid
     job.process_started_at = datetime.utcnow()
@@ -484,7 +482,7 @@ def _finalize(
     timeout_interrupted=False,
     process_started=None,
 ):
-    return ai_job_service._finalize_task_chat_job_sync(
+    return ai_task_chat._finalize_task_chat_job_sync(
         db,
         job_id="reliability-job",
         last_result_success=success,
@@ -501,22 +499,22 @@ def test_engine_error_does_not_interrupt_before_termination_finalizer(monkeypatc
     factory = _session_factory()
     db = factory()
     _owned_running_job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    attempt = ai_job_service.AgentAttemptContext(
+    attempt = AgentAttemptContext(
         job_id="reliability-job",
         task_id=None,
         queue_key="TASK_CHAT:task-1",
         run_token="run-1",
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
     )
-    token = ai_job_service.bind_agent_attempt(attempt)
+    token = bind_agent_attempt(attempt)
     try:
-        asyncio.run(ai_job_service._on_engine_error("provider exploded", "reliability-job"))
+        asyncio.run(ai_task_chat.on_engine_error("provider exploded", "reliability-job"))
     finally:
-        ai_job_service.reset_agent_attempt(token)
+        reset_agent_attempt(token)
 
     saved = db.get(SddAiJob, "reliability-job")
     assert saved.status == AiJobStatus.RUNNING
@@ -537,7 +535,7 @@ def test_task_chat_unconfirmed_tree_becomes_orphaned():
     assert saved.process_pid == 5151
     assert saved.process_group_id == 5151
     assert saved.run_token == "run-1"
-    assert saved.worker_boot_id == ai_job_service.WORKER_BOOT_ID
+    assert saved.worker_boot_id == ai_registry.WORKER_BOOT_ID
     assert saved.failure_code == "PROCESS_TREE_STILL_ALIVE"
 
 
@@ -548,7 +546,7 @@ def test_task_chat_unconfirmed_tree_without_persisted_pid_becomes_orphaned(monke
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
 
     # PID persistence failed but the attempt reports an unconfirmed tree:
@@ -573,9 +571,9 @@ def test_task_chat_started_without_death_proof_orphans_without_pid(monkeypatch):
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     result = _finalize(db, dead=None, process_started=True)
 
@@ -583,7 +581,7 @@ def test_task_chat_started_without_death_proof_orphans_without_pid(monkeypatch):
     assert result["status"] == AiJobStatus.ORPHANED.value
     assert saved.status == AiJobStatus.ORPHANED
     assert saved.run_token == "run-1"
-    assert saved.worker_boot_id == ai_job_service.WORKER_BOOT_ID
+    assert saved.worker_boot_id == ai_registry.WORKER_BOOT_ID
     assert saved.process_pid is None
     assert saved.failure_code == "PROCESS_TREE_STILL_ALIVE"
 
@@ -596,9 +594,9 @@ def test_task_chat_never_started_allows_clean_interrupted(monkeypatch):
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     result = _finalize(db, success=False, dead=None, process_started=False)
 
@@ -641,7 +639,7 @@ def test_task_chat_no_local_process_error_becomes_clean_interrupted():
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
 
     result = _finalize(db, success=False, dead=None)
@@ -658,22 +656,22 @@ def test_dirty_interrupted_with_ownership_is_reaped(monkeypatch):
     job = _owned_running_job(db, token="run-legacy")
     job.status = AiJobStatus.INTERRUPTED
     db.commit()
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    rows = ai_job_service._list_reclaimable_jobs_sync()
+    rows = ai_reaper.list_reclaimable_jobs_sync()
     assert any(
         row["job_id"] == "reliability-job" and row["reason"] == "INTERRUPTED_OWNERSHIP_LEAK"
         for row in rows
     )
 
-    adopted = ai_job_service._adopt_reclaimable_job_sync(
+    adopted = ai_reaper.adopt_reclaimable_job_sync(
         "reliability-job", "run-legacy", "run-legacy", "INTERRUPTED_OWNERSHIP_LEAK"
     )
     assert adopted is True
     db.expire_all()
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.TERMINATING
 
-    payload = ai_job_service._finish_termination_sync(
+    payload = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-legacy",
         confirmed_dead=True,
@@ -693,17 +691,17 @@ def test_dirty_interrupted_without_death_proof_is_not_cleared(monkeypatch):
     job = _owned_running_job(db, token="run-legacy")
     job.status = AiJobStatus.INTERRUPTED
     db.commit()
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
     # The reaper first adopts the leaked row into its stop/verify flow.
-    adopted = ai_job_service._adopt_reclaimable_job_sync(
+    adopted = ai_reaper.adopt_reclaimable_job_sync(
         "reliability-job", "run-legacy", "run-legacy", "INTERRUPTED_OWNERSHIP_LEAK"
     )
     assert adopted is True
     db.expire_all()
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.TERMINATING
 
-    payload = ai_job_service._finish_termination_sync(
+    payload = ai_attempts.finish_termination_sync(
         "reliability-job",
         "run-legacy",
         confirmed_dead=False,
@@ -722,9 +720,9 @@ def test_clean_interrupted_row_is_not_reaped(monkeypatch):
     factory = _session_factory()
     db = factory()
     _job(db, status=AiJobStatus.INTERRUPTED)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    rows = ai_job_service._list_reclaimable_jobs_sync()
+    rows = ai_reaper.list_reclaimable_jobs_sync()
     assert rows == []
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.INTERRUPTED
 
@@ -746,22 +744,22 @@ def test_user_terminating_state_cannot_be_overwritten_by_engine_error(monkeypatc
     factory = _session_factory()
     db = factory()
     _owned_job(db, status=AiJobStatus.TERMINATING)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    attempt = ai_job_service.AgentAttemptContext(
+    attempt = AgentAttemptContext(
         job_id="reliability-job",
         task_id=None,
         queue_key="TASK_CHAT:task-1",
         run_token="run-1",
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
     )
-    token = ai_job_service.bind_agent_attempt(attempt)
+    token = bind_agent_attempt(attempt)
     try:
-        asyncio.run(ai_job_service._on_engine_error("late error", "reliability-job"))
+        asyncio.run(ai_task_chat.on_engine_error("late error", "reliability-job"))
     finally:
-        ai_job_service.reset_agent_attempt(token)
+        reset_agent_attempt(token)
 
     db.expire_all()
     assert db.get(SddAiJob, "reliability-job").status == AiJobStatus.TERMINATING
@@ -797,9 +795,9 @@ def test_confirmed_dead_failure_writes_failed_and_clears_ownership():
     _owned_running_job(db)
     import pytest as _pytest
 
-    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(_pytest.MonkeyPatch(), factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -820,13 +818,13 @@ def test_unconfirmed_failure_with_missing_pid_writes_orphaned():
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
     import pytest as _pytest
 
-    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(_pytest.MonkeyPatch(), factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -850,13 +848,13 @@ def test_update_job_state_started_without_death_proof_orphans_without_pid():
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
     import pytest as _pytest
 
-    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(_pytest.MonkeyPatch(), factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -870,7 +868,7 @@ def test_update_job_state_started_without_death_proof_orphans_without_pid():
     assert result["payload"]["status"] == AiJobStatus.ORPHANED.value
     assert saved.status == AiJobStatus.ORPHANED
     assert saved.run_token == "run-1"
-    assert saved.worker_boot_id == ai_job_service.WORKER_BOOT_ID
+    assert saved.worker_boot_id == ai_registry.WORKER_BOOT_ID
 
 
 def test_update_job_state_confirmed_dead_allows_terminal_and_clears_ownership():
@@ -881,13 +879,13 @@ def test_update_job_state_confirmed_dead_allows_terminal_and_clears_ownership():
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
     import pytest as _pytest
 
-    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(_pytest.MonkeyPatch(), factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -911,13 +909,13 @@ def test_update_job_state_never_started_allows_business_failure():
         db,
         status=AiJobStatus.RUNNING,
         run_token="run-1",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
     )
     import pytest as _pytest
 
-    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(_pytest.MonkeyPatch(), factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -944,9 +942,9 @@ def test_update_job_state_orphaned_retains_containment_and_ownership():
     db.commit()
     import pytest as _pytest
 
-    _pytest.MonkeyPatch().setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(_pytest.MonkeyPatch(), factory)
 
-    result = ai_job_service._update_job_state_sync(
+    result = ai_fencing.update_job_state_sync(
         "reliability-job",
         status=AiJobStatus.FAILED,
         finalize=True,
@@ -973,9 +971,9 @@ def test_claim_persists_containment_id_derived_from_run_token(monkeypatch):
     factory = _session_factory()
     db = factory()
     _job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
 
-    job_id = ai_job_service._take_next_pending_job_id_sync("TASK_CHAT:task-1")
+    job_id = ai_store.take_next_pending_job_id_sync("TASK_CHAT:task-1")
     assert job_id == "reliability-job"
     claimed = db.get(SddAiJob, "reliability-job")
     assert claimed.run_token
@@ -989,13 +987,13 @@ def test_runtime_evidence_survives_cli_exit_then_outer_failure(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_running_job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _no_broadcast(payload, *, final=False):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     runtime = agents_pkg.AgentAttemptRuntimeState()
     runtime.record_process_started()
@@ -1005,26 +1003,26 @@ def test_runtime_evidence_survives_cli_exit_then_outer_failure(monkeypatch):
         error=None,
     )
     state_token = agents_pkg.bind_agent_attempt_runtime(runtime)
-    attempt = ai_job_service.AgentAttemptContext(
+    attempt = AgentAttemptContext(
         job_id="reliability-job",
         task_id=None,
         queue_key="TASK_CHAT:task-1",
         run_token="run-1",
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
     )
-    attempt_token = ai_job_service.bind_agent_attempt(attempt)
+    attempt_token = bind_agent_attempt(attempt)
     try:
         asyncio.run(
-            ai_job_service._finalize_task_chat_job_failure(
+            ai_task_chat.finalize_task_chat_job_failure(
                 "reliability-job",
                 "persist failed after successful CLI exit",
             )
         )
     finally:
-        ai_job_service.reset_agent_attempt_runtime(state_token)
-        ai_job_service.reset_agent_attempt(attempt_token)
+        reset_agent_attempt_runtime(state_token)
+        reset_agent_attempt(attempt_token)
 
     saved = db.get(SddAiJob, "reliability-job")
     assert saved.status == AiJobStatus.INTERRUPTED
@@ -1037,13 +1035,13 @@ def test_unconfirmed_runtime_evidence_finalizes_orphaned(monkeypatch):
     factory = _session_factory()
     db = factory()
     _owned_running_job(db)
-    monkeypatch.setattr(ai_job_service, "SessionLocal", factory)
+    patch_ai_job_db(monkeypatch, factory)
     monkeypatch.setattr("app.database.SessionLocal", factory)
 
     async def _no_broadcast(payload, *, final=False):
         return None
 
-    monkeypatch.setattr(ai_job_service, "_broadcast_job_payload", _no_broadcast)
+    monkeypatch.setattr(ai_publishing, "broadcast_job_payload", _no_broadcast)
 
     runtime = agents_pkg.AgentAttemptRuntimeState()
     runtime.record_process_started()
@@ -1054,26 +1052,26 @@ def test_unconfirmed_runtime_evidence_finalizes_orphaned(monkeypatch):
         remaining_pids=(5151,),
     )
     state_token = agents_pkg.bind_agent_attempt_runtime(runtime)
-    attempt = ai_job_service.AgentAttemptContext(
+    attempt = AgentAttemptContext(
         job_id="reliability-job",
         task_id=None,
         queue_key="TASK_CHAT:task-1",
         run_token="run-1",
         worker_id="w",
-        worker_boot_id=ai_job_service.WORKER_BOOT_ID,
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
         attempt_count=1,
     )
-    attempt_token = ai_job_service.bind_agent_attempt(attempt)
+    attempt_token = bind_agent_attempt(attempt)
     try:
         asyncio.run(
-            ai_job_service._finalize_task_chat_job_failure(
+            ai_task_chat.finalize_task_chat_job_failure(
                 "reliability-job",
                 "provider error with live tree",
             )
         )
     finally:
-        ai_job_service.reset_agent_attempt_runtime(state_token)
-        ai_job_service.reset_agent_attempt(attempt_token)
+        reset_agent_attempt_runtime(state_token)
+        reset_agent_attempt(attempt_token)
 
     saved = db.get(SddAiJob, "reliability-job")
     assert saved.status == AiJobStatus.ORPHANED
@@ -1089,7 +1087,7 @@ def test_concurrent_jobs_runtime_evidence_not_shared():
     first.record_process_started()
     first.record_termination(confirmed_dead=True)
     token = agents_pkg.bind_agent_attempt_runtime(first)
-    ai_job_service.reset_agent_attempt_runtime(token)
+    reset_agent_attempt_runtime(token)
 
     second = agents_pkg.AgentAttemptRuntimeState()
     second.record_termination(confirmed_dead=False)
@@ -1101,7 +1099,7 @@ def test_concurrent_jobs_runtime_evidence_not_shared():
         assert state.termination_confirmed_dead is False
         assert first.termination_confirmed_dead is True
     finally:
-        ai_job_service.reset_agent_attempt_runtime(token)
+        reset_agent_attempt_runtime(token)
     assert agents_pkg.current_agent_attempt_runtime() is None
 
 
@@ -1327,11 +1325,11 @@ def test_run_cli_single_turn_timeout_unconfirmed_tree_raises_typed_error(monkeyp
         ),
         raise_timeout=True,
     )
-    monkeypatch.setattr(ai_job_service, "create_cli_bridge", lambda *a, **kw: bridge)
+    monkeypatch.setattr("app.engine.claude_bridge.create_cli_bridge", lambda *a, **kw: bridge)
 
     async def _run():
         with pytest.raises(AgentError) as exc_info:
-            await ai_job_service.run_cli_single_turn("hi", ".", max_attempts=2)
+            await ai_provider_turn.run_cli_single_turn("hi", ".", max_attempts=2)
         assert exc_info.value.termination_confirmed_dead is False
         assert exc_info.value.failure_code == "PROCESS_TREE_STILL_ALIVE"
 
@@ -1363,11 +1361,11 @@ def test_run_cli_single_turn_provider_error_confirmed_dead_raises_typed(monkeypa
             return self.termination
 
     bridge = _ErrorResultBridge()
-    monkeypatch.setattr(ai_job_service, "create_cli_bridge", lambda *args, **kwargs: bridge)
+    monkeypatch.setattr("app.engine.claude_bridge.create_cli_bridge", lambda *args, **kwargs: bridge)
 
     async def _run():
         with pytest.raises(AgentProviderError) as exc_info:
-            await ai_job_service.run_cli_single_turn("hi", ".", max_attempts=1)
+            await ai_provider_turn.run_cli_single_turn("hi", ".", max_attempts=1)
         assert exc_info.value.termination_confirmed_dead is True
         assert exc_info.value.failure_code == "PROVIDER_ERROR"
         assert bridge.last_termination.confirmed_dead is True
@@ -1382,11 +1380,11 @@ def test_run_cli_single_turn_cancelled_raises_typed_cancelled(monkeypatch):
     bridge = _StubBridge(
         termination=TerminationResult(confirmed_dead=True, root_return_code=None),
     )
-    monkeypatch.setattr(ai_job_service, "create_cli_bridge", lambda *args, **kwargs: bridge)
+    monkeypatch.setattr("app.engine.claude_bridge.create_cli_bridge", lambda *args, **kwargs: bridge)
 
     async def _run():
         with pytest.raises(AgentCancelledError) as exc_info:
-            await ai_job_service.run_cli_single_turn(
+            await ai_provider_turn.run_cli_single_turn(
                 "hi",
                 ".",
                 max_attempts=1,
@@ -1434,13 +1432,13 @@ def test_run_cli_single_turn_records_evidence_in_runtime_state(monkeypatch):
     bridge = _RecordingBridge(
         termination=TerminationResult(confirmed_dead=True, root_return_code=0),
     )
-    monkeypatch.setattr(ai_job_service, "create_cli_bridge", lambda *args, **kwargs: bridge)
+    monkeypatch.setattr("app.engine.claude_bridge.create_cli_bridge", lambda *args, **kwargs: bridge)
 
     async def _run():
         runtime = agents_pkg.AgentAttemptRuntimeState()
         token = agents_pkg.bind_agent_attempt_runtime(runtime)
         try:
-            result = await ai_job_service.run_cli_single_turn("hi", ".", max_attempts=1)
+            result = await ai_provider_turn.run_cli_single_turn("hi", ".", max_attempts=1)
             assert result["termination_confirmed_dead"] is True
             # The stub never spawned a real process; a real bridge/spawn would
             # have recorded process_started via the supervisor.

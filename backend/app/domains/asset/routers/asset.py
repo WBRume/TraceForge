@@ -44,7 +44,13 @@ from app.domains.asset.schemas.asset import (
     AssetVersionResponse,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import DecisionCreateRequest
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import constants as ai_job_constants
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.store import (
+    create_asset_thread_job,
+    list_thread_jobs,
+    serialize_job,
+)
 from app.domains.asset.services import asset_discussion_service, asset_document_service, asset_resolution_service, asset_service
 from app.domains.auth.services import auth_service
 from app.domains.task.services import task_cli_state_service, task_service
@@ -188,7 +194,7 @@ def _create_asset_thread_ai_job_sync(
         )
         # The AI job creation commits this message in the same short DB phase.
         message_payload = _serialize_message(message).model_dump(mode="json")
-    job = ai_job_service.create_asset_thread_job(
+    job = create_asset_thread_job(
         db,
         workspace_id=ws_id,
         task_id=thread.task_id,
@@ -196,9 +202,9 @@ def _create_asset_thread_ai_job_sync(
         thread_id=thread.id,
         creator_id=creator_id,
         prompt_text=prompt_text or None,
-        job_kind=ai_job_service.JOB_KIND_THREAD_AI_REPLY,
+        job_kind=ai_job_constants.JOB_KIND_THREAD_AI_REPLY,
     )
-    return {"payload": ai_job_service.serialize_job(job), "message": message_payload}
+    return {"payload": serialize_job(job), "message": message_payload}
 
 
 def _create_asset_resolution_job_sync(
@@ -224,7 +230,7 @@ def _create_asset_resolution_job_sync(
         asset, context_version_id or asset.active_version_id
     )
     proposal_id = str(context_json.get("proposal_id") or "").strip() or None
-    if job_kind == ai_job_service.JOB_KIND_RESOLUTION_REWRITE:
+    if job_kind == ai_job_constants.JOB_KIND_RESOLUTION_REWRITE:
         proposal = (
             db.query(SddAssetResolutionProposal)
             .filter(
@@ -240,7 +246,7 @@ def _create_asset_resolution_job_sync(
     task_cli_state_service.ensure_bootstrap_ready_or_start(
         db, workspace_id=ws_id, task_id=thread.task_id
     )
-    if job_kind == ai_job_service.JOB_KIND_RESOLUTION_PROPOSAL:
+    if job_kind == ai_job_constants.JOB_KIND_RESOLUTION_PROPOSAL:
         existing_draft = (
             db.query(SddAssetResolutionProposal)
             .filter(
@@ -261,7 +267,7 @@ def _create_asset_resolution_job_sync(
                     "existing_draft_id": existing_draft.id,
                 },
             )
-    job = ai_job_service.create_asset_thread_job(
+    job = create_asset_thread_job(
         db,
         workspace_id=ws_id,
         task_id=thread.task_id,
@@ -272,7 +278,7 @@ def _create_asset_resolution_job_sync(
         job_kind=job_kind,
         context_json=context_json,
     )
-    return {"payload": ai_job_service.serialize_job(job)}
+    return {"payload": serialize_job(job)}
 
 
 def _serialize_proposal(proposal) -> AssetResolutionProposalResponse:
@@ -1040,7 +1046,7 @@ async def create_asset_thread_ai_job(
             },
         )
     payload = created["payload"]
-    await ai_job_service.enqueue_asset_thread_job(payload["id"])
+    await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
 
 
@@ -1061,12 +1067,12 @@ def list_asset_thread_ai_jobs(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    jobs = ai_job_service.list_thread_jobs(
+    jobs = list_thread_jobs(
         db,
         thread_id=thread.id,
         active_only=active_only,
     )
-    items = [AiJobResponse(**ai_job_service.serialize_job(item)) for item in jobs]
+    items = [AiJobResponse(**serialize_job(item)) for item in jobs]
     return AiJobListResponse(items=items, total=len(items))
 
 
@@ -1115,7 +1121,7 @@ async def create_thread_resolution_proposal(
                 asset_id=asset_id,
                 thread_id=thread_id,
                 creator_id=current_user.id,
-                job_kind=ai_job_service.JOB_KIND_RESOLUTION_PROPOSAL,
+                job_kind=ai_job_constants.JOB_KIND_RESOLUTION_PROPOSAL,
                 overwrite_existing_draft=overwrite_existing_draft,
                 context_json={
                     "overwrite_existing_draft": overwrite_existing_draft,
@@ -1127,7 +1133,7 @@ async def create_thread_resolution_proposal(
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
         raise HTTPException(status_code=409, detail=str(exc))
     payload = created["payload"]
-    await ai_job_service.enqueue_asset_thread_job(payload["id"])
+    await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
 
 
@@ -1257,7 +1263,7 @@ async def rewrite_thread_resolution_proposal(
                 asset_id=asset_id,
                 thread_id=thread_id,
                 creator_id=current_user.id,
-                job_kind=ai_job_service.JOB_KIND_RESOLUTION_REWRITE,
+                job_kind=ai_job_constants.JOB_KIND_RESOLUTION_REWRITE,
                 context_json={
                     "proposal_id": proposal_id,
                     "proposal_text": proposal_text,
@@ -1271,7 +1277,7 @@ async def rewrite_thread_resolution_proposal(
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
         raise HTTPException(status_code=409, detail=str(exc))
     payload = created["payload"]
-    await ai_job_service.enqueue_asset_thread_job(payload["id"])
+    await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
 
 

@@ -10,7 +10,8 @@ from app.dependencies import get_current_user, get_db
 from app.engine.workflow_engine import get_engine
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest, FailTaskCloseoutRequest, TaskCloseoutResponse
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.services.jobs import attempts as ai_job_attempts
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.task.services import task_cli_state_service, task_closeout_service, task_service
 from app.domains.workspace.services import workspace_service
 from app.domains.workspace_asset.services.workspace_task_detail_service import TaskDetailWriteError
@@ -28,7 +29,7 @@ def _verify_manage_task_status(ws_id: str, current_user: User, db: Session) -> N
 
 
 async def _stop_active_task_session(db: Session, ws_id: str, task_id: str, message: str) -> None:
-    cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+    cancelled_job_ids = ai_job_attempts.mark_task_chat_jobs_cancelled(
         db,
         workspace_id=ws_id,
         task_id=task_id,
@@ -38,7 +39,7 @@ async def _stop_active_task_session(db: Session, ws_id: str, task_id: str, messa
     if engine:
         await engine.stop()
     for job_id in cancelled_job_ids:
-        await ai_job_service.publish_job(job_id)
+        await ai_job_publishing.publish_job(job_id)
     task_cli_state_service.schedule_task_cli_state_cleanup(ws_id, task_id)
 
 

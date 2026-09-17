@@ -93,11 +93,8 @@ from app.domains.asset.services.asset_document_service import parse_document_pay
 from app.domains.workspace_asset.services import workspace_task_detail_service
 from app.core.logging import get_logger
 from app.core.offload import run_db_txn
-from app.domains.ai.services.ai_job_service import (
-    WORKER_BOOT_ID,
-    run_cli_single_turn,
-    schedule_queue,
-)
+from app.domains.ai.services.jobs.provider_turn import run_cli_single_turn
+from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime as ai_job_runtime
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
     ConvergenceIntent,
@@ -1462,7 +1459,7 @@ REQUIREMENT_IMPORT_MAX_BYTES = 20 * 1024 * 1024
 
 def schedule_requirement_preview_queue(workspace_id: str) -> None:
     """Requirement preview 作业统一走 AI 任务队列（可恢复、按 workspace 串行）。"""
-    schedule_queue(f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}")
+    ai_job_runtime.schedule_queue(f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}")
 
 
 def create_requirement_import_preview_job(

@@ -55,7 +55,17 @@ from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseRes
 from app.domains.case_center.models.case import SddCase
 from app.domains.case_center.services import case_service
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse, ProvisionJobResponse
-from app.domains.ai.services import ai_job_service
+from app.domains.ai.models.ai_job import AiJobChannel, SddAiJob
+from app.domains.ai.services.jobs import attempts as ai_job_attempts
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.store import (
+    create_diagnosis_summary_job,
+    create_task_chat_job,
+    find_active_chat_job,
+    find_active_summary_job,
+    list_task_jobs,
+    serialize_job,
+)
 from app.domains.asset.services import asset_document_service
 from app.domains.skill.services import task_skill_runtime_service, skill_runtime_trace_service
 from app.domains.task.services import (
@@ -237,7 +247,7 @@ def _load_start_task_context_sync(
         raise HTTPException(status_code=409, detail=_TASK_RUNNING_MSG)
     if task.status == TaskStatus.INTERRUPTED:
         raise HTTPException(status_code=409, detail=_TASK_INTERRUPTED_MSG)
-    if ai_job_service.find_active_summary_job(db, task.id) is not None:
+    if find_active_summary_job(db, task.id) is not None:
         raise HTTPException(
             status_code=409,
             detail="一键总结问题案例进行中，请等待完成或停止后再启动会话",
@@ -296,7 +306,7 @@ def _start_task_sync(
             "initial_prompt": True,
         },
     )
-    job = ai_job_service.create_task_chat_job(
+    job = create_task_chat_job(
         db,
         workspace_id=ws_id,
         task_id=task.id,
@@ -308,7 +318,7 @@ def _start_task_sync(
     return {
         "task_id": task.id,
         "job_id": job.id,
-        "job": ai_job_service.serialize_job(job),
+        "job": serialize_job(job),
     }
 
 
@@ -372,7 +382,7 @@ def _prepare_initialize_sync(
             status_code=409,
             detail="Task preparation failed and cannot be initialized. Please create a new task.",
         )
-    cancelled_job_ids = ai_job_service.mark_task_chat_jobs_cancelled(
+    cancelled_job_ids = ai_job_attempts.mark_task_chat_jobs_cancelled(
         db,
         workspace_id=ws_id,
         task_id=task_id,
@@ -428,16 +438,16 @@ def _apply_initialize_sync(
 def _initialize_has_active_jobs_sync(db: Session, *, task_id: str) -> bool:
     from app.domains.task.services.chat_submission_service import BLOCKING
 
-    return db.query(ai_job_service.SddAiJob.id).filter(
-        ai_job_service.SddAiJob.task_id == task_id,
-        ai_job_service.SddAiJob.channel == ai_job_service.AiJobChannel.TASK_CHAT,
-        ai_job_service.SddAiJob.status.in_(BLOCKING),
+    return db.query(SddAiJob.id).filter(
+        SddAiJob.task_id == task_id,
+        SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        SddAiJob.status.in_(BLOCKING),
     ).first() is not None
 
 
 def _serialize_job_by_id_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
-    job = db.get(ai_job_service.SddAiJob, job_id)
-    return ai_job_service.serialize_job(job) if job else None
+    job = db.get(SddAiJob, job_id)
+    return serialize_job(job) if job else None
 
 
 def _load_task_control_context_sync(
@@ -884,7 +894,7 @@ async def start_task(
                     user_display=state["user_display"],
                 )
             )
-            await ai_job_service.enqueue_task_chat_job(result["job_id"])
+            await ai_job_publishing.enqueue_task_chat_job(result["job_id"])
 
             return {"msg": "Task started", "task_id": result["task_id"], "job": result["job"]}
     except LockAcquireTimeout as exc:
@@ -930,7 +940,7 @@ async def initialize_task(
                         detail="旧引擎尚未停止，请稍后重试初始化；原会话已保留。",
                     ) from exc
             for old_job_id in prepared["cancelled_job_ids"]:
-                await ai_job_service.publish_job(old_job_id)
+                await ai_job_publishing.publish_job(old_job_id)
 
             from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
 
@@ -998,7 +1008,7 @@ async def initialize_task(
                 fresh_session=True,
                 skip_checkpoint=True,
             )
-            await ai_job_service.enqueue_task_chat_job(created.job_id)
+            await ai_job_publishing.enqueue_task_chat_job(created.job_id)
             job_payload = await _run_route_db_txn(
                 db, db_bind,
                 lambda db: _serialize_job_by_id_sync(db, created.job_id)
@@ -1515,12 +1525,12 @@ def list_task_ai_jobs(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    jobs = ai_job_service.list_task_jobs(
+    jobs = list_task_jobs(
         db,
         task_id=task.id,
         active_only=active_only,
     )
-    items = [AiJobResponse(**ai_job_service.serialize_job(item)) for item in jobs]
+    items = [AiJobResponse(**serialize_job(item)) for item in jobs]
     return AiJobListResponse(items=items, total=len(items))
 
 
@@ -1586,7 +1596,7 @@ async def run_task_spec_bootstrap(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         await task_cli_state_service.publish_bootstrap_snapshot(task_id)
-        baseline_job = await ai_job_service.enqueue_task_baseline_job(
+        baseline_job = await ai_job_publishing.enqueue_task_baseline_job(
             workspace_id=ws_id,
             task_id=task_id,
             creator_id=current_user.id,
@@ -1794,20 +1804,20 @@ def _prepare_diagnosis_summary_sync(
             detail="Case already adopted, diagnosis summarization is not allowed",
         )
 
-    active_summary = ai_job_service.find_active_summary_job(db, task.id)
+    active_summary = find_active_summary_job(db, task.id)
     if active_summary is not None:
         return {
             "job_id": active_summary.id,
-            "status": ai_job_service.serialize_job(active_summary).get("status"),
+            "status": serialize_job(active_summary).get("status"),
             "task_id": task.id,
             "created": False,
         }
-    if ai_job_service.find_active_chat_job(db, task.id) is not None:
+    if find_active_chat_job(db, task.id) is not None:
         raise HTTPException(
             status_code=409,
             detail="会话进行中，请等待完成或停止后再一键总结问题案例",
         )
-    job = ai_job_service.create_diagnosis_summary_job(
+    job = create_diagnosis_summary_job(
         db,
         workspace_id=ws_id,
         task_id=task.id,
@@ -2002,7 +2012,7 @@ async def trigger_diagnosis_summary(
         workspace_id=ws_id,
         task_id=prepared["task_id"],
     )
-    await ai_job_service.enqueue_task_chat_job(prepared["job_id"])
+    await ai_job_publishing.enqueue_task_chat_job(prepared["job_id"])
     return {
         "job_id": prepared["job_id"],
         "status": prepared["status"],
@@ -2021,16 +2031,16 @@ def get_diagnosis_summary_status(
     """问题定位任务：查询「一键总结问题案例」后台任务状态（供前端轮询收敛）。"""
     verify_workspace_access(ws_id, current_user, db)
     job = (
-        db.query(ai_job_service.SddAiJob)
+        db.query(SddAiJob)
         .filter(
-            ai_job_service.SddAiJob.id == job_id,
-            ai_job_service.SddAiJob.task_id == task_id,
+            SddAiJob.id == job_id,
+            SddAiJob.task_id == task_id,
         )
         .first()
     )
     if not job:
         raise HTTPException(status_code=404, detail="Diagnosis summary job not found")
-    payload = ai_job_service.serialize_job(job)
+    payload = serialize_job(job)
     return {
         "job_id": job.id,
         "task_id": task_id,

@@ -14,7 +14,9 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
-from app.domains.ai.services import ai_job_service, chat_message_idempotency_service
+from app.domains.ai.services.jobs.executors import task_chat as ai_job_task_chat
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services import chat_message_idempotency_service
 from app.domains.ai.services.chat_message_idempotency_service import ChatMessageClaim
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import (
@@ -215,7 +217,7 @@ class TaskWebSocketHandler:
         interaction_id = str(request.metadata.get("interaction_id") or "").strip()
         reply_to_message_id = str(request.metadata.get("reply_to_message_id") or "").strip()
         if interaction_id and reply_to_message_id:
-            live_delivery = await ai_job_service.confirmation_delivery_available(
+            live_delivery = await ai_job_task_chat.confirmation_delivery_available(
                 task_id=self._task_id,
                 interaction_id=interaction_id,
                 job_id=str(request.metadata.get("job_id") or "") or None,
@@ -418,7 +420,7 @@ class TaskWebSocketHandler:
                     ).model_dump(),
                 ),
             )
-            delivered = await ai_job_service.deliver_confirmation_response(
+            delivered = await ai_job_task_chat.deliver_confirmation_response(
                 task_id=self._task_id,
                 interaction_id=str(request.metadata.get("interaction_id") or ""),
                 response=request.content,
@@ -485,7 +487,7 @@ class TaskWebSocketHandler:
         finally:
             # The turn is already durable. Client I/O must not leave its job
             # pending until the next process-level queue recovery.
-            await ai_job_service.enqueue_task_chat_job(created.job_id)
+            await ai_job_publishing.enqueue_task_chat_job(created.job_id)
 
     async def _send_chat_ack(
         self,

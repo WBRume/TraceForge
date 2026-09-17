@@ -20,11 +20,11 @@ def active_statuses(db, task_id):
 
 async def recover_task_attempts(task_id, *, run_txn=run_db_txn, wait_for_running=False):
     """Caller holds the task lock; never cancel a healthy attempt on ordinary send."""
-    from app.domains.ai.services import ai_job_service
+    from app.domains.ai.services.jobs.reaper import reap_stale_jobs
 
     if not await run_txn(lambda db: active_statuses(db, task_id)):
         return
-    await ai_job_service.reap_stale_jobs(task_id=task_id)
+    await reap_stale_jobs(task_id=task_id)
     deadline = asyncio.get_running_loop().time() + settings.TASK_SESSION_REVERT_WAIT_SECONDS
     while statuses := await run_txn(lambda db: active_statuses(db, task_id)):
         # Queued/running/HITL turns still belong to the user. Ordinary chat
