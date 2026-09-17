@@ -118,6 +118,31 @@ const splitBatch = computed<RequirementImportBatch | null>(() => (
   splitTrackedJob.value?.status === 'SUCCESS' ? splitTrackedJob.value.batch : null
 ))
 
+function navigateToSplitReview(requirementId: string, batch: RequirementImportBatch) {
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
+  void router.push({
+    name: 'workspaceAssetRequirementSplitReview',
+    params: {
+      wsId: props.workspaceId,
+      requirementId,
+      batchId: batch.id,
+    },
+    state: {
+      batchJson: JSON.stringify(batch),
+    },
+  })
+}
+
+watch(
+  () => splitTrackedJob.value,
+  (job) => {
+    if (job?.status === 'SUCCESS' && job.batch) {
+      navigateToSplitReview(splitRequirementId.value || job.requirementId || '', job.batch)
+    }
+  },
+)
+
 const fallbackResponse = computed<WorkspaceAssetsRequirements>(() => ({
   workspace_id: props.workspaceId,
   items: [...props.requirements],
@@ -303,10 +328,10 @@ async function openSplit(requirement: RequirementSummary) {
     splitDialogOpen.value = true
     return
   }
-  // 已完成但未查看的结果：直接展示，免重跑 CLI
+  // 已完成但未查看的结果：直接跳转至独立拆分评审工作台
   const finished = provisioningStore.findLatestPreviewResult(requirement.id, 'requirement_split_preview')
-  if (finished) {
-    splitDialogOpen.value = true
+  if (finished && finished.batch) {
+    navigateToSplitReview(requirement.id, finished.batch)
     return
   }
   try {
@@ -417,6 +442,15 @@ watch(
     }
     if (!job || job.kind === 'provision') return
     provisioningStore.markPreviewJobViewed(jobId)
+    if (job.kind === 'requirement_split_preview' && job.status === 'SUCCESS' && job.batch) {
+      navigateToSplitReview(job.requirementId || '', job.batch)
+      return
+    }
+    if (job.kind === 'requirement_split_preview') {
+      splitRequirementId.value = job.requirementId || ''
+      splitDialogOpen.value = true
+      return
+    }
     createPreviewJobId.value = jobId
     createOpen.value = true
   },
@@ -496,9 +530,9 @@ watch(
     />
 
     <RequirementImportDialog
-      :open="splitDialogOpen"
+      :open="splitDialogOpen && !splitBatch"
       mode="split"
-      :batch="splitBatch"
+      :batch="null"
       :preview-job="splitPreviewJob"
       :loading="actionLoading"
       @close="closeSplitDialog"

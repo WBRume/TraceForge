@@ -1837,10 +1837,12 @@
         "back_to_list": "Back to Requirements",
         "back_to_task": "Back to Task",
         "link_task": "Link Task",
-        "unlink_task": "Unlink Task"
+        "unlink_task": "Unlink Task",
+        "delete": "Delete"
       },
       "fields": {
         "title": "Title",
+        "body": "Description",
         "description": "Description",
         "acceptance_criteria": "Acceptance Criteria",
         "status": "Status",
@@ -1920,6 +1922,28 @@
         "create_failed": "Failed to start the AI preview. Please try again later.",
         "minimize": "Minimize",
         "boundary": "AI Preview is only a draft preview. It does not create Tasks, Evidence, Coverage, Verified states, or code commits."
+      },
+      "split_review": {
+        "title": "Sub-requirement Split Review",
+        "back_to_parent": "Back to Requirement",
+        "parent_spec_title": "Parent Specification",
+        "parent_criteria_title": "Parent Acceptance Criteria",
+        "sub_requirements_title": "Sub-requirements",
+        "select_all": "Select all",
+        "selected_count": "{selected} of {total} selected",
+        "add_item": "Add sub-requirement",
+        "add_criterion": "Add criterion",
+        "criterion_placeholder": "Enter acceptance criterion and press Enter",
+        "task_prompt_label": "Task Prompt",
+        "confirm_action": "Confirm ({count})",
+        "discard_action": "Cancel",
+        "include_in_import": "Include",
+        "submitting": "Submitting...",
+        "change_reason_placeholder": "Change reason (optional)",
+        "confirm_success": "Sub-requirements created successfully",
+        "no_items": "No items in this preview batch",
+        "no_parent_spec": "No parent specification",
+        "no_parent_criteria": "No parent acceptance criteria"
       },
       "edit": {
         "aria_label": "Requirement editor",

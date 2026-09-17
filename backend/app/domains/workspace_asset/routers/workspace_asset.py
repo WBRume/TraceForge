@@ -460,6 +460,20 @@ def confirm_workspace_asset_requirement_split(
     return result
 
 
+@router.get("/requirements/import-batches/{batch_id}", response_model=RequirementImportBatchResponse)
+def get_workspace_asset_requirement_import_batch(
+    ws_id: str,
+    batch_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _verify_view_assets(ws_id, current_user, db)
+    batch = preview_job_service.get_import_batch(db, ws_id, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    return batch
+
+
 @router.get("/tasks", response_model=WorkspaceAssetsTasksResponse)
 def list_workspace_asset_tasks(
     ws_id: str,

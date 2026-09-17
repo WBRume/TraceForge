@@ -145,6 +145,31 @@ const splitBatch = computed<RequirementImportBatch | null>(() => (
   splitTrackedJob.value?.status === 'SUCCESS' ? splitTrackedJob.value.batch : null
 ))
 
+function navigateToSplitReview(reqId: string, batch: RequirementImportBatch) {
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
+  void router.push({
+    name: 'workspaceAssetRequirementSplitReview',
+    params: {
+      wsId: wsId.value,
+      requirementId: reqId,
+      batchId: batch.id,
+    },
+    state: {
+      batchJson: JSON.stringify(batch),
+    },
+  })
+}
+
+watch(
+  () => splitTrackedJob.value,
+  (job) => {
+    if (job?.status === 'SUCCESS' && job.batch) {
+      navigateToSplitReview(splitRequirementId.value || requirementId.value, job.batch)
+    }
+  },
+)
+
 async function openSplit(requirement: RequirementSummary) {
   splitRequirementId.value = requirement.id
   // 同一需求已有进行中的预览：直接回绑弹窗，不重复发起作业
@@ -153,10 +178,10 @@ async function openSplit(requirement: RequirementSummary) {
     splitDialogOpen.value = true
     return
   }
-  // 已完成但未查看的结果：直接展示，免重跑 CLI
+  // 已完成但未查看的结果：直接跳转至独立拆分评审工作台
   const finished = provisioningStore.findLatestPreviewResult(requirement.id, 'requirement_split_preview')
-  if (finished) {
-    splitDialogOpen.value = true
+  if (finished && finished.batch) {
+    navigateToSplitReview(requirement.id, finished.batch)
     return
   }
   try {
@@ -225,7 +250,7 @@ async function cancelRunningPreview(jobId: string) {
   }
 }
 
-// 浮窗「查看预览」深链：?previewJob=<jobId> → 打开拆分预览弹窗
+// 浮窗「查看预览」深链：?previewJob=<jobId> → 若已成功直接跳路由，否则打开进度弹窗
 watch(
   () => route.query.previewJob,
   async (previewJobId) => {
@@ -245,6 +270,10 @@ watch(
     }
     if (!job) return
     provisioningStore.markPreviewJobViewed(jobId)
+    if (job.kind === 'requirement_split_preview' && job.status === 'SUCCESS' && job.batch) {
+      navigateToSplitReview(job.requirementId || requirementId.value, job.batch)
+      return
+    }
     splitRequirementId.value = job.requirementId || requirementId.value
     splitDialogOpen.value = true
   },
@@ -324,9 +353,9 @@ watch(
     />
 
     <RequirementImportDialog
-      :open="splitDialogOpen"
+      :open="splitDialogOpen && !splitBatch"
       mode="split"
-      :batch="splitBatch"
+      :batch="null"
       :preview-job="splitPreviewJob"
       :loading="loading"
       @close="closeSplitDialog"

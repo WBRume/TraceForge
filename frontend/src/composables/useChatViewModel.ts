@@ -3413,7 +3413,7 @@ export function useChatViewModel() {
     }
   }
 
-  const scheduleRecoverSessionRetry = (taskId: string, reason: string) => {
+  const scheduleRecoverSessionRetry = (_taskId: string, reason: string) => {
     if (recoverSessionRetryTimer !== null) return
     const delay = wsBackoffDelay(recoverSessionAttempt)
     recoverSessionRetryTimer = window.setTimeout(() => {
@@ -3490,7 +3490,7 @@ export function useChatViewModel() {
         scheduleRecoverSessionRetry(taskId, reason)
         return false
       } finally {
-        if (recoverSessionFlight === flight) recoverSessionFlight = null
+        recoverSessionFlight = null
       }
     })()
     recoverSessionFlight = flight
