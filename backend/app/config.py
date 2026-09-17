@@ -299,7 +299,6 @@ class Settings(BaseSettings):
     LOG_ENQUEUE: bool = True
 
     # ── Redis / Distributed Lock ──
-    REDIS_ENABLED: bool = False
     REDIS_URL: str = "redis://127.0.0.1:6379/0"
     REDIS_PASSWORD: str = ""
     REDIS_SOCKET_TIMEOUT_SECONDS: float = 3.0

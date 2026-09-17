@@ -23,10 +23,14 @@ from app.domains.task.models.task import TaskStatus  # noqa: E402
 from app.domains.skill.routers import skill as skill_router
 from app.domains.task.routers import task as task_router
 
+# 直连真实 Redis 的并发/压力检查（live 集成检查，默认随 pytest.ini 的 addopts 排除）。
+# 运行方式（显式指定要访问的 Redis，避免无意触及任何环境）：
+#   DISTRIBUTED_LOCK_BACKEND=redis DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK=false \n#   REDIS_URL=redis://<host>:6379/0 pytest -m live_revert
+
+pytestmark = pytest.mark.live_revert
+
 
 def _skip_unless_redis_lock_mode() -> None:
-    if not bool(settings.REDIS_ENABLED):
-        pytest.skip("REDIS_ENABLED is false; skip redis API concurrency tests")
     if str(settings.DISTRIBUTED_LOCK_BACKEND or "").strip().lower() != "redis":
         pytest.skip("DISTRIBUTED_LOCK_BACKEND is not redis; skip redis API concurrency tests")
     if bool(settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK):

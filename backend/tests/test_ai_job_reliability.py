@@ -495,6 +495,45 @@ def _finalize(
     )
 
 
+def test_finalize_on_clean_interrupted_row_is_noop(monkeypatch):
+    """行已是干净 INTERRUPTED（无残留 ownership）时 finalize 必须幂等返回 None。
+
+    回归：该分支引用了未导入的 row_has_leaked_interrupted_ownership，
+    恢复会话后的 finalize 一触发就 NameError。
+    """
+    factory = _session_factory()
+    db = factory()
+    _job(db, status=AiJobStatus.INTERRUPTED)
+    patch_ai_job_db(monkeypatch, factory)
+
+    result = _finalize(db, success=False, dead=True)
+
+    assert result is None
+    saved = db.get(SddAiJob, "reliability-job")
+    assert saved.status == AiJobStatus.INTERRUPTED
+
+
+def test_finalize_on_leaked_interrupted_row_still_converges(monkeypatch):
+    """脏 INTERRUPTED（仍残留 ownership）：finalize 走 convergence 收敛。"""
+    factory = _session_factory()
+    db = factory()
+    job = _job(db, status=AiJobStatus.INTERRUPTED)
+    job.run_token = "run-1"
+    job.worker_boot_id = ai_registry.WORKER_BOOT_ID
+    db.commit()
+    patch_ai_job_db(monkeypatch, factory)
+
+    result = _finalize(db, success=False, dead=True)
+
+    assert result is not None
+    # 生产路径由外层 run_db_txn 提交；测试需要显式提交后再读。
+    db.commit()
+    db.expire_all()
+    saved = db.get(SddAiJob, "reliability-job")
+    assert saved.status == AiJobStatus.INTERRUPTED
+    assert saved.run_token is None
+
+
 def test_engine_error_does_not_interrupt_before_termination_finalizer(monkeypatch):
     factory = _session_factory()
     db = factory()

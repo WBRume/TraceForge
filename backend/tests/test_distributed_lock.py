@@ -71,7 +71,6 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         self._orig = {
-            "REDIS_ENABLED": settings.REDIS_ENABLED,
             "DISTRIBUTED_LOCK_BACKEND": settings.DISTRIBUTED_LOCK_BACKEND,
             "DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK": settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK,
             "DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS": settings.DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS,
@@ -81,7 +80,6 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
         dl._PROVIDER = None
 
     def tearDown(self) -> None:
-        settings.REDIS_ENABLED = self._orig["REDIS_ENABLED"]
         settings.DISTRIBUTED_LOCK_BACKEND = self._orig["DISTRIBUTED_LOCK_BACKEND"]
         settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK = self._orig["DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK"]
         settings.DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS = self._orig["DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS"]
@@ -98,7 +96,6 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_provider_fallbacks_to_local_when_redis_unavailable(self):
         settings.DISTRIBUTED_LOCK_BACKEND = "redis"
-        settings.REDIS_ENABLED = True
         settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK = True
         dl._PROVIDER = None
 
@@ -108,7 +105,6 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_get_provider_raises_when_redis_unavailable_and_fallback_disabled(self):
         settings.DISTRIBUTED_LOCK_BACKEND = "redis"
-        settings.REDIS_ENABLED = True
         settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK = False
         dl._PROVIDER = None
 

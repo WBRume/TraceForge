@@ -31,12 +31,41 @@ TESTS_ROOT = os.path.abspath(os.path.dirname(__file__))
 if TESTS_ROOT not in sys.path:
     sys.path.insert(0, TESTS_ROOT)
 
+# ── 测试环境隔离（必须在任何 app.* 导入之前执行）─────────────────────────
+# app/config.py 硬编码读取 backend/.env（生产/开发共用配置）。把 tests/.env.test
+# 以 override=False 注入 os.environ：pydantic-settings 中真实环境变量优先于
+# .env 文件，因此测试进程的基础设施地址被替换为 hermetic 默认值（本地锁、
+# 本地空端口 Redis），默认套件绝不触及生产 .env 中的远程服务。
+# 显式 export 的变量仍可覆盖本文件（如 DISTRIBUTED_LOCK_BACKEND=redis pytest -m live_revert
+# 按需运行真实 Redis 集成检查）。
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(os.path.join(TESTS_ROOT, ".env.test"), override=False)
+
 # 补全 ORM mapper / FK 注册表：User 及各域模型的 relationship / ForeignKey
 # 指向跨域表，必须全量导入 models 包后才能 create_all（与生产 app 全量加载等价）
 import importlib  # noqa: E402
 import pkgutil  # noqa: E402
 
 from app import domains as _domains  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_lock_provider(monkeypatch):
+    """默认为所有测试注入进程内锁提供者（hermetic）。
+
+    分布式锁默认后端是远程 Redis：业务测试并不验证 Redis 本身，却会因
+    远端延迟抖动 / 前置压力测试污染连接池而间歇性超时失败（409）。
+    这里统一替换为 LocalLockProvider（语义一致：acquire-timeout/互斥/释放），
+    让默认测试套件完全离线可复现。
+
+    直连真实 Redis 的集成检查已打 ``live_revert`` 标记并在测试内自行重置
+    provider（``dl._PROVIDER = None``），不受本 fixture 影响；按需运行：
+    ``pytest -m live_revert``。
+    """
+    from app.core import distributed_lock as dl
+
+    monkeypatch.setattr(dl, "_PROVIDER", dl.LocalLockProvider())
 
 for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
     try:
