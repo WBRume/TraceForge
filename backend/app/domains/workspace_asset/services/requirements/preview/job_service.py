@@ -129,6 +129,13 @@ def preview_job_response(db: Session, job: SddAiJob) -> RequirementPreviewJobRes
         loaded = get_import_batch(db, job.workspace_id, batch_id)
         if loaded:
             batch = import_batch_response(loaded)
+    requirement_id = str(context.get("requirement_id") or "").strip() or None
+    # 导入预览没有 requirement_id，用来源文件名给浮窗当标题
+    requirement_title = (
+        str(context.get("requirement_title") or "").strip()
+        or str(context.get("source_filename") or "").strip()
+        or None
+    )
     return RequirementPreviewJobResponse(
         job_id=job.id,
         workspace_id=job.workspace_id,
@@ -137,9 +144,33 @@ def preview_job_response(db: Session, job: SddAiJob) -> RequirementPreviewJobRes
         message=job.message,
         error=job.error_message,
         batch=batch,
+        job_kind=str(context.get("job_kind") or "").strip() or None,
+        requirement_id=requirement_id,
+        requirement_title=requirement_title,
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
+
+
+def list_active_requirement_preview_jobs(
+    db: Session,
+    creator_id: str,
+    *,
+    limit: int = 20,
+) -> List[RequirementPreviewJobResponse]:
+    """浮窗刷新恢复：当前用户名下未终态的 requirement preview 作业。"""
+    jobs = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.creator_id == creator_id,
+            SddAiJob.queue_key.like(f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}%"),
+            SddAiJob.status.in_([AiJobStatus.PENDING, AiJobStatus.RUNNING]),
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .limit(max(1, min(int(limit or 20), 100)))
+        .all()
+    )
+    return [preview_job_response(db, job) for job in jobs]
 
 
 def get_requirement_preview_job(db: Session, workspace_id: str, job_id: str) -> Optional[RequirementPreviewJobResponse]:
@@ -238,6 +269,7 @@ def create_requirement_split_preview_job(
             "job_kind": "REQUIREMENT_SPLIT_PREVIEW",
             "project_path": project_path,
             "requirement_id": requirement.id,
+            "requirement_title": requirement.title,
             "source_kind": "split",
             "source_uri": requirement.source_uri,
             "source_ref": requirement.id,
@@ -259,6 +291,7 @@ __all__ = [
     "create_requirement_split_preview_job",
     "get_import_batch",
     "get_requirement_preview_job",
+    "list_active_requirement_preview_jobs",
     "preview_job_response",
     "schedule_requirement_preview_queue",
     "workspace_project_path_or_error",

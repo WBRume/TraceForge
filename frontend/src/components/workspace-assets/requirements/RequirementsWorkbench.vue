@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, reactive, shallowRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { ElMessage } from 'element-plus'
 import RequirementEditDrawer from './RequirementEditDrawer.vue'
 import RequirementImportDialog from './RequirementImportDialog.vue'
 import RequirementTableWorkbench from './RequirementTableWorkbench.vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
+import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
+import { formatApiError } from '@/utils/error'
 import type {
   RequirementImportBatch,
   RequirementImportConfirmPayload,
@@ -26,6 +30,7 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const {
@@ -34,12 +39,14 @@ const {
   loadRequirements,
   createRequirement,
   updateRequirement,
-  createRequirementImportPreview,
+  createRequirementImportPreviewJob,
+  fetchRequirementPreviewJob,
   directImportRequirement,
   confirmRequirementImport,
-  createRequirementSplitPreview,
+  createRequirementSplitPreviewJob,
   confirmRequirementSplit,
 } = useWorkspaceAssets()
+const provisioningStore = useProvisioningStore()
 
 function routeString(key: string): string | undefined {
   const value = route.query[key]
@@ -68,13 +75,48 @@ const editorOpen = shallowRef(false)
 const editingRequirement = shallowRef<RequirementSummary | null>(null)
 const childParent = shallowRef<RequirementSummary | null>(null)
 const createOpen = shallowRef(false)
-const createBatch = shallowRef<RequirementImportBatch | null>(null)
-const createPreviewJob = shallowRef<RequirementPreviewJob | null>(null)
-const createPreviewRunId = shallowRef(0)
-const splitBatch = shallowRef<RequirementImportBatch | null>(null)
-const splitPreviewJob = shallowRef<RequirementPreviewJob | null>(null)
-const splitPreviewRunId = shallowRef(0)
-const splitRequirement = shallowRef<RequirementSummary | null>(null)
+// AI 预览作业：创建后交给右下角浮窗后台跟踪（分钟级等待不再阻塞弹窗/页面）
+const createPreviewJobId = shallowRef('')
+const splitDialogOpen = shallowRef(false)
+const splitRequirementId = shallowRef('')
+
+function trackedJobToPreviewJob(job: ProvisionJobView | null): RequirementPreviewJob | null {
+  if (!job) return null
+  return {
+    job_id: job.jobId,
+    workspace_id: job.workspaceId,
+    status: job.status,
+    progress: job.progress,
+    message: job.message || null,
+    error: job.errorMessage || null,
+    batch: job.batch,
+  }
+}
+
+const createPreviewJob = computed<RequirementPreviewJob | null>(() => (
+  trackedJobToPreviewJob(provisioningStore.getTrackedJob(createPreviewJobId.value))
+))
+
+const createBatch = computed<RequirementImportBatch | null>(() => {
+  const job = provisioningStore.getTrackedJob(createPreviewJobId.value)
+  return job?.status === 'SUCCESS' ? job.batch : null
+})
+
+// 拆分预览作业绑定：优先非终态（进行中），否则最近一条（SUCCESS 带批次可确认）
+const splitTrackedJob = computed<ProvisionJobView | null>(() => {
+  const reqId = splitRequirementId.value
+  if (!reqId) return null
+  const matched = provisioningStore.jobList.filter(
+    (job) => job.kind === 'requirement_split_preview' && job.requirementId === reqId,
+  )
+  return matched.find((job) => !job.terminal) || matched[matched.length - 1] || null
+})
+
+const splitPreviewJob = computed<RequirementPreviewJob | null>(() => trackedJobToPreviewJob(splitTrackedJob.value))
+
+const splitBatch = computed<RequirementImportBatch | null>(() => (
+  splitTrackedJob.value?.status === 'SUCCESS' ? splitTrackedJob.value.batch : null
+))
 
 const fallbackResponse = computed<WorkspaceAssetsRequirements>(() => ({
   workspace_id: props.workspaceId,
@@ -151,8 +193,8 @@ async function handleQueryChange(query: RequirementListQuery) {
 
 function openCreate() {
   childParent.value = null
-  createBatch.value = null
-  createPreviewJob.value = null
+  // 重新打开新建弹窗时回到初始步骤；进行中的预览作业留在浮窗继续跑
+  createPreviewJobId.value = ''
   createOpen.value = true
 }
 
@@ -191,29 +233,41 @@ async function submitEditor(payload: RequirementMutationPayload) {
   }
 }
 
-async function previewImport(payload: Parameters<typeof createRequirementImportPreview>[1]) {
-  createPreviewRunId.value += 1
-  const runId = createPreviewRunId.value
-  createBatch.value = null
-  createPreviewJob.value = null
-  const batch = await createRequirementImportPreview(
-    props.workspaceId,
-    payload,
-    (job) => {
-      if (runId === createPreviewRunId.value) createPreviewJob.value = job
-    },
-    () => runId === createPreviewRunId.value,
-  )
-  if (batch && runId === createPreviewRunId.value) createBatch.value = batch
+async function previewImport(payload: Parameters<typeof createRequirementImportPreviewJob>[1]) {
+  // 导入预览每次都是新内容，总是发起新作业（进行中的旧作业继续后台执行）
+  try {
+    const job = await createRequirementImportPreviewJob(props.workspaceId, payload)
+    if (!job) return
+    provisioningStore.trackRequirementPreviewJob({
+      jobId: job.job_id,
+      workspaceId: job.workspace_id || props.workspaceId,
+      kind: 'requirement_import_preview',
+    })
+    createPreviewJobId.value = job.job_id
+  } catch (err) {
+    ElMessage.error(formatApiError(
+      err,
+      t('workspace_assets.requirements.preview_progress.create_failed'),
+      t,
+    ))
+  }
+}
+
+/** 弹窗点「缩小」：作业收起到右下角浮窗（卡片才出现），关闭弹窗 */
+function minimizeCreatePreview() {
+  if (createPreviewJobId.value) provisioningStore.minimizePreviewJob(createPreviewJobId.value)
+  createOpen.value = false
+  createPreviewJobId.value = ''
 }
 
 async function confirmImport(payload: RequirementImportConfirmPayload) {
-  if (!createBatch.value) return
-  const batch = await confirmRequirementImport(props.workspaceId, createBatch.value.id, payload)
+  const previewBatch = createBatch.value
+  if (!previewBatch) return
+  const batch = await confirmRequirementImport(props.workspaceId, previewBatch.id, payload)
   if (!batch) return
-  createBatch.value = batch
   createOpen.value = false
-  createPreviewJob.value = null
+  if (createPreviewJobId.value) provisioningStore.dismiss(createPreviewJobId.value)
+  createPreviewJobId.value = ''
   await reloadRequirements()
   emit('refresh')
   const root = requirementItems.value.find((item) => item.import_batch_id === batch.id && !item.parent_requirement_id)
@@ -242,59 +296,132 @@ async function directImport(payload: Parameters<typeof directImportRequirement>[
 }
 
 async function openSplit(requirement: RequirementSummary) {
-  splitPreviewRunId.value += 1
-  const runId = splitPreviewRunId.value
-  splitRequirement.value = requirement
-  splitBatch.value = null
-  splitPreviewJob.value = null
-  const batch = await createRequirementSplitPreview(
-    props.workspaceId,
-    requirement.id,
-    null,
-    (job) => {
-      if (runId === splitPreviewRunId.value) splitPreviewJob.value = job
-    },
-    () => runId === splitPreviewRunId.value,
-  )
-  if (batch && runId === splitPreviewRunId.value) splitBatch.value = batch
+  splitRequirementId.value = requirement.id
+  // 同一需求已有进行中的预览：直接回绑弹窗，不重复发起作业
+  const active = provisioningStore.findActivePreviewJob(requirement.id, 'requirement_split_preview')
+  if (active) {
+    splitDialogOpen.value = true
+    return
+  }
+  // 已完成但未查看的结果：直接展示，免重跑 CLI
+  const finished = provisioningStore.findLatestPreviewResult(requirement.id, 'requirement_split_preview')
+  if (finished) {
+    splitDialogOpen.value = true
+    return
+  }
+  try {
+    const job = await createRequirementSplitPreviewJob(props.workspaceId, requirement.id)
+    if (!job) return
+    provisioningStore.trackRequirementPreviewJob({
+      jobId: job.job_id,
+      workspaceId: job.workspace_id || props.workspaceId,
+      kind: 'requirement_split_preview',
+      requirementId: requirement.id,
+      requirementTitle: requirement.title,
+    })
+    splitDialogOpen.value = true
+  } catch (err) {
+    ElMessage.error(formatApiError(
+      err,
+      t('workspace_assets.requirements.preview_progress.create_failed'),
+      t,
+    ))
+  }
+}
+
+/** 弹窗点「缩小」：作业收起到右下角浮窗（卡片才出现），关闭弹窗 */
+function minimizeSplitPreview() {
+  const job = splitTrackedJob.value
+  if (job) provisioningStore.minimizePreviewJob(job.jobId)
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
 }
 
 async function confirmSplit(payload: RequirementImportConfirmPayload) {
-  if (!splitBatch.value || !splitRequirement.value) return
+  const batch = splitBatch.value
+  if (!batch || !splitRequirementId.value) return
   const splitPayload: RequirementSplitPayload = {
-    batch_id: splitBatch.value.id,
+    batch_id: batch.id,
     items: payload.items,
     change_reason: payload.change_reason,
   }
-  const batch = await confirmRequirementSplit(props.workspaceId, splitRequirement.value.id, splitPayload)
-  if (batch) {
-    const parentId = splitRequirement.value.id
-    splitBatch.value = null
-    splitPreviewJob.value = null
-    splitRequirement.value = null
+  const confirmed = await confirmRequirementSplit(props.workspaceId, splitRequirementId.value, splitPayload)
+  if (confirmed) {
+    const parentId = splitRequirementId.value
+    discardSplitPreview()
     await refreshAfterMutation(parentId)
   }
 }
 
 function ignorePreview() {
-  createBatch.value = null
+  // 丢弃导入预览：清理浮窗作业并回到导入步骤
+  const job = provisioningStore.getTrackedJob(createPreviewJobId.value)
+  if (job) provisioningStore.dismiss(job.jobId)
+  createPreviewJobId.value = ''
 }
 
 function clearCreatePreviewJob() {
-  createPreviewJob.value = null
+  ignorePreview()
+}
+
+async function cancelRunningPreview(jobId: string) {
+  const ok = await provisioningStore.cancelPreviewJob(jobId)
+  if (!ok) {
+    ElMessage.error(t('provisioning.preview_cancel_failed'))
+  }
 }
 
 function closeCreateDialog() {
-  createPreviewRunId.value += 1
+  // 关闭对话框 = 取消后台预览（「缩小」才是转入后台继续执行）
+  const job = provisioningStore.getTrackedJob(createPreviewJobId.value)
   createOpen.value = false
-  createPreviewJob.value = null
+  createPreviewJobId.value = ''
+  if (job && !job.terminal) {
+    void cancelRunningPreview(job.jobId)
+  }
+}
+
+function discardSplitPreview() {
+  const job = splitTrackedJob.value
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
+  if (job) provisioningStore.dismiss(job.jobId)
 }
 
 function closeSplitDialog() {
-  splitPreviewRunId.value += 1
-  splitBatch.value = null
-  splitPreviewJob.value = null
+  const job = splitTrackedJob.value
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
+  if (job && !job.terminal) {
+    void cancelRunningPreview(job.jobId)
+  }
 }
+
+// 浮窗「查看预览」深链（导入预览没有详情页，回到列表打开 create 弹窗）
+watch(
+  () => route.query.previewJob,
+  async (previewJobId) => {
+    if (typeof previewJobId !== 'string' || !previewJobId || !props.workspaceId) return
+    const jobId = previewJobId
+    const nextQuery = { ...route.query }
+    delete nextQuery.previewJob
+    await router.replace({ query: nextQuery })
+    let job = provisioningStore.getTrackedJob(jobId)
+    if (!job) {
+      try {
+        const fetched = await fetchRequirementPreviewJob(props.workspaceId, jobId)
+        job = provisioningStore.ingestPreviewJobPayload(fetched)
+      } catch {
+        return
+      }
+    }
+    if (!job || job.kind === 'provision') return
+    provisioningStore.markPreviewJobViewed(jobId)
+    createPreviewJobId.value = jobId
+    createOpen.value = true
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.workspaceId,
@@ -359,6 +486,7 @@ watch(
       :preview-job="createPreviewJob"
       :loading="actionLoading"
       @close="closeCreateDialog"
+      @minimize="minimizeCreatePreview"
       @manual="submitCreatedRequirement"
       @direct="directImport"
       @preview="previewImport"
@@ -368,15 +496,16 @@ watch(
     />
 
     <RequirementImportDialog
-      :open="Boolean(splitBatch || splitPreviewJob)"
+      :open="splitDialogOpen"
       mode="split"
       :batch="splitBatch"
       :preview-job="splitPreviewJob"
       :loading="actionLoading"
       @close="closeSplitDialog"
-      @preview="ignorePreview"
+      @minimize="minimizeSplitPreview"
+      @discard-preview="discardSplitPreview"
       @confirm="confirmSplit"
-      @clear-preview-job="closeSplitDialog"
+      @clear-preview-job="discardSplitPreview"
     />
   </section>
 </template>

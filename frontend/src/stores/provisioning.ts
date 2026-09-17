@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import api from '@/utils/api'
+import type { RequirementImportBatch } from '@/types/workspaceAssets'
 
 type PendingTaskSpecUpload = {
   workspaceId: string
@@ -15,6 +16,9 @@ type PendingTaskDocsUpload = {
 }
 
 export type ProvisionJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+
+/** 浮窗跟踪的作业种类：任务创建 / Requirement AI 拆分预览 / AI 导入预览 */
+export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview'
 
 export type ProvisionJobView = {
   jobId: string
@@ -31,6 +35,19 @@ export type ProvisionJobView = {
   ready: boolean
   /** 轮询终态：SUCCESS / FAILED（含被取消）或连续拉取失败 */
   terminal: boolean
+  /** 作业种类（provision 缺省，兼容既有调用方） */
+  kind: ProvisionJobKind
+  /** requirement preview 专用：关联需求与结果批次 */
+  requirementId: string
+  requirementTitle: string
+  batch: RequirementImportBatch | null
+  /** 预览结果已被「查看预览」消费：浮窗隐藏卡片，store 保留供弹窗绑定 */
+  viewed: boolean
+  /**
+   * 预览作业是否已从弹窗「缩小」到右下角：false 时弹窗自身展示进度，
+   * 浮窗不出卡片（provision 作业没有弹窗阶段，恒为 true）
+   */
+  handedOver: boolean
 }
 
 type ProvisionJobApiPayload = {
@@ -48,6 +65,19 @@ type ProvisionJobApiPayload = {
   context_json?: { task_name?: string | null } | null
 }
 
+type RequirementPreviewJobApiPayload = {
+  job_id?: string | null
+  workspace_id?: string | null
+  status?: string | null
+  progress?: number | null
+  message?: string | null
+  error?: string | null
+  batch?: RequirementImportBatch | null
+  job_kind?: string | null
+  requirement_id?: string | null
+  requirement_title?: string | null
+}
+
 const pendingSpecByJob = new Map<string, PendingTaskSpecUpload>()
 const pendingDocsByJob = new Map<string, PendingTaskDocsUpload>()
 
@@ -57,7 +87,19 @@ const TASK_PENDING_POLL_ATTEMPTS = 20
 const TASK_PENDING_POLL_INTERVAL_MS = 500
 const EXPAND_PREF_KEY = 'provisionWidgetExpanded'
 
+// Requirement preview 作业的前端终态集合（与后端 converge 终态对齐）
+const PREVIEW_FINAL_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
+
 const asJobId = (value: unknown): string => String(value || '').trim()
+
+/** 后端 job_kind（REQUIREMENT_SPLIT_PREVIEW 等）→ 浮窗 kind；未知返回空串 */
+const normalizePreviewKind = (value: unknown): ProvisionJobKind | '' => {
+  const kind = String(value || '').trim().toLowerCase()
+  if (kind === 'requirement_split_preview' || kind === 'requirement_import_preview') {
+    return kind
+  }
+  return ''
+}
 
 export const useProvisioningStore = defineStore('provisioning', () => {
   // ── 任务准备浮窗状态（跨路由/刷新存活；刷新后由 restoreFromServer 恢复）──
@@ -148,6 +190,43 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       cancelRequested: Boolean(payload?.cancel_requested) || Boolean(existing?.cancelRequested),
       ready: existing?.ready || false,
       terminal: existing?.terminal || false,
+      kind: existing?.kind || 'provision',
+      requirementId: existing?.requirementId || '',
+      requirementTitle: existing?.requirementTitle || '',
+      batch: existing?.batch || null,
+      viewed: existing?.viewed || false,
+      handedOver: existing?.handedOver ?? true,
+    }
+    jobs.value = { ...jobs.value, [jobId]: view }
+    return view
+  }
+
+  const upsertPreviewJobFromPayload = (payload: RequirementPreviewJobApiPayload): ProvisionJobView | null => {
+    const jobId = asJobId(payload?.job_id)
+    if (!jobId) return null
+    const existing = jobs.value[jobId]
+    const status = String(payload?.status || existing?.status || 'PENDING').toUpperCase() as ProvisionJobStatus
+    const view: ProvisionJobView = {
+      jobId,
+      taskId: '',
+      workspaceId: asJobId(payload?.workspace_id) || existing?.workspaceId || '',
+      taskName: '',
+      status,
+      stage: '',
+      progress: Math.max(0, Math.min(Number(payload?.progress ?? existing?.progress ?? 0), 100)),
+      message: String(payload?.message || existing?.message || ''),
+      errorMessage: String(payload?.error || existing?.errorMessage || ''),
+      cancelRequested: false,
+      ready: false,
+      terminal: existing?.terminal || PREVIEW_FINAL_STATUSES.has(status),
+      kind: existing?.kind || normalizePreviewKind(payload?.job_kind) || 'requirement_import_preview',
+      requirementId: asJobId(payload?.requirement_id) || existing?.requirementId || '',
+      requirementTitle: String(payload?.requirement_title || existing?.requirementTitle || ''),
+      batch: payload?.batch || existing?.batch || null,
+      viewed: existing?.viewed || false,
+      // 新建条目默认 true（restore/深链兜底场景没有弹窗在展示）；弹窗内
+      // 发起的作业由 trackRequirementPreviewJob 显式置 false，轮询更新保留原值
+      handedOver: existing?.handedOver ?? true,
     }
     jobs.value = { ...jobs.value, [jobId]: view }
     return view
@@ -158,7 +237,11 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     timer = window.setInterval(() => {
       for (const job of Object.values(jobs.value)) {
         if (!job.terminal) {
-          void fetchJob(job.jobId)
+          if (job.kind === 'provision') {
+            void fetchJob(job.jobId)
+          } else {
+            void fetchPreviewJob(job.jobId)
+          }
         }
       }
     }, POLL_INTERVAL_MS)
@@ -320,11 +403,197 @@ export const useProvisioningStore = defineStore('provisioning', () => {
         cancelRequested: false,
         ready: false,
         terminal: false,
+        kind: 'provision',
+        requirementId: '',
+        requirementTitle: '',
+        batch: null,
+        viewed: false,
+        handedOver: true,
       },
     }
     expanded.value = true
     ensureTimer()
     void fetchJob(jobId)
+  }
+
+  /**
+   * Requirement AI 预览作业（拆分/导入）接入浮窗跟踪。
+   * 弹窗关闭后作业继续在后台轮询；不展开面板（发起时弹窗自身已有进度 UI）。
+   */
+  const trackRequirementPreviewJob = (payload: {
+    jobId: string
+    workspaceId: string
+    kind: ProvisionJobKind
+    requirementId?: string
+    requirementTitle?: string
+  }) => {
+    const jobId = asJobId(payload?.jobId)
+    if (!jobId) return null
+    const existing = jobs.value[jobId]
+    const view: ProvisionJobView = existing && !existing.terminal ? existing : {
+      jobId,
+      taskId: '',
+      workspaceId: asJobId(payload?.workspaceId),
+      taskName: '',
+      status: 'PENDING',
+      stage: '',
+      progress: 0,
+      message: '',
+      errorMessage: '',
+      cancelRequested: false,
+      ready: false,
+      terminal: false,
+      kind: normalizePreviewKind(payload?.kind) || 'requirement_import_preview',
+      requirementId: asJobId(payload?.requirementId),
+      requirementTitle: String(payload?.requirementTitle || ''),
+      batch: null,
+      viewed: false,
+      // 弹窗内发起：进度先由弹窗展示，点「缩小」后才交到右下角浮窗
+      handedOver: false,
+    }
+    jobs.value = { ...jobs.value, [jobId]: view }
+    ensureTimer()
+    void fetchPreviewJob(jobId)
+    return view
+  }
+
+  /** 弹窗点「缩小」：预览作业收起到右下角浮窗（展开面板承接弹窗上下文） */
+  const minimizePreviewJob = (jobId: string) => {
+    const normalizedJobId = asJobId(jobId)
+    const current = jobs.value[normalizedJobId]
+    if (!current || current.kind === 'provision') return
+    jobs.value = {
+      ...jobs.value,
+      [normalizedJobId]: { ...current, handedOver: true },
+    }
+    expanded.value = true
+  }
+
+  /** 已完成但尚未查看的预览结果（同需求重复发起「拆分」时直接回绑，免重跑 CLI） */
+  const findLatestPreviewResult = (
+    requirementId: string,
+    kind: ProvisionJobKind,
+  ): ProvisionJobView | null => {
+    const normalized = asJobId(requirementId)
+    if (!normalized) return null
+    return (
+      Object.values(jobs.value).find(
+        (job) =>
+          job.kind === kind
+          && job.requirementId === normalized
+          && job.terminal
+          && job.status === 'SUCCESS',
+      ) || null
+    )
+  }
+
+  /**
+   * 浮窗关闭进行中的预览作业：走任务会话同款 ai-jobs cancel 通道，
+   * 后端经统一取消信号终止 CLI（各 backend 由 bridge.cancel 收敛）。
+   * 成功/作业不存在 → 移除卡片；失败 → 保留卡片由调用方提示重试。
+   */
+  const cancelPreviewJob = async (jobId: string): Promise<boolean> => {
+    const normalizedJobId = asJobId(jobId)
+    const job = jobs.value[normalizedJobId]
+    if (!job || job.kind === 'provision') return true
+    try {
+      await api.post(`/workspaces/${job.workspaceId}/ai-jobs/${normalizedJobId}/cancel`)
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status
+      if (status === 404) {
+        dismiss(normalizedJobId)
+        return true
+      }
+      return false
+    }
+    dismiss(normalizedJobId)
+    return true
+  }
+
+  /** 深链恢复：把一次作业查询结果直接并入浮窗（刷新后 store 无记录时用） */
+  const ingestPreviewJobPayload = (payload: RequirementPreviewJobApiPayload): ProvisionJobView | null => {
+    const view = upsertPreviewJobFromPayload(payload)
+    if (view && !view.terminal) {
+      ensureTimer()
+    }
+    return view
+  }
+
+  /** 预览结果已被「查看预览」消费：浮窗隐藏卡片（store 保留供弹窗绑定） */
+  const markPreviewJobViewed = (jobId: string) => {
+    const normalizedJobId = asJobId(jobId)
+    const current = jobs.value[normalizedJobId]
+    if (!current || current.kind === 'provision') return
+    jobs.value = {
+      ...jobs.value,
+      [normalizedJobId]: { ...current, viewed: true },
+    }
+  }
+
+  /** 按 jobId 查浮窗中跟踪的作业（视图绑定预览弹窗用） */
+  const getTrackedJob = (jobId: string): ProvisionJobView | null => {
+    const normalizedJobId = asJobId(jobId)
+    return jobs.value[normalizedJobId] || null
+  }
+
+  /** 浮窗中某需求当前非终态的预览作业（去重：同一需求不重复发起） */
+  const findActivePreviewJob = (
+    requirementId: string,
+    kind: ProvisionJobKind,
+  ): ProvisionJobView | null => {
+    const normalized = asJobId(requirementId)
+    if (!normalized) return null
+    return (
+      Object.values(jobs.value).find(
+        (job) => job.kind === kind && job.requirementId === normalized && !job.terminal,
+      ) || null
+    )
+  }
+
+  /** 预览作业轮询：进度更新 + 终态收敛（SUCCESS 存 batch 供弹窗直接展示） */
+  const fetchPreviewJob = async (jobId: string) => {
+    const normalizedJobId = asJobId(jobId)
+    if (!normalizedJobId || inFlight.has(normalizedJobId)) return
+    const current = jobs.value[normalizedJobId]
+    if (!current || current.kind === 'provision') return
+    inFlight.add(normalizedJobId)
+    try {
+      const res = await api.get(
+        `/workspaces/${current.workspaceId}/workspace-assets/requirements/preview-jobs/${normalizedJobId}`,
+      )
+      const view = upsertPreviewJobFromPayload(res.data as RequirementPreviewJobApiPayload)
+      fetchErrors.delete(normalizedJobId)
+      if (!view) return
+      if (view.terminal && view.status === 'FAILED' && !view.errorMessage) {
+        jobs.value = {
+          ...jobs.value,
+          [normalizedJobId]: { ...view, errorMessage: 'failed_fallback' },
+        }
+      }
+      stopTimerIfIdle()
+    } catch (err: unknown) {
+      const notFound = (err as { response?: { status?: number } })?.response?.status === 404
+      const errors = (fetchErrors.get(normalizedJobId) || 0) + 1
+      fetchErrors.set(normalizedJobId, errors)
+      if (notFound || errors >= MAX_CONSECUTIVE_FETCH_ERRORS) {
+        const failed = jobs.value[normalizedJobId]
+        if (failed) {
+          jobs.value = {
+            ...jobs.value,
+            [normalizedJobId]: {
+              ...failed,
+              status: 'FAILED',
+              terminal: true,
+              errorMessage: failed.errorMessage || (notFound ? 'job_not_found' : 'load_failed'),
+            },
+          }
+        }
+        fetchErrors.delete(normalizedJobId)
+        stopTimerIfIdle()
+      }
+    } finally {
+      inFlight.delete(normalizedJobId)
+    }
   }
 
   /** 应用启动时恢复：拉取当前用户（创建人）名下未终态的任务创建 job */
@@ -340,12 +609,30 @@ export const useProvisioningStore = defineStore('provisioning', () => {
           void fetchJob(view.jobId)
         }
       }
-      if (Object.keys(jobs.value).length > 0) {
+      if (Object.values(jobs.value).some((job) => job.kind === 'provision' && !job.terminal)) {
         ensureTimer()
       }
     } catch (err) {
       restored.value = false
       console.warn('Failed to restore provisioning jobs', err)
+    }
+    // Requirement preview 作业独立恢复：端点不可用不影响任务创建浮窗
+    try {
+      const res = await api.get('/requirement-preview-jobs/active')
+      const items = Array.isArray(res.data) ? res.data : []
+      for (const payload of items as RequirementPreviewJobApiPayload[]) {
+        // 缺少可识别 job_kind 的记录直接跳过，避免误覆盖其他种类的作业视图
+        if (!normalizePreviewKind(payload?.job_kind)) continue
+        const view = upsertPreviewJobFromPayload(payload)
+        if (view && !view.terminal) {
+          void fetchPreviewJob(view.jobId)
+        }
+      }
+      if (Object.values(jobs.value).some((job) => job.kind !== 'provision' && !job.terminal)) {
+        ensureTimer()
+      }
+    } catch (err) {
+      console.warn('Failed to restore requirement preview jobs', err)
     }
   }
 
@@ -375,12 +662,16 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   const dismiss = (jobId: string) => {
     const normalizedJobId = asJobId(jobId)
     if (!normalizedJobId) return
+    const dismissed = jobs.value[normalizedJobId]
     const next = { ...jobs.value }
     delete next[normalizedJobId]
     jobs.value = next
     fetchErrors.delete(normalizedJobId)
     clearPendingUploads(normalizedJobId)
-    taskListRefreshToken.value += 1
+    // 仅任务创建作业影响任务列表；预览作业的 dismiss 不触发无关刷新
+    if (dismissed?.kind === 'provision') {
+      taskListRefreshToken.value += 1
+    }
     stopTimerIfIdle()
   }
 
@@ -398,6 +689,14 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     consumePendingTaskDocs,
     clearPendingTaskDocs,
     startWatching,
+    trackRequirementPreviewJob,
+    minimizePreviewJob,
+    findLatestPreviewResult,
+    cancelPreviewJob,
+    ingestPreviewJobPayload,
+    markPreviewJobViewed,
+    getTrackedJob,
+    findActivePreviewJob,
     restoreFromServer,
     minimize,
     expand,

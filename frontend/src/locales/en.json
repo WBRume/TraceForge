@@ -1067,7 +1067,16 @@
     "cancel_confirm_title": "Cancel Task Creation",
     "cancel_confirm": "Cancel creating \"{name}\"? Prepared resources will be cleaned up and the task will not be kept.",
     "cancel_failed": "Failed to cancel. Please try again later.",
-    "job_not_found": "Provisioning job not found (it may have been cancelled or cleaned up)."
+    "job_not_found": "Provisioning job not found (it may have been cancelled or cleaned up).",
+    "preview_split_title": "AI Split Preview",
+    "preview_import_title": "AI Import Preview",
+    "preview_stage_queued": "Queued",
+    "preview_stage_running": "Generating",
+    "preview_stage_completed": "Completed",
+    "preview_stage_failed": "Not finished",
+    "preview_open_action": "Open Preview",
+    "preview_success_hint": "AI preview is ready for review.",
+    "preview_cancel_failed": "Failed to cancel the preview. Please try again later."
   },
   "skills": {
     "entry": "Skills Configuration",
@@ -1908,6 +1917,8 @@
         "progress": "Progress",
         "message": "Message",
         "waiting_message": "Waiting for backend progress",
+        "create_failed": "Failed to start the AI preview. Please try again later.",
+        "minimize": "Minimize",
         "boundary": "AI Preview is only a draft preview. It does not create Tasks, Evidence, Coverage, Verified states, or code commits."
       },
       "edit": {

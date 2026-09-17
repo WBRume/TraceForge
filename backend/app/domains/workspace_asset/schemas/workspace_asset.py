@@ -231,6 +231,10 @@ class RequirementPreviewJobResponse(BaseModel):
     message: Optional[str] = None
     error: Optional[str] = None
     batch: Optional[RequirementImportBatchResponse] = None
+    # 作业种类与关联对象（来自 context_json）：供前端浮窗区分拆分/导入并回跳
+    job_kind: Optional[str] = None
+    requirement_id: Optional[str] = None
+    requirement_title: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

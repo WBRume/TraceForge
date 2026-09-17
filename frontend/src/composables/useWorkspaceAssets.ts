@@ -25,15 +25,6 @@ export const isWorkspaceAssetTaskDetailSkeleton = (taskId: string): boolean =>
   taskId === WORKSPACE_ASSET_TASK_DETAIL_SKELETON_ID
 
 const emptyConnectionStatus: WorkspaceAssetConnectionStatus[] = []
-const previewFinalStatuses = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
-// 真实 agent CLI 执行可能持续数分钟；2s × 300 ≈ 10 分钟等待上限。
-const PREVIEW_POLL_INTERVAL_MS = 2000
-const PREVIEW_POLL_MAX_ATTEMPTS = 300
-type RequirementPreviewJobUpdate = (job: RequirementPreviewJob) => void
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => globalThis.setTimeout(resolve, ms))
-}
 
 export function useWorkspaceAssets() {
   const loading = shallowRef(false)
@@ -211,7 +202,7 @@ export function useWorkspaceAssets() {
     })
   }
 
-  async function createRequirementImportPreview(
+  async function createRequirementImportPreviewJob(
     workspaceId: string,
     payload: {
       file?: File | null
@@ -220,30 +211,23 @@ export function useWorkspaceAssets() {
       source_uri?: string | null
       source_ref?: string | null
     },
-    onJobUpdate?: RequirementPreviewJobUpdate,
-    shouldContinue?: () => boolean,
-  ): Promise<RequirementImportBatch | null> {
-    return mutate(async () => {
-      const form = new FormData()
-      if (payload.file) {
-        form.append('file', payload.file)
-      } else if (payload.text) {
-        form.append('text', payload.text)
-      }
-      if (payload.source_kind) form.append('source_kind', payload.source_kind)
-      if (payload.source_uri) form.append('source_uri', payload.source_uri)
-      if (payload.source_ref) form.append('source_ref', payload.source_ref)
-      const response = await api.post<RequirementPreviewJob>(
-        `/workspaces/${workspaceId}/workspace-assets/requirements/imports`,
-        form,
-      )
-      onJobUpdate?.(response.data)
-      const job = await waitRequirementPreviewJob(workspaceId, response.data, onJobUpdate, shouldContinue)
-      if (job.status === 'FAILED' || job.status === 'CANCELLED') {
-        throw new Error(job.error || job.message || 'Requirement AI preview failed')
-      }
-      return job.batch || null
-    })
+  ): Promise<RequirementPreviewJob | null> {
+    // 不走 mutate()：AI CLI 执行是分钟级后台作业，轮询进度由右下角浮窗
+    // （provisioning store）负责，绝不能让全局 loading 一直为 true。
+    const form = new FormData()
+    if (payload.file) {
+      form.append('file', payload.file)
+    } else if (payload.text) {
+      form.append('text', payload.text)
+    }
+    if (payload.source_kind) form.append('source_kind', payload.source_kind)
+    if (payload.source_uri) form.append('source_uri', payload.source_uri)
+    if (payload.source_ref) form.append('source_ref', payload.source_ref)
+    const response = await api.post<RequirementPreviewJob>(
+      `/workspaces/${workspaceId}/workspace-assets/requirements/imports`,
+      form,
+    )
+    return response.data
   }
 
   async function directImportRequirement(
@@ -276,15 +260,6 @@ export function useWorkspaceAssets() {
     })
   }
 
-  async function getRequirementPreviewJob(
-    workspaceId: string,
-    jobId: string,
-  ): Promise<RequirementPreviewJob | null> {
-    return mutate(async () => {
-      return fetchRequirementPreviewJob(workspaceId, jobId)
-    })
-  }
-
   async function fetchRequirementPreviewJob(
     workspaceId: string,
     jobId: string,
@@ -293,61 +268,6 @@ export function useWorkspaceAssets() {
       `/workspaces/${workspaceId}/workspace-assets/requirements/preview-jobs/${jobId}`,
     )
     return response.data
-  }
-
-  async function waitRequirementPreviewJob(
-    workspaceId: string,
-    initialJob: RequirementPreviewJob,
-    onJobUpdate?: RequirementPreviewJobUpdate,
-    shouldContinue?: () => boolean,
-  ): Promise<RequirementPreviewJob> {
-    let job = initialJob
-    onJobUpdate?.(job)
-    for (let attempt = 0; attempt < PREVIEW_POLL_MAX_ATTEMPTS && !previewFinalStatuses.has(job.status); attempt += 1) {
-      // 对话框已关闭或新一轮预览已启动：静默停止轮询，交还控制权。
-      if (shouldContinue && !shouldContinue()) return job
-      await wait(PREVIEW_POLL_INTERVAL_MS)
-      job = await fetchRequirementPreviewJob(workspaceId, job.job_id)
-      onJobUpdate?.(job)
-    }
-    if (!previewFinalStatuses.has(job.status)) {
-      // 轮询达到上限仍非终态（真实 CLI 执行可能超过旧版 60s 等待）：
-      // 以明确的超时失败态呈现，避免对话框永远停留在“生成中”。
-      const message = `AI Preview 等待超时（${Math.round(
-        (PREVIEW_POLL_INTERVAL_MS * PREVIEW_POLL_MAX_ATTEMPTS) / 1000,
-      )}s），作业可能仍在后台执行；请稍后刷新确认结果。`
-      onJobUpdate?.({ ...job, status: 'FAILED', error: message })
-      throw new Error(message)
-    }
-    return job
-  }
-
-  async function createRequirementImportPreviewJob(
-    workspaceId: string,
-    payload: {
-      file?: File | null
-      text?: string | null
-      source_kind?: string | null
-      source_uri?: string | null
-      source_ref?: string | null
-    },
-  ): Promise<RequirementPreviewJob | null> {
-    return mutate(async () => {
-      const form = new FormData()
-      if (payload.file) {
-        form.append('file', payload.file)
-      } else if (payload.text) {
-        form.append('text', payload.text)
-      }
-      if (payload.source_kind) form.append('source_kind', payload.source_kind)
-      if (payload.source_uri) form.append('source_uri', payload.source_uri)
-      if (payload.source_ref) form.append('source_ref', payload.source_ref)
-      const response = await api.post<RequirementPreviewJob>(
-        `/workspaces/${workspaceId}/workspace-assets/requirements/imports`,
-        form,
-      )
-      return response.data
-    })
   }
 
   async function confirmRequirementImport(
@@ -364,39 +284,17 @@ export function useWorkspaceAssets() {
     })
   }
 
-  async function createRequirementSplitPreview(
-    workspaceId: string,
-    requirementId: string,
-    changeReason?: string | null,
-    onJobUpdate?: RequirementPreviewJobUpdate,
-    shouldContinue?: () => boolean,
-  ): Promise<RequirementImportBatch | null> {
-    return mutate(async () => {
-      const response = await api.post<RequirementPreviewJob>(
-        `/workspaces/${workspaceId}/workspace-assets/requirements/${requirementId}/split-preview`,
-        { change_reason: changeReason || undefined },
-      )
-      onJobUpdate?.(response.data)
-      const job = await waitRequirementPreviewJob(workspaceId, response.data, onJobUpdate, shouldContinue)
-      if (job.status === 'FAILED' || job.status === 'CANCELLED') {
-        throw new Error(job.error || job.message || 'Requirement split preview failed')
-      }
-      return job.batch || null
-    })
-  }
-
   async function createRequirementSplitPreviewJob(
     workspaceId: string,
     requirementId: string,
     changeReason?: string | null,
   ): Promise<RequirementPreviewJob | null> {
-    return mutate(async () => {
-      const response = await api.post<RequirementPreviewJob>(
-        `/workspaces/${workspaceId}/workspace-assets/requirements/${requirementId}/split-preview`,
-        { change_reason: changeReason || undefined },
-      )
-      return response.data
-    })
+    // 不走 mutate()：理由同 createRequirementImportPreviewJob。
+    const response = await api.post<RequirementPreviewJob>(
+      `/workspaces/${workspaceId}/workspace-assets/requirements/${requirementId}/split-preview`,
+      { change_reason: changeReason || undefined },
+    )
+    return response.data
   }
 
   async function confirmRequirementSplit(
@@ -494,13 +392,10 @@ export function useWorkspaceAssets() {
     updateRequirement,
     linkRequirementTask,
     unlinkRequirementTask,
-    createRequirementImportPreview,
     createRequirementImportPreviewJob,
-    getRequirementPreviewJob,
-    waitRequirementPreviewJob,
+    fetchRequirementPreviewJob,
     directImportRequirement,
     confirmRequirementImport,
-    createRequirementSplitPreview,
     createRequirementSplitPreviewJob,
     confirmRequirementSplit,
     loadTasks,

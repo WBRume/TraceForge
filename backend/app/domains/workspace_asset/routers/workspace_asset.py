@@ -3,7 +3,7 @@ Workspace Assets API routes.
 """
 
 import asyncio
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
@@ -95,6 +95,18 @@ from app.domains.workspace_asset.services.traceability import get_traceability
 
 
 router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspace Assets"])
+
+# 不挂在 workspace 前缀下的全局路由：供右下角浮窗在任意页面恢复进行中的
+# requirement preview 作业（按创建人过滤，与 provision-jobs/active 同型）。
+global_router = APIRouter(prefix="/requirement-preview-jobs", tags=["Workspace Assets"])
+
+
+@global_router.get("/active", response_model=List[RequirementPreviewJobResponse])
+def list_active_requirement_preview_jobs(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return preview_job_service.list_active_requirement_preview_jobs(db, current_user.id)
 
 
 def _verify_view_assets(ws_id: str, current_user: User, db: Session) -> None:

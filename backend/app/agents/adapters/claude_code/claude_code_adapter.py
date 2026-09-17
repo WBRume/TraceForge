@@ -334,6 +334,9 @@ class ClaudeCodeAdapter(AgentBackend):
             raise AgentError("Claude fork-on-resume requires an existing session id")
 
         request = AgentRunRequest(
+            # run_id 前缀 "claude-legacy" 指旧 CliBridgeBase 兼容入口（本方法），
+            # 单回合调用方（run_cli_single_turn 等）都从这里进来；并非旧 CLI/
+            # 旧模型/降级路径——实际仍走统一 run() 拉起当前 claude CLI。
             run_id=f"claude-legacy-{id(self)}",
             prompt=prompt,
             project_path=project_path,
