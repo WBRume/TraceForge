@@ -14,8 +14,11 @@ import pytest
 from app.agents.errors import AgentError
 from app.agents.contract import AgentRunRequest
 from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
-from app.agents.process_supervisor import (
+from app.agents.supervision import (
+    PROCESS_TREE_UNKNOWN,
     ManagedAgentProcess,
+    ProcessProbeState,
+    ProcessTreeSnapshot,
     ProcessWaitResult,
     TerminationResult,
     process_supervisor,
@@ -390,7 +393,7 @@ def test_spawn_callback_cancellation_closes_process_tree():
         assert await _wait_until(
             lambda: all(
                 item.process.returncode is not None
-                and not item._tree_has_live_processes()
+                and not item.known_descendant_pids
                 for item in process_supervisor._processes
             )
         ), "process tree survived the spawn-callback cancellation window"
@@ -475,9 +478,7 @@ def test_spawn_callback_timeout_closes_tree_and_raises_timeout():
 def test_cleanup_false_then_true_converges_same_identity():
     """第一次清理 False、第二次清理 True（同一 identity）必须收敛为已死亡。"""
     import app.agents as agents_pkg
-    from datetime import datetime, timezone
 
-    from app.agents.contract import AgentProcessIdentity
 
     async def _run():
         runtime = agents_pkg.AgentAttemptRuntimeState()
@@ -630,9 +631,10 @@ class _FakeManaged:
 
 def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
     """3-5 个受管进程持续采样时 heartbeat 延迟必须保持在阈值内。"""
-    from app.agents import process_supervisor as ps
+    from app.agents.supervision import inspection as supervision_inspection
+    from app.agents.supervision import managed as supervision_managed
 
-    if ps.psutil is None:
+    if psutil is None:
         pytest.skip("psutil is required for the event-loop lag test")
 
     async def _run():
@@ -647,7 +649,7 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
         for index in range(1, 5):
             managed_items.append(_FakeManaged(999999 - index))
         tasks = [
-            asyncio.create_task(ps.ProcessSupervisor._monitor_tree(item))
+            asyncio.create_task(supervision_managed.monitor_tree(item))
             for item in managed_items
         ]
         max_gap = 0.0
@@ -660,9 +662,9 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
                 max_gap = max(max_gap, now - last_beat)
                 last_beat = now
             # inspection executor 队列不得随时间增长（worker 数为上界）。
-            executor = ps._inspection_executor()
+            executor = supervision_inspection._inspection_executor()
             queue_size = executor._work_queue.qsize()
-            assert queue_size <= ps._inspection_executor()._max_workers + 1
+            assert queue_size <= supervision_inspection._inspection_executor()._max_workers + 1
         finally:
             for item in managed_items:
                 item.stop_monitor = True
@@ -684,7 +686,8 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
     # 主事件循环 heartbeat 延迟阈值：远小于采样周期 * 受管进程数。
     assert max_gap < 0.35, f"event loop stalled: max heartbeat gap={max_gap:.3f}s"
 
-import app.agents.process_supervisor as supervisor_module
+import app.agents.supervision.tree as supervisor_tree
+import app.agents.supervision.windows as supervisor_windows
 
 # ────────────── P0-2：三态探测与假死亡证明防护（doc §5） ──────────────
 
@@ -707,10 +710,10 @@ def test_access_denied_snapshot_is_unknown_and_keeps_known_descendants(monkeypat
     def denied(pid):
         raise psutil.AccessDenied(pid=pid)
 
-    monkeypatch.setattr(supervisor_module.psutil, "Process", denied)
-    snapshot = supervisor_module.inspect_process_tree_snapshot(managed)
+    monkeypatch.setattr(psutil, "Process", denied)
+    snapshot = supervisor_tree.inspect_process_tree_snapshot(managed)
 
-    assert snapshot.state == supervisor_module.ProcessProbeState.UNKNOWN
+    assert snapshot.state == ProcessProbeState.UNKNOWN
     assert snapshot.live_descendant_pids == ()
     # UNKNOWN 快照不得清空已知 PID（doc §5.4.3）。
     managed_known = {991002}
@@ -733,11 +736,11 @@ def test_root_alive_with_denied_child_is_live(monkeypatch):
     def denied(pid):
         raise psutil.AccessDenied(pid=pid)
 
-    monkeypatch.setattr(supervisor_module.psutil, "Process", denied)
-    snapshot = supervisor_module.inspect_process_tree_snapshot(managed)
+    monkeypatch.setattr(psutil, "Process", denied)
+    snapshot = supervisor_tree.inspect_process_tree_snapshot(managed)
 
     # root 明确存活（asyncio returncode 权威）：LIVE，绝不折叠成死亡。
-    assert snapshot.state == supervisor_module.ProcessProbeState.LIVE
+    assert snapshot.state == ProcessProbeState.LIVE
     assert 991001 in snapshot.remaining_pids
 
 
@@ -750,10 +753,10 @@ def test_root_exited_and_known_child_access_denied_is_unknown(monkeypatch):
         calls["n"] += 1
         raise psutil.AccessDenied(pid=pid)
 
-    monkeypatch.setattr(supervisor_module.psutil, "Process", first_denied_then_no_such)
-    snapshot = supervisor_module.inspect_process_tree_snapshot(managed)
+    monkeypatch.setattr(psutil, "Process", first_denied_then_no_such)
+    snapshot = supervisor_tree.inspect_process_tree_snapshot(managed)
 
-    assert snapshot.state == supervisor_module.ProcessProbeState.UNKNOWN
+    assert snapshot.state == ProcessProbeState.UNKNOWN
     assert snapshot.failure_code
 
 
@@ -767,15 +770,15 @@ def test_confirmed_dead_requires_every_identity_gone(monkeypatch):
             raise psutil.NoSuchProcess(int(pid))
         raise psutil.AccessDenied(pid=pid)
 
-    monkeypatch.setattr(supervisor_module.psutil, "Process", process_for)
-    snapshot = supervisor_module.inspect_process_tree_snapshot(managed)
+    monkeypatch.setattr(psutil, "Process", process_for)
+    snapshot = supervisor_tree.inspect_process_tree_snapshot(managed)
 
     # 一个 identity confirmed dead、另一个 unknown：聚合必须是 UNKNOWN。
-    assert snapshot.state == supervisor_module.ProcessProbeState.UNKNOWN
+    assert snapshot.state == ProcessProbeState.UNKNOWN
 
     real_pids.add(991003)
-    snapshot_after = supervisor_module.inspect_process_tree_snapshot(managed)
-    assert snapshot_after.state == supervisor_module.ProcessProbeState.CONFIRMED_DEAD
+    snapshot_after = supervisor_tree.inspect_process_tree_snapshot(managed)
+    assert snapshot_after.state == ProcessProbeState.CONFIRMED_DEAD
 
 
 def test_unknown_snapshot_never_manufactures_death(monkeypatch):
@@ -788,7 +791,7 @@ def test_unknown_snapshot_never_manufactures_death(monkeypatch):
     def denied(pid):
         raise psutil.AccessDenied(pid=pid)
 
-    monkeypatch.setattr(supervisor_module.psutil, "Process", denied)
+    monkeypatch.setattr(psutil, "Process", denied)
 
     async def _run():
         # _result 消费三态快照：UNKNOWN -> confirmed_dead=None。
@@ -797,7 +800,7 @@ def test_unknown_snapshot_never_manufactures_death(monkeypatch):
 
     result = asyncio.run(_run())
     assert result.confirmed_dead is None
-    assert result.error_code == supervisor_module.PROCESS_TREE_UNKNOWN
+    assert result.error_code == PROCESS_TREE_UNKNOWN
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Job Object containment")
@@ -808,9 +811,9 @@ def test_windows_job_query_failure_is_unknown(monkeypatch):
         def QueryInformationJobObject(self, *args, **kwargs):
             return False
 
-    monkeypatch.setattr(supervisor_module, "_windows_kernel32", lambda: _FailingKernel32())
-    state, pids = supervisor_module._windows_job_probe(managed)
-    assert state == supervisor_module.ProcessProbeState.UNKNOWN
+    monkeypatch.setattr(supervisor_windows, "windows_kernel32", lambda: _FailingKernel32())
+    state, pids = supervisor_tree.windows_job_probe(managed)
+    assert state == ProcessProbeState.UNKNOWN
     assert pids == set()
 
 
@@ -827,12 +830,12 @@ def test_inspect_tree_runs_off_loop_and_serializes_per_managed(monkeypatch):
         in_flight["max"] = max(in_flight["max"], in_flight["n"])
         _time.sleep(0.03)
         in_flight["n"] -= 1
-        return supervisor_module.ProcessTreeSnapshot(
-            state=supervisor_module.ProcessProbeState.CONFIRMED_DEAD,
+        return ProcessTreeSnapshot(
+            state=ProcessProbeState.CONFIRMED_DEAD,
             root_return_code=0,
         )
 
-    monkeypatch.setattr(supervisor_module, "inspect_process_tree_snapshot", slow_snapshot)
+    monkeypatch.setattr(supervisor_tree, "inspect_process_tree_snapshot", slow_snapshot)
 
     async def _run():
         managed = ManagedAgentProcess(
@@ -843,7 +846,7 @@ def test_inspect_tree_runs_off_loop_and_serializes_per_managed(monkeypatch):
         return snapshots
 
     snapshots = asyncio.run(_run())
-    assert all(s.state == supervisor_module.ProcessProbeState.CONFIRMED_DEAD for s in snapshots)
+    assert all(s.state == ProcessProbeState.CONFIRMED_DEAD for s in snapshots)
     # 同一 managed process 同时最多一个在飞采样（有界 gate，doc §9.4）。
     assert in_flight["max"] == 1
 
@@ -853,12 +856,12 @@ def test_concurrent_inspect_tree_keeps_event_loop_responsive(monkeypatch):
 
     def slow_snapshot(managed):
         _time.sleep(0.05)
-        return supervisor_module.ProcessTreeSnapshot(
-            state=supervisor_module.ProcessProbeState.CONFIRMED_DEAD,
+        return ProcessTreeSnapshot(
+            state=ProcessProbeState.CONFIRMED_DEAD,
             root_return_code=0,
         )
 
-    monkeypatch.setattr(supervisor_module, "inspect_process_tree_snapshot", slow_snapshot)
+    monkeypatch.setattr(supervisor_tree, "inspect_process_tree_snapshot", slow_snapshot)
 
     async def _run():
         loop = asyncio.get_running_loop()
@@ -884,7 +887,7 @@ def test_concurrent_inspect_tree_keeps_event_loop_responsive(monkeypatch):
 
     results, max_lag = asyncio.run(_run())
     assert all(
-        r.state == supervisor_module.ProcessProbeState.CONFIRMED_DEAD for r in results
+        r.state == ProcessProbeState.CONFIRMED_DEAD for r in results
     )
     # 5 个并发 50ms 假检查全部发生在 inspection executor 中；
     # 事件循环 heartbeat 不应被阻塞超过调度余量。

@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional
 
-from app.agents.process_supervisor import containment_capability, process_supervisor
+from app.agents.supervision import containment_capability, process_supervisor
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db

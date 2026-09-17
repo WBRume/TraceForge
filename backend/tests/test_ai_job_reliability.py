@@ -1354,7 +1354,7 @@ class _StubBridge:
 
 def test_run_cli_single_turn_timeout_unconfirmed_tree_raises_typed_error(monkeypatch):
     from app.agents.errors import AgentError
-    from app.agents.process_supervisor import TerminationResult
+    from app.agents.supervision import TerminationResult
 
     bridge = _StubBridge(
         termination=TerminationResult(
@@ -1379,7 +1379,7 @@ def test_run_cli_single_turn_timeout_unconfirmed_tree_raises_typed_error(monkeyp
 
 def test_run_cli_single_turn_provider_error_confirmed_dead_raises_typed(monkeypatch):
     from app.agents.errors import AgentProviderError
-    from app.agents.process_supervisor import TerminationResult
+    from app.agents.supervision import TerminationResult
 
     class _ErrorResultBridge(_StubBridge):
         def __init__(self):
@@ -1414,7 +1414,7 @@ def test_run_cli_single_turn_provider_error_confirmed_dead_raises_typed(monkeypa
 
 def test_run_cli_single_turn_cancelled_raises_typed_cancelled(monkeypatch):
     from app.agents.errors import AgentCancelledError
-    from app.agents.process_supervisor import TerminationResult
+    from app.agents.supervision import TerminationResult
 
     bridge = _StubBridge(
         termination=TerminationResult(confirmed_dead=True, root_return_code=None),
@@ -1438,7 +1438,7 @@ def test_run_cli_single_turn_cancelled_raises_typed_cancelled(monkeypatch):
 def test_run_cli_single_turn_records_evidence_in_runtime_state(monkeypatch):
     import app.agents as agents_pkg
     from app.agents.contract import record_attempt_termination
-    from app.agents.process_supervisor import TerminationResult
+    from app.agents.supervision import TerminationResult
 
     class _RecordingBridge(_StubBridge):
         """Mirror the real SubprocessCliBridge evidence contract."""

@@ -888,7 +888,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
 
 
 def _containment_id_for_run_token(run_token: str) -> str:
-    from app.agents.process_supervisor import containment_id_for_run_token
+    from app.agents.supervision import containment_id_for_run_token
 
     return containment_id_for_run_token(run_token)
 

@@ -30,7 +30,7 @@ from app.agents.errors import (
     AgentTimeoutError,
     SessionForkError,
 )
-from app.agents.process_supervisor import agent_stop_result_from_termination
+from app.agents.supervision import agent_stop_result_from_termination
 from app.config import settings
 from app.engine.claude_bridge import SubprocessCliBridge
 

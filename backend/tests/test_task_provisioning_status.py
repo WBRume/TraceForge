@@ -18,7 +18,7 @@ from app.domains.ai.services.jobs.executors import (
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from ai_job_test_utils import patch_ai_job_db
-from app.agents.process_supervisor import process_supervisor
+from app.agents.supervision import process_supervisor
 """
 任务创建准备态（PROVISIONING）测试
 
@@ -241,7 +241,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
             return None  # A new worker has no in-memory process registration.
 
         async def stop_persisted(pid, started_at, reason, **kwargs):
-            from app.agents.process_supervisor import TerminationResult
+            from app.agents.supervision import TerminationResult
             assert pid == 4321
             assert kwargs["run_token"] == "before-restart"
             return TerminationResult(confirmed_dead=True, root_return_code=None)

@@ -29,12 +29,11 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-import app.agents.process_supervisor as supervisor_module
-from app.agents.process_supervisor import (
+import app.agents.supervision.discovery as supervisor_discovery
+from app.agents.supervision import (
     PROCESS_GROUP_UNKNOWN,
     PROCESS_TREE_UNKNOWN,
     TOKEN_DISCOVERY_UNKNOWN,
-    ProcessProbeState,
     process_supervisor,
 )
 
@@ -386,13 +385,13 @@ async def test_stop_persisted_does_not_kill_reused_pid():
 @pytest.mark.asyncio
 async def test_persisted_token_scan_does_not_block_event_loop(monkeypatch):
     """P1-1：慢 token 扫描只占 inspection worker，不占主事件循环。"""
-    original = supervisor_module._scan_token_processes_sync
+    original = supervisor_discovery.scan_token_processes_sync
 
     def slow_scan(token: str, _not_before=None):
         time.sleep(0.20)
         return original(token, _not_before)
 
-    monkeypatch.setattr(supervisor_module, "_scan_token_processes_sync", slow_scan)
+    monkeypatch.setattr(supervisor_discovery, "scan_token_processes_sync", slow_scan)
 
     gaps: list[float] = []
 

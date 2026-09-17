@@ -57,7 +57,7 @@ from app.domains.ai.services.jobs.executors import (
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from app.domains.ai.services.jobs import fencing as ai_fencing
 from ai_job_test_utils import patch_ai_job_db
-from app.agents.process_supervisor import process_supervisor
+from app.agents.supervision import process_supervisor
 from app.domains.websocket.ws.manager import manager as task_ws_manager
 from app.core.offload import run_db_txn
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError

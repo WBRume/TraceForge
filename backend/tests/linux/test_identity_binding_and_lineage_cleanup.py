@@ -1,4 +1,4 @@
-"""07e04775 审计回归（doc: docs/agent-job-07e04775-audit-pseudocode-plan.md）。
+"""身份绑定与谱系清理回归。
 
 从审计复现脚本迁入正式测试目录，保留 Linux skip、受控故障与 finally 清理：
 
@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import subprocess
 import sys
 import uuid
 from types import SimpleNamespace
@@ -25,8 +24,8 @@ from unittest.mock import patch
 import psutil
 import pytest
 
-import app.agents.process_supervisor as ps
-from app.agents.process_supervisor import ProcessSupervisor
+import app.agents.supervision.identity as ps
+from app.agents.supervision import ProcessProbeState, ProcessSupervisor
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
@@ -59,7 +58,7 @@ async def test_failed_or_different_pidfd_binding_never_sends(second_time):
          patch.object(ps.os, "pidfd_open", return_value=777), \
          patch.object(ps.os, "close"), patch.object(ps.os, "kill") as kill, \
          patch.object(ps.signal, "pidfd_send_signal") as fd_send:
-        result = await ps._signal_after_identity_recheck(999991, 100.0, signal.SIGKILL, [], "SIGKILL")
+        result = await ps.signal_after_identity_recheck(999991, 100.0, signal.SIGKILL, [], "SIGKILL")
     assert result == "unverified", (result, kill.call_args_list, fd_send.call_args_list)
     assert not kill.called and not fd_send.called, (
         result, kill.call_args_list, fd_send.call_args_list
@@ -74,7 +73,7 @@ async def test_rebind_access_denied_never_sends():
          patch.object(ps.os, "pidfd_open", return_value=778), \
          patch.object(ps.os, "close"), patch.object(ps.os, "kill") as kill, \
          patch.object(ps.signal, "pidfd_send_signal") as fd_send:
-        result = await ps._signal_after_identity_recheck(999992, 100.0, signal.SIGKILL, [], "SIGKILL")
+        result = await ps.signal_after_identity_recheck(999992, 100.0, signal.SIGKILL, [], "SIGKILL")
     assert result == "unverified"
     assert not kill.called and not fd_send.called
 
@@ -87,7 +86,7 @@ async def test_pidfd_open_failure_never_sends():
          patch.object(ps.os, "pidfd_open", side_effect=PermissionError(999993)), \
          patch.object(ps.os, "kill") as kill, \
          patch.object(ps.signal, "pidfd_send_signal") as fd_send:
-        result = await ps._signal_after_identity_recheck(999993, 100.0, signal.SIGKILL, [], "SIGKILL")
+        result = await ps.signal_after_identity_recheck(999993, 100.0, signal.SIGKILL, [], "SIGKILL")
     assert result == "unverified"
     assert not kill.called and not fd_send.called
 
@@ -97,10 +96,10 @@ async def test_unsupported_pidfd_platform_never_sends():
     """平台不支持安全句柄操作：明确 UNSUPPORTED，零信号。"""
     samples = [SimpleNamespace(create_time=lambda: 100.0)]
     with patch.object(ps.psutil, "Process", side_effect=samples), \
-         patch.object(ps, "_pidfd_send_supported", return_value=False), \
+         patch.object(ps, "pidfd_send_supported", return_value=False), \
          patch.object(ps.os, "kill") as kill, \
          patch.object(ps.signal, "pidfd_send_signal") as fd_send:
-        result = await ps._signal_after_identity_recheck(999994, 100.0, signal.SIGKILL, [], "SIGKILL")
+        result = await ps.signal_after_identity_recheck(999994, 100.0, signal.SIGKILL, [], "SIGKILL")
     assert result == "unverified"
     assert not kill.called and not fd_send.called
 
@@ -114,7 +113,7 @@ async def test_missing_expected_identity_never_sends():
          patch.object(ps.os, "pidfd_open", return_value=779), \
          patch.object(ps.os, "close"), patch.object(ps.os, "kill") as kill, \
          patch.object(ps.signal, "pidfd_send_signal") as fd_send:
-        result = await ps._signal_after_identity_recheck(999995, None, signal.SIGKILL, [], "SIGKILL")
+        result = await ps.signal_after_identity_recheck(999995, None, signal.SIGKILL, [], "SIGKILL")
     assert result == "unverified"
     assert not kill.called and not fd_send.called
 
@@ -145,7 +144,7 @@ async def test_verified_send_closes_pidfd_exactly_once():
     with patch.object(ps.psutil, "Process", side_effect=samples), \
          patch.object(ps.os, "close", side_effect=counting_close), \
          patch.object(ps.signal, "pidfd_send_signal", side_effect=counting_send):
-        result = await ps._signal_after_identity_recheck(
+        result = await ps.signal_after_identity_recheck(
             os.getpid(), probe_ct, 0, [], "SIG0"
         )
     assert result == "sent", result
@@ -183,7 +182,7 @@ time.sleep(1)
         # 只缩短等待预算；保留真实树采样与真实信号。
         async def fast_wait(_timeout):
             snapshot = await managed.inspect_tree()
-            return snapshot.state == ps.ProcessProbeState.CONFIRMED_DEAD
+            return snapshot.state == ProcessProbeState.CONFIRMED_DEAD
 
         with patch.object(managed, "_wait_for_exit", side_effect=fast_wait):
             result = await managed.close(reason="audit")

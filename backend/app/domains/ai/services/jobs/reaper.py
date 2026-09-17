@@ -18,7 +18,7 @@ from app.agents import (
     AgentStopResult,
     EXECUTION_KIND_REMOTE_SESSION,
 )
-from app.agents.process_supervisor import process_supervisor
+from app.agents.supervision import process_supervisor
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
