@@ -38,6 +38,7 @@ from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
 from app.domains.workspace.routers import workspace
 from app.domains.workspace.routers import invite_join
 from app.domains.task.routers import task
+from app.domains.task.routers import public_session_shares
 from app.domains.dashboard.routers import dashboard
 from app.domains.asset.routers import asset
 from app.domains.asset.routers import upload
@@ -117,6 +118,12 @@ async def lifespan(app: FastAPI):
                 await ws_manager.shutdown()
             except Exception:
                 logger.warning("Failed to shutdown %s websocket hubs", label)
+        try:
+            from app.domains.websocket.ws.public_share_manager import public_share_ws_manager
+
+            await public_share_ws_manager.shutdown()
+        except Exception:
+            logger.warning("Failed to shutdown public share websocket hubs")
         await search_router.stop(app)
         try:
             await close_redis_client()
@@ -164,6 +171,9 @@ app.include_router(oauth.router, prefix="/api")
 app.include_router(workspace.router, prefix="/api")
 app.include_router(invite_join.router, prefix="/api")
 app.include_router(task.router, prefix="/api")
+app.include_router(public_session_shares.router, prefix="/api")
+# 公开分享 WS 通道：与 /ws/task 同级（vite / nginx 的 /ws 代理直接转发）
+app.include_router(public_session_shares.ws_router)
 app.include_router(task_closeout.router, prefix="/api")
 app.include_router(case_center_router.router, prefix="/api")
 app.include_router(case_center_router.global_router, prefix="/api")

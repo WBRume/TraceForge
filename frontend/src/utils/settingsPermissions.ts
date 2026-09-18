@@ -10,6 +10,7 @@ export type PermissionKey =
   | 'view_assets'
   | 'manage_requirements'
   | 'export_task'
+  | 'share_task_session'
   | 'view_api_mock'
   | 'manage_api_mock'
   | 'publish_api_mock'
@@ -28,6 +29,7 @@ export const createEmptyPermissions = (override?: Partial<PermissionFlags>): Per
   view_assets: true,
   manage_requirements: false,
   export_task: false,
+  share_task_session: false,
   view_api_mock: false,
   manage_api_mock: false,
   publish_api_mock: false,
@@ -48,6 +50,7 @@ export const defaultPermissionsByRole = (role: 'OWNER' | 'DEVELOPER' | 'VIEWER')
       view_assets: true,
       manage_requirements: true,
       export_task: true,
+      share_task_session: true,
       view_api_mock: true,
       manage_api_mock: true,
       publish_api_mock: true,
@@ -66,6 +69,7 @@ export const defaultPermissionsByRole = (role: 'OWNER' | 'DEVELOPER' | 'VIEWER')
       view_assets: true,
       manage_requirements: false,
       export_task: true,
+      share_task_session: true,
       view_api_mock: true,
       manage_api_mock: true,
     })

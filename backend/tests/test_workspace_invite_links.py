@@ -135,13 +135,13 @@ def test_accept_invite_link_rejects_invalid_states(db):
     else:
         raise AssertionError("unknown token should fail")
 
-    # 已撤销
+    # 已撤销（撤销即删除，旧 token 查不到）
     link = workspace_service.create_invite_link(db, "ws-1", creator_user_id=owner.id, role="DEVELOPER")
     workspace_service.revoke_invite_link(db, "ws-1", link.id)
     try:
         workspace_service.accept_invite_link(db, link.token, invitee)
     except ValueError as exc:
-        assert "revoked" in str(exc).lower()
+        assert "not found" in str(exc).lower()
     else:
         raise AssertionError("revoked link should fail")
 
@@ -221,14 +221,20 @@ def test_invite_link_api_full_flow(db):
     assert listed.json()["total"] == 1
     assert listed.json()["items"][0]["used_count"] == 1
 
-    # 撤销后再接受 → 400
+    # 撤销（即删除）后再接受 → 旧 token 失效
     revoked = client.delete(f"/api/workspaces/ws-1/invite-links/{body['id']}")
     assert revoked.status_code == 200
     assert revoked.json()["status"] == "REVOKED"
 
+    # 已撤销的链接不再出现在列表里
+    listed_after = client.get("/api/workspaces/ws-1/invite-links")
+    assert listed_after.status_code == 200
+    assert listed_after.json()["total"] == 0
+
+    # 撤销即删除：旧 token 对任何人（含已是成员者）都不可用。
+    # 幂等放行仅适用于仍存在的链接（服务层用例覆盖了二次接受不耗次数）。
     accepted_again = accept_client.post(f"/api/invites/{token}/accept")
-    assert accepted_again.status_code == 200  # 已是成员幂等放行
-    assert accepted_again.json()["already_member"] is True
+    assert accepted_again.status_code == 404
 
 
 def test_invite_link_api_requires_manage_members(db):

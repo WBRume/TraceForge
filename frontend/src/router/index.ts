@@ -33,6 +33,12 @@ const router = createRouter({
       name: 'joinInvite',
       component: () => import('../views/JoinInviteView.vue')
     },
+    // 任务会话免登录分享页（令牌在 fragment；READ 只读 / INPUT 邀请输入）
+    {
+      path: '/share/session',
+      name: 'sharedTaskSession',
+      component: () => import('../views/SharedTaskSessionView.vue')
+    },
     // OAuth 三方登录流程页（免鉴权；后端 302 落地页，T04）
     {
       path: '/oauth/callback',

@@ -695,7 +695,8 @@ def revoke_workspace_invite_link(
     _ensure_member_manager(db, ws_id, current_user.id)
 
     # 服务只加锁并 flush（与 accept 相同的锁顺序 Workspace → Link）；
-    # commit/rollback 归路由（doc 审计 0c381413 §4.2）。
+    # commit/rollback 归路由（doc 审计 0c381413 §4.2）。撤销即删除，
+    # 响应返回删除快照（status=REVOKED，行已不存在）。
     link = workspace_service.revoke_invite_link_in_txn(db, ws_id, link_id)
     if not link:
         db.rollback()
@@ -711,4 +712,20 @@ def revoke_workspace_invite_link(
         workspace_id=ws_id,
         operation="revoke_invite_link",
     )
-    return WorkspaceInviteLinkResponse(**workspace_service.serialize_invite_link(link))
+    return WorkspaceInviteLinkResponse(
+        id=link.id,
+        workspace_id=link.workspace_id,
+        token=link.token,
+        role=link.role,
+        permissions=workspace_service.permissions_to_flags(
+            workspace_service.default_permissions_for_role(link.role)
+        ),
+        is_expert=bool(link.is_expert),
+        max_uses=link.max_uses,
+        used_count=int(link.used_count or 0),
+        remaining_uses=None if link.max_uses is None else max(0, link.max_uses - int(link.used_count or 0)),
+        expires_at=link.expires_at,
+        created_at=link.created_at,
+        status="REVOKED",
+        created_by_name="",
+    )

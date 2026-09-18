@@ -47,7 +47,8 @@ const PERMISSION_DOMAINS: PermissionDomain[] = [
       { key: 'start_task', label: '启动任务', desc: '触发 Agent 执行与流水线运转' },
       { key: 'manage_task_status', label: '管理任务状态', desc: '暂停、恢复或变更任务运行阶段' },
       { key: 'delete_task', label: '删除任务', desc: '清理已废弃或无效的任务记录' },
-      { key: 'export_task', label: '导出任务', desc: '下载任务日志、报表与产物归档' }
+      { key: 'export_task', label: '导出任务', desc: '下载任务日志、报表与产物归档' },
+      { key: 'share_task_session', label: '分享任务会话', desc: '生成免登录会话分享与邀请输入链接' }
     ]
   },
   {

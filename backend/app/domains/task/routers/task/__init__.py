@@ -12,6 +12,7 @@
 - skill_runtime:     Skills 运行时列表 / 事件 / 运行文件树与读写
 - change_proposals:  变更提案创建（三重分布式锁编排）
 - diagnosis:         问题定位辅助文档 / 定位结果 / 一键转案例 / 一键总结
+- session_shares:    任务会话免登录分享（创建 / 列表 / 撤销 / 待采纳输入）
 
 get_db / get_current_user 在此 re-export：路由声明与测试 DI override 使用
 同一可调用对象（app.dependencies 中的原函数）。
@@ -26,6 +27,7 @@ from . import (
     diagnosis,
     session_control,
     session_runs,
+    session_shares,
     skill_runtime,
     spec_docs,
 )
@@ -39,5 +41,6 @@ for _submodule in (
     skill_runtime,
     change_proposals,
     diagnosis,
+    session_shares,
 ):
     router.include_router(_submodule.router)

@@ -76,6 +76,12 @@ async def broadcast_job_payload(payload: Dict[str, Any]) -> None:
                     },
                 ),
             )
+            # 公开 READ 分享页的实时 nudge：chat 作业终态意味着助手回复已落库
+            from app.domains.websocket.ws.public_share_manager import (
+                notify_task_shares_history_changed,
+            )
+
+            await notify_task_shares_history_changed(task_id)
 
 
 def _load_job_payload_sync(job_id: str) -> Optional[Dict[str, Any]]:

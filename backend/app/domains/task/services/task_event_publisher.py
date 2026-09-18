@@ -94,8 +94,12 @@ async def publish_once() -> int:
     """Publish one batch; returns the number of events published."""
     from app.domains.ai.schemas.websocket import WSMessage
     from app.domains.websocket.ws.manager import manager
+    from app.domains.websocket.ws.public_share_manager import (
+        notify_task_shares_history_changed,
+    )
 
     published = 0
+    notified_tasks: set[str] = set()
     for _row_id, event_id, task_id, payload, attempts in await run_db_txn(
         lambda db: _pending_sync(db, datetime.utcnow())
     ):
@@ -108,6 +112,11 @@ async def publish_once() -> int:
                 WSMessage(type="chat_submission_update", payload=payload),
             )
             published += 1
+            # 公开 READ 分享页的实时 nudge：正式消息事件（payload 含 message）
+            # 意味着会话历史变化。每批每任务至多通知一次。
+            if task_id not in notified_tasks and isinstance(payload, dict) and payload.get("message"):
+                notified_tasks.add(task_id)
+                await notify_task_shares_history_changed(task_id)
         except Exception as exc:
             logger.warning(
                 "Task event publish deferred: event_id={}, task_id={}, error={}",
