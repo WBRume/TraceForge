@@ -641,7 +641,10 @@ const resetCloseHintPending = () => {
             <h4 class="section-title">
               {{ t("doc_review.member_conversation_title") }}
             </h4>
-            <span class="section-meta">{{ messageCountText }}</span>
+            <span class="section-meta">
+              <span class="pulse-dot blue"></span>
+              {{ messageCountText }}
+            </span>
           </header>
           <ThreadTimeline :messages="selectedThread.messages" />
 
@@ -665,7 +668,10 @@ const resetCloseHintPending = () => {
         <section class="section-panel ai-panel">
           <header class="section-head">
             <h4 class="section-title">{{ t("doc_review.ai_assistant") }}</h4>
-            <span class="section-meta">{{ aiPanelMeta }}</span>
+            <span class="section-meta">
+              <span class="pulse-dot purple"></span>
+              {{ aiPanelMeta }}
+            </span>
           </header>
           <div v-if="selectedThreadJob" class="ai-job-state">
             <strong>{{ aiStatusText }}</strong>
@@ -712,7 +718,10 @@ const resetCloseHintPending = () => {
             <h4 class="section-title">
               {{ t("doc_review.proposal_section_title") }}
             </h4>
-            <span class="section-meta">{{ proposalPanelMeta }}</span>
+            <span class="section-meta">
+              <span class="pulse-dot amber"></span>
+              {{ proposalPanelMeta }}
+            </span>
           </header>
           <p v-if="selectedProposalJob?.error_message" class="ai-job-error">
             {{ selectedProposalJob.error_message }}
@@ -1006,31 +1015,34 @@ const resetCloseHintPending = () => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: rgba(241, 245, 249, 0.8);
-  border: 1px solid rgba(226, 232, 240, 0.8);
-  border-radius: 999px;
-  padding: 4px 12px 4px 8px;
-  font-size: 13px;
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(226, 232, 240, 0.85);
+  border-radius: 8px;
+  padding: 4px 10px 4px 8px;
+  font-size: 12px;
   font-weight: 500;
   color: #334155;
   cursor: pointer;
+  backdrop-filter: blur(8px);
   transition: all 0.2s;
 }
 
 .nav-back-button:hover {
-  background: #f8fafc;
+  background: #ffffff;
   color: #0f172a;
-  transform: translateX(-2px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  border-color: #cbd5e1;
+  transform: translateX(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
 }
 
 .block-anchor {
-  font-size: 13px;
-  color: var(--color-text-muted);
+  font-size: 11px;
+  color: #64748b;
   font-family: var(--font-mono, monospace);
-  background: rgba(0, 0, 0, 0.04);
+  background: rgba(14, 165, 233, 0.06);
+  border: 1px solid rgba(14, 165, 233, 0.15);
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .nav-action-btn {
@@ -1142,14 +1154,13 @@ const resetCloseHintPending = () => {
   flex-direction: column;
   gap: 0.85rem;
   padding: 1rem;
-  border-radius: var(--radius-lg);
+  border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.9);
-  border-left: 4px solid transparent;
-  background: rgba(248, 250, 252, 0.7);
-  box-shadow:
-    inset 0 2px 4px rgba(255, 255, 255, 0.5),
-    var(--shadow-sm);
-  backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  box-shadow: 0 4px 16px -2px rgba(15, 23, 42, 0.03);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .section-head {
@@ -1170,34 +1181,50 @@ const resetCloseHintPending = () => {
 .section-meta {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-height: 22px;
-  padding: 0 10px;
-  border-radius: 999px;
+  gap: 6px;
   font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  border: 1px solid transparent;
+  font-weight: 500;
+  color: #64748b;
+  background: none;
+  border: none;
+  padding: 0;
+  line-height: 1.2;
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.pulse-dot.blue {
+  background: #0ea5e9;
+  box-shadow: 0 0 8px rgba(14, 165, 233, 0.85);
+}
+
+.pulse-dot.purple {
+  background: #8b5cf6;
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.85);
+}
+
+.pulse-dot.amber {
+  background: #f59e0b;
+  box-shadow: 0 0 8px rgba(245, 158, 11, 0.85);
 }
 
 .member-panel {
-  border-color: rgba(14, 165, 233, 0.28);
-  border-left-color: rgba(3, 105, 161, 0.65);
   background: linear-gradient(
     180deg,
-    rgba(240, 249, 255, 0.76) 0%,
-    rgba(248, 250, 252, 0.78) 100%
+    rgba(240, 249, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.65) 100%
   );
+  border-color: rgba(186, 230, 253, 0.7);
 }
 
 .member-panel .section-title {
-  color: #0369a1;
-}
-
-.member-panel .section-meta {
-  color: #0c4a6e;
-  background: rgba(14, 165, 233, 0.16);
-  border-color: rgba(14, 165, 233, 0.3);
+  color: #0284c7;
 }
 
 .member-panel :deep(.timeline) {
@@ -1210,53 +1237,42 @@ const resetCloseHintPending = () => {
 }
 
 .ai-panel {
-  border-color: rgba(8, 145, 178, 0.26);
-  border-left-color: rgba(14, 116, 144, 0.65);
   background: linear-gradient(
     180deg,
-    rgba(236, 254, 255, 0.72) 0%,
-    rgba(248, 250, 252, 0.78) 100%
+    rgba(245, 243, 255, 0.5) 0%,
+    rgba(255, 255, 255, 0.65) 100%
   );
+  border-color: rgba(199, 210, 254, 0.7);
 }
 
 .ai-panel .section-title {
-  color: #0e7490;
-}
-
-.ai-panel .section-meta {
-  color: #155e75;
-  background: rgba(6, 182, 212, 0.15);
-  border-color: rgba(8, 145, 178, 0.28);
+  background: linear-gradient(135deg, #4f46e5 0%, #0284c7 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .proposal-panel {
-  border-color: rgba(217, 119, 6, 0.28);
-  border-left-color: rgba(180, 83, 9, 0.64);
   background: linear-gradient(
     180deg,
-    rgba(255, 247, 237, 0.74) 0%,
-    rgba(248, 250, 252, 0.78) 100%
+    rgba(255, 251, 235, 0.5) 0%,
+    rgba(255, 255, 255, 0.65) 100%
   );
+  border-color: rgba(253, 230, 138, 0.7);
 }
 
 .proposal-panel .section-title {
   color: #b45309;
 }
 
-.proposal-panel .section-meta {
-  color: #9a3412;
-  background: rgba(245, 158, 11, 0.16);
-  border-color: rgba(217, 119, 6, 0.32);
-}
-
 .ai-input {
   width: 100%;
-  border: 1px solid rgba(148, 163, 184, 0.3);
+  border: 1px solid rgba(203, 213, 225, 0.7);
   border-radius: var(--radius-lg);
   padding: 10px;
   font-size: 13px;
-  background: rgba(255, 255, 255, 0.9);
-  transition: border-color 0.2s;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(8px);
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
 
 .ai-input:focus {
@@ -1290,30 +1306,22 @@ const resetCloseHintPending = () => {
 .composer .btn-primary:disabled,
 .ai-actions-row .btn-primary:disabled,
 .ai-actions-row .btn-secondary:disabled {
-  opacity: 0.5;
+  background: rgba(241, 245, 249, 0.8) !important;
+  border: 1px solid rgba(226, 232, 240, 0.9) !important;
+  color: #94a3b8 !important;
   cursor: not-allowed;
-  transform: none;
-  text-shadow: none;
-  box-shadow: none;
-}
-
-.composer .btn-primary:disabled {
-  background: rgba(148, 163, 184, 0.86);
-  color: rgba(255, 255, 255, 0.9);
-}
-
-.ai-actions-row .btn-secondary:disabled {
-  background: rgba(241, 245, 249, 0.9);
-  border-color: rgba(148, 163, 184, 0.38);
-  color: #94a3b8;
+  box-shadow: none !important;
+  transform: none !important;
+  text-shadow: none !important;
+  opacity: 1;
 }
 
 .composer .btn-primary:disabled:hover,
 .ai-actions-row .btn-primary:disabled:hover,
 .ai-actions-row .btn-secondary:disabled:hover {
-  transform: none;
-  box-shadow: none;
-  background-image: none;
+  transform: none !important;
+  box-shadow: none !important;
+  background-image: none !important;
 }
 
 .ai-job-state {
@@ -1348,21 +1356,17 @@ const resetCloseHintPending = () => {
   justify-content: space-between;
   align-items: center;
   gap: 0.75rem;
-  border: 1px solid rgba(14, 165, 233, 0.2);
+  border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: var(--radius-md);
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.95) 0%,
-    rgba(240, 249, 255, 0.6) 100%
-  );
+  background: rgba(255, 255, 255, 0.88);
   padding: 0.75rem;
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 2px 8px -2px rgba(15, 23, 42, 0.04);
   backdrop-filter: blur(12px);
   transition: border-color 0.2s;
 }
 
 .proposal-item:hover {
-  border-color: rgba(14, 165, 233, 0.5);
+  border-color: rgba(14, 165, 233, 0.4);
 }
 
 .proposal-item strong {
@@ -1380,6 +1384,19 @@ const resetCloseHintPending = () => {
 .proposal-actions {
   display: inline-flex;
   gap: 8px;
+}
+
+.proposal-actions .small-btn {
+  background: rgba(240, 249, 255, 0.9);
+  border: 1px solid rgba(14, 165, 233, 0.3);
+  color: #0284c7;
+  border-radius: 6px;
+  font-weight: 500;
+}
+
+.proposal-actions .small-btn:hover {
+  background: #e0f2fe;
+  border-color: #0284c7;
 }
 
 .small-btn {
