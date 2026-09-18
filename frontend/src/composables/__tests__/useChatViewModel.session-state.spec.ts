@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { useChatViewModel } from '@/composables/useChatViewModel'
+import { useChatViewModel } from '@/composables/chat/useChatViewModel'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
