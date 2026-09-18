@@ -22,6 +22,8 @@ from app.core import redis_client as redis_client_module  # noqa: E402
 from app.domains.task.models.task import TaskStatus  # noqa: E402
 from app.domains.skill.routers import skill as skill_router
 from app.domains.task.routers import task as task_router
+from app.domains.task.services import task_service  # noqa: E402
+from app.domains.workflow.services import provision_job_service  # noqa: E402
 
 # 直连真实 Redis 的并发/压力检查（live 集成检查，默认随 pytest.ini 的 addopts 排除）。
 # 运行方式（显式指定要访问的 Redis，避免无意触及任何环境）：
@@ -123,16 +125,15 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         status=TaskStatus.PENDING,
         error_message=None,
     )
-    monkeypatch.setattr(task_router, "verify_workspace_permission", lambda *args, **kwargs: None)
-    # start_task now goes through the by-id permission helper; the fixture
-    # must cover the current call point so the route reaches the lock section.
     monkeypatch.setattr(
-        task_router,
-        "_verify_workspace_permission_by_id",
+        "app.domains.task.routers.task.session_runs.verify_workspace_permission",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(task_router.task_service, "get_task", lambda db, task_id, ws_id: fake_task)
-    monkeypatch.setattr(task_router, "get_engine", lambda task_id: None)
+    monkeypatch.setattr(task_service, "get_task", lambda db, task_id, ws_id: fake_task)
+    monkeypatch.setattr(
+        "app.domains.task.services.task_session_control_service.get_engine",
+        lambda task_id: None,
+    )
     monkeypatch.setattr(
         task_router.task_service,
         "save_chat_message",
@@ -157,9 +158,15 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         _ = job_id
         return {"id": "job-start-1", "status": "PENDING"}
 
-    monkeypatch.setattr(task_router, "create_task_chat_job", _create_task_chat_job)
+    monkeypatch.setattr(
+        "app.domains.task.services.task_session_control_service.create_task_chat_job",
+        _create_task_chat_job,
+    )
     monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue_task_chat_job)
-    monkeypatch.setattr(task_router, "serialize_job", lambda job: {"id": job.id, "status": job.status})
+    monkeypatch.setattr(
+        "app.domains.task.services.task_session_control_service.serialize_job",
+        lambda job: {"id": job.id, "status": job.status},
+    )
 
     async def _run() -> None:
         await _ensure_redis_provider()
@@ -341,10 +348,13 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
     async def _fake_run_create_task_job(_job_id: str):
         return None
 
-    monkeypatch.setattr(task_router, "verify_workspace_permission", lambda *args, **kwargs: None)
-    monkeypatch.setattr(task_router.task_service, "create_task_record_for_provision", _fake_create_task_record_for_provision)
-    monkeypatch.setattr(task_router.provision_job_service, "create_job", _fake_create_job)
-    monkeypatch.setattr(task_router.provision_job_service, "run_create_task_job", _fake_run_create_task_job)
+    monkeypatch.setattr(
+        "app.domains.task.routers.task.crud.verify_workspace_permission",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(task_service, "create_task_record_for_provision", _fake_create_task_record_for_provision)
+    monkeypatch.setattr(provision_job_service, "create_job", _fake_create_job)
+    monkeypatch.setattr(provision_job_service, "run_create_task_job", _fake_run_create_task_job)
 
     original_queue_wait = settings.TASK_CREATE_QUEUE_WAIT_TIMEOUT_SECONDS
     original_lock_block = settings.DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS

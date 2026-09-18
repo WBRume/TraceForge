@@ -139,7 +139,10 @@ def test_start_task_persists_user_initial_prompt_and_links_job(tmp_path, monkeyp
         async def _enqueue(_job_id):
             return None
 
-        monkeypatch.setattr(task_router, "get_engine", lambda _task_id: None)
+        monkeypatch.setattr(
+            "app.domains.task.services.task_session_control_service.get_engine",
+            lambda _task_id: None,
+        )
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue)
         client = TestClient(_build_app(SessionLocal, user))
 
@@ -173,10 +176,6 @@ def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
 
         captured = {}
 
-        async def _run_db_txn(fn):
-            with _session(SessionLocal) as db:
-                return fn(db)
-
         async def _create_task_chat_turn(**kwargs):
             captured.update(kwargs)
             with _session(SessionLocal) as db:
@@ -193,10 +192,12 @@ def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
         async def _enqueue(_job_id):
             return None
 
-        monkeypatch.setattr(task_router, "run_db_txn", _run_db_txn)
-        monkeypatch.setattr(task_router.task_session_service, "create_task_chat_turn", _create_task_chat_turn)
+        monkeypatch.setattr("app.domains.task.services.task_session_service.create_task_chat_turn", _create_task_chat_turn)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue)
-        monkeypatch.setattr(task_router, "get_engine", lambda _task_id: None)
+        monkeypatch.setattr(
+            "app.domains.task.services.task_session_control_service.get_engine",
+            lambda _task_id: None,
+        )
         client = TestClient(_build_app(SessionLocal, user))
 
         resp = client.post(
@@ -252,7 +253,9 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
         monkeypatch.setattr("app.domains.ai.services.jobs.reaper.process_supervisor.stop_persisted", stop_persisted)
         monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_attempt", stop_attempt)
         monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_persisted", stop_persisted)
-        monkeypatch.setattr(task_router, "get_engine", lambda _: None)
+        monkeypatch.setattr(
+            "app.domains.task.services.task_session_control_service.get_engine", lambda _: None
+        )
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
         client = TestClient(_build_app(factory, user))
@@ -308,7 +311,10 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
             raise RuntimeError("provider stop failed")
 
         monkeypatch.setattr("app.database.SessionLocal", factory)
-        monkeypatch.setattr(task_router, "get_engine", lambda _: SimpleNamespace(stop=stop) if recovery == "stop_failure" else None)
+        monkeypatch.setattr(
+            "app.domains.task.services.task_session_control_service.get_engine",
+            lambda _: SimpleNamespace(stop=stop) if recovery == "stop_failure" else None,
+        )
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
         monkeypatch.setattr(ai_reaper, "reap_stale_jobs", reap)

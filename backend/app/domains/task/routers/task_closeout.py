@@ -5,10 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.distributed_lock import LockAcquireTimeout, lock_task, make_resource_busy_error
+from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
 from app.engine.workflow_engine import get_engine
 from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.task.routers.task.deps import raise_task_lock_conflict
 from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest, FailTaskCloseoutRequest, TaskCloseoutResponse
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
@@ -51,11 +52,6 @@ def _raise_closeout_error(exc: Exception) -> None:
     raise exc
 
 
-def _raise_task_lock_conflict(exc: LockAcquireTimeout) -> None:
-    busy = make_resource_busy_error(exc, "Task is busy. Please retry later.")
-    raise HTTPException(status_code=busy.status_code, detail=str(busy))
-
-
 @router.post("/complete", response_model=TaskCloseoutResponse)
 async def complete_task_closeout(
     ws_id: str,
@@ -77,7 +73,7 @@ async def complete_task_closeout(
             await _stop_active_task_session(db, ws_id, task_id, "Task completed through closeout")
             return result
     except LockAcquireTimeout as exc:
-        _raise_task_lock_conflict(exc)
+        raise_task_lock_conflict(exc, message="Task is busy. Please retry later.")
 
 
 @router.post("/fail", response_model=TaskCloseoutResponse)
@@ -101,4 +97,4 @@ async def fail_task_closeout(
             await _stop_active_task_session(db, ws_id, task_id, "Task failed through closeout")
             return result
     except LockAcquireTimeout as exc:
-        _raise_task_lock_conflict(exc)
+        raise_task_lock_conflict(exc, message="Task is busy. Please retry later.")

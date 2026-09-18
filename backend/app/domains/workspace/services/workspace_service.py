@@ -1302,3 +1302,23 @@ def get_invite_for_preview(db: Session, token: str) -> Optional[Tuple["Workspace
     if not workspace:
         return None
     return link, workspace, serialize_invite_link(link)
+
+
+def workspace_uses_git_worktree(db: Session, workspace_id: str) -> bool:
+    """判断工作区是否以 git 仓库/worktree 模式管理代码。
+
+    任务删除等场景据此决定是否需要叠加工作区仓库锁。
+    """
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
+
+    workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if not workspace:
+        return False
+    if bool(str(workspace.project_path or "").strip() and str(workspace.git_repo_url or "").strip()):
+        return True
+    repo_count = (
+        db.query(SddWorkspaceRepository)
+        .filter(SddWorkspaceRepository.workspace_id == workspace_id)
+        .count()
+    )
+    return repo_count > 0

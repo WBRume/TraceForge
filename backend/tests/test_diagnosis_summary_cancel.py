@@ -65,7 +65,11 @@ def _build_app(SessionLocal, user, monkeypatch):
     async def _fake_lock_task(_task_id):
         yield
 
-    monkeypatch.setattr(task_router, "lock_task", _fake_lock_task)
+    # lock_task 由各子路由模块各自绑定，需逐模块替换
+    for _module_name in ("crud", "session_runs", "session_control", "spec_docs", "change_proposals", "diagnosis"):
+        monkeypatch.setattr(
+            f"app.domains.task.routers.task.{_module_name}.lock_task", _fake_lock_task
+        )
 
     def _override_db():
         db = SessionLocal()
