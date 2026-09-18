@@ -479,3 +479,26 @@
   color: #b91c1c !important;
 }
 
+
+/* ── 分享邀请输入：待采纳入口（输入区上方） ── */
+/* 左右边距与工具栏 / 输入卡 / 协作预输入面板对齐（var(--space-6) = 24px） */
+.suggestion-entry-btn {
+  align-self: flex-start;
+  margin: 0 var(--space-6, 24px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #b45309;
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.suggestion-entry-btn:hover {
+  background: #fef3c7;
+}
+.suggestion-entry-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex-shrink: 0;
+}

@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import datetime
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import func, or_
@@ -39,6 +40,7 @@ PERMISSION_FIELD_MAP: Dict[WorkspacePermission, str] = {
     WorkspacePermission.VIEW_ASSETS: "view_assets",
     WorkspacePermission.MANAGE_REQUIREMENTS: "manage_requirements",
     WorkspacePermission.EXPORT_TASK: "export_task",
+    WorkspacePermission.SHARE_TASK_SESSION: "share_task_session",
     WorkspacePermission.VIEW_API_MOCK: "view_api_mock",
     WorkspacePermission.MANAGE_API_MOCK: "manage_api_mock",
     WorkspacePermission.PUBLISH_API_MOCK: "publish_api_mock",
@@ -58,6 +60,7 @@ DEFAULT_ROLE_PERMISSIONS: Dict[WorkspaceRole, Set[WorkspacePermission]] = {
         WorkspacePermission.VIEW_DASHBOARD,
         WorkspacePermission.VIEW_ASSETS,
         WorkspacePermission.EXPORT_TASK,
+        WorkspacePermission.SHARE_TASK_SESSION,
         WorkspacePermission.VIEW_API_MOCK,
         WorkspacePermission.MANAGE_API_MOCK,
     },
@@ -1218,11 +1221,12 @@ def list_invite_links(db: Session, workspace_id: str) -> List["WorkspaceInviteLi
 def revoke_invite_link_in_txn(
     db: Session, workspace_id: str, link_id: str
 ) -> Optional["WorkspaceInviteLink"]:
-    """撤销邀请链接的事务核心（doc 审计 0c381413 §4.2）。
+    """撤销邀请链接 = 删除链接行（事务核心，doc 审计 0c381413 §4.2）。
 
     与 accept 使用同一锁顺序：先锁 Workspace 行，再以
-    ``populate_existing() + FOR UPDATE`` 重读 link；撤销判定基于锁定后
-    的最新状态。只 ``flush``，commit/rollback 归调用方。
+    ``populate_existing() + FOR UPDATE`` 重读 link；删除基于锁定后的
+    最新状态。只 ``flush``，commit/rollback 归调用方。删除后旧 token
+    即不可用（accept 按 token 查不到）。
     """
     if _lock_workspace_for_member_change(db, workspace_id) is None:
         return None
@@ -1240,20 +1244,33 @@ def revoke_invite_link_in_txn(
     )
     if link is None:
         return None
-    if not link.revoked_at:
-        link.revoked_at = _utcnow()
-        db.flush()
-    return link
+    # 删除前把响应需要的字段拷出：commit 后实例脱离 Session，属性不可再读
+    snapshot = SimpleNamespace(
+        id=link.id,
+        workspace_id=link.workspace_id,
+        token=link.token,
+        role=link.role,
+        is_expert=link.is_expert,
+        max_uses=link.max_uses,
+        used_count=int(link.used_count or 0),
+        expires_at=link.expires_at,
+        created_at=link.created_at,
+    )
+    db.delete(link)
+    db.flush()
+    return snapshot
 
 
-def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
-    """撤销邀请链接（commit-owning 兼容入口）。"""
+def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional[Any]:
+    """撤销邀请链接（commit-owning 兼容入口）。
+
+    返回删除快照（SimpleNamespace；行已删除，无需 refresh）。
+    """
     link = revoke_invite_link_in_txn(db, workspace_id, link_id)
     if link is None:
         db.rollback()
         return None
     db.commit()
-    db.refresh(link)
     return link
 
 

@@ -345,6 +345,18 @@ class Settings(BaseSettings):
     # 预输入超时扫描
     PRE_INPUT_SCAN_INTERVAL_SECONDS: float = 5.0
 
+    # ── 任务会话分享 ──
+    # 访客短期凭证有效期（不超过分享有效期）
+    TASK_SHARE_ACCESS_TTL_SECONDS: int = 1800
+    # 匿名输入长度上限
+    TASK_SHARE_SUGGESTION_MAX_CHARS: int = 20000
+    # 提交限流：每 (share_id, visitor_id) 窗口期内最多 N 次；0 表示关闭
+    TASK_SHARE_SUBMIT_RATE_LIMIT: int = 10
+    TASK_SHARE_SUBMIT_RATE_WINDOW_SECONDS: int = 60
+    # exchange 限流（按 IP）
+    TASK_SHARE_EXCHANGE_RATE_LIMIT: int = 30
+    TASK_SHARE_EXCHANGE_RATE_WINDOW_SECONDS: int = 60
+
     model_config = SettingsConfigDict(
         env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",

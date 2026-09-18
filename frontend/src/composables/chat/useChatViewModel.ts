@@ -465,6 +465,9 @@ export function useChatViewModel() {
   const canEditTaskRuntimeSkills = computed(() => (
     Boolean(taskState.currentTask.value) && workspaceContext.canManageTaskStatus.value
   ))
+  const canShareTaskSession = computed(() => Boolean(
+    taskState.currentTask.value && workspaceContext.workspacePermissions.value?.share_task_session
+  ))
 
   const startActions = useTaskStartActions({
     getCurrentTask: () => taskState.currentTask.value,
@@ -772,6 +775,7 @@ export function useChatViewModel() {
     canDeleteTask: workspaceContext.canDeleteTask,
     canExportTask: workspaceContext.canExportTask,
     canEditSuperpowersDocs: workspaceContext.canEditSuperpowersDocs,
+    canShareTaskSession,
 
     // 当前会话
     currentTask: taskState.currentTask,

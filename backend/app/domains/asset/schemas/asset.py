@@ -257,6 +257,7 @@ class WorkspacePermissionFlags(BaseModel):
     view_assets: bool = True
     manage_requirements: bool = False
     export_task: bool = False
+    share_task_session: bool = False
     view_api_mock: bool = False
     manage_api_mock: bool = False
     publish_api_mock: bool = False

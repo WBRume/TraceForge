@@ -1132,6 +1132,19 @@ async def undo_task_message(
                     operation_id,
                     str(broadcast_exc),
                 )
+            # 公开 READ 分享页的实时 nudge：撤销改变了可见历史
+            try:
+                from app.domains.websocket.ws.public_share_manager import (
+                    notify_task_shares_history_changed,
+                )
+
+                await notify_task_shares_history_changed(resolved_task_id)
+            except Exception as nudge_exc:
+                logger.warning(
+                    "Task session undo share nudge deferred: task={}, error={}",
+                    resolved_task_id,
+                    str(nudge_exc),
+                )
             return result
         except TaskSessionUndoError:
             await _compensate_live_state()

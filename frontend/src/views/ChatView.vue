@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { proxyRefs, ref, watch } from 'vue'
+import { computed, proxyRefs, ref, watch } from 'vue'
 import {
   ChevronLeft,
   ChevronRight,
@@ -14,13 +14,11 @@ import {
   Brain,
   Wrench,
   ChevronDown,
-  Download,
   Loader2,
   Play,
   Plus,
   CheckCircle2,
   AlertCircle,
-  BarChart3,
   FileText,
   GitPullRequest,
   FolderGit2,
@@ -44,9 +42,13 @@ import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
-import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
+import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
+import TaskSessionShareDialog from '@/components/chat/TaskSessionShareDialog.vue'
+import ShareSuggestionPanel from '@/components/chat/ShareSuggestionPanel.vue'
 import { useChatViewModel } from '@/composables/chat/useChatViewModel'
 import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagnosisDocs'
+import { useTaskSessionShares, type CreatedShare } from '@/composables/useTaskSessionShares'
+import { useShareSuggestions, type ShareSuggestion } from '@/composables/useShareSuggestions'
 
 const rawVm = useChatViewModel()
 const vm = proxyRefs(rawVm)
@@ -57,6 +59,19 @@ const pendingUndoMessage = ref<Record<string, any> | null>(null)
 const taskAdvancedDrawerOpen = ref(false)
 const showBootstrapConfirm = ref(false)
 
+// ── 任务会话分享：弹窗 + 待采纳输入面板 ──
+const showShareDialog = ref(false)
+const justCreatedShare = ref<CreatedShare | null>(null)
+const suggestionPanelOpen = ref(false)
+const adoptingSuggestion = ref<ShareSuggestion | null>(null)
+
+const getWsId = () => String(rawVm.route.params.wsId || '')
+const getShareTaskId = () => String(rawVm.currentTask?.value?.id || '')
+const sessionShares = useTaskSessionShares({ getWorkspaceId: getWsId, getTaskId: getShareTaskId })
+const shareSuggestions = useShareSuggestions({ getWorkspaceId: getWsId, getTaskId: getShareTaskId })
+
+const canShareTaskSession = computed(() => rawVm.canShareTaskSession.value)
+
 const confirmBootstrapBuild = async () => {
   if (rawVm.specBootstrapTriggering.value) return
   showBootstrapConfirm.value = false
@@ -65,6 +80,82 @@ const confirmBootstrapBuild = async () => {
   } catch {
     // triggerSpecBootstrap owns user-facing error handling
   }
+}
+
+// ── 分享：打开弹窗时拉取列表 ──
+const openShareDialog = () => {
+  if (!rawVm.currentTask.value) return
+  justCreatedShare.value = null
+  showShareDialog.value = true
+  void sessionShares.loadShares()
+}
+
+const handleCreateShare = async (payload: {
+  mode: 'READ' | 'INPUT'
+  expires_in_days: number
+  instruction_text?: string
+}) => {
+  const created = await sessionShares.createShare(payload)
+  if (created) {
+    justCreatedShare.value = created
+  }
+}
+
+const handleRevokeShare = async (shareId: string) => {
+  const ok = await sessionShares.revokeShare(shareId)
+  // 撤销的是刚创建的链接：清掉高亮，避免旧 URL 继续被复制
+  if (ok && justCreatedShare.value && justCreatedShare.value.id === shareId) {
+    justCreatedShare.value = null
+  }
+}
+
+const closeShareDialog = () => {
+  showShareDialog.value = false
+  justCreatedShare.value = null
+}
+
+// ── 待采纳输入：采纳填入草稿（先 adopt 再填入；有草稿时让用户选择追加/替换） ──
+const applySuggestionToDraft = (content: string) => {
+  const current = String(rawVm.chatInput.value || '')
+  rawVm.chatInput.value = current ? `${current}
+${content}` : content
+}
+
+const handleAdoptSuggestion = async (suggestion: ShareSuggestion) => {
+  const updated = await shareSuggestions.patchSuggestion(suggestion, 'adopt')
+  if (!updated) return
+  const current = String(rawVm.chatInput.value || '').trim()
+  if (current) {
+    // 已有草稿：让用户明确选择追加或替换；取消不改变建议状态
+    adoptingSuggestion.value = updated
+    return
+  }
+  applySuggestionToDraft(updated.effective_content)
+}
+
+const confirmAdoptAppend = () => {
+  if (!adoptingSuggestion.value) return
+  applySuggestionToDraft(adoptingSuggestion.value.effective_content)
+  adoptingSuggestion.value = null
+}
+
+const confirmAdoptReplace = () => {
+  if (!adoptingSuggestion.value) return
+  rawVm.chatInput.value = adoptingSuggestion.value.effective_content
+  adoptingSuggestion.value = null
+}
+
+const cancelAdoptChoice = () => {
+  // 取消该选择不改变建议状态；ADOPTED 记录仍可重新填入
+  adoptingSuggestion.value = null
+}
+
+const handleEditSuggestion = async (suggestion: ShareSuggestion, editedContent: string) => {
+  await shareSuggestions.patchSuggestion(suggestion, 'edit', editedContent)
+}
+
+const handleDismissSuggestion = async (suggestion: ShareSuggestion) => {
+  await shareSuggestions.patchSuggestion(suggestion, 'dismiss')
 }
 
 const handleUndoRequest = (message: Record<string, any>) => {
@@ -318,9 +409,6 @@ const hitlOptionLabel = (option: unknown): string => {
             <CheckCircle2 class="w-4 h-4" />
           </button>
 
-          <button class="icon-btn" :disabled="!vm.canExportTask" @click="vm.handleExport" title="Export Session">
-            <Download class="w-4 h-4" />
-          </button>
           <button class="btn-micro" v-if="!vm.hidePatchWorkflows" :disabled="!vm.currentTask" @click="showApplyPatchDrawer = true">
             <GitPullRequest class="w-4 h-4" />
             {{ $t('chat.change_apply_button') }}
@@ -342,15 +430,6 @@ const hitlOptionLabel = (option: unknown): string => {
             </button>
           </div>
           <button
-            v-if="vm.chatWorkbenchMode === 'platform'"
-            class="icon-btn"
-            :class="{ active: vm.contextWindowDrawerOpen }"
-            @click="vm.openContextWindowDrawer"
-            :title="$t('chat.context_window_button')"
-          >
-            <BarChart3 class="w-4 h-4" />
-          </button>
-          <button
             v-if="vm.showSpecEntryButton"
             class="icon-btn"
             :class="{ active: vm.isSpecPanelOpen && vm.isSpecDrawerAvailable }"
@@ -365,7 +444,15 @@ const hitlOptionLabel = (option: unknown): string => {
             :disabled="!vm.canDeleteTask"
             @click="vm.handleDeleteTask(vm.currentTask)"
           />
-          <GlobalSearchTrigger compact />
+          <ChatMoreActionsMenu
+            :can-export="vm.canExportTask"
+            :can-share="canShareTaskSession"
+            :show-attribution="vm.chatWorkbenchMode === 'platform'"
+            :attribution-active="vm.contextWindowDrawerOpen"
+            @export="vm.handleExport"
+            @open-attribution="vm.openContextWindowDrawer"
+            @share="openShareDialog"
+          />
         </div>
       </header>
 
@@ -617,6 +704,33 @@ const hitlOptionLabel = (option: unknown): string => {
         v-if="vm.activePreInput && vm.preInputIsCollecting"
         :vm="vm"
       />
+
+      <!-- 分享邀请输入：发起人收到的待采纳输入（入口 + 面板） -->
+      <template v-if="vm.currentTask && canShareTaskSession && shareSuggestions.pendingCount.value > 0">
+        <button
+          v-if="!suggestionPanelOpen"
+          type="button"
+          class="btn-micro suggestion-entry-btn"
+          @click="suggestionPanelOpen = true"
+        >
+          <span class="suggestion-entry-dot"></span>
+          {{ $t('share.suggestions_entry', { count: shareSuggestions.pendingCount.value }) }}
+          <ChevronDown class="w-3 h-3" />
+        </button>
+        <ShareSuggestionPanel
+          v-else
+          :suggestions="shareSuggestions.suggestions.value"
+          :pending-count="shareSuggestions.pendingCount.value"
+          :loading="shareSuggestions.loading.value"
+          :acting-ids="shareSuggestions.actingIds.value"
+          :has-draft="Boolean(vm.chatInput && vm.chatInput.trim())"
+          @close="suggestionPanelOpen = false"
+          @edit="handleEditSuggestion"
+          @copy="shareSuggestions.copySuggestion"
+          @adopt="handleAdoptSuggestion"
+          @dismiss="handleDismissSuggestion"
+        />
+      </template>
 
       <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
            收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
@@ -922,6 +1036,43 @@ const hitlOptionLabel = (option: unknown): string => {
       :workspace="vm.currentWorkspace"
       @close="showApplyPatchDrawer = false"
     />
+
+    <!-- 任务会话分享弹窗 -->
+    <TaskSessionShareDialog
+      :show="showShareDialog"
+      :task-id="String(vm.currentTask?.id || '')"
+      :task-name="vm.currentTask?.name || ''"
+      :shares="sessionShares.shares.value"
+      :loading="sessionShares.sharesLoading.value"
+      :creating="sessionShares.creating.value"
+      :revoking-ids="sessionShares.revokingIds.value"
+      :can-share="canShareTaskSession"
+      :just-created="justCreatedShare"
+      @close="closeShareDialog"
+      @create="handleCreateShare"
+      @revoke="handleRevokeShare"
+    />
+
+    <!-- 采纳输入：已有草稿时选择追加或替换（取消不改变建议状态） -->
+    <ConfirmActionModal
+      :show="Boolean(adoptingSuggestion)"
+      :title="$t('share.adopt_choice_title')"
+      :message="$t('share.adopt_choice_message')"
+      :description="$t('share.adopt_choice_description')"
+      :cancel-text="$t('common.cancel')"
+      :confirm-text="$t('share.adopt_choice_append')"
+      tone="primary"
+      @cancel="cancelAdoptChoice"
+      @confirm="confirmAdoptAppend"
+    >
+      <template #content>
+        <div class="modal-actions" style="margin-top: 12px;">
+          <button class="btn-secondary" @click="confirmAdoptReplace">
+            {{ $t('share.adopt_choice_replace') }}
+          </button>
+        </div>
+      </template>
+    </ConfirmActionModal>
 
     <TaskCloseoutPanel
       v-if="vm.currentTask && vm.closeoutMode"

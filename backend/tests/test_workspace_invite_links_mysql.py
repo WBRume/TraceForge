@@ -245,7 +245,7 @@ def test_revoke_before_accept_rejects_late_locker(clean_tables):
     # 先由 revoke 持锁（不提交），accept 线程此时必然阻塞在 Workspace 行锁上。
     db_a = factory()
     revoked = ws.revoke_invite_link_in_txn(db_a, "ws-m", link.id)
-    assert revoked is not None and revoked.revoked_at is not None
+    assert revoked is not None  # 删除快照（行本身已被标记删除）
 
     outcome = {}
 
@@ -267,7 +267,8 @@ def test_revoke_before_accept_rejects_late_locker(clean_tables):
     thread.join(timeout=30)
     assert not thread.is_alive(), "accept worker deadlocked"
     assert outcome.get("result", (None, None))[0] == "err", outcome
-    assert "revoked" in str(outcome["result"][1]).lower(), outcome
+    # 撤销即删除：accept 按 token 已查不到该链接
+    assert "not found" in str(outcome["result"][1]).lower(), outcome
 
     with factory() as db:
         members = db.query(WorkspaceMember).filter(WorkspaceMember.workspace_id == "ws-m").count()
@@ -290,12 +291,13 @@ def test_accept_before_revoke_keeps_completed_claim(clean_tables):
     with factory() as db:
         revoked = ws.revoke_invite_link_in_txn(db, "ws-m", link.id)
         db.commit()
-    assert revoked.revoked_at is not None
+    assert revoked is not None  # 删除快照
 
     with factory() as db:
         members = db.query(WorkspaceMember).filter(WorkspaceMember.workspace_id == "ws-m").count()
-        used = db.get(WorkspaceInviteLink, "link-tok-r2").used_count
-    assert members == 1 and used == 1, (members, used)
+        remaining = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.id == "link-tok-r2").count()
+    # 已完成的领取保留；撤销的链接行已删除
+    assert members == 1 and remaining == 0, (members, remaining)
 
 
 def test_link_expires_while_lock_is_held_rejects_after_acquire(clean_tables):
