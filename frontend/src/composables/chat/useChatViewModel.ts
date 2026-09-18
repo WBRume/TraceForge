@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import type { ShallowUnwrapRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import api from '@/utils/api'
@@ -980,3 +981,9 @@ export function useChatViewModel() {
 }
 
 export type ChatViewModel = ReturnType<typeof useChatViewModel>
+
+/**
+ * 经 proxyRefs 解包后的视图模型形态，是区块组件（components/chat/sections/*）
+ * 的 `vm` prop 契约：模板内可直接读写 `vm.xxx`（ref 自动解包）。
+ */
+export type ChatViewVm = ShallowUnwrapRef<ChatViewModel>

@@ -5,6 +5,7 @@
  * 代码路径：任务 project_path + 工作区关联仓库
  */
 import { readonly, ref, watch } from 'vue'
+import type { ShallowUnwrapRef } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
@@ -161,3 +162,8 @@ export function useDiagnosisDocs(options: { wsId: () => string; taskId: () => st
     refresh,
   }
 }
+
+export type DiagnosisDocsModel = ReturnType<typeof useDiagnosisDocs>
+
+/** 经 proxyRefs 解包后的模型形态（区块组件的 prop 契约）。 */
+export type DiagnosisDocsModelView = ShallowUnwrapRef<DiagnosisDocsModel>

@@ -256,3 +256,43 @@ button {
 .text-primary-900 { color: var(--color-primary-900); }
 .text-slate-500 { color: #64748B; }
 .text-slate-700 { color: #334155; }
+
+/* ─── 图标工具类（lucide 图标尺寸/着色，供各视图区块组件共用） ─── */
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
+.text-primary { color: var(--color-primary-600); }
+.text-primary-light { color: var(--color-primary-100); }
+.text-success { color: var(--color-accent-emerald); }
+.text-error { color: var(--color-accent-rose); }
+.text-amber { color: var(--color-accent-amber); }
+.w-3 { width: 12px; height: 12px; }
+.w-4 { width: 16px; height: 16px; }
+.w-5 { width: 20px; height: 20px; }
+.w-6 { width: 24px; height: 24px; }
+.w-8 { width: 32px; height: 32px; }
+.h-3 { width: 12px; height: 12px; }
+.h-4 { width: 16px; height: 16px; }
+.h-5 { width: 20px; height: 20px; }
+.h-6 { width: 24px; height: 24px; }
+.h-8 { width: 32px; height: 32px; }
+
+/* ─── 微型按钮（工具栏次级动作） ─── */
+.btn-micro {
+  background: white;
+  color: #475569;
+  border: 1px solid #E2E8F0;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+.btn-micro:hover {
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+  border-color: var(--color-primary-200);
+}

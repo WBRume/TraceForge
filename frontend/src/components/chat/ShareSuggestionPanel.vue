@@ -324,8 +324,8 @@ const confirmEdit = (item: ShareSuggestion) => {
   word-break: break-word;
 }
 
-/* 自足按钮样式：.btn-micro 定义在 ChatView 的 scoped 样式里，作用域
-   到不了子组件，这里按同规格实现（chat-view-modal-buttons.css:185） */
+/* 自足按钮样式：.btn-micro 虽已全局化（assets/main.css），但同规格副本
+   保证本组件脱离全局样式时外观不变 */
 .suggestion-item-actions {
   display: flex;
   align-items: center;
