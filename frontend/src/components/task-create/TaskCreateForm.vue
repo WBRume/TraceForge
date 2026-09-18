@@ -252,8 +252,8 @@ defineExpose({ reset })
       </div>
     </div>
 
-    <!-- 行 5：Skills 载入触发条（独占一行，整行可点击，仅研发态任务） -->
-    <div v-if="!isDiagnosisTask" class="form-meta-container">
+    <!-- 行 5：Skills 载入触发条（独占一行，整行可点击，研发 / 诊断态均可用） -->
+    <div class="form-meta-container">
       <div
         class="meta-skills-bar skills-entry-card"
         :class="{ active: activeSidebar === 'skills', 'has-selection': selectedSkillCount > 0 }"
@@ -281,7 +281,7 @@ defineExpose({ reset })
     <!-- 底部操作区 -->
     <div class="modal-footer">
       <div class="footer-left-hint">
-        <span v-if="!isDiagnosisTask && selectedSkillCount > 0" class="footer-skills-hint">
+        <span v-if="selectedSkillCount > 0" class="footer-skills-hint">
           <Sparkles class="w-3.5 h-3.5 text-primary" />
           {{ $t('skills.task_panel.selected_count', { count: selectedSkillCount }) }}
         </span>
