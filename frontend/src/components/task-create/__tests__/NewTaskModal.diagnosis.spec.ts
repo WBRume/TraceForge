@@ -159,4 +159,53 @@ describe('NewTaskModal diagnosis mode', () => {
     // 需求开发侧：spec 上传白名单保持不变，不受诊断上传放开影响
     expect(specInput.attributes('accept')).toBe('.pdf,.doc,.docx,.md,.txt')
   })
+
+  it('allows selecting skills for diagnosis tasks and submits skill_ids', async () => {
+    apiMock.get.mockImplementation(async (url: string) => {
+      if (url.startsWith('/skills')) {
+        return {
+          data: {
+            items: [
+              { id: 'skill-1', name: 'Log Analysis', description: 'log triage', dimension: 'WORKSPACE', publish_state: 'PUBLISHED' },
+            ],
+            total: 1,
+            page: 1,
+            page_size: 8,
+          },
+        }
+      }
+      return { data: { repositories: [] } }
+    })
+
+    const wrapper = await mountModal()
+    await diagnosisTypeCard(wrapper).trigger('click')
+    await flushPromises()
+
+    // 诊断态同样显示 Skills 入口条，可展开侧栏勾选
+    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card)')
+    expect(skillsEntry.exists()).toBe(true)
+    await skillsEntry.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.modal-skills-sidebar.open').exists()).toBe(true)
+
+    await wrapper.find('.skill-card-item').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.skills-selected-badge.has-selected').exists()).toBe(true)
+
+    await wrapper.find('input[placeholder="dashboard.task_name_placeholder"]').setValue('定位超时问题')
+    await wrapper.find('textarea[placeholder="diagnosis.phenomenon_placeholder"]').setValue('接口偶发超时')
+
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.post).toHaveBeenCalledWith(
+      '/workspaces/ws-1/tasks',
+      expect.objectContaining({
+        name: '定位超时问题',
+        task_type: 'DIAGNOSIS',
+        phenomenon: '接口偶发超时',
+        skill_ids: ['skill-1'],
+      }),
+    )
+  })
 })

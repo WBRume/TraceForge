@@ -1,4 +1,4 @@
-<!-- SkillsPickerSidebar: 任务创建弹窗的技能选择侧栏（仅研发态任务可展开）。
+<!-- SkillsPickerSidebar: 任务创建弹窗的技能选择侧栏（研发 / 诊断态任务均可展开）。
      服务端分页搜索 / scope 过滤 / 分页为选择器私有状态；
      勾选集经 v-model 交给对话框，提交时组装 skill_ids。 -->
 <script setup lang="ts">

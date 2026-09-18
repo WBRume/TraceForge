@@ -3,7 +3,7 @@
      持有任务类型 / 侧栏状态 / 仓库控制器 / 技能勾选集，
      负责草稿校验、payload 组装、任务创建与 provision 浮窗接入。 -->
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, useTemplateRef, watch } from 'vue'
+import { onMounted, ref, shallowRef, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { Hammer, Plus, Stethoscope, X } from 'lucide-vue-next'
@@ -29,7 +29,7 @@ const provisioningStore = useProvisioningStore()
 
 // ── 弹窗内状态 ──
 const taskType = shallowRef<TaskTypeValue>('DEVELOPMENT')
-// 右侧滑出侧栏：同一时刻至多展开一个（Skills 仅研发态可展开）
+// 右侧滑出侧栏：同一时刻至多展开一个（Skills / 仓库两类任务均可展开）
 const activeSidebar = shallowRef<TaskCreateSidebar>('none')
 
 const creatingTask = shallowRef(false)
@@ -41,13 +41,6 @@ const selectedSkillIds = ref<string[]>([])
 
 onMounted(() => {
   void repos.load()
-})
-
-// 问题定位任务不含 Skills 装配：切到诊断态时收起 Skills 侧栏
-watch(taskType, (type) => {
-  if (type === 'DIAGNOSIS' && activeSidebar.value === 'skills') {
-    activeSidebar.value = 'none'
-  }
 })
 
 const toggleSidebar = (name: TaskCreateSidebarName) => {
