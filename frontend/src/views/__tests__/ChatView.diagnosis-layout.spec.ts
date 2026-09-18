@@ -8,7 +8,7 @@ const chatMessageBubbleSource = source('../../components/chat/ChatMessageBubble.
 const diagnosisResultCardSource = source('../../components/chat/DiagnosisResultCard.vue')
 const chatExecutionInputSource = source('../../components/chat/ChatExecutionInput.vue')
 const chatViewSource = source('../ChatView.vue')
-const chatViewModelSource = source('../../composables/useChatViewModel.ts')
+const chatStartActionsSource = source('../../composables/chat/actions/useTaskStartActions.ts')
 const confirmActionModalSource = source('../../components/ConfirmActionModal.vue')
 
 function declarations(source: string, selector: string): string {
@@ -106,10 +106,10 @@ describe('ChatView diagnosis summary layout containment', () => {
   it('allows editing the initial prompt before starting or initializing a task', () => {
     expect(chatViewSource).toContain('v-model="vm.startPrompt"')
     expect(chatViewSource).toContain('v-model="vm.initPrompt"')
-    expect(chatViewModelSource).toContain("const startPrompt = ref('')")
-    expect(chatViewModelSource).toContain("const initPrompt = ref('')")
-    expect(chatViewModelSource).toContain('prompt: promptText || undefined')
-    expect(chatViewModelSource).toContain('startPrompt.value = defaultInitialPromptForTask(currentTask.value)')
+    expect(chatStartActionsSource).toContain("const startPrompt = ref('')")
+    expect(chatStartActionsSource).toContain("const initPrompt = ref('')")
+    expect(chatStartActionsSource).toContain('prompt: promptText || undefined')
+    expect(chatStartActionsSource).toContain('startPrompt.value = defaultInitialPromptForTask(options.getCurrentTask())')
   })
 
   it('keeps confirmation modal hover from changing the dialog background', () => {

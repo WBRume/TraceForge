@@ -45,7 +45,7 @@ import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import GlobalSearchTrigger from '@/components/global-search/GlobalSearchTrigger.vue'
-import { useChatViewModel } from '@/composables/useChatViewModel'
+import { useChatViewModel } from '@/composables/chat/useChatViewModel'
 import { useDiagnosisDocs, type DiagnosisDocItem } from '@/composables/useDiagnosisDocs'
 
 const rawVm = useChatViewModel()

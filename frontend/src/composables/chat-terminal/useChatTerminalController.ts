@@ -55,7 +55,6 @@ export interface ChatTerminalBridge {
   sendChatContent: (content: string) => Promise<boolean>
   initializeTaskWithReason: (reason?: string) => Promise<boolean>
   interruptCurrentRun: () => Promise<boolean>
-  interruptTaskNow: () => Promise<boolean>
   completeTaskNow: () => Promise<boolean>
   clearTaskHistory: () => Promise<ClearHistoryResult | null>
   setTerminalContainer: (container: HTMLElement | null) => void
