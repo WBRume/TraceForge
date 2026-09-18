@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import NewTaskModal from '@/components/NewTaskModal.vue'
+import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import { useProvisioningStore } from '@/stores/provisioning'
 
 const apiMock = vi.hoisted(() => ({

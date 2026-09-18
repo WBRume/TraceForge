@@ -1,0 +1,277 @@
+/*
+ * task-create 共享样式：侧栏控件 + 次级按钮 + 工具类。
+ * 由 components/task-create 各组件以 <style scoped src> 引入
+ * （与 management-shared.css 惯例一致）；侧栏框架样式见 SidebarPanel.vue。
+ */
+
+/* ── 侧栏工具行（搜索 / 刷新 / 批量输入共用） ── */
+.skills-sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.skills-search-wrapper {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.skills-search-icon {
+  position: absolute;
+  left: 9px;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+/* 搜索框：纯白背景，非 disabled 灰底 */
+.skills-search-input {
+  width: 100%;
+  padding: 6px 26px 6px 28px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  background: #ffffff !important;
+  color: #0f172a;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.skills-search-input:focus {
+  border-color: #0ea5e9;
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.15);
+}
+
+.skills-search-clear {
+  position: absolute;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── 过滤行：scope Pills / 全选 / 提示 ── */
+.skills-filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.scope-pills {
+  display: flex;
+  gap: 4px;
+}
+
+.scope-pill {
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.scope-pill:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.scope-pill.active {
+  background: #0ea5e9;
+  color: #ffffff;
+  border-color: #0ea5e9;
+  font-weight: 600;
+}
+
+.tool-text-btn {
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.tool-text-btn:hover {
+  background: #f1f5f9;
+  color: #0ea5e9;
+  border-color: #cbd5e1;
+}
+
+.tool-text-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tool-icon-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #475569;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.tool-icon-btn:hover {
+  background: #f1f5f9;
+  color: #0ea5e9;
+}
+
+.tool-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 侧栏内容状态 ── */
+.skills-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 0.82rem;
+  padding: 8px 0;
+}
+
+.skills-state.center {
+  flex-direction: column;
+  justify-content: center;
+  padding: 32px 0;
+  text-align: center;
+}
+
+.skills-state.empty {
+  color: #94a3b8;
+}
+
+.skills-state-note {
+  margin: 8px 12px 0;
+  padding: 6px 10px;
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+/* 侧栏标题（icon + 标题文字，由各侧栏经 #title 插槽提供） */
+.skills-sidebar-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.skills-sidebar-title h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+/* ── 次级按钮（表单底部取消 + Skills 分页共用） ── */
+.btn-secondary {
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── 工具类 ── */
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.text-primary {
+  color: #0ea5e9;
+}
+
+.text-slate-400 {
+  color: #94a3b8;
+}
+
+.text-slate-600 {
+  color: #475569;
+}
+
+.w-3 {
+  width: 0.75rem;
+}
+
+.h-3 {
+  height: 0.75rem;
+}
+
+.w-3\.5 {
+  width: 0.875rem;
+}
+
+.h-3\.5 {
+  height: 0.875rem;
+}
+
+.w-4 {
+  width: 1rem;
+}
+
+.h-4 {
+  height: 1rem;
+}
+
+.w-6 {
+  width: 1.5rem;
+}
+
+.h-6 {
+  height: 1.5rem;
+}
+
+.flex-shrink-0 {
+  flex-shrink: 0;
+}

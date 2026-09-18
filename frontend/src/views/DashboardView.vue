@@ -11,7 +11,7 @@ import {
   TerminalSquare
 } from 'lucide-vue-next'
 import api from '@/utils/api'
-import NewTaskModal from '@/components/NewTaskModal.vue'
+import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import {
   buildDurationChartOption,
   buildHeatmapOption,

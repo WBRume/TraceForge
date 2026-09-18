@@ -28,7 +28,7 @@ import {
   Upload,
   SlidersHorizontal,
 } from 'lucide-vue-next'
-import NewTaskModal from '@/components/NewTaskModal.vue'
+import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
