@@ -51,7 +51,14 @@ from app.domains.ai.services.jobs.store import (
     list_thread_jobs,
     serialize_job,
 )
-from app.domains.asset.services import asset_discussion_service, asset_document_service, asset_resolution_service, asset_service
+from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
+from app.domains.asset.services.document import (
+    payload as document_payload,
+    repair as document_repair,
+    repository as document_repository,
+    serializer as document_serializer,
+    versioning as document_versioning,
+)
 from app.domains.auth.services import auth_service
 from app.domains.task.services import task_cli_state_service, task_service
 from app.domains.workspace.services import workspace_service
@@ -117,7 +124,7 @@ def _ensure_spec_editable(asset) -> None:
 
 
 def _serialize_asset(asset) -> AssetResponse:
-    return asset_document_service.serialize_asset(asset)
+    return document_serializer.serialize_asset(asset)
 
 
 def _serialize_version(version) -> AssetVersionResponse:
@@ -163,7 +170,7 @@ def _create_asset_thread_ai_job_sync(
     creator_id: str,
     prompt_text: str,
 ) -> dict:
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id)
     if not asset or not thread:
         raise HTTPException(status_code=404, detail="Asset thread not found")
@@ -209,7 +216,7 @@ def _create_asset_resolution_job_sync(
     context_json: dict,
     overwrite_existing_draft: bool = False,
 ) -> dict:
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id)
     if not asset or not thread:
         raise HTTPException(status_code=404, detail="Asset thread not found")
@@ -349,7 +356,7 @@ def _ensure_thread_open(thread) -> None:
 
 def _ensure_active_version(db: Session, asset):
     before_active = asset.active_version_id
-    version = asset_document_service.ensure_asset_has_version(db, asset)
+    version = document_versioning.ensure_asset_has_version(db, asset)
     if version and asset.active_version_id != version.id:
         asset.active_version_id = version.id
     if version and asset.active_version_id != before_active:
@@ -390,7 +397,7 @@ def _load_asset_thread_action_context_sync(
 ) -> dict[str, Any]:
     """Authorize and validate an asset-thread action off the event loop."""
     _verify_comment_permission_by_id(ws_id, user_id, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     thread = asset_discussion_service.get_thread(
@@ -407,7 +414,7 @@ def _load_asset_thread_action_context_sync(
     resolved_context_id = str(context_version_id or "").strip() or asset.active_version_id
     context_version = None
     if resolved_context_id:
-        context_version = asset_document_service.get_asset_version(
+        context_version = document_repository.get_asset_version(
             db,
             asset.id,
             resolved_context_id,
@@ -449,14 +456,14 @@ def _create_asset_thread_sync(
     user_id: str,
 ) -> dict[str, Any]:
     _verify_comment_permission_by_id(ws_id, user_id, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     version = None
     if data.version_id:
-        version = asset_document_service.get_asset_version(db, asset.id, data.version_id)
+        version = document_repository.get_asset_version(db, asset.id, data.version_id)
     if not version:
-        version = asset_document_service.ensure_asset_has_version(db, asset)
+        version = document_versioning.ensure_asset_has_version(db, asset)
         if version and asset.active_version_id != version.id:
             asset.active_version_id = version.id
     if not version:
@@ -528,7 +535,7 @@ def _update_asset_thread_state_sync(
     user_id: str,
 ) -> dict[str, Any]:
     _verify_expert_permission_by_id(ws_id, user_id, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
@@ -548,7 +555,7 @@ def _update_asset_thread_state_sync(
     db.flush()
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread.id)
     context_version = (
-        asset_document_service.get_asset_version(db, asset.id, asset.active_version_id)
+        document_repository.get_asset_version(db, asset.id, asset.active_version_id)
         if asset.active_version_id
         else None
     )
@@ -578,11 +585,11 @@ def _update_asset_thread_close_hint_sync(
         require_task=False,
         require_latest_context=False,
     )
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id)
     resolved_context_id = str(context_version_id or "").strip() or asset.active_version_id
     context_version = (
-        asset_document_service.get_asset_version(db, asset.id, resolved_context_id)
+        document_repository.get_asset_version(db, asset.id, resolved_context_id)
         if resolved_context_id
         else None
     )
@@ -636,7 +643,7 @@ def _maybe_backfill_task_spec_asset(db: Session, ws_id: str, task_id: Optional[s
     task = task_service.get_task(db, task_id, ws_id)
     if not task:
         return
-    created = asset_document_service.ensure_spec_asset_backfilled(db, task)
+    created = document_versioning.ensure_spec_asset_backfilled(db, task)
     if created:
         db.commit()
 
@@ -702,7 +709,7 @@ def get_asset(
     current_user: User = Depends(get_current_user),
 ):
     _verify_asset_access(ws_id, current_user, db)
-    asset = asset_service.get_asset(db, asset_id, ws_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     return _serialize_asset(asset)
@@ -717,17 +724,17 @@ def get_asset_document(
     current_user: User = Depends(get_current_user),
 ):
     _verify_asset_access(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
     active_version = None
     if version_id:
-        active_version = asset_document_service.get_asset_version(db, asset.id, version_id)
+        active_version = document_repository.get_asset_version(db, asset.id, version_id)
     if not active_version:
         active_version = _ensure_active_version(db, asset)
     updated = False
-    if active_version and asset_document_service.repair_docx_version_if_needed(db, asset, active_version):
+    if active_version and document_repair.repair_docx_version_if_needed(db, asset, active_version):
         updated = True
     if active_version:
         imported = asset_discussion_service.sync_docx_comments_to_threads(
@@ -763,7 +770,7 @@ def get_asset_document(
         workspace_service.is_workspace_expert(db, ws_id, current_user.id)
         and is_latest_context_version
     )
-    inline_review_enabled = asset_document_service.can_inline_review(asset.source_ext)
+    inline_review_enabled = document_payload.can_inline_review(asset.source_ext)
     ai_available = True
     ai_unavailable_reason: Optional[str] = None
     if not is_latest_context_version:
@@ -810,10 +817,10 @@ def list_asset_versions(
     current_user: User = Depends(get_current_user),
 ):
     _verify_asset_access(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    versions = asset_document_service.list_asset_versions(db, asset.id)
+    versions = document_repository.list_asset_versions(db, asset.id)
     return AssetVersionListResponse(
         items=[_serialize_version(version) for version in versions],
         total=len(versions),
@@ -830,10 +837,10 @@ def get_asset_version(
     current_user: User = Depends(get_current_user),
 ):
     _verify_asset_access(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
-    version = asset_document_service.get_asset_version(db, asset.id, version_id)
+    version = document_repository.get_asset_version(db, asset.id, version_id)
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
     return _serialize_version(version)
@@ -849,13 +856,13 @@ def list_asset_threads(
     current_user: User = Depends(get_current_user),
 ):
     _verify_asset_access(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     resolved_context_version_id = context_version_id or version_id
     context_version = None
     if resolved_context_version_id:
-        context_version = asset_document_service.get_asset_version(db, asset.id, resolved_context_version_id)
+        context_version = document_repository.get_asset_version(db, asset.id, resolved_context_version_id)
     if not context_version:
         context_version = _ensure_active_version(db, asset)
     items = asset_discussion_service.list_threads(db, asset_id=asset.id, version_id=None)
@@ -882,7 +889,7 @@ def get_asset_thread(
     current_user: User = Depends(get_current_user),
 ):
     _verify_asset_access(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
@@ -890,7 +897,7 @@ def get_asset_thread(
         raise HTTPException(status_code=404, detail="Thread not found")
     context_version = None
     if context_version_id:
-        context_version = asset_document_service.get_asset_version(db, asset.id, context_version_id)
+        context_version = document_repository.get_asset_version(db, asset.id, context_version_id)
     if not context_version:
         context_version = _ensure_active_version(db, asset)
     return _serialize_thread_with_context(
@@ -1051,7 +1058,7 @@ def list_asset_thread_ai_jobs(
     current_user: User = Depends(get_current_user),
 ):
     _verify_comment_permission(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
@@ -1142,7 +1149,7 @@ def precheck_thread_resolution_anchor(
     current_user: User = Depends(get_current_user),
 ):
     _verify_comment_permission(ws_id, current_user, db)
-    asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread_id)
@@ -1176,7 +1183,7 @@ def precheck_thread_resolution_anchor(
 
     context_version = None
     if resolved_context_version_id:
-        context_version = asset_document_service.get_asset_version(db, asset.id, resolved_context_version_id)
+        context_version = document_repository.get_asset_version(db, asset.id, resolved_context_version_id)
     if not context_version:
         context_version = _ensure_active_version(db, asset)
 
@@ -1283,7 +1290,7 @@ async def apply_thread_resolution(
     try:
         def persist_resolution(db: Session):
             _verify_expert_permission(ws_id, current_user, db)
-            asset = asset_document_service.get_asset_by_id(db, ws_id, asset_id)
+            asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
             if not asset:
                 raise HTTPException(status_code=404, detail="Asset not found")
             _ensure_spec_editable(asset)

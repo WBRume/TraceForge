@@ -14,7 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.asset.models.asset import AssetType, SddAsset
-from app.domains.asset.services import asset_document_service
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.decision_service import decision_source_response
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import task_service
@@ -190,7 +190,7 @@ def get_task_files(
     if not task:
         return TaskFilesSectionResponse()
 
-    asset_document_service.ensure_spec_asset_backfilled(db, task)
+    document_versioning.ensure_spec_asset_backfilled(db, task)
     db.commit()
 
     page = max(1, int(page or 1))

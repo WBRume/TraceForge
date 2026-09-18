@@ -22,7 +22,10 @@ from app.domains.asset.models.asset import (
     SddAssetVersion,
 )
 from app.domains.task.models.task import SddTask
-from app.domains.asset.services import asset_discussion_service, asset_document_service
+from app.domains.asset.services import asset_discussion_service
+from app.domains.asset.services.document import payload as document_payload
+from app.domains.asset.services.document import repository as document_repository
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.task.services import task_cli_state_service
 
 try:
@@ -680,9 +683,9 @@ def update_resolution_proposal_rewrite(
         raise ResolutionServiceError("Proposal does not belong to thread")
 
     requested_version_id = str(context_version_id or "").strip() or str(proposal.base_version_id)
-    version = asset_document_service.get_asset_version(db, thread.asset_id, requested_version_id)
+    version = document_repository.get_asset_version(db, thread.asset_id, requested_version_id)
     if not version and str(requested_version_id) != str(proposal.base_version_id):
-        version = asset_document_service.get_asset_version(db, thread.asset_id, proposal.base_version_id)
+        version = document_repository.get_asset_version(db, thread.asset_id, proposal.base_version_id)
     if not version:
         raise ResolutionServiceError("Proposal base version not found")
 
@@ -750,7 +753,7 @@ def update_resolution_proposal_rewrite(
         markdown = str(rewritten_markdown or "").strip()
         if not markdown:
             raise ResolutionServiceError("Rewritten document markdown cannot be empty", status_code=422)
-        parsed = asset_document_service.parse_document_payload("proposal-rewrite.md", markdown.encode("utf-8"))
+        parsed = document_payload.parse_document_payload("proposal-rewrite.md", markdown.encode("utf-8"))
         candidate_blocks = list(parsed.get("blocks_json") or [])
         if not candidate_blocks:
             raise ResolutionServiceError("Failed to parse rewritten document blocks", status_code=422)
@@ -912,9 +915,9 @@ def apply_resolution_proposal(
     active_version_id = str(asset.active_version_id or "").strip()
     proposal_version_id = str(proposal.base_version_id or "").strip()
     requested_base_version_id = active_version_id or proposal_version_id
-    base_version = asset_document_service.get_asset_version(db, asset.id, requested_base_version_id)
+    base_version = document_repository.get_asset_version(db, asset.id, requested_base_version_id)
     if not base_version and requested_base_version_id != proposal_version_id:
-        base_version = asset_document_service.get_asset_version(db, asset.id, proposal_version_id)
+        base_version = document_repository.get_asset_version(db, asset.id, proposal_version_id)
     if not base_version:
         raise ResolutionServiceError("Proposal base version not found")
 
@@ -1072,7 +1075,7 @@ def apply_resolution_proposal(
     if output_bytes is None:
         output_bytes = next_markdown.encode("utf-8")
 
-    version = asset_document_service.create_asset_version_from_normalized_content(
+    version = document_versioning.create_asset_version_from_normalized_content(
         db,
         asset,
         creator_id=actor_user_id,

@@ -18,7 +18,8 @@ from app.domains.task.models.log import SddExecutionLog, LogType
 from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember, generate_uuid
-from app.domains.asset.services import asset_discussion_service, asset_document_service
+from app.domains.asset.services import asset_discussion_service
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.skill.services import skill_service
 from app.domains.task.services import git_worktree_service
 from app.domains.skill.services.skill import storage_service as skill_storage_service
@@ -650,7 +651,7 @@ def upload_task_spec(
     
     # 更新数据库中的绝对路径
     task.spec_doc_path = os.path.abspath(file_path)
-    asset, version = asset_document_service.create_asset_version_from_upload(
+    asset, version = document_versioning.create_asset_version_from_upload(
         db,
         task,
         creator_id=task.creator_id,

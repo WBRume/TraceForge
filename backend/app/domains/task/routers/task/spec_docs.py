@@ -12,7 +12,9 @@ from app.core.logging import bind_task_context, get_logger
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
 from app.domains.asset.schemas.asset import AssetResponse
-from app.domains.asset.services import asset_document_service
+from app.domains.asset.services import asset_service
+from app.domains.asset.services.document import serializer as document_serializer
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.task.routers.task.deps import (
@@ -45,9 +47,9 @@ def get_task_spec_asset(
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
 
-    asset = asset_document_service.get_spec_asset_by_task(db, task.id)
+    asset = asset_service.get_spec_asset_by_task(db, task.id)
     if not asset and task.spec_doc_path:
-        asset = asset_document_service.ensure_spec_asset_backfilled(db, task)
+        asset = document_versioning.ensure_spec_asset_backfilled(db, task)
         if asset:
             db.commit()
             db.refresh(asset)
@@ -55,7 +57,7 @@ def get_task_spec_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Task spec asset not found")
 
-    return asset_document_service.serialize_asset(asset)
+    return document_serializer.serialize_asset(asset)
 
 
 @router.post("/{task_id}/upload-spec", response_model=dict)

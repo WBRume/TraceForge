@@ -22,7 +22,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.domains.asset.models.asset import SddAsset, SddAssetVersion, AssetType
-from app.domains.asset.services import asset_document_service
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.task.models.task import SddTask
 from app.domains.workflow.models.task_change import (
     ChangeProposalStatus,
@@ -1057,7 +1057,7 @@ def _store_diff_asset(
     }
     if file_diffs:
         content_json["file_diffs"] = file_diffs
-    asset, _version = asset_document_service.create_task_asset_version_from_bytes(
+    asset, _version = document_versioning.create_task_asset_version_from_bytes(
         db,
         task,
         creator_id=actor_id,

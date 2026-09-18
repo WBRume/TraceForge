@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
 from app.domains.task.models.task import SddTask
-from app.domains.asset.services import asset_document_service
+from app.domains.asset.services.document import versioning as document_versioning
 
 
 def _decode_excerpt(raw: bytes, *, limit: int = 12000) -> str:
@@ -49,7 +49,7 @@ def create_patch_asset(
     asset_name = f"Change Proposal #{proposal_no} Patch Set {patch_set_no}"
     if repo_slug:
         asset_name = f"{asset_name} [{repo_slug}]"
-    return asset_document_service.create_task_asset_version_from_bytes(
+    return document_versioning.create_task_asset_version_from_bytes(
         db,
         task,
         creator_id=creator_id,
@@ -82,7 +82,7 @@ def create_verification_log_asset(
 ) -> Tuple[SddAsset, SddAssetVersion, str]:
     excerpt = _decode_excerpt(file_content)
     safe_name = file_name or f"verification-run-{run_id}.log"
-    asset, version = asset_document_service.create_task_asset_version_from_bytes(
+    asset, version = document_versioning.create_task_asset_version_from_bytes(
         db,
         task,
         creator_id=creator_id,
@@ -116,7 +116,7 @@ def create_conflict_report_asset(
 ) -> Tuple[SddAsset, SddAssetVersion, str]:
     excerpt = _decode_excerpt(file_content)
     safe_name = file_name or f"conflict-report-{report_id}.log"
-    asset, version = asset_document_service.create_task_asset_version_from_bytes(
+    asset, version = document_versioning.create_task_asset_version_from_bytes(
         db,
         task,
         creator_id=creator_id,

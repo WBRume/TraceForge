@@ -13,7 +13,7 @@ from app.dependencies import get_current_user, get_db
 from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.ai.services.jobs.store import serialize_job
-from app.domains.asset.services import asset_document_service
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.case_center.schemas.case import CaseDraftCreateRequest, CaseResponse
 from app.domains.case_center.services import case_service
@@ -64,7 +64,7 @@ def _create_diagnosis_doc_sync(
             status_code=403,
             detail="Only diagnosis tasks support diagnosis documents",
         )
-    asset, version, cli_path = asset_document_service.create_diagnosis_doc_asset_version(
+    asset, version, cli_path = document_versioning.create_diagnosis_doc_asset_version(
         db,
         task,
         creator_id=creator_id,
