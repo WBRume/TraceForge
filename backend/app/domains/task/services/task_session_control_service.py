@@ -1,12 +1,21 @@
-"""Task AI session interrupt/resume orchestration."""
+"""Task 会话生命周期编排：start（建立）/ initialize（重置）/ interrupt（打断）/ resume（恢复）。
+
+四个转换共享同一套编排纪律：
+- 路由层负责鉴权、参数解析与任务分布式锁（锁冲突映射为 HTTP 409/429）；
+- 服务层在锁内把同步 DB 段拆成单事务、在 DB 线程执行（run_db_txn_with_bind），
+  引擎检查、attempt 恢复、turn 创建与广播保持在事件循环；
+- 业务守卫失败抛 TaskSessionControlError（携带 HTTP 状态码），路由统一映射。
+"""
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from sqlalchemy.orm import Session
 
+from app.core.logging import get_logger
 from app.engine.workflow_engine import WorkflowEngine, get_engine
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
@@ -15,12 +24,21 @@ from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.ai.services.jobs.store import (
+    create_task_chat_job,
     find_active_summary_job,
     serialize_job,
 )
-from app.domains.task.services import context_token_service
+from app.domains.task.services import context_token_service, task_service, task_session_service
 from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.domains.websocket.ws.manager import manager as task_ws_manager
+
+logger = get_logger(__name__, category="task_execution")
+
+# ── 会话状态守卫文案（业务规则归属服务层，HTTP 层引用同一来源）──
+BASELINED_LOCKED_MSG = "Task is BASELINED and locked for changes"
+TASK_RUNNING_MSG = "Task is currently running. Please wait or cancel it first."
+TASK_INTERRUPTED_MSG = "Task is interrupted. Resume it or initialize a fresh session."
+TASK_PROVISIONING_MSG = "Task is still being provisioned. Please wait until the workspace is ready."
 
 
 class TaskSessionControlError(Exception):
@@ -557,3 +575,352 @@ async def resume_interrupted_task(
     )
     await ai_job_publishing.enqueue_task_chat_job(created.job_id)
     return finalized["task_payload"]
+
+
+# ──────────────────────── 会话建立：start / initialize ────────────────────────
+
+
+def _session_bind(db: Session) -> Any:
+    """Resolve the bind of a (possibly closed) request dependency session.
+
+    轻量测试替身可能没有 get_bind：返回 None 时编排退化为直接同步执行。
+    """
+    getter = getattr(db, "get_bind", None)
+    return getter() if callable(getter) else None
+
+
+def _bind_txn_runner(
+    db: Session, db_bind: Any
+) -> Callable[[Callable[[Session], Any]], Awaitable[Any]]:
+    """锁内短事务执行器：有 bind 走 DB 线程，无 bind（测试替身）同步执行。"""
+    if db_bind is None:
+        async def run(body: Callable[[Session], Any]) -> Any:
+            return body(db)
+    else:
+        async def run(body: Callable[[Session], Any]) -> Any:
+            return await run_db_txn_with_bind(db_bind, body)
+    return run
+
+
+def _ensure_task_not_baselined(task: SddTask) -> None:
+    if task.status == TaskStatus.BASELINED:
+        raise TaskSessionControlError(BASELINED_LOCKED_MSG, status_code=403)
+
+
+def _assert_no_preparing_submission(db: Session, task_id: str) -> None:
+    from app.domains.task.services.chat_submission_service import (
+        SubmissionError,
+        assert_no_preparing_submission,
+    )
+
+    try:
+        assert_no_preparing_submission(db, task_id)
+    except SubmissionError as exc:
+        raise TaskSessionControlError(str(exc), status_code=409) from exc
+
+
+def build_session_prompt(task: SddTask, requested_prompt: Optional[str]) -> Dict[str, str]:
+    """组装会话首条 prompt（start 与 initialize 共用）。
+
+    会话窗口只展示用户输入部分（``user_display``）；规格文件指引与诊断
+    后缀等内置提示词只随作业发给 agent（``prompt``）。
+    """
+    from app.domains.task.services.diagnosis_result_service import build_diagnosis_prompt_suffix
+
+    requested = str(requested_prompt or "").strip()
+    user_display = requested or (task.description or "").strip() or f"Please start task '{task.name}'."
+    prompt = user_display
+    if task.spec_doc_path:
+        abs_path = os.path.abspath(task.spec_doc_path)
+        prompt += (
+            "\n\nPlease read and strictly implement all requirements in the specification file. "
+            f"Absolute path: {abs_path}"
+        )
+    prompt += build_diagnosis_prompt_suffix(task)
+    return {"user_display": user_display, "prompt": prompt}
+
+
+def load_start_task_context_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    requested_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    """启动前守卫 + 首条 prompt 组装（单事务，调用方已持有任务锁）。"""
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise TaskSessionControlError("Task not found", status_code=404)
+    _assert_no_preparing_submission(db, task_id)
+    _ensure_task_not_baselined(task)
+    if task.status == TaskStatus.PROVISIONING:
+        raise TaskSessionControlError(TASK_PROVISIONING_MSG, status_code=409)
+    if task.status == TaskStatus.CODING:
+        raise TaskSessionControlError(TASK_RUNNING_MSG, status_code=409)
+    if task.status == TaskStatus.INTERRUPTED:
+        raise TaskSessionControlError(TASK_INTERRUPTED_MSG, status_code=409)
+    if find_active_summary_job(db, task.id) is not None:
+        raise TaskSessionControlError(
+            "一键总结问题案例进行中，请等待完成或停止后再启动会话", status_code=409
+        )
+    prompts = build_session_prompt(task, requested_prompt)
+    return {
+        "task_id": task.id,
+        "task_name": task.name,
+        "task_description": task.description,
+        "task_spec_doc_path": task.spec_doc_path,
+        **prompts,
+    }
+
+
+def start_task_session_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    creator_id: str,
+    prompt: str,
+    user_display: str,
+) -> Dict[str, Any]:
+    """任务状态重置为 CODING，并创建首条消息 + 聊天作业（单事务，锁内调用）。"""
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise TaskSessionControlError("Task not found", status_code=404)
+    _ensure_task_not_baselined(task)
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    task.session_id = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
+
+    initial_message = task_service.save_chat_message(
+        db,
+        task_id=task.id,
+        workspace_id=ws_id,
+        creator_id=creator_id,
+        role="user",
+        content=user_display,
+        message_type="text",
+        metadata_json={
+            "source": "task_start",
+            "fresh_session": True,
+            "initial_prompt": True,
+        },
+    )
+    job = create_task_chat_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=creator_id,
+        prompt_text=prompt,
+        context_json={"source": "task_start", "fresh_session": True},
+        chat_message_id=initial_message.id,
+    )
+    return {
+        "task_id": task.id,
+        "job_id": job.id,
+        "job": serialize_job(job),
+    }
+
+
+async def start_task_session(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    actor_user_id: str,
+    requested_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    """启动全新任务会话（POST /start 业务编排；调用方已持有任务锁）。
+
+    守卫检查 → 旧引擎收尾 → 状态重置 + 首条消息 + 聊天作业 → 入队执行。
+    依赖 Session 只用于解析 bind（路由层已在等待锁前关闭它）。
+    """
+    run_txn = _bind_txn_runner(db, _session_bind(db))
+    state = await run_txn(
+        lambda session: load_start_task_context_sync(
+            session, ws_id=ws_id, task_id=task_id, requested_prompt=requested_prompt
+        )
+    )
+    existing_engine = get_engine(state["task_id"])
+    if existing_engine and existing_engine.running:
+        raise TaskSessionControlError(TASK_RUNNING_MSG, status_code=409)
+    if existing_engine and not existing_engine.running:
+        await existing_engine.stop()
+
+    result = await run_txn(
+        lambda session: start_task_session_sync(
+            session,
+            ws_id=ws_id,
+            task_id=task_id,
+            creator_id=actor_user_id,
+            prompt=state["prompt"],
+            user_display=state["user_display"],
+        )
+    )
+    await ai_job_publishing.enqueue_task_chat_job(result["job_id"])
+    return {"msg": "Task started", "task_id": result["task_id"], "job": result["job"]}
+
+
+def _initialize_has_active_jobs_sync(db: Session, *, task_id: str) -> bool:
+    """Cancellation is a request, not proof that the old attempt has exited."""
+    from app.domains.task.services.chat_submission_service import BLOCKING
+
+    return db.query(SddAiJob.id).filter(
+        SddAiJob.task_id == task_id,
+        SddAiJob.channel == AiJobChannel.TASK_CHAT,
+        SddAiJob.status.in_(BLOCKING),
+    ).first() is not None
+
+
+def prepare_initialize_sync(db: Session, *, ws_id: str, task_id: str) -> Dict[str, Any]:
+    """重新初始化前置守卫 + 取消在途聊天作业（单事务，锁内调用）。"""
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise TaskSessionControlError("Task not found", status_code=404)
+    _assert_no_preparing_submission(db, task_id)
+    _ensure_task_not_baselined(task)
+    if task.status == TaskStatus.PROVISIONING:
+        raise TaskSessionControlError(TASK_PROVISIONING_MSG, status_code=409)
+    if str(task.current_phase or "").strip().upper() == "PREPARE_FAILED":
+        raise TaskSessionControlError(
+            "Task preparation failed and cannot be initialized. Please create a new task.",
+            status_code=409,
+        )
+    cancelled_job_ids = ai_job_attempts.mark_task_chat_jobs_cancelled(
+        db,
+        workspace_id=ws_id,
+        task_id=task_id,
+        message="Task initialized with a fresh session",
+    )
+    return {"task_id": task.id, "cancelled_job_ids": cancelled_job_ids}
+
+
+def apply_initialize_sync(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    skill_ids: Optional[list[str]],
+    keep_deleted_runtime_skills: bool,
+    requested_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    """替换 Skills、推进 session_generation、重置状态并组装首条 prompt（单事务，锁内调用）。"""
+    task = task_service.get_task(db, task_id, ws_id)
+    if not task:
+        raise TaskSessionControlError("Task not found", status_code=404)
+    _ensure_task_not_baselined(task)
+    # Cancellation is a request, not proof that the old attempt has exited.
+    # Check before clearing the session or advancing its generation.
+    if _initialize_has_active_jobs_sync(db, task_id=task_id):
+        raise TaskSessionControlError(
+            "旧任务执行尚未清理完成，请稍后重试初始化；无需删除任务。", status_code=409
+        )
+    if skill_ids is not None:
+        task_service.replace_task_skills_for_initialize(
+            db,
+            task,
+            workspace_id=ws_id,
+            skill_ids=skill_ids,
+            keep_deleted_runtime_skills=keep_deleted_runtime_skills,
+        )
+    task.retry_count = int(task.retry_count or 0) + 1
+    task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
+    task.status = TaskStatus.CODING
+    task.error_message = None
+    task.session_id = None
+    task.interrupt_reason = None
+    task.interrupted_by_id = None
+    task.interrupted_at = None
+    db.commit()
+    prompts = build_session_prompt(task, requested_prompt)
+    return {"task_id": task.id, **prompts}
+
+
+def _serialize_job_by_id_sync(db: Session, job_id: str) -> Optional[Dict[str, Any]]:
+    job = db.get(SddAiJob, job_id)
+    return serialize_job(job) if job else None
+
+
+async def initialize_task_session(
+    db: Session,
+    *,
+    ws_id: str,
+    task_id: str,
+    actor_user_id: str,
+    skill_ids: Optional[list[str]] = None,
+    keep_deleted_runtime_skills: bool = True,
+    requested_prompt: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> Dict[str, Any]:
+    """重新初始化任务会话（POST /initialize 业务编排；调用方已持有任务锁）。
+
+    取消在途作业并广播 → 停旧引擎 → 恢复 attempt → 换装 Skills / 推进代际
+    → 落 init_reason 消息 → 创建新会话 turn → 入队执行。
+    """
+    run_txn = _bind_txn_runner(db, _session_bind(db))
+    prepared = await run_txn(
+        lambda session: prepare_initialize_sync(session, ws_id=ws_id, task_id=task_id)
+    )
+    engine = get_engine(task_id)
+    if engine:
+        try:
+            await engine.stop()
+        except Exception as exc:
+            logger.exception("Failed to stop old engine before initialization: task_id={}", task_id)
+            raise TaskSessionControlError(
+                "旧引擎尚未停止，请稍后重试初始化；原会话已保留。", status_code=409
+            ) from exc
+    for old_job_id in prepared["cancelled_job_ids"]:
+        await ai_job_publishing.publish_job(old_job_id)
+
+    from app.domains.task.services.task_attempt_recovery_service import recover_task_attempts
+
+    await recover_task_attempts(task_id, run_txn=run_txn, wait_for_running=True)
+
+    try:
+        state = await run_txn(
+            lambda session: apply_initialize_sync(
+                session,
+                ws_id=ws_id,
+                task_id=task_id,
+                skill_ids=skill_ids,
+                keep_deleted_runtime_skills=keep_deleted_runtime_skills,
+                requested_prompt=requested_prompt,
+            )
+        )
+    except ValueError as exc:
+        raise TaskSessionControlError(str(exc), status_code=int(getattr(exc, "status_code", 400))) from exc
+
+    init_reason_text = str(reason or "").strip()
+    # 同步落库 off-loop（线程内自建 session，含通知生成）
+    await run_txn(
+        lambda session: task_service.save_chat_message(
+            session,
+            task_id,
+            ws_id,
+            actor_user_id,
+            role="system",
+            content=init_reason_text,
+            message_type="init_reason",
+        )
+    )
+    created = await task_session_service.create_task_chat_turn(
+        task_id=task_id,
+        actor_user_id=actor_user_id,
+        content=state["user_display"],
+        prompt_text=state["prompt"],
+        context_json={
+            "source": "task_initialize",
+            "fresh_session": True,
+            "initialize_reason": init_reason_text,
+        },
+        fresh_session=True,
+        skip_checkpoint=True,
+    )
+    await ai_job_publishing.enqueue_task_chat_job(created.job_id)
+    job_payload = await run_txn(
+        lambda session: _serialize_job_by_id_sync(session, created.job_id)
+    )
+    return {"msg": "Task initialized", "job": job_payload}

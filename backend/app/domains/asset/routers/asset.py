@@ -117,17 +117,7 @@ def _ensure_spec_editable(asset) -> None:
 
 
 def _serialize_asset(asset) -> AssetResponse:
-    asset_type = asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type)
-    return AssetResponse(
-        id=asset.id,
-        task_id=asset.task_id,
-        workspace_id=asset.workspace_id,
-        asset_type=asset_type,
-        name=asset.name,
-        content_text=asset.content_text,
-        content_json=asset.content_json,
-        created_at=asset.created_at,
-    )
+    return asset_document_service.serialize_asset(asset)
 
 
 def _serialize_version(version) -> AssetVersionResponse:

@@ -29,6 +29,12 @@ from app.domains.task.models.diagnosis import (
 )
 from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
+from app.domains.ai.services.jobs.store import (
+    create_diagnosis_summary_job,
+    find_active_chat_job,
+    find_active_summary_job,
+    serialize_job,
+)
 from app.domains.websocket.ws.manager import manager as ws_manager
 from app.domains.rag.services import outbox_service as rag_outbox_service
 
@@ -601,3 +607,79 @@ async def publish_diagnosis_result_message(*, task_id: str, message_id: str) -> 
     payload = await run_db(_build_diagnosis_result_message_payload_sync, task_id, message_id)
     if payload:
         await ws_manager.send_message_to_room(task_id, WSMessage(type="chat_message", payload=payload))
+
+
+# ──────────────────────── 一键总结问题案例 ────────────────────────
+
+
+class DiagnosisSummaryError(ValueError):
+    """一键总结问题案例的业务冲突（携带 HTTP 状态码，路由层统一映射）。"""
+
+    def __init__(self, message: str, *, status_code: int = 409):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+def prepare_diagnosis_summary_sync(
+    db: Session, *, ws_id: str, task_id: str, actor_user_id: str
+) -> Dict[str, Any]:
+    """一键总结问题案例：守卫检查 + 幂等创建后台总结作业（单事务）。
+
+    路由层负责权限校验与任务锁；这里完成任务类型守卫 → 提交互斥 →
+    已采纳案例互斥 → 总结/会话作业互斥 → 作业创建。
+    SubmissionError（提交受理中）原样上抛，由路由按 {code, message} 形状映射。
+    """
+    task = (
+        db.query(SddTask)
+        .filter(SddTask.id == task_id, SddTask.workspace_id == ws_id)
+        .first()
+    )
+    if not task:
+        raise DiagnosisSummaryError("Task not found", status_code=404)
+    if getattr(task, "task_type", None) != "DIAGNOSIS":
+        raise DiagnosisSummaryError(
+            "Only diagnosis tasks support diagnosis results", status_code=403
+        )
+    from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
+
+    assert_no_preparing_submission(db, task_id)
+    existing_case = (
+        db.query(SddCase)
+        .filter(
+            SddCase.workspace_id == ws_id,
+            SddCase.source_task_id == task.id,
+        )
+        .first()
+    )
+    diagnosis_result = getattr(task, "diagnosis_result", None)
+    if existing_case is not None or (
+        diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"
+    ):
+        raise DiagnosisSummaryError(
+            "Case already adopted, diagnosis summarization is not allowed", status_code=409
+        )
+
+    active_summary = find_active_summary_job(db, task.id)
+    if active_summary is not None:
+        return {
+            "job_id": active_summary.id,
+            "status": serialize_job(active_summary).get("status"),
+            "task_id": task.id,
+            "created": False,
+        }
+    if find_active_chat_job(db, task.id) is not None:
+        raise DiagnosisSummaryError(
+            "会话进行中，请等待完成或停止后再一键总结问题案例", status_code=409
+        )
+    job = create_diagnosis_summary_job(
+        db,
+        workspace_id=ws_id,
+        task_id=task.id,
+        creator_id=actor_user_id,
+    )
+    return {
+        "job_id": job.id,
+        "status": "PENDING",
+        "task_id": task.id,
+        "created": True,
+    }
