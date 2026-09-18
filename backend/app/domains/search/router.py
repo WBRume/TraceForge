@@ -124,7 +124,7 @@ async def message_context(ws_id: str, task_id: str, message_id: str,
 
 
 class ProfileInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
     id: str | None = None
     revision: int = Field(0, ge=0)
     endpoint: str = Field(max_length=500)
