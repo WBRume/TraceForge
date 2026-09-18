@@ -37,7 +37,7 @@ from app.domains.workflow.schemas.provision import (
 )
 from app.domains.workflow.services import provision_job_service
 from app.domains.workspace.services import workspace_service
-from app.engine.workflow_engine import get_engine
+from app.engine.session import get_engine
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 

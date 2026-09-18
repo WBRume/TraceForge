@@ -1,6 +1,6 @@
 """统一 AgentBackend 底层调用的 AI 会话日志。
 
-TraceForge 的统一执行入口（WorkflowEngine / LegacyBridgeShim）在调用
+TraceForge 的统一执行入口（TaskAgentEngine / LegacyBridgeShim）在调用
 ``backend.run()`` 时都经过这里，从而避免每个 adapter 单独重复写日志。
 除了 loguru 的 ``ai_session`` 分类日志外，还会像 Claude 一样在
 ``AI_SESSION_LOG_DIR`` 下生成独立的会话 trace 文件（``时间戳_会话id.log``）。

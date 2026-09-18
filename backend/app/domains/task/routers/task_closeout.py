@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
-from app.engine.workflow_engine import get_engine
+from app.engine.session import get_engine
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.routers.task.deps import raise_task_lock_conflict
 from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest, FailTaskCloseoutRequest, TaskCloseoutResponse

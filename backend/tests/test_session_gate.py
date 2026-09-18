@@ -13,7 +13,7 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.domains.ai.models.ai_job import AiJobStatus  # noqa: E402
-from app.engine.workflow_engine import SessionGate  # noqa: E402
+from app.engine.session import SessionGate  # noqa: E402
 
 
 def _fake_db(job=None, task=None):
@@ -99,7 +99,7 @@ class SessionGateTest(unittest.IsolatedAsyncioTestCase):
     async def test_refresh_updates_cached_result(self):
         gate = _armed_gate()
         with mock.patch(
-            "app.engine.workflow_engine.run_db",
+            "app.engine.session.gate.run_db",
             mock.AsyncMock(return_value=False),
         ):
             self.assertFalse(await gate.refresh())
@@ -110,7 +110,7 @@ class SessionGateTest(unittest.IsolatedAsyncioTestCase):
         gate = _armed_gate()
         last = gate._db_current
         with mock.patch(
-            "app.engine.workflow_engine.run_db",
+            "app.engine.session.gate.run_db",
             mock.AsyncMock(side_effect=RuntimeError("db down")),
         ):
             self.assertEqual(await gate.refresh(), last)

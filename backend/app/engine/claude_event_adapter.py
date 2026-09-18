@@ -12,6 +12,8 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List
 
+from app.agents.events import AgentEvent
+
 MAX_TEXT_LEN = 2000
 MAX_RAW_JSON_LEN = 5000
 
@@ -508,3 +510,123 @@ def format_claude_event_log_line(entry: Dict[str, Any]) -> str:
     if text:
         return f"[{event_type or 'event'}] {text}"
     return f"[{event_type or 'event'}]"
+
+
+# ─────────────── 旧版 dict 事件 → 统一 AgentEvent 归一 ───────────────
+
+
+def claude_stream_to_agent_events(event: Dict[str, Any]) -> List[AgentEvent]:
+    """把旧版 Claude stream-json dict 事件归一为 AgentEvent 序列。
+
+    供 legacy CliBridgeBase 路径（mock bridge 等）复用引擎的统一事件处理：
+    - system/init        -> session_started
+    - assistant 事件     -> usage + 逐 content block（thinking/text/tool_use/
+                            tool_result/context_compacted）
+    - result 事件        -> result（is_error/subtype 折叠进 finish_reason）
+    - 其他类型命中压缩信号 -> context_compacted
+    """
+    event_type = event.get("type")
+
+    if event_type == "system" and event.get("subtype") == "init":
+        return [AgentEvent(
+            type="session_started",
+            payload={
+                "provider_session_id": str(event.get("session_id") or ""),
+                "model": event.get("model"),
+            },
+            provider="claude-cli",
+        )]
+
+    if event_type == "result":
+        is_error = bool(event.get("is_error")) or str(event.get("subtype") or "") == "error"
+        usage = extract_claude_usage(event)
+        return [AgentEvent(
+            type="result",
+            payload={
+                "result": event.get("result", ""),
+                "duration_ms": event.get("duration_ms"),
+                "cost_usd": event.get("total_cost_usd"),
+                "usage": usage,
+                "finish_reason": "error" if is_error else "completed",
+            },
+            provider="claude-cli",
+        )]
+
+    if event_type == "assistant":
+        message = event.get("message", {})
+        events: List[AgentEvent] = []
+        usage = extract_claude_usage(event)
+        if usage:
+            events.append(AgentEvent(type="usage", payload=usage, provider="claude-cli"))
+        for block in message.get("content", []):
+            events.extend(_claude_block_to_agent_events(block))
+        return events
+
+    # 未知类型：压缩信号兜底（与 assistant 内嵌压缩块同一处理）
+    if extract_claude_compaction_event(event):
+        return [_compaction_agent_event(event)]
+    return []
+
+
+def _claude_block_to_agent_events(block: Dict[str, Any]) -> List[AgentEvent]:
+    block_type = block.get("type")
+
+    if block_type == "thinking":
+        text = block.get("thinking", "")
+        if text:
+            return [AgentEvent(type="thinking", payload={"text": text}, provider="claude-cli")]
+        return []
+
+    if block_type == "text":
+        text = block.get("text", "")
+        if text:
+            return [AgentEvent(type="text", payload={"text": text}, provider="claude-cli")]
+        return []
+
+    if block_type == "tool_use":
+        return [AgentEvent(
+            type="tool_use",
+            payload={
+                "tool_name": block.get("name", "unknown"),
+                "tool_input": block.get("input", {}),
+                "tool_use_id": block.get("id", ""),
+            },
+            provider="claude-cli",
+        )]
+
+    if block_type == "tool_result":
+        # 有时 tool_result 的 content 是 list
+        output = block.get("output", block.get("content", ""))
+        if isinstance(output, list):
+            output = "\n".join(
+                item.get("text", str(item))
+                for item in output
+                if isinstance(item, dict)
+            ) if output else ""
+        return [AgentEvent(
+            type="tool_result",
+            payload={
+                "tool_use_id": block.get("tool_use_id", ""),
+                "output": str(output),
+                "is_error": bool(block.get("is_error", False)),
+            },
+            provider="claude-cli",
+        )]
+
+    if extract_claude_compaction_event(block):
+        return [_compaction_agent_event(block)]
+
+    return []
+
+
+def _compaction_agent_event(source: Dict[str, Any]) -> AgentEvent:
+    lines = []
+    for entry in flatten_claude_event(source):
+        line = format_claude_event_log_line(entry)
+        if line:
+            lines.append(line)
+    return AgentEvent(
+        type="context_compacted",
+        payload={"summary": "\n".join(lines) or str(source)},
+        provider="claude-cli",
+    )

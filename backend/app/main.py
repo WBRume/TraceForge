@@ -58,7 +58,7 @@ from app.domains.management.routers import (
 )
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
 from app.domains.ai.services.jobs import workers as ai_job_workers
-from app.engine.workflow_engine import shutdown_active_engines
+from app.engine.session import shutdown_active_engines
 from app.domains.api_mock.services import api_mock_service
 from app.domains.auth.services import auth_service
 from app.domains.system_config.routers import system_config

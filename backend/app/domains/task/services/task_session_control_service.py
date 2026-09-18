@@ -16,7 +16,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
-from app.engine.workflow_engine import WorkflowEngine, get_engine
+from app.engine.session import TaskAgentEngine, get_engine
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
 from app.domains.task.models.task import SddTask, TaskStatus
@@ -57,7 +57,7 @@ def _merge_json(original: Any, patch: Dict[str, Any]) -> Dict[str, Any]:
     return merged
 
 
-def _find_running_task_job(db: Session, task_id: str, engine: WorkflowEngine) -> Optional[SddAiJob]:
+def _find_running_task_job(db: Session, task_id: str, engine: TaskAgentEngine) -> Optional[SddAiJob]:
     query = db.query(SddAiJob).filter(
         SddAiJob.task_id == task_id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,

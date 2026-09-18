@@ -32,7 +32,7 @@ from app.domains.workflow.schemas.change_proposal import (
     ChangeProposalResponse,
 )
 from app.domains.workflow.services import change_proposal_service
-from app.engine.workflow_engine import get_engine
+from app.engine.session import get_engine
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 

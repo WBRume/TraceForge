@@ -250,9 +250,9 @@ def test_engine_records_last_result_before_persist():
     """引擎必须在持久化之前登记真实 result（持久化失败不抹掉证据）。"""
     import inspect
 
-    from app.engine.workflow_engine import WorkflowEngine
+    from app.engine.session import TaskAgentEngine
 
-    source = inspect.getsource(WorkflowEngine.run)
+    source = inspect.getsource(TaskAgentEngine.run)
     persist_pos = source.index("_persist_provider_state")
     assign_pos = source.index("self.last_result = result")
     assert assign_pos < persist_pos

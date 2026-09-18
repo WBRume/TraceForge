@@ -11,17 +11,17 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.agents import AgentEvent  # noqa: E402
-from app.engine.workflow_engine import WorkflowEngine  # noqa: E402
+from app.engine.session import TaskAgentEngine  # noqa: E402
 
 
 class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
-    def _engine(self) -> WorkflowEngine:
-        with patch.object(WorkflowEngine, "_create_engine_backend", return_value=MagicMock()):
-            engine = WorkflowEngine("task-1", "ws-1", "user-1")
-        engine._queue_execution_log = MagicMock()
-        engine._record_context_segment = MagicMock()
-        engine._ws_push = AsyncMock()
-        engine._push_chat = AsyncMock()
+    def _engine(self) -> TaskAgentEngine:
+        with patch.object(TaskAgentEngine, "_create_engine_backend", return_value=MagicMock()):
+            engine = TaskAgentEngine("task-1", "ws-1", "user-1")
+        engine.logs.queue = MagicMock()
+        engine.segments.record = MagicMock()
+        engine.frontend.push = AsyncMock()
+        engine.frontend.push_chat = AsyncMock()
         return engine
 
     async def test_text_and_provider_debug_events_are_not_execution_logs(self):
@@ -38,8 +38,8 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
             provider="opencode",
         ))
 
-        engine._push_chat.assert_awaited_once_with("assistant", "assistant reply")
-        engine._queue_execution_log.assert_not_called()
+        engine.frontend.push_chat.assert_awaited_once_with("assistant", "assistant reply")
+        engine.logs.queue.assert_not_called()
 
     async def test_thinking_delta_throttles_and_snapshot_replaces(self):
         engine = self._engine()
@@ -55,8 +55,8 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
             payload={"text": "ing", "delta": "ing"},
             provider="dsh",
         ))
-        self.assertEqual(engine._thinking_buffer, "checking")
-        self.assertEqual(engine._ws_push.await_count, 0)
+        self.assertEqual(engine.thinking.content, "checking")
+        self.assertEqual(engine.frontend.push.await_count, 0)
 
         # 快照帧（无 delta 键）：整体替换 + 立即发送
         await engine.handle_agent_event(AgentEvent(
@@ -64,9 +64,9 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
             payload={"text": "FINAL"},
             provider="dsh",
         ))
-        self.assertEqual(engine._thinking_buffer, "FINAL")
-        self.assertEqual(engine._ws_push.await_count, 1)
-        frame = engine._ws_push.await_args.args[1]
+        self.assertEqual(engine.thinking.content, "FINAL")
+        self.assertEqual(engine.frontend.push.await_count, 1)
+        frame = engine.frontend.push.await_args.args[1]
         self.assertEqual(frame.get("content"), "FINAL")
         self.assertIsNone(frame.get("delta"))
         self.assertGreaterEqual(frame.get("sequence"), 1)
@@ -85,21 +85,21 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
             payload={"text": "b", "delta": "b"},
             provider="dsh",
         ))
-        self.assertEqual(engine._ws_push.await_count, 0)
+        self.assertEqual(engine.frontend.push.await_count, 0)
 
         # 节流窗口到期：两条 delta 合并为一帧增量
         await asyncio.sleep(0.3)
-        self.assertEqual(engine._ws_push.await_count, 1)
-        frame = engine._ws_push.await_args.args[1]
+        self.assertEqual(engine.frontend.push.await_count, 1)
+        frame = engine.frontend.push.await_args.args[1]
         self.assertEqual(frame.get("delta"), "ab")
         self.assertEqual(frame.get("content"), "")
         self.assertEqual(frame.get("sequence"), 1)
         self.assertFalse(frame.get("final"))
 
         # 收口帧：快照语义 + final 标记
-        await engine._finish_thinking()
-        self.assertEqual(engine._ws_push.await_count, 2)
-        final_frame = engine._ws_push.await_args.args[1]
+        await engine.thinking.finish()
+        self.assertEqual(engine.frontend.push.await_count, 2)
+        final_frame = engine.frontend.push.await_args.args[1]
         self.assertTrue(final_frame.get("final"))
         self.assertEqual(final_frame.get("content"), "ab")
         self.assertIsNone(final_frame.get("delta"))
@@ -109,10 +109,10 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch(
-                "app.engine.workflow_engine.skill_runtime_trace_service.enqueue_tool_use_trace"
+                "app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_use_trace"
             ),
             patch(
-                "app.engine.workflow_engine.skill_runtime_trace_service.enqueue_tool_result_trace"
+                "app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_result_trace"
             ),
         ):
             await engine.handle_agent_event(AgentEvent(
@@ -134,8 +134,8 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
                 provider="opencode",
             ))
 
-        assert engine._queue_execution_log.call_count == 2
-        stored = [json.loads(call.args[0]) for call in engine._queue_execution_log.call_args_list]
+        assert engine.logs.queue.call_count == 2
+        stored = [json.loads(call.args[0]) for call in engine.logs.queue.call_args_list]
         assert stored == [
             {
                 "tool_name": "read_file",
@@ -154,20 +154,20 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
             provider="claude-code",
         ))
 
-        engine._queue_execution_log.assert_called_once()
-        assert engine._queue_execution_log.call_args.args[0].startswith("[compaction]")
+        engine.logs.queue.assert_called_once()
+        assert engine.logs.queue.call_args.args[0].startswith("[compaction]")
 
     async def test_execution_logs_flush_as_one_batch(self):
-        with patch.object(WorkflowEngine, "_create_engine_backend", return_value=MagicMock()):
-            engine = WorkflowEngine("task-1", "ws-1", "user-1")
-        engine._persist_execution_logs_sync = MagicMock()
+        with patch.object(TaskAgentEngine, "_create_engine_backend", return_value=MagicMock()):
+            engine = TaskAgentEngine("task-1", "ws-1", "user-1")
+        engine.logs._persist_sync = MagicMock()
 
-        with patch("app.engine.workflow_engine.EXECUTION_LOG_FLUSH_INTERVAL_SECONDS", 0):
-            engine._queue_execution_log("first")
-            engine._queue_execution_log("second")
-            await engine._drain_execution_logs()
+        with patch("app.engine.session.persistence.EXECUTION_LOG_FLUSH_INTERVAL_SECONDS", 0):
+            engine.logs.queue("first")
+            engine.logs.queue("second")
+            await engine.logs.drain()
 
-        engine._persist_execution_logs_sync.assert_called_once()
-        batch = engine._persist_execution_logs_sync.call_args.args[0]
+        engine.logs._persist_sync.assert_called_once()
+        batch = engine.logs._persist_sync.call_args.args[0]
         assert [entry[0] for entry in batch] == ["first", "second"]
         assert batch[0][2] < batch[1][2]

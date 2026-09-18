@@ -1,6 +1,6 @@
 """进程内注册表/锁表回收：
 
-- WorkflowEngine 注册表：正常收口后立即摘除；可恢复态保留并按 TTL 收割；
+- TaskAgentEngine 注册表：正常收口后立即摘除；可恢复态保留并按 TTL 收割；
 - AI 队列：runner 结束后回收 _QUEUE_RUNNERS/_QUEUE_LOCKS 条目；
 - LocalLockProvider：锁条目按引用计数回收；
 - 本地队列信号量表 _LOCAL_QUEUE_SLOTS 按引用计数回收。
@@ -18,7 +18,7 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.config import settings  # noqa: E402
-from app.agents import AgentBackend, AgentRunRequest, AgentRunResult  # noqa: E402
+from app.agents import AgentBackend, AgentRunRequest, AgentRunResult, AgentTimeoutError  # noqa: E402
 from app.core import distributed_lock as dl  # noqa: E402
 from app.domains.ai.services.jobs import (
     attempts as ai_attempts,
@@ -39,13 +39,16 @@ from app.domains.ai.services.jobs.executors import (
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.engine import workflow_engine as we  # noqa: E402
+from app.engine.session import engine as session_engine  # noqa: E402
+from app.engine.session import persistence as session_persistence  # noqa: E402
+from app.engine.session import registry as engine_registry  # noqa: E402
+from app.engine.session.engine import TaskAgentEngine  # noqa: E402
 
 
-def _make_engine(task_id: str = "task-reclaim-1") -> "we.WorkflowEngine":
-    with patch.object(we.WorkflowEngine, "_create_engine_backend", return_value=MagicMock()):
-        engine = we.WorkflowEngine(task_id, "ws-1", "user-1")
-    engine._ws_push = AsyncMock()
+def _make_engine(task_id: str = "task-reclaim-1") -> TaskAgentEngine:
+    with patch.object(TaskAgentEngine, "_create_engine_backend", return_value=MagicMock()):
+        engine = TaskAgentEngine(task_id, "ws-1", "user-1")
+    engine.frontend.push = AsyncMock()
     return engine
 
 
@@ -77,7 +80,7 @@ class _OutcomeBackend(AgentBackend):
 async def _run_with_logging_stub(backend, request, handler) -> AgentRunResult:
     engine = handler.__self__
     if backend.outcome == "timeout":
-        raise we.AgentTimeoutError("request timed out")
+        raise AgentTimeoutError("request timed out")
     if backend.outcome == "failure":
         engine.last_result_success = False
         engine.last_result_text = "boom"
@@ -88,29 +91,30 @@ async def _run_with_logging_stub(backend, request, handler) -> AgentRunResult:
 
 class EngineRegistryReclaimTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
-        we._active_engines.clear()
-        we._idle_sweeper_task = None
+        engine_registry._active_engines.clear()
+        engine_registry._idle_sweeper_task = None
         self._orig_ttl = settings.ENGINE_IDLE_TTL_SECONDS
-        self._orig_interval = we.ENGINE_IDLE_SWEEP_INTERVAL_SECONDS
+        self._orig_interval = engine_registry.ENGINE_IDLE_SWEEP_INTERVAL_SECONDS
 
     async def asyncTearDown(self) -> None:
-        task = we._idle_sweeper_task
+        task = engine_registry._idle_sweeper_task
         if task is not None:
             task.cancel()
             try:
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
-        we._active_engines.clear()
-        we._idle_sweeper_task = None
+        engine_registry._active_engines.clear()
+        engine_registry._idle_sweeper_task = None
         settings.ENGINE_IDLE_TTL_SECONDS = self._orig_ttl
-        we.ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = self._orig_interval
+        engine_registry.ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = self._orig_interval
 
     async def _run_engine(self, engine, outcome: str) -> None:
         engine.cli = _OutcomeBackend(outcome)
-        with patch.object(we, "run_db", new=AsyncMock()), \
-                patch.object(we, "run_git_job", new=AsyncMock()), \
-                patch.object(we, "run_agent_backend_with_logging", new=_run_with_logging_stub), \
+        with patch.object(session_engine, "run_db", new=AsyncMock()), \
+                patch.object(session_engine, "run_git_job", new=AsyncMock()), \
+                patch.object(session_engine, "run_agent_backend_with_logging", new=_run_with_logging_stub), \
+                patch.object(session_persistence, "run_db", new=AsyncMock()), \
                 patch("app.domains.auth.services.auth_service.create_access_token", return_value="tok"):
             await engine.run("hello")
 
@@ -118,29 +122,29 @@ class EngineRegistryReclaimTest(unittest.IsolatedAsyncioTestCase):
         engine = _make_engine("task-reclaim-ok")
         await self._run_engine(engine, "success")
         self.assertEqual(engine.last_result_success, True)
-        self.assertNotIn(engine.task_id, we._active_engines)
+        self.assertNotIn(engine.task_id, engine_registry._active_engines)
 
     async def test_timeout_run_keeps_engine_for_resume(self):
         engine = _make_engine("task-reclaim-timeout")
         await self._run_engine(engine, "timeout")
         self.assertIsNone(engine.last_result_success)
-        self.assertIn(engine.task_id, we._active_engines)
+        self.assertIn(engine.task_id, engine_registry._active_engines)
         self.assertFalse(engine.running)
 
     async def test_failed_run_keeps_engine_for_resume(self):
         engine = _make_engine("task-reclaim-fail")
         await self._run_engine(engine, "failure")
         self.assertEqual(engine.last_result_success, False)
-        self.assertIn(engine.task_id, we._active_engines)
+        self.assertIn(engine.task_id, engine_registry._active_engines)
         self.assertFalse(engine.running)
 
     async def test_sweep_evicts_only_stale_idle_engines(self):
         stale = _make_engine("task-reclaim-stale")
         fresh = _make_engine("task-reclaim-fresh")
         running = _make_engine("task-reclaim-running")
-        we.register_engine(stale)
-        we.register_engine(fresh)
-        we.register_engine(running)
+        engine_registry.register_engine(stale)
+        engine_registry.register_engine(fresh)
+        engine_registry.register_engine(running)
         stale.running = False
         fresh.running = False
         running.running = True
@@ -148,27 +152,27 @@ class EngineRegistryReclaimTest(unittest.IsolatedAsyncioTestCase):
         fresh._last_idle_since = time.monotonic()
         settings.ENGINE_IDLE_TTL_SECONDS = 1
 
-        evicted = we._sweep_idle_engines()
+        evicted = engine_registry.sweep_idle_engines()
 
         self.assertEqual(evicted, 1)
-        self.assertNotIn(stale.task_id, we._active_engines)
-        self.assertIn(fresh.task_id, we._active_engines)
-        self.assertIn(running.task_id, we._active_engines)
+        self.assertNotIn(stale.task_id, engine_registry._active_engines)
+        self.assertIn(fresh.task_id, engine_registry._active_engines)
+        self.assertIn(running.task_id, engine_registry._active_engines)
 
     async def test_idle_sweeper_loop_evicts_and_exits(self):
         engine = _make_engine("task-reclaim-loop")
-        we.register_engine(engine)
+        engine_registry.register_engine(engine)
         engine.running = False
         engine._last_idle_since = time.monotonic() - 2.0
         settings.ENGINE_IDLE_TTL_SECONDS = 1
-        we.ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = 0.02
+        engine_registry.ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = 0.02
 
-        we._ensure_idle_sweeper()
-        self.assertIsNotNone(we._idle_sweeper_task)
+        engine_registry._ensure_idle_sweeper()
+        self.assertIsNotNone(engine_registry._idle_sweeper_task)
         await asyncio.sleep(0.2)
 
-        self.assertNotIn(engine.task_id, we._active_engines)
-        self.assertIsNone(we._idle_sweeper_task)
+        self.assertNotIn(engine.task_id, engine_registry._active_engines)
+        self.assertIsNone(engine_registry._idle_sweeper_task)
 
 
 class QueueRunnerReclaimTest(unittest.IsolatedAsyncioTestCase):

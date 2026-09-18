@@ -27,7 +27,7 @@ from app.domains.task.services.task_session_control_service import (
     TASK_RUNNING_MSG,
 )
 from app.domains.workspace.services import workspace_service
-from app.engine.workflow_engine import get_engine
+from app.engine.session import get_engine
 
 T = TypeVar("T")
 

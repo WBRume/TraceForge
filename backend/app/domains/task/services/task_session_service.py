@@ -36,7 +36,7 @@ from app.domains.skill.services import skill_runtime_trace_service
 from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
 from app.domains.task.services import task_service, task_session_snapshot_service
 from app.domains.websocket.ws.manager import manager
-from app.engine.workflow_engine import get_engine
+from app.engine.session import get_engine
 
 logger = get_logger(__name__, category="task_session_undo")
 

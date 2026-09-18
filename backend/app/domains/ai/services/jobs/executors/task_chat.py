@@ -1,4 +1,4 @@
-"""任务聊天的 AI 作业执行器（WorkflowEngine 接线）。
+"""任务聊天的 AI 作业执行器（TaskAgentEngine 接线）。
 
 职责：
 
@@ -41,7 +41,7 @@ from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.fencing import attempt_is_current_sync
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
 from app.domains.task.models.task import SddTask
-from app.engine.workflow_engine import WorkflowEngine, get_engine
+from app.engine.session import TaskAgentEngine, get_engine
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -261,7 +261,7 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
     attempt = current_agent_attempt()
     engine = get_engine(state_row["task_id"])
     if not engine:
-        engine = WorkflowEngine(
+        engine = TaskAgentEngine(
             task_id=state_row["task_id"],
             ws_id=state_row["workspace_id"],
             user_id=state_row["creator_id"],
@@ -451,7 +451,7 @@ def engine_provider_result(engine: Any) -> Optional[AgentRunResult]:
     return None
 
 
-async def finalize_task_chat_job_from_engine(job_id: str, engine: WorkflowEngine) -> None:
+async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngine) -> None:
     # Fallback for missing callback updates.
     is_timeout_interrupted = bool(getattr(engine, "last_result_interrupted", False)) or looks_like_timeout_text(
         engine.last_result_text or ""
