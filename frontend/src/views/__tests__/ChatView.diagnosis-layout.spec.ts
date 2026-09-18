@@ -1,14 +1,24 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
+/**
+ * Chat 诊断摘要布局包容性回归测试。
+ * ChatView 已拆分为 sections/* 区块组件，本测试按新模块边界锁定：
+ * 主列收缩约束、诊断结果卡约束、撤销遮罩/确认流、初始 Prompt 可编辑。
+ */
 const source = (relativePath: string) => readFileSync(new URL(relativePath, import.meta.url), 'utf8')
 const layoutCss = source('../../styles/chat-view/chat-view-layout.css')
-const pinnedHistoryCss = source('../../styles/chat-view/chat-view-pinned-history.css')
+const sessionHeaderSource = source('../../components/chat/sections/SessionHeader.vue')
+const chatHistoryPanelSource = source('../../components/chat/sections/ChatHistoryPanel.vue')
+const taskSidebarSource = source('../../components/chat/sections/TaskSidebar.vue')
+const specSidebarSource = source('../../components/chat/sections/spec/SpecSidebar.vue')
 const chatMessageBubbleSource = source('../../components/chat/ChatMessageBubble.vue')
 const diagnosisResultCardSource = source('../../components/chat/DiagnosisResultCard.vue')
 const chatExecutionInputSource = source('../../components/chat/ChatExecutionInput.vue')
 const chatViewSource = source('../ChatView.vue')
 const chatStartActionsSource = source('../../composables/chat/actions/useTaskStartActions.ts')
+const startTaskModalSource = source('../../components/chat/sections/StartTaskModal.vue')
+const initializeTaskModalSource = source('../../components/chat/sections/InitializeTaskModal.vue')
 const confirmActionModalSource = source('../../components/ConfirmActionModal.vue')
 
 function declarations(source: string, selector: string): string {
@@ -25,20 +35,29 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(mainRule).toContain('container-name: chat-main')
     expect(mainRule).toContain('container-type: inline-size')
 
-    const headerRule = declarations(layoutCss, '.chat-header')
+    const headerRule = declarations(sessionHeaderSource, '.chat-header')
     expect(headerRule).toContain('min-width: 0')
     expect(headerRule).toContain('flex-direction: column')
     expect(headerRule).toContain('align-items: stretch')
-    expect(declarations(layoutCss, '.header-left')).toContain('min-width: 0')
+    expect(declarations(sessionHeaderSource, '.header-left')).toContain('min-width: 0')
 
-    const actionsRule = declarations(layoutCss, '.header-actions')
+    const actionsRule = declarations(sessionHeaderSource, '.header-actions')
     expect(actionsRule).toContain('overflow-x: auto')
     expect(actionsRule).toContain('width: 100%')
-    expect(declarations(layoutCss, '.header-actions > *')).toContain('flex: 0 0 auto')
-    expect(declarations(layoutCss, '.header-actions button')).toContain('white-space: nowrap')
-    expect(layoutCss).toContain('@container chat-main (max-width: 900px)')
-    expect(declarations(pinnedHistoryCss, '.chat-history')).toContain('min-width: 0')
+    expect(declarations(sessionHeaderSource, '.header-actions > *')).toContain('flex: 0 0 auto')
+    expect(declarations(sessionHeaderSource, '.header-actions button')).toContain('white-space: nowrap')
+    expect(sessionHeaderSource).toContain('@container chat-main (max-width: 900px)')
+    expect(declarations(chatHistoryPanelSource, '.chat-history')).toContain('min-width: 0')
     expect(declarations(chatExecutionInputSource, '.chat-execution-row')).toContain('min-width: 0')
+  })
+
+  it('keeps the task sidebar and spec drawer constraints inside their section components', () => {
+    expect(declarations(taskSidebarSource, '.task-sidebar')).toContain('width: 280px')
+    expect(declarations(taskSidebarSource, '.task-filter-select:deep(.select-trigger)')).toContain('height: 32px')
+
+    expect(declarations(specSidebarSource, '.spec-sidebar')).toContain('position: absolute')
+    expect(specSidebarSource).toContain('.spec-sidebar.is-open.level-1')
+    expect(specSidebarSource).toContain('.spec-body :deep(.doc-review-workbench)')
   })
 
   it('bounds diagnosis result messages even when generated content has unbroken paths', () => {
@@ -104,8 +123,8 @@ describe('ChatView diagnosis summary layout containment', () => {
   })
 
   it('allows editing the initial prompt before starting or initializing a task', () => {
-    expect(chatViewSource).toContain('v-model="vm.startPrompt"')
-    expect(chatViewSource).toContain('v-model="vm.initPrompt"')
+    expect(startTaskModalSource).toContain('v-model="props.vm.startPrompt"')
+    expect(initializeTaskModalSource).toContain('v-model="props.vm.initPrompt"')
     expect(chatStartActionsSource).toContain("const startPrompt = ref('')")
     expect(chatStartActionsSource).toContain("const initPrompt = ref('')")
     expect(chatStartActionsSource).toContain('prompt: promptText || undefined')

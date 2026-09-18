@@ -1,0 +1,112 @@
+/* 诊断面板共用框架样式：DiagnosisDocsPanel / DiagnosisCodePathPanel
+   以 <style scoped src> 各自引入（scoped 隔离，互不影响）。 */
+.diag-panel {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.4);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid rgba(14, 165, 233, 0.1);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+  box-shadow: var(--shadow-lg);
+}
+
+.diag-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(14, 165, 233, 0.08);
+  background: rgba(255, 255, 255, 0.6);
+  flex-shrink: 0;
+}
+
+.diag-panel-title-group {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.diag-panel-title-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--color-text-title);
+  font-family: var(--font-heading);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.diag-panel-title-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--color-primary-50);
+  color: var(--color-primary-600);
+}
+
+.diag-panel-title-icon.amber {
+  background: #fffbeb;
+  color: #d97706;
+}
+
+.diag-panel-subtitle {
+  margin: 2px 0 0 42px;
+  font-size: 0.72rem;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diag-panel-actions {
+  flex-shrink: 0;
+}
+
+.diag-hidden-input {
+  display: none;
+}
+
+.diag-upload-btn {
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.diag-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+}
+
+.diag-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.diag-body-stack {
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 18px 20px;
+  gap: 18px;
+}
+
+.diag-spin {
+  animation: diag-spin 1s linear infinite;
+}
+
+@keyframes diag-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
