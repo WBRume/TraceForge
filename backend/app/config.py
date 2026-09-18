@@ -243,7 +243,7 @@ class Settings(BaseSettings):
     TASK_CHANGE_PROPOSAL_QUEUE_WAIT_TIMEOUT_SECONDS: float = 120.0
     TASK_CHANGE_PROPOSAL_QUEUE_POLL_INTERVAL_SECONDS: float = 0.1
 
-    # ── WorkflowEngine 事件落库批处理 ──
+    # ── TaskAgentEngine 事件落库批处理 ──
     # context segment 批量写入：按条数或时间窗触发（结束/异常/HITL 前强制 flush）
     SEGMENT_FLUSH_INTERVAL_SECONDS: float = 0.2
     SEGMENT_FLUSH_MAX_ITEMS: int = 50

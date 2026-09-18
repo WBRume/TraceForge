@@ -30,7 +30,7 @@ from app.domains.websocket.ws.connection import (
     receive_json_until_evicted,
 )
 from app.domains.websocket.ws.manager import ConnectionManager, manager
-from app.engine.workflow_engine import WorkflowEngine, get_engine
+from app.engine.session import TaskAgentEngine, get_engine
 
 
 task_logger = get_logger(__name__, category="task_execution")
@@ -65,8 +65,8 @@ class TaskWebSocketHandler:
         *,
         session_factory: Callable[[], Session],
         connection_manager: ConnectionManager = manager,
-        engine_getter: Callable[[str], WorkflowEngine | None] | None = None,
-        engine_factory: Callable[..., WorkflowEngine] | None = None,
+        engine_getter: Callable[[str], TaskAgentEngine | None] | None = None,
+        engine_factory: Callable[..., TaskAgentEngine] | None = None,
         client_key: str | None = None,
         resume_epoch: str | None = None,
         last_sequence: int | None = None,
@@ -77,7 +77,7 @@ class TaskWebSocketHandler:
         self._session_factory = session_factory
         self._manager = connection_manager
         self._engine_getter = engine_getter or get_engine
-        self._engine_factory = engine_factory or WorkflowEngine
+        self._engine_factory = engine_factory or TaskAgentEngine
         self._client_key = client_key
         self._resume_epoch = resume_epoch
         self._last_sequence = last_sequence

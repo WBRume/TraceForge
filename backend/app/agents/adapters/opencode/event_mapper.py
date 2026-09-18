@@ -467,7 +467,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                         "session.next.tool.input.started", "session.next.tool.input.ended",
                         "session.next.tool.progress", "session.next.prompted",
                         "session.next.prompt.admitted", "session.idle", "message.updated"):
-        # 这些事件对 WorkflowEngine 不是必需事件；作为 log 保留审计信息。
+        # 这些事件对 TaskAgentEngine 不是必需事件；作为 log 保留审计信息。
         events.append(AgentEvent(
             type="log",
             payload={"level": "debug", "message": f"[opencode:{event_type}] {_json_text(data, 1200)}"},
