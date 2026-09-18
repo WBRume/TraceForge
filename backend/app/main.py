@@ -5,6 +5,7 @@ FastAPI 主入口
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -75,10 +76,66 @@ from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
 from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.rag.routers import outbox as rag_outbox_router
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _pre_input_worker_task
+    app.state.ai_runtime_ready = False
+    await search_router.start(app)
+    _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
+    recovered_queue_count = await ai_job_workers.start_runtime_workers()
+    app.state.ai_runtime_ready = True
+    if recovered_queue_count:
+        logger.info("Recovered {} pending AI job queues", recovered_queue_count)
+    try:
+        yield
+    finally:
+        app.state.ai_runtime_ready = False
+        if _pre_input_worker_task is not None:
+            _pre_input_worker_task.cancel()
+            await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
+            _pre_input_worker_task = None
+        # Stop new durable claims and queue runners first.  The service then
+        # terminates every locally supervised process before infrastructure closes.
+        try:
+            await ai_job_workers.shutdown_runtime_workers()
+        except Exception:
+            logger.exception("Failed to shutdown AI job runtime")
+        try:
+            await shutdown_active_engines()
+        except Exception:
+            logger.exception("Failed to shutdown active workflow engines")
+        try:
+            await api_mock_ws_manager.shutdown()
+        except Exception:
+            logger.warning("Failed to shutdown API MOCK redis listener")
+        for ws_manager, label in (
+            (manager, "task"),
+            (notification_ws_manager, "notification"),
+            (asset_discussion_ws_manager, "asset discussion"),
+        ):
+            try:
+                await ws_manager.shutdown()
+            except Exception:
+                logger.warning("Failed to shutdown %s websocket hubs", label)
+        await search_router.stop(app)
+        try:
+            await close_redis_client()
+        except Exception:
+            logger.warning("Failed to close redis client on shutdown")
+        try:
+            # 在线程中执行有限等待的 executor 关闭，避免阻塞事件循环
+            await asyncio.get_running_loop().run_in_executor(
+                None, shutdown_offload_executors, True
+            )
+        except Exception:
+            logger.warning("Failed to shutdown offload executors")
+
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="规范驱动开发基础平台 API"
+    description="规范驱动开发基础平台 API",
+    lifespan=lifespan,
 )
 
 _pre_input_worker_task: asyncio.Task | None = None
@@ -99,62 +156,6 @@ app.add_middleware(LoggingMiddleware)
 # ── OAuth 统一业务异常输出：{"detail": ..., "code": "OAUTH_XXX", **extra}（§4.5）──
 app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)
 
-
-@app.on_event("startup")
-async def _on_startup() -> None:
-    global _pre_input_worker_task
-    app.state.ai_runtime_ready = False
-    await search_router.start(app)
-    _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
-    recovered_queue_count = await ai_job_workers.start_runtime_workers()
-    app.state.ai_runtime_ready = True
-    if recovered_queue_count:
-        logger.info("Recovered {} pending AI job queues", recovered_queue_count)
-
-
-@app.on_event("shutdown")
-async def _on_shutdown() -> None:
-    global _pre_input_worker_task
-    app.state.ai_runtime_ready = False
-    if _pre_input_worker_task is not None:
-        _pre_input_worker_task.cancel()
-        await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
-        _pre_input_worker_task = None
-    # Stop new durable claims and queue runners first.  The service then
-    # terminates every locally supervised process before infrastructure closes.
-    try:
-        await ai_job_workers.shutdown_runtime_workers()
-    except Exception:
-        logger.exception("Failed to shutdown AI job runtime")
-    try:
-        await shutdown_active_engines()
-    except Exception:
-        logger.exception("Failed to shutdown active workflow engines")
-    try:
-        await api_mock_ws_manager.shutdown()
-    except Exception:
-        logger.warning("Failed to shutdown API MOCK redis listener")
-    for ws_manager, label in (
-        (manager, "task"),
-        (notification_ws_manager, "notification"),
-        (asset_discussion_ws_manager, "asset discussion"),
-    ):
-        try:
-            await ws_manager.shutdown()
-        except Exception:
-            logger.warning("Failed to shutdown %s websocket hubs", label)
-    await search_router.stop(app)
-    try:
-        await close_redis_client()
-    except Exception:
-        logger.warning("Failed to close redis client on shutdown")
-    try:
-        # 在线程中执行有限等待的 executor 关闭，避免阻塞事件循环
-        await asyncio.get_running_loop().run_in_executor(
-            None, shutdown_offload_executors, True
-        )
-    except Exception:
-        logger.warning("Failed to shutdown offload executors")
 
 # ── 路由挂载 ──
 app.include_router(search_router.router, prefix="/api")
