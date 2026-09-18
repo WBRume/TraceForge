@@ -59,7 +59,7 @@ def search_assets(
     return items, total
 
 
-def get_asset(db: Session, asset_id: str, workspace_id: str) -> Optional[SddAsset]:
+def get_asset_by_id(db: Session, workspace_id: str, asset_id: str) -> Optional[SddAsset]:
     return (
         db.query(SddAsset)
         .filter(SddAsset.id == asset_id, SddAsset.workspace_id == workspace_id)
@@ -79,6 +79,26 @@ def get_task_asset_by_type(
         .filter(
             SddAsset.task_id == task_id,
             SddAsset.asset_type == normalized,
+        )
+        .order_by(SddAsset.created_at.asc())
+        .first()
+    )
+
+
+def get_spec_asset_by_task(db: Session, task_id: str) -> Optional[SddAsset]:
+    """任务的 SPEC 文档资产（业务上每个任务只有一份 SPEC）。"""
+    return get_task_asset_by_type(db, task_id=task_id, asset_type=AssetType.SPEC)
+
+
+def get_diagnosis_doc_asset_by_task_and_name(
+    db: Session, task_id: str, file_name: str
+) -> Optional[SddAsset]:
+    return (
+        db.query(SddAsset)
+        .filter(
+            SddAsset.task_id == task_id,
+            SddAsset.asset_type == AssetType.DIAGNOSIS_DOC,
+            SddAsset.name == file_name,
         )
         .order_by(SddAsset.created_at.asc())
         .first()

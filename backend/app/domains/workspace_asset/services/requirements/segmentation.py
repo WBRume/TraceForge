@@ -9,7 +9,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from app.domains.asset.services.asset_document_service import parse_document_payload
+from app.domains.asset.services.document.payload import parse_document_payload
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import clean_optional, normalize_list
 
