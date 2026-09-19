@@ -44,12 +44,12 @@
 普通测试：
 
 ```text
-python -m pytest tests/test_search_contracts.py -q
-python -m pytest tests/test_task_chat_history_ordering.py tests/test_task_session_interrupt_resume.py tests/test_chat_message_idempotency_service.py tests/test_task_websocket_handler.py -q
+python -m pytest tests/search/test_search_contracts.py -q
+python -m pytest tests/task/test_task_chat_history_ordering.py tests/task/test_task_session_interrupt_resume.py tests/ai/test_chat_message_idempotency_service.py tests/websocket/test_task_websocket_handler.py -q
 python -m compileall -q app
 ```
 
-真实基础设施测试需显式设置 `SEARCH_LIVE_TESTS=1` 后运行 `python -m pytest tests/test_search_live.py -q`。仅创建和删除 `traceforge_search_test_<随机值>` MySQL 数据库和 `traceforge-search-test-<随机值>` ES 索引；不触及业务库、已有索引和读别名。需要 CREATE/DROP DATABASE 测试权限、ES 测试索引权限、Redis 和供应商凭据；会发送少量合成文本请求。
+真实基础设施测试需显式设置 `SEARCH_LIVE_TESTS=1` 后运行 `python -m pytest tests/search/test_search_live.py -q`。仅创建和删除 `traceforge_search_test_<随机值>` MySQL 数据库和 `traceforge-search-test-<随机值>` ES 索引；不触及业务库、已有索引和读别名。需要 CREATE/DROP DATABASE 测试权限、ES 测试索引权限、Redis 和供应商凭据；会发送少量合成文本请求。
 
 前端运行 `npm run test:run -- src/composables/__tests__/useDoubleShift.spec.ts src/composables/__tests__/useGlobalSearch.spec.ts src/composables/__tests__/useChatMessageContext.spec.ts` 和 `npm run build`（包含 vue-tsc）。
 

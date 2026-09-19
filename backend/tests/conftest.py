@@ -26,7 +26,7 @@ from sqlalchemy.pool import StaticPool
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
-# 允许测试之间互相导入共享工具（如 ai_job_test_utils）。
+# 允许测试之间互相导入共享工具（如 tests/ai/jobs/reliability_helpers）。
 TESTS_ROOT = os.path.abspath(os.path.dirname(__file__))
 if TESTS_ROOT not in sys.path:
     sys.path.insert(0, TESTS_ROOT)
