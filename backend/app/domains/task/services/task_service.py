@@ -1048,6 +1048,41 @@ def update_task_status(
     return task
 
 
+DELETE_TRASH_DIR_NAME = ".delete"
+
+
+def _archive_task_dir_into_delete_trash(task_project_path: str, workspace_project_path: str) -> None:
+    """删除任务后把工作区内残留的任务目录移入 <工作区根>/.delete/ 软删除区。
+
+    仅移动工作区根直接下属的任务目录（.delete 自身除外）；移动失败只告警，
+    不影响删除主流程。归档名冲突时追加 _1/_2 序号。
+    """
+    try:
+        task_abs = os.path.abspath(str(task_project_path or "").strip())
+        stop_abs = os.path.abspath(str(workspace_project_path or "").strip())
+        if not stop_abs or not os.path.isdir(stop_abs):
+            return
+        if not task_abs.startswith(stop_abs + os.sep):
+            return
+        trash_root = os.path.join(stop_abs, DELETE_TRASH_DIR_NAME)
+        if os.path.commonpath([task_abs, trash_root]) == trash_root:
+            return
+        if not os.path.isdir(task_abs):
+            return
+
+        base_name = os.path.basename(task_abs.rstrip("\\/")) or "task"
+        os.makedirs(trash_root, exist_ok=True)
+        target = os.path.join(trash_root, base_name)
+        sequence = 1
+        while os.path.exists(target):
+            target = os.path.join(trash_root, f"{base_name}_{sequence}")
+            sequence += 1
+        shutil.move(task_abs, target)
+        logger.info(f"Task dir moved to delete trash: {task_abs} -> {target}")
+    except Exception as exc:
+        logger.warning(f"Failed to move task dir to delete trash {task_project_path}: {exc}")
+
+
 def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
     task = db.query(SddTask).filter(
         SddTask.id == task_id, SddTask.workspace_id == workspace_id
@@ -1079,6 +1114,10 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
             expected_git_repo_url=task_remote,
             missing_ok=True,
         )
+
+    # git worktree 已由 git 移除目录；其余情况（非 git 目录、多仓残留任务根）
+    # 会留在工作区，统一移入 .delete 软删除区而非原地删除。
+    _archive_task_dir_into_delete_trash(task.project_path, workspace_project_path)
 
     db.delete(task)
     db.commit()
