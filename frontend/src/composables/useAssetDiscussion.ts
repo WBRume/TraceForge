@@ -12,6 +12,8 @@ export type AssetSummary = {
   workspace_id: string
   asset_type: string
   name: string
+  source_ext?: string | null
+  source_mime?: string | null
   created_at: string
 }
 

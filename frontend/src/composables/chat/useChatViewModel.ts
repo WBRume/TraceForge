@@ -909,6 +909,7 @@ export function useChatViewModel() {
     specDrawerLevel: specDrawer.specDrawerLevel,
     specDrawerTab: specDrawer.specDrawerTab,
     currentTaskHasSpec: specDrawer.currentTaskHasSpec,
+    isPdfSpec: specDrawer.isPdfSpec,
     showSpecEntryButton: specDrawer.showSpecEntryButton,
     isSpecDrawerAvailable: specDrawer.isSpecDrawerAvailable,
     isSpecPanelOpen: specDrawer.isSpecPanelOpen,

@@ -39,7 +39,7 @@ watch(
 
 <template>
   <aside
-    v-if="props.vm.currentTask && (props.vm.isSpecDrawerAvailable || props.vm.isDiagnosisTask)"
+    v-if="props.vm.currentTask && (props.vm.isSpecDrawerAvailable || props.vm.isDiagnosisTask || props.vm.isPdfSpec)"
     class="spec-sidebar glass-panel"
     :class="{
       'is-open': props.vm.isSpecPanelOpen,

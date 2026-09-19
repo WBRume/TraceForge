@@ -16,5 +16,7 @@ def serialize_asset(asset: SddAsset) -> AssetResponse:
         name=asset.name,
         content_text=asset.content_text,
         content_json=asset.content_json,
+        source_ext=asset.source_ext,
+        source_mime=asset.source_mime,
         created_at=asset.created_at,
     )

@@ -13,6 +13,7 @@ import {
 } from "@/composables/useAssetDiscussion";
 import DocumentCanvas from "./DocumentCanvas.vue";
 import InlineSelectionPopover from "./InlineSelectionPopover.vue";
+import PdfCanvas from "./PdfCanvas.vue";
 import ProposalDraftModal from "./ProposalDraftModal.vue";
 import ResolutionDiffModal from "./ResolutionDiffModal.vue";
 import ThreadSidebar from "./ThreadSidebar.vue";
@@ -105,6 +106,11 @@ const {
 const selectedAsset = computed(
   () => assets.value.find((item) => item.id === selectedAssetId.value) || null,
 );
+const isPdfAsset = computed(() => {
+  const versionExt = String(documentData.value?.active_version?.original_ext || "").toLowerCase();
+  const assetExt = String(selectedAsset.value?.source_ext || "").toLowerCase();
+  return versionExt === ".pdf" || assetExt === ".pdf";
+});
 const noAssetHint = computed(() => {
   if (loadingAssets.value) return t("doc_review.assets_loading");
   if (loadAssetsError.value) return loadAssetsError.value;
@@ -149,6 +155,7 @@ const baselineBusy = computed(() => {
   return status === "PENDING" || status === "RUNNING";
 });
 const showBaselineStatus = computed(() => {
+  if (isPdfAsset.value) return false;
   if (!props.taskId) return false;
   if (bootstrapLoading.value) return true;
   const status = String(bootstrapStatus.value?.status || "").toUpperCase();
@@ -190,6 +197,7 @@ const relocationHintText = computed(() =>
   t("doc_review.anchor_relocation_pick_hint"),
 );
 const hasHeaderPrefixSlot = computed(() => Boolean(slots["header-prefix"]));
+const pdfVersionId = computed(() => selectedVersionId.value || activeVersionId.value || null);
 const inlineReviewEnabled = computed(
   () =>
     effectiveCapabilities.value.inline_review_enabled &&
@@ -956,26 +964,36 @@ onBeforeUnmount(() => {
           {{ relocationHintText }}
         </div>
         <div class="canvas-shell custom-scrollbar">
-        <DocumentCanvas
-          :blocks="documentData?.blocks || []"
-          :markers-by-block="markersByBlock"
-          :selected-thread-id="selectedThreadId"
-          :inline-review-enabled="inlineReviewEnabled"
-          @open-thread="openThread"
-          @select-range="handleSelectRange"
-          @clear-selection="selectionPayload = null"
-        />
-      </div>
+          <PdfCanvas
+            v-if="isPdfAsset"
+            class="pdf-stage"
+            :ws-id="props.wsId"
+            :asset-id="selectedAssetId || ''"
+            :version-id="pdfVersionId"
+          />
+          <DocumentCanvas
+            v-else
+            :blocks="documentData?.blocks || []"
+            :markers-by-block="markersByBlock"
+            :selected-thread-id="selectedThreadId"
+            :inline-review-enabled="inlineReviewEnabled"
+            @open-thread="openThread"
+            @select-range="handleSelectRange"
+            @clear-selection="selectionPayload = null"
+          />
+        </div>
 
-      <InlineSelectionPopover
-        :selection="selectionPayload"
-        :can-comment="effectiveCapabilities.can_comment"
-        @close="selectionPayload = null"
-        @create="createThreadFromSelection"
-      />
-    </section>
+        <InlineSelectionPopover
+          v-if="!isPdfAsset"
+          :selection="selectionPayload"
+          :can-comment="effectiveCapabilities.can_comment"
+          @close="selectionPayload = null"
+          @create="createThreadFromSelection"
+        />
+      </section>
 
       <ThreadSidebar
+        v-if="!isPdfAsset"
         class="discussion-stage"
         :threads="threads"
         :selected-thread-id="selectedThreadId"
@@ -1417,6 +1435,12 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   padding-right: 8px;
   background: transparent;
+}
+
+.canvas-shell :deep(.pdf-stage),
+.pdf-stage {
+  flex: 1;
+  min-height: 0;
 }
 
 .discussion-stage {

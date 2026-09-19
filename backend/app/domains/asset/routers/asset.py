@@ -4,9 +4,11 @@ Asset API routes.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
@@ -713,6 +715,36 @@ def get_asset(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     return _serialize_asset(asset)
+
+
+@router.get("/{asset_id}/file")
+def get_asset_original_file(
+    ws_id: str,
+    asset_id: str,
+    version_id: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """下载资产某个版本的原始文件字节(PDF 预览等场景)。"""
+    _verify_asset_access(ws_id, current_user, db)
+    asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    version = None
+    if version_id:
+        version = document_repository.get_asset_version(db, asset.id, version_id)
+    if not version:
+        version = _ensure_active_version(db, asset)
+    if not version or not str(version.original_path or "").strip():
+        raise HTTPException(status_code=404, detail="Version file not found")
+    path = os.path.abspath(version.original_path)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Version file missing on disk")
+    return FileResponse(
+        path,
+        media_type=version.original_mime or "application/octet-stream",
+        filename=os.path.basename(path),
+    )
 
 
 @router.get("/{asset_id}/document", response_model=AssetDocumentResponse)

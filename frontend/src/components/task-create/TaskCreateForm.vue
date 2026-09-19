@@ -38,6 +38,8 @@ const requirementDuration = shallowRef(8)
 const specFile = shallowRef<File | null>(null)
 const diagnosisFiles = shallowRef<File[]>([])
 
+const isPdfSpecFile = computed(() => (specFile.value?.name || '').toLowerCase().endsWith('.pdf'))
+
 const handleSpecFileUpload = (event: Event) => {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
@@ -158,13 +160,16 @@ defineExpose({ reset })
             :id="`spec-upload-${props.wsId}`"
             type="file"
             class="hidden-input"
-            accept=".pdf,.doc,.docx,.md,.txt"
+            accept=".pdf,.docx,.md,.txt"
             @change="handleSpecFileUpload"
           />
           <label :for="`spec-upload-${props.wsId}`" class="btn-primary file-choose-btn">
             {{ $t('common.select') }}
           </label>
         </div>
+        <p v-if="isPdfSpecFile" class="pdf-agent-hint">
+          {{ $t('dashboard.spec_pdf_agent_hint') }}
+        </p>
       </div>
 
       <!-- 诊断态文档上传 -->
@@ -475,6 +480,13 @@ defineExpose({ reset })
   font-size: 0.72rem;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.pdf-agent-hint {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: #b45309;
 }
 
 .hidden-input {

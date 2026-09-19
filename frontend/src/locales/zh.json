@@ -413,6 +413,7 @@
     "requirement_duration": "需求预估时间 (小时)",
     "requirement_placeholder": "例如：8",
     "spec_placeholder": "上传 SRS/规范文档...",
+    "spec_pdf_agent_hint": "已选择 PDF 文档:请确保底层 Agent 具备自行读取 PDF 的能力或已安装对应 Skills,否则引擎启动后将无法理解需求内容。",
     "spec_upload_failed_after_create": "任务已创建，但需求文档上传失败，请在会话中重新上传。",
     "create_task_failed": "创建任务失败，请稍后重试。",
     "delete_confirm": "确定删除会话 {name}？所有历史记录和过程资产将被清除，此操作不可逆。"
@@ -1777,6 +1778,8 @@
     "revision_unavailable_title": "修订稿暂不可用",
     "revision_unavailable_hint": "尚未获得可渲染的修订内容，请重试“应用提案”。",
     "assets_loading": "正在加载文档资产...",
+    "pdf_loading": "PDF 加载中...",
+    "pdf_failed": "PDF 加载失败,请稍后重试。",
     "no_doc_for_current_task": "当前会话未找到可显示的需求文档",
     "assets_load_failed": "文档资产加载失败",
     "document_load_failed": "文档加载失败",
