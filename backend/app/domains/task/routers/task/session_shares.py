@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
+from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.task.routers.task.deps import (
     TASKS_ROUTE_PREFIX,
@@ -268,5 +269,18 @@ async def patch_share_suggestion(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
         )
+
+    # 同步发起人的其他会话窗口（同一任务房间）；内容仍由各自 REST 拉取
+    from app.domains.websocket.ws.manager import manager as task_ws_manager
+    await task_ws_manager.send_message_to_room(
+        task_id,
+        WSMessage(
+            type="share_suggestion_update",
+            payload={
+                "task_id": task_id,
+                "recipient_user_id": serialized.get("recipient_user_id"),
+            },
+        ),
+    )
 
     return ShareSuggestionItem(**serialized)

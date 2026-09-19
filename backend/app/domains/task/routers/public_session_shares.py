@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
+from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.auth.models.user import User
 from app.domains.task.models.session_share import TaskSessionShare
 from app.domains.task.models.task import SddTask
@@ -248,14 +249,15 @@ async def submit_share_suggestion(
             display_name=data.display_name,
             client_submission_id=data.client_submission_id,
         )
-        # commit 后 expire_on_commit 会分离实例，序列化必须在事务内完成
+        # commit 后 expire_on_commit 会分离实例，序列化与字段拷贝必须在事务内完成
         receipt = share_suggestion_service.serialize_receipt(row)
+        recipient_user_id = str(locked_share.creator_id)
         session.commit()
-        return receipt
+        return receipt, recipient_user_id
 
     try:
         async with lock_task(task_id):
-            receipt = await run_db_txn(_txn)
+            receipt, recipient_user_id = await run_db_txn(_txn)
     except LockAcquireTimeout as exc:
         raise HTTPException(
             status_code=429, detail={"code": "TASK_BUSY", "message": "当前任务繁忙，请稍后重试"}
@@ -264,6 +266,19 @@ async def submit_share_suggestion(
         _raise_share_error(exc)
     except session_share_service.ShareError as exc:
         _raise_share_error(exc)
+
+    # Nudge 发起人（接收人）：任务房间广播不含建议内容，接收人经 REST 权限过滤后拉取
+    from app.domains.websocket.ws.manager import manager as task_ws_manager
+    await task_ws_manager.send_message_to_room(
+        task_id,
+        WSMessage(
+            type="share_suggestion_update",
+            payload={
+                "task_id": task_id,
+                "recipient_user_id": recipient_user_id,
+            },
+        ),
+    )
 
     return ShareSuggestionReceipt(**receipt)
 

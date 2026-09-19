@@ -74,6 +74,7 @@ class ShareSuggestionItem(BaseModel):
     task_id: str
     session_generation: int
     visitor_id: str
+    recipient_user_id: Optional[str] = None
     sender_user_id: Optional[str] = None
     display_name: Optional[str] = None
     original_content: str

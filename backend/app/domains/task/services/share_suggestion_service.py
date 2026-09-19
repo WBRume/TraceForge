@@ -170,6 +170,7 @@ def serialize_suggestion(row: TaskShareSuggestion) -> Dict[str, Any]:
         "task_id": row.task_id,
         "session_generation": int(row.session_generation or 0),
         "visitor_id": row.visitor_id,
+        "recipient_user_id": str(row.recipient_user_id) if row.recipient_user_id else None,
         "sender_user_id": row.sender_user_id,
         "display_name": row.display_name,
         "original_content": row.original_content,

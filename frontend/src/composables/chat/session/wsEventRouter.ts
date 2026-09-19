@@ -50,6 +50,7 @@ export function createTaskWsEventRouter(deps: {
   refreshActiveJobs: (taskId: string) => Promise<boolean>
   applyTaskSessionPayload: (payload: any) => void
   specBootstrapApplyUpdate: (payload: any) => void
+  shareSuggestionNudge: (payload: any) => void
   preinputHandleEvent: (type: string, payload: any) => void
   skillsMergeTraceEvent: (event: any) => void
   skillsScheduleUsageRefresh: () => void
@@ -289,6 +290,11 @@ export function createTaskWsEventRouter(deps: {
 
       case 'spec_bootstrap_update': {
         deps.specBootstrapApplyUpdate(payload)
+        break
+      }
+
+      case 'share_suggestion_update': {
+        deps.shareSuggestionNudge(payload)
         break
       }
 

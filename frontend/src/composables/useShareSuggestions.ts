@@ -1,8 +1,9 @@
 /**
- * 发起人收到的分享输入：轮询拉取、编辑、复制、采纳、忽略。
+ * 发起人收到的分享输入：编辑、复制、采纳、忽略。
  *
- * 轮询策略（第一版）：进入会话立即查询；页面可见时每 10 秒增量拉取，
- * 失焦暂停，重新聚焦立即补拉。不依赖任务 WS 广播。
+ * 更新策略：不轮询。后端在访客提交/发起人操作建议后向任务房间广播
+ * share_suggestion_update（由会话 WS 路由转发到 handleSuggestionNudge），
+ * 前端收到 nudge 后经 REST 权限过滤拉取；页面重新聚焦时也补拉一次。
  */
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -26,8 +27,6 @@ export type ShareSuggestion = {
   effective_content: string
 }
 
-const POLL_INTERVAL_MS = 10_000
-
 export function useShareSuggestions(options: {
   getWorkspaceId: () => string
   getTaskId: () => string
@@ -44,7 +43,7 @@ export function useShareSuggestions(options: {
   )
   const pendingCount = computed(() => pendingSuggestions.value.length)
 
-  let pollTimer: number | null = null
+  let nudgeInFlight: Promise<void> | null = null
 
   const loadSuggestions = async (silent = true) => {
     const taskId = options.getTaskId()
@@ -109,9 +108,20 @@ export function useShareSuggestions(options: {
     }
   }
 
+  /** WS share_suggestion_update：静默刷新（单飞合并短窗口内的重复 nudge）。 */
+  const handleSuggestionNudge = () => {
+    if (!options.getTaskId()) return
+    if (nudgeInFlight) return
+    nudgeInFlight = loadSuggestions()
+      .catch(() => undefined)
+      .finally(() => {
+        nudgeInFlight = null
+      })
+  }
+
   // 会话选择/切换：立即清空旧列表并补拉新任务的待采纳输入。
-  // ChatView 挂载早于 currentTask 就绪，仅靠 onMounted 首拉会落空、
-  // 只能等下一轮 10s 轮询——这里以 taskId 为准及时刷新。
+  // ChatView 挂载早于 currentTask 就绪，仅靠 onMounted 首拉会落空——
+  // 这里以 taskId 为准及时刷新。
   watch(
     () => options.getTaskId(),
     (taskId) => {
@@ -125,22 +135,6 @@ export function useShareSuggestions(options: {
     { immediate: true },
   )
 
-  const startPolling = () => {
-    if (pollTimer !== null) return
-    pollTimer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void loadSuggestions()
-      }
-    }, POLL_INTERVAL_MS)
-  }
-
-  const stopPolling = () => {
-    if (pollTimer !== null) {
-      window.clearInterval(pollTimer)
-      pollTimer = null
-    }
-  }
-
   const onVisibilityChange = () => {
     if (document.visibilityState === 'visible') {
       void loadSuggestions()
@@ -148,13 +142,10 @@ export function useShareSuggestions(options: {
   }
 
   onMounted(() => {
-    void loadSuggestions()
-    startPolling()
     document.addEventListener('visibilitychange', onVisibilityChange)
   })
 
   onUnmounted(() => {
-    stopPolling()
     document.removeEventListener('visibilitychange', onVisibilityChange)
   })
 
@@ -166,6 +157,7 @@ export function useShareSuggestions(options: {
     pendingSuggestions,
     pendingCount,
     loadSuggestions,
+    handleSuggestionNudge,
     patchSuggestion,
     copySuggestion,
   }
