@@ -143,6 +143,7 @@ watch(
             :task-id="props.vm.currentTask.id"
             :initial-asset-id="props.vm.activeInitialSpecAssetId || undefined"
             :readonly="true"
+            :bootstrap-status="props.vm.specBootstrap"
             compact
           />
         </div>

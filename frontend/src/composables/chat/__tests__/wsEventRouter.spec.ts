@@ -24,6 +24,7 @@ const createDeps = () => {
     appliedSessionPayloads: [] as any[],
     preinputEvents: [] as string[],
     specUpdates: [] as any[],
+    suggestionNudges: [] as any[],
     traceMerges: [] as any[],
     usageRefreshes: 0,
     engineSyncs: 0,
@@ -73,6 +74,7 @@ const createDeps = () => {
     refreshActiveJobs: (taskId: string) => { calls.activeJobRefreshes.push(taskId); return Promise.resolve(true) },
     applyTaskSessionPayload: (payload: any) => calls.appliedSessionPayloads.push(payload),
     specBootstrapApplyUpdate: (payload: any) => calls.specUpdates.push(payload),
+    shareSuggestionNudge: (payload: any) => calls.suggestionNudges.push(payload),
     preinputHandleEvent: (type: string) => calls.preinputEvents.push(type),
     skillsMergeTraceEvent: (event: any) => calls.traceMerges.push(event),
     skillsScheduleUsageRefresh: () => { calls.usageRefreshes += 1 },
@@ -156,6 +158,7 @@ describe('createTaskWsEventRouter', () => {
     handleWsMessage({ type: 'tool_use', payload: { tool_name: 'bash' } })
     handleWsMessage({ type: 'skill_runtime_event', payload: { id: 'e1' } })
     handleWsMessage({ type: 'spec_bootstrap_update', payload: { task_id: 't1' } })
+    handleWsMessage({ type: 'share_suggestion_update', payload: { task_id: 't1', recipient_user_id: 'u1' } })
     handleWsMessage({ type: 'pre_input_update', payload: {} })
     handleWsMessage({ type: 'chat_job_done', payload: { job: { id: 'j1', status: 'SUCCESS' } } })
 
@@ -163,6 +166,7 @@ describe('createTaskWsEventRouter', () => {
     expect(calls.usageRefreshes).toBe(1)
     expect(calls.traceMerges).toHaveLength(1)
     expect(calls.specUpdates).toHaveLength(1)
+    expect(calls.suggestionNudges).toEqual([{ task_id: 't1', recipient_user_id: 'u1' }])
     expect(calls.preinputEvents).toEqual(['pre_input_update'])
     expect(calls.ingested[0]).toMatchObject({ id: 'j1' })
   })

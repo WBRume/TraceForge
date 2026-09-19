@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, useSlots, watch } from "vue";
+import { computed, onMounted, ref, useSlots, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
 import { ChevronDown, FileText, Clock } from "lucide-vue-next";
@@ -31,6 +31,13 @@ const props = defineProps<{
   compact?: boolean;
   initialAssetId?: string;
   readonly?: boolean;
+  /** Spec 基线状态由宿主注入：会话内复用 vm.specBootstrap（WS 推送），独立页接 useTaskSpecBootstrapFeed */
+  bootstrapStatus?: {
+    status: string;
+    progress: number;
+    message?: string | null;
+    error_message?: string | null;
+  } | null;
 }>();
 
 const loadingAssets = ref(false);
@@ -57,14 +64,6 @@ const forceRevisionSnapshot = ref(false);
 const overwriteConfirmVisible = ref(false);
 const overwriteTargetThreadId = ref("");
 const overwriteTargetDraftId = ref("");
-const bootstrapStatus = ref<{
-  status: string;
-  progress: number;
-  message?: string | null;
-  error_message?: string | null;
-} | null>(null);
-const bootstrapLoading = ref(false);
-const bootstrapPollTimer = ref<number | null>(null);
 const bootstrapTriggering = ref(false);
 const showBootstrapConfirm = ref(false);
 
@@ -141,7 +140,7 @@ const aiUnavailableReasonText = computed(() => {
   return t(`doc_review.${aiUnavailableReason.value}`);
 });
 const baselineStatusText = computed(() => {
-  const status = String(bootstrapStatus.value?.status || "").toUpperCase();
+  const status = String(props.bootstrapStatus?.status || "").toUpperCase();
   if (!status) return t("doc_review.baseline_status_unknown");
   if (status === "PENDING") return t("chat.spec_bootstrap_status_pending");
   if (status === "RUNNING") return t("chat.spec_bootstrap_status_running");
@@ -151,19 +150,18 @@ const baselineStatusText = computed(() => {
   return status;
 });
 const baselineBusy = computed(() => {
-  const status = String(bootstrapStatus.value?.status || "").toUpperCase();
+  const status = String(props.bootstrapStatus?.status || "").toUpperCase();
   return status === "PENDING" || status === "RUNNING";
 });
 const showBaselineStatus = computed(() => {
   if (isPdfAsset.value) return false;
   if (!props.taskId) return false;
-  if (bootstrapLoading.value) return true;
-  const status = String(bootstrapStatus.value?.status || "").toUpperCase();
+  const status = String(props.bootstrapStatus?.status || "").toUpperCase();
   if (!status) return false;
   return status !== "READY";
 });
 const bootstrapStatusCode = computed(() =>
-  String(bootstrapStatus.value?.status || "").toUpperCase(),
+  String(props.bootstrapStatus?.status || "").toUpperCase(),
 );
 const canTriggerBootstrap = computed(
   () =>
@@ -189,7 +187,6 @@ const triggerBootstrap = async () => {
     }
   } finally {
     bootstrapTriggering.value = false;
-    void loadBootstrapStatus();
   }
 };
 const isRelocationPending = computed(() => !!pendingRelocation.value);
@@ -272,54 +269,6 @@ const fetchTaskSpecAsset = async (taskId: string) => {
 const fetchAssetById = async (assetId: string) => {
   const res = await api.get(`/workspaces/${props.wsId}/assets/${assetId}`);
   return res.data as AssetSummary;
-};
-
-const clearBootstrapPoll = () => {
-  if (bootstrapPollTimer.value !== null) {
-    window.clearTimeout(bootstrapPollTimer.value);
-    bootstrapPollTimer.value = null;
-  }
-};
-
-const scheduleBootstrapPoll = () => {
-  clearBootstrapPoll();
-  if (!props.taskId) return;
-  const status = String(bootstrapStatus.value?.status || "").toUpperCase();
-  if (!["PENDING", "RUNNING", "STALE"].includes(status)) return;
-  bootstrapPollTimer.value = window.setTimeout(() => {
-    bootstrapPollTimer.value = null;
-    void loadBootstrapStatus();
-  }, 1600);
-};
-
-const loadBootstrapStatus = async () => {
-  if (!props.wsId || !props.taskId) {
-    bootstrapStatus.value = null;
-    return;
-  }
-  bootstrapLoading.value = true;
-  try {
-    const res = await api.get(`/workspaces/${props.wsId}/tasks/${props.taskId}/spec-bootstrap`);
-    bootstrapStatus.value = res.data || null;
-  } catch (error: unknown) {
-    const status = (error as { response?: { status?: number } })?.response?.status;
-    if (status === 404) {
-      bootstrapStatus.value = {
-        status: "PENDING",
-        progress: 0,
-        message: t("chat.spec_bootstrap_not_initialized"),
-      };
-    } else {
-      bootstrapStatus.value = {
-        status: "FAILED",
-        progress: 100,
-        message: t("chat.spec_bootstrap_status_failed"),
-      };
-    }
-  } finally {
-    bootstrapLoading.value = false;
-    scheduleBootstrapPoll();
-  }
 };
 
 const loadAssets = async () => {
@@ -632,7 +581,6 @@ const applyProposal = async (
   applyingProposal.value = true;
   try {
     await discussion.applyResolutionProposal(threadId, proposalId, payload, undefined, decision);
-    void loadBootstrapStatus();
     closeRevisionModal(true);
   } catch (error: unknown) {
     ElMessage.error(formatApiError(error, t("doc_review.proposal_apply_failed"), t));
@@ -762,9 +710,6 @@ const changeVersion = async (versionId: string) => {
   selectedVersionId.value = versionId;
   await discussion.loadDocument(versionId);
   await discussion.loadThreads(versionId);
-  if (props.taskId) {
-    void loadBootstrapStatus();
-  }
   selectedThreadId.value = "";
   pendingRelocation.value = null;
   if (proposalDraftModalVisible.value) {
@@ -827,7 +772,6 @@ watch(
   () => [props.wsId, props.taskId, props.initialAssetId] as const,
   () => {
     void loadAssets();
-    void loadBootstrapStatus();
   },
 );
 
@@ -842,11 +786,6 @@ watch(
 
 onMounted(() => {
   void loadAssets();
-  void loadBootstrapStatus();
-});
-
-onBeforeUnmount(() => {
-  clearBootstrapPoll();
 });
 </script>
 
@@ -942,8 +881,7 @@ onBeforeUnmount(() => {
     <div v-if="showBaselineStatus" class="baseline-status glass-panel" :class="{ busy: baselineBusy }">
       <div class="baseline-left">
         <strong>{{ t("doc_review.baseline_status_label") }}: {{ baselineStatusText }}</strong>
-        <span v-if="bootstrapStatus?.message">{{ bootstrapStatus.message }}</span>
-        <span v-else-if="bootstrapLoading">{{ t("chat.spec_bootstrap_loading") }}</span>
+        <span v-if="props.bootstrapStatus?.message">{{ props.bootstrapStatus.message }}</span>
       </div>
       <div class="baseline-right">
         <button
@@ -954,7 +892,7 @@ onBeforeUnmount(() => {
         >
           {{ t("chat.spec_bootstrap_action_build") }}
         </button>
-        <span>{{ Number(bootstrapStatus?.progress || 0) }}%</span>
+        <span>{{ Number(props.bootstrapStatus?.progress || 0) }}%</span>
       </div>
     </div>
 

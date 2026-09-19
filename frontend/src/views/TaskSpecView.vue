@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, AlertCircle } from 'lucide-vue-next'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
+import { useTaskSpecBootstrapFeed } from '@/composables/useTaskSpecBootstrapFeed'
 import api from '@/utils/api'
 
 const route = useRoute()
@@ -11,6 +12,8 @@ const router = useRouter()
 const { t } = useI18n()
 const wsId = computed(() => String(route.params.wsId || ''))
 const taskId = computed(() => String(route.params.taskId || ''))
+
+const specBootstrapFeed = useTaskSpecBootstrapFeed({ wsId, taskId })
 
 const taskStatus = ref('')
 
@@ -61,6 +64,7 @@ const backToChat = () => {
         :ws-id="wsId"
         :task-id="taskId"
         :readonly="docReadonly"
+        :bootstrap-status="specBootstrapFeed.bootstrap.value"
         compact
       >
         <template #header-prefix>

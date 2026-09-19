@@ -64,6 +64,11 @@ const {
   setChatDraft: (content) => { rawVm.chatInput.value = content },
 })
 
+// 分享建议 WS nudge → 建议域刷新（事件驱动，替代定时轮询）
+rawVm.registerShareSuggestionNudge(() => {
+  shareSuggestions.handleSuggestionNudge()
+})
+
 // ── 撤销确认流：先确认，再交给消息动作域执行 ──
 const pendingUndoMessage = ref<Record<string, any> | null>(null)
 

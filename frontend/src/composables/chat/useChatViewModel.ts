@@ -316,6 +316,12 @@ export function useChatViewModel() {
   })
 
   // ─── WS 事件路由（传输 → 领域） ───
+  // 分享建议域由 ChatView 的 useShareFlows 持有（与分享弹窗同生命周期），
+  // nudge 经此回调槽转发，避免 vm ↔ shareFlows 循环依赖。
+  let shareSuggestionNudgeHandler: ((payload: any) => void) | null = null
+  const registerShareSuggestionNudge = (handler: (payload: any) => void) => {
+    shareSuggestionNudgeHandler = handler
+  }
   const wsRouter = createTaskWsEventRouter({
     task: {
       getTaskId: taskState.getTaskId,
@@ -361,6 +367,7 @@ export function useChatViewModel() {
     refreshActiveJobs: (taskId) => jobs.loadActive(taskId),
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     specBootstrapApplyUpdate: specBootstrap.applyUpdate,
+    shareSuggestionNudge: (payload) => shareSuggestionNudgeHandler?.(payload),
     preinputHandleEvent: preinput.handleEvent,
     skillsMergeTraceEvent: skills.mergeRuntimeTraceEvent,
     skillsScheduleUsageRefresh: skills.scheduleRuntimeUsageRefresh,
@@ -926,6 +933,7 @@ export function useChatViewModel() {
     canTriggerSpecBootstrap: specBootstrap.canTriggerSpecBootstrap,
     bootstrapStatusText: specBootstrap.statusText,
     triggerSpecBootstrap: specBootstrap.trigger,
+    registerShareSuggestionNudge,
 
     // 上下文窗口
     contextWindowDrawerOpen: contextPanel.drawerOpen,
