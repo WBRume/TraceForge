@@ -27,6 +27,7 @@ from app.domains.asset.schemas.asset import (
     AssetDocumentCapabilities,
     AssetDocumentResponse,
     AssetListResponse,
+    AssetManualEditBlockRequest,
     AssetResolutionAnchorPrecheckRequest,
     AssetResolutionAnchorPrecheckResponse,
     AssetResolutionApplyRequest,
@@ -803,6 +804,7 @@ def get_asset_document(
         and is_latest_context_version
     )
     inline_review_enabled = document_payload.can_inline_review(asset.source_ext)
+    can_manual_edit = can_apply_resolution and inline_review_enabled
     ai_available = True
     ai_unavailable_reason: Optional[str] = None
     if not is_latest_context_version:
@@ -834,6 +836,7 @@ def get_asset_document(
             can_comment=can_comment,
             can_ai_reply=can_ai_reply,
             can_apply_resolution=can_apply_resolution,
+            can_manual_edit=can_manual_edit,
             inline_review_enabled=inline_review_enabled,
             ai_available=ai_available,
             ai_unavailable_reason=ai_unavailable_reason,
@@ -1432,6 +1435,79 @@ async def apply_thread_resolution(
             "thread": result["thread"],
         },
     )
+    return version_response
+
+
+@router.post("/{asset_id}/document/blocks/{block_id}", response_model=AssetVersionResponse)
+async def manual_edit_asset_block(
+    ws_id: str,
+    asset_id: str,
+    block_id: str,
+    data: AssetManualEditBlockRequest,
+    current_user: User = Depends(get_current_user),
+):
+    def persist_edit(db: Session):
+        _verify_expert_permission(ws_id, current_user, db)
+        asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        _ensure_spec_editable(asset)
+        _ensure_latest_context_version_for_mutation(asset, data.context_version_id)
+        try:
+            version, affected_threads = asset_resolution_service.manual_edit_block(
+                db,
+                asset=asset,
+                block_id=block_id,
+                new_text=data.new_text,
+                actor_user_id=current_user.id,
+                context_version_id=data.context_version_id,
+                change_note=data.change_note,
+            )
+        except asset_resolution_service.ResolutionServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        db.commit()
+        return {
+            "asset_id": asset.id,
+            "task_id": asset.task_id,
+            "version": _serialize_version(version).model_dump(mode="json"),
+            "threads": [
+                _serialize_thread_with_context(
+                    db,
+                    thread=thread,
+                    context_version=version,
+                ).model_dump(mode="json")
+                for thread in affected_threads
+            ],
+        }
+
+    result = await run_db_txn(persist_edit)
+    version_response = AssetVersionResponse(**result["version"])
+    if result["task_id"]:
+        await task_cli_state_service.mark_bootstrap_stale_async(
+            workspace_id=ws_id,
+            task_id=result["task_id"],
+            spec_version_id=version_response.id,
+            reason="Specification context changed; rebuild baseline manually",
+        )
+        await task_cli_state_service.publish_bootstrap_snapshot(result["task_id"])
+
+    await asset_discussion_ws_manager.broadcast(
+        result["asset_id"],
+        {
+            "type": "version_applied",
+            "asset_id": result["asset_id"],
+            "version": version_response.model_dump(mode="json"),
+        },
+    )
+    for thread_payload in result["threads"]:
+        await asset_discussion_ws_manager.broadcast(
+            result["asset_id"],
+            {
+                "type": "thread_updated",
+                "asset_id": result["asset_id"],
+                "thread": thread_payload,
+            },
+        )
     return version_response
 
 

@@ -121,6 +121,7 @@ export type AssetDocumentCapabilities = {
   can_comment: boolean
   can_ai_reply: boolean
   can_apply_resolution: boolean
+  can_manual_edit: boolean
   inline_review_enabled: boolean
   ai_available: boolean
   ai_unavailable_reason?: string | null
@@ -215,6 +216,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
       can_comment: false,
       can_ai_reply: false,
       can_apply_resolution: false,
+      can_manual_edit: false,
       inline_review_enabled: false,
       ai_available: false,
       ai_unavailable_reason: null,
@@ -604,6 +606,17 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     return version
   }
 
+  const manualEditBlock = async (blockId: string, newText: string) => {
+    if (!wsIdRef.value || !assetIdRef.value || !blockId) return null
+    const res = await api.post(
+      `/workspaces/${wsIdRef.value}/assets/${assetIdRef.value}/document/blocks/${blockId}`,
+      { new_text: newText },
+    )
+    const version = res.data as AssetVersion
+    await refresh(version.id)
+    return version
+  }
+
   const cancelAiJob = async (jobId: string) => {
     if (!wsIdRef.value || !jobId) return null
     const res = await api.post(`/workspaces/${wsIdRef.value}/ai-jobs/${jobId}/cancel`)
@@ -885,6 +898,7 @@ export function useAssetDiscussion(options: UseAssetDiscussionOptions) {
     createResolutionProposal,
     rewriteResolutionProposal,
     applyResolutionProposal,
+    manualEditBlock,
     cancelAiJob,
     updateThreadCloseHint,
     updateThreadState,

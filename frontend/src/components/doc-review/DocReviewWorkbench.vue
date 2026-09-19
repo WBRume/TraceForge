@@ -127,6 +127,7 @@ const effectiveCapabilities = computed(() => {
     can_comment: false,
     can_ai_reply: false,
     can_apply_resolution: false,
+    can_manual_edit: false,
   };
 });
 const aiUnavailableReason = computed(
@@ -206,6 +207,54 @@ const historicalVersionReadonly = computed(
     !effectiveCapabilities.value.can_comment &&
     String(effectiveCapabilities.value.ai_unavailable_reason || "") === "historical_version_readonly",
 );
+const editingBlockId = ref("");
+const savingBlockEdit = ref(false);
+const canManualEdit = computed(
+  () =>
+    !readOnlyMode.value &&
+    !isPdfAsset.value &&
+    Boolean(effectiveCapabilities.value.can_manual_edit),
+);
+
+const startBlockEdit = (blockId: string) => {
+  if (!canManualEdit.value || !blockId) return;
+  editingBlockId.value = blockId;
+};
+
+const cancelBlockEdit = () => {
+  if (savingBlockEdit.value) return;
+  editingBlockId.value = "";
+};
+
+const saveBlockEdit = async (blockId: string, text: string) => {
+  if (!canManualEdit.value || savingBlockEdit.value) return;
+  const normalized = String(text || "").trim();
+  if (!normalized) {
+    ElMessage.warning(t("doc_review.manual_edit_empty"));
+    return;
+  }
+  const originalBlock = (documentData.value?.blocks || []).find(
+    (block: any) => String(block?.id || "") === blockId,
+  );
+  if (originalBlock && String(originalBlock?.text || "").trim() === normalized) {
+    editingBlockId.value = "";
+    return;
+  }
+  savingBlockEdit.value = true;
+  try {
+    await discussion.manualEditBlock(blockId, normalized);
+    editingBlockId.value = "";
+  } catch (error: unknown) {
+    ElMessage.error(formatApiError(error, t("doc_review.manual_edit_save_failed"), t));
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 409) {
+      editingBlockId.value = "";
+      void discussion.refresh();
+    }
+  } finally {
+    savingBlockEdit.value = false;
+  }
+};
 
 const proposalThread = computed(
   () => threads.value.find((item) => item.id === proposalThreadId.value) || null,
@@ -784,6 +833,16 @@ watch(
   },
 );
 
+watch(
+  () => activeVersionId.value,
+  (_next, previous) => {
+    if (!previous) return;
+    if (!editingBlockId.value) return;
+    editingBlockId.value = "";
+    ElMessage.info(t("doc_review.manual_edit_stale"));
+  },
+);
+
 onMounted(() => {
   void loadAssets();
 });
@@ -915,9 +974,14 @@ onMounted(() => {
             :markers-by-block="markersByBlock"
             :selected-thread-id="selectedThreadId"
             :inline-review-enabled="inlineReviewEnabled"
+            :can-manual-edit="canManualEdit"
+            :editing-block-id="editingBlockId"
             @open-thread="openThread"
             @select-range="handleSelectRange"
             @clear-selection="selectionPayload = null"
+            @start-edit="startBlockEdit"
+            @save-block-edit="saveBlockEdit"
+            @cancel-block-edit="cancelBlockEdit"
           />
         </div>
 

@@ -1192,3 +1192,168 @@ def apply_resolution_proposal(
     )
     db.flush()
     return version
+
+
+def _pick_closest_occurrence(text: str, keyword: str, target: Optional[int]) -> Optional[int]:
+    if not text or not keyword:
+        return None
+    points: List[int] = []
+    from_index = 0
+    while from_index <= len(text) - len(keyword):
+        idx = text.find(keyword, from_index)
+        if idx < 0:
+            break
+        points.append(idx)
+        from_index = idx + 1
+    if not points:
+        return None
+    if not isinstance(target, int):
+        return points[0]
+    return min(points, key=lambda point: abs(point - target))
+
+
+def _remap_anchor_selection(
+    effective_anchor: Dict[str, Any],
+    new_text: str,
+) -> tuple[Optional[str], Optional[int], Optional[int]]:
+    old_selected = str(effective_anchor.get("selected_text") or "").strip()
+    if not old_selected or old_selected not in new_text:
+        return None, None, None
+    old_start = effective_anchor.get("char_start")
+    try:
+        old_start_int = int(old_start) if old_start is not None else None
+    except Exception:
+        old_start_int = None
+    start = _pick_closest_occurrence(new_text, old_selected, old_start_int)
+    if start is None:
+        return None, None, None
+    return old_selected, start, start + len(old_selected)
+
+
+def manual_edit_block(
+    db: Session,
+    *,
+    asset: SddAsset,
+    block_id: str,
+    new_text: str,
+    actor_user_id: str,
+    context_version_id: Optional[str] = None,
+    change_note: Optional[str] = None,
+) -> Tuple[SddAssetVersion, List[SddAssetThread]]:
+    text = str(new_text or "").strip()
+    if not text:
+        raise ResolutionServiceError("Edited block content cannot be empty", status_code=422)
+
+    resolved_context_version_id = str(context_version_id or "").strip() or asset.active_version_id
+    base_version = document_repository.get_asset_version(db, asset.id, resolved_context_version_id)
+    if not base_version:
+        raise ResolutionServiceError("Document version not found", status_code=404)
+    if str(base_version.id) != str(asset.active_version_id or ""):
+        raise ResolutionServiceError(
+            "Document has a newer version, please refresh and retry",
+            status_code=409,
+        )
+
+    base_block = asset_discussion_service.get_block_by_id(base_version, block_id)
+    if not base_block:
+        raise ResolutionServiceError("Block not found in current version", status_code=404)
+    if str(base_block.get("type") or "").strip().lower() == "table":
+        raise ResolutionServiceError("Table blocks do not support manual editing", status_code=422)
+
+    base_blocks = base_version.blocks_json or []
+    if not isinstance(base_blocks, list):
+        raise ResolutionServiceError("Base version blocks are invalid")
+
+    old_runs = _normalize_runs(base_block.get("runs"), str(base_block.get("text") or ""))
+    old_text = _runs_text(old_runs)
+    target_block = _build_new_block_ast(base_block, old_runs, text)
+    next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=target_block)
+    next_markdown = _blocks_to_markdown(next_blocks)
+
+    version = document_versioning.create_asset_version_from_normalized_content(
+        db,
+        asset,
+        creator_id=actor_user_id,
+        normalized_markdown=next_markdown,
+        blocks_json=next_blocks,
+        change_note=change_note or f"Manual edit on block {block_id}",
+        base_version_id=base_version.id,
+        output_ext=asset.source_ext or base_version.original_ext or ".md",
+        output_mime=asset.source_mime or base_version.original_mime or "text/markdown",
+        output_file_bytes=next_markdown.encode("utf-8"),
+        output_file_name=asset.source_file_name or f"spec-v{base_version.version_no + 1}.md",
+    )
+
+    affected_threads: List[SddAssetThread] = []
+    for thread in asset_discussion_service.list_threads(db, asset_id=asset.id):
+        anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
+            db,
+            thread=thread,
+            context_version=base_version,
+        )
+        effective_anchor = (
+            anchor_eval.get("effective_anchor")
+            if isinstance(anchor_eval.get("effective_anchor"), dict)
+            else {}
+        )
+        if str(effective_anchor.get("block_id") or "").strip() != str(block_id).strip():
+            continue
+
+        new_selected, new_start, new_end = _remap_anchor_selection(effective_anchor, text)
+        try:
+            asset_discussion_service.upsert_thread_anchor_mapping(
+                db,
+                thread=thread,
+                version_id=version.id,
+                block_id=block_id,
+                selected_text=new_selected,
+                char_start=new_start,
+                char_end=new_end,
+                actor_user_id=actor_user_id,
+            )
+        except ValueError:
+            # Older historical data may miss stable anchor ids.
+            pass
+
+        anchor_eval_next = asset_discussion_service.resolve_thread_anchor_for_version(
+            db,
+            thread=thread,
+            context_version=version,
+        )
+        if anchor_eval_next.get("anchor_status") == "missing":
+            if str(thread.close_hint_state or "none") != "no_close_needed":
+                asset_discussion_service.set_thread_close_hint(
+                    db,
+                    thread=thread,
+                    state="pending",
+                    reason="anchor_missing",
+                    version_id=version.id,
+                )
+        elif str(thread.close_hint_reason or "") == "anchor_missing":
+            asset_discussion_service.set_thread_close_hint(
+                db,
+                thread=thread,
+                state="none",
+                reason=None,
+                version_id=None,
+            )
+        affected_threads.append(thread)
+
+    if asset.task_id:
+        _refresh_task_spec_pointer_and_bootstrap(
+            db,
+            task_id=asset.task_id,
+            workspace_id=asset.workspace_id,
+            asset=asset,
+            version=version,
+            refresh_mode="DELTA",
+            refresh_context_json={
+                "scope": "manual_edit",
+                "block_id": block_id,
+                "old_text": old_text[:2400],
+                "new_text": text[:2400],
+            },
+        )
+
+    db.flush()
+    return version, affected_threads

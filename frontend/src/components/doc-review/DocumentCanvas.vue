@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
+import { Pencil } from "lucide-vue-next";
+import BlockInlineEditor from "./BlockInlineEditor.vue";
 
 type DocumentBlock = {
   id: string;
@@ -79,6 +81,8 @@ const props = defineProps<{
   markersByBlock: Record<string, ThreadMarker[]>;
   selectedThreadId?: string;
   inlineReviewEnabled?: boolean;
+  canManualEdit?: boolean;
+  editingBlockId?: string;
 }>();
 
 const { t } = useI18n();
@@ -110,7 +114,17 @@ const emit = defineEmits<{
     },
   ];
   "clear-selection": [];
+  "start-edit": [blockId: string];
+  "save-block-edit": [blockId: string, text: string];
+  "cancel-block-edit": [blockId: string];
 }>();
+
+const EDITABLE_BLOCK_KINDS = new Set(["heading", "paragraph", "list_item"]);
+
+const showEditButton = (block: RenderBlock) =>
+  Boolean(props.canManualEdit) &&
+  EDITABLE_BLOCK_KINDS.has(block.renderKind) &&
+  !props.editingBlockId;
 
 const hasBlocks = computed(() => props.blocks.length > 0);
 
@@ -818,6 +832,7 @@ const openBlockThread = (blockId: string) => {
 
 const emitSelection = (event: MouseEvent, block: RenderBlock) => {
   if (!props.inlineReviewEnabled) return;
+  if (props.editingBlockId) return;
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
     emit("clear-selection");
@@ -890,6 +905,7 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
           `kind-${block.renderKind}`,
           blockStateClass(block),
           { 'is-selected-thread': hasSelectedThread(block.id) },
+          { 'is-editing': block.id === editingBlockId },
           block.renderKind === 'heading'
             ? `heading-level-${block.headingLevel}`
             : '',
@@ -907,9 +923,19 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
           {{ markerCount(block.id) }}
         </button>
 
+        <button
+          v-if="showEditButton(block)"
+          class="manual-edit-btn"
+          :class="{ 'with-badge': markerCount(block.id) > 0 }"
+          :title="t('doc_review.manual_edit_button')"
+          @click.stop="emit('start-edit', block.id)"
+        >
+          <Pencil :size="12" :stroke-width="2.5" />
+        </button>
+
         <component
           :is="`h${block.headingLevel}`"
-          v-if="block.renderKind === 'heading'"
+          v-if="block.renderKind === 'heading' && block.id !== editingBlockId"
           class="doc-heading doc-select-root"
         >
           <span
@@ -940,10 +966,23 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
             </span>
           </span>
         </component>
+        <BlockInlineEditor
+          v-else-if="block.renderKind === 'heading' && block.id === editingBlockId"
+          :initial-text="block.displayText"
+          @save="(text) => emit('save-block-edit', block.id, text)"
+          @cancel="emit('cancel-block-edit', block.id)"
+        />
 
         <p v-else-if="block.renderKind === 'list_item'" class="doc-list-item">
           <span class="list-marker">{{ block.listMarker }}</span>
-          <span class="list-text doc-select-root">
+          <BlockInlineEditor
+            v-if="block.id === editingBlockId"
+            class="list-text"
+            :initial-text="block.displayText"
+            @save="(text) => emit('save-block-edit', block.id, text)"
+            @cancel="emit('cancel-block-edit', block.id)"
+          />
+          <span v-else class="list-text doc-select-root">
             <span
               v-for="(run, runIndex) in block.inlineRuns"
               :key="`${block.id}-list-${runIndex}`"
@@ -1039,6 +1078,13 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
             </tbody>
           </table>
         </div>
+
+        <BlockInlineEditor
+          v-else-if="block.id === editingBlockId"
+          :initial-text="block.displayText"
+          @save="(text) => emit('save-block-edit', block.id, text)"
+          @cancel="emit('cancel-block-edit', block.id)"
+        />
 
         <p v-else class="doc-paragraph doc-select-root">
           <span
@@ -1362,6 +1408,42 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
     0 0 0 1.5px rgba(255, 255, 255, 0.9);
 }
 
+.manual-edit-btn {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1px solid rgba(14, 165, 233, 0.35);
+  color: #0369a1;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.doc-block:hover .manual-edit-btn {
+  opacity: 1;
+}
+
+.manual-edit-btn:hover {
+  transform: scale(1.12);
+  background: #e0f2fe;
+}
+
+.manual-edit-btn.with-badge {
+  right: 32px;
+}
+
+.doc-block.is-editing {
+  box-shadow: inset 0 0 0 2px rgba(14, 165, 233, 0.35);
+  border-radius: 6px;
+}
+
 @media (max-width: 960px) {
   .doc-paper {
     padding: 22px 18px 24px;
@@ -1370,6 +1452,15 @@ const emitSelection = (event: MouseEvent, block: RenderBlock) => {
 
   .thread-badge {
     right: 2px;
+  }
+
+  .manual-edit-btn {
+    opacity: 1;
+    right: 2px;
+  }
+
+  .manual-edit-btn.with-badge {
+    right: 30px;
   }
 }
 </style>
