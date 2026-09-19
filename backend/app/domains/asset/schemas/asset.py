@@ -16,6 +16,8 @@ class AssetResponse(BaseModel):
     name: str
     content_text: Optional[str] = None
     content_json: Optional[Any] = None
+    source_ext: Optional[str] = None
+    source_mime: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

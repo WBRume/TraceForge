@@ -156,8 +156,8 @@ describe('NewTaskModal diagnosis mode', () => {
 
     const specInput = wrapper.find('#spec-upload-ws-1')
     expect(specInput.exists()).toBe(true)
-    // 需求开发侧：spec 上传白名单保持不变，不受诊断上传放开影响
-    expect(specInput.attributes('accept')).toBe('.pdf,.doc,.docx,.md,.txt')
+    // 需求开发侧:禁止 legacy .doc,其余白名单不受诊断上传放开影响
+    expect(specInput.attributes('accept')).toBe('.pdf,.docx,.md,.txt')
   })
 
   it('allows selecting skills for diagnosis tasks and submits skill_ids', async () => {

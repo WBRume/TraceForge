@@ -30,6 +30,10 @@ export function useSpecDrawer(options: {
   }
 
   const currentTaskHasSpec = computed(() => hasTaskSpecification(options.currentTask.value))
+  // PDF 规格文档:无 Web 端解析/基线,任务启动后抽屉内直接预览(预启动仍走独立工作区路由)
+  const isPdfSpec = computed(() =>
+    String(options.currentTask.value?.spec_doc_path || '').toLowerCase().endsWith('.pdf'),
+  )
   const isSuperpowersDocsAvailable = computed(() => Boolean(options.currentTask.value) && !options.isTaskPreStart.value)
   const showSpecEntryButton = computed(() => (currentTaskHasSpec.value || isSuperpowersDocsAvailable.value) && !options.isDiagnosisTask.value)
   const isSpecDrawerAvailable = computed(() => (
@@ -126,6 +130,7 @@ export function useSpecDrawer(options: {
     hasTaskSpecDoc,
     hasTaskSpecification,
     currentTaskHasSpec,
+    isPdfSpec,
     isSuperpowersDocsAvailable,
     showSpecEntryButton,
     isSpecDrawerAvailable,

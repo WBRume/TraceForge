@@ -28,7 +28,7 @@ const confirmBootstrapBuild = async () => {
 </script>
 
 <template>
-  <div v-if="props.vm.isTaskPreStart && props.vm.currentTaskHasSpec" class="prestart-doc-tip glass-panel">
+  <div v-if="props.vm.isTaskPreStart && props.vm.currentTaskHasSpec && !props.vm.isPdfSpec" class="prestart-doc-tip glass-panel">
     <p>{{ t('chat.spec_prestart_hint') }}</p>
     <div v-if="props.vm.specBootstrapLoading" class="bootstrap-status">
       <span>{{ t('chat.spec_bootstrap_loading') }}</span>

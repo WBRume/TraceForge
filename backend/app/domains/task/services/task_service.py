@@ -623,6 +623,15 @@ def replace_task_skills_for_initialize(
         raise ValueError(f"Failed to update task skills: {exc}")
 
 
+# 这些格式的需求文档不做 Web 端解析与基线(内容不可抽块),
+# 只存原文件供 CLI/Agent 自行读取。
+PDF_SPEC_BOOTSTRAP_DISABLED_EXTS = {".pdf"}
+
+
+def spec_bootstrap_enabled_for_ext(ext: str) -> bool:
+    return (ext or "").lower() not in PDF_SPEC_BOOTSTRAP_DISABLED_EXTS
+
+
 def upload_task_spec(
     db: Session,
     task_id: str,
@@ -635,6 +644,12 @@ def upload_task_spec(
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if not task:
         raise ValueError("Task not found")
+
+    ext = os.path.splitext(file_name or "")[1].lower()
+    if ext == ".doc":
+        raise ValueError(
+            "Legacy .doc files are not supported; please convert to .docx or upload a PDF"
+        )
 
     # 使用任务关联的 project_path 作为基准
     base_dir = task.project_path

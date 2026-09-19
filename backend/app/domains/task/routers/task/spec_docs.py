@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -71,6 +72,13 @@ async def upload_task_spec(
         try:
             async with lock_task(task_id):
                 content = await file.read()
+                ext = os.path.splitext(file.filename or "")[1].lower()
+                if ext == ".doc":
+                    raise HTTPException(
+                        status_code=415,
+                        detail="Legacy .doc is not supported; please convert to .docx or upload a PDF",
+                    )
+                bootstrap_enabled = task_service.spec_bootstrap_enabled_for_ext(ext)
 
                 def persist_task_spec_upload(db: Session):
                     verify_workspace_permission(
@@ -85,22 +93,26 @@ async def upload_task_spec(
                     file_path, asset_id, version_id = task_service.upload_task_spec(
                         db, task_id, file.filename, content
                     )
-                    bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
-                        db,
-                        workspace_id=ws_id,
-                        task_id=task_id,
-                        spec_asset_id=asset_id,
-                        spec_version_id=version_id,
-                    )
+                    if bootstrap_enabled:
+                        bootstrap = task_cli_state_service.upsert_bootstrap_for_upload(
+                            db,
+                            workspace_id=ws_id,
+                            task_id=task_id,
+                            spec_asset_id=asset_id,
+                            spec_version_id=version_id,
+                        )
+                        bootstrap_status = (
+                            bootstrap.status.value
+                            if hasattr(bootstrap.status, "value")
+                            else str(bootstrap.status)
+                        )
+                    else:
+                        bootstrap_status = "DISABLED"
                     return {
                         "path": file_path,
                         "asset_id": asset_id,
                         "version_id": version_id,
-                        "spec_bootstrap_status": (
-                            bootstrap.status.value
-                            if hasattr(bootstrap.status, "value")
-                            else str(bootstrap.status)
-                        ),
+                        "spec_bootstrap_status": bootstrap_status,
                     }
 
                 upload = await run_db_txn(persist_task_spec_upload)
@@ -119,6 +131,8 @@ async def upload_task_spec(
             raise_task_lock_conflict(exc)
         except HTTPException:
             raise
+        except ValueError as exc:
+            raise HTTPException(status_code=415, detail=str(exc))
         except Exception as exc:
             logger.exception(f"Failed to upload spec for task {task_id}: {exc}")
             raise HTTPException(status_code=500, detail=str(exc))

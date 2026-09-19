@@ -26,6 +26,7 @@ from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import payload as document_payload
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.document import versioning as document_versioning
+from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace
 from app.domains.task.services import task_cli_state_service
 
 try:
@@ -1064,14 +1065,20 @@ def apply_resolution_proposal(
     flag_modified(proposal, "proposed_patch_json")
 
     output_bytes: Optional[bytes] = None
-    if (asset.source_ext or "").lower() == ".docx" and not use_document_apply:
-        output_bytes = _try_apply_docx_text(
-            base_version,
-            old_text=old_text,
-            new_text=new_text,
-            selected_text=selected_text_for_apply,
-        )
-
+    if (asset.source_ext or "").lower() == ".docx":
+        if not use_document_apply:
+            output_bytes = _try_apply_docx_text(
+                base_version,
+                old_text=old_text,
+                new_text=new_text,
+                selected_text=selected_text_for_apply,
+            )
+        else:
+            output_bytes = apply_blocks_to_docx_inplace(
+                str(base_version.original_path or ""),
+                base_blocks,
+                next_blocks,
+            )
     if output_bytes is None:
         output_bytes = next_markdown.encode("utf-8")
 
