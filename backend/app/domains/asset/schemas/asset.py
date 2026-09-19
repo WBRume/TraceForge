@@ -68,6 +68,7 @@ class AssetDocumentCapabilities(BaseModel):
     can_comment: bool
     can_ai_reply: bool
     can_apply_resolution: bool
+    can_manual_edit: bool
     inline_review_enabled: bool
     ai_available: bool = True
     ai_unavailable_reason: Optional[str] = None
@@ -173,6 +174,20 @@ class AssetResolutionApplyRequest(BaseModel):
     final_blocks_ast: Optional[List[Any]] = None
     change_note: Optional[str] = None
     decision: Optional[AssetResolutionDecisionRequest] = None
+
+
+class AssetManualEditBlockRequest(BaseModel):
+    new_text: str = Field(..., min_length=1, max_length=50000)
+    context_version_id: Optional[str] = None
+    change_note: Optional[str] = Field(default=None, max_length=500)
+
+    @field_validator("new_text")
+    @classmethod
+    def validate_new_text(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("new_text is required")
+        return normalized
 
 
 class AssetResolutionProposalCreateRequest(BaseModel):
