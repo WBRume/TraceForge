@@ -11,6 +11,9 @@ export interface PinnedSearchItem {
   taskName: string
   messageId?: string
   role?: string
+  creatorName?: string | null
+  creatorAvatarUrl?: string | null
+  creatorAvatarSvg?: string | null
   snippetText: string
   created_at?: string
   minimized: boolean
@@ -94,6 +97,9 @@ export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
       taskName: searchItem.task_name,
       messageId,
       role: searchItem.role,
+      creatorName: searchItem.creator_display_name ?? null,
+      creatorAvatarUrl: searchItem.creator_avatar_url ?? null,
+      creatorAvatarSvg: searchItem.creator_avatar_svg ?? null,
       snippetText: extractText(searchItem),
       created_at: searchItem.created_at,
       minimized: false,

@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from tests.task.test_task_chat_history_ordering import db_session, _seed_task
 from app.config import settings
-from app.domains.auth.models.user import WorkspaceMember
+from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.services import task_service
 from app.domains.search.models import SearchDocumentState, SearchOutbox, SearchEmbeddingJob
@@ -253,3 +253,39 @@ def test_search_date_filter_accepts_mixed_timezone_formats():
     with TestClient(app) as client:
         assert client.get("/api/search", params={"q": "hello", "from": "2026-01-01", "to": "2026-01-02T00:00:00Z"}).status_code == 200
         assert client.get("/api/search", params={"q": "hello", "from": "2026-01-02", "to": "2026-01-01T00:00:00Z"}).status_code == 422
+
+
+def test_hydrate_returns_creator_identity_for_user_messages(db_session):
+    db = db_session
+    task = _seed_task(db)
+    db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
+    db.commit()
+    msg = task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
+    db.commit()
+    doc = current_document(db, "message:" + msg.id)
+    rows, consumed = hydrate(db, task.creator_id, [doc], 0, 20, "连接池", [task.workspace_id])
+    assert len(rows) == 1 and consumed == 1
+    item = rows[0]
+    assert item["role"] == "user"
+    assert item["creator_id"] == "user-1"
+    assert item["creator_display_name"] == "User"
+    # No custom avatar: resolver falls back to the deterministic default SVG.
+    assert item["creator_avatar_svg"] and item["creator_avatar_svg"].startswith("<svg")
+    assert item["creator_avatar_url"] is None
+
+
+def test_hydrate_oversized_avatar_svg_is_omitted(db_session):
+    db = db_session
+    task = _seed_task(db)
+    oversized = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+                 + '<rect x="0" y="0" width="1" height="1" fill="#0ea5e9"/>' * 120 + '</svg>')
+    db.query(User).filter(User.id == task.creator_id).update({"avatar_svg": oversized})
+    db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
+    db.commit()
+    msg = task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
+    db.commit()
+    doc = current_document(db, "message:" + msg.id)
+    rows, _ = hydrate(db, task.creator_id, [doc], 0, 20, "连接池", [task.workspace_id])
+    assert rows and rows[0]["creator_display_name"] == "User"
+    # Oversized custom SVG is dropped to protect the bounded response size; name still identifies the user.
+    assert rows[0]["creator_avatar_svg"] is None

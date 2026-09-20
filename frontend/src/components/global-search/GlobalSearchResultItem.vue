@@ -8,6 +8,7 @@ import {
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { usePinnedFloatsStore } from '@/stores/pinnedFloats'
+import UserAvatar from '@/components/user/UserAvatar.vue'
 import type { SearchItem } from '@/types/search'
 
 const props = defineProps<{ item: SearchItem; active: boolean }>()
@@ -16,6 +17,12 @@ const emit = defineEmits<{ select: [] }>()
 const pinnedStore = usePinnedFloatsStore()
 const isPinned = computed(() => pinnedStore.isPinned(props.item.entity_key))
 const copied = ref(false)
+
+// 用户发言：展示真实用户头像与用户名（与聊天消息一致的身份标识）
+const isUserMessage = computed(() => props.item.kind === 'message' && props.item.role === 'user')
+const hasCreatorIdentity = computed(() =>
+  Boolean(props.item.creator_avatar_svg || props.item.creator_avatar_url || props.item.creator_display_name)
+)
 
 const handleCopy = async (e: MouseEvent) => {
   e.stopPropagation()
@@ -59,8 +66,18 @@ const handleTogglePin = (e: MouseEvent) => {
     <!-- 头部信息行：方案 D3 极简微圆点纯排版设计，无廉价堆叠 icon -->
     <div class="result-header">
       <div class="header-badges">
-        <!-- 6px 实体微圆点（蓝点代表任务，橙点代表用户发言，紫点代表 AI 回复） -->
+        <!-- 用户发言：真实用户头像（与聊天气泡一致）；其余类型保留 6px 实体微圆点 -->
+        <UserAvatar
+          v-if="isUserMessage && hasCreatorIdentity"
+          class="type-avatar"
+          :display-name="item.creator_display_name"
+          :user-id="item.creator_id"
+          :avatar-svg="item.creator_avatar_svg"
+          :avatar-url="item.creator_avatar_url"
+          size="xs"
+        />
         <span
+          v-else
           class="type-dot"
           :class="{
             'dot-task': item.kind === 'task',
@@ -73,6 +90,12 @@ const handleTogglePin = (e: MouseEvent) => {
         <span class="type-label">
           {{ item.kind === 'task' ? '任务' : (item.role === 'user' ? '用户发言' : 'AI 回复') }}
         </span>
+
+        <!-- 具体用户名 -->
+        <template v-if="isUserMessage && item.creator_display_name">
+          <span class="dot-sep">·</span>
+          <span class="creator-name" :title="item.creator_display_name">{{ item.creator_display_name }}</span>
+        </template>
 
         <span class="dot-sep">·</span>
 
@@ -176,6 +199,13 @@ const handleTogglePin = (e: MouseEvent) => {
   flex-shrink: 0;
 }
 
+/* 用户发言真实头像（与聊天消息同款 UserAvatar） */
+.type-avatar.user-avatar {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
 .type-dot.dot-task {
   background-color: #0ea5e9;
   box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.15);
@@ -198,6 +228,19 @@ const handleTogglePin = (e: MouseEvent) => {
   color: #334155;
   flex-shrink: 0;
   line-height: 1;
+}
+
+/* 具体用户名：沿用用户发言的琥珀色身份色 */
+.creator-name {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #b45309;
+  flex-shrink: 0;
+  line-height: 1;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dot-sep {
