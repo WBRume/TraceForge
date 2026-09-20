@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
@@ -24,6 +24,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementDetailResponse,
     RequirementImportBatchResponse,
     RequirementImportConfirmRequest,
+    RequirementSplitDraftPayload,
     RequirementSplitRequest,
 )
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
@@ -292,6 +293,64 @@ def confirm_requirement_import(
     return import_batch_response(refreshed) if refreshed else None
 
 
+def save_requirement_split_draft(
+    db: Session,
+    workspace_id: str,
+    batch_id: str,
+    payload: RequirementSplitDraftPayload,
+) -> Optional[RequirementImportBatchResponse]:
+    """把拆分评审页的未提交编辑覆盖保存为批次草稿。
+
+    草稿是 AI 原始预览之上的编辑态覆盖层：批次 items 保持 AI 原始输出不变，
+    仅 PREVIEW（未确认）批次可写；同 workspace 其他用户读取时可见。
+    """
+    batch = get_import_batch(db, workspace_id, batch_id)
+    if not batch:
+        return None
+    _ensure_batch_open(batch, "Split draft can only be saved while the batch is still open.")
+    batch.draft_json = payload.model_dump(mode="json")
+    db.commit()
+    refreshed = get_import_batch(db, workspace_id, batch_id)
+    return import_batch_response(refreshed) if refreshed else None
+
+
+def clear_requirement_split_draft(
+    db: Session,
+    workspace_id: str,
+    batch_id: str,
+) -> Optional[RequirementImportBatchResponse]:
+    """删除拆分评审页草稿（评审页「取消」语义）：删除后重新拆分会发起新的 AI 预览。"""
+    batch = get_import_batch(db, workspace_id, batch_id)
+    if not batch:
+        return None
+    batch.draft_json = None
+    db.commit()
+    refreshed = get_import_batch(db, workspace_id, batch_id)
+    return import_batch_response(refreshed) if refreshed else None
+
+
+def find_requirement_split_draft(
+    db: Session,
+    workspace_id: str,
+    requirement_id: str,
+) -> Optional[RequirementImportBatchResponse]:
+    """「拆分」入口草稿回绑：该需求最近一个带未提交草稿的 PREVIEW 拆分批次。"""
+    batch = (
+        db.query(SddRequirementImportBatch)
+        .options(selectinload(SddRequirementImportBatch.items))
+        .filter(
+            SddRequirementImportBatch.workspace_id == workspace_id,
+            SddRequirementImportBatch.source_kind == "split",
+            SddRequirementImportBatch.source_ref == str(requirement_id),
+            SddRequirementImportBatch.status == RequirementImportBatchStatus.PREVIEW,
+            SddRequirementImportBatch.draft_json.isnot(None),
+        )
+        .order_by(SddRequirementImportBatch.updated_at.desc(), SddRequirementImportBatch.created_at.desc())
+        .first()
+    )
+    return import_batch_response(batch) if batch else None
+
+
 def confirm_requirement_split(
     db: Session,
     workspace_id: str,
@@ -357,6 +416,8 @@ def confirm_requirement_split(
         )
     batch.status = RequirementImportBatchStatus.CONFIRMED
     batch.confirmed_count = created_count
+    # 确认即消费草稿：批次关闭后草稿不再有意义，避免残留脏数据
+    batch.draft_json = None
     add_requirement_audit(
         db,
         workspace_id=workspace_id,

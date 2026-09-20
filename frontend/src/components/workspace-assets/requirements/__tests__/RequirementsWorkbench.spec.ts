@@ -58,6 +58,7 @@ const workspaceAssetsMock = vi.hoisted(() => ({
   confirmRequirementImport: vi.fn(),
   createRequirementSplitPreviewJob: vi.fn(),
   confirmRequirementSplit: vi.fn(),
+  findRequirementSplitDraft: vi.fn(async () => null),
 }))
 
 vi.mock('@/composables/useWorkspaceAssets', () => ({

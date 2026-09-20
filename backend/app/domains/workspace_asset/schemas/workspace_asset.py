@@ -206,6 +206,23 @@ class RequirementImportPreviewItem(BaseModel):
     requirement_id: Optional[str] = None
 
 
+class RequirementSplitDraftItem(BaseModel):
+    item_id: str
+    include: bool = True
+    title: Optional[str] = None
+    body: Optional[str] = None
+    acceptance_criteria: Optional[List[str]] = None
+    priority: Optional[str] = None
+    task_prompt: Optional[str] = None
+
+
+class RequirementSplitDraftPayload(BaseModel):
+    """拆分评审页未提交编辑的草稿结构：覆盖在批次原始 AI 预览之上的编辑态。"""
+
+    change_reason: Optional[str] = None
+    items: List[RequirementSplitDraftItem] = Field(default_factory=list)
+
+
 class RequirementImportBatchResponse(BaseModel):
     id: str
     workspace_id: str
@@ -219,6 +236,7 @@ class RequirementImportBatchResponse(BaseModel):
     confirmed_count: int = 0
     normalized_markdown: Optional[str] = None
     items: List[RequirementImportPreviewItem] = Field(default_factory=list)
+    draft: Optional[RequirementSplitDraftPayload] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

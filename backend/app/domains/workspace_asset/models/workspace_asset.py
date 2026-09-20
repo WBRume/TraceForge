@@ -286,6 +286,11 @@ class SddRequirementImportBatch(Base):
     source_ref = Column(String(300), nullable=True)
     source_metadata_json = Column(JSON, nullable=True)
     normalized_markdown = Column(Text, nullable=True)
+    # 拆分评审页的未提交编辑草稿（覆盖在 AI 原始预览之上；确认/取消后清除）。
+    # 仅 PREVIEW 批次可写；结构见 schemas.RequirementSplitDraftPayload。
+    # none_as_null=True：清草稿赋 None 必须落成 SQL NULL，否则 JSON 'null' 文本
+    # 会骗过 draft_json IS NOT NULL 的草稿回绑查询。
+    draft_json = Column(JSON(none_as_null=True), nullable=True)
     status = Column(
         Enum(RequirementImportBatchStatus, values_callable=_enum_values),
         nullable=False,

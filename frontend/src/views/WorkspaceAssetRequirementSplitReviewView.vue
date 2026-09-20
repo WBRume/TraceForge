@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Plus, Trash2, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import RequirementSpecificationBlock from '@/components/workspace-assets/requirements/RequirementSpecificationBlock.vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
+import { useProvisioningStore } from '@/stores/provisioning'
+import { useAuthStore } from '@/stores/auth'
+import api from '@/utils/api'
 import type {
   RequirementDetail,
   RequirementImportBatch,
   RequirementImportConfirmItem,
+  RequirementSplitDraft,
   RequirementSplitPayload,
 } from '@/types/workspaceAssets'
 
@@ -36,7 +41,10 @@ const {
   loadRequirementDetail,
   loadImportBatch,
   confirmRequirementSplit,
+  saveRequirementSplitDraft,
+  clearRequirementSplitDraft,
 } = useWorkspaceAssets()
+const provisioningStore = useProvisioningStore()
 
 const loading = ref(true)
 const submitting = ref(false)
@@ -44,6 +52,17 @@ const requirementDetail = ref<RequirementDetail | null>(null)
 const changeReason = ref('')
 const items = reactive<EditableSplitItem[]>([])
 const activeIndex = ref(0)
+
+// ── 服务端草稿：自动保存 / 恢复 / 「取消」删除 ──
+const draftStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const lastSavedLabel = ref('')
+const discardConfirmOpen = ref(false)
+const discarding = ref(false)
+/** 初始装载/草稿恢复期间、以及草稿终结（取消/确认）后禁止自动保存 */
+let draftAutosavePaused = true
+let draftClosed = false
+let draftSaveTimer: ReturnType<typeof setTimeout> | undefined
+let draftSavePromise: Promise<boolean> | null = null
 
 const parentRequirement = computed(() => requirementDetail.value?.requirement || null)
 const activeItem = computed(() => items[activeIndex.value] || null)
@@ -71,17 +90,41 @@ function getPriorityBadgeClass(priority: string) {
   return 'priority-medium'
 }
 
-function initItemsFromBatch(batch: RequirementImportBatch) {
+/** 批次 AI 原始预览 + 服务端草稿覆盖层 → 可编辑列表；草稿优先，缺失字段回落原始预览 */
+function applyDraft(batch: RequirementImportBatch, draft: RequirementSplitDraft | null | undefined) {
+  const draftById = new Map((draft?.items || []).map((draftItem) => [draftItem.item_id, draftItem]))
+  const matchedIds = new Set<string>()
   items.splice(0, items.length)
   for (const raw of batch.items || []) {
+    const draftItem = draftById.get(raw.id)
+    if (draftItem) matchedIds.add(raw.id)
+    const draftCriteria = draftItem?.acceptance_criteria
     items.push({
       item_id: raw.id,
-      include: raw.status !== 'SKIPPED',
-      title: raw.title || '',
-      body: raw.body || '',
-      acceptance_criteria: Array.isArray(raw.acceptance_criteria) ? [...raw.acceptance_criteria] : [],
-      priority: raw.priority || 'Medium',
-      task_prompt: raw.task_prompt || '',
+      include: draftItem ? draftItem.include : raw.status !== 'SKIPPED',
+      title: draftItem?.title ?? raw.title ?? '',
+      body: draftItem?.body ?? raw.body ?? '',
+      acceptance_criteria: Array.isArray(draftCriteria)
+        ? [...draftCriteria]
+        : Array.isArray(raw.acceptance_criteria)
+          ? [...raw.acceptance_criteria]
+          : [],
+      priority: draftItem?.priority ?? raw.priority ?? 'Medium',
+      task_prompt: draftItem?.task_prompt ?? raw.task_prompt ?? '',
+      newCriterionText: '',
+    })
+  }
+  // 草稿中比批次多出的条目：评审页手工新建、尚未确认回传的自定义子需求
+  for (const draftItem of draft?.items || []) {
+    if (matchedIds.has(draftItem.item_id)) continue
+    items.push({
+      item_id: draftItem.item_id,
+      include: draftItem.include,
+      title: draftItem.title ?? '',
+      body: draftItem.body ?? '',
+      acceptance_criteria: Array.isArray(draftItem.acceptance_criteria) ? [...draftItem.acceptance_criteria] : [],
+      priority: draftItem.priority ?? 'Medium',
+      task_prompt: draftItem.task_prompt ?? '',
       newCriterionText: '',
     })
   }
@@ -93,41 +136,23 @@ function initItemsFromBatch(batch: RequirementImportBatch) {
 async function loadData() {
   loading.value = true
   try {
-    let passedBatch: RequirementImportBatch | null = null
-    if (typeof history.state?.batchJson === 'string') {
-      try {
-        passedBatch = JSON.parse(history.state.batchJson) as RequirementImportBatch
-      } catch {
-        passedBatch = null
-      }
-    }
-    if (!passedBatch && batchId.value) {
-      const cached = sessionStorage.getItem(`TF_SPLIT_BATCH_${batchId.value}`)
-      if (cached) {
-        try {
-          passedBatch = JSON.parse(cached) as RequirementImportBatch
-        } catch {
-          // ignore
-        }
-      }
-    }
-
+    // 批次一律取服务端真身：草稿覆盖层只存在于服务端（同 workspace 其他用户可见）
     const [detail, batch] = await Promise.all([
       loadRequirementDetail(wsId.value, requirementId.value),
-      passedBatch && passedBatch.id === batchId.value
-        ? Promise.resolve(passedBatch)
-        : loadImportBatch(wsId.value, batchId.value),
+      loadImportBatch(wsId.value, batchId.value),
     ])
 
     requirementDetail.value = detail
     if (batch) {
-      try {
-        sessionStorage.setItem(`TF_SPLIT_BATCH_${batch.id}`, JSON.stringify(batch))
-      } catch {
-        // ignore
+      applyDraft(batch, batch.draft)
+      if (batch.draft) {
+        changeReason.value = batch.draft.change_reason || ''
+        ElMessage.info(t('workspace_assets.requirements.split_review.draft_restored'))
       }
-      initItemsFromBatch(batch)
     }
+    // 恢复产生的变更不算编辑：watcher 在恢复期间保持暂停
+    await nextTick()
+    draftAutosavePaused = false
   } finally {
     loading.value = false
   }
@@ -169,8 +194,106 @@ function removeItem(index: number) {
   }
 }
 
-function goBack() {
-  router.push({
+function buildDraftPayload(): RequirementSplitDraft {
+  return {
+    change_reason: changeReason.value.trim() || null,
+    items: items.map((item) => ({
+      item_id: item.item_id,
+      include: item.include,
+      title: item.title,
+      body: item.body || null,
+      acceptance_criteria: [...item.acceptance_criteria],
+      priority: item.priority || null,
+      task_prompt: item.task_prompt || null,
+    })),
+  }
+}
+
+function scheduleDraftSave() {
+  if (draftAutosavePaused || draftClosed) return
+  if (draftSaveTimer) clearTimeout(draftSaveTimer)
+  draftSaveTimer = setTimeout(() => {
+    draftSaveTimer = undefined
+    draftSavePromise = flushDraftSave()
+  }, 800)
+}
+
+async function flushDraftSave(): Promise<boolean> {
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer)
+    draftSaveTimer = undefined
+  }
+  if (draftAutosavePaused || draftClosed || !batchId.value) return false
+  draftStatus.value = 'saving'
+  const ok = await saveRequirementSplitDraft(wsId.value, batchId.value, buildDraftPayload())
+  draftStatus.value = ok ? 'saved' : 'error'
+  if (ok) {
+    lastSavedLabel.value = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+  return ok
+}
+
+watch([items, changeReason], () => {
+  scheduleDraftSave()
+}, { deep: true })
+
+onBeforeUnmount(() => {
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer)
+    draftSaveTimer = undefined
+  }
+  window.removeEventListener('pagehide', handlePageHide)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
+
+/** 页面隐藏/卸载通道：防抖来不及触发时的兜底保存。
+ *  用 fetch keepalive 让请求在页面卸载后仍能发完（axios 不支持 keepalive，
+ *  sendBeacon 带不了 Authorization 头）；草稿体远小于 64KB 浏览器上限。 */
+function keepaliveDraftSave() {
+  if (draftAutosavePaused || draftClosed || !batchId.value) return
+  const authStore = useAuthStore()
+  if (!authStore.token) return
+  const url = `${api.defaults.baseURL}/workspaces/${wsId.value}/workspace-assets/requirements/import-batches/${batchId.value}/draft`
+  try {
+    void fetch(url, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authStore.token}`,
+      },
+      body: JSON.stringify(buildDraftPayload()),
+      keepalive: true,
+    })
+  } catch {
+    // 页面正在卸载，尽力而为
+  }
+}
+
+function handlePageHide() {
+  keepaliveDraftSave()
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === 'hidden') {
+    keepaliveDraftSave()
+  }
+}
+
+const draftStatusText = computed(() => {
+  switch (draftStatus.value) {
+    case 'saving':
+      return t('workspace_assets.requirements.split_review.draft_saving')
+    case 'saved':
+      return t('workspace_assets.requirements.split_review.draft_saved', { time: lastSavedLabel.value })
+    case 'error':
+      return t('workspace_assets.requirements.split_review.draft_save_failed')
+    default:
+      return ''
+  }
+})
+
+async function navigateBack() {
+  await router.push({
     name: 'workspaceAssetsRequirementDetail',
     params: {
       wsId: wsId.value,
@@ -179,8 +302,68 @@ function goBack() {
   })
 }
 
+/** 「返回需求详情」= 保留草稿退出：先 flush 在途编辑，下次「拆分」直接回本页续编 */
+async function goBack() {
+  await flushDraftSave()
+  await navigateBack()
+}
+
+/** 草稿删除/确认消费后，清掉浮窗里绑定该批次的旧拆分作业卡片：
+ *  否则「拆分」入口会经 findLatestPreviewResult 再跳回已消费的批次。 */
+function dismissBatchJob() {
+  const job = provisioningStore.jobList.find(
+    (candidate) => candidate.kind === 'requirement_split_preview' && candidate.batch?.id === batchId.value,
+  )
+  if (job) provisioningStore.dismiss(job.jobId)
+}
+
+/** 「取消」= 删除草稿（破坏性操作，先二次确认） */
+function requestDiscard() {
+  discardConfirmOpen.value = true
+}
+
+async function confirmDiscard() {
+  if (discarding.value) return
+  discarding.value = true
+  try {
+    // 先终结自动保存并等在途请求收敛，避免「先 PUT 后 DELETE」复活草稿
+    draftClosed = true
+    if (draftSaveTimer) {
+      clearTimeout(draftSaveTimer)
+      draftSaveTimer = undefined
+    }
+    if (draftSavePromise) {
+      await draftSavePromise
+      draftSavePromise = null
+    }
+    const ok = await clearRequirementSplitDraft(wsId.value, batchId.value)
+    if (!ok) {
+      // 删除失败保持原状：允许继续编辑，自动保存重新启用
+      draftClosed = false
+      ElMessage.error(t('workspace_assets.requirements.split_review.draft_discard_failed'))
+      return
+    }
+    discardConfirmOpen.value = false
+    dismissBatchJob()
+    ElMessage.success(t('workspace_assets.requirements.split_review.draft_discarded'))
+    await navigateBack()
+  } finally {
+    discarding.value = false
+  }
+}
+
 async function handleConfirm() {
   if (!selectedCount.value) return
+  // 确认即消费草稿：服务端 confirm 会清批次草稿，本地停止自动保存并等在途请求收敛
+  draftClosed = true
+  if (draftSaveTimer) {
+    clearTimeout(draftSaveTimer)
+    draftSaveTimer = undefined
+  }
+  if (draftSavePromise) {
+    await draftSavePromise
+    draftSavePromise = null
+  }
   submitting.value = true
   try {
     const confirmItems: RequirementImportConfirmItem[] = items.map((item) => ({
@@ -203,14 +386,25 @@ async function handleConfirm() {
     const result = await confirmRequirementSplit(wsId.value, requirementId.value, payload)
     if (result) {
       ElMessage.success(t('workspace_assets.requirements.split_review.confirm_success'))
-      goBack()
+      dismissBatchJob()
+      await navigateBack()
+    } else {
+      // 确认失败恢复编辑态（草稿自动保存重新启用）
+      draftClosed = false
     }
   } finally {
     submitting.value = false
   }
 }
 
+// 页内路由离开（含浏览器返回键）：等在途草稿保存收敛后再离开，不丢最后一段编辑
+onBeforeRouteLeave(async () => {
+  await flushDraftSave()
+})
+
 onMounted(() => {
+  window.addEventListener('pagehide', handlePageHide)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
   void loadData()
 })
 </script>
@@ -233,13 +427,18 @@ onMounted(() => {
       </div>
 
       <div class="nav-right">
+        <span
+          v-if="draftStatus !== 'idle'"
+          class="draft-status"
+          :class="`is-${draftStatus}`"
+        >{{ draftStatusText }}</span>
         <input
           v-model="changeReason"
           type="text"
           class="reason-input"
           :placeholder="t('workspace_assets.requirements.placeholders.change_reason')"
         />
-        <button class="btn-cancel" type="button" @click="goBack">
+        <button class="btn-cancel" type="button" @click="requestDiscard">
           {{ t('workspace_assets.requirements.split_review.discard_action') }}
         </button>
         <button
@@ -479,6 +678,19 @@ onMounted(() => {
         </div>
       </section>
     </main>
+
+    <!-- 取消 = 删除草稿：破坏性操作二次确认（确认后下次「拆分」重新发起 AI 拆分） -->
+    <ConfirmActionModal
+      :show="discardConfirmOpen"
+      :title="t('workspace_assets.requirements.split_review.discard_confirm_title')"
+      :message="t('workspace_assets.requirements.split_review.discard_confirm_message')"
+      :cancel-text="t('common.cancel')"
+      :confirm-text="t('workspace_assets.requirements.split_review.discard_confirm_text')"
+      :loading="discarding"
+      tone="danger"
+      @cancel="discardConfirmOpen = false"
+      @confirm="confirmDiscard"
+    />
   </div>
 </template>
 
@@ -585,6 +797,25 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+}
+
+.draft-status {
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #94a3b8;
+}
+
+.draft-status.is-saving {
+  color: #0284c7;
+}
+
+.draft-status.is-saved {
+  color: #16a34a;
+}
+
+.draft-status.is-error {
+  color: #dc2626;
 }
 
 .reason-input {

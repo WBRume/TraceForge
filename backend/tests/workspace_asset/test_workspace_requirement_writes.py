@@ -37,9 +37,13 @@ from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
+    RequirementImportBatchStatus,
+    RequirementImportItemStatus,
     RequirementStatus,
     SddRequirement,
     SddRequirementAuditLog,
+    SddRequirementImportBatch,
+    SddRequirementImportItem,
     SddTaskRequirement,
 )
 from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service  # noqa: E402
@@ -609,5 +613,113 @@ def test_manage_requirements_permission_is_required_for_writes():
             json={"title": "Should not write", "status": "DRAFT"},
         )
         assert response.status_code == 403
+    finally:
+        engine.dispose()
+
+
+def _seed_split_draft_batch(db, workspace_id: str, batch_id: str, item_id: str, item_title: str = "AI title"):
+    batch = SddRequirementImportBatch(
+        id=batch_id,
+        workspace_id=workspace_id,
+        source_kind="split",
+        source_ref="req-draft",
+        status=RequirementImportBatchStatus.PREVIEW,
+        item_count=1,
+    )
+    db.add(batch)
+    db.add(
+        SddRequirementImportItem(
+            id=item_id,
+            workspace_id=workspace_id,
+            batch_id=batch_id,
+            title=item_title,
+            body="AI original body",
+            acceptance_criteria_json=["AI criterion"],
+            priority="P1",
+            order_index=0,
+            status=RequirementImportItemStatus.PENDING,
+        )
+    )
+    db.commit()
+
+
+def test_requirement_split_draft_save_find_and_clear_lifecycle():
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, _task = _seed_workspace(db, workspace_id="ws-draft", task_id="task-draft")
+            db.add(
+                SddRequirement(
+                    id="req-draft",
+                    workspace_id=workspace.id,
+                    created_by_id=user.id,
+                    title="Draft parent",
+                    status=RequirementStatus.READY,
+                )
+            )
+            _seed_split_draft_batch(db, workspace.id, "batch-draft-1", item_id="item-draft-1")
+            _seed_split_draft_batch(db, workspace.id, "batch-draft-2", item_id="item-draft-2")
+
+        client = TestClient(_build_app(SessionLocal, user))
+        base = "/api/workspaces/ws-draft/workspace-assets/requirements"
+
+        # 无草稿：草稿回绑查找 404
+        assert client.get(f"{base}/req-draft/split-draft").status_code == 404
+
+        # 保存草稿：覆盖层写入，AI 原始预览条目保持不变
+        saved = client.put(
+            f"{base}/import-batches/batch-draft-1/draft",
+            json={
+                "change_reason": "manual tweak",
+                "items": [
+                    {
+                        "item_id": "item-draft-1",
+                        "include": False,
+                        "title": "Edited title",
+                        "body": "Edited body",
+                        "acceptance_criteria": ["Edited criterion"],
+                        "priority": "P0",
+                        "task_prompt": "Edited prompt",
+                    }
+                ],
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["draft"]["change_reason"] == "manual tweak"
+        assert saved.json()["draft"]["items"][0]["title"] == "Edited title"
+        assert saved.json()["items"][0]["title"] == "AI title"
+        assert saved.json()["items"][0]["task_prompt"] is None
+
+        # 「拆分」入口草稿回绑：命中带草稿的 PREVIEW 批次
+        found = client.get(f"{base}/req-draft/split-draft")
+        assert found.status_code == 200
+        assert found.json()["id"] == "batch-draft-1"
+        assert found.json()["draft"]["items"][0]["include"] is False
+
+        # 取消草稿：删除后草稿回绑查找回到 404
+        cleared = client.delete(f"{base}/import-batches/batch-draft-1/draft")
+        assert cleared.status_code == 200
+        assert cleared.json()["draft"] is None
+        assert client.get(f"{base}/req-draft/split-draft").status_code == 404
+
+        # 再次保存草稿后确认拆分：草稿随批次一起被消费清空
+        client.put(
+            f"{base}/import-batches/batch-draft-2/draft",
+            json={"items": [{"item_id": "item-draft-2", "include": True, "title": "Final title"}]},
+        )
+        confirmed = client.post(
+            f"{base}/req-draft/split",
+            json={"batch_id": "batch-draft-2", "items": [{"item_id": "item-draft-2", "include": True}]},
+        )
+        assert confirmed.status_code == 200
+        assert confirmed.json()["status"] == "CONFIRMED"
+        assert confirmed.json()["draft"] is None
+        assert client.get(f"{base}/req-draft/split-draft").status_code == 404
+
+        # 已确认批次不再接受草稿写入
+        assert client.put(
+            f"{base}/import-batches/batch-draft-2/draft",
+            json={"items": [{"item_id": "item-draft-2", "include": True}]},
+        ).status_code == 409
     finally:
         engine.dispose()
