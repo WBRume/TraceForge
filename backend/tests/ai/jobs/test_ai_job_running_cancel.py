@@ -119,6 +119,81 @@ def test_cancel_mode_still_converges_cancelled(monkeypatch):
     assert payload["status"] == AiJobStatus.CANCELLED.value
 
 
+# ────────────── Requirement preview 取消绝不重试（P0 回归）──────────────
+
+
+def _seed_preview_job_for_termination(db, *, cancel_requested: bool):
+    job = SddAiJob(
+        id="preview-cancel-job",
+        workspace_id="ws-1",
+        channel=AiJobChannel.ASSET_THREAD,
+        queue_key="REQUIREMENT_PREVIEW:ws-1",
+        status=AiJobStatus.TERMINATING,
+        creator_id="user-1",
+        run_token="run-1",
+        worker_boot_id=ai_registry.WORKER_BOOT_ID,
+        process_execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
+        process_pid=5151,
+        process_group_id=5151,
+        attempt_count=1,
+        max_attempts=2,
+        cancel_requested_at=datetime.utcnow() if cancel_requested else None,
+    )
+    db.add(job)
+    db.commit()
+    return job
+
+
+def test_requirement_preview_user_cancel_converges_cancelled_never_retried(monkeypatch):
+    """Requirement preview 用户取消：即使 attempt_count < max_attempts 也不得
+    打回 PENDING 重试——重试会让队列在 CLI 被杀掉的同一瞬间二次拉起 CLI
+    （取消事件已被 runner 清空，第二个 CLI 会跑完整流程）。必须落 CANCELLED。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_preview_job_for_termination(db, cancel_requested=True)
+    patch_ai_job_db(monkeypatch, factory)
+
+    row = db.query(SddAiJob).filter(SddAiJob.id == "preview-cancel-job").first()
+    evidence = ai_attempts.termination_evidence_for_row(
+        row, confirmed_dead=True, failure_code="CANCEL_REQUESTED", reason="USER_CANCEL",
+    )
+    payload = ai_attempts.converge_termination_sync(
+        "preview-cancel-job",
+        "run-1",
+        evidence=evidence,
+        reason="USER_CANCEL",
+        failure_code="CANCEL_REQUESTED",
+    )
+
+    assert payload["status"] == AiJobStatus.CANCELLED.value
+    db.expire_all()
+    saved = db.query(SddAiJob).filter(SddAiJob.id == "preview-cancel-job").first()
+    assert saved.status == AiJobStatus.CANCELLED
+
+
+def test_requirement_preview_crash_still_retries_before_max_attempts(monkeypatch):
+    """非取消终止（崩溃/租约丢失）：attempt_count < max_attempts 仍保留重试
+    语义（打回 PENDING），只针对用户取消收紧。"""
+    factory = _session_factory()
+    db = factory()
+    _seed_preview_job_for_termination(db, cancel_requested=False)
+    patch_ai_job_db(monkeypatch, factory)
+
+    row = db.query(SddAiJob).filter(SddAiJob.id == "preview-cancel-job").first()
+    evidence = ai_attempts.termination_evidence_for_row(
+        row, confirmed_dead=True, failure_code="LEASE_EXPIRED", reason="LEASE_EXPIRED",
+    )
+    payload = ai_attempts.converge_termination_sync(
+        "preview-cancel-job",
+        "run-1",
+        evidence=evidence,
+        reason="LEASE_EXPIRED",
+        failure_code="LEASE_EXPIRED",
+    )
+
+    assert payload["status"] == AiJobStatus.PENDING.value
+
+
 def test_running_cancel_unconfirmed_tree_keeps_ownership(monkeypatch):
     factory = _session_factory()
     db = factory()

@@ -17,6 +17,9 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const isFailed = computed(() => props.job.status === 'FAILED' || props.job.status === 'CANCELLED')
+// 取消请求已受理、后端正在终止 CLI：状态收敛到 CANCELLED 前明确展示「正在取消」
+const isCancelling = computed(() => props.job.status === 'TERMINATING' || props.job.cancel_requested === true)
+const statusLabel = computed(() => (isCancelling.value ? 'CANCELLING' : props.job.status))
 const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.progress || 0))}%`)
 </script>
 
@@ -29,9 +32,11 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
       </span>
       <div>
         <h4>
-          {{ isFailed
-            ? t('workspace_assets.requirements.preview_progress.failed_title')
-            : t('workspace_assets.requirements.preview_progress.title') }}
+          {{ isCancelling
+            ? t('workspace_assets.requirements.preview_progress.cancelling_title')
+            : isFailed
+              ? t('workspace_assets.requirements.preview_progress.failed_title')
+              : t('workspace_assets.requirements.preview_progress.title') }}
         </h4>
         <p>
           {{ props.split
@@ -48,7 +53,7 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
     <dl class="progress-meta">
       <div>
         <dt>{{ t('workspace_assets.requirements.preview_progress.status') }}</dt>
-        <dd>{{ props.job.status }}</dd>
+        <dd>{{ statusLabel }}</dd>
       </div>
       <div>
         <dt>{{ t('workspace_assets.requirements.preview_progress.progress') }}</dt>

@@ -1162,6 +1162,7 @@
     "preview_import_title": "AI Import Preview",
     "preview_stage_queued": "Queued",
     "preview_stage_running": "Generating",
+    "preview_stage_cancelling": "Cancelling",
     "preview_stage_completed": "Completed",
     "preview_stage_failed": "Not finished",
     "preview_open_action": "Open Preview",
@@ -2008,6 +2009,7 @@
       },
       "preview_progress": {
         "title": "Generating AI Preview",
+        "cancelling_title": "Cancelling AI Preview",
         "failed_title": "AI Preview did not complete",
         "body": "The AI engine is running in the configured workspace directory. This may take a moment.",
         "split_body": "The AI engine is checking whether this Requirement should become child Requirements.",
@@ -2018,6 +2020,11 @@
         "create_failed": "Failed to start the AI preview. Please try again later.",
         "minimize": "Minimize",
         "boundary": "AI Preview is only a draft preview. It does not create Tasks, Evidence, Coverage, Verified states, or code commits."
+      },
+      "split_confirm": {
+        "title": "Start AI Requirement Split",
+        "message": "Start an AI split preview for \"{name}\"? The AI CLI will analyze this requirement in the background and draft child requirements. This usually takes a few minutes.",
+        "confirm_text": "Start Split"
       },
       "split_review": {
         "title": "Sub-requirement Split Review",
@@ -2053,7 +2060,6 @@
         "eyebrow": "Requirement Detail",
         "no_body": "No body has been written for this Requirement yet.",
         "specification_title": "Requirement specification",
-        "specification_body": "Body content is formatted into paragraphs, lists, and headings for easier review.",
         "children_specification_body": "This Requirement has been split into child Requirements. Specification content is shown through the child list to avoid repeating the parent source body.",
         "not_set": "Not set",
         "source_pending": "Waiting for source reference",
@@ -2063,7 +2069,6 @@
         "phase_pending": "Phase pending",
         "select_task": "Select real Task to link",
         "audit_title": "Audit History",
-        "audit_body": "Real create, edit, import, split and Task-link actions are recorded here.",
         "time_pending": "Time pending",
         "no_reason": "No reason recorded",
         "no_audit": "No audit records are available for this Requirement yet.",

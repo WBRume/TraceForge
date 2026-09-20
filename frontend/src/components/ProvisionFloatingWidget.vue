@@ -14,8 +14,9 @@ const { t } = useI18n()
 
 const KNOWN_ERROR_KEYS = new Set(['task_status_not_ready', 'load_failed', 'failed_fallback', 'job_not_found'])
 
-// 预览作业只在弹窗点「缩小」后才出现在浮窗；查看结果后隐藏
-const jobs = computed(() => store.jobList.filter((job) => job.kind === 'provision' || (job.handedOver && !job.viewed)))
+// 预览作业在弹窗点「缩小」或取消请求已发出（cancelRequested）后出现在浮窗；
+// 查看结果后隐藏。取消中的作业必须可见：这是「关闭弹窗已停止 CLI」的可见反馈
+const jobs = computed(() => store.jobList.filter((job) => job.kind === 'provision' || ((job.handedOver || job.cancelRequested) && !job.viewed)))
 const activeJobs = computed(() => jobs.value.filter((job) => !job.terminal))
 const terminalJobs = computed(() => jobs.value.filter((job) => job.terminal))
 const pillVisible = computed(() => jobs.value.length > 0)
@@ -26,9 +27,13 @@ const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.ter
 
 const previewStageText = (job: ProvisionJobView) => {
   const status = String(job.status || '').toUpperCase()
-  if (status === 'PENDING') return t('provisioning.preview_stage_queued')
+  // 终态优先于取消中：FAILED/ORPHANED 不得被 cancelRequested 覆盖成"正在取消"
   if (status === 'SUCCESS') return t('provisioning.preview_stage_completed')
-  if (status === 'FAILED' || status === 'CANCELLED') return t('provisioning.preview_stage_failed')
+  if (['FAILED', 'CANCELLED', 'ORPHANED', 'REVERTED'].includes(status)) {
+    return t('provisioning.preview_stage_failed')
+  }
+  if (status === 'TERMINATING' || job.cancelRequested) return t('provisioning.preview_stage_cancelling')
+  if (status === 'PENDING') return t('provisioning.preview_stage_queued')
   return t('provisioning.preview_stage_running')
 }
 

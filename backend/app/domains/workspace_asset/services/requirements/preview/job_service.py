@@ -248,11 +248,32 @@ def create_requirement_split_preview_job(
     actor_id: str,
     change_reason: Optional[str] = None,
 ) -> Optional[RequirementPreviewJobResponse]:
+    from app.domains.ai.services.jobs.constants import FINAL_STATUSES
     from app.domains.workspace_asset.services.requirements.queries import get_requirement
 
     requirement = get_requirement(db, workspace_id, requirement_id)
     if not requirement:
         return None
+    # 幂等守卫：同一需求同一时刻最多一个拆分预览作业。取消收敛 / reaper
+    # 回收尚未完成时再次发起拆分，直接复用未收敛的旧作业，绝不并行拉起
+    # 第二个 CLI（旧 CLI 的进程树可能尚未确认死亡）。
+    unconverged = (
+        db.query(SddAiJob)
+        .filter(
+            SddAiJob.workspace_id == workspace_id,
+            SddAiJob.queue_key == f"{REQUIREMENT_PREVIEW_QUEUE_PREFIX}{workspace_id}",
+            SddAiJob.status.notin_(list(FINAL_STATUSES)),
+        )
+        .order_by(SddAiJob.created_at.desc())
+        .all()
+    )
+    for stale in unconverged:
+        stale_context = stale.context_json if isinstance(stale.context_json, dict) else {}
+        if str(stale_context.get("job_kind") or "") != "REQUIREMENT_SPLIT_PREVIEW":
+            continue
+        if str(stale_context.get("requirement_id") or "") != str(requirement.id):
+            continue
+        return preview_job_response(db, stale)
     project_path = workspace_project_path_or_error(db, workspace_id)
     job = SddAiJob(
         workspace_id=workspace_id,

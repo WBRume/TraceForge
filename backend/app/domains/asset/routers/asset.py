@@ -1414,7 +1414,6 @@ async def apply_thread_resolution(
             workspace_id=ws_id,
             task_id=result["task_id"],
             spec_version_id=version_response.id,
-            reason="Specification context changed; rebuild baseline manually",
         )
         await task_cli_state_service.publish_bootstrap_snapshot(result["task_id"])
 
@@ -1487,7 +1486,6 @@ async def manual_edit_asset_block(
             workspace_id=ws_id,
             task_id=result["task_id"],
             spec_version_id=version_response.id,
-            reason="Specification context changed; rebuild baseline manually",
         )
         await task_cli_state_service.publish_bootstrap_snapshot(result["task_id"])
 

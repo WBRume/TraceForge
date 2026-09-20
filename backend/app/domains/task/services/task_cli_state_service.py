@@ -1039,7 +1039,7 @@ def mark_bootstrap_stale(
     workspace_id: str,
     task_id: str,
     spec_version_id: Optional[str] = None,
-    reason: str = "Specification changed; rebuild baseline",
+    reason: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Invalidate an existing baseline without launching a worker."""
     record = db.query(SddTaskCliBootstrap).filter(
@@ -1055,7 +1055,8 @@ def mark_bootstrap_stale(
     if spec_version_id:
         record.spec_version_id = str(spec_version_id)
     record.progress = 0
-    record.message = reason
+    if reason:
+        record.message = reason
     record.error_message = None
     db.commit()
     db.refresh(record)
@@ -1067,7 +1068,7 @@ async def mark_bootstrap_stale_async(
     workspace_id: str,
     task_id: str,
     spec_version_id: Optional[str] = None,
-    reason: str = "Specification changed; rebuild baseline",
+    reason: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     return await run_db(
         _mark_bootstrap_stale_sync,

@@ -15,7 +15,8 @@ type PendingTaskDocsUpload = {
   files: File[]
 }
 
-export type ProvisionJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED'
+/** 预览作业状态含后端收敛态（CANCELLED/TERMINATING/ORPHANED/REVERTED） */
+export type ProvisionJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'TERMINATING' | 'ORPHANED' | 'REVERTED'
 
 /** 浮窗跟踪的作业种类：任务创建 / Requirement AI 拆分预览 / AI 导入预览 */
 export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview'
@@ -76,6 +77,8 @@ type RequirementPreviewJobApiPayload = {
   job_kind?: string | null
   requirement_id?: string | null
   requirement_title?: string | null
+  /** 后端轮询响应目前不携带该字段；保留以兼容未来扩展（本地标记不受影响） */
+  cancel_requested?: boolean | null
 }
 
 const pendingSpecByJob = new Map<string, PendingTaskSpecUpload>()
@@ -87,8 +90,10 @@ const TASK_PENDING_POLL_ATTEMPTS = 20
 const TASK_PENDING_POLL_INTERVAL_MS = 500
 const EXPAND_PREF_KEY = 'provisionWidgetExpanded'
 
-// Requirement preview 作业的前端终态集合（与后端 converge 终态对齐）
-const PREVIEW_FINAL_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELLED'])
+// Requirement preview 作业的前端终态集合：后端 converge 业务终态
+// （SUCCESS/FAILED/CANCELLED/REVERTED）+ ORPHANED（死亡未证实等待 reaper 收敛，
+// 前端视作不可复绑的死作业，停止轮询即可）。
+const PREVIEW_FINAL_STATUSES = new Set(['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED', 'ORPHANED'])
 
 const asJobId = (value: unknown): string => String(value || '').trim()
 
@@ -216,7 +221,9 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       progress: Math.max(0, Math.min(Number(payload?.progress ?? existing?.progress ?? 0), 100)),
       message: String(payload?.message || existing?.message || ''),
       errorMessage: String(payload?.error || existing?.errorMessage || ''),
-      cancelRequested: false,
+      // preview 轮询响应不携带 cancel_requested；保留本地取消标记，
+      // 让「取消中」状态在收敛到 CANCELLED 之前不被轮询覆盖
+      cancelRequested: Boolean(payload?.cancel_requested) || Boolean(existing?.cancelRequested),
       ready: false,
       terminal: existing?.terminal || PREVIEW_FINAL_STATUSES.has(status),
       kind: existing?.kind || normalizePreviewKind(payload?.job_kind) || 'requirement_import_preview',
@@ -488,14 +495,28 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   }
 
   /**
-   * 浮窗关闭进行中的预览作业：走任务会话同款 ai-jobs cancel 通道，
+   * 浮窗/弹窗关闭进行中的预览作业：走任务会话同款 ai-jobs cancel 通道，
    * 后端经统一取消信号终止 CLI（各 backend 由 bridge.cancel 收敛）。
-   * 成功/作业不存在 → 移除卡片；失败 → 保留卡片由调用方提示重试。
+   *
+   * 语义：
+   * - 请求受理 → 标记 cancelRequested 并保留作业，轮询直到后端收敛
+   *   CANCELLED 后自动清理。绝不立即移除：否则「关闭→立刻重开」会误判
+   *   为无作业而重复发起新 CLI（旧作业仍在终态收敛/排队，新作业卡 PENDING）。
+   * - 404 → 作业不存在，直接移除；其余失败 → 保留作业并交由调用方提示重试。
    */
   const cancelPreviewJob = async (jobId: string): Promise<boolean> => {
     const normalizedJobId = asJobId(jobId)
     const job = jobs.value[normalizedJobId]
     if (!job || job.kind === 'provision') return true
+    const markCancelling = () => {
+      const current = jobs.value[normalizedJobId]
+      if (current) {
+        jobs.value = {
+          ...jobs.value,
+          [normalizedJobId]: { ...current, cancelRequested: true },
+        }
+      }
+    }
     try {
       await api.post(`/workspaces/${job.workspaceId}/ai-jobs/${normalizedJobId}/cancel`)
     } catch (err: unknown) {
@@ -504,9 +525,10 @@ export const useProvisioningStore = defineStore('provisioning', () => {
         dismiss(normalizedJobId)
         return true
       }
+      markCancelling()
       return false
     }
-    dismiss(normalizedJobId)
+    markCancelling()
     return true
   }
 
@@ -564,6 +586,16 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       const view = upsertPreviewJobFromPayload(res.data as RequirementPreviewJobApiPayload)
       fetchErrors.delete(normalizedJobId)
       if (!view) return
+      if (
+        view.terminal
+        && (view.status === 'CANCELLED' || view.status === 'ORPHANED' || view.status === 'REVERTED')
+      ) {
+        // 取消已收敛 / reaper 回收敛死：预览作业没有可查看的结果，自动移除
+        // 卡片（SUCCESS/FAILED 保留供弹窗/浮窗查看结果与错误）。终态后轮询
+        // 停止，必须在这里清理，否则卡片会永远停留。
+        dismiss(normalizedJobId)
+        return
+      }
       if (view.terminal && view.status === 'FAILED' && !view.errorMessage) {
         jobs.value = {
           ...jobs.value,

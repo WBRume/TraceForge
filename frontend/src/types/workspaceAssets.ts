@@ -197,6 +197,12 @@ export type RequirementPreviewJob = {
   message?: string | null
   error?: string | null
   batch?: RequirementImportBatch | null
+  /** 后端 job_kind（REQUIREMENT_SPLIT_PREVIEW / REQUIREMENT_IMPORT_PREVIEW），服务端兜底回绑时使用 */
+  job_kind?: string | null
+  requirement_id?: string | null
+  requirement_title?: string | null
+  /** 前端本地标记：取消请求已受理/已发出，后端尚未收敛 CANCELLED */
+  cancel_requested?: boolean
   created_at?: string | null
   updated_at?: string | null
 }

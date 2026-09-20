@@ -1162,6 +1162,7 @@
     "preview_import_title": "AI 导入预览",
     "preview_stage_queued": "排队中",
     "preview_stage_running": "生成中",
+    "preview_stage_cancelling": "正在取消",
     "preview_stage_completed": "已完成",
     "preview_stage_failed": "未完成",
     "preview_open_action": "查看预览",
@@ -2010,6 +2011,7 @@
       },
       "preview_progress": {
         "title": "AI Preview 生成中",
+        "cancelling_title": "正在取消 AI Preview",
         "failed_title": "AI Preview 未完成",
         "body": "AI 引擎正在配置的工作目录中后台执行，请稍候。",
         "split_body": "AI 引擎正在判断该 Requirement 是否需要拆成子需求。",
@@ -2020,6 +2022,11 @@
         "create_failed": "发起 AI 预览失败，请稍后重试。",
         "minimize": "缩小",
         "boundary": "AI Preview 只是草稿预览；不会创建 Task、Evidence、Coverage、Verified 状态或代码提交。"
+      },
+      "split_confirm": {
+        "title": "发起 AI 需求拆分",
+        "message": "将为需求「{name}」发起 AI 拆分预览：后台会调用 AI CLI 分析该需求并生成子需求预览，通常需要几分钟。确认开始？",
+        "confirm_text": "开始拆分"
       },
       "split_review": {
         "title": "子需求拆分录入",
@@ -2055,7 +2062,6 @@
         "eyebrow": "需求详情",
         "no_body": "该需求尚未填写正文。",
         "specification_title": "需求规格内容",
-        "specification_body": "按段落、列表和小标题展示正文内容，便于阅读和审查。",
         "children_specification_body": "该需求已拆分为子需求，规格内容以子需求列表为准，避免重复展示父需求原始正文。",
         "not_set": "未设置",
         "source_pending": "等待来源引用",
@@ -2065,7 +2071,6 @@
         "phase_pending": "阶段待接入",
         "select_task": "选择真实 Task 进行关联",
         "audit_title": "审计历史",
-        "audit_body": "真实创建、编辑、导入、拆分与 Task 关联操作会记录在这里。",
         "time_pending": "时间待接入",
         "no_reason": "未记录原因",
         "no_audit": "该需求暂无审计记录。",

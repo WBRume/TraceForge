@@ -270,6 +270,16 @@ export function useWorkspaceAssets() {
     return response.data
   }
 
+  /**
+   * 当前用户名下未终态（PENDING/RUNNING）的 requirement preview 作业。
+   * 「拆分」入口用于服务端兜底回绑：store 里没有记录（刷新/卡片被清理）
+   * 时，只要后端仍有该需求的进行中作业就复用，绝不重复发起新 CLI。
+   */
+  async function listActiveRequirementPreviewJobs(): Promise<RequirementPreviewJob[]> {
+    const response = await api.get<RequirementPreviewJob[]>('/requirement-preview-jobs/active')
+    return Array.isArray(response.data) ? response.data : []
+  }
+
   async function confirmRequirementImport(
     workspaceId: string,
     batchId: string,
@@ -406,6 +416,7 @@ export function useWorkspaceAssets() {
     unlinkRequirementTask,
     createRequirementImportPreviewJob,
     fetchRequirementPreviewJob,
+    listActiveRequirementPreviewJobs,
     directImportRequirement,
     confirmRequirementImport,
     createRequirementSplitPreviewJob,
