@@ -172,6 +172,22 @@ export type RequirementImportPreviewItem = {
   requirement_id?: string | null
 }
 
+export type RequirementSplitDraftItem = {
+  item_id: string
+  include: boolean
+  title?: string | null
+  body?: string | null
+  acceptance_criteria?: string[] | null
+  priority?: string | null
+  task_prompt?: string | null
+}
+
+/** 拆分评审页未提交编辑的服务端草稿（覆盖在批次 AI 原始预览之上） */
+export type RequirementSplitDraft = {
+  change_reason?: string | null
+  items: RequirementSplitDraftItem[]
+}
+
 export type RequirementImportBatch = {
   id: string
   workspace_id: string
@@ -185,6 +201,7 @@ export type RequirementImportBatch = {
   confirmed_count: number
   normalized_markdown?: string | null
   items: RequirementImportPreviewItem[]
+  draft?: RequirementSplitDraft | null
   created_at?: string | null
   updated_at?: string | null
 }

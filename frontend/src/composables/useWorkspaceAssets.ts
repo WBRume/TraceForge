@@ -7,6 +7,7 @@ import type {
   RequirementListQuery,
   RequirementMutationPayload,
   RequirementPreviewJob,
+  RequirementSplitDraft,
   RequirementSplitPayload,
   RequirementTaskLinkPayload,
   TaskDetail,
@@ -333,6 +334,59 @@ export function useWorkspaceAssets() {
     })
   }
 
+  /**
+   * 拆分评审页草稿自动保存。不接 mutate()：自动保存是击键级防抖的高频请求，
+   * 不应翻转页面级 loading/error 状态；失败只影响草稿指示灯，不打断编辑。
+   */
+  async function saveRequirementSplitDraft(
+    workspaceId: string,
+    batchId: string,
+    payload: RequirementSplitDraft,
+  ): Promise<boolean> {
+    try {
+      await api.put(
+        `/workspaces/${workspaceId}/workspace-assets/requirements/import-batches/${batchId}/draft`,
+        payload,
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** 删除拆分评审页草稿（「取消」= 删除草稿；失败返回 false 由调用方提示重试）。 */
+  async function clearRequirementSplitDraft(
+    workspaceId: string,
+    batchId: string,
+  ): Promise<boolean> {
+    try {
+      await api.delete(
+        `/workspaces/${workspaceId}/workspace-assets/requirements/import-batches/${batchId}/draft`,
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * 「拆分」入口草稿回绑：该需求最近一个带未提交草稿的 PREVIEW 拆分批次。
+   * 无草稿（404）或查询失败都返回 null，入口退回原有作业绑定/新发起流程。
+   */
+  async function findRequirementSplitDraft(
+    workspaceId: string,
+    requirementId: string,
+  ): Promise<RequirementImportBatch | null> {
+    try {
+      const response = await api.get<RequirementImportBatch>(
+        `/workspaces/${workspaceId}/workspace-assets/requirements/${requirementId}/split-draft`,
+      )
+      return response.data
+    } catch {
+      return null
+    }
+  }
+
   async function loadTasks(
     workspaceId: string,
     query?: TaskListQuery,
@@ -422,6 +476,9 @@ export function useWorkspaceAssets() {
     createRequirementSplitPreviewJob,
     confirmRequirementSplit,
     loadImportBatch,
+    saveRequirementSplitDraft,
+    clearRequirementSplitDraft,
+    findRequirementSplitDraft,
     loadTasks,
     loadTaskDetail,
     loadTraceability,

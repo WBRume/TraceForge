@@ -35,6 +35,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementImportConfirmRequest,
     RequirementPreviewJobResponse,
     RequirementSplitRequest,
+    RequirementSplitDraftPayload,
     RequirementSplitPreviewRequest,
     RequirementTaskLinkRequest,
     RequirementUpdateRequest,
@@ -472,6 +473,58 @@ def get_workspace_asset_requirement_import_batch(
     if not batch:
         raise HTTPException(status_code=404, detail="Import batch not found")
     return batch
+
+
+@router.get("/requirements/{requirement_id}/split-draft", response_model=RequirementImportBatchResponse)
+def get_workspace_asset_requirement_split_draft(
+    ws_id: str,
+    requirement_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """「拆分」入口草稿回绑：该需求最近一个带未提交草稿的 PREVIEW 拆分批次。"""
+    _verify_view_assets(ws_id, current_user, db)
+    result = import_service.find_requirement_split_draft(db, ws_id, requirement_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Split draft not found")
+    return result
+
+
+@router.put("/requirements/import-batches/{batch_id}/draft", response_model=RequirementImportBatchResponse)
+def save_workspace_asset_requirement_split_draft(
+    ws_id: str,
+    batch_id: str,
+    payload: RequirementSplitDraftPayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """保存拆分评审页草稿（自动保存 + 显式返回时 flush）：覆盖式写入，AI 原始预览不变。"""
+    _verify_manage_requirements(ws_id, current_user, db)
+    try:
+        result = import_service.save_requirement_split_draft(db, ws_id, batch_id, payload)
+    except WorkspaceAssetError as exc:
+        _raise_write_error(exc)
+    if not result:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    return result
+
+
+@router.delete("/requirements/import-batches/{batch_id}/draft", response_model=RequirementImportBatchResponse)
+def clear_workspace_asset_requirement_split_draft(
+    ws_id: str,
+    batch_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """删除拆分评审页草稿（「取消」= 删除草稿，下次拆分重新发起 AI 拆分）。"""
+    _verify_manage_requirements(ws_id, current_user, db)
+    try:
+        result = import_service.clear_requirement_split_draft(db, ws_id, batch_id)
+    except WorkspaceAssetError as exc:
+        _raise_write_error(exc)
+    if not result:
+        raise HTTPException(status_code=404, detail="Import batch not found")
+    return result
 
 
 @router.get("/tasks", response_model=WorkspaceAssetsTasksResponse)

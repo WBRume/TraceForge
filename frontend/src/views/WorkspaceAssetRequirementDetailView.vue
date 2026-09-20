@@ -39,6 +39,7 @@ const {
   fetchRequirementPreviewJob,
   listActiveRequirementPreviewJobs,
   confirmRequirementSplit,
+  findRequirementSplitDraft,
 } = useWorkspaceAssets()
 const provisioningStore = useProvisioningStore()
 
@@ -52,11 +53,13 @@ const backLabelKey = computed(() =>
 )
 
 function goBack() {
-  if (window.history.length > 1) {
+  // 从 Task 上下文进入（?from=task）时回到来源 Task 页；其余一律显式回列表页。
+  // 绝不能无脑 router.back()：详情可能由拆分评审页 push 而来，back() 会落回编辑页。
+  if (route.query.from === 'task' && window.history.length > 1) {
     router.back()
-  } else {
-    router.push({ name: 'workspaceAssetsRequirements', params: { wsId: wsId.value } })
+    return
   }
+  router.push({ name: 'workspaceAssetsRequirements', params: { wsId: wsId.value } })
 }
 const detail = shallowRef<RequirementDetail | null>(null)
 const editorOpen = shallowRef(false)
@@ -183,7 +186,14 @@ watch(
 // ── 拆分入口：二次确认 → 发起预览作业 ──
 const splitConfirmTarget = shallowRef<RequirementSummary | null>(null)
 
-function openSplit(requirement: RequirementSummary) {
+async function openSplit(requirement: RequirementSummary) {
+  // 草稿优先：该需求存在未提交的拆分草稿 → 直接回拆分评审工作台续编，
+  // 不弹「发起 AI 拆分」二次确认；只有草稿被取消/确认消费后才走新拆分流程。
+  const draftBatch = await findRequirementSplitDraft(wsId.value, requirement.id)
+  if (draftBatch) {
+    navigateToSplitReview(requirement.id, draftBatch)
+    return
+  }
   // 拆分会调用 AI CLI（分钟级开销），先弹二次确认（与全局确认弹窗同款样式）
   splitConfirmTarget.value = requirement
 }

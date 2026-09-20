@@ -47,6 +47,7 @@ const {
   confirmRequirementImport,
   createRequirementSplitPreviewJob,
   confirmRequirementSplit,
+  findRequirementSplitDraft,
 } = useWorkspaceAssets()
 const provisioningStore = useProvisioningStore()
 
@@ -333,7 +334,14 @@ async function directImport(payload: Parameters<typeof directImportRequirement>[
 // ── 拆分入口：二次确认 → 发起预览作业 ──
 const splitConfirmTarget = shallowRef<RequirementSummary | null>(null)
 
-function openSplit(requirement: RequirementSummary) {
+async function openSplit(requirement: RequirementSummary) {
+  // 草稿优先：该需求存在未提交的拆分草稿 → 直接回拆分评审工作台续编，
+  // 不弹「发起 AI 拆分」二次确认；只有草稿被取消/确认消费后才走新拆分流程。
+  const draftBatch = await findRequirementSplitDraft(props.workspaceId, requirement.id)
+  if (draftBatch) {
+    navigateToSplitReview(requirement.id, draftBatch)
+    return
+  }
   // 拆分会调用 AI CLI（分钟级开销），先弹二次确认（与全局确认弹窗同款样式）
   splitConfirmTarget.value = requirement
 }

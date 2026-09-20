@@ -25,6 +25,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementImportBatchResponse,
     RequirementImportPreviewItem,
     RequirementLinkedTaskResponse,
+    RequirementSplitDraftPayload,
     RequirementSummary,
     TaskRequirementLinkResponse,
 )
@@ -234,6 +235,16 @@ def import_item_response(item: SddRequirementImportItem) -> RequirementImportPre
     )
 
 
+def _split_draft_payload(batch: SddRequirementImportBatch) -> Optional[RequirementSplitDraftPayload]:
+    """批次行上的未提交草稿 → 响应结构；历史脏数据解析失败时静默降级为无草稿。"""
+    if not isinstance(batch.draft_json, dict):
+        return None
+    try:
+        return RequirementSplitDraftPayload.model_validate(batch.draft_json)
+    except Exception:
+        return None
+
+
 def import_batch_response(batch: SddRequirementImportBatch) -> RequirementImportBatchResponse:
     items = sorted(batch.items or [], key=lambda item: item.order_index)
     return RequirementImportBatchResponse(
@@ -249,6 +260,7 @@ def import_batch_response(batch: SddRequirementImportBatch) -> RequirementImport
         confirmed_count=batch.confirmed_count,
         normalized_markdown=batch.normalized_markdown,
         items=[import_item_response(item) for item in items],
+        draft=_split_draft_payload(batch),
         created_at=batch.created_at,
         updated_at=batch.updated_at,
     )
