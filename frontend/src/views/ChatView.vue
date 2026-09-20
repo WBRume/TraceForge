@@ -161,11 +161,8 @@ watch(
         :thinking-content="vm.thinkingContent"
         :thinking-expanded="vm.thinkingExpanded"
         :engine-running="vm.engineRunning"
-        :status-cards="vm.statusCards"
-        :results-summary="vm.resultsSummary"
         :hitl-cards="vm.activeHitlCards"
         @update:thinking-expanded="vm.thinkingExpanded = $event"
-        @toggle-summary-expanded="vm.resultsSummary.expanded = !vm.resultsSummary.expanded"
         @submit-hitl="vm.submitHitl"
       />
 
