@@ -25,6 +25,7 @@ from . import (
     change_proposals,
     crud,
     diagnosis,
+    reading,
     session_control,
     session_runs,
     session_shares,
@@ -42,5 +43,6 @@ for _submodule in (
     change_proposals,
     diagnosis,
     session_shares,
+    reading,
 ):
     router.include_router(_submodule.router)

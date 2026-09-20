@@ -96,8 +96,8 @@ class _FakeConnectionManager:
         self.room_messages = []
         self.outbound = _FakeOutbound()
 
-    async def connect(self, websocket, task_id, client_key=None):
-        self.connect_calls.append((websocket, task_id))
+    async def connect(self, websocket, task_id, client_key=None, user_id=None, **kwargs):
+        self.connect_calls.append((websocket, task_id, user_id))
         return self.outbound
 
     def disconnect(self, websocket, task_id):
@@ -155,7 +155,7 @@ async def test_run_disconnects_once_when_client_disconnects():
 
     await handler.run()
 
-    assert manager.connect_calls == [(websocket, "task-1")]
+    assert manager.connect_calls == [(websocket, "task-1", "user-1")]
     assert manager.disconnect_calls == [(websocket, "task-1")]
     # handler 持有单连接发送器（单写契约）
     assert handler._outbound is manager.outbound

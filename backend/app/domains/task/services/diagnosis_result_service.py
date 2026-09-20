@@ -488,13 +488,17 @@ def upsert_diagnosis_result_from_ai(
     result.extracted_from_ai = True
     result.extracted_at = datetime.utcnow()
     db.flush()
-    _sync_card_message(
+    # 定位卡原地更新也产生新阅读版本（旧回执不能覆盖新内容）
+    card = _sync_card_message(
         db,
         task=task,
         result=result,
         payload=payload,
         actor_user_id=actor_user_id,
     )
+    from app.domains.task.services import reading_capture_service
+    if card is not None:
+        reading_capture_service.record_message_change(db, task_id=task.id, message=card)
     db.commit()
     db.refresh(result)
     return result
@@ -520,13 +524,17 @@ def upsert_diagnosis_result_from_user(
         db.add(result)
     _apply_payload(result, data)
     db.flush()
-    _sync_card_message(
+    # 用户编辑卡片同样刷新阅读版本（同事务）
+    card = _sync_card_message(
         db,
         task=task,
         result=result,
         payload=data,
         actor_user_id=actor_user_id,
     )
+    from app.domains.task.services import reading_capture_service
+    if card is not None:
+        reading_capture_service.record_message_change(db, task_id=task.id, message=card)
     db.commit()
     db.refresh(result)
     _enqueue_approved_case_update(db, task, result)

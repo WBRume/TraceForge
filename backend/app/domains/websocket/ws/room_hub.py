@@ -544,6 +544,28 @@ class RoomHubRegistry:
     def has_subscribers(self, room_key: str) -> bool:
         return bool(self.rooms.get(room_key))
 
+    def send_to_user(self, room_key: str, user_id: str, payload: dict) -> int:
+        """私有定向投递：仅选择绑定同一用户且仍在该任务房间的连接。
+
+        - 不分配公共 room sequence，不进入 task room journal（回放不能泄漏私有事件）；
+        - 复用现有 OutboundConnection 出站队列与 LIVE/SYNCING/REPLAYING 延迟规则；
+        - 队列拒绝或提交失败由 _submit_or_remove 淘汰并关闭连接，客户端走现有重连恢复。
+        """
+        hub = self._hubs.get(room_key)
+        if hub is None:
+            return 0
+        wanted = str(user_id)
+        delivered = 0
+        with hub.lock:
+            for websocket, connection in list(hub.connections.items()):
+                if str(self.presence.get(room_key, {}).get(websocket, "")) != wanted:
+                    continue
+                if connection.dropped:
+                    continue
+                if self._submit_or_remove(hub, websocket, connection, payload, kind="json"):
+                    delivered += 1
+        return delivered
+
     def online_users(self, room_key: str) -> list[str]:
         users: list[str] = []
         for user_id in self.presence.get(room_key, {}).values():

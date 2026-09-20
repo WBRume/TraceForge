@@ -868,6 +868,21 @@ def remove_member(db: Session, workspace_id: str, member_id: str, operator_user_
     if member.user_id == operator_user_id:
         raise PermissionError("You cannot remove yourself")
 
+    # 移除成员：删除其在工作区的个人阅读状态与回执（重新加入按首次访问处理）
+    from app.domains.task.models.reading import TaskReadingReceipt, TaskReadingState
+    from app.domains.task.models.task import SddTask
+    db.query(TaskReadingState).filter(
+        TaskReadingState.user_id == member.user_id,
+        TaskReadingState.workspace_id == workspace_id,
+    ).delete(synchronize_session=False)
+    workspace_task_ids = (
+        db.query(SddTask.id).filter(SddTask.workspace_id == workspace_id).subquery()
+    )
+    db.query(TaskReadingReceipt).filter(
+        TaskReadingReceipt.user_id == member.user_id,
+        TaskReadingReceipt.task_id.in_(workspace_task_ids),
+    ).delete(synchronize_session=False)
+
     db.delete(member)
     db.commit()
 

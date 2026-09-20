@@ -5,7 +5,7 @@ SDD 任务与计划节点模型
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, func,
+    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, Boolean, func,
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
@@ -65,6 +65,12 @@ class SddTask(Base):
     session_generation = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     session_revision = Column(Integer, nullable=False, default=0, server_default="0", index=True)
     next_chat_seq = Column(BigInteger, nullable=True)
+    # 阅读进度水位：条目每次有效变更递增（永不因撤回/清空回退）；
+    # 物理清空历史时 epoch 递增使旧设备提交与旧游标失效；
+    # ready 表示该任务历史条目回填与捕获核对完成。
+    reading_change_seq = Column(BigInteger, nullable=False, default=0, server_default="0")
+    reading_epoch = Column(BigInteger, nullable=False, default=1, server_default="1")
+    reading_ready = Column(Boolean, nullable=False, default=False, server_default="0")
     # 粘性 agent backend：任务首次运行后固定，工作区切换 backend 不影响已有会话
     agent_backend = Column(String(40), nullable=True)
     interrupt_reason = Column(Text, nullable=True)

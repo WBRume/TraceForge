@@ -132,7 +132,9 @@ def register_user(db: Session, email: str, password: str, display_name: str) -> 
 
 def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
     """Verify user credentials for login."""
-    user = db.query(User).filter(User.email == email).first()
+    # K-13：登录 email 归一化（trim + 转小写），与注册路径保持一致，
+    # 避免输入携带前后空格/大小写差异导致误报"邮箱或密码错误"
+    user = db.query(User).filter(User.email == normalize_email(email)).first()
     if not user or not verify_password(password, user.hashed_password):
         return None
     return user

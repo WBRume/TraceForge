@@ -2,11 +2,12 @@
 import { useI18n } from 'vue-i18n'
 import { Loader2 } from 'lucide-vue-next'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
+import ReadingResumeBanner from '@/components/chat/reading/ReadingResumeBanner.vue'
 import type { Ref } from 'vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**
- * 对话历史区：历史锚定提示条、分页加载、初始化分隔线与消息气泡列表。
+ * 对话历史区：续读提示条、历史锚定提示条、分页加载、初始化分隔线与消息气泡列表。
  * 滚动容器 DOM 与滚动恢复逻辑归视图模型（useChatWorkbenchScroll/useChatHistory），
  * 经 containerRef 注入；消息级动作（撤销）冒泡给视图。
  */
@@ -23,6 +24,14 @@ const { t } = useI18n()
 </script>
 
 <template>
+  <ReadingResumeBanner
+    v-if="props.vm.currentTask && !props.vm.historyAnchored && props.vm.showResumeBanner"
+    :unread-count="props.vm.readingUnreadSnapshot"
+    :sync-state="props.vm.readingSyncState"
+    @resume="props.vm.resumeFromLastRead"
+    @close="props.vm.closeResumeBanner"
+    @return-latest="props.vm.returnToLatest"
+  />
   <div v-if="props.vm.historyAnchored" class="history-context-bar" role="status">
     <span>{{ props.vm.historyHasNew ? '历史窗口 · 有新消息' : '正在查看历史消息' }}</span>
     <button @click="props.vm.returnToLatest">回到最新</button>

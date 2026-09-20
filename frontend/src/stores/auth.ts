@@ -2,6 +2,7 @@ import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import router from '@/router'
+import { getSddDesktop } from '@/utils/runtime'
 
 type AuthUser = {
   id: string
@@ -30,10 +31,25 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('sdd_token', newToken)
   }
   
+  /**
+   * 清除 Electron 桌面端持久化的 token（%APPDATA%/frontend/config.json）。
+   * 登录时 PortalView 会把 token 写入桌面配置，登出若不同步清理，
+   * 刷新 / 重启（initializeApiFromDesktopConfig）和 loadLocalConfig 都会把
+   * 旧 token 恢复回来，表现为"登出无效，刷新又登录"。
+   */
+  function clearDesktopPersistedToken() {
+    const desktop = getSddDesktop()
+    if (!desktop) return
+    void desktop.config.setConfig({ token: null }).catch((error: unknown) => {
+      console.error('Failed to clear persisted desktop token', error)
+    })
+  }
+
   function logout() {
     token.value = null
     user.value = null
     localStorage.removeItem('sdd_token')
+    clearDesktopPersistedToken()
     router.push('/')
   }
 
@@ -42,6 +58,7 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
     boundProviders.value = []
     localStorage.removeItem('sdd_token')
+    clearDesktopPersistedToken()
   }
 
   function setUser(nextUser: AuthUser | null) {

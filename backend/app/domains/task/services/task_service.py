@@ -1219,6 +1219,11 @@ def save_chat_message(
         session_generation=session_generation,
     )
     db.add(msg)
+    db.flush()
+    # 阅读捕获与源消息同事务：task 行锁（allocate_chat_seq 已取得）内分配
+    # change_seq；捕获失败让源事务回滚，不允许吞错造成永久漏记录。
+    from app.domains.task.services import reading_capture_service
+    reading_capture_service.record_message_change(db, task_id=task_id, message=msg)
     db.commit()
     db.refresh(msg)
     # 关注是任务级订阅；消息落库后同步写入站内信，实时 WS 投递由通知中心的
@@ -1417,6 +1422,11 @@ def clear_task_history(db: Session, task_id: str, workspace_id: str) -> dict:
         SddExecutionLog.workspace_id == workspace_id,
     ).delete(synchronize_session=False)
 
+    # 清空历史与阅读状态失效同事务：递增 reading_epoch / change_seq，
+    # 旧条目与旧 notice 失效并创建 history_cleared 提示（第 7.3 节）。
+    from app.domains.task.services import reading_capture_service
+    reading_capture_service.record_history_clear(db, task_id=task_id)
+
     db.commit()
     return {
         "deleted_chat_messages": int(deleted_messages),
@@ -1460,9 +1470,24 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
         ).all()
     } if turn_ids else set()
 
+    # 阅读身份批量装配（避免 N+1）：共享内容版本，不含任何个人进度
+    reading_by_message_id = {}
+    if message_ids:
+        from app.domains.task.models.reading import TaskReadingItem
+        from app.domains.task.services.reading_capture_service import message_item_key
+        item_keys = [message_item_key(mid) for mid in message_ids]
+        reading_by_message_id = {
+            item.message_id: item
+            for item in db.query(TaskReadingItem).filter(
+                TaskReadingItem.task_id == task_id,
+                TaskReadingItem.item_key.in_(item_keys),
+            ).all()
+        }
+
     messages = []
     for msg in msg_query:
         metadata = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
+        reading_item = reading_by_message_id.get(str(msg.id))
         messages.append({
             "id": msg.id,
             "role": msg.role.value if hasattr(msg.role, 'value') else msg.role,
@@ -1479,6 +1504,8 @@ def serialize_history_messages(db, task, msg_query, workspace_id, task_id):
             "metadata": metadata or None,
             "session_turn_id": msg.session_turn_id,
             "session_generation": msg.session_generation,
+            "reading_item_key": reading_item.item_key if reading_item is not None else None,
+            "reading_change_seq": str(int(reading_item.change_seq)) if reading_item is not None else None,
             "can_undo": bool(
                 getattr(msg.role, "value", msg.role) == "user"
                 and msg.session_turn_id

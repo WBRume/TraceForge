@@ -846,12 +846,20 @@ def _writeback_submitted_message_sync(db: Session, *, pre_input_id: str, message
 
 
 def _load_message_session_fields_sync(db: Session, message_id: str) -> dict:
-    row = db.query(ChatMessage.session_turn_id, ChatMessage.session_generation).filter(
+    row = db.query(ChatMessage.task_id, ChatMessage.session_turn_id, ChatMessage.session_generation).filter(
         ChatMessage.id == message_id
     ).first()
+    reading_change_seq: Optional[int] = None
+    if row:
+        from app.domains.task.models.reading import TaskReadingItem
+        reading_change_seq = db.query(TaskReadingItem.change_seq).filter(
+            TaskReadingItem.task_id == row[0],
+            TaskReadingItem.item_key == f"message:{message_id}",
+        ).scalar()
     return {
-        "session_turn_id": row[0] if row else None,
-        "session_generation": row[1] if row else None,
+        "session_turn_id": row[1] if row else None,
+        "session_generation": row[2] if row else None,
+        "reading_change_seq": reading_change_seq,
     }
 
 
@@ -967,6 +975,8 @@ async def submit_pre_input(
                     created_at=(claimed_state["submitted_at"] or datetime.utcnow().isoformat()),
                     session_turn_id=message_fields["session_turn_id"],
                     session_generation=message_fields["session_generation"],
+                    reading_item_key=(f"message:{message_id}" if message_id else None),
+                    reading_change_seq=(str(message_fields["reading_change_seq"]) if message_fields.get("reading_change_seq") is not None else None),
                 ).model_dump(),
             ),
         )

@@ -37,12 +37,13 @@ class ConnectionManager:
         client_id: Optional[str] = None,
         epoch: Optional[str] = None,
         last_sequence: Optional[int] = None,
+        user_id: Optional[str] = None,
     ) -> OutboundConnection:
         await websocket.accept()
         connection = await self.registry.connect(
             self._room_key(task_id),
             websocket,
-            user_id=None,
+            user_id=user_id,
             client_id=client_id or client_key,
             epoch=epoch,
             last_sequence=last_sequence,
@@ -52,7 +53,8 @@ class ConnectionManager:
             f"Client connected to task {task_id} "
             f"(active={len(self.registry.rooms.get(self._room_key(task_id), {}))}, "
             f"state={connection.state.value}, epoch={epoch or ''}, "
-            f"last_sequence={last_sequence if last_sequence is not None else ''})"
+            f"last_sequence={last_sequence if last_sequence is not None else ''}, "
+            f"user={user_id or ''})"
         )
         return connection
 
@@ -82,6 +84,10 @@ class ConnectionManager:
         """Append one task event and enqueue it for every current connection."""
         json_data = message.model_dump_json()
         return self.registry.broadcast_text(self._room_key(task_id), json_data)
+
+    def send_to_user(self, task_id: str, user_id: str, payload: dict) -> int:
+        """私有定向投递（不进公共 journal，不分配公共序号）。"""
+        return self.registry.send_to_user(self._room_key(task_id), user_id, payload)
 
     async def sweep(self) -> int:
         return await self.registry.sweep()
