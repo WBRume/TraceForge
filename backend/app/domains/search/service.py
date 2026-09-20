@@ -7,16 +7,21 @@ from fastapi import HTTPException
 from sqlalchemy.orm import load_only
 from app.config import settings
 from app.core.offload import run_db_txn
-from app.domains.auth.models.user import Workspace, WorkspaceMember
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.task.models.task import SddTask
 from app.domains.task.models.chat import ChatMessage
 from app.domains.search.models import SearchDocumentState, SearchIndexTarget, SearchEmbeddingProfile, SearchEmbeddingJob, SearchOutbox
 from app.domains.search.projection import digest, build_search_projection, embedding_text
+from app.domains.task.services.avatar_service import resolve_avatar_svg
 from app.domains.search.embedding import embed, EmbeddingError
 from app.domains.search.es import search_body, scope_filters
 from app.domains.search.rrf import hybrid_search, checked_hits
 from app.domains.search.worker import dto
 from app.domains.search import sessions
+
+# Search responses are size-capped (see _search), so oversized custom avatar SVGs
+# are omitted and the client falls back to the name-initial avatar.
+AVATAR_SVG_MAX_CHARS = 4096
 
 
 def authorized_scope(db, user_id, workspace_id=None, task_id=None):
@@ -103,6 +108,13 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
     # Bounded full projection loading only for the final selected page.
     selected_messages = {m.id: m for m in db.query(ChatMessage).filter(ChatMessage.id.in_([c.get("message_id") for c in selected if c["kind"] == "message"])).populate_existing()}
     selected_tasks = {t.id: t for t in db.query(SddTask).filter(SddTask.id.in_([c["task_id"] for c in selected if c["kind"] == "task"])).populate_existing()}
+    # Creator identity (name/avatar) so the UI can attribute user messages; same
+    # exposure as the chat session DTO for members who can already read the message.
+    creators = {}
+    message_creator_ids = {m.creator_id for m in selected_messages.values() if m.creator_id}
+    if message_creator_ids:
+        for user in db.query(User).options(load_only(User.id, User.display_name, User.avatar_url, User.avatar_svg)).filter(User.id.in_(message_creator_ids)):
+            creators[user.id] = user
     items = []
     for c in selected:
         source = selected_messages.get(c.get("message_id")) if c["kind"] == "message" else selected_tasks.get(c["task_id"])
@@ -115,12 +127,25 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
             basis = "semantic"
         if c.get("highlight"):
             segments, basis = highlight_segments(c["highlight"]), "keyword"
-        items.append(dict(kind=c["kind"], entity_key=c["entity_key"], workspace_id=task.workspace_id,
+        item = dict(kind=c["kind"], entity_key=c["entity_key"], workspace_id=task.workspace_id,
             workspace_name=workspaces[task.workspace_id], task_id=task.id, task_name=task.name,
             message_id=c.get("message_id"), role=projection.get("role"), message_type=projection.get("message_type"),
             created_at=projection["created_at"], snippet=segments, snippet_basis=basis,
             target={"route_name": "taskChat", "params": {"wsId": task.workspace_id, "taskId": task.id},
-                "query": {"messageId": c["message_id"]} if c.get("message_id") else {}}))
+                "query": {"messageId": c["message_id"]} if c.get("message_id") else {}})
+        if c["kind"] == "message":
+            creator = creators.get(source.creator_id)
+            avatar_svg = None
+            if creator is not None:
+                avatar_svg = resolve_avatar_svg(creator.avatar_svg, creator.avatar_url,
+                    display_name=creator.display_name, email=creator.email, user_id=creator.id)
+                if avatar_svg and len(avatar_svg) > AVATAR_SVG_MAX_CHARS:
+                    avatar_svg = None
+            item.update(creator_id=source.creator_id,
+                creator_display_name=creator.display_name if creator else None,
+                creator_avatar_url=creator.avatar_url if creator else None,
+                creator_avatar_svg=avatar_svg)
+        items.append(item)
     return items, consumed
 
 

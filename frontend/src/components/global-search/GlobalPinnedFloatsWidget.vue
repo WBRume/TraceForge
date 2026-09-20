@@ -8,9 +8,14 @@ import {
 } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import { usePinnedFloatsStore, type PinnedSearchItem } from '@/stores/pinnedFloats'
+import UserAvatar from '@/components/user/UserAvatar.vue'
 import SessionContextPanel from './SessionContextPanel.vue'
 
 const store = usePinnedFloatsStore()
+
+// 用户发言：展示真实用户头像与用户名（与聊天消息一致的身份标识）
+const hasCreatorIdentity = (item: PinnedSearchItem) =>
+  Boolean(item.creatorAvatarSvg || item.creatorAvatarUrl || item.creatorName)
 
 // 复制状态记录：itemId -> boolean (短期显示对勾)
 const copiedMap = ref<Record<string, boolean>>({})
@@ -263,7 +268,20 @@ const onPillPointerUp = () => {
           <!-- 消息：纯消息卡片（纯文本，无彩色 icon） -->
           <div v-else class="message-float-content">
             <div class="msg-float-meta">
-              <span class="msg-meta-role">
+              <!-- 用户发言：头像 + 具体用户名；其余保留角色文字 -->
+              <span v-if="item.role === 'user' && hasCreatorIdentity(item)" class="msg-meta-user">
+                <UserAvatar
+                  class="meta-user-avatar"
+                  :display-name="item.creatorName"
+                  :avatar-svg="item.creatorAvatarSvg"
+                  :avatar-url="item.creatorAvatarUrl"
+                  size="xs"
+                />
+                <span class="msg-meta-user-name" :title="item.creatorName || undefined">
+                  {{ item.creatorName || '用户发言' }}
+                </span>
+              </span>
+              <span v-else class="msg-meta-role">
                 {{ item.role === 'user' ? '用户发言' : 'AI 回复' }}
               </span>
               <span class="msg-meta-path">{{ item.workspaceName }} / {{ item.taskName }}</span>
@@ -296,8 +314,17 @@ const onPillPointerUp = () => {
         @pointerdown="onPillPointerDown($event, item)"
       >
         <div class="docked-pill-inner">
-          <!-- 类别微标 -->
+          <!-- 用户发言：真实用户头像；其余类型保留类别微标 -->
+          <UserAvatar
+            v-if="item.kind === 'message' && item.role === 'user' && hasCreatorIdentity(item)"
+            class="pill-avatar"
+            :display-name="item.creatorName"
+            :avatar-svg="item.creatorAvatarSvg"
+            :avatar-url="item.creatorAvatarUrl"
+            size="xs"
+          />
           <div
+            v-else
             class="pill-type-dot"
             :class="{
               'is-task': item.kind === 'task',
@@ -503,6 +530,28 @@ const onPillPointerUp = () => {
   color: #475569;
 }
 
+/* 用户发言身份：头像 + 用户名（沿用用户发言琥珀色） */
+.msg-meta-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.msg-meta-user .meta-user-avatar.user-avatar {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.msg-meta-user-name {
+  font-weight: 600;
+  color: #b45309;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .msg-meta-path {
   color: #94a3b8;
   overflow: hidden;
@@ -637,6 +686,13 @@ const onPillPointerUp = () => {
   background: #f3e8ff;
   color: #7e22ce;
   border: 1px solid #e9d5ff;
+}
+
+/* 用户发言胶囊：真实用户头像替代"言"字微标（保持 22px 几何不变） */
+.pill-avatar.user-avatar {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
 }
 
 .pill-info {

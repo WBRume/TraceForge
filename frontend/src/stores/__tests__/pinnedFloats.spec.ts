@@ -34,6 +34,10 @@ describe('pinnedFloats store', () => {
     task_name: '优化用户界面',
     message_id: 'msg-456',
     role: 'user',
+    creator_id: 'user-1',
+    creator_display_name: '张三',
+    creator_avatar_url: null,
+    creator_avatar_svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"></svg>',
     created_at: '2026-09-15T12:05:00Z',
     snippet_basis: 'semantic',
     snippet: [{ text: '请问这个功能如何使用？', match: true }],
@@ -58,6 +62,13 @@ describe('pinnedFloats store', () => {
     store.togglePin(mockMessageItem)
     expect(store.items).toHaveLength(2)
     expect(store.isPinned('msg-456')).toBe(true)
+
+    // 用户发言钉住时保留创建者身份（头像 + 用户名），供胶囊与浮窗展示
+    const pinnedMessage = store.items.find((i) => i.id === 'msg-456')
+    expect(pinnedMessage?.role).toBe('user')
+    expect(pinnedMessage?.creatorName).toBe('张三')
+    expect(pinnedMessage?.creatorAvatarSvg).toContain('<svg')
+    expect(pinnedMessage?.creatorAvatarUrl).toBeNull()
 
     store.togglePin(mockMessageItem)
     expect(store.items).toHaveLength(1)

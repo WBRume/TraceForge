@@ -12,6 +12,10 @@ export interface SearchItem {
   task_name: string
   message_id?: string
   role?: string
+  creator_id?: string | null
+  creator_display_name?: string | null
+  creator_avatar_url?: string | null
+  creator_avatar_svg?: string | null
   created_at: string
   snippet_basis: 'keyword' | 'semantic' | 'plain'
   snippet: { text: string; match: boolean }[]
