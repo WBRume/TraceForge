@@ -347,19 +347,32 @@ describe('ProvisionFloatingWidget', () => {
     store.dismiss('pjob-9')
   })
 
-  it('closing a running preview card cancels the backend CLI job and removes the card', async () => {
-    apiMock.get.mockResolvedValue({
-      data: {
-        job_id: 'pjob-3',
-        workspace_id: 'ws-1',
-        status: 'RUNNING',
-        progress: 20,
-        message: 'Running Claude Code CLI split preview',
-        job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
-        requirement_id: 'req-3',
-        requirement_title: 'Cancel me',
-      },
-    })
+  it('closing a running preview card cancels the CLI job and cleans up after convergence', async () => {
+    vi.useFakeTimers()
+    apiMock.get
+      .mockResolvedValueOnce({
+        data: {
+          job_id: 'pjob-3',
+          workspace_id: 'ws-1',
+          status: 'RUNNING',
+          progress: 20,
+          message: 'Running Claude Code CLI split preview',
+          job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+          requirement_id: 'req-3',
+          requirement_title: 'Cancel me',
+        },
+      })
+      .mockResolvedValue({
+        data: {
+          job_id: 'pjob-3',
+          workspace_id: 'ws-1',
+          status: 'CANCELLED',
+          progress: 100,
+          job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+          requirement_id: 'req-3',
+          requirement_title: 'Cancel me',
+        },
+      })
     apiMock.post.mockResolvedValue({ data: {} })
 
     const store = useProvisioningStore()
@@ -371,7 +384,7 @@ describe('ProvisionFloatingWidget', () => {
       requirementTitle: 'Cancel me',
     })
     store.minimizePreviewJob('pjob-3')
-    await flushPromises()
+    await vi.advanceTimersByTimeAsync(0)
 
     const wrapper = mountWidget()
     const closeButton = wrapper.find('.widget-job-actions .widget-icon-btn')
@@ -381,8 +394,54 @@ describe('ProvisionFloatingWidget', () => {
 
     // 复用任务会话的 ai-jobs cancel 通道：终止 CLI 进程（各 backend 统一收敛）
     expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/ai-jobs/pjob-3/cancel')
+    // 取消受理后作业先保留（cancelRequested 标记），避免重开弹窗时误判为无作业
+    expect(store.jobs['pjob-3']).toBeTruthy()
+    expect(store.jobs['pjob-3'].cancelRequested).toBe(true)
+
+    // 后端收敛 CANCELLED 后自动清理卡片
+    await vi.advanceTimersByTimeAsync(1300)
     expect(store.jobs['pjob-3']).toBeUndefined()
     wrapper.unmount()
+  })
+
+  it('shows the cancelling preview card even before handover so close-cancel is visible', async () => {
+    apiMock.get.mockResolvedValue({
+      data: {
+        job_id: 'pjob-5',
+        workspace_id: 'ws-1',
+        status: 'RUNNING',
+        progress: 35,
+        job_kind: 'REQUIREMENT_SPLIT_PREVIEW',
+        requirement_id: 'req-5',
+        requirement_title: 'Dialog closed',
+      },
+    })
+    apiMock.post.mockResolvedValue({ data: {} })
+
+    const store = useProvisioningStore()
+    store.trackRequirementPreviewJob({
+      jobId: 'pjob-5',
+      workspaceId: 'ws-1',
+      kind: 'requirement_split_preview',
+      requirementId: 'req-5',
+      requirementTitle: 'Dialog closed',
+    })
+    await flushPromises()
+
+    // 未缩小：取消前不出现在浮窗
+    const before = mountWidget()
+    expect(before.text()).not.toContain('Dialog closed')
+    before.unmount()
+
+    // 弹窗关闭发起取消：受理后即使未缩小，浮窗也要显示「正在取消」卡片
+    await store.cancelPreviewJob('pjob-5')
+    expect(store.jobs['pjob-5'].cancelRequested).toBe(true)
+    store.expand()
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('Dialog closed')
+    expect(wrapper.text()).toContain('provisioning.preview_stage_cancelling')
+    wrapper.unmount()
+    store.dismiss('pjob-5')
   })
 
   it('keeps the preview card when the cancel request fails', async () => {

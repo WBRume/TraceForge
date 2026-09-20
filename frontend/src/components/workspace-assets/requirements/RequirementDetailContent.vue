@@ -59,22 +59,9 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
     <div class="detail-grid">
       <!-- Main Content Area -->
       <div class="main-column">
-        <header class="content-card hero-card">
-          <div class="hero-header">
-            <span class="eyebrow-tag">{{ t('workspace_assets.requirements.detail.eyebrow') }}</span>
-            <div class="title-row">
-              <h2>{{ activeRequirement.title }}</h2>
-            </div>
-          </div>
-          <p class="hero-description">
-            {{ hasChildRequirements ? t('workspace_assets.requirements.detail.children_specification_body') : t('workspace_assets.requirements.detail.specification_body') }}
-          </p>
-        </header>
-
         <section class="content-card">
           <div class="card-header">
             <h3>{{ t('workspace_assets.requirements.detail.specification_title') }}</h3>
-            <p class="card-subtitle">{{ hasChildRequirements ? t('workspace_assets.requirements.detail.children_specification_body') : t('workspace_assets.requirements.detail.specification_body') }}</p>
           </div>
           <div class="card-body">
             <RequirementSpecificationBlock
@@ -240,41 +227,6 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
 
 .main-column {
   min-width: 0;
-}
-
-/* Hero Card */
-.hero-card {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(240, 249, 255, 0.9) 100%);
-  border-left: 4px solid #0ea5e9;
-}
-
-.eyebrow-tag {
-  display: inline-block;
-  padding: 4px 10px;
-  background: #f0f9ff;
-  color: #0369a1;
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  border-radius: 6px;
-  margin-bottom: 12px;
-  letter-spacing: 0.5px;
-}
-
-.hero-header h2 {
-  font-family: 'Poppins', sans-serif;
-  font-size: 1.85rem;
-  font-weight: 700;
-  color: #0f172a;
-  margin: 0 0 12px;
-  line-height: 1.2;
-}
-
-.hero-description {
-  color: #64748b;
-  font-size: 1rem;
-  line-height: 1.6;
-  margin: 0;
 }
 
 /* Section Headers */

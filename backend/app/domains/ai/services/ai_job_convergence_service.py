@@ -571,18 +571,23 @@ def _derive_termination_business_status(
     if request.requested_status is not None:
         return request.requested_status
     queue_key = str(job.queue_key or "")
-    if queue_key.startswith("REQUIREMENT_PREVIEW:") and int(job.attempt_count or 0) < int(
-        job.max_attempts or 1
-    ):
-        return AiJobStatus.PENDING
     if request.termination_mode == "INTERRUPT" and job.channel == AiJobChannel.TASK_CHAT:
         # 用户临时中断（可恢复）：与 legacy 无 token 路径
         # （``_finalize_legacy_interrupt_sync``）语义一致，job 落 INTERRUPTED。
         # ``cancel_requested_at`` 在 INTERRUPT 模式下只承担写入 fence 职责，
         # 不把临时中断判定为 CANCELLED。
         return AiJobStatus.INTERRUPTED
+    # 用户显式取消（cancel_requested_at）绝不进入任何重试规则，必须落
+    # CANCELLED。REQUIREMENT_PREVIEW 的 attempt_count < max_attempts 重试
+    # 规则只适用于非取消终止（崩溃/租约丢失/worker 重启回收）：若取消也被
+    # 打回 PENDING，队列会在 CLI 被杀掉的同一瞬间重新认领并二次拉起 CLI，
+    # 且此时取消事件已被 runner 清空，第二个 CLI 会跑完整流程（P0 回归）。
     if job.cancel_requested_at is not None:
         return AiJobStatus.CANCELLED
+    if queue_key.startswith("REQUIREMENT_PREVIEW:") and int(job.attempt_count or 0) < int(
+        job.max_attempts or 1
+    ):
+        return AiJobStatus.PENDING
     if queue_key.startswith("TASK_BASELINE:"):
         return AiJobStatus.FAILED
     if job.channel == AiJobChannel.TASK_CHAT:

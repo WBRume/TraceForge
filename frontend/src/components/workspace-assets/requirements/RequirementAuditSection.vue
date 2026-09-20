@@ -13,7 +13,6 @@ const { t } = useI18n()
   <section class="requirement-section">
     <header class="section-head">
       <h4>{{ t('workspace_assets.requirements.detail.audit_title') }}</h4>
-      <p>{{ t('workspace_assets.requirements.detail.audit_body') }}</p>
     </header>
 
     <el-timeline v-if="logs.length">

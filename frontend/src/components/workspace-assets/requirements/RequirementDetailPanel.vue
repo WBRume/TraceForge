@@ -149,7 +149,6 @@ function submitLink() {
         <div class="section-head">
           <div>
             <h4>{{ t('workspace_assets.requirements.detail.audit_title') }}</h4>
-            <p>{{ t('workspace_assets.requirements.detail.audit_body') }}</p>
           </div>
           <History :size="18" />
         </div>

@@ -813,30 +813,92 @@ def test_list_active_requirement_preview_jobs_filters_creator_and_status(tmp_pat
     SessionLocal = _build_session()
     db = SessionLocal()
     _seed_split_preview_target(db, tmp_path)
+    from app.domains.workspace_asset.models.workspace_asset import SddRequirement
+
+    other_user = User(id="user-2", email="u2@example.com", hashed_password="x", display_name="U2")
+    other_requirement = SddRequirement(
+        id="req-2",
+        workspace_id="ws-1",
+        created_by_id="user-2",
+        title="Other requirement",
+        body="Line one\nLine two\nLine three",
+    )
+    db.add_all([other_user, other_requirement])
+    db.commit()
 
     pending = preview_job_service.create_requirement_split_preview_job(
         db, "ws-1", "req-1", "user-1"
     )
-    finished = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
-    other_user = User(id="user-2", email="u2@example.com", hashed_password="x", display_name="U2")
-    db.add(other_user)
-    db.commit()
     foreign = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-2"
+        db, "ws-1", "req-2", "user-2"
     )
 
     db.expire_all()
-    done = db.query(SddAiJob).filter(SddAiJob.id == finished.job_id).one()
+    done = db.query(SddAiJob).filter(SddAiJob.id == pending.job_id).one()
     done.status = AiJobStatus.SUCCESS
     db.commit()
 
+    # 成功后同一需求可以再次发起：幂等守卫只拦截未收敛作业
+    again = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-1"
+    )
+    assert again.job_id != pending.job_id
+
     active = preview_job_service.list_active_requirement_preview_jobs(db, "user-1")
     active_ids = {item.job_id for item in active}
-    assert pending.job_id in active_ids
-    assert finished.job_id not in active_ids
+    assert pending.job_id not in active_ids
+    assert again.job_id in active_ids
     assert foreign.job_id not in active_ids
-    item = next(i for i in active if i.job_id == pending.job_id)
-    assert item.status in (AiJobStatus.PENDING.value, AiJobStatus.RUNNING.value)
+    item = next(i for i in active if i.job_id == again.job_id)
+    assert item.status == AiJobStatus.PENDING.value
     assert item.requirement_title == "Big requirement"
+
+
+def test_create_split_preview_job_reuses_unconverged_job_for_same_requirement(tmp_path):
+    """幂等守卫：同一需求存在未收敛（RUNNING）的拆分作业时再次发起，必须
+    复用旧作业而不是新建——否则取消收敛/回收完成前会并行拉起第二个 CLI。"""
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    first_id = _seed_split_preview_target(db, tmp_path)
+    _claim_running(first_id, SessionLocal)
+
+    second = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-1"
+    )
+    assert second.job_id == first_id
+    assert second.status == AiJobStatus.RUNNING.value
+
+    # 其他需求不受影响：各自有独立的拆分作业
+    from app.domains.workspace_asset.models.workspace_asset import SddRequirement
+
+    other_requirement = SddRequirement(
+        id="req-2",
+        workspace_id="ws-1",
+        created_by_id="user-1",
+        title="Another requirement",
+        body="Line one\nLine two\nLine three",
+    )
+    db.add(other_requirement)
+    db.commit()
+    other = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-2", "user-1"
+    )
+    assert other.job_id != first_id
+
+
+def test_create_split_preview_job_after_cancel_creates_fresh_job(tmp_path):
+    """已收敛（CANCELLED）的作业不阻塞重新发起：取消后可以正常再次拆分。"""
+    SessionLocal = _build_session()
+    db = SessionLocal()
+    first_id = _seed_split_preview_target(db, tmp_path)
+
+    db.expire_all()
+    cancelled = db.query(SddAiJob).filter(SddAiJob.id == first_id).one()
+    cancelled.status = AiJobStatus.CANCELLED
+    db.commit()
+
+    second = preview_job_service.create_requirement_split_preview_job(
+        db, "ws-1", "req-1", "user-1"
+    )
+    assert second.job_id != first_id
+    assert second.status == AiJobStatus.PENDING.value

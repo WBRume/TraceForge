@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from 'lucide-vue-next'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import RequirementDetailContent from '@/components/workspace-assets/requirements/RequirementDetailContent.vue'
 import RequirementEditDrawer from '@/components/workspace-assets/requirements/RequirementEditDrawer.vue'
 import RequirementImportDialog from '@/components/workspace-assets/requirements/RequirementImportDialog.vue'
@@ -36,6 +37,7 @@ const {
   unlinkRequirementTask,
   createRequirementSplitPreviewJob,
   fetchRequirementPreviewJob,
+  listActiveRequirementPreviewJobs,
   confirmRequirementSplit,
 } = useWorkspaceAssets()
 const provisioningStore = useProvisioningStore()
@@ -138,6 +140,7 @@ const splitPreviewJob = computed<RequirementPreviewJob | null>(() => {
     message: job.message || null,
     error: job.errorMessage || null,
     batch: job.batch,
+    cancel_requested: job.cancelRequested,
   }
 })
 
@@ -164,15 +167,34 @@ function navigateToSplitReview(reqId: string, batch: RequirementImportBatch) {
 watch(
   () => splitTrackedJob.value,
   (job) => {
+    // 取消已收敛（CANCELLED 自动清理）或作业被移除时，弹窗失去绑定对象：
+    // 直接关闭，避免回落到无批次的空白编辑态
+    if (!job && splitDialogOpen.value) {
+      splitDialogOpen.value = false
+      splitRequirementId.value = ''
+      return
+    }
     if (job?.status === 'SUCCESS' && job.batch) {
       navigateToSplitReview(splitRequirementId.value || requirementId.value, job.batch)
     }
   },
 )
 
-async function openSplit(requirement: RequirementSummary) {
+// ── 拆分入口：二次确认 → 发起预览作业 ──
+const splitConfirmTarget = shallowRef<RequirementSummary | null>(null)
+
+function openSplit(requirement: RequirementSummary) {
+  // 拆分会调用 AI CLI（分钟级开销），先弹二次确认（与全局确认弹窗同款样式）
+  splitConfirmTarget.value = requirement
+}
+
+function cancelSplitRequest() {
+  splitConfirmTarget.value = null
+}
+
+async function startSplitPreview(requirement: RequirementSummary) {
   splitRequirementId.value = requirement.id
-  // 同一需求已有进行中的预览：直接回绑弹窗，不重复发起作业
+  // 同一需求已有进行中的预览（store 内）：直接回绑弹窗，不重复发起作业
   const active = provisioningStore.findActivePreviewJob(requirement.id, 'requirement_split_preview')
   if (active) {
     splitDialogOpen.value = true
@@ -183,6 +205,29 @@ async function openSplit(requirement: RequirementSummary) {
   if (finished && finished.batch) {
     navigateToSplitReview(requirement.id, finished.batch)
     return
+  }
+  // 服务端兜底：store 无记录（刷新/卡片已被清理）但后端仍有该需求的进行中
+  // 作业时回绑，避免重复发起新 CLI 排在旧作业后面一直 PENDING
+  try {
+    const activeJobs = await listActiveRequirementPreviewJobs()
+    const serverActive = activeJobs.find((job) => (
+      String(job.job_kind || '').toUpperCase() === 'REQUIREMENT_SPLIT_PREVIEW'
+      && job.requirement_id === requirement.id
+      && (!job.workspace_id || job.workspace_id === wsId.value)
+    ))
+    if (serverActive) {
+      provisioningStore.trackRequirementPreviewJob({
+        jobId: serverActive.job_id,
+        workspaceId: serverActive.workspace_id || wsId.value,
+        kind: 'requirement_split_preview',
+        requirementId: requirement.id,
+        requirementTitle: serverActive.requirement_title || requirement.title,
+      })
+      splitDialogOpen.value = true
+      return
+    }
+  } catch {
+    // 服务端查询失败不阻断主流程：退回「发起新作业」路径
   }
   try {
     const job = await createRequirementSplitPreviewJob(wsId.value, requirement.id)
@@ -202,6 +247,13 @@ async function openSplit(requirement: RequirementSummary) {
       t,
     ))
   }
+}
+
+async function confirmSplitRequest() {
+  const requirement = splitConfirmTarget.value
+  splitConfirmTarget.value = null
+  if (!requirement) return
+  await startSplitPreview(requirement)
 }
 
 /** 弹窗点「缩小」：作业收起到右下角浮窗（卡片才出现），关闭弹窗 */
@@ -233,21 +285,28 @@ function discardSplitPreview() {
   if (job) provisioningStore.dismiss(job.jobId)
 }
 
-/** 关闭对话框 = 取消后台预览（「缩小」才是转入后台继续执行） */
-function closeSplitDialog() {
-  const job = splitTrackedJob.value
-  splitDialogOpen.value = false
-  splitRequirementId.value = ''
-  if (job && !job.terminal) {
-    void cancelRunningPreview(job.jobId)
-  }
-}
+/** 拆分进度弹窗关闭中（等待后端取消受理），防重复触发 */
+const closingSplitDialog = shallowRef(false)
 
-async function cancelRunningPreview(jobId: string) {
-  const ok = await provisioningStore.cancelPreviewJob(jobId)
+async function closeSplitDialog() {
+  if (closingSplitDialog.value) return
+  const job = splitTrackedJob.value
+  if (!job || job.terminal) {
+    splitDialogOpen.value = false
+    splitRequirementId.value = ''
+    return
+  }
+  // 关闭 = 取消后台 CLI（「缩小」才是转入后台继续执行）：等待后端受理后再关
+  // 弹窗；受理失败则保持弹窗打开（作业仍在运行，可重试或缩小），绝不静默泄漏。
+  closingSplitDialog.value = true
+  const ok = await provisioningStore.cancelPreviewJob(job.jobId)
+  closingSplitDialog.value = false
   if (!ok) {
     ElMessage.error(t('provisioning.preview_cancel_failed'))
+    return
   }
+  splitDialogOpen.value = false
+  splitRequirementId.value = ''
 }
 
 // 浮窗「查看预览」深链：?previewJob=<jobId> → 若已成功直接跳路由，否则打开进度弹窗
@@ -363,6 +422,18 @@ watch(
       @discard-preview="discardSplitPreview"
       @confirm="confirmSplit"
       @clear-preview-job="discardSplitPreview"
+    />
+
+    <!-- 拆分二次确认：与全局确认弹窗同款样式（ConfirmActionModal） -->
+    <ConfirmActionModal
+      :show="Boolean(splitConfirmTarget)"
+      :title="t('workspace_assets.requirements.split_confirm.title')"
+      :message="t('workspace_assets.requirements.split_confirm.message', { name: splitConfirmTarget?.title || '' })"
+      :cancel-text="t('common.cancel')"
+      :confirm-text="t('workspace_assets.requirements.split_confirm.confirm_text')"
+      tone="primary"
+      @cancel="cancelSplitRequest"
+      @confirm="confirmSplitRequest"
     />
   </div>
 </template>
