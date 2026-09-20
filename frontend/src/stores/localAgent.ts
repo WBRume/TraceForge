@@ -133,10 +133,12 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
       return
     }
     const config = await desktop.config.getConfig()
-    token.value = config.token || authStore.token || ''
-    if (config.token) {
+    // 仅在本地登录态缺失时采纳桌面持久化 token（避免旧 config token 复活/覆盖当前会话；
+    // 登出时 auth store 已同步清理 config.token，见 stores/auth.ts clearDesktopPersistedToken）
+    if (config.token && !authStore.token) {
       authStore.setToken(config.token)
     }
+    token.value = authStore.token || config.token || ''
     setApiServerUrl(DEFAULT_SERVER_URL)
     initialized.value = true
   }

@@ -3681,5 +3681,17 @@
     "just_now": "Just now",
     "minutes_ago": "{n} min ago",
     "hours_ago": "{n} h ago"
+  },
+  "reading": {
+    "resume_from_anchor": "Continue from last read",
+    "return_latest": "Back to latest",
+    "resume_none": "No saved reading position yet",
+    "resume_empty": "No valid messages near your last reading position; you can continue from new messages",
+    "anchor_updated": "The message you last read has been updated; located at the latest version",
+    "anchor_retracted": "Messages near your last reading position were retracted; located at valid context",
+    "anchor_missing": "The message at your last reading position no longer exists; located nearby",
+    "resume_unavailable": "Reading position is unavailable, please retry later",
+    "unread_count_label": "{count} unread",
+    "close": "Close"
   }
 }

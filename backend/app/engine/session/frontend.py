@@ -270,6 +270,21 @@ class FrontendFeed:
                 WorkspaceMember.workspace_id == owner.ws_id,
                 WorkspaceMember.user_id == owner.user_id,
             ).first()
+            # 共享内容版本：与 save_chat_message 的阅读捕获同事务写入
+            reading_item_key = None
+            reading_change_seq = None
+            from app.domains.task.models.reading import TaskReadingItem as _ReadingItem
+            reading_row = (
+                db.query(_ReadingItem)
+                .filter(
+                    _ReadingItem.task_id == owner.task_id,
+                    _ReadingItem.item_key == f"message:{saved_message.id}",
+                )
+                .first()
+            )
+            if reading_row is not None:
+                reading_item_key = reading_row.item_key
+                reading_change_seq = str(int(reading_row.change_seq))
             payload = WSChatPayload(
                 task_id=owner.task_id,
                 role=role,
@@ -285,6 +300,8 @@ class FrontendFeed:
                 created_at=saved_message.created_at.isoformat(),
                 session_turn_id=saved_message.session_turn_id,
                 session_generation=saved_message.session_generation,
+                reading_item_key=reading_item_key,
+                reading_change_seq=reading_change_seq,
             ).model_dump()
             return payload
         finally:

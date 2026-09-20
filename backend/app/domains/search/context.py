@@ -1,34 +1,29 @@
-"""Bounded bidirectional indexed history windows with shared history DTOs."""
+"""Bounded bidirectional indexed history windows with shared history DTOs.
+
+窗口几何（keyset/双向取窗）已抽取到任务域共享模块 history_window_service，
+本模块保留搜索专用签名与授权语义，行为与抽取前一致。
+"""
 from datetime import datetime
 import time
 from fastapi import HTTPException
 from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session
 from app.domains.task.models.task import SddTask
 from app.domains.task.models.chat import ChatMessage
+from app.domains.task.services.history_window_service import keyset, ORDER_COLUMNS
 from app.domains.task.services.task_service import serialize_history_messages
 from app.domains.search.service import authorized_scope
 from app.domains.search.sessions import sign, unsign
 
 
-def keyset(key, direction):
-    created, seq, identity = key
-    if isinstance(created, str):
-        created = datetime.fromisoformat(created)
-    cols, vals = (ChatMessage.created_at, ChatMessage.sort_seq, ChatMessage.id), (created, seq, identity)
-    compare = (lambda a, b: a < b) if direction == "before" else (lambda a, b: a > b)
-    return or_(compare(cols[0], vals[0]), and_(cols[0] == vals[0], compare(cols[1], vals[1])),
-        and_(cols[0] == vals[0], cols[1] == vals[1], compare(cols[2], vals[2])))
-
-
-def window(db, user, ws, task_id, message_id=None, cursor=None, direction="before", before=15, after=15, limit=30):
+def window(db: Session, user, ws, task_id, message_id=None, cursor=None, direction="before", before=15, after=15, limit=30):
     authorized_scope(db, user, ws, task_id)
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == ws).first()
     query = db.query(ChatMessage).filter(ChatMessage.task_id == task_id, ChatMessage.workspace_id == ws)
     if query.filter(ChatMessage.sort_seq.is_(None)).with_entities(ChatMessage.id).first():
         raise HTTPException(409, "SEARCH_HISTORY_NOT_READY")
     def fetch(key, way, count):
-        columns = (ChatMessage.created_at, ChatMessage.sort_seq, ChatMessage.id)
-        rows = query.filter(keyset(key, way)).order_by(*[c.desc() if way == "before" else c.asc() for c in columns]).limit(count + 1).all()
+        rows = query.filter(keyset(key, way)).order_by(*[c.desc() if way == "before" else c.asc() for c in ORDER_COLUMNS]).limit(count + 1).all()
         more = len(rows) > count
         return (list(reversed(rows[:count])) if way == "before" else rows[:count]), more
     anchor = None
@@ -36,7 +31,7 @@ def window(db, user, ws, task_id, message_id=None, cursor=None, direction="befor
         token = unsign(cursor, "context", user)
         if token.get("workspace") != ws or token.get("task") != task_id or token.get("direction") != direction:
             raise HTTPException(410, "SEARCH_CURSOR_EXPIRED")
-        rows, more = fetch(token["key"], direction, limit)
+        rows, more = fetch(tuple(token["key"]), direction, limit)
         has_before, has_after = (more, True) if direction == "before" else (True, more)
     else:
         anchor = query.filter(ChatMessage.id == message_id).first()

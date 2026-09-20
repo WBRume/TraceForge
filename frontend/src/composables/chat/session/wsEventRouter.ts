@@ -79,6 +79,8 @@ export function createTaskWsEventRouter(deps: {
     metadata: payload.metadata || null,
     session_turn_id: payload.session_turn_id || null,
     session_generation: payload.session_generation ?? null,
+    reading_item_key: payload.reading_item_key ?? null,
+    reading_change_seq: payload.reading_change_seq ?? null,
     can_undo: payload.can_undo,
     delivery_status: deliveryStatus,
   })

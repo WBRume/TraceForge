@@ -56,7 +56,7 @@ const handleSubmit = async () => {
     if (isLoginMode.value) {
       // Login
       const params = new URLSearchParams()
-      params.append('username', form.value.email)
+      params.append('username', form.value.email.trim())
       params.append('password', form.value.password)
       
       const res = await api.post('/auth/login', params)

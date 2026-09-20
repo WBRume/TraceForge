@@ -68,6 +68,10 @@ class WSChatPayload(BaseModel):
     session_turn_id: Optional[str] = None
     session_generation: Optional[int] = None
     can_undo: Optional[bool] = None
+    # 共享内容版本（阅读条目身份）：不是任何个人进度；旧帧/临时气泡缺失时
+    # 客户端先不确认，合并缺失 ID 后经 reading-items 补取
+    reading_item_key: Optional[str] = None
+    reading_change_seq: Optional[str] = None
 
 
 # ── AI 思考过程 ──

@@ -3686,5 +3686,17 @@
     "just_now": "刚刚",
     "minutes_ago": "{n} 分钟前",
     "hours_ago": "{n} 小时前"
+  },
+  "reading": {
+    "resume_from_anchor": "从上次阅读处继续",
+    "return_latest": "回到最新",
+    "resume_none": "还没有可恢复的阅读位置",
+    "resume_empty": "上次阅读附近已没有有效消息，有新消息时可从新消息继续",
+    "anchor_updated": "上次阅读的消息内容已更新，已定位到最新版本",
+    "anchor_retracted": "上次阅读附近的消息已撤回，已定位到仍有效的上下文",
+    "anchor_missing": "上次阅读位置的消息已不存在，已定位到附近消息",
+    "resume_unavailable": "阅读位置暂不可用，请稍后重试",
+    "unread_count_label": "有 {count} 条未读",
+    "close": "关闭"
   }
 }

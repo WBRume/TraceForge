@@ -91,4 +91,6 @@ NON_SEQUENCED_EVENT_TYPES = {
     "pong",
     "presence",
     "typing",
+    # 个人阅读进度失效通知：私有定向投递，绝不进入公共 journal
+    "reading_progress_changed",
 }

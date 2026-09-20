@@ -57,6 +57,9 @@ export type ChatMessageFields = {
   session_turn_id: string | null
   session_generation: number | null
   can_undo: boolean
+  /** 共享内容版本（阅读条目身份）；旧帧/临时气泡缺失时先不确认已读 */
+  reading_item_key?: string | null
+  reading_change_seq?: string | null
 }
 
 /** 后端消息（history / WS / 快照）→ 前端气泡统一形状。 */
@@ -77,4 +80,6 @@ export const mapHistoryMessages = (hMessages: any[]): ChatMessageFields[] => hMe
   session_turn_id: m.session_turn_id || null,
   session_generation: m.session_generation ?? null,
   can_undo: Boolean(m.can_undo),
+  reading_item_key: m.reading_item_key ?? null,
+  reading_change_seq: m.reading_change_seq ?? null,
 }))

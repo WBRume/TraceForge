@@ -428,6 +428,9 @@ class ConnectionRegistry:
     def broadcast_json(self, room_key: str, payload: dict, *, sequenced: Optional[bool] = None) -> int:
         return self._hub_registry.publish_json(room_key, payload, sequenced=sequenced)
 
+    def send_to_user(self, room_key: str, user_id: str, payload: dict) -> int:
+        return self._hub_registry.send_to_user(room_key, user_id, payload)
+
     def has_subscribers(self, room_key: str) -> bool:
         return self._hub_registry.has_subscribers(room_key)
 

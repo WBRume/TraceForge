@@ -1,4 +1,4 @@
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ShallowUnwrapRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -43,6 +43,8 @@ import { useTaskStartActions } from './actions/useTaskStartActions'
 import { useTaskStatusActions } from './actions/useTaskStatusActions'
 import { useTaskAdminActions } from './actions/useTaskAdminActions'
 import { useMessageActions } from './actions/useMessageActions'
+import { useTaskReadingProgress } from './reading/useTaskReadingProgress'
+import { fetchReadingResume } from '@/services/taskReadingApi'
 
 /**
  * Chat 视图模型组合根：把各领域模块（任务列表、消息、历史、卡片、jobs、
@@ -237,6 +239,131 @@ export function useChatViewModel() {
     scrollToChatBottom: () => scrollToBottom('chat'),
   })
 
+  // ─── 阅读进度与续读（产品裁剪版） ───
+
+  const readingProgress = useTaskReadingProgress({
+    getWorkspaceId,
+    getTaskId: taskState.getTaskId,
+    isTaskActive: () => Boolean(authStore.token) && taskState.getTaskId() === String(route.params.taskId || taskState.getTaskId()),
+  })
+
+  // ─── 续读提示条：进入任务时有未读才出现，点击继续/关闭后消失 ───
+
+  /**
+   * 未读快照：仅在进入任务后第一次看到“有未读”状态时冻结计数（entry-only）。
+   * - 首次进入的会话：基线刚建立、无未读 → 不显示；
+   * - 会话期间新到的消息不弹（用户正在现场看）；
+   * - 关闭/继续后本次访问不再出现，重新进入任务时按最新未读重建。
+   */
+  const readingUnreadSnapshot = ref<{ value: string; relation: 'eq' | 'gte'; atSeq: string } | null>(null)
+  watch(readingProgress.progress, (state) => {
+    if (readingUnreadSnapshot.value) return
+    if (!state?.initialized || !state.has_unread) return
+    readingUnreadSnapshot.value = {
+      value: String(state.unread_count.value),
+      relation: state.unread_count.relation,
+      atSeq: String(state.latest_change_seq),
+    }
+  })
+
+  /**
+   * 提示条展示条件：存在未读快照 且 未被本次点击消除。
+   * 点击「从上次阅读处继续」即记录当时的内容水位，提示条消失；
+   * 之后有更新的内容（latest_change_seq 前进）时重新出现。
+   */
+  const resumeDismissedAtSeq = ref<string | null>(null)
+  /** 用户点击关闭：仅收起提示条，不确认未读；重新进入任务仍会提示。 */
+  const readingBannerClosed = ref(false)
+  const closeResumeBanner = () => {
+    readingBannerClosed.value = true
+  }
+
+  const showResumeBanner = computed(() => {
+    const state = readingProgress.progress.value
+    if (!state?.initialized || !readingUnreadSnapshot.value || readingBannerClosed.value) return false
+    if (resumeDismissedAtSeq.value) {
+      try {
+        if (BigInt(state.latest_change_seq) <= BigInt(resumeDismissedAtSeq.value)) return false
+      } catch {
+        return false
+      }
+    }
+    return true
+  })
+
+  /** 在当前（最新）视图中定位锚点消息：高亮并滚动到其附近（近似恢复 offset_ratio）。 */
+  const scrollToMessageInLatestView = async (anchorId: string, ratio: number | null): Promise<boolean> => {
+    await nextTick()
+    if (!messages.findById(anchorId)) return false
+    const container = chatContainer.value
+    const target = container?.querySelector(`[data-message-id="${CSS.escape(anchorId)}"]`) as HTMLElement | null
+    if (!target) return false
+    highlight.highlightedMessageId.value = anchorId
+    if (container && typeof ratio === 'number' && target.offsetHeight > container.clientHeight * 0.5) {
+      // 超长消息：按保存的消息内相对位置近似恢复
+      container.scrollTop = Math.max(0, target.offsetTop - container.clientHeight * 0.2 + target.offsetHeight * ratio)
+    } else {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+    highlight.scheduleClear()
+    return true
+  }
+
+  /**
+   * “从上次阅读处继续”：在当前最新视图中直接定位到未读起点（上次阅读边界），
+   * 并确认当前整批未读（提示条不再对这批内容重复出现）。
+   * 不进入「正在查看历史消息」锚定模式；锚点早于已加载页面时逐页向前加载
+   * （有界），仍不可达才退回锚定上下文视图兜底。
+   */
+  const resumeFromLastRead = async () => {
+    const taskId = taskState.getTaskId()
+    if (!taskId) return
+    resumeDismissedAtSeq.value = String(readingProgress.progress.value?.latest_change_seq ?? '0')
+    try {
+      const result = await fetchReadingResume({ workspaceId: getWorkspaceId(), taskId })
+      if (!result || result.anchor_status === 'none' || !result.initialized) {
+        ElMessage.info(t('reading.resume_none'))
+        return
+      }
+      if (result.anchor_status === 'empty') {
+        ElMessage.info(t('reading.resume_empty'))
+        return
+      }
+      const anchorId = String(result.anchor?.message_id || '')
+      if (!anchorId) {
+        ElMessage.info(t('reading.resume_none'))
+        return
+      }
+      // 确认当前整批未读（§8.4 显式确认：仅覆盖签名窗口上界）
+      await readingProgress.acknowledgeAll(taskId)
+      // 若正处于锚定定位（搜索/引用跳转），先回到最新视图
+      if (historyContext.anchored.value || String(route.query.messageId || '')) {
+        await history.returnToLatest()
+      }
+      // 最新页尚未加载完成时先加载一次
+      if (!messages.visibleMessages.value.length) {
+        await history.loadHistory(taskId, true)
+      }
+      // 锚点在已加载范围内 → 直接滚动；否则逐页向前加载（有界 6 页）
+      let found = await scrollToMessageInLatestView(anchorId, result.anchor?.offset_ratio ?? null)
+      let pages = 0
+      while (!found && history.hasMore.value && pages < 6) {
+        await history.loadOlderMessages()
+        found = await scrollToMessageInLatestView(anchorId, result.anchor?.offset_ratio ?? null)
+        pages += 1
+      }
+      if (!found) {
+        // 兜底：锚点非常早（超过有界加载），退回锚定上下文视图
+        await history.loadAnchorContext(anchorId)
+      }
+      if (result.anchor_status === 'updated') ElMessage.info(t('reading.anchor_updated'))
+      else if (result.anchor_status === 'retracted') ElMessage.info(t('reading.anchor_retracted'))
+      else if (result.anchor_status === 'missing') ElMessage.info(t('reading.anchor_missing'))
+    } catch {
+      ElMessage.warning(t('reading.resume_unavailable'))
+    }
+  }
+
   const sessionState = useSessionState({
     getWorkspaceId,
     getCurrentTask: () => taskState.currentTask.value,
@@ -275,6 +402,13 @@ export function useChatViewModel() {
           const wasReady = ws.isSubscriptionReady(taskId)
           ws.markSubscriptionReady(taskId)
           sessionState.onInitialSubscriptionReady(taskId, wasReady)
+          // 就绪后补取一次个人阅读快照（覆盖断线期间的私有变更）
+          void readingProgress.onConnectionReady(taskId)
+          return
+        }
+        if (frameType === 'reading_progress_changed') {
+          // 私有失效通知：无公共序号的业务事件，不进入公共回放分支
+          readingProgress.handleWsFrame(frame.payload)
           return
         }
         handleWsMessage(frame)
@@ -633,7 +767,13 @@ export function useChatViewModel() {
       specDrawer.setTab('spec_doc')
       specDrawer.requestSpecDrawerLevel(specDrawer.lastOpenSpecDrawerLevel.value)
     }
+    // 阅读进度：切任务先清空本地状态与待提交队列，再建立个人基线
+    readingProgress.reset()
+    resumeDismissedAtSeq.value = null
+    readingUnreadSnapshot.value = null
+    readingBannerClosed.value = false
     ws.connect(task.id)
+    if (!route.query.messageId) void readingProgress.ensureSession(String(task.id))
   }
 
   async function openTaskSession(taskId: string) {
@@ -719,6 +859,9 @@ export function useChatViewModel() {
     if (!ws.isHealthy(taskId) && submissions.busy.value) {
       void sessionState.recoverSession('visibility-unavailable')
     }
+    // 前台恢复：一次校验快照（生命周期触发，非周期任务），并尽力 flush 待提交回执
+    void readingProgress.refresh(taskId)
+    void readingProgress.flushNow(taskId)
   }
 
   onMounted(() => {
@@ -739,6 +882,7 @@ export function useChatViewModel() {
     contextPanel.clearRefreshTimer()
     highlight.clear()
     diagnosis.clearTimer()
+    readingProgress.reset()
   })
 
   return {
@@ -986,6 +1130,16 @@ export function useChatViewModel() {
     chatContainer,
     terminalContainer,
     setTerminalContainer,
+
+    // 阅读进度与续读
+    readingState: readingProgress.progress,
+    readingSyncState: readingProgress.syncState,
+    readingNotReady: readingProgress.readingNotReady,
+    readingPendingCount: readingProgress.pendingCount,
+    showResumeBanner,
+    closeResumeBanner,
+    readingUnreadSnapshot,
+    resumeFromLastRead,
   }
 }
 

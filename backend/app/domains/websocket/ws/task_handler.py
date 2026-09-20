@@ -87,7 +87,7 @@ class TaskWebSocketHandler:
 
     async def run(self) -> None:
         """Accept, serve, and always unregister the connection."""
-        connect_kwargs = {"client_key": self._client_key}
+        connect_kwargs = {"client_key": self._client_key, "user_id": self._user.id}
         if self._resume_epoch is not None or self._last_sequence is not None:
             connect_kwargs.update(epoch=self._resume_epoch, last_sequence=self._last_sequence)
         self._outbound = await self._manager.connect(self._websocket, self._task_id, **connect_kwargs)
@@ -417,6 +417,8 @@ class TaskWebSocketHandler:
                         creator_avatar_svg=self._user.avatar_svg,
                         created_at=created_at,
                         session_generation=created.session_generation,
+                        reading_item_key=created.reading_item_key,
+                        reading_change_seq=str(created.reading_change_seq) if created.reading_change_seq is not None else None,
                     ).model_dump(),
                 ),
             )
@@ -481,6 +483,8 @@ class TaskWebSocketHandler:
                         session_turn_id=created.session_turn_id,
                         session_generation=created.session_generation,
                         can_undo=created.can_undo,
+                        reading_item_key=created.reading_item_key,
+                        reading_change_seq=str(created.reading_change_seq) if created.reading_change_seq is not None else None,
                     ).model_dump(),
                 ),
             )

@@ -117,6 +117,7 @@ def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]
         WorkspaceMember.user_id == message.creator_id,
     ).first() if message.creator_id else None
     metadata = message.metadata_json if isinstance(message.metadata_json, dict) else None
+    reading_info = _load_reading_info(db, message)
     return {
         "task_id": message.task_id,
         "role": _enum_text(message.role) if message.role else "user",
@@ -133,8 +134,27 @@ def _chat_message_event_dto(db: Session, message: ChatMessage) -> dict[str, Any]
         "created_at": message.created_at.isoformat() if message.created_at else None,
         "session_turn_id": message.session_turn_id,
         "session_generation": message.session_generation,
+        "reading_item_key": reading_info.get("item_key") if reading_info else None,
+        "reading_change_seq": str(reading_info["change_seq"]) if reading_info and reading_info.get("change_seq") is not None else None,
         "can_undo": bool(message.session_turn_id),
     }
+
+
+def _load_reading_info(db: Session, message: ChatMessage) -> Optional[dict[str, Any]]:
+    """读取消息当前阅读身份（已在捕获事务中登记；缺失时返回 None）。"""
+    from app.domains.task.models.reading import TaskReadingItem
+
+    item = (
+        db.query(TaskReadingItem)
+        .filter(
+            TaskReadingItem.task_id == message.task_id,
+            TaskReadingItem.item_key == f"message:{message.id}",
+        )
+        .first()
+    )
+    if item is None:
+        return None
+    return {"item_key": item.item_key, "change_seq": int(item.change_seq)}
 
 
 @dataclass(frozen=True)
@@ -153,6 +173,8 @@ class CreatedChatTurn:
     session_generation: Optional[int]
     job_id: str
     can_undo: bool = True
+    reading_item_key: Optional[str] = None
+    reading_change_seq: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -324,6 +346,12 @@ def _persist_chat_turn_sync(
         commit=False,
     )
     turn.ai_job_id = job.id
+    # 阅读捕获与源消息同事务（task 行锁已取得）：先登记条目，
+    # outbox 事件的 DTO 才能携带共享内容版本 reading_change_seq
+    from app.domains.task.services import reading_capture_service
+    reading_info = reading_capture_service.record_message_change(
+        db, task_id=task_id, message=message
+    )
     if submission is not None:
         submission.ai_job_id = job.id
         submission.chat_message_id = message.id
@@ -356,6 +384,8 @@ def _persist_chat_turn_sync(
         session_generation=generation,
         job_id=str(job.id),
         can_undo=bool(checkpoint_root),
+        reading_item_key=reading_info.get("item_key"),
+        reading_change_seq=reading_info.get("change_seq"),
     )
 
 
@@ -719,12 +749,22 @@ async def _restore_provider_for_suffix(
     return None
 
 
-def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], message_ids: list[str]) -> None:
+def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], message_ids: list[str], operation_id: Optional[str] = None) -> None:
     from app.domains.task.models.chat_submission import TaskChatSubmission
     db.query(TaskChatSubmission).filter(TaskChatSubmission.task_id == task.id,
         TaskChatSubmission.chat_message_id.in_(message_ids)).delete(synchronize_session=False)
     from app.domains.search.capture import enqueue_scope
     enqueue_scope(db, task_id=task.id, workspace_id=task.workspace_id)
+    if message_ids and operation_id:
+        # 撤回边界与源删除同事务：失效阅读条目并登记结构化 notice（不含正文）。
+        from app.domains.task.services import reading_capture_service
+        reading_capture_service.record_message_retractions(
+            db,
+            task_id=task.id,
+            message_ids=message_ids,
+            operation_id=operation_id,
+            reason="session_undo",
+        )
     job_ids = [turn.ai_job_id for turn in suffix if turn.ai_job_id]
     trace_paths: list[str] = []
     for turn in suffix:
@@ -915,7 +955,7 @@ def _complete_undo_sync(
         if suffix_ids
         else []
     )
-    _redact_suffix(db, task, suffix, context["message_ids"])
+    _redact_suffix(db, task, suffix, context["message_ids"], operation_id=context["operation_id"])
     now = datetime.utcnow()
     for turn in suffix:
         turn.status = TaskSessionTurnStatus.REVERTED
