@@ -1,12 +1,12 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Brain, ChevronDown, Loader2 } from 'lucide-vue-next'
-import RunSummaryCard from './RunSummaryCard.vue'
+import { Brain, ChevronDown } from 'lucide-vue-next'
 import HitlInteractionCard from './HitlInteractionCard.vue'
-import type { ChatStatusCard, HitlCard, ResultsSummaryState } from '@/composables/chat/types'
+import type { HitlCard } from '@/composables/chat/types'
 
 /**
- * 会话置顶卡片区（不随对话滚动）：AI 思考卡、运行摘要卡与 HITL 交互卡的装配容器。
+ * 会话置顶卡片区（不随对话滚动）：AI 思考卡与 HITL 交互卡的装配容器。
  * 展开状态与应答提交均上交视图模型，本组件只做编排与思考卡的展示。
  */
 const props = defineProps<{
@@ -14,21 +14,20 @@ const props = defineProps<{
   thinkingContent: string
   thinkingExpanded: boolean
   engineRunning: boolean
-  statusCards: ChatStatusCard[]
-  resultsSummary: ResultsSummaryState
   hitlCards: HitlCard[]
 }>()
 
 const emit = defineEmits<{
   (event: 'update:thinkingExpanded', value: boolean): void
-  (event: 'toggle-summary-expanded'): void
   (event: 'submit-hitl', cardId: string, value: string): void
 }>()
 
 const { t } = useI18n()
 
+const thinkingBase = computed(() => t('chat.thinking').replace(/\.{3,}$/, ''))
+
 const hasCards = () => (
-  props.hitlCards.length > 0 || props.statusCards.length > 0 || props.showThinking || props.resultsSummary.visible
+  props.hitlCards.length > 0 || (props.showThinking && Boolean(props.thinkingContent))
 )
 </script>
 
@@ -43,9 +42,10 @@ const hasCards = () => (
         @click="emit('update:thinkingExpanded', !props.thinkingExpanded)"
       >
         <div class="header-title flex items-center gap-2">
-          <Brain class="w-4 h-4" />
-          <Loader2 v-if="props.engineRunning" class="w-3 h-3 spin text-primary" />
-          <span>{{ t('chat.thinking') }}</span>
+          <Brain class="w-4 h-4 text-primary" />
+          <span class="thinking-label">
+            {{ thinkingBase }}<span v-if="props.engineRunning" class="thinking-dots" aria-hidden="true"></span><span v-else>...</span>
+          </span>
         </div>
         <ChevronDown class="w-4 h-4 toggle-icon transition-transform" :class="{'rotate-180': props.thinkingExpanded}" />
       </div>
@@ -53,13 +53,6 @@ const hasCards = () => (
         <pre>{{ props.thinkingContent }}</pre>
       </div>
     </div>
-
-    <!-- 运行状态与任务状态分布 -->
-    <RunSummaryCard
-      :status-cards="props.statusCards"
-      :results-summary="props.resultsSummary"
-      @toggle-expanded="emit('toggle-summary-expanded')"
-    />
 
     <!-- HITL 交互卡片 -->
     <HitlInteractionCard
@@ -122,5 +115,30 @@ const hasCards = () => (
   color: #64748B;
   white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+.thinking-label {
+  display: inline-flex;
+  align-items: center;
+}
+
+.thinking-dots {
+  display: inline-block;
+  min-width: 28px;
+  text-align: left;
+}
+
+.thinking-dots::after {
+  content: '.';
+  animation: thinking-dots-step 1.5s infinite steps(5, jump-none);
+}
+
+@keyframes thinking-dots-step {
+  0% { content: '.'; }
+  20% { content: '..'; }
+  40% { content: '...'; }
+  60% { content: '....'; }
+  80% { content: '.....'; }
+  100% { content: '.'; }
 }
 </style>

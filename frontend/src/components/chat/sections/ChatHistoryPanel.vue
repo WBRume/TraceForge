@@ -24,58 +24,71 @@ const { t } = useI18n()
 </script>
 
 <template>
-  <ReadingResumeBanner
-    v-if="props.vm.currentTask && !props.vm.historyAnchored && props.vm.showResumeBanner"
-    :unread-count="props.vm.readingUnreadSnapshot"
-    :sync-state="props.vm.readingSyncState"
-    @resume="props.vm.resumeFromLastRead"
-    @close="props.vm.closeResumeBanner"
-    @return-latest="props.vm.returnToLatest"
-  />
-  <div v-if="props.vm.historyAnchored" class="history-context-bar" role="status">
-    <span>{{ props.vm.historyHasNew ? '历史窗口 · 有新消息' : '正在查看历史消息' }}</span>
-    <button @click="props.vm.returnToLatest">回到最新</button>
-    <button v-if="props.vm.historyHasAfter" :disabled="props.vm.historyContextLoading" @click="props.vm.loadContextDirection('after')">加载后续消息</button>
-  </div>
-  <div class="chat-history" :ref="props.containerRef" @scroll="props.vm.handleChatScroll">
-    <div v-if="props.vm.loadingMore" class="loading-more-hint">
-      <Loader2 class="w-4 h-4 spin" />
-      <span>{{ t('common.loading') }}</span>
+  <div class="chat-history-panel-root">
+    <ReadingResumeBanner
+      v-if="props.vm.currentTask && !props.vm.historyAnchored && props.vm.showResumeBanner"
+      :unread-count="props.vm.readingUnreadSnapshot"
+      :sync-state="props.vm.readingSyncState"
+      @resume="props.vm.resumeFromLastRead"
+      @close="props.vm.closeResumeBanner"
+      @return-latest="props.vm.returnToLatest"
+    />
+    <div v-if="props.vm.historyAnchored" class="history-context-bar" role="status">
+      <span>{{ props.vm.historyHasNew ? '历史窗口 · 有新消息' : '正在查看历史消息' }}</span>
+      <button @click="props.vm.returnToLatest">回到最新</button>
+      <button v-if="props.vm.historyHasAfter" :disabled="props.vm.historyContextLoading" @click="props.vm.loadContextDirection('after')">加载后续消息</button>
     </div>
-    <div v-else-if="props.vm.hasMore" class="load-more-hint" @click="props.vm.loadOlderMessages">
-      · {{ t('common.load_more') }}
-    </div>
-    <template v-for="msg in props.vm.messages" :key="msg.id">
-      <!-- 会话分隔线：每次初始化产生 -->
-      <div
-        v-if="msg.message_type === 'init_reason'"
-        class="session-separator"
-        :class="{ 'is-highlighted': props.vm.highlightedMessageId === msg.id }"
-        :data-message-id="msg.id"
-      >
-        <div class="separator-line"></div>
-        <div class="separator-content">
-          <span class="separator-time">{{ props.vm.formatTime(msg.created_at) }}</span>
-          <span v-if="msg.content" class="separator-reason">{{ msg.content }}</span>
-        </div>
-        <div class="separator-line"></div>
+    <div class="chat-history" :ref="props.containerRef" @scroll="props.vm.handleChatScroll">
+      <div v-if="props.vm.loadingMore" class="loading-more-hint">
+        <Loader2 class="w-4 h-4 spin" />
+        <span>{{ t('common.loading') }}</span>
       </div>
-      <!-- 普通消息气泡 -->
-      <ChatMessageBubble
-        v-else
-        :msg="msg"
-        :vm="props.vm"
-        @undo-request="emit('undo-request', $event)"
-      />
-    </template>
+      <div v-else-if="props.vm.hasMore" class="load-more-hint" @click="props.vm.loadOlderMessages">
+        · {{ t('common.load_more') }}
+      </div>
+      <template v-for="msg in props.vm.messages" :key="msg.id">
+        <!-- 会话分隔线：每次初始化产生 -->
+        <div
+          v-if="msg.message_type === 'init_reason'"
+          class="session-separator"
+          :class="{ 'is-highlighted': props.vm.highlightedMessageId === msg.id }"
+          :data-message-id="msg.id"
+        >
+          <div class="separator-line"></div>
+          <div class="separator-content">
+            <span class="separator-time">{{ props.vm.formatTime(msg.created_at) }}</span>
+            <span v-if="msg.content" class="separator-reason">{{ msg.content }}</span>
+          </div>
+          <div class="separator-line"></div>
+        </div>
+        <!-- 普通消息气泡 -->
+        <ChatMessageBubble
+          v-else
+          :msg="msg"
+          :vm="props.vm"
+          @undo-request="emit('undo-request', $event)"
+        />
+      </template>
 
-    <div v-if="props.vm.messages.length === 0" class="chat-empty-hint">
-      <p>{{ t('chat.empty_hint') }}</p>
+      <div v-if="props.vm.messages.length === 0" class="chat-empty-hint">
+        <p>{{ t('chat.empty_hint') }}</p>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* ─── Chat History Panel Root ─── */
+.chat-history-panel-root {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
 /* ─── Chat History ─── */
 .chat-history {
   flex: 1;

@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   GitPullRequest,
   FileText,
-  Loader2,
 } from 'lucide-vue-next'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
@@ -37,7 +36,6 @@ const { t } = useI18n()
     <div class="header-left">
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
       <span class="badge" :class="props.vm.currentTask.status.toLowerCase()">{{ props.vm.currentTask.status }}</span>
-      <Loader2 v-if="props.vm.engineRunning" class="w-4 h-4 spin text-primary" />
     </div>
     <div class="header-actions">
       <button
