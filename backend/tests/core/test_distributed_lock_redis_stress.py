@@ -1,6 +1,8 @@
 import asyncio
 import os
 import sys
+import uuid
+from unittest import mock
 from typing import List
 
 import pytest
@@ -37,6 +39,40 @@ async def _ensure_redis_provider() -> None:
 def _reset_redis_runtime_cache() -> None:
     dl._PROVIDER = None
     redis_client_module._REDIS_CLIENT = None
+
+
+def test_redis_lock_recovers_committed_set_with_lost_response():
+    from redis.exceptions import TimeoutError as RedisTimeoutError
+
+    _skip_unless_redis_lock_mode()
+
+    async def _run() -> None:
+        client = await redis_client_module.get_redis_client()
+        resource_id = f"lost-response-{uuid.uuid4().hex}"
+        key = dl._sanitize_lock_key(resource_type="task", resource_id=resource_id)
+        original_set = client.set
+        committed_tokens = []
+
+        async def lose_response(name, value, **kwargs):
+            result = await original_set(name, value, **kwargs)
+            if name == key and result:
+                committed_tokens.append(value)
+                raise RedisTimeoutError("injected lost SET response")
+            return result
+
+        try:
+            with mock.patch.object(client, "set", side_effect=lose_response):
+                async with dl.RedisLockProvider().lock(
+                    resource_type="task", resource_id=resource_id, ttl=5,
+                ):
+                    assert len(committed_tokens) == 1
+                    assert await client.get(key) == committed_tokens[0]
+                    assert await client.pttl(key) > 3000
+            assert await client.get(key) is None
+        finally:
+            await redis_client_module.close_redis_client()
+
+    asyncio.run(_run())
 
 
 def test_redis_lock_same_key_exclusive_under_concurrency():
