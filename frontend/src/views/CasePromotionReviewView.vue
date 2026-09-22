@@ -58,7 +58,12 @@ const loadJob = async () => {
 
     if (current) {
       job.value = current
-      floating.ingestPromotionJob(current)
+      const reviewState = current.result?.review_state
+      if (reviewState === 'CONFIRMED' || reviewState === 'DISCARDED') {
+        floating.dismiss(current.job_id)
+      } else {
+        floating.ingestPromotionJob(current)
+      }
       if (current.result?.draft) {
         reviewDraft.value = JSON.parse(JSON.stringify(current.result.draft))
       }
@@ -117,6 +122,7 @@ const handleConfirm = async () => {
     )
 
     job.value = data
+    clearTimeout(pollTimer)
     floating.dismiss(current.job_id)
     ElMessage.success('诊断规程已成功入库！')
 
@@ -156,6 +162,7 @@ const doDiscard = async () => {
       },
     )
     job.value = data
+    clearTimeout(pollTimer)
     floating.dismiss(current.job_id)
     discardConfirmOpen.value = false
     ElMessage.info('已放弃该诊断规程草案')

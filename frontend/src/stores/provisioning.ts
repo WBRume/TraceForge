@@ -551,11 +551,18 @@ export const useProvisioningStore = defineStore('provisioning', () => {
 
   // Promotion jobs share the floating presentation, but use notification WS invalidations.
   const ingestPromotionJob = (payload: RequirementPreviewJobApiPayload, inDialog = false) => {
-    const existing = jobs.value[asJobId(payload.job_id)]
+    const normalizedJobId = asJobId(payload?.job_id)
+    if (!normalizedJobId) return null
+    const reviewState = payload.result?.review_state
+    if (reviewState === 'CONFIRMED' || reviewState === 'DISCARDED') {
+      dismiss(normalizedJobId)
+      return null
+    }
+    const existing = jobs.value[normalizedJobId]
     if (existing?.terminal && !PREVIEW_FINAL_STATUSES.has(String(payload.status))) return existing
     const view = upsertPreviewJobFromPayload({ ...payload, job_kind: 'playbook_promotion', requirement_title: '案例晋升诊断规程' })
     if (view) {
-      const next = { ...view, promotionPayload: payload, reviewRequired: payload.result?.review_state === 'PENDING', ...(inDialog ? { handedOver: false, viewed: false } : {}) }
+      const next = { ...view, promotionPayload: payload, reviewRequired: reviewState === 'PENDING', ...(inDialog ? { handedOver: false, viewed: false } : {}) }
       jobs.value = { ...jobs.value, [view.jobId]: next }
       return next
     }

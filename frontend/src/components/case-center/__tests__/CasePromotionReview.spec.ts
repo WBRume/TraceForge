@@ -3,6 +3,7 @@ import { createPinia } from 'pinia'
 import { beforeEach, expect, it, vi } from 'vitest'
 import CasePromotionAction from '../CasePromotionAction.vue'
 import CasePromotionReview from '../CasePromotionReview.vue'
+import { useProvisioningStore } from '@/stores/provisioning'
 import api from '@/utils/api'
 vi.mock('@/utils/api', () => ({ default: { get: vi.fn(), post: vi.fn() } }))
 const draft = { grouping_reason: '建议按触发条件分组', playbooks: [['a', 'b'], ['c']].map((ids, index) => ({
@@ -13,7 +14,7 @@ const job = { job_id: 'job', workspace_id: 'ws', status: 'SUCCESS', progress: 10
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(api.get).mockResolvedValue({ data: { items: [job] } }) })
 const mountAction = () => mount(CasePromotionAction, { props: { workspaceId: 'ws', caseIds: ['a','b','c'] }, global: {
   plugins: [createPinia()], stubs: { ConfirmActionModal: true, RequirementImportDialog: {
-    props: ['open', 'reviewPending'], template: '<section v-if="open"><slot v-if="reviewPending" name="promotion" /></section>',
+    name: 'RequirementImportDialog', props: ['open', 'reviewPending'], template: '<div><slot v-if="open && reviewPending" name="promotion" /></div>',
   } },
 } })
 
@@ -33,6 +34,8 @@ it('shows two-plus-one as a reviewable draft and only confirms edited content on
   await review.get('.btn-primary').trigger('click'); await flushPromises()
   expect(api.post).toHaveBeenCalledWith('/workspaces/ws/cases/playbook-promotions/job/confirm', expect.objectContaining({ draft_revision: 'rev', draft: expect.objectContaining({ playbooks: expect.arrayContaining([expect.objectContaining({ title: '人工修订的定位方法' })]) }) }))
   expect(wrapper.emitted('completed')).toHaveLength(1)
+  expect(useProvisioningStore().jobs['job']).toBeUndefined()
+  expect(wrapper.findComponent({ name: 'RequirementImportDialog' }).props('open')).toBe(false)
   wrapper.unmount()
 })
 
@@ -45,6 +48,18 @@ it('requests model re-abstraction instead of publishing or concatenating two gro
   expect(api.post).toHaveBeenCalledOnce()
   expect(api.post).toHaveBeenCalledWith('/workspaces/ws/cases/playbook-promotions/job/regenerate', { draft_revision: 'rev', idempotency_key: expect.any(String) })
   expect(wrapper.emitted('completed')).toBeUndefined()
+  wrapper.unmount()
+})
+
+it('discards promotion draft, closes dialog, and dismisses floating job', async () => {
+  const wrapper = mountAction(); await flushPromises()
+  await wrapper.get('button').trigger('click'); await flushPromises()
+  vi.mocked(api.post).mockResolvedValue({ data: { ...job, result: { ...job.result, review_state: 'DISCARDED' } } })
+  const discardBtn = wrapper.findAll('button').find(b => b.text() === '放弃草案')!
+  await discardBtn.trigger('click'); await flushPromises()
+  expect(api.post).toHaveBeenCalledWith('/workspaces/ws/cases/playbook-promotions/job/discard', { draft_revision: 'rev' })
+  expect(useProvisioningStore().jobs['job']).toBeUndefined()
+  expect(wrapper.findComponent({ name: 'RequirementImportDialog' }).props('open')).toBe(false)
   wrapper.unmount()
 })
 

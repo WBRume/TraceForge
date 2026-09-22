@@ -500,4 +500,58 @@ describe('ProvisionFloatingWidget', () => {
     wrapper.unmount()
     store.dismiss('pjob-4')
   })
+
+  it('automatically removes promotion card when confirmed or discarded', async () => {
+    const store = useProvisioningStore()
+    store.ingestPromotionJob({
+      job_id: 'promotion-1',
+      workspace_id: 'ws-1',
+      status: 'SUCCESS',
+      progress: 100,
+      result: { review_state: 'PENDING' },
+    }, false)
+    store.minimizePreviewJob('promotion-1')
+
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('案例晋升诊断规程')
+    expect(wrapper.text()).toContain('确认草案')
+
+    // 当规程审核状态变为 CONFIRMED
+    store.ingestPromotionJob({
+      job_id: 'promotion-1',
+      workspace_id: 'ws-1',
+      status: 'SUCCESS',
+      progress: 100,
+      result: { review_state: 'CONFIRMED' },
+    }, false)
+    await flushPromises()
+
+    expect(wrapper.find('.provision-widget').exists()).toBe(false)
+    expect(store.jobs['promotion-1']).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('allows manually dismissing terminal promotion card via close button', async () => {
+    const store = useProvisioningStore()
+    store.ingestPromotionJob({
+      job_id: 'promotion-2',
+      workspace_id: 'ws-1',
+      status: 'SUCCESS',
+      progress: 100,
+      result: { review_state: 'PENDING' },
+    }, false)
+    store.minimizePreviewJob('promotion-2')
+
+    const wrapper = mountWidget()
+    expect(wrapper.text()).toContain('案例晋升诊断规程')
+    const closeBtn = wrapper.find('.widget-job-actions .widget-icon-btn')
+    expect(closeBtn.exists()).toBe(true)
+
+    await closeBtn.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.provision-widget').exists()).toBe(false)
+    expect(store.jobs['promotion-2']).toBeUndefined()
+    wrapper.unmount()
+  })
 })

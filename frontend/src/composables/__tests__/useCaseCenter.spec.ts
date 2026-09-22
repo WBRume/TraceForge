@@ -107,12 +107,14 @@ describe('useCaseCenter', () => {
     expect(apiMock.post).toHaveBeenCalledWith('/workspaces/ws-1/cases/case-1/submit')
   })
 
-  it('decides an in-review case with approve conclusion and comment', async () => {
+  it('decides an in-review case with approve conclusion and comment and closes dialog', async () => {
     apiMock.get.mockResolvedValue({ data: caseItem({ status: 'IN_REVIEW' }) })
     apiMock.post.mockResolvedValueOnce({ data: caseItem({ status: 'APPROVED' }) })
     const vm = useCaseCenter()
     await vm.openCase('case-1')
-    vm.reviewConclusion.value = 'approve'
+    vm.openReviewDialog('approve')
+    expect(vm.reviewDialogVisible.value).toBe(true)
+
     vm.reviewComment.value = '根因清晰，同意入库'
     await vm.confirmReview()
 
@@ -120,6 +122,35 @@ describe('useCaseCenter', () => {
       conclusion: 'approve',
       comment: '根因清晰，同意入库',
     })
+    expect(vm.reviewDialogVisible.value).toBe(false)
+    expect(vm.reviewComment.value).toBe('')
+  })
+
+  it('resets dialog visible and comment on closeReviewDialog', () => {
+    const vm = useCaseCenter()
+    vm.openReviewDialog('reject')
+    vm.reviewComment.value = '需要补充链路'
+    expect(vm.reviewDialogVisible.value).toBe(true)
+
+    vm.closeReviewDialog()
+    expect(vm.reviewDialogVisible.value).toBe(false)
+    expect(vm.reviewComment.value).toBe('')
+  })
+
+  it('prevents rejection if comment is empty and keeps dialog open', async () => {
+    apiMock.get.mockResolvedValue({ data: caseItem({ status: 'IN_REVIEW' }) })
+    const vm = useCaseCenter()
+    await vm.openCase('case-1')
+    vm.openReviewDialog('reject')
+    vm.reviewComment.value = '   '
+
+    await vm.confirmReview()
+
+    expect(apiMock.post).not.toHaveBeenCalledWith(
+      expect.stringContaining('/review'),
+      expect.anything(),
+    )
+    expect(vm.reviewDialogVisible.value).toBe(true)
   })
 
   it('saves a new case through the create endpoint', async () => {

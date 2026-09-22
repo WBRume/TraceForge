@@ -30,6 +30,7 @@ import CaseReviewTimeline from './CaseReviewTimeline.vue'
 import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import CaseFormDialog from './CaseFormDialog.vue'
 import CasePlaybookHistory from './CasePlaybookHistory.vue'
+import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -318,41 +319,34 @@ const callChainItems = computed(() => {
       @save="vm.saveForm()"
     />
 
-    <!-- ─── Review decision dialog ─── -->
-    <el-dialog
-      v-model="vm.reviewDialogVisible"
+    <!-- ─── Review decision modal ─── -->
+    <ConfirmActionModal
+      :show="vm.reviewDialogVisible"
       :title="vm.reviewConclusion === 'approve' ? t('case_center.action.approve') : t('case_center.action.reject')"
-      width="480px"
-      append-to-body
+      :message="vm.reviewConclusion === 'approve' ? t('case_center.review_approve_message') : t('case_center.review_reject_message')"
+      :cancel-text="t('common.cancel')"
+      :confirm-text="vm.reviewConclusion === 'approve' ? t('case_center.action.approve') : t('case_center.action.reject')"
+      :tone="vm.reviewConclusion === 'approve' ? 'success' : 'danger'"
+      :loading="vm.actionLoading"
+      @cancel="vm.closeReviewDialog()"
+      @confirm="vm.confirmReview()"
     >
-      <el-input
-        v-model="vm.reviewComment"
-        type="textarea"
-        :rows="4"
-        :placeholder="t('case_center.review_comment_placeholder')"
-      />
-      <template #footer>
-        <button class="btn-secondary" type="button" @click="vm.reviewDialogVisible = false">{{ t('common.cancel') }}</button>
-        <button
-          v-if="vm.reviewConclusion === 'approve'"
-          class="btn-primary"
-          type="button"
-          :disabled="vm.actionLoading"
-          @click="vm.confirmReview()"
-        >
-          <CheckCircle2 :size="16" /> {{ t('case_center.action.approve') }}
-        </button>
-        <button
-          v-else
-          class="btn-secondary case-btn-danger"
-          type="button"
-          :disabled="vm.actionLoading"
-          @click="vm.confirmReview()"
-        >
-          <XCircle :size="16" /> {{ t('case_center.action.reject') }}
-        </button>
+      <template #icon>
+        <CheckCircle2 v-if="vm.reviewConclusion === 'approve'" class="w-6 h-6 flex-shrink-0" />
+        <XCircle v-else class="w-6 h-6 flex-shrink-0" />
       </template>
-    </el-dialog>
+      <template #content>
+        <div class="review-dialog-content">
+          <label class="review-dialog-label">{{ t('case_center.review_comment_label') }}</label>
+          <textarea
+            v-model="vm.reviewComment"
+            class="review-dialog-textarea"
+            rows="4"
+            :placeholder="t('case_center.review_comment_placeholder')"
+          />
+        </div>
+      </template>
+    </ConfirmActionModal>
   </div>
 </template>
 
@@ -882,5 +876,41 @@ const callChainItems = computed(() => {
   .report-aside {
     position: static;
   }
+}
+
+/* ─── 评审确认弹窗内容样式（与全局 ConfirmActionModal 融合） ─── */
+.review-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.review-dialog-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.review-dialog-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 0.875rem;
+  color: #1e293b;
+  background-color: #f8fafc;
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), background-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.review-dialog-textarea:focus {
+  outline: none;
+  border-color: var(--color-primary-500);
+  background-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.15);
 }
 </style>
