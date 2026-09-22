@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import BinaryIO, Optional
 
 from app.agents.contract import record_attempt_termination
 from app.agents.supervision import reclaim, spawn
@@ -83,6 +83,7 @@ class ProcessSupervisor:
         on_process_started=None,
         containment_id: Optional[str] = None,
         process_attach_timeout_seconds: Optional[float] = None,
+        stdin: int | BinaryIO = asyncio.subprocess.DEVNULL,
     ) -> ManagedAgentProcess:
         return await spawn.spawn_supervised(
             self,
@@ -94,6 +95,7 @@ class ProcessSupervisor:
             on_process_started=on_process_started,
             containment_id=containment_id,
             process_attach_timeout_seconds=process_attach_timeout_seconds,
+            stdin=stdin,
         )
 
     # ── attempt 级停止（本 worker 持有的进程）───────────────────────

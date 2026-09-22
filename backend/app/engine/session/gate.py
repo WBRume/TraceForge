@@ -41,11 +41,13 @@ class SessionGate:
         session_revision: Optional[int],
         ttl_seconds: float,
         attempt: Optional[AgentAttemptContext] = None,
+        additional_fences=(),
     ):
         self.task_id = task_id
         self.job_id = job_id
         self.session_revision = session_revision
         self.attempt = attempt
+        self.additional_fences = tuple(additional_fences)
         self._ttl = max(0.0, float(ttl_seconds))
         self._armed = bool(job_id and session_revision is not None)
         self._stale = False
@@ -112,6 +114,9 @@ class SessionGate:
         """线程闭包内的关键写入复核（复用调用方 session，不另开连接）。"""
         if self._stale:
             return False
+        for fence in self.additional_fences:
+            if not fence.fence_sync(db):
+                return False
         if not self._armed:
             return True
         try:

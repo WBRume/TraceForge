@@ -45,6 +45,11 @@ const diagnosisExtractedFromAi = computed(() => {
 })
 
 const msgRole = computed(() => String(props.msg?.role || '').toLowerCase())
+const displayContent = computed(() => {
+  const content = String(props.msg?.content || '')
+  return msgRole.value === 'assistant' && props.vm.currentTask?.task_meta_json?.diagnosis_playbook_guide
+    ? content.replace(/```traceforge-sop[\s\S]*?(?:```|$)/g, '').trim() : content
+})
 const memberColor = computed(() => props.vm?.messageAuthorColor?.(props.msg) || '#0EA5E9')
 
 const metadata = computed(() => {
@@ -242,6 +247,7 @@ function openDiagnosisCase(caseId: string) {
       <DiagnosisResultCard
         v-if="isDiagnosisResult && diagnosisPayload"
         :payload="diagnosisPayload"
+        :playbook-provenance="msg.metadata?.playbook_provenance"
         :status="diagnosisStatus"
         :extracted-from-ai="diagnosisExtractedFromAi"
         :case-link="String(vm.diagnosisCaseLink || '')"
@@ -272,7 +278,7 @@ function openDiagnosisCase(caseId: string) {
             :title="segmentTitle(seg)"
           >{{ seg.text }}</span>
         </div>
-        <div v-else class="msg-content">{{ msg.content }}</div>
+        <div v-else class="msg-content">{{ displayContent }}</div>
       </div>
 
       <!-- Bubble Actions (Under the bubble): Mark Decision / Undo / Copy -->

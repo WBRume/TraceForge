@@ -71,3 +71,9 @@ codebuddy-sdk-doc.txt
 /.playwright-cli/
 /output/
 /frontend/demos/
+/examples/
+# Rebuildable local BM25 index and isolated promotion CLI working directories.
+/backend/data/search-bm25.sqlite3*
+/backend/data/playbook-promotion/
+/data/search-bm25.sqlite3
+/data/

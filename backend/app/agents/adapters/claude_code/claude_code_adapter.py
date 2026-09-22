@@ -61,6 +61,10 @@ def _locate_session_file(store_dir: str, session_id: str) -> Optional[str]:
 
 
 class ClaudeCodeAdapter(AgentBackend):
+    def get_runtime_control(self):
+        from app.agents.runtime_control import runtime_control_for
+        return runtime_control_for(self)
+
     name = "claude-code"
     capabilities = AgentCapabilities(
         supports_resume=True,
@@ -123,6 +127,10 @@ class ClaudeCodeAdapter(AgentBackend):
         async def _raw_callback(event: dict[str, Any]) -> None:
             await self._handle_raw_event(event, _tracked_event)
 
+        runtime_kwargs = {}
+        if request.provider_options.get("execution_policy") is not None:
+            runtime_kwargs["runtime_policy"] = request.provider_options["execution_policy"]
+
         try:
             await program.start_session(
                 prompt=request.prompt,
@@ -134,6 +142,7 @@ class ClaudeCodeAdapter(AgentBackend):
                 permission_mode=request.permission_mode,
                 on_process_started=request.on_process_started,
                 process_attach_timeout_seconds=request.process_attach_timeout_seconds,
+                **runtime_kwargs,
             )
             try:
                 await watchdog.wait(program.wait())

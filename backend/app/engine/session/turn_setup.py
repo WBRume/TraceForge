@@ -17,6 +17,29 @@ from app.domains.task.models.task import SddTask
 logger = get_logger(__name__, category="task_execution")
 
 
+def playbook_context_sync(task_id: str) -> str:
+    from app.domains.diagnosis_playbook.analysis_guide import prompt_suffix
+    with SessionLocal() as db:
+        task = db.get(SddTask, task_id)
+        return prompt_suffix(task) if task else ""
+
+
+def playbook_turn_sync(task_id: str) -> dict:
+    from app.domains.diagnosis_playbook.guide_session import turn_context, prompt
+    with SessionLocal() as db:
+        task = db.get(SddTask, task_id)
+        fence = turn_context(task) if task else None
+        return {"fence": fence, "prompt": prompt(task) if fence else ""}
+
+
+def record_playbook_result_sync(task_id, fence, text, job_id, streamed_text=""):
+    from app.domains.diagnosis_playbook.guide_session import accept_result
+    with SessionLocal() as db:
+        result = accept_result(db, task_id, fence, text, job_id, streamed_text)
+        db.commit()
+        return result
+
+
 def resolve_project_path_sync(task_id: str) -> str:
     """线程内执行：解析任务的工作目录（CLI cwd）。"""
     from app.domains.task.services import task_service

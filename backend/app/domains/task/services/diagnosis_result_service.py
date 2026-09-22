@@ -463,7 +463,7 @@ def _enqueue_approved_case_update(db: Session, task, result: SddDiagnosisResult)
         logger.exception("Failed to enqueue RAG update for approved case task=%s", task.id)
 
 
-def upsert_diagnosis_result_from_ai(
+def write_diagnosis_result(
     db: Session,
     *,
     task,
@@ -499,8 +499,15 @@ def upsert_diagnosis_result_from_ai(
     from app.domains.task.services import reading_capture_service
     if card is not None:
         reading_capture_service.record_message_change(db, task_id=task.id, message=card)
-    db.commit()
-    db.refresh(result)
+    return result
+
+
+def upsert_diagnosis_result_from_ai(db: Session, *, task, payload: DiagnosisResultPayload, actor_user_id: str) -> Optional[SddDiagnosisResult]:
+    """Legacy committing wrapper around the transaction-owned projection writer."""
+    result = write_diagnosis_result(db, task=task, payload=payload, actor_user_id=actor_user_id)
+    if result is not None:
+        db.commit()
+        db.refresh(result)
     return result
 
 

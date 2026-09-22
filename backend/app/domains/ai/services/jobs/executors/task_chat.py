@@ -427,6 +427,10 @@ def _finalize_task_chat_job_sync(
     result = convergence.converge_job_attempt_in_txn(db, request)
     if not result.changed or not result.payload:
         return None
+    from app.domains.diagnosis_playbook.guide_execution import on_job_finished
+    guide_state = on_job_finished(db, job)
+    if guide_state:
+        result.payload["guide_snapshot"] = guide_state
     return result.payload
 
 
@@ -482,6 +486,9 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
     is_success = str(payload.get("status") or "") == AiJobStatus.SUCCESS.value
     runtime.clear_cancel_for_payload(payload)
     await publishing.broadcast_job_payload(payload)
+    if payload.get("guide_snapshot"):
+        from app.domains.diagnosis_playbook.guide_execution import dispatch
+        await dispatch(payload["task_id"], payload["guide_snapshot"])
     if not is_success:
         return
     publishing.reschedule_if_pending(payload)
@@ -518,4 +525,7 @@ async def finalize_task_chat_job_failure(
     if payload is None:
         return None
     await publishing.broadcast_job_payload(payload)
+    if payload.get("guide_snapshot"):
+        from app.domains.diagnosis_playbook.guide_execution import dispatch
+        await dispatch(payload["task_id"], payload["guide_snapshot"])
     return payload

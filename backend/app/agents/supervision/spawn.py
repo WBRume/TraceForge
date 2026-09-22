@@ -23,7 +23,7 @@ import asyncio
 import os
 import subprocess
 import uuid
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -194,6 +194,7 @@ async def spawn_supervised(
     on_process_started: Optional[Any] = None,
     containment_id: Optional[str] = None,
     process_attach_timeout_seconds: Optional[float] = None,
+    stdin: int | BinaryIO = asyncio.subprocess.DEVNULL,
 ) -> ManagedAgentProcess:
     """Create one supervised local Agent process and attach it to the attempt."""
     # Doc 7.4: when the deployment requires attempt containment, a
@@ -201,7 +202,7 @@ async def spawn_supervised(
     # starting an unprotected CLI.
     require_containment_ready()
     kwargs: dict = {
-        "stdin": asyncio.subprocess.DEVNULL,
+        "stdin": stdin,
         "stdout": asyncio.subprocess.PIPE,
         "stderr": asyncio.subprocess.PIPE,
     }

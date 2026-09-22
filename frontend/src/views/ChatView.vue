@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { proxyRefs } from 'vue'
 import { ChevronDown, Loader2 } from 'lucide-vue-next'
 import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
@@ -24,6 +24,9 @@ import StartTaskModal from '@/components/chat/sections/StartTaskModal.vue'
 import SpecSidebar from '@/components/chat/sections/spec/SpecSidebar.vue'
 import { useChatViewModel } from '@/composables/chat/useChatViewModel'
 import { useShareFlows } from '@/composables/chat/share/useShareFlows'
+import { useDiagnosisPlaybook } from '@/composables/chat/diagnosis/useDiagnosisPlaybook'
+import DiagnosisSopLayout from '@/components/chat/diagnosis-playbook/DiagnosisSopLayout.vue'
+import { useGuideSession } from '@/composables/chat/diagnosis/useGuideSession'
 
 /**
  * 任务会话工作台（路由级组合面）：三栏布局装配 + 弹窗宿主。
@@ -33,6 +36,43 @@ import { useShareFlows } from '@/composables/chat/share/useShareFlows'
  */
 const rawVm = useChatViewModel()
 const vm = proxyRefs(rawVm)
+const playbook = proxyRefs(useDiagnosisPlaybook({
+  workspaceId: () => String(rawVm.route.params.wsId || ''),
+  taskId: () => String(rawVm.currentTask.value?.id || ''),
+  enabled: () => rawVm.currentTask.value?.task_type === 'DIAGNOSIS' && Boolean(rawVm.currentTask.value?.task_meta_json?.playbook_run_id),
+  eligible: () => rawVm.currentTask.value?.task_type === 'DIAGNOSIS',
+}))
+const guideSession = proxyRefs(useGuideSession({
+  workspaceId: () => String(rawVm.route.params.wsId || ''), taskId: () => String(rawVm.currentTask.value?.id || ''),
+  enabled: () => Boolean(rawVm.currentTask.value?.task_meta_json?.diagnosis_playbook_guide),
+  sessionGeneration: () => Number(rawVm.currentTask.value?.session_generation || 0),
+}))
+rawVm.registerPlaybookEvent((type, payload) => { playbook.onEvent(type, payload); guideSession.onEvent(type, payload) })
+const sopEnabled = computed(() => Boolean(vm.currentTask?.task_meta_json?.diagnosis_playbook_guide || vm.currentTask?.task_meta_json?.playbook_run_id))
+// SOP 三栏较挤，任务列表默认收起；用户选择持久化，跨任务与会话保持
+const SOP_TASKLIST_KEY = 'sdd_sop_tasklist_expanded'
+const showSopTasks = ref(localStorage.getItem(SOP_TASKLIST_KEY) === '1')
+const toggleSopTasks = () => {
+  showSopTasks.value = !showSopTasks.value
+  localStorage.setItem(SOP_TASKLIST_KEY, showSopTasks.value ? '1' : '0')
+}
+
+// 快捷键 [ 切换任务列表；输入控件聚焦时不劫持按键
+const handleGlobalKeydown = (event: KeyboardEvent) => {
+  if (event.key !== '[' || !sopEnabled.value) return
+  const target = event.target as HTMLElement | null
+  if (target?.closest('input, textarea, select, [contenteditable="true"]')) return
+  event.preventDefault()
+  toggleSopTasks()
+}
+onMounted(() => window.addEventListener('keydown', handleGlobalKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', handleGlobalKeydown))
+const investigate = (text: string) => {
+  if (vm.isChatLocked || vm.engineRunning) return
+  if (vm.chatInput?.trim()) { vm.chatInput += '\n\n' + text; return }
+  vm.chatInput = text
+  void vm.sendChat()
+}
 
 // ── 视图装配态 ──
 const showApplyPatchDrawer = ref(false)
@@ -120,8 +160,13 @@ watch(
 </script>
 <template>
   <div class="chat-layout">
-    <!-- Left Sidebar: Task List -->
-    <TaskSidebar :vm="vm" :list-container-ref="rawVm.taskListContainer" />
+    <!-- Left Sidebar: Task List（SOP 模式下可折叠，宽位动画由 .is-collapsed 驱动） -->
+    <TaskSidebar
+      :class="{ 'is-collapsed': sopEnabled && !showSopTasks }"
+      :aria-hidden="sopEnabled && !showSopTasks ? 'true' : undefined"
+      :vm="vm"
+      :list-container-ref="rawVm.taskListContainer"
+    />
 
     <!-- Center: Chat + Pinned Cards -->
     <section
@@ -132,6 +177,9 @@ watch(
     >
       <SessionHeader
         :vm="vm"
+        :show-tasklist-toggle="sopEnabled"
+        :tasklist-visible="showSopTasks"
+        @toggle-tasklist="toggleSopTasks"
         @share="openShareDialog"
         @open-apply-patch="showApplyPatchDrawer = true"
       />
@@ -155,6 +203,11 @@ watch(
       <SpecBootstrapTip :vm="vm" />
 
       <template v-if="vm.chatWorkbenchMode === 'platform'">
+      <DiagnosisSopLayout :enabled="sopEnabled" :guide="guideSession.state" :run="playbook.run as any"
+        :busy="guideSession.busy || playbook.busy || vm.isChatLocked" :running="vm.engineRunning" :error="guideSession.error || playbook.error"
+        :tail="playbook.tail" :can-continue="playbook.canContinue" :agent-text="playbook.agentText"
+        @guide-command="guideSession.command" @command="playbook.command" @investigate="investigate"
+        @retry="() => { guideSession.reload(); playbook.reload() }">
       <!-- ─ 置顶富文本卡片区（独立，不随对话滚动） ─ -->
       <PinnedCardsArea
         :show-thinking="vm.showThinking"
@@ -216,7 +269,7 @@ watch(
         ref="chatInputRef"
         v-model="vm.chatInput"
         v-model:pre-input-mode="preInputMode"
-        :disabled="vm.isChatLocked || vm.sendingChat"
+        :disabled="vm.isChatLocked || vm.sendingChat || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))"
         :running="vm.engineRunning"
         :can-interrupt="vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
@@ -229,6 +282,7 @@ watch(
         @interrupt="vm.interruptCurrentRun"
         @start-pre-input="handleStartPreInput"
       />
+      </DiagnosisSopLayout>
       </template>
       <template v-else>
         <div class="cli-shell-wrapper">
@@ -244,7 +298,7 @@ watch(
     </section>
 
     <!-- Right: Spec / Diagnosis Drawer -->
-    <SpecSidebar :vm="vm" />
+    <SpecSidebar v-if="!sopEnabled" :vm="vm" />
 
     <!-- ─── Modals and Drawers ─── -->
     <!-- 任务准备进度由全局浮窗 ProvisionFloatingWidget（App.vue 挂载）负责 -->

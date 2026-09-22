@@ -429,6 +429,8 @@
     "agent_session_started": "Agent 会话已启动",
     "ai_job_running": "AI 作业进行中",
     "terminal": "任务列表",
+    "tasklist_collapse": "收起任务列表（[）",
+    "tasklist_expand": "展开任务列表（[）",
     "ai_assistant_name": "AI 助手",
     "copy": "复制内容",
     "copied": "已复制",

@@ -9,6 +9,8 @@ import {
   CheckCircle2,
   GitPullRequest,
   FileText,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from 'lucide-vue-next'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
@@ -18,14 +20,18 @@ import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
  * 会话头部动作域：引擎启停、初始化、技能/文档抽屉入口、补丁工作流、
  * 平台/CLI 工作台切换与更多操作菜单。
  * 分享入口与补丁抽屉属于视图级装配（弹窗宿主在 ChatView），以事件冒泡。
+ * SOP 模式下标题左侧提供任务列表折叠钮（状态由视图装配层持有）。
  */
 const props = defineProps<{
   vm: ChatViewVm
+  showTasklistToggle?: boolean
+  tasklistVisible?: boolean
 }>()
 
 const emit = defineEmits<{
   (event: 'share'): void
   (event: 'open-apply-patch'): void
+  (event: 'toggle-tasklist'): void
 }>()
 
 const { t } = useI18n()
@@ -34,6 +40,18 @@ const { t } = useI18n()
 <template>
   <header class="chat-header glass-panel">
     <div class="header-left">
+      <button
+        v-if="props.showTasklistToggle"
+        type="button"
+        class="icon-btn tasklist-toggle-btn"
+        :title="props.tasklistVisible ? t('chat.tasklist_collapse') : t('chat.tasklist_expand')"
+        :aria-label="props.tasklistVisible ? t('chat.tasklist_collapse') : t('chat.tasklist_expand')"
+        :aria-expanded="props.tasklistVisible ? 'true' : 'false'"
+        @click="emit('toggle-tasklist')"
+      >
+        <PanelLeftClose v-if="props.tasklistVisible" class="w-4 h-4" />
+        <PanelLeftOpen v-else class="w-4 h-4" />
+      </button>
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
       <span class="badge" :class="props.vm.currentTask.status.toLowerCase()">{{ props.vm.currentTask.status }}</span>
     </div>
@@ -148,6 +166,9 @@ const { t } = useI18n()
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
+}
+.tasklist-toggle-btn {
+  flex: 0 0 auto;
 }
 .header-left h2 {
   margin: 0;

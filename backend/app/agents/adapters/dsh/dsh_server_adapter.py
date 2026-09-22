@@ -206,6 +206,10 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
 
 
 class DshServerAdapter(AgentBackend):
+    def get_runtime_control(self):
+        from app.agents.runtime_control import runtime_control_for
+        return runtime_control_for(self)
+
     name = "dsh"
     capabilities = AgentCapabilities(
         supports_resume=True,  # web host prompt 隐式 resume 冷会话
@@ -618,6 +622,11 @@ class DshServerAdapter(AgentBackend):
                 session_id = await self._create_session(request)
             await self._ensure_event_protocol()
             self._session_id = session_id
+
+            policy = request.provider_options.get("execution_policy")
+            if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
+                from app.agents.playbook_guard import apply_dsh_policy
+                await apply_dsh_policy(request, session_id)
 
             await _tracked_event(AgentEvent(
                 type="session_started",

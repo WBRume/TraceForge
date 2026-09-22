@@ -219,10 +219,20 @@ const router = createRouter({
           name: 'knowledgeCasesWorkspace',
           component: () => import('../views/knowledge/KnowledgeCaseCenterView.vue'),
         },
-{
+        {
           path: 'cases/:wsId/:caseId',
           name: 'knowledgeCaseDetail',
           component: () => import('../views/CaseReportView.vue'),
+        },
+        {
+          path: 'cases/:wsId/playbooks/:playbookId',
+          name: 'knowledgePlaybookDetail',
+          component: () => import('../views/PlaybookDetailView.vue'),
+        },
+        {
+          path: 'cases/:wsId/promotions/:jobId',
+          name: 'knowledgeCasePromotionReview',
+          component: () => import('../views/CasePromotionReviewView.vue'),
         },
         {
           path: '',
@@ -311,6 +321,17 @@ const router = createRouter({
           path: 'cases/:caseId',
           name: 'workspaceCaseDetail',
           component: () => import('../views/CaseReportView.vue')
+        },
+        {
+          path: 'cases/playbooks/:playbookId',
+          name: 'workspacePlaybookDetail',
+          alias: 'playbooks/:playbookId',
+          component: () => import('../views/PlaybookDetailView.vue')
+        },
+        {
+          path: 'cases/promotions/:jobId',
+          name: 'workspaceCasePromotionReview',
+          component: () => import('../views/CasePromotionReviewView.vue')
         },
         {
           path: 'assets/knowledge-base',

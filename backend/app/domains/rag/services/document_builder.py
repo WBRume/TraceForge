@@ -233,6 +233,8 @@ def build_case_document(
     )
     metadata: Dict[str, Any] = {
         "case_id": case.id,
+        "archive_origin": getattr(case, "archive_origin", "MANUAL"),
+        "verification_status": "TECHNICALLY_VERIFIED" if case.status == "TECHNICALLY_VERIFIED" else None,
         "source_task_id": case.source_task_id,
         "product_name": case.product_name,
         "product_version": case.product_version,

@@ -22,7 +22,7 @@ def mark_connection(conn, source, kind, deleted=False):
         return
     version = row["source_version"] + 1 if row else 1
     fields = dict(kind=kind, workspace_id=source.workspace_id,
-                  task_id=source.task_id if kind == "message" else source.id, source_id=source.id,
+                  task_id=source.task_id if kind == "message" else (source.source_task_id or source.id) if kind == "case" else source.id, source_id=source.id,
                   source_version=version, projection_hash=hashed, deleted=dead, updated_at=datetime.utcnow())
     if row:
         conn.execute(update(table).where(table.c.entity_key == key).values(**fields))
@@ -63,7 +63,9 @@ def _register_capture():
     from app.domains.task.models.task import SddTask
     from app.domains.task.models.chat import ChatMessage
     from app.domains.auth.models.user import Workspace
-    for model, kind in ((SddTask, "task"), (ChatMessage, "message")):
+    from app.domains.case_center.models.case import SddCase
+    from app.domains.diagnosis_playbook.models import PlaybookSpec
+    for model, kind in ((SddTask, "task"), (ChatMessage, "message"), (SddCase, "case"), (PlaybookSpec, "playbook")):
         def changed(mapper, connection, target, kind=kind):
             mark_connection(connection, target, kind)
         def deleted(mapper, connection, target, kind=kind):

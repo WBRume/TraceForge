@@ -70,9 +70,11 @@ async def create_task(
             spec_doc_path=data.spec_doc_path,
             requirement_duration_hours=data.requirement_duration_hours,
             skill_ids=data.skill_ids,
+            diagnosis_playbook_spec_id=data.diagnosis_playbook_spec_id,
             task_type=data.task_type,
             phenomenon=data.phenomenon,
             priority=data.priority,
+            sop_auto_run=data.sop_auto_run,
             repository_branches=[
                 {"repository_id": item.repository_id, "branch_name": item.branch_name}
                 for item in (data.repository_branches or [])

@@ -47,6 +47,26 @@ const mountWidget = () =>
   })
 
 describe('ProvisionFloatingWidget', () => {
+  it('shows minimized promotion in the shared widget and updates without polling', async () => {
+    vi.useFakeTimers()
+    const store = useProvisioningStore()
+    store.ingestPromotionJob({ job_id: 'promotion', workspace_id: 'ws-1', status: 'RUNNING', progress: 15 }, true)
+    const wrapper = mountWidget()
+    expect(wrapper.find('.provision-widget').exists()).toBe(false)
+    store.minimizePreviewJob('promotion')
+    await flushPromises()
+    expect(wrapper.text()).toContain('案例晋升诊断规程')
+    expect(wrapper.text()).toContain('15%')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(apiMock.get).not.toHaveBeenCalled()
+    await wrapper.get('.widget-job-actions .widget-btn-primary').trigger('click')
+    expect(routerMock.push).toHaveBeenCalledWith({ name: 'workspaceCasePromotionReview', params: { wsId: 'ws-1', jobId: 'promotion' } })
+    apiMock.get.mockResolvedValue({ data: { items: [{ job_id: 'promotion', workspace_id: 'ws-1', status: 'SUCCESS', progress: 100 }] } })
+    await store.refreshPromotionJobs('ws-1')
+    await flushPromises()
+    expect(wrapper.text()).toContain('查看结果')
+    store.dismiss('promotion'); wrapper.unmount()
+  })
   beforeEach(() => {
     pinia = createPinia()
     setActivePinia(pinia)

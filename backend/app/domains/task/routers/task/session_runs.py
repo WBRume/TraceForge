@@ -60,6 +60,7 @@ async def start_task(
                 task_id=task_id,
                 actor_user_id=current_user.id,
                 requested_prompt=start_req.prompt if start_req else None,
+                sop_auto_run=start_req.sop_auto_run if start_req else None,
             )
     except task_session_control_service.TaskSessionControlError as exc:
         raise_session_control_error(exc)

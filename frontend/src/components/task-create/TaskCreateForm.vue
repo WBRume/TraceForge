@@ -2,8 +2,9 @@
      持有草稿字段与附件文件（随弹窗挂载/销毁天然复位），提交时发出草稿快照；
      仓库 / Skills 侧栏入口条只负责发出切换事件，不做任何业务判断。 -->
 <script setup lang="ts">
-import { computed, shallowRef } from 'vue'
-import { ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from 'lucide-vue-next'
+import { computed, shallowRef, watch } from 'vue'
+import { BookOpen, ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from 'lucide-vue-next'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import type { TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 
 const props = defineProps<{
@@ -15,12 +16,14 @@ const props = defineProps<{
   selectedRepoCount: number
   selectedSkillCount: number
   activeSidebar: TaskCreateSidebar
+  selectedPlaybook?: { id: string; title: string } | null
 }>()
 
 const emit = defineEmits<{
   submit: [draft: TaskDraftSnapshot]
   cancel: []
   'toggle-sidebar': [name: TaskCreateSidebarName]
+  'playbook-context': [context: { name: string; description: string }]
 }>()
 
 const isDiagnosisTask = computed(() => props.taskType === 'DIAGNOSIS')
@@ -32,7 +35,11 @@ const name = shallowRef('')
 const description = shallowRef('')
 const phenomenon = shallowRef('')
 const priority = shallowRef('P2')
+const sopAutoRun = shallowRef(false)
 const requirementDuration = shallowRef(8)
+watch(() => [name.value, description.value, phenomenon.value, props.taskType], () => {
+  emit('playbook-context', { name: name.value, description: isDiagnosisTask.value ? phenomenon.value : description.value })
+}, { immediate: true })
 
 // ── 附件：研发态规范文档（单文件）/ 诊断态文档（多文件，类型不限） ──
 const specFile = shallowRef<File | null>(null)
@@ -64,9 +71,11 @@ const submitDraft = () => {
     description: description.value,
     phenomenon: phenomenon.value,
     priority: priority.value,
+    sopAutoRun: sopAutoRun.value,
     requirementDurationHours: Number(requirementDuration.value),
     specFile: specFile.value,
     diagnosisFiles: [...diagnosisFiles.value],
+    diagnosisPlaybookSpecId: props.selectedPlaybook?.id,
   })
 }
 
@@ -76,6 +85,7 @@ const reset = () => {
   description.value = ''
   phenomenon.value = ''
   priority.value = 'P2'
+  sopAutoRun.value = false
   requirementDuration.value = 8
   specFile.value = null
   diagnosisFiles.value = []
@@ -232,6 +242,30 @@ defineExpose({ reset })
           :placeholder="$t('diagnosis.phenomenon_placeholder')"
         />
       </div>
+    </div>
+
+    <!-- 自动执行全流程主开关（仅问题定位任务） -->
+    <div v-if="isDiagnosisTask" class="form-row">
+      <label class="auto-run-switch" title="开启后，SOP 阶段确认通过即由服务端自动衔接下一阶段，无需逐步确认；证据不足或执行失败时暂停。">
+        <ToggleSwitch v-model="sopAutoRun" aria-label="自动执行全流程" />
+        <span class="auto-run-title">自动执行全流程</span>
+        <span class="auto-run-hint">阶段确认通过后自动推进下一阶段，无需逐步确认</span>
+      </label>
+    </div>
+
+    <!-- 诊断规程入口（仅问题定位任务；研发态不可选诊断规程） -->
+    <div v-if="isDiagnosisTask" class="form-meta-container">
+      <button type="button" class="meta-skills-bar skills-entry-card playbook-entry-card"
+        :class="{ active: activeSidebar === 'playbooks', 'has-selection': !!selectedPlaybook }"
+        :disabled="creating" @click="emit('toggle-sidebar', 'playbooks')">
+        <span class="skills-bar-left"><span class="skills-bar-icon-box"><BookOpen class="w-3.5 h-3.5 text-primary" /></span>
+          <span class="skills-bar-title">诊断规程</span>
+          <span class="skills-bar-badge" :class="{ 'has-selected': !!selectedPlaybook }">{{ selectedPlaybook ? '已选 1 项' : '可选' }}</span>
+        </span>
+        <span class="skills-bar-right"><span class="skills-bar-action-text">{{ selectedPlaybook?.title || '推荐并选择' }}</span>
+          <ChevronRight class="w-3.5 h-3.5 chevron-icon" :class="{ open: activeSidebar === 'playbooks' }" />
+        </span>
+      </button>
     </div>
 
     <!-- 行 4：Worktree 仓库载入触发条（整行可点击展开右侧仓库树） -->
@@ -514,6 +548,11 @@ defineExpose({ reset })
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.playbook-entry-card { width:100%; min-width:0; gap:12px; text-align:left }
+.playbook-entry-card .skills-bar-left { flex-shrink:0 }
+.playbook-entry-card .skills-bar-right { min-width:0 }
+.playbook-entry-card .skills-bar-action-text { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+
 .meta-skills-bar:hover {
   border-color: #7dd3fc;
   background: #f0f9ff;
@@ -583,6 +622,30 @@ defineExpose({ reset })
 
 .chevron-icon.open {
   transform: rotate(90deg);
+}
+
+/* 自动执行全流程主开关（诊断态） */
+.auto-run-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #334155;
+  padding: 2px 0;
+}
+
+.auto-run-title {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.auto-run-hint {
+  color: #94a3b8;
+  font-size: 0.74rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 诊断模式文件列表 */

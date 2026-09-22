@@ -23,7 +23,19 @@ def digest(data):
 
 
 def build_search_projection(source, kind):
-    if kind == "message":
+    if kind == "playbook":
+        spec = source.spec_json["spec"]
+        role, message_type, task_id = None, None, source.id
+        title = plain_text(spec["metadata"]["title"])
+        content = "\n".join(spec.get("match", {}).get("symptoms", [])) + "\n" + json.dumps({"stages": spec.get("stages", []), "context": spec.get("context", {})}, ensure_ascii=False)
+    elif kind == "case":
+        if source.status not in {"APPROVED", "TECHNICALLY_VERIFIED"}:
+            return None
+        role, message_type = None, None
+        task_id = source.source_task_id or source.id
+        title = plain_text(source.title)
+        content = "\n".join(str(getattr(source, field) or "") for field in ("problem_description", "analysis_process", "root_cause", "solution", "code_context"))
+    elif kind == "message":
         # Execution records are not knowledge sources until the owning job succeeds.
         meta = source.metadata_json or {}
         if meta.get("submission_id") and meta.get("knowledge_state") != "published":
@@ -45,7 +57,7 @@ def build_search_projection(source, kind):
         return None
     symbols = list(dict.fromkeys(s for s in re.findall(r"[A-Za-z_][A-Za-z0-9_./:\\\-]*", title + "\n" + text) if len(s.encode()) <= 256))
     doc = dict(entity_key=f"{kind}:{source.id}", kind=kind, workspace_id=source.workspace_id,
-               task_id=task_id, creator_id=source.creator_id, title=title, content_text=text,
+               task_id=task_id, creator_id=getattr(source, "creator_id", None), title=title, content_text=text,
                symbols=symbols, deleted=False, schema_version=1,
                created_at=source.created_at.isoformat() if source.created_at else None)
     if kind == "message":
@@ -77,4 +89,4 @@ def build_embedding_chunks(text, size=1600, overlap=160):
 
 
 def embedding_text(doc):
-    return (doc.get("title", "") + "\n" + doc.get("content_text", "")).strip() if doc["kind"] == "task" else doc["content_text"]
+    return (doc.get("title", "") + "\n" + doc.get("content_text", "")).strip() if doc["kind"] in {"task", "case", "playbook"} else doc["content_text"]

@@ -681,6 +681,7 @@ def start_task_session_sync(
     creator_id: str,
     prompt: str,
     user_display: str,
+    sop_auto_run: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """任务状态重置为 CODING，并创建首条消息 + 聊天作业（单事务，锁内调用）。"""
     task = task_service.get_task(db, task_id, ws_id)
@@ -690,9 +691,13 @@ def start_task_session_sync(
     task.status = TaskStatus.CODING
     task.error_message = None
     task.session_id = None
+    task.session_generation = max(1, int(task.session_generation or 0))
     task.interrupt_reason = None
     task.interrupted_by_id = None
     task.interrupted_at = None
+    # 主开关：启动引擎时可更新“自动执行全流程”任务级偏好
+    if sop_auto_run is not None:
+        task.task_meta_json = {**(task.task_meta_json or {}), "sop_auto_run": bool(sop_auto_run)}
 
     initial_message = task_service.save_chat_message(
         db,
@@ -716,6 +721,8 @@ def start_task_session_sync(
         prompt_text=prompt,
         context_json={"source": "task_start", "fresh_session": True},
         chat_message_id=initial_message.id,
+        session_generation=task.session_generation,
+        session_revision=task.session_revision,
     )
     return {
         "task_id": task.id,
@@ -731,6 +738,7 @@ async def start_task_session(
     task_id: str,
     actor_user_id: str,
     requested_prompt: Optional[str] = None,
+    sop_auto_run: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """启动全新任务会话（POST /start 业务编排；调用方已持有任务锁）。
 
@@ -757,6 +765,7 @@ async def start_task_session(
             creator_id=actor_user_id,
             prompt=state["prompt"],
             user_display=state["user_display"],
+            sop_auto_run=sop_auto_run,
         )
     )
     await ai_job_publishing.enqueue_task_chat_job(result["job_id"])

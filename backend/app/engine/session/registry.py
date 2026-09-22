@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__, category="task_execution")
 
 # ── 全局引擎注册表：task_id -> TaskAgentEngine ──
-_active_engines: Dict[str, "TaskAgentEngine"] = {}
+_active_engines: Dict[object, "TaskAgentEngine"] = {}
 
 # 空闲引擎收割：非 running 引擎超过 ENGINE_IDLE_TTL_SECONDS 后由周期任务摘除。
 # 正常结束后立即摘除（成功即删）；INTERRUPTED/WAITING_HITL 等可恢复态保留以便
@@ -27,19 +27,24 @@ ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = 60.0
 _idle_sweeper_task: Optional[asyncio.Task] = None
 
 
-def get_engine(task_id: str) -> Optional["TaskAgentEngine"]:
-    return _active_engines.get(task_id)
+def _scope_key(task_id: str, scope_id: str = "main"):
+    # Preserve the legacy in-process main key for older callers and diagnostics.
+    return task_id if scope_id == "main" else (task_id, scope_id)
+
+
+def get_engine(task_id: str, scope_id: str = "main") -> Optional["TaskAgentEngine"]:
+    return _active_engines.get(_scope_key(task_id, scope_id))
 
 
 def register_engine(engine: "TaskAgentEngine", *, mark_running: bool = False) -> None:
     if mark_running:
         engine.running = True
-    _active_engines[engine.task_id] = engine
+    _active_engines[_scope_key(engine.task_id, getattr(engine, "scope_id", "main"))] = engine
     _ensure_idle_sweeper()
 
 
-def unregister_engine(task_id: str) -> None:
-    _active_engines.pop(task_id, None)
+def unregister_engine(task_id: str, scope_id: str = "main") -> None:
+    _active_engines.pop(_scope_key(task_id, scope_id), None)
 
 
 def sweep_idle_engines() -> int:

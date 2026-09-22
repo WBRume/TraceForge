@@ -8,11 +8,12 @@ import GlobalSearchResultItem from './GlobalSearchResultItem.vue'
 import type { SearchCapabilities, SearchItem } from '@/types/search'
 
 const open = defineModel<boolean>({ required: true })
-defineProps<{ capabilities: SearchCapabilities }>()
+const props = defineProps<{ capabilities: SearchCapabilities }>()
 
 const router = useRouter()
 const state = useGlobalSearch(open)
 const { query, retrieval, kind, composing, loading, error, items, response } = state
+watch(() => props.capabilities.hybrid_available, available => { if (!available) retrieval.value = 'lexical' }, { immediate: true })
 
 const active = shallowRef(0)
 const input = shallowRef<HTMLInputElement>()
@@ -27,6 +28,8 @@ const kindOptions = [
   { value: 'all', label: '全部' },
   { value: 'task', label: '任务' },
   { value: 'message', label: '消息' },
+  { value: 'case', label: '案例' },
+  { value: 'playbook', label: '诊断规程' },
 ]
 
 const choose = async (item?: SearchItem) => {
@@ -206,7 +209,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="response?.degraded_reason" class="status-banner warning" role="status">
             <AlertTriangle class="w-4 h-4 flex-shrink-0 text-amber-500" />
-            <span>语义服务暂不可用，本次已自动使用关键词检索。</span>
+            <span>{{ response.degraded_reason?.includes('sqlite_bm25') ? '当前使用关键词检索。' : '语义服务暂不可用，本次已自动使用关键词检索。' }}</span>
           </div>
           <div v-if="response?.indexing_state === 'partial'" class="status-banner info" role="status">
             <Sparkles class="w-4 h-4 flex-shrink-0 text-sky-500" />

@@ -55,15 +55,23 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
     if not settings.SEARCH_ENABLED:
         return dict(enabled=False, ready=False, hybrid_available=False)
     target, profile = await run_db_txn(configuration)
+    from .sqlite_index import local_only
     ready = False
-    if target:
+    if target and not local_only():
         try:
             ready = bool(await request.app.state.search_es.indices.exists(index=target["physical_index"]))
         except Exception:
             pass
     reason = "embedding_not_configured" if not profile else "semantic_index_not_ready" if not target["verified"] else None
     hybrid = ready and reason is None
-    return dict(enabled=True, ready=ready, types=["task", "message"], min_query_length=2, max_query_length=200,
+    if not ready and settings.SEARCH_BACKEND != 'elasticsearch':
+        from .sqlite_index import ready as local_ready
+        indexing_ready = await asyncio.to_thread(local_ready)
+        return dict(enabled=True, ready=True, types=['task', 'message', 'case', 'playbook'], min_query_length=2, max_query_length=200,
+            max_limit=50, history_context_enabled=True, indexing_state='ready' if indexing_ready else 'partial', default_retrieval='lexical',
+            available_retrievals=['lexical'], hybrid_available=False, hybrid_unavailable_reason='sqlite_bm25_only',
+            semantic_indexing_state='unavailable', result_window_size=200, max_display_results=100, fusion='bm25', backend='sqlite')
+    return dict(enabled=True, ready=ready, types=["task", "message", "case", "playbook"], min_query_length=2, max_query_length=200,
         max_limit=50, history_context_enabled=True, indexing_state="ready" if target and target["verified"] else "partial",
         default_retrieval="hybrid", available_retrievals=["lexical", "hybrid"] if hybrid else ["lexical"],
         hybrid_available=hybrid, hybrid_unavailable_reason=reason, semantic_indexing_state=target["semantic_indexing_state"] if target else "building",
@@ -72,7 +80,7 @@ async def capabilities(request: Request, user=Depends(get_current_user)):
 
 @router.get("/search")
 async def search(request: Request, q: str = Query(min_length=2, max_length=200),
-        retrieval: Literal["hybrid", "lexical"] = "hybrid", type: Literal["all", "task", "message"] = "all",
+        retrieval: Literal["hybrid", "lexical"] = "hybrid", type: Literal["all", "task", "message", "case", "playbook"] = "all",
         workspace_id: str | None = None, task_id: str | None = None, role: Literal["user", "assistant"] | None = None,
         date_from: datetime | None = Query(None, alias="from"), date_to: datetime | None = Query(None, alias="to"),
         limit: int = Query(20, ge=1, le=50), cursor: str | None = Query(None, max_length=4096), user=Depends(get_current_user)):

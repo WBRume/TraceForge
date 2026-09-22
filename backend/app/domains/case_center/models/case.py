@@ -28,6 +28,7 @@ class CasePriority(str, PyEnum):
 
 
 class CaseStatus(str, PyEnum):
+    TECHNICALLY_VERIFIED = "TECHNICALLY_VERIFIED"
     DRAFT = "DRAFT"                    # 草稿
     PENDING_REVIEW = "PENDING_REVIEW"  # 待评审
     IN_REVIEW = "IN_REVIEW"            # 评审中
@@ -72,6 +73,7 @@ class SddCase(Base):
 
     # 生命周期
     status = Column(String(20), nullable=False, default=CaseStatus.DRAFT.value, index=True)
+    archive_origin = Column(String(16), nullable=False, default="MANUAL", server_default="MANUAL")
     review_round = Column(Integer, nullable=False, default=1)  # 评审轮次，驳回重提后 +1
     diagnosis_detail_json = Column(JSON, nullable=True)  # 问题定位结构化明细 {similar_cases, call_chain, code_context, fix_code}
     submitted_at = Column(DateTime, nullable=True)

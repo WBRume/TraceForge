@@ -42,7 +42,7 @@ TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
-from app.domains.task.models.task import TaskStatus  # noqa: E402
+from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob  # noqa: E402
 from app.domains.task.models.chat import ChatMessage  # noqa: E402
@@ -159,6 +159,38 @@ def test_start_task_persists_user_initial_prompt_and_links_job(tmp_path, monkeyp
             assert message.metadata_json["source"] == "task_start"
             assert job.prompt_text.startswith("用户真正提交的启动提示")
             assert job.context_json["source"] == "task_start"
+    finally:
+        engine.dispose()
+
+
+def test_start_task_persists_sop_auto_run_main_switch(tmp_path, monkeypatch):
+    engine, SessionLocal = _build_db()
+    try:
+        with _session(SessionLocal) as db:
+            user, workspace, task = _seed_workspace(db, workspace_id="ws-sop", task_id="task-sop")
+            task.status = TaskStatus.PENDING.value
+            task.project_path = str(tmp_path)
+            db.commit()
+            ws_id, task_id = workspace.id, task.id
+
+        async def _enqueue(_job_id):
+            return None
+
+        monkeypatch.setattr(
+            "app.domains.task.services.task_session_control_service.get_engine",
+            lambda _task_id: None,
+        )
+        monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue)
+        client = TestClient(_build_app(SessionLocal, user))
+
+        resp = client.post(
+            f"/api/workspaces/{ws_id}/tasks/{task_id}/start",
+            json={"prompt": "启动", "sop_auto_run": True},
+        )
+        assert resp.status_code == 200, resp.text
+        with _session(SessionLocal) as db:
+            stored = db.get(SddTask, task_id)
+            assert stored.task_meta_json["sop_auto_run"] is True
     finally:
         engine.dispose()
 

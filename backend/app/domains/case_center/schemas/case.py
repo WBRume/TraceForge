@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 CaseCategoryValue = Literal["PUBLIC", "PRODUCT", "SITE", "TEMPORARY"]
 CasePriorityValue = Literal["P0", "P1", "P2", "P3"]
-CaseStatusValue = Literal["DRAFT", "PENDING_REVIEW", "IN_REVIEW", "APPROVED", "REJECTED"]
+CaseStatusValue = Literal["DRAFT", "PENDING_REVIEW", "IN_REVIEW", "APPROVED", "REJECTED", "TECHNICALLY_VERIFIED"]
 
 
 class CaseCreateRequest(BaseModel):
@@ -69,6 +69,7 @@ class CaseReviewRecordResponse(BaseModel):
 
 
 class CaseResponse(BaseModel):
+    archive_origin: str = "MANUAL"
     id: str
     workspace_id: str
     workspace_name: Optional[str] = None
@@ -101,6 +102,7 @@ class CaseResponse(BaseModel):
     source_task_phenomenon: Optional[str] = None
     my_can_manage: bool = False
     my_can_review: bool = False
+    has_playbook: bool = False
     review_records: List[CaseReviewRecordResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}

@@ -120,6 +120,18 @@ const advancedFilterOpen = ref(false)
   flex-direction: column;
   background-color: var(--color-surface-white);
   z-index: 5;
+  flex: 0 0 auto;
+  transition: margin-left 0.28s ease, opacity 0.24s ease, visibility 0s;
+}
+
+/* SOP 模式折叠态：负外边距滑出视口（chat-layout overflow hidden 裁切），
+   不改宽度以避免内容回流抖动；visibility 延迟到滑动结束后生效 */
+.task-sidebar.is-collapsed {
+  margin-left: -280px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: margin-left 0.28s ease, opacity 0.24s ease, visibility 0s 0.28s;
 }
 
 .sidebar-header {

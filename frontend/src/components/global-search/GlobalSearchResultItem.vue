@@ -88,7 +88,7 @@ const handleTogglePin = (e: MouseEvent) => {
 
         <!-- 类型文字标签 -->
         <span class="type-label">
-          {{ item.kind === 'task' ? '任务' : (item.role === 'user' ? '用户发言' : 'AI 回复') }}
+          {{ item.kind === 'task' ? '任务' : item.kind === 'case' ? '案例' : item.kind === 'playbook' ? '诊断规程' : (item.role === 'user' ? '用户发言' : 'AI 回复') }}
         </span>
 
         <!-- 具体用户名 -->
@@ -124,6 +124,7 @@ const handleTogglePin = (e: MouseEvent) => {
 
         <!-- 固定到窗口浮窗：使用钉子 icon -->
         <button
+          v-if="item.kind === 'task' || item.kind === 'message'"
           type="button"
           class="item-action-btn"
           :class="{ 'is-pinned': isPinned }"

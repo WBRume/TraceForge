@@ -20,11 +20,14 @@ class TaskCreate(BaseModel):
     spec_doc_path: Optional[str] = None
     requirement_duration_hours: float = 0.0
     skill_ids: List[str] = Field(default_factory=list)
+    diagnosis_playbook_spec_id: Optional[str] = Field(default=None, min_length=1, max_length=36)
     # 任务类型：DEVELOPMENT 研发态（默认） / DIAGNOSIS 问题定位
     task_type: Literal["DEVELOPMENT", "DIAGNOSIS"] = "DEVELOPMENT"
     # 问题定位任务专用：现象与优先级
     phenomenon: Optional[str] = None
     priority: Optional[str] = None
+    # 问题定位任务主开关：自动执行全流程（SOP 阶段自动推进）
+    sop_auto_run: bool = False
     # 可选：按仓库覆盖会话使用的工作区分支
     repository_branches: Optional[List[TaskRepositoryBranchInput]] = None
     # 可选：仅为所选仓库子集创建 worktree（缺省/为空时默认使用工作区全部仓库）
@@ -105,6 +108,8 @@ class TaskStartRequest(BaseModel):
     """启动任务时的额外参数"""
     prompt: Optional[str] = None
     operator_context: Optional[dict] = None
+    # 问题定位任务主开关：自动执行全流程（None = 保持任务现有偏好）
+    sop_auto_run: Optional[bool] = None
 
 
 class TaskInterruptRequest(BaseModel):

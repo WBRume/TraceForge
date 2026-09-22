@@ -51,6 +51,7 @@ export function createTaskWsEventRouter(deps: {
   applyTaskSessionPayload: (payload: any) => void
   specBootstrapApplyUpdate: (payload: any) => void
   shareSuggestionNudge: (payload: any) => void
+  playbookEvent?: (type: string, payload: any) => void
   preinputHandleEvent: (type: string, payload: any) => void
   skillsMergeTraceEvent: (event: any) => void
   skillsScheduleUsageRefresh: () => void
@@ -98,6 +99,11 @@ export function createTaskWsEventRouter(deps: {
 
   const handleWsMessage = (msg: any) => {
     const { type, payload } = msg
+
+    if (typeof type === 'string' && (type.startsWith('playbook.') || type.startsWith('runner.'))) {
+      deps.playbookEvent?.(type, payload)
+      return
+    }
 
     switch (type) {
       case 'chat_message': {
@@ -267,6 +273,7 @@ export function createTaskWsEventRouter(deps: {
 
       case 'task_session_reverted': {
         if (String(payload?.task_id || '') !== deps.task.getTaskId()) break
+        deps.playbookEvent?.('playbook.resync', { task_id: deps.task.getTaskId() })
         deps.onSessionGenerationBump()
         const removedIds = new Set<string>(
           (Array.isArray(payload?.removed_message_ids) ? payload.removed_message_ids : []).map((id: any) => String(id)),

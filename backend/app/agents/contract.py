@@ -772,6 +772,11 @@ class AgentBackend(ABC):
     name: str
     capabilities: AgentCapabilities
 
+    def get_runtime_control(self):
+        """Optional SOP control plane; old adapters retain their exact contract."""
+        from app.agents.runtime_control import UnsupportedRuntimeControl
+        return UnsupportedRuntimeControl()
+
     @abstractmethod
     async def run(
         self,

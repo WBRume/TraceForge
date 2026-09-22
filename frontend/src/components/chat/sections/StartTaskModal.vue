@@ -1,16 +1,23 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**
- * 启动引擎确认弹窗：确认前允许编辑随首条消息发出的初始 Prompt。
+ * 启动引擎确认弹窗：确认前允许编辑随首条消息发出的初始 Prompt；
+ * 问题定位且绑定规程的任务提供“自动执行全流程”主开关。
  */
 const props = defineProps<{
   vm: ChatViewVm
 }>()
 
 const { t } = useI18n()
+
+const sopApplies = computed(() =>
+  Boolean(props.vm.currentTask?.task_meta_json?.diagnosis_playbook_guide),
+)
 </script>
 
 <template>
@@ -37,6 +44,13 @@ const { t } = useI18n()
             rows="5"
             :placeholder="t('chat.initial_prompt_placeholder')"
           ></textarea>
+        </div>
+        <div v-if="sopApplies" class="form-group sop-auto-run-group">
+          <label class="sop-auto-run-switch" title="开启后，SOP 阶段确认通过即由服务端自动衔接下一阶段，无需逐步确认；证据不足或执行失败时暂停。">
+            <ToggleSwitch v-model="props.vm.startSopAutoRun" aria-label="自动执行全流程" />
+            <span class="sop-auto-run-title">自动执行全流程</span>
+            <span class="sop-auto-run-hint">阶段确认通过后自动推进下一阶段</span>
+          </label>
         </div>
       </div>
     </template>
@@ -69,4 +83,8 @@ const { t } = useI18n()
   box-sizing: border-box;
 }
 .input-field:focus { border-color: var(--color-primary-500); outline: none; }
+.sop-auto-run-group { padding: 10px 12px; border: 1px solid #E2E8F0; border-radius: var(--radius-md); background: #F8FAFC; }
+.sop-auto-run-switch { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.875rem; color: #334155; }
+.sop-auto-run-title { font-weight: 600; flex-shrink: 0; }
+.sop-auto-run-hint { color: #94A3B8; font-size: 0.78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

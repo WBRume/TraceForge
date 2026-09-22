@@ -404,6 +404,7 @@ export function useChatViewModel() {
           sessionState.onInitialSubscriptionReady(taskId, wasReady)
           // 就绪后补取一次个人阅读快照（覆盖断线期间的私有变更）
           void readingProgress.onConnectionReady(taskId)
+          playbookEventHandler?.('playbook.resync', { task_id: taskId })
           return
         }
         if (frameType === 'reading_progress_changed') {
@@ -453,10 +454,13 @@ export function useChatViewModel() {
   // 分享建议域由 ChatView 的 useShareFlows 持有（与分享弹窗同生命周期），
   // nudge 经此回调槽转发，避免 vm ↔ shareFlows 循环依赖。
   let shareSuggestionNudgeHandler: ((payload: any) => void) | null = null
+  let playbookEventHandler: ((type: string, payload: any) => void) | null = null
+  const registerPlaybookEvent = (handler: (type: string, payload: any) => void) => { playbookEventHandler = handler }
   const registerShareSuggestionNudge = (handler: (payload: any) => void) => {
     shareSuggestionNudgeHandler = handler
   }
   const wsRouter = createTaskWsEventRouter({
+    playbookEvent: (type, payload) => playbookEventHandler?.(type, payload),
     task: {
       getTaskId: taskState.getTaskId,
       patchSessionGeneration: (generation) => {
@@ -986,6 +990,7 @@ export function useChatViewModel() {
 
     // 启动 / 初始化
     startPrompt: startActions.startPrompt,
+    startSopAutoRun: startActions.startSopAutoRun,
     showStartConfirm: startActions.showStartConfirm,
     startingTask: startActions.startingTask,
     isStartActionVisible: startActions.isStartActionVisible,
@@ -1078,6 +1083,7 @@ export function useChatViewModel() {
     bootstrapStatusText: specBootstrap.statusText,
     triggerSpecBootstrap: specBootstrap.trigger,
     registerShareSuggestionNudge,
+    registerPlaybookEvent,
 
     // 上下文窗口
     contextWindowDrawerOpen: contextPanel.drawerOpen,

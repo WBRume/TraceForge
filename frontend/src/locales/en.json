@@ -429,6 +429,8 @@
     "agent_session_started": "Agent session started",
     "ai_job_running": "AI job running",
     "terminal": "Task List",
+    "tasklist_collapse": "Collapse task list ( [ )",
+    "tasklist_expand": "Expand task list ( [ )",
     "ai_assistant_name": "AI Assistant",
     "copy": "Copy message",
     "copied": "Copied",

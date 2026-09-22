@@ -7,7 +7,7 @@
 export type TaskTypeValue = 'DEVELOPMENT' | 'DIAGNOSIS'
 
 /** 右侧滑出侧栏；同一时刻至多展开一个，none = 全部收起 */
-export type TaskCreateSidebar = 'none' | 'skills' | 'repos'
+export type TaskCreateSidebar = 'none' | 'skills' | 'repos' | 'playbooks'
 
 /** 可展开的侧栏名称（入口条 / 内部切换用） */
 export type TaskCreateSidebarName = Exclude<TaskCreateSidebar, 'none'>
@@ -35,12 +35,15 @@ export interface SkillSummary {
 
 /** 表单提交时的草稿快照（含 File 对象，保持普通对象不代理） */
 export interface TaskDraftSnapshot {
+  diagnosisPlaybookSpecId?: string
   taskType: TaskTypeValue
   name: string
   description: string
   /** 诊断态：问题现象 */
   phenomenon: string
   priority: string
+  /** 诊断态主开关：自动执行全流程（SOP 阶段自动推进） */
+  sopAutoRun: boolean
   /** 研发态：需求工时（小时） */
   requirementDurationHours: number
   /** 研发态：规范文档（任务创建成功后由浮窗上传） */

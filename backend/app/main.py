@@ -49,6 +49,11 @@ from app.domains.ai.routers import queue
 from app.domains.workspace_asset.routers import workspace_asset
 from app.domains.task.routers import task_closeout
 from app.domains.case_center.routers import case as case_center_router
+from app.domains.diagnosis_playbook.router import (
+    router as diagnosis_playbook_router,
+    global_router as diagnosis_playbook_global_router,
+)
+from app.domains.diagnosis_playbook.tool_server import router as playbook_tool_router
 from app.domains.asset.routers import decision
 from app.domains.management.routers import (
     products_router,
@@ -81,6 +86,15 @@ from app.domains.rag.routers import outbox as rag_outbox_router
 async def lifespan(app: FastAPI):
     global _pre_input_worker_task
     app.state.ai_runtime_ready = False
+    from app.runtime.evidence_runner.registry import load_configured_bundles
+    load_configured_bundles(settings.DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES)
+    if settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE:
+        from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import install
+        install(settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE)
+    playbook_worker_task = None
+    if settings.DIAGNOSIS_PLAYBOOK_WORKER_ENABLED:
+        from app.domains.diagnosis_playbook.worker import PlaybookWorker
+        playbook_worker_task = asyncio.create_task(PlaybookWorker(settings.DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT).run())
     await search_router.start(app)
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
     recovered_queue_count = await ai_job_workers.start_runtime_workers()
@@ -91,6 +105,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.ai_runtime_ready = False
+        if playbook_worker_task is not None:
+            playbook_worker_task.cancel()
+            await asyncio.gather(playbook_worker_task, return_exceptions=True)
         if _pre_input_worker_task is not None:
             _pre_input_worker_task.cancel()
             await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
@@ -175,6 +192,9 @@ app.include_router(public_session_shares.router, prefix="/api")
 # 公开分享 WS 通道：与 /ws/task 同级（vite / nginx 的 /ws 代理直接转发）
 app.include_router(public_session_shares.ws_router)
 app.include_router(task_closeout.router, prefix="/api")
+app.include_router(diagnosis_playbook_router, prefix="/api")
+app.include_router(diagnosis_playbook_global_router, prefix="/api")
+app.include_router(playbook_tool_router, prefix="/api")
 app.include_router(case_center_router.router, prefix="/api")
 app.include_router(case_center_router.global_router, prefix="/api")
 app.include_router(decision.router, prefix="/api")

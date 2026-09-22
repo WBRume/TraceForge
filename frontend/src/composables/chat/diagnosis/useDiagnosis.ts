@@ -40,6 +40,7 @@ export function useDiagnosis(options: {
   const diagnosisResultSaving = ref(false)
   const diagnosisCaseCreating = ref(false)
   const diagnosisCaseLink = ref('')
+  const diagnosisArchiveOrigin = ref('MANUAL')
   const diagnosisSummaryJobId = ref('')
 
   // 「一键总结/重新生成」的 loading 状态以后端真实 job 状态为唯一事实源：
@@ -85,7 +86,7 @@ export function useDiagnosis(options: {
     return t('diagnosis.summarizing_elapsed', { elapsed: formatElapsedDuration(total) })
   })
   const isDiagnosisAdopted = computed(() => Boolean(
-    diagnosisResult.value?.status === 'CONFIRMED' || diagnosisCaseLink.value,
+    diagnosisResult.value?.status === 'CONFIRMED' || (diagnosisCaseLink.value && diagnosisArchiveOrigin.value !== 'PLAYBOOK'),
   ))
 
   const clearTimer = () => {
@@ -98,6 +99,7 @@ export function useDiagnosis(options: {
   const resetForTask = () => {
     diagnosisResult.value = null
     diagnosisCaseLink.value = ''
+    diagnosisArchiveOrigin.value = 'MANUAL'
     diagnosisSummaryJobId.value = ''
     clearTimer()
   }
@@ -130,6 +132,7 @@ export function useDiagnosis(options: {
       })
       const linked = (casesRes.data?.items || [])[0]
       diagnosisCaseLink.value = linked?.id || ''
+      diagnosisArchiveOrigin.value = linked?.archive_origin || 'MANUAL'
     } catch (e) {
       diagnosisCaseLink.value = ''
     }
