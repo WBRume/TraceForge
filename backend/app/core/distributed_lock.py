@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import random
 import re
 import time
 import uuid
@@ -318,6 +319,63 @@ class LocalLockProvider(DistributedLockProvider):
 class RedisLockProvider(DistributedLockProvider):
     backend_name = "redis"
 
+    async def _acquire(self, lock: Any, context: LockContext) -> bool:
+        from redis.exceptions import (
+            AuthenticationError,
+            ConnectionError as RedisConnectionError,
+            LockNotOwnedError,
+            TimeoutError as RedisTimeoutError,
+        )
+
+        token = uuid.uuid4().hex.encode("ascii")
+        uncertain = False
+
+        async def attempt() -> bool:
+            nonlocal uncertain
+            for index in range(3):
+                try:
+                    if uncertain:
+                        # SET may have succeeded before its response was lost.
+                        # Reacquire atomically checks our token and resets the TTL.
+                        lock.local.token = token
+                        try:
+                            return await lock.reacquire()
+                        except LockNotOwnedError:
+                            lock.local.token = None
+                    uncertain = True
+                    return await lock.acquire(
+                        blocking=True,
+                        blocking_timeout=context.blocking_timeout,
+                        token=token,
+                    )
+                except AuthenticationError:
+                    raise
+                except (RedisConnectionError, RedisTimeoutError) as exc:
+                    if index == 2:
+                        raise
+                    delay = random.uniform(0.05, 0.15) * (2 ** index)
+                    logger.warning(
+                        "redis lock acquire retry: lock_key={}, attempt={}, error={}",
+                        context.lock_key, index + 1, str(exc),
+                    )
+                    await asyncio.sleep(delay)
+            return False
+
+        try:
+            # Bound all socket calls, contention waits and backoff together.
+            return await asyncio.wait_for(attempt(), timeout=context.blocking_timeout)
+        except BaseException:
+            if uncertain:
+                # Also clean up a possibly committed SET on cancellation. Release
+                # compares tokens, so it cannot delete a different owner's lock.
+                lock.local.token = token
+                try:
+                    await asyncio.wait_for(lock.release(), timeout=1.0)
+                except Exception as exc:
+                    logger.debug("redis uncertain lock cleanup failed: key={}, error={}",
+                                 context.lock_key, str(exc))
+            raise
+
     @contextlib.asynccontextmanager
     async def lock(
         self,
@@ -343,10 +401,7 @@ class RedisLockProvider(DistributedLockProvider):
             thread_local=False,
         )
         try:
-            acquired = await lock.acquire(
-                blocking=True,
-                blocking_timeout=context.blocking_timeout,
-            )
+            acquired = await self._acquire(lock, context)
         except Exception as exc:
             logger.warning(
                 "redis lock acquire failed: resource_type={}, resource_id={}, lock_key={}, error={}",
