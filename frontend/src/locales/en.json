@@ -3591,6 +3591,10 @@
       "review_records": "Review Records"
     },
     "review_comment_placeholder": "Enter review comment (required when rejecting)",
+    "review_comment_label": "Review Comment",
+    "review_comment_required": "Review comment is required when rejecting",
+    "review_approve_message": "Are you sure to approve this case into the knowledge base? It will be available for playbook synthesis and retrieval.",
+    "review_reject_message": "Are you sure to reject this case? The author can revise and resubmit according to the review comments.",
     "rejected_comment_label": "Rejection Comment",
     "review_round": "Round {round}",
     "creator": "Creator",

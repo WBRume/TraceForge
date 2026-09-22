@@ -3596,6 +3596,10 @@
       "review_records": "评审记录"
     },
     "review_comment_placeholder": "填写评审意见（驳回时必填）",
+    "review_comment_label": "评审意见",
+    "review_comment_required": "驳回时必须填写评审意见",
+    "review_approve_message": "确认将此案例评审通过并正式入库？入库后可用于规程提炼与知识检索。",
+    "review_reject_message": "确认将此案例驳回打回？驳回后作者可根据评审意见修改并重新提交评审。",
     "rejected_comment_label": "驳回意见",
     "review_round": "第 {round} 轮评审",
     "creator": "创建人",

@@ -7,6 +7,7 @@ import RequirementImportDialog from '@/components/workspace-assets/requirements/
 import type { PromotionJob, PromotionDraft } from '@/types/playbookPromotion'
 import CasePromotionReview from './CasePromotionReview.vue'
 import { useProvisioningStore } from '@/stores/provisioning'
+import { ElMessage } from 'element-plus'
 const props = defineProps<{ workspaceId: string; caseIds: string[]; requestedJobId?: string }>()
 const floating = useProvisioningStore()
 const emit = defineEmits<{ completed: [] }>()
@@ -99,8 +100,17 @@ const reviewAction = async (action: 'confirm' | 'discard' | 'regenerate') => {
     })
     if (captured !== generation) return
     if (action === 'regenerate') { floating.dismiss(current.job_id); regenerationKey = '' }
+    if (action === 'confirm') {
+      open.value = false
+      floating.dismiss(current.job_id)
+      ElMessage.success('诊断规程已成功入库！')
+    }
+    if (action === 'discard') {
+      open.value = false
+      floating.dismiss(current.job_id)
+      ElMessage.info('已放弃该诊断规程草案')
+    }
     accept(data)
-    if (action === 'discard') { open.value = false; floating.dismiss(current.job_id) }
   } catch (e: any) {
     if (captured !== generation) return
     const code = e.response?.data?.detail?.code

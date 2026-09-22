@@ -282,7 +282,7 @@ const handleEnterSession = (job: ProvisionJobView) => {
               {{ job.cancelRequested ? t('provisioning.cancelling') : t('common.cancel') }}
             </button>
             <button
-              v-else
+              v-if="job.terminal || (isPreviewJob(job) && !job.reviewRequired)"
               type="button"
               class="widget-icon-btn"
               :title="t('common.close')"

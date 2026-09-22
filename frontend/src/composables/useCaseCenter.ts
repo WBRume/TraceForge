@@ -295,14 +295,25 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
     reviewDialogVisible.value = true
   }
 
+  const closeReviewDialog = () => {
+    reviewDialogVisible.value = false
+    reviewComment.value = ''
+  }
+
   const confirmReview = () => {
     const wsId = requireWorkspace()
     if (!wsId) return
+    if (reviewConclusion.value === 'reject' && !reviewComment.value.trim()) {
+      ElMessage.warning(t('case_center.review_comment_required'))
+      return
+    }
     return runAction(async () => {
       await api.post(`/workspaces/${wsId}/cases/${currentCase.value.id}/review`, {
         conclusion: reviewConclusion.value,
-        comment: reviewComment.value,
+        comment: reviewComment.value.trim(),
       })
+      reviewDialogVisible.value = false
+      reviewComment.value = ''
     }, reviewConclusion.value === 'approve' ? 'case_center.approve_success' : 'case_center.reject_success')
   }
 
@@ -353,6 +364,7 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
     reviewConclusion,
     reviewComment,
     openReviewDialog,
+    closeReviewDialog,
     confirmReview,
     deleteCase,
   }
