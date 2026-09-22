@@ -56,6 +56,7 @@ export function createTaskWsEventRouter(deps: {
   skillsMergeTraceEvent: (event: any) => void
   skillsScheduleUsageRefresh: () => void
   onSessionGenerationBump: () => void
+  onMessagesRetracted?: () => void
   contextWindowScheduleRefresh: () => void
   scrollTo: (target: 'chat' | 'terminal') => void
   isHistoryAnchored: () => boolean
@@ -283,6 +284,7 @@ export function createTaskWsEventRouter(deps: {
           ElMessage.warning('定位的消息已被撤销，请回到最新')
         }
         deps.messages.removeByIds(removedIds)
+        deps.onMessagesRetracted?.()
         deps.terminalLogs.clear()
         deps.cards.clear()
         deps.engine.resetThinking()

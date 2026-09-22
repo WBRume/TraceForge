@@ -103,7 +103,7 @@ export function useTaskReadingProgress(options: UseTaskReadingProgressOptions) {
 
   /**
    * 合并服务端状态：
-   * - 同 epoch：state_revision 单调回退保护（<= 当前 revision 的快照丢弃）；
+   * - 同 epoch：个人版本与内容版本均不得回退；任一版本前进即可合并；
    * - epoch 变大：直接替换（旧 epoch 本地数据由上层在重 init 时清空）；
    * - epoch 变小：落后快照，忽略。
    */
@@ -121,7 +121,10 @@ export function useTaskReadingProgress(options: UseTaskReadingProgressOptions) {
       epochMismatch.value = false
       return true
     }
-    if (!seqGreaterThan(incoming.state_revision, current.state_revision)) return false
+    if (seqLessThan(incoming.state_revision, current.state_revision)
+      || seqLessThan(incoming.latest_change_seq, current.latest_change_seq)) return false
+    if (!seqGreaterThan(incoming.state_revision, current.state_revision)
+      && !seqGreaterThan(incoming.latest_change_seq, current.latest_change_seq)) return false
     progress.value = incoming
     return true
   }

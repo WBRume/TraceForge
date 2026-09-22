@@ -20,6 +20,7 @@ const createDeps = () => {
     ingested: [] as any[],
     summaryAppends: [] as any[],
     generationBumps: 0,
+    readingRefreshes: 0,
     generationPatches: [] as number[],
     appliedSessionPayloads: [] as any[],
     preinputEvents: [] as string[],
@@ -79,6 +80,7 @@ const createDeps = () => {
     skillsMergeTraceEvent: (event: any) => calls.traceMerges.push(event),
     skillsScheduleUsageRefresh: () => { calls.usageRefreshes += 1 },
     onSessionGenerationBump: () => { calls.generationBumps += 1 },
+    onMessagesRetracted: () => { calls.readingRefreshes += 1 },
     contextWindowScheduleRefresh: () => { calls.contextRefresh += 1 },
     scrollTo: (target: 'chat' | 'terminal') => calls.scroll.push(target),
     isHistoryAnchored: () => false,
@@ -142,6 +144,7 @@ describe('createTaskWsEventRouter', () => {
     } })
 
     expect(calls.generationBumps).toBe(1)
+    expect(calls.readingRefreshes).toBe(1)
     expect(calls.removedByIds[0]).toEqual(new Set(['m1', 'm2']))
     expect(calls.cardsCleared).toBe(1)
     expect(calls.logClears).toBe(1)

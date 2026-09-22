@@ -280,7 +280,7 @@ export function useChatViewModel() {
 
   const showResumeBanner = computed(() => {
     const state = readingProgress.progress.value
-    if (!state?.initialized || !readingUnreadSnapshot.value || readingBannerClosed.value) return false
+    if (!state?.initialized || !state.has_unread || !readingUnreadSnapshot.value || readingBannerClosed.value) return false
     if (resumeDismissedAtSeq.value) {
       try {
         if (BigInt(state.latest_change_seq) <= BigInt(resumeDismissedAtSeq.value)) return false
@@ -509,6 +509,7 @@ export function useChatViewModel() {
     preinputHandleEvent: preinput.handleEvent,
     skillsMergeTraceEvent: skills.mergeRuntimeTraceEvent,
     skillsScheduleUsageRefresh: skills.scheduleRuntimeUsageRefresh,
+    onMessagesRetracted: () => { void readingProgress.refresh(taskState.getTaskId()) },
     onSessionGenerationBump: () => history.bumpGeneration(),
     contextWindowScheduleRefresh: contextPanel.scheduleRefresh,
     scrollTo: scrollToBottom,
@@ -583,7 +584,10 @@ export function useChatViewModel() {
     engineResetThinking: engine.resetThinking,
     jobsReset: jobs.reset,
     bumpHistoryGeneration: history.bumpGeneration,
-    loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
+    loadHistory: async (taskId, reset) => {
+      await history.loadHistory(taskId, reset)
+      await readingProgress.refresh(taskId)
+    },
     undoTaskMessage: (taskId, messageId, undoOptions) => taskSessionControls.undoTaskMessage(taskId, messageId, undoOptions),
     restoreComposer: (content) => {
       send.chatInput.value = content

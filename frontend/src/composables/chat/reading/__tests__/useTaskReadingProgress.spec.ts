@@ -68,6 +68,22 @@ const flushMicrotasks = async () => {
 }
 
 describe('useTaskReadingProgress', () => {
+  it('clears retracted unread when only the content version advances and rejects stale snapshots', async () => {
+    const unread = makeState({ has_unread: true, unread_count: { value: '1', relation: 'eq' } })
+    apiStub.openReadingSession.mockResolvedValue(makeSession(unread, 'wt-1'))
+    const ctl = createController()
+    await ctl.ensureSession('task-1')
+    apiStub.fetchReadingProgress.mockResolvedValue(makeState({ latest_change_seq: '111' }))
+    await ctl.refresh('task-1')
+    expect(ctl.progress.value?.has_unread).toBe(false)
+    expect(ctl.progress.value?.unread_count.value).toBe('0')
+    apiStub.fetchReadingProgress.mockResolvedValue(unread)
+    await ctl.refresh('task-1')
+    expect(ctl.progress.value?.has_unread).toBe(false)
+    expect(ctl.progress.value?.latest_change_seq).toBe('111')
+    ctl.reset()
+  })
+
   it('merges receipts by max change_seq, throttles to 2s and caps batches at 50', async () => {
     vi.useFakeTimers()
     try {
