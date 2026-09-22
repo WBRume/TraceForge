@@ -2,7 +2,7 @@
 import pytest
 
 from app.domains.task.models.chat import ChatMessage
-from app.domains.task.models.reading import TaskReadingReceipt
+from app.domains.task.models.reading import TaskReadingItem, TaskReadingReceipt
 from app.domains.task.services import reading_capture_service as rcs
 from app.domains.task.services import reading_progress_service as rps
 from app.domains.task.services import task_service
@@ -291,3 +291,67 @@ def test_resume_prefers_first_unread_over_saved_anchor(seeded_db):
     env["db"].commit()
     assert res["anchor_status"] == "ok", res
     assert res["anchor"]["message_id"] == str(m2.id), res["anchor"]
+
+
+def test_retraction_does_not_leave_unread_after_sop_input(seeded_db):
+    env = seeded_db
+    db = env["db"]
+    _open(env, "user-a")
+    _open(env, "user-b")
+    message = task_service.save_chat_message(
+        db, task_id=env["task_id"], workspace_id=env["ws_id"],
+        creator_id="user-a", role="assistant", content="retracted reply",
+    )
+    rcs.record_message_retractions(
+        db, task_id=env["task_id"], message_ids=[message.id], operation_id="own-undo",
+    )
+    db.delete(message)
+    db.flush()
+    notice = db.query(TaskReadingItem).filter_by(item_key="operation:own-undo").one()
+    assert notice.active is True  # 保留撤回事实用于锚点恢复，但不计未读。
+    task_service.save_chat_message(
+        db, task_id=env["task_id"], workspace_id=env["ws_id"],
+        creator_id="user-a", role="user", content="请继续 SOP 的「补丁与回归」阶段",
+    )
+    db.commit()
+
+    # 停止后没有新回复；重新进入也不能把本人撤回当成未读。
+    for _ in range(2):
+        state = _open(env, "user-a")["state"]
+        assert state["has_unread"] is False
+        assert state["unread_count"] == {"value": 0, "relation": "eq"}
+    observer = _open(env, "user-b")["state"]
+    assert observer["unread_count"] == {"value": 1, "relation": "eq"}  # 仅剩新 SOP 输入
+    compacted = rps.compact_progress(
+        db, user_id="user-a", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+    )
+    assert compacted["state"]["read_frontier_seq"] == state["latest_change_seq"]
+
+
+@pytest.mark.parametrize("reader", ["user-a", "user-b"])
+def test_retracted_unread_disappears_for_every_reader(seeded_db, reader):
+    env = seeded_db
+    _open(env, reader)
+    message = task_service.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
+        creator_id="user-a", role="assistant", content="reply",
+    )
+    env["db"].commit()
+    before = _open(env, reader)["state"]
+    assert before["unread_count"]["value"] == (0 if reader == "user-a" else 1)
+    rcs.record_message_retractions(
+        env["db"], task_id=env["task_id"], message_ids=[message.id], operation_id="unknown-actor",
+    )
+    env["db"].delete(message)
+    env["db"].commit()
+    for _ in range(2):
+        state = _open(env, reader)["state"]
+        assert state["has_unread"] is False
+        assert state["unread_count"] == {"value": 0, "relation": "eq"}
+        assert rps._unread_query(
+            env["db"], user_id=reader, task_id=env["task_id"], epoch=1, lower=0,
+        ).count() == 0
+    result = rps.compact_progress(
+        env["db"], user_id=reader, workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+    )
+    assert result["state"]["read_frontier_seq"] == state["latest_change_seq"]

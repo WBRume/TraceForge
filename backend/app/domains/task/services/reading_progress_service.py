@@ -31,6 +31,7 @@ from app.domains.task.models.reading import (
 )
 from app.domains.task.models.task import SddTask
 from app.domains.task.services.reading_capture_service import (
+    KIND_RETRACTED,
     history_cleared_item_key,
     lock_task_row,
     message_item_key,
@@ -129,6 +130,7 @@ def _unread_query(db: Session, *, user_id: str, task_id: str, epoch: int,
     query = db.query(TaskReadingItem).filter(
         TaskReadingItem.task_id == task_id,
         TaskReadingItem.active.is_(True),
+        TaskReadingItem.kind != KIND_RETRACTED,
         TaskReadingItem.change_seq > lower,
         ~TaskReadingItem.item_key.in_(
             db.query(TaskReadingReceipt.item_key).filter(
@@ -202,6 +204,7 @@ def serialize_state(db: Session, task: SddTask, state: Optional[TaskReadingState
         .filter(
             TaskReadingItem.task_id == task.id,
             TaskReadingItem.active.is_(True),
+            TaskReadingItem.kind != KIND_RETRACTED,
             TaskReadingItem.change_seq > frontier,
             own_input_condition(str(state.user_id)),
             ~TaskReadingItem.item_key.in_(
@@ -388,8 +391,8 @@ def compact_verified_prefix(
     stopped_at_unread = False
     for item in rows:
         seq = int(item.change_seq)
-        if not item.active:
-            new_frontier = seq  # inactive 不阻塞前缀
+        if not item.active or item.kind == KIND_RETRACTED:
+            new_frontier = seq  # 已撤回消息及撤回提示均不产生未读，不阻塞前缀
             continue
         if str(item.creator_id or "") == str(state.user_id):
             new_frontier = seq  # 本人产生的条目（输入或本人会话的 AI 回复）
