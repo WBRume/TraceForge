@@ -10,6 +10,7 @@ import { ElMessage } from 'element-plus'
 import { usePinnedFloatsStore } from '@/stores/pinnedFloats'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import type { SearchItem } from '@/types/search'
+import { formatTime } from '@/utils/chatFormatters'
 
 const props = defineProps<{ item: SearchItem; active: boolean }>()
 const emit = defineEmits<{ select: [] }>()
@@ -17,6 +18,11 @@ const emit = defineEmits<{ select: [] }>()
 const pinnedStore = usePinnedFloatsStore()
 const isPinned = computed(() => pinnedStore.isPinned(props.item.entity_key))
 const copied = ref(false)
+const createdTime = computed(() => {
+  const value = props.item.created_at
+  return value && !Number.isNaN(Date.parse(value)) ? formatTime(value) : ''
+})
+const timeLabel = computed(() => props.item.kind === 'message' ? '发送于' : '创建于')
 
 // 用户发言：展示真实用户头像与用户名（与聊天消息一致的身份标识）
 const isUserMessage = computed(() => props.item.kind === 'message' && props.item.role === 'user')
@@ -145,9 +151,12 @@ const handleTogglePin = (e: MouseEvent) => {
       </template>
     </div>
 
-    <!-- 底部语义说明（纯文字无彩色 icon） -->
-    <div v-if="item.snippet_basis === 'semantic'" class="result-footer">
-      <span class="semantic-hint">语义匹配</span>
+    <div class="result-footer">
+      <time v-if="createdTime" class="result-time" :datetime="item.created_at" :title="`${timeLabel} ${createdTime}`">
+        {{ timeLabel }} {{ createdTime }}
+      </time>
+      <span v-else class="result-time">时间未知</span>
+      <span v-if="item.snippet_basis === 'semantic'" class="semantic-hint">语义匹配</span>
     </div>
   </div>
 </template>
@@ -338,9 +347,16 @@ const handleTogglePin = (e: MouseEvent) => {
 
 .result-footer {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 6px 12px;
   margin-top: 2px;
+}
+
+.result-time {
+  font-size: 11px;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
 }
 
 .semantic-hint {

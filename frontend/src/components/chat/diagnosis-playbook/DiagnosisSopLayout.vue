@@ -103,12 +103,12 @@ const layoutStyle = computed(() => ({ gridTemplateColumns: `${widths.value.left}
 </template>
 <style scoped>
 .ordinary-conversation { display:flex; flex:1; min-height:0; flex-direction:column }
-.sop-layout { display:grid; flex:1; min-height:0; min-width:0; overflow:auto; background:#f7f9fc }
+.sop-layout { display:grid; flex:1; min-height:0; min-width:0; overflow:auto; background:#f8fafc }
 .sop-layout.dragging { cursor:col-resize; user-select:none }
 .sop-splitter { position:relative; cursor:col-resize; touch-action:none; outline:none }
-.sop-splitter::before { content:''; position:absolute; inset:0 2px; background:#dbe5f1 }
+.sop-splitter::before { content:''; position:absolute; inset:0 2px; background:#e2e8f0 }
 .sop-splitter::after { content:''; position:absolute; inset:0 -4px }
-.sop-splitter:hover::before { background:#c3d2e4 }
+.sop-splitter:hover::before { background:#cbd5e1 }
 .sop-layout.dragging .sop-splitter.drag-source::before { background:#93c5fd }
 .sop-workspace { overflow:auto; min-width:0; min-height:0 }.sop-conversation { display:flex; flex-direction:column; min-height:0; min-width:0; background:white }
 .agent-heading { display:flex; justify-content:space-between; gap:8px; font-size:13px; font-weight:600; padding:16px; border-bottom:1px solid #dbe5f1; flex-shrink:0 }.agent-heading span { color:#2563eb; font-weight:400; font-size:11px }
