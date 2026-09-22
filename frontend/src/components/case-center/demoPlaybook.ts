@@ -1,0 +1,195 @@
+// 官方标准规程示例：MySQL 并发转账行锁死锁排查
+export const DEMO_PLAYBOOK_YAML = `apiVersion: traceforge.dev/troubleshooting/v1
+kind: TroubleshootingPlaybook
+metadata:
+  id: mysql-transfer-deadlock
+  version: "1.0.0"
+  title: 并发转账行锁死锁定位
+  taskType: DIAGNOSIS
+  tags: [mysql, innodb, concurrency, deadlock]
+  sourceCaseRefs: []
+
+match:
+  symptoms: [mysql_1213, transaction_deadlock, concurrent_transfer_failure]
+  requiredFacts:
+    database.engine: mysql
+    database.table_engine: InnoDB
+  preferredFacts:
+    service.language: python
+
+inputs:
+  source_snapshot:
+    type: snapshot_ref
+    required: true
+  observation_connection:
+    type: connection_ref
+    required: true
+    effect: read_only
+  fixture_template:
+    type: fixture_ref
+    required: true
+    effect: isolated_mutation
+  target_operation:
+    type: symbol_ref
+    required: true
+  observed_error_sample:
+    type: artifact_ref
+    required: true
+  parallel_clients:
+    type: integer
+    default: 16
+    minimum: 2
+    maximum: 64
+
+environment:
+  # The shipped local controller is explicitly advisory. Each run must also
+  # receive advisory_ack; this does not certify OS/container isolation.
+  allowAdvisory: true
+  executor: bound_runner
+  source: "\${inputs.source_snapshot}"
+  fixture: "\${inputs.fixture_template}"
+  requiredCapabilities:
+    readonly_enforcement: [executor, sandbox]
+    workspace_isolation: true
+    sealed_evidence: true
+  fingerprint:
+    - source_tree_digest
+    - dependency_lock_digest
+    - runtime_versions
+    - mysql_version
+    - transaction_isolation
+    - schema_digest
+    - relevant_config_digest
+  bindings:
+    source: READONLY
+    scratch: BROKER_WRITABLE
+    evidence: RUNNER_ONLY
+    patch: WRITE_ON_PATCH_PHASE
+  fixtureLifecycle: per_branch_and_attempt
+
+context:
+  anchorAt: [stage_boundary, branch_fork, context_compacted]
+  carry: [symptom, hypotheses, evidence_refs, rejected_reasons, pending_experiments]
+
+execution:
+  shell: false
+  bundle: registry://traceforge/mysql-deadlock/1.0.0
+  bundleDigest: resolve_and_pin_at_compile
+  selfHealing:
+    maxConsecutiveSameFailure: 2
+    maxRepairsPerStage: 3
+    onExhausted: NEEDS_INPUT
+  staleEvidence: invalidate_descendants
+
+stages:
+  - id: probe
+    phase: PROBE
+    agentTier: READONLY
+    objective: 采集现象对应的锁与连接池证据，不修改被观察环境
+    verification:
+      command:
+        argv: [python, -m, tf_probe.mysql_snapshot, --input-manifest, "\${bound.input_manifest}"]
+        cwd: "\${bound.scratch}"
+        timeoutSeconds: 60
+        effect: OBSERVATION_READONLY
+      expectExitCodes: [0]
+      artifacts:
+        - {name: probe.json, parser: mysql_probe_v1, source: runner_output}
+      passWhen:
+        all:
+          - {op: eq, fact: probe.connection_ok, value: true}
+          - {op: ge, fact: probe.correlated_samples, value: 1}
+          - {op: nonempty, fact: probe.lock_or_error_artifact_refs}
+    next: hypotheses
+
+  - id: hypotheses
+    phase: HYPOTHESIZE
+    agentTier: READONLY
+    objective: 根据探针生成二至三个可证伪假说及区分实验
+    toolContract: propose_hypotheses
+    hypotheses:
+      min: 2
+      max: 3
+      strategy: discriminating_experiments
+      executionStrategy: sequential_priority_queue
+      branches: [lock_order, pool_wait, range_lock]
+      fork: prefer_native_else_anchor_rehydrate
+      join: all_terminal_or_discriminating_decision
+      unresolved: NEEDS_INPUT
+    verification:
+      command:
+        argv: [python, -m, tf_hypothesis.run_discriminators, --manifest, "\${bound.hypothesis_manifest}"]
+        cwd: "\${bound.scratch}"
+        timeoutSeconds: 180
+        effect: ISOLATED_FIXTURE
+      expectExitCodes: [0]
+      artifacts:
+        - {name: discriminators.json, parser: hypothesis_discriminators_v1, source: runner_output}
+      passWhen:
+        all:
+          - {op: eq, fact: hypotheses.has_discriminating_physical_evidence, value: true}
+          - {op: eq, fact: hypotheses.required_conflicts_resolved, value: true}
+    next: reproduce
+
+  - id: reproduce
+    phase: REPRODUCE
+    agentTier: READONLY
+    objective: 固定原始症状的复现器与判别器，在未修复快照捕获预期断言失败
+    candidate: experiment_bundle
+    oracle: transfer_deadlock_oracle_v1
+    verification:
+      command:
+        argv: [python, -m, tf_verify.pytest_runner, --case, transfer_pair, --snapshot, "\${bound.source}"]
+        cwd: "\${bound.scratch}"
+        timeoutSeconds: 120
+        effect: ISOLATED_FIXTURE
+      expectExitCodes: [1]
+      artifacts:
+        - {name: junit.xml, parser: junit_v1, source: runner_output}
+        - {name: oracle.json, parser: transfer_deadlock_v1, source: runner_output}
+      passWhen:
+        all:
+          - {op: eq, fact: tests.target_node_collected, value: true}
+          - {op: eq, fact: tests.target_failure, value: TransferDeadlockAssertion}
+          - {op: eq, fact: database.error_code, value: 1213}
+          - {op: eq, fact: database.correlated_lock_cycle, value: true}
+          - {op: eq, fact: oracle.matches_observed_symptom, value: true}
+    next: patch
+
+  - id: patch
+    phase: PATCH
+    agentTier: WORKSPACE_WRITE
+    enterWhen:
+      gatePassed: reproduce
+      quiescent: true
+      sameEnvironmentFamily: true
+    objective: 在补丁工作区修复根因，保持复现器和 oracle 不变
+    protectedArtifacts: [oracle_bundle, frozen_reproducer, evidence_manifest]
+    verification:
+      command:
+        argv: [python, -m, tf_verify.compare, --manifest, "\${bound.comparison_manifest}"]
+        cwd: "\${bound.scratch}"
+        timeoutSeconds: 600
+        effect: ISOLATED_FIXTURE
+      expectExitCodes: [0]
+      artifacts:
+        - {name: comparison.json, parser: baseline_patch_comparison_v1, source: runner_output}
+      passWhen:
+        all:
+          - {op: eq, fact: comparison.baseline_target_failed, value: true}
+          - {op: eq, fact: comparison.patch_target_passed, value: true}
+          - {op: eq, fact: comparison.oracle_digest_equal, value: true}
+          - {op: eq, fact: comparison.environment_equal_except_patch, value: true}
+          - {op: eq, fact: comparison.expected_tests_collected, value: true}
+          - {op: eq, fact: comparison.regression_passed, value: true}
+          - {op: eq, fact: comparison.balance_conserved, value: true}
+          - {op: eq, fact: comparison.request_coverage_complete, value: true}
+          - {op: eq, fact: comparison.lock_order_consistent, value: true}
+    next: completed
+
+completion:
+  requireAllStageGates: true
+  output: diagnosis_result_v1
+  archive: technical_case_record
+  attachEvidenceManifest: true
+`

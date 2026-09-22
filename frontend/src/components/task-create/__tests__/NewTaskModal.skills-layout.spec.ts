@@ -80,7 +80,7 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
     expect(wrapper.find('.modal-skills-sidebar.open').exists()).toBe(false)
 
     // 点击整行 Skills 触发卡片（排除仓库入口条）
-    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card)')
+    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card):not(.playbook-entry-card)')
     expect(skillsEntry.exists()).toBe(true)
     await skillsEntry.trigger('click')
     await flushPromises()
@@ -96,7 +96,7 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
     const wrapper = await mountModal()
 
     // 展开侧栏（Skills 入口条，排除仓库入口条）
-    await wrapper.find('.skills-entry-card:not(.repo-entry-card)').trigger('click')
+    await wrapper.find('.skills-entry-card:not(.repo-entry-card):not(.playbook-entry-card)').trigger('click')
     await flushPromises()
 
     const searchInput = wrapper.find('.skills-search-input')
@@ -122,7 +122,7 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
     const wrapper = await mountModal()
 
     // 展开侧栏（Skills 入口条，排除仓库入口条）
-    await wrapper.find('.skills-entry-card:not(.repo-entry-card)').trigger('click')
+    await wrapper.find('.skills-entry-card:not(.repo-entry-card):not(.playbook-entry-card)').trigger('click')
     await flushPromises()
 
     // 勾选第一个技能

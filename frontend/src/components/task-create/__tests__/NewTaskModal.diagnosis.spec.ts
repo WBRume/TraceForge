@@ -55,8 +55,9 @@ describe('NewTaskModal diagnosis mode', () => {
   it('hides the generic description field for diagnosis tasks', async () => {
     const wrapper = await mountModal()
 
-    // 研发态默认显示描述
+    // 研发态默认显示描述；诊断规程入口仅问题定位任务提供
     expect(wrapper.findAll('textarea')).toHaveLength(1)
+    expect(wrapper.find('.playbook-entry-card').exists()).toBe(false)
 
     await diagnosisTypeCard(wrapper).trigger('click')
     await flushPromises()
@@ -67,6 +68,7 @@ describe('NewTaskModal diagnosis mode', () => {
     expect(textareas[0].attributes('placeholder')).toContain('diagnosis.phenomenon_placeholder')
     expect(textareas[0].attributes('required')).toBeDefined()
     expect(wrapper.find('textarea[placeholder="dashboard.desc_placeholder"]').exists()).toBe(false)
+    expect(wrapper.find('.playbook-entry-card').exists()).toBe(true)
   })
 
   it('shows multi-file upload for diagnosis docs', async () => {
@@ -160,6 +162,31 @@ describe('NewTaskModal diagnosis mode', () => {
     expect(specInput.attributes('accept')).toBe('.pdf,.docx,.md,.txt')
   })
 
+  it('exposes the auto-run main switch only for diagnosis tasks and submits sop_auto_run', async () => {
+    const wrapper = await mountModal()
+
+    // 研发态不显示主开关
+    expect(wrapper.find('[aria-label="自动执行全流程"]').exists()).toBe(false)
+
+    await diagnosisTypeCard(wrapper).trigger('click')
+    await flushPromises()
+
+    const toggle = wrapper.find('[aria-label="自动执行全流程"]')
+    expect(toggle.exists()).toBe(true)
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+
+    await wrapper.find('input[placeholder="dashboard.task_name_placeholder"]').setValue('定位超时问题')
+    await wrapper.find('textarea[placeholder="diagnosis.phenomenon_placeholder"]').setValue('接口偶发超时')
+    await toggle.setValue(true)
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(apiMock.post).toHaveBeenCalledWith(
+      '/workspaces/ws-1/tasks',
+      expect.objectContaining({ task_type: 'DIAGNOSIS', sop_auto_run: true }),
+    )
+  })
+
   it('allows selecting skills for diagnosis tasks and submits skill_ids', async () => {
     apiMock.get.mockImplementation(async (url: string) => {
       if (url.startsWith('/skills')) {
@@ -181,8 +208,8 @@ describe('NewTaskModal diagnosis mode', () => {
     await diagnosisTypeCard(wrapper).trigger('click')
     await flushPromises()
 
-    // 诊断态同样显示 Skills 入口条，可展开侧栏勾选
-    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card)')
+    // 诊断态同样显示 Skills 入口条（不含仓库/诊断规程入口），可展开侧栏勾选
+    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card):not(.playbook-entry-card)')
     expect(skillsEntry.exists()).toBe(true)
     await skillsEntry.trigger('click')
     await flushPromises()

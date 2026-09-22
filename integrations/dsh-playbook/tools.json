@@ -1,0 +1,115 @@
+[
+  {
+    "name": "propose_hypotheses",
+    "description": "提交二至三个可证伪假说与候选判别脚本。此工具不会标记验证通过。",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hypotheses"
+      ],
+      "properties": {
+        "hypotheses": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "claim",
+              "predictions",
+              "falsifiers",
+              "discriminator_script"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9_]+$"
+              },
+              "claim": {
+                "type": "string",
+                "minLength": 1
+              },
+              "predictions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "falsifiers": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "discriminator_script": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "propose_experiment",
+    "description": "提交候选实验文件；由平台校验、冻结并执行。",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "files": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "propose_patch",
+    "description": "提交补丁候选文件，平台在回合静止后物化到独立补丁快照。",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files"
+      ],
+      "properties": {
+        "files": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "read_source",
+    "description": "读取绑定源码快照内的文件或列出目录；不允许读取凭据和证据存储。",
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      }
+    }
+  }
+]

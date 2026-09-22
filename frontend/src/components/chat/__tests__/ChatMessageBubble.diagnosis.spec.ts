@@ -51,6 +51,15 @@ const mountBubble = (msg: Record<string, any>, vm: Record<string, unknown> = {})
   })
 
 describe('ChatMessageBubble diagnosis_result rendering', () => {
+  it('keeps SOP protocol blocks out of bound-guide bubbles only', () => {
+    const msg = { id: 'sop', role: 'assistant', content: '采证完成\n```traceforge-sop\n{"phase":"PROBE"}\n```' }
+    const bound = mountBubble(msg, { currentTask: { task_meta_json: { diagnosis_playbook_guide: {} } } })
+    expect(bound.find('.msg-content').text()).toBe('采证完成')
+    const ordinary = mountBubble(msg)
+    expect(ordinary.find('.msg-content').text()).toContain('traceforge-sop')
+    bound.unmount()
+    ordinary.unmount()
+  })
   it('renders the diagnosis result card inside the conversation for diagnosis_result messages', () => {
     const wrapper = mountBubble({
       id: 'msg-diag-1',

@@ -37,6 +37,12 @@ export function useTaskStartActions(options: {
   const startPrompt = ref('')
   const showStartConfirm = ref(false)
   const startingTask = ref(false)
+  // 主开关：自动执行全流程（仅问题定位且绑定规程的任务生效）
+  const startSopAutoRun = ref(false)
+
+  /** 当前任务是否使用 SOP 诊断规程工作台 */
+  const taskUsesSop = (task: any): boolean =>
+    Boolean(task?.task_meta_json?.diagnosis_playbook_guide)
 
   // ─── 会话初始化 ───
   const showInitReasonModal = ref(false)
@@ -76,6 +82,7 @@ export function useTaskStartActions(options: {
     }
     if (startingTask.value) return
     startPrompt.value = defaultInitialPromptForTask(options.getCurrentTask())
+    startSopAutoRun.value = Boolean(options.getCurrentTask()?.task_meta_json?.sop_auto_run)
     showStartConfirm.value = true
   }
 
@@ -99,7 +106,7 @@ export function useTaskStartActions(options: {
     try {
       await api.post(
         `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/start`,
-        { prompt }
+        taskUsesSop(task) ? { prompt, sop_auto_run: startSopAutoRun.value } : { prompt }
       )
 
       task.status = 'CODING'
@@ -291,6 +298,7 @@ export function useTaskStartActions(options: {
 
   return {
     startPrompt,
+    startSopAutoRun,
     showStartConfirm,
     startingTask,
     showInitReasonModal,

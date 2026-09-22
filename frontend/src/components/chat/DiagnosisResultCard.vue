@@ -38,6 +38,7 @@ const props = defineProps<{
   caseCreating: boolean
   summarizing?: boolean
   adopted?: boolean
+  playbookProvenance?: { run_id: string; verification_status: string; archive_origin: string }
 }>()
 
 const emit = defineEmits<{
@@ -63,7 +64,7 @@ watch(
 )
 
 const resultConfirmed = computed(() => String(props.status || '') === 'CONFIRMED')
-const adopted = computed(() => props.adopted || resultConfirmed.value || Boolean(props.caseLink))
+const adopted = computed(() => props.adopted || resultConfirmed.value || (Boolean(props.caseLink) && props.playbookProvenance?.archive_origin !== 'PLAYBOOK'))
 const canEdit = computed(() => !adopted.value && !props.saving)
 
 const hasContent = computed(() => {
@@ -157,6 +158,10 @@ function chainLabel(node: DiagnosisCallChainNode): string {
 
 <template>
   <div class="diagnosis-card">
+    <div v-if="playbookProvenance" class="dc-header">
+      <span>{{ editing ? '结论编辑中，保存后需重新验证' : '物理验证已通过（限定环境）' }}</span>
+      <a href="#diagnosis-playbook-workbench">查看证据</a>
+    </div>
     <div class="dc-header">
       <div class="dc-header-row">
         <ClipboardList class="dc-icon" />

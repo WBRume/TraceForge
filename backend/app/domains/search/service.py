@@ -10,6 +10,7 @@ from app.core.offload import run_db_txn
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.task.models.task import SddTask
 from app.domains.task.models.chat import ChatMessage
+from app.domains.case_center.models.case import SddCase
 from app.domains.search.models import SearchDocumentState, SearchIndexTarget, SearchEmbeddingProfile, SearchEmbeddingJob, SearchOutbox
 from app.domains.search.projection import digest, build_search_projection, embedding_text
 from app.domains.task.services.avatar_service import resolve_avatar_svg
@@ -90,11 +91,29 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
     workspaces = {w.id: w.name for w in db.query(Workspace).options(load_only(Workspace.id, Workspace.name)).filter(Workspace.id.in_(allowed))}
     message_ids = [c.get("message_id") for c in remaining if c["kind"] == "message"]
     messages = {m.id: m for m in db.query(ChatMessage).options(load_only(ChatMessage.id, ChatMessage.task_id, ChatMessage.workspace_id)).filter(ChatMessage.id.in_(message_ids), ChatMessage.workspace_id.in_(allowed))}
+    case_ids = [c["entity_key"].split(":", 1)[1] for c in remaining if c["kind"] == "case"]
+    cases = {c.id: c for c in db.query(SddCase).filter(SddCase.id.in_(case_ids), SddCase.workspace_id.in_(allowed), SddCase.status.in_(["APPROVED", "TECHNICALLY_VERIFIED"]))} if case_ids else {}
+    from app.domains.diagnosis_playbook.models import PlaybookSpec
+    playbooks = {s.id: s for s in db.query(PlaybookSpec).filter(PlaybookSpec.id.in_([c['entity_key'].split(':', 1)[1] for c in remaining if c['kind'] == 'playbook']), PlaybookSpec.workspace_id.in_(allowed))}
     selected = []
     consumed = offset
     for candidate in remaining:
         consumed += 1
         state = states.get(candidate["entity_key"])
+        if candidate['kind'] == 'playbook':
+            spec = playbooks.get(candidate['entity_key'].split(':', 1)[1])
+            if state and not state.deleted and spec and state.source_version == candidate.get('source_version') and state.projection_hash == candidate.get('projection_hash'):
+                selected.append(candidate)
+                if len(selected) >= limit:
+                    break
+            continue
+        if candidate["kind"] == "case":
+            case = cases.get(candidate["entity_key"].split(":", 1)[1])
+            if state and not state.deleted and case and state.workspace_id == case.workspace_id and state.source_version == candidate.get("source_version") and state.projection_hash == candidate.get("projection_hash"):
+                selected.append(candidate)
+                if len(selected) >= limit:
+                    break
+            continue
         task = tasks.get(candidate["task_id"])
         if not state or state.deleted or not task or state.workspace_id not in allowed or state.workspace_id != task.workspace_id or state.source_version != candidate.get("source_version") or state.projection_hash != candidate.get("projection_hash"):
             continue
@@ -117,6 +136,28 @@ def hydrate(db, user, candidates, offset, limit, query, scope):
             creators[user.id] = user
     items = []
     for c in selected:
+        if c['kind'] == 'playbook':
+            spec = playbooks[c['entity_key'].split(':', 1)[1]]
+            projection = build_search_projection(spec, 'playbook')
+            if projection['projection_hash'] != c['projection_hash']:
+                continue
+            segments, basis = snippet(embedding_text(projection), query)
+            items.append(dict(kind='playbook', entity_key=c['entity_key'], workspace_id=spec.workspace_id,
+                workspace_name=workspaces[spec.workspace_id], task_id=spec.id, task_name=projection['title'],
+                created_at=projection['created_at'], snippet=segments, snippet_basis=basis,
+                target={'route_name': 'workspaceCases', 'params': {'wsId': spec.workspace_id}, 'query': {'tab': 'playbooks'}}))
+            continue
+        if c["kind"] == "case":
+            case = cases[c["entity_key"].split(":", 1)[1]]
+            projection = build_search_projection(case, "case")
+            if not projection or projection["projection_hash"] != c["projection_hash"]:
+                continue
+            segments, basis = snippet(embedding_text(projection), query, c.get("start_char", 0))
+            items.append(dict(kind="case", entity_key=c["entity_key"], workspace_id=case.workspace_id,
+                              workspace_name=workspaces[case.workspace_id], task_id=case.source_task_id,
+                              task_name=case.title, created_at=projection["created_at"], snippet=segments, snippet_basis=basis,
+                              target={"route_name": "workspaceCaseDetail", "params": {"wsId": case.workspace_id, "caseId": case.id}, "query": {}}))
+            continue
         source = selected_messages.get(c.get("message_id")) if c["kind"] == "message" else selected_tasks.get(c["task_id"])
         projection = build_search_projection(source, c["kind"]) if source else None
         if not projection or projection["projection_hash"] != c["projection_hash"]:
@@ -177,17 +218,24 @@ class SearchService:
             return dict(items=[], next_cursor=None, session_cursor="", has_more=False, requested_retrieval=params["retrieval"],
                 executed_retrieval=params["retrieval"], degraded_reason=None, indexing_state="ready", semantic_indexing_state="ready",
                 result_window_exhausted=False, incomplete=False, took_ms=round((time.monotonic() - started) * 1000))
-        if not target:
-            raise HTTPException(503, "SEARCH_NOT_READY")
+        from . import sqlite_index
+        if not target and settings.SEARCH_BACKEND == 'elasticsearch':
+            raise HTTPException(503, 'SEARCH_NOT_READY')
+        local = sqlite_index.local_only() or not target
+        if local:
+            target = dict(target_id='sqlite', embedding_profile_id=None, verified=await asyncio.to_thread(sqlite_index.ready), semantic_indexing_state='unavailable')
         binding = digest([user, scope, target["target_id"], target["embedding_profile_id"], {k: v for k, v in params.items() if k != "cursor"}])
         if params.get("cursor"):
             sid, snapshot, offset, shown = await sessions.read(user, params["cursor"], binding)
         else:
             mode, degraded = params["retrieval"], None
+            if local:
+                mode, degraded = 'lexical', 'sqlite_bm25_only'
             vector = None
             if mode == "hybrid":
                 if not profile or not target["verified"]:
-                    raise HTTPException(409, "SEARCH_SEMANTIC_NOT_READY")
+                    mode, degraded = 'lexical', 'semantic_index_not_ready'
+            if mode == 'hybrid':
                 try:
                     from app.domains.search.budget import reserve
                     await reserve(profile["id"], query=True)
@@ -198,12 +246,19 @@ class SearchService:
             if scope:
                 filters = scope_filters(scope, kind=params["type"], task_id=params.get("task_id"), role=params.get("role"), date_from=params.get("from"), date_to=params.get("to"))
                 try:
-                    if vector is not None:
-                        hits = await hybrid_search(self.es, target["physical_index"], params["q"], filters, vector, target["embedding_profile_id"])
-                    else:
-                        hits = checked_hits(await self.es.search(index=target["physical_index"], body=search_body(params["q"], filters)))
+                    async with asyncio.timeout(0.9):
+                        if local:
+                            hits = await asyncio.to_thread(sqlite_index.search, params['q'], scope, kind=params['type'], task_id=params.get('task_id'), role=params.get('role'), date_from=params.get('from'), date_to=params.get('to'))
+                        elif vector is not None:
+                            hits = await hybrid_search(self.es, target["physical_index"], params["q"], filters, vector, target["embedding_profile_id"])
+                        else:
+                            hits = checked_hits(await self.es.search(index=target["physical_index"], body=search_body(params["q"], filters)))
                 except Exception:
-                    raise HTTPException(503, "SEARCH_UNAVAILABLE") from None
+                    if settings.SEARCH_BACKEND == 'elasticsearch':
+                        raise HTTPException(503, "SEARCH_UNAVAILABLE") from None
+                    hits = await asyncio.to_thread(sqlite_index.search, params['q'], scope, kind=params['type'], task_id=params.get('task_id'), role=params.get('role'), date_from=params.get('from'), date_to=params.get('to'))
+                    mode, degraded = 'lexical', 'elasticsearch_unavailable_sqlite_bm25'
+                    target = {**target, 'verified': await asyncio.to_thread(sqlite_index.ready), 'semantic_indexing_state': 'unavailable'}
                 for hit in hits:
                     candidate = dict(hit["_source"])
                     highlights = hit.get("highlight", {})

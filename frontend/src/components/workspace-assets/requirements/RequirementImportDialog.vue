@@ -18,7 +18,7 @@ import type {
   RequirementReturnStep,
 } from './requirementCreateTypes'
 
-type DialogMode = 'create' | 'split'
+type DialogMode = 'create' | 'split' | 'promotion'
 
 const props = defineProps<{
   open: boolean
@@ -26,6 +26,7 @@ const props = defineProps<{
   previewJob?: RequirementPreviewJob | null
   mode?: DialogMode
   loading?: boolean
+  reviewPending?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -45,7 +46,7 @@ const returnStep = shallowRef<RequirementReturnStep>('file')
 const resetKey = shallowRef(0)
 const confirmReason = shallowRef('')
 
-const isSplit = computed(() => props.mode === 'split')
+const isSplit = computed(() => props.mode === 'split' || props.mode === 'promotion')
 const dialogTitle = computed(() => (
   isSplit.value
     ? t('workspace_assets.requirements.create.split_title')
@@ -123,17 +124,17 @@ function close() {
 <template>
   <Teleport to="body">
     <div v-if="props.open" class="modal-overlay" @click.self="close">
-      <section class="modal glass-panel requirement-dialog" :aria-label="t('workspace_assets.requirements.create.aria_label')">
+      <section class="modal glass-panel requirement-dialog" :aria-label="mode === 'promotion' ? '案例晋升诊断规程' : t('workspace_assets.requirements.create.aria_label')">
         <header class="modal-header">
           <div class="header-icon">
             <Sparkles :size="24" class="text-primary" />
           </div>
           <div class="header-text">
-            <span class="eyebrow">{{ dialogEyebrow }}</span>
-            <h2>{{ dialogTitle }}</h2>
-            <p class="step-label">{{ stepLabel }}</p>
+            <span v-if="mode !== 'promotion'" class="eyebrow">{{ dialogEyebrow }}</span>
+            <h2>{{ mode === 'promotion' ? '案例晋升诊断规程' : dialogTitle }}</h2>
+            <p v-if="mode !== 'promotion'" class="step-label">{{ stepLabel }}</p>
           </div>
-          <template v-if="runningPreviewJob">
+          <template v-if="runningPreviewJob || reviewPending">
             <button
               type="button"
               class="close-btn"
@@ -152,10 +153,12 @@ function close() {
         </header>
 
         <div class="modal-content">
+          <slot v-if="mode === 'promotion' && reviewPending" name="promotion" />
           <RequirementPreviewProgress
-            v-if="showingPreviewProgress && props.previewJob"
+            v-else-if="showingPreviewProgress && props.previewJob"
             :job="props.previewJob"
             :split="isSplit"
+            :promotion="mode === 'promotion'"
             @back="clearPreviewProgress"
             @cancel="close"
           />

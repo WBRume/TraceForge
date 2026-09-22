@@ -54,8 +54,10 @@ def current_document(db, key):
     from app.domains.task.models.chat import ChatMessage
     from app.domains.task.models.task import SddTask
     from app.domains.auth.models.user import Workspace
+    from app.domains.case_center.models.case import SddCase
     kind, source_id = key.split(":", 1)
-    model = ChatMessage if kind == "message" else SddTask
+    from app.domains.diagnosis_playbook.models import PlaybookSpec
+    model = {"message": ChatMessage, "task": SddTask, "case": SddCase, "playbook": PlaybookSpec}[kind]
     # Existing source row lock serializes first state creation with ordinary source writes.
     if kind == "message":
         parent = db.query(ChatMessage.task_id).filter(ChatMessage.id == source_id).first()
@@ -156,6 +158,19 @@ async def process_body(client, job):
     if work is None:
         return
     docs, targets, profiles, keys = work
+    from . import sqlite_index
+    await asyncio.to_thread(sqlite_index.write, docs)
+    if sqlite_index.local_only() or not targets:
+        def confirm_local(db):
+            row = owns(db, SearchOutbox, job)
+            if row and job['event_kind'] != 'entity_changed' and keys:
+                row.scan_cursor = keys[-1]
+                finish(db, SearchOutbox, job, 'pending')
+                row.available_at = datetime.utcnow()
+            else:
+                finish(db, SearchOutbox, job)
+        await run_db_txn(confirm_local)
+        return
     if not targets:
         await run_db_txn(lambda db: finish(db, SearchOutbox, job, "pending", "SEARCH_NO_TARGET"))
         return
@@ -199,6 +214,13 @@ async def process_embedding(client, http, job):
     if snapshot is None:
         return
     doc, target, profile = snapshot
+    from .sqlite_index import local_only
+    if local_only():
+        await run_db_txn(lambda db: finish(db, SearchEmbeddingJob, job, 'pending', 'SEARCH_SQLITE_MODE'))
+        return
+    # Do not spend embedding requests while its destination index is unavailable.
+    if not await client.indices.exists(index=target['physical_index']):
+        raise RuntimeError('SEARCH_TRANSPORT_FAILED')
     chunks = build_embedding_chunks(embedding_text(doc), profile["chunk_chars"], profile["chunk_overlap"])
     vectors = []
     for start in range(0, len(chunks), 16):
@@ -222,6 +244,9 @@ async def run(kind, once=False, stop_event=None):
     load_models()
     # Load the application's model registry without starting its runtime.
     from app.domains.task.services import task_service  # noqa: F401
+    if kind == 'search' and stop_event is None:
+        from .sqlite_index import bootstrap
+        await bootstrap(asyncio.Event())
     model = SearchEmbeddingJob if kind == "embedding" else SearchOutbox
     async with create_client() as client, httpx.AsyncClient(follow_redirects=False) as http:
         while stop_event is None or not stop_event.is_set():
@@ -250,7 +275,8 @@ async def run(kind, once=False, stop_event=None):
                             if profile:
                                 profile.last_error_code = code
                         permanent = isinstance(exc, (ValueError, EmbeddingError)) and not getattr(exc, "retryable", False)
-                        finish(db, model, job, "dead" if permanent or job["attempts"] >= 8 else "pending", code)
+                        retry_transport = settings.SEARCH_BACKEND == 'auto' and code == 'SEARCH_TRANSPORT_FAILED'
+                        finish(db, model, job, "dead" if permanent or (job["attempts"] >= 8 and not retry_transport) else "pending", code)
                     await run_db_txn(fail)
             if once:
                 return bool(job)

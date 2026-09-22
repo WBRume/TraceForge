@@ -66,14 +66,15 @@ _TIMEOUT_TEXT_MARKERS = (
 def classify_turn_outcome(result_text: str, *, is_error: bool, finish_reason: str) -> str:
     """回合结果三分类：timeout（可恢复中断）/ failed / success。
 
-    timeout 优先：finish_reason 显式为 timeout，或结果文本命中超时标记；
-    其次按 is_error / finish_reason in {error, aborted} 判失败。
+    以 Provider 的终止状态为准。错误文本仅用于兼容旧后端没有结构化
+    timeout 原因的失败结果；成功回复可能正在分析业务系统的超时问题。
     """
     normalized = str(result_text or "").lower()
     timeout_like = any(marker in normalized for marker in _TIMEOUT_TEXT_MARKERS)
-    if finish_reason == "timeout" or timeout_like:
+    failed = is_error or finish_reason in ("error", "aborted")
+    if finish_reason == "timeout" or (failed and timeout_like):
         return "timeout"
-    if is_error or finish_reason in ("error", "aborted"):
+    if failed:
         return "failed"
     return "success"
 
@@ -100,10 +101,13 @@ class TaskAgentEngine:
         on_error: Optional[Callable[[str, str], Any]] = None,
         on_process_started: Optional[Callable[[Any, Optional[AgentAttemptContext]], Any]] = None,
         attempt: Optional[AgentAttemptContext] = None,
+        execution_profile=None,
     ):
         self.task_id = task_id
         self.ws_id = ws_id
         self.user_id = user_id
+        self.execution_profile = execution_profile
+        self.scope_id = execution_profile.scope.scope_id if execution_profile is not None else "main"
 
         # 指定 backend（任务粘性/工作区配置）；为空回退全局 .env
         self.backend_name = backend_name
@@ -128,6 +132,8 @@ class TaskAgentEngine:
         self.last_result_success: Optional[bool] = None
         self.last_result_text: str = ""
         self.last_result_interrupted = False
+        self._guide_turn = None
+        self._guide_text = ""
         self.last_termination_confirmed_dead: Optional[bool] = None
         # 最近一次真实 provider result（AgentRunResult）。只有 backend 返回
         # 结果对象时才赋值：引擎异常/超时/中断路径不会设置它，finalizer
@@ -263,6 +269,8 @@ class TaskAgentEngine:
     # ─────────────── 主执行流程 ───────────────
 
     def _reset_turn_state(self) -> None:
+        self._guide_turn = None
+        self._guide_text = ""
         self._interrupt_requested = False
         self.last_result_success = None
         self.last_result_text = ""
@@ -278,6 +286,9 @@ class TaskAgentEngine:
         主入口：将用户 prompt 发送给 agent backend 并处理事件流
         支持首次启动和恢复会话
         """
+        if self.execution_profile is not None:
+            from app.engine.session.execution_profile import run_profiled_turn
+            return await run_profiled_turn(self, prompt)
         self._run_task = asyncio.current_task()
         with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
             job_id=self.current_job_id,
@@ -321,6 +332,9 @@ class TaskAgentEngine:
                     attempt=self.attempt,
                 )
 
+                guide_turn = await run_db(turn_setup.playbook_turn_sync, self.task_id)
+                self._guide_turn = guide_turn["fence"]
+                prompt += guide_turn["prompt"]
                 # 统一 AgentBackend 路径；旧 CliBridgeBase（mock/legacy）走 dict 事件兼容路径
                 if isinstance(self.cli, AgentBackend):
                     request = turn_setup.build_agent_run_request(
@@ -542,6 +556,8 @@ class TaskAgentEngine:
         返回统一停止结果（AgentStopResult）或旧 bridge 的 TerminationResult；
         远程停止结果同时写入 attempt runtime 供 runner 收敛消费。
         """
+        if self.execution_profile is not None:
+            return await self.execution_profile.cancel(self)
         with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
             job_id=self.current_job_id,
             task_id=self.task_id,
@@ -563,6 +579,10 @@ class TaskAgentEngine:
 
     async def stop(self):
         """停止引擎"""
+        if self.execution_profile is not None:
+            result = await self.execution_profile.cancel(self)
+            unregister_engine(self.task_id, self.scope_id)
+            return result
         with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
             job_id=self.current_job_id,
             task_id=self.task_id,
@@ -615,6 +635,8 @@ class TaskAgentEngine:
             elif event_type == "text":
                 text = str(payload.get("text") or "")
                 if text:
+                    if self._guide_turn:
+                        self._guide_text = (self._guide_text + text)[-200001:]
                     await self.thinking.finish()
                     await self.frontend.push_chat("assistant", text)
             elif event_type == "thinking":
@@ -850,7 +872,8 @@ class TaskAgentEngine:
                 duration_ms=duration,
                 total_cost_usd=cost,
             )
-            logger.warning("Agent execution timed out, session is resumable")
+            logger.bind(finish_reason=finish_reason, is_error=is_error, duration_ms=duration).warning(
+                "Agent execution timed out, session is resumable")
             await update_task_status(self, TaskStatus.INTERRUPTED, "Agent execution timed out; session is resumable")
             await update_task_metrics(self, cost, duration, "INTERRUPTED")
             await self.frontend.push_status("INTERRUPTED", "执行超时，可继续发送消息恢复")
@@ -880,6 +903,15 @@ class TaskAgentEngine:
                 self.current_job_id or "",
             )
         else:
+            if self._guide_turn:
+                try:
+                    from app.domains.diagnosis_playbook.guide_session import publish
+                    guide_state = await run_db(turn_setup.record_playbook_result_sync, self.task_id,
+                        self._guide_turn, result_text, self.current_job_id, self._guide_text)
+                    if guide_state:
+                        await publish(self.task_id, guide_state)
+                except Exception:
+                    logger.exception("SOP stage projection failed after provider completion")
             self.segments.update_snapshot(
                 usage=usage,
                 raw_usage_json=raw_usage_json,

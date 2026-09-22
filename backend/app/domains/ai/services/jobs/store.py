@@ -911,6 +911,7 @@ def list_pending_queue_keys_sync() -> List[str]:
             f"{AiJobChannel.ASSET_THREAD.value}:",
             f"{constants.QUEUE_KEY_DIAGNOSIS_SUMMARY}:",
             "REQUIREMENT_PREVIEW:",
+            "PLAYBOOK_PROMOTION:",
             f"{constants.QUEUE_KEY_TASK_BASELINE}:",
         )
         return [

@@ -1,0 +1,9 @@
+{
+  "name": "@traceforge/dsh-playbook-guard",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "main": "index.mjs",
+  "scripts": { "test": "node --test guard.test.mjs" },
+  "engines": { "node": ">=22" }
+}

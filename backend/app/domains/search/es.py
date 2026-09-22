@@ -6,7 +6,7 @@ from app.domains.search.projection import es_version
 
 def create_client():
     from elasticsearch import AsyncElasticsearch
-    return AsyncElasticsearch(settings.SEARCH_ES_URL,
+    return AsyncElasticsearch(settings.SEARCH_ES_URL or "http://127.0.0.1:9200",
         basic_auth=(settings.SEARCH_ES_USERNAME, settings.SEARCH_ES_PASSWORD),
         ca_certs=settings.SEARCH_ES_CA_CERTS or None, request_timeout=2, max_retries=0)
 

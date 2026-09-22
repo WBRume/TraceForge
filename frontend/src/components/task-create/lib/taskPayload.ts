@@ -34,6 +34,7 @@ export function validateTaskDraft(
 /**
  * 组装 POST /workspaces/:id/tasks 的请求体（纯函数）：
  * - 诊断态不带 description，改传 phenomenon + priority
+ * - 诊断规程仅问题定位任务可绑定（研发态不下发 diagnosis_playbook_spec_id）
  * - 勾选仓库与全选等价时不下发 repository_ids（沿用后端默认全量 worktree 行为）
  * - 仅对勾选仓库下发非空（trim 后）分支覆盖
  */
@@ -47,8 +48,10 @@ export function buildTaskCreatePayload(
     skill_ids: ctx.skillIds,
   }
   if (draft.taskType === 'DIAGNOSIS') {
+    if (draft.diagnosisPlaybookSpecId) payload.diagnosis_playbook_spec_id = draft.diagnosisPlaybookSpecId
     payload.phenomenon = draft.phenomenon
     payload.priority = draft.priority
+    if (draft.sopAutoRun) payload.sop_auto_run = true
   } else {
     payload.description = draft.description
     payload.requirement_duration_hours = Number(draft.requirementDurationHours)

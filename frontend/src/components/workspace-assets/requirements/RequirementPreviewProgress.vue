@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { LoaderCircle, TriangleAlert } from 'lucide-vue-next'
+import { Check, LoaderCircle, TriangleAlert } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import type { RequirementPreviewJob } from '@/types/workspaceAssets'
 
 const props = defineProps<{
   job: RequirementPreviewJob
   split?: boolean
+  promotion?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,17 +29,18 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
     <div class="progress-head">
       <span class="progress-icon" aria-hidden="true">
         <TriangleAlert v-if="isFailed" :size="19" />
+        <Check v-else-if="job.status === 'SUCCESS'" :size="19" />
         <LoaderCircle v-else class="spinning" :size="19" />
       </span>
       <div>
         <h4>
-          {{ isCancelling
+          {{ promotion ? (job.status === 'SUCCESS' ? '晋升完成' : isFailed ? '晋升失败' : isCancelling ? '正在取消' : '正在晋升') : isCancelling
             ? t('workspace_assets.requirements.preview_progress.cancelling_title')
             : isFailed
               ? t('workspace_assets.requirements.preview_progress.failed_title')
               : t('workspace_assets.requirements.preview_progress.title') }}
         </h4>
-        <p>
+        <p v-if="!promotion">
           {{ props.split
             ? t('workspace_assets.requirements.preview_progress.split_body')
             : t('workspace_assets.requirements.preview_progress.body') }}
@@ -65,7 +67,7 @@ const progressWidth = computed(() => `${Math.max(0, Math.min(100, props.job.prog
       </div>
     </dl>
 
-    <p class="boundary-note">{{ t('workspace_assets.requirements.preview_progress.boundary') }}</p>
+    <p v-if="!promotion" class="boundary-note">{{ t('workspace_assets.requirements.preview_progress.boundary') }}</p>
 
     <!-- 进行中：缩小/关闭都是标题栏图标；失败才需要底部操作 -->
     <footer v-if="isFailed" class="progress-footer">

@@ -1,9 +1,10 @@
 import json
+import hashlib
 import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -11,6 +12,49 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.engine.claude_bridge import SubprocessCliBridge, resolve_claude_permission_args
+
+
+class ClaudeBridgePromptInputTest(unittest.IsolatedAsyncioTestCase):
+    async def test_long_prompt_reaches_supervised_child_intact(self):
+        prompt = '阶段04 中文 🎉 "引用" | &\\\n' * 10000
+        script = (
+            "import sys,json,hashlib; data=sys.stdin.buffer.read(); "
+            "print(json.dumps({'type':'result','digest':hashlib.sha256(data).hexdigest(),"
+            "'args':sys.argv[1:]}), flush=True)"
+        )
+        for session_id, fork in ((None, False), ("existing-session", False), ("existing-session", True)):
+            with self.subTest(session_id=session_id, fork=fork):
+                bridge = SubprocessCliBridge(cli_path=sys.executable)
+                events = []
+                with tempfile.TemporaryDirectory() as cwd, patch.object(
+                    bridge, "_resolve_cli_base_args", return_value=[sys.executable, "-c", script]
+                ):
+                    try:
+                        await bridge.start_session(prompt, cwd, events.append, session_id=session_id, fork_session=fork)
+                        await bridge.wait()
+                    finally:
+                        if bridge.is_running():
+                            await bridge.cancel()
+                self.assertEqual(len(events), 1)
+                self.assertEqual(events[0]["digest"], hashlib.sha256(prompt.encode("utf-8")).hexdigest())
+                args = events[0]["args"]
+                self.assertNotIn(prompt, args)
+                self.assertEqual("--resume" in args, session_id is not None)
+                self.assertEqual("--fork-session" in args, fork)
+
+    async def test_spawn_failure_closes_prompt_input(self):
+        bridge = SubprocessCliBridge(cli_path="claude")
+        inputs = []
+
+        async def fail_spawn(*args, **kwargs):
+            inputs.append(kwargs["stdin"])
+            raise OSError("spawn failed")
+
+        with patch("app.engine.claude_bridge.process_supervisor.spawn", side_effect=fail_spawn):
+            with self.assertRaisesRegex(OSError, "spawn failed"):
+                await bridge.start_session("test", os.getcwd(), lambda event: None)
+        self.assertTrue(inputs[0].closed)
+        self.assertFalse(bridge.is_running())
 
 
 class ClaudeBridgePermissionArgsTest(unittest.TestCase):

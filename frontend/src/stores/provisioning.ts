@@ -19,7 +19,7 @@ type PendingTaskDocsUpload = {
 export type ProvisionJobStatus = 'PENDING' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELLED' | 'TERMINATING' | 'ORPHANED' | 'REVERTED'
 
 /** 浮窗跟踪的作业种类：任务创建 / Requirement AI 拆分预览 / AI 导入预览 */
-export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview'
+export type ProvisionJobKind = 'provision' | 'requirement_split_preview' | 'requirement_import_preview' | 'playbook_promotion'
 
 export type ProvisionJobView = {
   jobId: string
@@ -49,6 +49,8 @@ export type ProvisionJobView = {
    * 浮窗不出卡片（provision 作业没有弹窗阶段，恒为 true）
    */
   handedOver: boolean
+  promotionPayload?: RequirementPreviewJobApiPayload
+  reviewRequired?: boolean
 }
 
 type ProvisionJobApiPayload = {
@@ -67,6 +69,7 @@ type ProvisionJobApiPayload = {
 }
 
 type RequirementPreviewJobApiPayload = {
+  result?: { review_state?: string }
   job_id?: string | null
   workspace_id?: string | null
   status?: string | null
@@ -100,7 +103,7 @@ const asJobId = (value: unknown): string => String(value || '').trim()
 /** 后端 job_kind（REQUIREMENT_SPLIT_PREVIEW 等）→ 浮窗 kind；未知返回空串 */
 const normalizePreviewKind = (value: unknown): ProvisionJobKind | '' => {
   const kind = String(value || '').trim().toLowerCase()
-  if (kind === 'requirement_split_preview' || kind === 'requirement_import_preview') {
+  if (kind === 'requirement_split_preview' || kind === 'requirement_import_preview' || kind === 'playbook_promotion') {
     return kind
   }
   return ''
@@ -243,7 +246,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     if (timer !== null) return
     timer = window.setInterval(() => {
       for (const job of Object.values(jobs.value)) {
-        if (!job.terminal) {
+        if (!job.terminal && job.kind !== 'playbook_promotion') {
           if (job.kind === 'provision') {
             void fetchJob(job.jobId)
           } else {
@@ -256,7 +259,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
 
   const stopTimerIfIdle = () => {
     if (timer === null) return
-    if (Object.values(jobs.value).some((job) => !job.terminal)) return
+    if (Object.values(jobs.value).some((job) => !job.terminal && job.kind !== 'playbook_promotion')) return
     window.clearInterval(timer)
     timer = null
   }
@@ -471,7 +474,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     if (!current || current.kind === 'provision') return
     jobs.value = {
       ...jobs.value,
-      [normalizedJobId]: { ...current, handedOver: true },
+      [normalizedJobId]: { ...current, handedOver: true, viewed: false },
     }
     expanded.value = true
   }
@@ -518,6 +521,11 @@ export const useProvisioningStore = defineStore('provisioning', () => {
       }
     }
     try {
+      if (job.kind === 'playbook_promotion') {
+        const { data } = await api.post(`/workspaces/${job.workspaceId}/cases/playbook-promotions/${normalizedJobId}/cancel`)
+        ingestPromotionJob(data)
+        return true
+      }
       await api.post(`/workspaces/${job.workspaceId}/ai-jobs/${normalizedJobId}/cancel`)
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status
@@ -535,10 +543,38 @@ export const useProvisioningStore = defineStore('provisioning', () => {
   /** 深链恢复：把一次作业查询结果直接并入浮窗（刷新后 store 无记录时用） */
   const ingestPreviewJobPayload = (payload: RequirementPreviewJobApiPayload): ProvisionJobView | null => {
     const view = upsertPreviewJobFromPayload(payload)
-    if (view && !view.terminal) {
+    if (view && !view.terminal && view.kind !== 'playbook_promotion') {
       ensureTimer()
     }
     return view
+  }
+
+  // Promotion jobs share the floating presentation, but use notification WS invalidations.
+  const ingestPromotionJob = (payload: RequirementPreviewJobApiPayload, inDialog = false) => {
+    const existing = jobs.value[asJobId(payload.job_id)]
+    if (existing?.terminal && !PREVIEW_FINAL_STATUSES.has(String(payload.status))) return existing
+    const view = upsertPreviewJobFromPayload({ ...payload, job_kind: 'playbook_promotion', requirement_title: '案例晋升诊断规程' })
+    if (view) {
+      const next = { ...view, promotionPayload: payload, reviewRequired: payload.result?.review_state === 'PENDING', ...(inDialog ? { handedOver: false, viewed: false } : {}) }
+      jobs.value = { ...jobs.value, [view.jobId]: next }
+      return next
+    }
+    return null
+  }
+  const promotionReads = new Map<string, number>()
+  const refreshPromotionJobs = async (workspaceId?: string) => {
+    const workspaces = workspaceId ? [workspaceId] : [...new Set(jobList.value.filter(j => j.kind === 'playbook_promotion').map(j => j.workspaceId))]
+    await Promise.all(workspaces.map(async (wsId) => {
+      const version = (promotionReads.get(wsId) || 0) + 1
+      promotionReads.set(wsId, version)
+      try {
+        const { data } = await api.get(`/workspaces/${wsId}/cases/playbook-promotions`)
+        if (promotionReads.get(wsId) !== version) return
+        for (const payload of data.items || []) {
+          if (jobs.value[payload.job_id]) ingestPromotionJob(payload)
+        }
+      } catch { /* Reconnect or opening the dialog retries the snapshot. */ }
+    }))
   }
 
   /** 预览结果已被「查看预览」消费：浮窗隐藏卡片（store 保留供弹窗绑定） */
@@ -577,7 +613,7 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     const normalizedJobId = asJobId(jobId)
     if (!normalizedJobId || inFlight.has(normalizedJobId)) return
     const current = jobs.value[normalizedJobId]
-    if (!current || current.kind === 'provision') return
+    if (!current || current.kind === 'provision' || current.kind === 'playbook_promotion') return
     inFlight.add(normalizedJobId)
     try {
       const res = await api.get(
@@ -660,11 +696,17 @@ export const useProvisioningStore = defineStore('provisioning', () => {
           void fetchPreviewJob(view.jobId)
         }
       }
-      if (Object.values(jobs.value).some((job) => job.kind !== 'provision' && !job.terminal)) {
+      if (Object.values(jobs.value).some((job) => job.kind !== 'provision' && job.kind !== 'playbook_promotion' && !job.terminal)) {
         ensureTimer()
       }
     } catch (err) {
       console.warn('Failed to restore requirement preview jobs', err)
+    }
+    try {
+      const { data } = await api.get('/cases/playbook-promotions/active')
+      for (const payload of data.items || []) ingestPromotionJob(payload)
+    } catch (err) {
+      console.warn('Failed to restore playbook promotion jobs', err)
     }
   }
 
@@ -726,6 +768,8 @@ export const useProvisioningStore = defineStore('provisioning', () => {
     findLatestPreviewResult,
     cancelPreviewJob,
     ingestPreviewJobPayload,
+    ingestPromotionJob,
+    refreshPromotionJobs,
     markPreviewJobViewed,
     getTrackedJob,
     findActivePreviewJob,

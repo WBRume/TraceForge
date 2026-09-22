@@ -89,10 +89,15 @@ class ClaudeStreamNormalizationTest(unittest.TestCase):
 
 
 class TurnOutcomeClassificationTest(unittest.TestCase):
-    def test_timeout_markers_and_finish_reason_win(self):
-        self.assertEqual(classify_turn_outcome("Request timed out", is_error=False, finish_reason="completed"), "timeout")
-        self.assertEqual(classify_turn_outcome("连接超时", is_error=False, finish_reason="completed"), "timeout")
+    def test_timeout_markers_only_classify_failed_results(self):
+        self.assertEqual(classify_turn_outcome("Request timed out", is_error=True, finish_reason="error"), "timeout")
+        self.assertEqual(classify_turn_outcome("连接超时", is_error=True, finish_reason="completed"), "timeout")
         self.assertEqual(classify_turn_outcome("anything", is_error=False, finish_reason="timeout"), "timeout")
+
+    def test_successful_diagnosis_of_business_timeouts_is_not_agent_timeout(self):
+        for text in ("MySQL 1205 Lock wait timeout exceeded", "连接超时", "Request timed out",
+                     "请检查 innodb_lock_wait_timeout 和 ETIMEDOUT 日志"):
+            self.assertEqual(classify_turn_outcome(text, is_error=False, finish_reason="completed"), "success")
 
     def test_error_reasons(self):
         self.assertEqual(classify_turn_outcome("boom", is_error=True, finish_reason="completed"), "failed")

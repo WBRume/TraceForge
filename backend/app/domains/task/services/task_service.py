@@ -264,8 +264,10 @@ def create_task_record_for_provision(
     task_type: str = "DEVELOPMENT",
     phenomenon: Optional[str] = None,
     priority: Optional[str] = None,
+    sop_auto_run: bool = False,
     repository_branches: Optional[List[Dict[str, str]]] = None,
     repository_ids: Optional[List[str]] = None,
+    diagnosis_playbook_spec_id: Optional[str] = None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -289,9 +291,19 @@ def create_task_record_for_provision(
         priority_text = str(priority or "").strip().upper()
         if priority_text in {"P0", "P1", "P2", "P3"}:
             task_meta["priority"] = priority_text
+        # 主开关：自动执行全流程（SOP 会话以此初始化 auto_run）
+        if sop_auto_run:
+            task_meta["sop_auto_run"] = True
         # 诊断任务：现象即初始化描述，避免描述为空（前端不再单独填写描述）
         if not str(description or "").strip() and phenomenon_text:
             description = phenomenon_text
+
+    if diagnosis_playbook_spec_id:
+        # 诊断规程仅问题定位任务可选，研发态任务不允许绑定
+        if task_type != "DIAGNOSIS":
+            raise ValueError("diagnosis playbook selection requires a DIAGNOSIS task")
+        from app.domains.diagnosis_playbook.analysis_guide import task_binding
+        task_meta = {**(task_meta or {}), "diagnosis_playbook_guide": task_binding(db, workspace_id, diagnosis_playbook_spec_id)}
 
     task = SddTask(
         id=task_id,

@@ -68,6 +68,7 @@ export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
       return existing
     }
 
+    if (searchItem.kind !== 'task' && searchItem.kind !== 'message') return
     const isTask = searchItem.kind === 'task'
     const defaultWidth = isTask ? 420 : 360
     const defaultHeight = isTask ? 480 : 280

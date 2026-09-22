@@ -23,9 +23,10 @@ const pillVisible = computed(() => jobs.value.length > 0)
 
 // ── Requirement AI 预览作业（拆分/导入）分支 ──
 const isPreviewJob = (job: ProvisionJobView) => job.kind !== 'provision'
-const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.terminal && job.status === 'SUCCESS'
+const isPreviewSuccess = (job: ProvisionJobView) => isPreviewJob(job) && job.terminal && job.status === 'SUCCESS' && !job.reviewRequired
 
 const previewStageText = (job: ProvisionJobView) => {
+  if (job.reviewRequired) return '待确认'
   const status = String(job.status || '').toUpperCase()
   // 终态优先于取消中：FAILED/ORPHANED 不得被 cancelRequested 覆盖成"正在取消"
   if (status === 'SUCCESS') return t('provisioning.preview_stage_completed')
@@ -51,7 +52,10 @@ const previewTitle = (job: ProvisionJobView) => {
 const handleOpenPreview = (job: ProvisionJobView) => {
   const workspaceId = String(job.workspaceId || '').trim()
   if (!workspaceId) return
-  if (job.kind === 'requirement_split_preview' && job.requirementId) {
+  if (job.kind === 'playbook_promotion') {
+    window.dispatchEvent(new CustomEvent('playbook-promotion-open', { detail: { jobId: job.jobId } }))
+    router.push({ name: 'workspaceCasePromotionReview', params: { wsId: workspaceId, jobId: job.jobId } })
+  } else if (job.kind === 'requirement_split_preview' && job.requirementId) {
     router.push({
       path: `/workspaces/${workspaceId}/assets/requirements/${job.requirementId}`,
       query: { previewJob: job.jobId },
@@ -218,7 +222,7 @@ const handleEnterSession = (job: ProvisionJobView) => {
           v-for="job in jobs"
           :key="job.jobId"
           class="widget-job"
-          :class="{ 'widget-job-error': job.terminal && !job.ready && !isPreviewSuccess(job) }"
+          :class="{ 'widget-job-error': job.terminal && !job.ready && !isPreviewSuccess(job) && !job.reviewRequired }"
         >
           <div class="widget-job-head">
             <span class="widget-job-name" :title="jobTitle(job)">{{ jobTitle(job) }}</span>
@@ -237,6 +241,7 @@ const handleEnterSession = (job: ProvisionJobView) => {
             </div>
           </div>
 
+          <div v-else-if="job.reviewRequired" class="widget-job-meta">规程草案待人工确认</div>
           <div v-else-if="job.ready || isPreviewSuccess(job)" class="widget-job-success">
             <CheckCircle2 class="w-4 h-4 widget-ok" />
             <span>{{ isPreviewJob(job)
@@ -251,12 +256,12 @@ const handleEnterSession = (job: ProvisionJobView) => {
 
           <div class="widget-job-actions">
             <button
-              v-if="isPreviewSuccess(job)"
+              v-if="isPreviewSuccess(job) || job.kind === 'playbook_promotion'"
               type="button"
               class="widget-btn-primary"
               @click="handleOpenPreview(job)"
             >
-              {{ t('provisioning.preview_open_action') }}
+              {{ job.kind === 'playbook_promotion' ? (job.reviewRequired ? '确认草案' : job.terminal ? '查看结果' : '查看进度') : t('provisioning.preview_open_action') }}
             </button>
             <button
               v-else-if="job.ready"

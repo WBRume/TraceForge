@@ -10,20 +10,23 @@ from app.config import settings
 from app.core.redis_client import get_redis_client
 
 
+def signing_key():
+    return settings.SEARCH_CURSOR_SECRET.encode() if settings.SEARCH_CURSOR_SECRET else hmac.new(
+        settings.JWT_SECRET_KEY.encode(), b'traceforge-search-cursor-v1', hashlib.sha256).digest()
+
+
 def sign(payload):
-    if not settings.SEARCH_CURSOR_SECRET:
-        raise HTTPException(503, "SEARCH_CURSOR_SECRET_MISSING")
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
-    mac = hmac.new(settings.SEARCH_CURSOR_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    mac = hmac.new(signing_key(), raw.encode(), hashlib.sha256).hexdigest()
     return raw + "." + mac
 
 
 def unsign(token, purpose, user_id):
     try:
-        if len(token) > 4096 or not settings.SEARCH_CURSOR_SECRET:
+        if len(token) > 4096:
             raise ValueError()
         raw, mac = token.split(".")
-        expected = hmac.new(settings.SEARCH_CURSOR_SECRET.encode(), raw.encode(), hashlib.sha256).hexdigest()
+        expected = hmac.new(signing_key(), raw.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(mac, expected):
             raise ValueError()
         data = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))

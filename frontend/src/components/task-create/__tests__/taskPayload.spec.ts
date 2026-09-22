@@ -8,6 +8,7 @@ const draft = (overrides: Partial<TaskDraftSnapshot> = {}): TaskDraftSnapshot =>
   description: '做点什么',
   phenomenon: '',
   priority: 'P2',
+  sopAutoRun: false,
   requirementDurationHours: 8,
   specFile: null,
   diagnosisFiles: [],
@@ -80,6 +81,21 @@ describe('buildTaskCreatePayload', () => {
       skill_ids: [],
     })
     expect(payload.description).toBeUndefined()
+  })
+
+  it('sends sop_auto_run only for diagnosis tasks when the main switch is on', () => {
+    const on = buildTaskCreatePayload(
+      draft({ taskType: 'DIAGNOSIS', phenomenon: '接口偶发超时', sopAutoRun: true }),
+      payloadCtx(),
+    )
+    expect(on.sop_auto_run).toBe(true)
+    const off = buildTaskCreatePayload(
+      draft({ taskType: 'DIAGNOSIS', phenomenon: '接口偶发超时' }),
+      payloadCtx(),
+    )
+    expect(off).not.toHaveProperty('sop_auto_run')
+    const development = buildTaskCreatePayload(draft({ sopAutoRun: true }), payloadCtx())
+    expect(development).not.toHaveProperty('sop_auto_run')
   })
 
   it('omits repository_ids when the selection equals all repos', () => {

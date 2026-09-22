@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 const props = defineProps<{ status: string }>()
 const { t } = useI18n()
 
-const label = computed(() => t(`case_center.status.${props.status}`))
+const label = computed(() => props.status === 'TECHNICALLY_VERIFIED' ? '物理验证归档' : t(`case_center.status.${props.status}`))
 const cls = computed(() => `case-status-${String(props.status).toLowerCase()}`)
 </script>
 
@@ -26,6 +26,7 @@ const cls = computed(() => `case-status-${String(props.status).toLowerCase()}`)
 }
 
 .case-status-draft { color: #475569; background: #f1f5f9; border: 1px solid #e2e8f0; }
+.case-status-technically_verified { color:#1d4ed8; background:#eff6ff; border:1px solid #bfdbfe; }
 .case-status-pending_review { color: #1d4ed8; background: #eff6ff; border: 1px solid #bfdbfe; }
 .case-status-in_review { color: #b45309; background: #fffbeb; border: 1px solid #fde68a; }
 .case-status-approved { color: #14532d; background: #f0fdf4; border: 1px solid #bbf7d0; }

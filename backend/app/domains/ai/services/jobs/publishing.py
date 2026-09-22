@@ -25,6 +25,11 @@ async def broadcast_job_payload(payload: Dict[str, Any]) -> None:
     status = str(payload.get("status") or "")
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
+    if (payload.get('context_json') or {}).get('job_kind') == 'PLAYBOOK_PROMOTION':
+        from app.domains.notification.ws.notification_manager import notification_ws_manager
+        await notification_ws_manager.send_message_to_user(str(payload['creator_id']), {
+            'type': 'playbook_promotion_updated', 'job_id': payload['id'], 'workspace_id': payload['workspace_id']})
+        return
     if channel == AiJobChannel.ASSET_THREAD.value:
         asset_id = str(payload.get("asset_id") or "")
         if not asset_id:

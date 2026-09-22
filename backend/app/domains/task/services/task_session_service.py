@@ -229,6 +229,8 @@ def _prepare_chat_turn_sync(
         raise TaskSessionUndoError("Task is currently running; wait for it to finish", code="TASK_SESSION_BUSY")
     current_generation = int(getattr(task, "session_generation", 0) or 0)
     if current_generation <= 0:
+        from app.domains.diagnosis_playbook.guide_session import migrate_initial_generation
+        migrate_initial_generation(task)
         task.session_generation = 1
     if fresh_session:
         # The caller has already advanced the generation for an explicit
@@ -956,6 +958,8 @@ def _complete_undo_sync(
         else []
     )
     _redact_suffix(db, task, suffix, context["message_ids"], operation_id=context["operation_id"])
+    from app.domains.diagnosis_playbook.guide_session import invalidate_reverted_jobs
+    invalidate_reverted_jobs(task, {turn.ai_job_id for turn in suffix if turn.ai_job_id})
     now = datetime.utcnow()
     for turn in suffix:
         turn.status = TaskSessionTurnStatus.REVERTED

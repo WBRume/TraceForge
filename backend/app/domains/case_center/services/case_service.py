@@ -39,7 +39,7 @@ class CaseError(ValueError):
 
 
 _EDITABLE_STATUSES = {CaseStatus.DRAFT.value, CaseStatus.REJECTED.value}
-_TERMINAL_EDIT_STATUSES = {CaseStatus.APPROVED.value}
+_TERMINAL_EDIT_STATUSES = {CaseStatus.APPROVED.value, CaseStatus.TECHNICALLY_VERIFIED.value}
 
 
 def _clean(value: Optional[str]) -> Optional[str]:
@@ -58,6 +58,13 @@ def _case_query(db: Session):
 
 
 def serialize_case(case: SddCase) -> dict:
+    from sqlalchemy.orm import object_session
+    from app.domains.diagnosis_playbook.models import CasePlaybookLink
+    has_playbook = getattr(case, '_has_playbook', None)
+    session = object_session(case)
+    if has_playbook is None and session is not None:
+        has_playbook = session.query(CasePlaybookLink.id).filter(
+            CasePlaybookLink.case_id == case.id, CasePlaybookLink.spec_id.isnot(None)).first() is not None
     records = []
     for record in case.review_records or []:
         reviewer_name = None
@@ -154,6 +161,8 @@ def serialize_case(case: SddCase) -> dict:
         "category": case.category,
         "priority": case.priority,
         "status": case.status,
+        "has_playbook": bool(has_playbook),
+        "archive_origin": case.archive_origin,
         "review_round": case.review_round,
         "diagnosis_detail": diagnosis_detail if isinstance(diagnosis_detail, dict) else None,
         "submitted_at": case.submitted_at,
@@ -206,6 +215,11 @@ def _paginate_cases(query, page: int, page_size: int) -> Tuple[List[SddCase], in
         .limit(page_size)
         .all()
     )
+    from app.domains.diagnosis_playbook.models import CasePlaybookLink
+    promoted = {row[0] for row in query.session.query(CasePlaybookLink.case_id).filter(
+        CasePlaybookLink.case_id.in_([item.id for item in items]), CasePlaybookLink.spec_id.isnot(None)).distinct()}
+    for item in items:
+        item._has_playbook = item.id in promoted
     return items, total
 
 
@@ -602,6 +616,9 @@ def create_case_draft_from_task(
     """问题定位任务「确认采纳 → 一键转案例」：生成案例草稿。"""
     if task.task_type != TaskType.DIAGNOSIS.value:
         raise CaseError("Only diagnosis tasks can be converted to cases", status_code=403)
+
+    # Shared task-level association boundary with automatic technical projection.
+    db.query(SddTask).filter(SddTask.id == task.id).with_for_update().one()
 
     existing = (
         db.query(SddCase)

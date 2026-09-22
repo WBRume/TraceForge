@@ -29,6 +29,7 @@ import CaseReportSection from './CaseReportSection.vue'
 import CaseReviewTimeline from './CaseReviewTimeline.vue'
 import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import CaseFormDialog from './CaseFormDialog.vue'
+import CasePlaybookHistory from './CasePlaybookHistory.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -141,13 +142,14 @@ const callChainItems = computed(() => {
             <span
               class="mgmt-status-pill"
               :class="statusPillTone(vm.currentCase.status)"
-            >{{ t(`case_center.status.${vm.currentCase.status || 'DRAFT'}`) }}</span>
+            >{{ vm.currentCase.status === 'TECHNICALLY_VERIFIED' ? '物理验证归档' : t(`case_center.status.${vm.currentCase.status || 'DRAFT'}`) }}</span>
             <span class="mgmt-status-pill" :class="priorityPillTone(vm.currentCase.priority)">
               {{ vm.currentCase.priority || '-' }}
             </span>
-            <span class="mgmt-status-pill" :class="categoryPillTone(vm.currentCase.category)">
+            <span v-if="vm.currentCase.status !== 'APPROVED' || vm.currentCase.category !== 'TEMPORARY'" class="mgmt-status-pill" :class="categoryPillTone(vm.currentCase.category)">
               {{ t(`case_center.category.${vm.currentCase.category || 'PUBLIC'}`) }}
             </span>
+            <span v-if="vm.currentCase.has_playbook" class="mgmt-status-pill">已晋升规程</span>
           </h2>
           <p class="mgmt-subtitle">
             <span class="mgmt-case-meta">{{ t('case_center.creator') }}: {{ vm.currentCase.creator_name || '-' }}</span>
@@ -221,6 +223,7 @@ const callChainItems = computed(() => {
       </div>
 
       <!-- ─── Report Body ─── -->
+      <CasePlaybookHistory :workspace-id="wsId" :case-id="caseId" :can-manage="vm.myCanManage && vm.currentCase?.status === 'APPROVED'" />
       <div class="report-grid">
         <div class="report-main">
           <CaseReportSection index="01" :title="t('case_center.field.problem_description')" :icon="AlertCircle" tone="rose">

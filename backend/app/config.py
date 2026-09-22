@@ -5,7 +5,7 @@ TraceForge Platform - Global Configuration
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -28,9 +28,21 @@ def _resolve_backend_path(raw_value: Optional[str], *, fallback: str) -> str:
 class Settings(BaseSettings):
     """应用全局配置"""
 
-    # Search remains opt-in until migrations, backfill and capability checks pass.
-    SEARCH_ENABLED: bool = False
+    DIAGNOSIS_PLAYBOOK_WORKER_ENABLED: bool = False
+    DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL: Literal[
+        "ADVISORY_GUARD", "WORKTREE_BROKER", "CONTAINER_SANDBOX"
+    ] = "ADVISORY_GUARD"
+    DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT: str = str(_BACKEND_ROOT / "tmp" / "playbook_evidence")
+    DIAGNOSIS_PLAYBOOK_TOOL_URL: str = "http://127.0.0.1:8000/api/playbook-tools"
+    # Trusted deployment modules only; never populated from an API/spec input.
+    DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES: list[str] = Field(default_factory=list)
+    DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE: str = ""
+
+    # Local BM25 starts with the backend; ES/semantic retrieval are optional.
+    SEARCH_ENABLED: bool = True
     SEARCH_WORKERS_ENABLED: bool = True
+    SEARCH_BACKEND: Literal["auto", "elasticsearch", "sqlite"] = "auto"
+    SEARCH_SQLITE_PATH: str = "data/search-bm25.sqlite3"
     SEARCH_ES_URL: str = "http://127.0.0.1:9200"
     SEARCH_READ_ALIAS: str = "traceforge-search-read"
     SEARCH_ES_USERNAME: str = "elastic"

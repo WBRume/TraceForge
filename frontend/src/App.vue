@@ -1,13 +1,22 @@
 <script setup lang="ts">
 import { RouterView } from 'vue-router'
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
+import { useNotificationStore } from '@/stores/notification'
 import GlobalSearchHost from '@/components/global-search/GlobalSearchHost.vue'
 import ProvisionFloatingWidget from '@/components/ProvisionFloatingWidget.vue'
 
 const authStore = useAuthStore()
 const provisioningStore = useProvisioningStore()
+const notificationStore = useNotificationStore()
+
+// User notifications carry background-job updates across every application route.
+watch(() => [authStore.token, authStore.user?.id] as const, ([token, userId]) => {
+  notificationStore.reset()
+  if (token && userId) notificationStore.start()
+}, { immediate: true })
+onUnmounted(() => notificationStore.stop())
 
 onMounted(async () => {
   if (authStore.isAuthenticated) {

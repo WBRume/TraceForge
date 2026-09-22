@@ -35,6 +35,10 @@ from app.agents.adapters.opencode.event_mapper import map_opencode_event
 
 
 class OpenCodeAdapter(AgentBackend):
+    def get_runtime_control(self):
+        from app.agents.runtime_control import runtime_control_for
+        return runtime_control_for(self)
+
     name = "opencode"
     capabilities = AgentCapabilities(
         supports_resume=True,
@@ -135,6 +139,27 @@ class OpenCodeAdapter(AgentBackend):
             # 明确告诉 OpenCode 本次 prompt 所在的工作目录，确保每个任务
             # 都读取自己任务目录下的文件，而不是服务启动时的目录。
             params["directory"] = request.project_path
+        policy = request.provider_options.get("execution_policy")
+        if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
+            if request.provider_options.get("dedicated_backend_host") is not True:
+                raise AgentError("SOP_DEDICATED_BACKEND_HOST_REQUIRED")
+            # Runtime MCP configuration is host-scoped. Only a run-dedicated
+            # server may receive this short-lived bearer credential.
+            configured = await client.post(f"{self.server_url}/mcp", params=params, json={
+                "name": "traceforge_playbook", "config": {
+                    "type": "remote", "url": policy["mcp_config"]["url"],
+                    "headers": policy["mcp_config"]["headers"], "enabled": True, "oauth": False}})
+            if configured.status_code != 200:
+                raise AgentError("SOP_MCP_INSTALL_FAILED")
+            status = configured.json().get("traceforge_playbook", {})
+            if status.get("status") != "connected":
+                raise AgentError("SOP_MCP_NOT_CONNECTED")
+            # Tool deny rules are enforced by the provider, not a prompt.
+            # The wildcard closes future/native/custom tools as well.
+            body["tools"] = {"*": False, "traceforge_playbook_read_source": True,
+                             "traceforge_playbook_propose_hypotheses": True,
+                             "traceforge_playbook_propose_experiment": True,
+                             "traceforge_playbook_propose_patch": policy["tier"] == "WORKSPACE_WRITE"}
         response = await client.post(
             f"{self.server_url}/session/{session_id}/prompt_async",
             params=params,

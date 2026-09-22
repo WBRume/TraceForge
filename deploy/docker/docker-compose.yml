@@ -113,6 +113,8 @@ services:
       dockerfile: deploy/docker/backend.Dockerfile
     command: ["python", "-m", "app.domains.search.worker", "--kind", "search"]
     env_file: [.env]
+    volumes:
+      - ./volumes/storage:/app/storage
     restart: unless-stopped
     depends_on:
       migrate:

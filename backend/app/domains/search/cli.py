@@ -71,10 +71,12 @@ async def create_index(es, name, profile_id=None):
 def backfill_batch(db, run_id, batch_size):
     from app.domains.task.models.task import SddTask
     from app.domains.task.models.chat import ChatMessage
+    from app.domains.case_center.models.case import SddCase
     run = db.query(SearchBackfillRun).filter(SearchBackfillRun.id == run_id).with_for_update().one()
     if run.status == "done":
         return dto(run)
-    model = SddTask if run.stage == "task" else ChatMessage
+    from app.domains.diagnosis_playbook.models import PlaybookSpec
+    model = {"task": SddTask, "message": ChatMessage, "case": SddCase, "playbook": PlaybookSpec}[run.stage]
     query = db.query(model).filter(model.created_at <= run.boundary)
     if run.cursor:
         stamp, identity = datetime.fromisoformat(run.cursor[0]), run.cursor[1]
@@ -100,6 +102,10 @@ def backfill_batch(db, run_id, batch_size):
     if len(rows) < batch_size:
         if run.stage == "task":
             run.stage, run.cursor = "message", None
+        elif run.stage == "message":
+            run.stage, run.cursor = "case", None
+        elif run.stage == "case":
+            run.stage, run.cursor = "playbook", None
         else:
             run.status, run.finished_at = "done", datetime.utcnow()
     db.flush()

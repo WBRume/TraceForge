@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import codecs
+import tempfile
 from abc import ABC, abstractmethod
 from typing import Optional, Callable, Any, Dict
 
@@ -199,6 +200,7 @@ class SubprocessCliBridge(CliBridgeBase):
         permission_mode: str = "default",
         on_process_started: Optional[Callable[[Any], Any]] = None,
         process_attach_timeout_seconds: Optional[float] = None,
+        runtime_policy: Optional[dict] = None,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -215,6 +217,19 @@ class SubprocessCliBridge(CliBridgeBase):
             *cli_permission_args,
             "--verbose",
         ])
+        if runtime_policy is not None and runtime_policy.get("enforcement") != "ADVISORY_GUARD":
+            tier = runtime_policy.get("tier")
+            if tier not in {"READONLY", "WORKSPACE_WRITE"} or not runtime_policy.get("dispatch_ticket"):
+                raise ValueError("Invalid SOP execution policy")
+            expected = "read-only" if tier == "READONLY" else "default"
+            if permission_mode != expected:
+                raise ValueError("Conflicting legacy permission mode and SOP policy")
+            # All mutations are proposals materialized by the platform broker.
+            tools = ""
+            args.extend(["--tools", tools, "--strict-mcp-config", "--mcp-config",
+                         json.dumps({"mcpServers": {"traceforge_playbook": runtime_policy["mcp_config"]}}),
+                         "--allowedTools", "mcp__traceforge_playbook__propose_hypotheses,mcp__traceforge_playbook__propose_experiment,mcp__traceforge_playbook__propose_patch,mcp__traceforge_playbook__read_source",
+                         "--setting-sources", ""])
 
         # 恢复已有会话
         if session_id:
@@ -228,9 +243,6 @@ class SubprocessCliBridge(CliBridgeBase):
             self._session_id = str(uuid.uuid4())
             args.extend(["--session-id", self._session_id])
 
-        # 追加 prompt
-        args.append(prompt)
-
         try:
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
@@ -239,15 +251,22 @@ class SubprocessCliBridge(CliBridgeBase):
                     if key and value is not None:
                         env[str(key)] = str(value)
 
-            self._managed_process = await process_supervisor.spawn(
-                args,
-                cwd=project_path,
-                env=env,
-                run_token=str(env.get("TRACEFORGE_RUN_TOKEN") or "") or None,
-                worker_boot_id=str(env.get("WORKER_BOOT_ID") or "") or None,
-                on_process_started=on_process_started,
-                process_attach_timeout_seconds=process_attach_timeout_seconds,
-            )
+            # Prompt 不进入 argv，避免 Windows 命令行长度限制。文件型 stdin
+            # 提供完整 UTF-8 内容和 EOF，也不会与 stdout/stderr 形成管道背压。
+            # spawn 完成后子进程拥有独立句柄，父端可立即关闭临时文件。
+            with tempfile.TemporaryFile(mode="w+b") as prompt_input:
+                prompt_input.write(prompt.encode("utf-8"))
+                prompt_input.seek(0)
+                self._managed_process = await process_supervisor.spawn(
+                    args,
+                    cwd=project_path,
+                    env=env,
+                    stdin=prompt_input,
+                    run_token=str(env.get("TRACEFORGE_RUN_TOKEN") or "") or None,
+                    worker_boot_id=str(env.get("WORKER_BOOT_ID") or "") or None,
+                    on_process_started=on_process_started,
+                    process_attach_timeout_seconds=process_attach_timeout_seconds,
+                )
             self.process = self._managed_process.process
 
             # 启动异步读取循环

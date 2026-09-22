@@ -13,11 +13,13 @@ import { useProvisioningStore } from '@/stores/provisioning'
 import TaskCreateForm from './TaskCreateForm.vue'
 import SkillsPickerSidebar from './SkillsPickerSidebar.vue'
 import ReposPickerSidebar from './ReposPickerSidebar.vue'
+import PlaybookPicker from './PlaybookPickerSidebar.vue'
+import type { PlaybookSpec } from '@/types/diagnosisPlaybook'
 import { useWorkspaceRepos } from './composables/useWorkspaceRepos'
 import { buildTaskCreatePayload, validateTaskDraft } from './lib/taskPayload'
 import type { TaskCreatedEvent, TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 
-const props = defineProps<{ wsId: string }>()
+const props = defineProps<{ wsId: string; initialTaskType?: TaskTypeValue }>()
 
 const emit = defineEmits<{
   close: []
@@ -28,7 +30,7 @@ const { t } = useI18n()
 const provisioningStore = useProvisioningStore()
 
 // ── 弹窗内状态 ──
-const taskType = shallowRef<TaskTypeValue>('DEVELOPMENT')
+const taskType = shallowRef<TaskTypeValue>(props.initialTaskType ?? 'DEVELOPMENT')
 // 右侧滑出侧栏：同一时刻至多展开一个（Skills / 仓库两类任务均可展开）
 const activeSidebar = shallowRef<TaskCreateSidebar>('none')
 
@@ -38,6 +40,8 @@ const formRef = useTemplateRef<{ reset: () => void }>('taskForm')
 // ── 领域状态 ──
 const repos = useWorkspaceRepos(() => props.wsId)
 const selectedSkillIds = ref<string[]>([])
+const selectedPlaybook = shallowRef<PlaybookSpec | null>(null)
+const playbookContext = shallowRef({ name: '', description: '' })
 
 onMounted(() => {
   void repos.load()
@@ -45,6 +49,16 @@ onMounted(() => {
 
 const toggleSidebar = (name: TaskCreateSidebarName) => {
   activeSidebar.value = activeSidebar.value === name ? 'none' : name
+}
+
+/** 切换任务类型：诊断规程仅问题定位任务可选，切走时清空已选并收起侧栏 */
+const switchTaskType = (type: TaskTypeValue) => {
+  if (taskType.value === type) return
+  taskType.value = type
+  if (type !== 'DIAGNOSIS') {
+    selectedPlaybook.value = null
+    if (activeSidebar.value === 'playbooks') activeSidebar.value = 'none'
+  }
 }
 
 const handleSubmit = async (draft: TaskDraftSnapshot) => {
@@ -103,6 +117,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
       expectDiagnosisDocs: draft.diagnosisFiles.length > 0,
     })
     formRef.value?.reset()
+    selectedPlaybook.value = null
   } catch (e) {
     ElMessage.error(formatApiError(e, t('dashboard.create_task_failed'), t))
     console.error('Failed to create task', e)
@@ -131,7 +146,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
           type="button"
           class="segmented-btn task-type-card"
           :class="{ active: taskType === 'DEVELOPMENT' }"
-          @click="taskType = 'DEVELOPMENT'"
+          @click="switchTaskType('DEVELOPMENT')"
         >
           <Hammer class="w-3.5 h-3.5" />
           <span>{{ $t('task_types.development') }}</span>
@@ -140,7 +155,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
           type="button"
           class="segmented-btn task-type-card"
           :class="{ active: taskType === 'DIAGNOSIS' }"
-          @click="taskType = 'DIAGNOSIS'"
+          @click="switchTaskType('DIAGNOSIS')"
         >
           <Stethoscope class="w-3.5 h-3.5" />
           <span>{{ $t('task_types.diagnosis') }}</span>
@@ -163,6 +178,8 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         :selected-repo-count="repos.selectedIds.length"
         :selected-skill-count="selectedSkillIds.length"
         :active-sidebar="activeSidebar"
+        :selected-playbook="selectedPlaybook"
+        @playbook-context="playbookContext = $event"
         @submit="handleSubmit"
         @cancel="emit('close')"
         @toggle-sidebar="toggleSidebar"
@@ -180,6 +197,16 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
       <ReposPickerSidebar
         :controller="repos"
         :open="activeSidebar === 'repos'"
+        @close="activeSidebar = 'none'"
+      />
+      <PlaybookPicker
+        v-model="selectedPlaybook"
+        :workspace-id="props.wsId"
+        :open="activeSidebar === 'playbooks'"
+        :name="playbookContext.name"
+        :description="playbookContext.description"
+        :task-type="taskType"
+        :disabled="creatingTask"
         @close="activeSidebar = 'none'"
       />
     </div>

@@ -151,6 +151,10 @@ async def execute_job(job_id: str) -> JobExecutionOutcome:
 
     with bind_ai_context(job_id=job_id, event_type="execute_job"):
         try:
+            if job_kind == 'PLAYBOOK_PROMOTION':
+                from app.domains.diagnosis_playbook.promotion import run
+                provider_seen = await run(job_id)
+                return JobExecutionOutcome(requested_status=None, provider_outcome_seen=provider_seen)
             if queue_key.startswith("REQUIREMENT_PREVIEW:"):
                 provider_seen = await _run_requirement_preview_job(job_id, job_kind)
                 return JobExecutionOutcome(

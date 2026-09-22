@@ -7,7 +7,7 @@ export interface SearchCapabilities {
 }
 export interface SearchItem {
   entity_key: string
-  kind: 'task' | 'message'
+  kind: 'task' | 'message' | 'case' | 'playbook'
   workspace_name: string
   task_name: string
   message_id?: string

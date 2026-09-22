@@ -2,6 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import api from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
+import { useProvisioningStore } from '@/stores/provisioning'
 import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
 import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
@@ -116,6 +117,11 @@ export const useNotificationStore = defineStore('appNotification', () => {
   }
 
   const handleIncoming = (item: AppNotificationItem) => {
+    if (item?.type === 'playbook_promotion_updated') {
+      void useProvisioningStore().refreshPromotionJobs(item.workspace_id || undefined)
+      window.dispatchEvent(new CustomEvent('playbook-promotion-updated', { detail: item }))
+      return
+    }
     if (!item?.id) return
     const index = items.value.findIndex((existing) => existing.id === item.id)
     if (index >= 0) {
@@ -164,6 +170,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
         }
         await fetchList()
         await refreshUnreadCount()
+        window.dispatchEvent(new Event('playbook-promotion-resync'))
+        void useProvisioningStore().refreshPromotionJobs()
         if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
           sendResyncComplete(context.socket, frame, room)
         }
@@ -181,6 +189,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
     const generation = consumer.resetForConnection(socket)
     ws.onopen = () => {
       connected.value = true
+      window.dispatchEvent(new Event('playbook-promotion-resync'))
+      void useProvisioningStore().refreshPromotionJobs()
       wsReconnectAttempt = 0
     }
     ws.onmessage = (event) => {

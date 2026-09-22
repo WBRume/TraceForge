@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, useTemplateRef, watch } from 'vue'
+import { computed, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Bell } from 'lucide-vue-next'
@@ -98,12 +98,7 @@ watch(popoverOpen, (open) => {
   }
 })
 
-onMounted(() => {
-  store.start()
-})
-
 onUnmounted(() => {
-  store.stop()
   document.removeEventListener('pointerdown', onPointerDown, true)
   document.removeEventListener('keydown', onKeydown, true)
   window.removeEventListener('resize', onResize)
