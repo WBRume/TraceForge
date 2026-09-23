@@ -31,7 +31,6 @@ from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.domains.ai.services.jobs import attempts
-from app.domains.ai.services.jobs.constants import looks_like_timeout_text
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
 
 logger = get_logger(__name__, category="ai_session")
@@ -266,7 +265,9 @@ async def run_cli_single_turn(
                     provider_call_id=call.call_id,
                 )
 
-            if result_is_error or looks_like_timeout_text(final_text):
+            # 诊断正文可以讨论 timeout/请求超时；调用失败只由提供方终局状态判定。
+            # 真正的执行超时由上方 wait_for 的异常路径处理。
+            if result_is_error:
                 last_error = AgentProviderError(
                     final_text or "AI provider returned timeout/error",
                     termination_confirmed_dead=dead,
@@ -275,7 +276,7 @@ async def run_cli_single_turn(
                     provider_call_id=call.call_id if call is not None else None,
                 )
                 logger.warning(
-                    "Asset AI single-turn got timeout/error text (attempt {}/{}): {}",
+                    "Asset AI single-turn got provider error (attempt {}/{}): {}",
                     attempt_no,
                     attempts_count,
                     final_text[:160],

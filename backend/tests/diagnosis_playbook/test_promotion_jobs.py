@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock
 import pytest
 from fastapi import FastAPI
@@ -78,8 +79,7 @@ def test_missing_sources_and_stale_attempt_cannot_publish(db):
     assert not db.query(PlaybookSpec).count()
 
 
-@pytest.mark.asyncio
-async def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, monkeypatch, tmp_path):
+def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output(db, monkeypatch, tmp_path):
     import json
     from app.config import settings
     from app.core import offload
@@ -110,8 +110,9 @@ async def test_runner_calls_workspace_cli_with_snapshot_and_records_model_output
         current = db.query(SddAiJob).filter_by(id=identity).one()
         published.append((current.status, current.progress, db.query(PlaybookSpec).count()))
     monkeypatch.setattr(publishing, 'publish_job_state', publish)
-    assert await promotion.run(job.id) is True
+    assert asyncio.run(promotion.run(job.id)) is True
     assert cli.call_args.kwargs['backend_name'] == 'test-backend'
+    assert cli.call_args.kwargs['permission_mode'] == 'read-only'
     assert '晋升后的修改' not in cli.call_args.kwargs['prompt']
     assert 'checkout' in cli.call_args.kwargs['prompt']
     assert db.query(PlaybookSpec).count() == 0

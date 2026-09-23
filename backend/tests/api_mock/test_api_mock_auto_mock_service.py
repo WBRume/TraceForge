@@ -4,6 +4,7 @@ import sys
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -12,7 +13,8 @@ if BACKEND_ROOT not in sys.path:
 from app.domains.api_mock.services.api_mock import auto_mock_service  # noqa: E402
 
 
-def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(monkeypatch):
+@pytest.mark.parametrize("backend_name", ["claude-code", "opencode", "dsh"])
+def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(monkeypatch, backend_name):
     project = SimpleNamespace(
         id="project-1",
         workspace_id="ws-1",
@@ -25,7 +27,8 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     created_calls = []
     captured = {"prompt": None, "success_result": None}
 
-    async def _fake_run_claude_session(_cli_cmd, _cwd, prompt, **_kwargs):
+    async def _fake_run_agent_session(selected_backend, _cwd, prompt, **_kwargs):
+        assert selected_backend == backend_name
         captured["prompt"] = prompt
         payload = [
             {
@@ -67,10 +70,11 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     monkeypatch.setattr(auto_mock_service, "_raise_if_cancel_requested", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(auto_mock_service, "_set_job_progress", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(auto_mock_service, "_set_job_success", _fake_set_job_success)
-    monkeypatch.setattr(auto_mock_service, "_api_mock_cli_candidates", lambda: ["claude"])
+    resolve_backend = mock.Mock(return_value=backend_name)
+    monkeypatch.setattr(auto_mock_service, "resolve_workspace_backend", resolve_backend)
     monkeypatch.setattr(auto_mock_service, "_temp_workspace_path", lambda *_args, **_kwargs: "G:/tmp/api-mock")
     monkeypatch.setattr(auto_mock_service, "_copy_task_workspace", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(auto_mock_service, "run_claude_session", _fake_run_claude_session)
+    monkeypatch.setattr(auto_mock_service, "run_agent_session", _fake_run_agent_session)
     monkeypatch.setattr(auto_mock_service, "list_mock_cases_for_endpoint", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(auto_mock_service, "create_mock_case", _fake_create_mock_case)
     monkeypatch.setattr(
@@ -88,6 +92,7 @@ def test_auto_generate_mock_cases_persists_request_matchers_and_prompt_fields(mo
     )
 
     assert len(created_calls) == 2
+    resolve_backend.assert_called_once_with(mock.ANY, "ws-1")
     created = created_calls[0]
     assert created["request_query_json"] == {"source": "ai"}
     assert created["request_body_json"] == {"name": "Alice", "role": "admin"}

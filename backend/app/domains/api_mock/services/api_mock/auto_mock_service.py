@@ -7,8 +7,9 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
+from app.agents.selection import resolve_workspace_backend
 from app.domains.api_mock.models.api_mock import ApiMockRuleMode, SddApiMockProject
-from .cli_sync_service import run_claude_session
+from .cli_sync_service import run_agent_session
 from .endpoint_service import get_endpoint
 from .job_service import (
     JobCancelledError,
@@ -23,7 +24,7 @@ from .job_service import (
     get_job,
 )
 from .mock_case_service import create_mock_case, list_mock_cases_for_endpoint
-from .utils import _api_mock_cli_candidates, _copy_task_workspace, _extract_json_from_text, _temp_workspace_path
+from .utils import _copy_task_workspace, _extract_json_from_text, _temp_workspace_path
 
 
 def _create_openapi_system_prompt() -> str:
@@ -80,7 +81,7 @@ def _extract_auto_mock_cases_payload(result_texts: List[str], assistant_texts: L
             except Exception:
                 pass
 
-    raise ValueError("Cannot parse JSON Array output from Claude event stream")
+    raise ValueError("Cannot parse JSON Array output from Agent event stream")
 
 
 def _normalize_body_matcher(value: Any) -> Any:
@@ -133,37 +134,30 @@ def auto_generate_mock_cases_for_endpoint(
             _copy_task_workspace(project.task.project_path, temp_path)
 
         _raise_if_cancel_requested(db, project.id, job, job_id)
-        _set_job_progress(db, project.id, job, 30, "Consulting Claude for mock generation")
+        # Generation starts a fresh session; follow current workspace settings
+        # without changing the associated development task's sticky backend.
+        backend_name = resolve_workspace_backend(db, project.workspace_id)
+        _set_job_progress(db, project.id, job, 30, f"Consulting {backend_name} for mock generation")
 
         prompt = _create_openapi_system_prompt()
         prompt += f"\n\nEndpoint: {endpoint.method} {endpoint.path}\n"
         if instructions:
             prompt += f"\nUser Additional Instructions: {instructions}\n"
 
-        candidates = _api_mock_cli_candidates()
-        if not candidates:
-            raise RuntimeError("No Claude CLI candidates configured")
-        cli_cmd = candidates[0]
+        _append_job_log(db, project.id, job, f"Sending prompt to Agent: {backend_name}")
 
-        _append_job_log(db, project.id, job, "Sending prompt to Claude...")
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result_texts, assistant_texts = loop.run_until_complete(
-                run_claude_session(
-                    cli_cmd,
-                    temp_path,
-                    prompt,
-                    on_output=lambda msg: _append_job_log(db, project.id, job, msg),
-                    on_event=lambda ev: _append_job_event(db, project.id, job, ev),
-                    should_cancel=_should_cancel,
-                )
+        result_texts, assistant_texts = asyncio.run(
+            run_agent_session(
+                backend_name,
+                temp_path,
+                prompt,
+                on_output=lambda msg: _append_job_log(db, project.id, job, msg),
+                on_event=lambda ev: _append_job_event(db, project.id, job, ev),
+                should_cancel=_should_cancel,
             )
-        finally:
-            loop.close()
+        )
 
-        _append_job_log(db, project.id, job, "Claude response received. Parsing...")
+        _append_job_log(db, project.id, job, f"{backend_name} response received. Parsing...")
         _set_job_progress(db, project.id, job, 80, "Parsing mock cases payload")
 
         cases_payload = _extract_auto_mock_cases_payload(result_texts, assistant_texts)

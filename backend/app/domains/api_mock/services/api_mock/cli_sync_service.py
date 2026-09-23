@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
+from app.agents.selection import create_legacy_bridge
 from app.config import settings
 from app.core.logging import get_logger
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus, ApiMockSourceType, SddApiMockProject
@@ -148,6 +149,40 @@ async def run_claude_session(
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Tuple[List[str], List[str]]:
     bridge = create_cli_bridge(cli_path=cli_cmd)
+    if on_output:
+        on_output(f"Launching CLI: {cli_cmd}")
+    return await _run_bridge_session(
+        bridge, temp_path, prompt, on_output=on_output, on_event=on_event,
+        should_cancel=should_cancel,
+    )
+
+
+async def run_agent_session(
+    backend_name: str,
+    temp_path: str,
+    prompt: str,
+    *,
+    on_output: Optional[Callable[[str], None]] = None,
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[str], List[str]]:
+    """Run a fresh session using the workspace's unified Agent selection."""
+    bridge = create_legacy_bridge(backend_name)
+    return await _run_bridge_session(
+        bridge, temp_path, prompt, on_output=on_output, on_event=on_event,
+        should_cancel=should_cancel,
+    )
+
+
+async def _run_bridge_session(
+    bridge: Any,
+    temp_path: str,
+    prompt: str,
+    *,
+    on_output: Optional[Callable[[str], None]] = None,
+    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[str], List[str]]:
     result_texts: List[str] = []
     assistant_texts: List[str] = []
     cancelled = False
@@ -202,9 +237,6 @@ async def run_claude_session(
                 return
             await asyncio.sleep(0.2)
 
-    if on_output:
-        on_output(f"Launching CLI: {cli_cmd}")
-
     try:
         await bridge.start_session(
             prompt=prompt,
@@ -218,6 +250,10 @@ async def run_claude_session(
     monitor_task = asyncio.create_task(_cancel_monitor())
     try:
         await asyncio.wait_for(_wait_bridge_terminated(bridge), timeout=300)
+    except asyncio.CancelledError:
+        if cancelled:
+            raise JobCancelledError("Job cancelled by user") from None
+        raise
     except asyncio.TimeoutError as exc:
         await bridge.cancel()
         raise RuntimeError("analysis timeout (300s)") from exc
