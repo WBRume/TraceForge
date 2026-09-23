@@ -221,7 +221,7 @@ async def run(job_id):
     token, boot = (attempt.run_token, attempt.worker_boot_id) if attempt else (None, None)
     prepared = await run_db_txn(lambda db: prepare(db, job_id, token, boot))
     await publish_job_state(job_id)
-    result = await run_cli_single_turn(**prepared, max_attempts=1, permission_mode='plan',
+    result = await run_cli_single_turn(**prepared, max_attempts=1, permission_mode='read-only',
         should_cancel=lambda: runtime.is_cancel_requested(job_id), run_token=token)
     evidence = resolve_attempt_evidence(execution_kind=getattr(attempt, 'execution_kind', 'LOCAL_PROCESS'),
         runtime=current_agent_attempt_runtime(), provider_result=result)

@@ -163,6 +163,33 @@ def test_run_cli_single_turn_provider_error_confirmed_dead_raises_typed(monkeypa
     asyncio.run(_run())
 
 
+@pytest.mark.parametrize('text', [
+    '```json\n{"steps": ["检查请求超时后重试", "验证 timeout 幂等行为"]}\n```',
+    '连接超时应检查网络；timed out 不代表业务未执行。',
+])
+def test_successful_diagnostic_text_is_not_a_provider_error(monkeypatch, text):
+    from app.agents.supervision import TerminationResult
+
+    class SuccessBridge(_StubBridge):
+        async def start_session(self, **kwargs):
+            self.callback = kwargs['event_callback']
+            return await super().start_session(**kwargs)
+
+        async def wait(self):
+            await self.callback({'type': 'assistant', 'message': {
+                'content': [{'type': 'text', 'text': text}],
+            }})
+            await self.callback({'type': 'result', 'is_error': False, 'result': text})
+            self._running = False
+            return self.termination
+
+    bridge = SuccessBridge(termination=TerminationResult(confirmed_dead=True, root_return_code=0))
+    monkeypatch.setattr('app.engine.claude_bridge.create_cli_bridge', lambda: bridge)
+    result = asyncio.run(ai_provider_turn.run_cli_single_turn('diagnose', '.', max_attempts=2))
+    assert result['text'] == text
+    assert bridge.start_calls == 1
+
+
 def test_run_cli_single_turn_cancelled_raises_typed_cancelled(monkeypatch):
     from app.agents.errors import AgentCancelledError
     from app.agents.supervision import TerminationResult
