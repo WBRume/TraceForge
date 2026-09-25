@@ -667,6 +667,7 @@ class KnowledgeAssetResponse(BaseModel):
 
 class TaskSummary(BaseModel):
     id: str
+    execution_location: str = "SERVER"
     workspace_id: str
     creator_id: Optional[str] = None
     creator_display_name: Optional[str] = None

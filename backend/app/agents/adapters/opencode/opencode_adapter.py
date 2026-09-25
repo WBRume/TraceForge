@@ -1,13 +1,7 @@
-"""OpenCode Agent backend（Server 模式）。
+"""OpenCode 2.x server adapter using /api routes and native session events.
 
-Spike 结论：`opencode run --format json` 在 Windows 当前环境因 shell 探测失败，
-`opencode serve` 可稳定提供 SSE/HTTP API，因此 OpenCode 采用 **server 模式**接入。
-
-连接方式：
-- `POST /api/session` 创建会话（或复用 `request.session_id`）
-- 先打开 `GET /api/session/{id}/event` SSE 流，再 `POST /api/session/{id}/prompt`
-- 从 SSE 事件解析统一 AgentEvent，直到 `step.ended.finish=stop/cancelled/error`
-- 最后用 `GET /api/session/{id}/message` 取最终消息/用量兜底
+Subscribe before enqueuing a prompt. A step ending is not a turn ending;
+only session.execution.* terminal events settle an execution.
 """
 
 from __future__ import annotations
@@ -19,6 +13,7 @@ import time
 from typing import Any, Optional
 
 import httpx
+from app.agents.http_transport import agent_ssl_context
 
 from app.agents.contract import (
     AgentBackend,
@@ -53,8 +48,9 @@ class OpenCodeAdapter(AgentBackend):
         execution_kind="REMOTE_SESSION",
     )
 
-    def __init__(self, server_url: str = "http://127.0.0.1:4097") -> None:
+    def __init__(self, server_url: str = "http://127.0.0.1:4097", *, username: str = "opencode", password: str = "") -> None:
         self.server_url = server_url.rstrip("/")
+        self._auth = (username, password) if password else None
         self._client: Optional[httpx.AsyncClient] = None
         self._running = False
         self._run_id: Optional[str] = None
@@ -66,8 +62,9 @@ class OpenCodeAdapter(AgentBackend):
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, read=None),
-                trust_env=False,
+                timeout=httpx.Timeout(30.0),
+                trust_env=False, verify=agent_ssl_context(),
+                auth=self._auth,
             )
         return self._client
 
@@ -87,7 +84,9 @@ class OpenCodeAdapter(AgentBackend):
     async def probe(self) -> str:
         client = await self._ensure_client()
         try:
-            response = await client.get(self.server_url + "/")
+            response = await client.get(self.server_url + "/api/info")
+            if response.status_code != 200 or not self._is_json_response(response) or not str(response.json().get("version", "")).startswith("2."):
+                raise AgentError("OpenCode v2 /api/info response is invalid; OpenCode 2.x is required")
         except Exception as exc:
             raise AgentError(f"OpenCode server unreachable: {exc}") from exc
         return f"OpenCode server is reachable at {self.server_url} (HTTP {response.status_code})"
@@ -98,7 +97,7 @@ class OpenCodeAdapter(AgentBackend):
         if request.project_path:
             body["location"] = {"directory": request.project_path}
         if request.model:
-            body["model"] = {"id": request.model, "providerID": "opencode"}
+            body["model"] = self._model_ref(request.model)
         response = await client.post(f"{self.server_url}/api/session", json=body)
         if response.status_code != 200:
             raise AgentError(
@@ -112,9 +111,6 @@ class OpenCodeAdapter(AgentBackend):
 
     async def _send_prompt(self, session_id: str, request: AgentRunRequest) -> None:
         client = await self._ensure_client()
-        # 使用 prompt_async：该接口立即返回 204，避免同步 prompt 接口
-        # 一直持有 HTTP 连接直到 agent 回合结束，导致 SSE 事件虽然已产生
-        # 却迟迟不被消费，前端长时间“只看到运行、没有数据”。
         prompt_text = request.prompt
         normalized_mode = str(request.permission_mode or "").strip().lower()
         if normalized_mode in {"read-only", "readonly"}:
@@ -126,254 +122,113 @@ class OpenCodeAdapter(AgentBackend):
                 "禁止执行会改变项目或外部系统状态的命令。\n\n"
                 + prompt_text
             )
-        body: dict[str, Any] = {
-            "parts": [{"type": "text", "text": prompt_text}],
-        }
-        if request.model:
-            body["model"] = {"providerID": "opencode", "modelID": request.model}
-        if normalized_mode == "plan":
-            # OpenCode's built-in plan agent disables write-oriented execution.
-            body["agent"] = "plan"
-        params: dict[str, str] = {}
-        if request.project_path:
-            # 明确告诉 OpenCode 本次 prompt 所在的工作目录，确保每个任务
-            # 都读取自己任务目录下的文件，而不是服务启动时的目录。
-            params["directory"] = request.project_path
         policy = request.provider_options.get("execution_policy")
         if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
             if request.provider_options.get("dedicated_backend_host") is not True:
                 raise AgentError("SOP_DEDICATED_BACKEND_HOST_REQUIRED")
-            # Runtime MCP configuration is host-scoped. Only a run-dedicated
-            # server may receive this short-lived bearer credential.
-            configured = await client.post(f"{self.server_url}/mcp", params=params, json={
-                "name": "traceforge_playbook", "config": {
-                    "type": "remote", "url": policy["mcp_config"]["url"],
-                    "headers": policy["mcp_config"]["headers"], "enabled": True, "oauth": False}})
-            if configured.status_code != 200:
-                raise AgentError("SOP_MCP_INSTALL_FAILED")
-            status = configured.json().get("traceforge_playbook", {})
-            if status.get("status") != "connected":
+        if request.model:
+            response = await client.post(self._session_url(session_id, "/model"), json={"model": self._model_ref(request.model)})
+            self._check_response(response, "switch model")
+        if normalized_mode == "plan":
+            response = await client.post(self._session_url(session_id, "/agent"), json={"agent": "plan"})
+            self._check_response(response, "switch agent")
+        if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
+            # Runtime MCP credentials remain restricted to a dedicated host.
+            location = {"location[directory]": request.project_path} if request.project_path else {}
+            configured = await client.put(f"{self.server_url}/api/experimental/mcp/traceforge_playbook", params=location, json={
+                "config": {"type": "remote", "url": policy["mcp_config"]["url"],
+                           "headers": policy["mcp_config"]["headers"], "oauth": False, "codemode": False},
+            })
+            self._check_response(configured, "configure MCP")
+            listed = await client.get(f"{self.server_url}/api/mcp", params=location)
+            self._check_response(listed, "MCP status")
+            if not any(item.get("name") == "traceforge_playbook" and item.get("status", {}).get("status") == "connected"
+                       for item in listed.json().get("data", [])):
                 raise AgentError("SOP_MCP_NOT_CONNECTED")
-            # Tool deny rules are enforced by the provider, not a prompt.
-            # The wildcard closes future/native/custom tools as well.
-            body["tools"] = {"*": False, "traceforge_playbook_read_source": True,
-                             "traceforge_playbook_propose_hypotheses": True,
-                             "traceforge_playbook_propose_experiment": True,
-                             "traceforge_playbook_propose_patch": policy["tier"] == "WORKSPACE_WRITE"}
-        response = await client.post(
-            f"{self.server_url}/session/{session_id}/prompt_async",
-            params=params,
-            json=body,
-        )
-        if response.status_code not in (200, 204):
-            raise AgentError(
-                f"OpenCode prompt failed: HTTP {response.status_code} {response.text[:300]}"
-            )
+            allowed = ["read_source", "propose_hypotheses", "propose_experiment"]
+            if policy["tier"] == "WORKSPACE_WRITE":
+                allowed.append("propose_patch")
+            permissions = [{"action": "*", "resource": "*", "effect": "deny"}]
+            permissions.extend({"action": f"traceforge_playbook_{tool}", "resource": "*", "effect": "allow"} for tool in allowed)
+            configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
+            self._check_response(configured, "session permissions")
+        response = await client.post(self._session_url(session_id, "/prompt"), json={"text": prompt_text})
+        self._check_response(response, "prompt")
+        data = response.json().get("data", {})
+        if not isinstance(data, dict) or not data.get("id"):
+            raise AgentError("OpenCode prompt returned no inbox message id")
+        self._user_message_id = str(data["id"])
+        self._message_ids.add(self._user_message_id)
+
+    @staticmethod
+    def _model_ref(model: str) -> dict[str, str]:
+        provider, separator, name = model.partition("/")
+        return {"providerID": provider if separator else "opencode", "id": name if separator else model}
+
+    @classmethod
+    def _check_response(cls, response: httpx.Response, operation: str) -> None:
+        if response.status_code == 204 or (response.status_code == 200 and cls._is_json_response(response)):
+            return
+        raise AgentError(f"OpenCode {operation} failed: HTTP {response.status_code} {response.text[:300]}")
 
     async def _fetch_final_message(self, session_id: str) -> dict[str, Any]:
-        client = await self._ensure_client()
-        # prompt_async 的完成事件可能先于 provider message 的最终文本落盘。
-        # 有限轮询避免把这种正常的持久化时序误报成空回复；每次只保留
-        # provider 返回的结构，不把 prompt/result 写入日志。
-        last_message: dict[str, Any] = {}
-        for attempt in range(10):
-            # 优先使用 v1 /session/{id}/message：实测 v2 /api/session/{id}/message
-            # 对 prompt_async 创建的会话可能返回空 data。
-            response = await client.get(
-                f"{self.server_url}/session/{session_id}/message",
-            )
-            if response.status_code == 200 and self._is_json_response(response):
-                try:
-                    payload = response.json()
-                except ValueError:
-                    payload = None
-                parsed = self._parse_v1_messages(payload)
-                if parsed:
-                    last_message = parsed
-                    if str(parsed.get("text") or "").strip():
-                        return parsed
-
-            # 回退 v2（旧版本/未来版本可能使用 v2 结构）。
-            response = await client.get(
-                self._session_url(session_id, "/message"),
-                params={"limit": 20},
-            )
-            if response.status_code == 200 and self._is_json_response(response):
-                try:
-                    messages_payload = response.json()
-                except ValueError:
-                    messages_payload = {}
-                messages = messages_payload.get("data") or [] if isinstance(messages_payload, dict) else []
-                for message in reversed(messages):
-                    if not isinstance(message, dict) or message.get("type") != "assistant":
-                        continue
-                    content = message.get("content") or []
-                    text = "".join(
-                        str(block.get("text") or "")
-                        for block in content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ).strip()
-                    last_message = {
-                        "id": message.get("id"),
-                        "text": text,
-                        "finish": message.get("finish"),
-                        "cost": message.get("cost"),
-                        "tokens": message.get("tokens") or {},
-                        "content": content,
-                    }
-                    if text:
-                        return last_message
-                    break
-            if attempt < 9:
-                await asyncio.sleep(0.2)
-        return last_message
+        messages = await self.list_messages(session_id)
+        # Do not return an earlier turn when the current prompt produced no answer.
+        if self._user_message_id:
+            boundary = next((i for i, item in enumerate(messages) if item.get("id") == self._user_message_id), None)
+            if boundary is None:
+                return {}
+            messages = messages[boundary + 1:]
+        assistants = [item for item in messages if item.get("type") == "assistant" and item.get("agent") not in {"title", "summary"}]
+        if not assistants:
+            return {}
+        last = assistants[-1]
+        content = [part for item in assistants for part in item.get("content", []) if isinstance(part, dict)]
+        return {**last, "text": "\n".join(str(part.get("text", "")) for part in last.get("content", []) if part.get("type") == "text"), "content": content}
 
     async def revert_message(self, session_id: str, message_id: str, part_id: str | None = None) -> bool:
-        """Revert provider context at a provider message boundary."""
-        client = await self._ensure_client()
-        body: dict[str, Any] = {"messageID": str(message_id)}
         if part_id:
-            body["partID"] = str(part_id)
-        deadline = time.monotonic() + 30.0
-        while True:
-            session_busy = False
-            for url in (
-                f"{self.server_url}/api/session/{session_id}/revert",
-                f"{self.server_url}/session/{session_id}/revert",
-            ):
-                try:
-                    response = await client.post(url, json=body)
-                except Exception:
-                    continue
-                if response.status_code in (202, 204):
-                    return True
-                if response.status_code == 404:
-                    continue
-                if response.status_code == 409 and "busy" in response.text.lower():
-                    session_busy = True
-                    continue
-                if response.status_code == 200:
-                    if self._is_json_response(response):
-                        return True
-                    continue
-                if response.status_code != 405:
-                    raise AgentError(f"OpenCode revert failed: HTTP {response.status_code} {response.text[:300]}")
-            if session_busy and time.monotonic() < deadline:
-                await asyncio.sleep(0.2)
-                continue
-            break
-        return False
-
-    async def delete_message(self, session_id: str, message_id: str) -> bool:
-        """Permanently remove a provider message after revert."""
+            raise AgentError("OpenCode v2 revert requires a whole-message boundary")
         client = await self._ensure_client()
-        saw_not_found = False
-        for url in (
-            f"{self.server_url}/api/session/{session_id}/message/{message_id}",
-            f"{self.server_url}/session/{session_id}/message/{message_id}",
-        ):
-            try:
-                response = await client.delete(url)
-            except Exception:
-                continue
-            if response.status_code in (202, 204):
-                return True
-            if response.status_code == 404:
-                saw_not_found = True
-                continue
-            if response.status_code == 200:
-                if self._is_json_response(response):
-                    return True
-                continue
-            if response.status_code != 405:
-                raise AgentError(f"OpenCode delete message failed: HTTP {response.status_code} {response.text[:300]}")
-        return saw_not_found
+        response = await client.post(self._session_url(session_id, "/revert/stage"), json={"messageID": message_id, "files": False})
+        self._check_response(response, "stage revert")
+        response = await client.post(self._session_url(session_id, "/revert/commit"))
+        self._check_response(response, "commit revert")
+        return True
 
     async def list_messages(self, session_id: str) -> list[dict[str, Any]]:
         client = await self._ensure_client()
-        for url in (
-            f"{self.server_url}/api/session/{session_id}/message",
-            f"{self.server_url}/session/{session_id}/message",
-        ):
-            try:
-                response = await client.get(url, params={"limit": 200})
-            except Exception:
-                continue
-            if response.status_code != 200 or not self._is_json_response(response):
-                continue
-            try:
-                payload = response.json()
-            except ValueError:
-                continue
-            data = payload.get("data") if isinstance(payload, dict) else payload
-            if isinstance(data, list):
-                return [item for item in data if isinstance(item, dict)]
-        raise AgentError("OpenCode message listing failed")
+        messages: list[dict[str, Any]] = []
+        params: dict[str, Any] = {"limit": 200, "order": "asc"}
+        cursors: set[str] = set()
+        while True:
+            response = await client.get(self._session_url(session_id, "/message"), params=params)
+            self._check_response(response, "list messages")
+            data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("data"), list) or not isinstance(data.get("cursor"), dict):
+                raise AgentError("OpenCode v2 message listing returned an invalid page")
+            messages.extend(item for item in data["data"] if isinstance(item, dict))
+            cursor = data["cursor"].get("next")
+            if not cursor:
+                return messages
+            if cursor in cursors:
+                raise AgentError("OpenCode message pagination repeated a cursor")
+            cursors.add(cursor)
+            params = {"limit": 200, "cursor": cursor}
 
     async def wait_until_idle(self, session_id: str, timeout_seconds: float = 30.0) -> None:
-        """Wait for OpenCode's server-side session worker to release its lock."""
         client = await self._ensure_client()
-        deadline = time.monotonic() + max(0.1, float(timeout_seconds or 30.0))
+        deadline = time.monotonic() + max(0.1, timeout_seconds)
         while time.monotonic() < deadline:
-            try:
-                response = await client.get(f"{self.server_url}/session/status")
-                if response.status_code == 200 and self._is_json_response(response):
-                    payload = response.json()
-                    status = payload.get(str(session_id)) if isinstance(payload, dict) else None
-                    if not isinstance(status, dict):
-                        return
-                    status_type = self._text(status.get("type") or status.get("status")).lower()
-                    if status_type not in {"busy", "running", "retry", "pending"}:
-                        return
-            except (httpx.HTTPError, ValueError):
-                pass
+            response = await client.get(f"{self.server_url}/api/session/active")
+            self._check_response(response, "active sessions")
+            payload = response.json()
+            if not isinstance(payload, dict) or not isinstance(payload.get("data"), dict):
+                raise AgentError("OpenCode active sessions response is invalid")
+            if session_id not in payload["data"]:
+                return
             await asyncio.sleep(0.1)
         raise AgentError("OpenCode session did not become idle before undo")
-
-    @staticmethod
-    def _parse_v1_messages(data: Any) -> Optional[dict[str, Any]]:
-        """解析 OpenCode v1 /session/{id}/message 返回的消息列表。"""
-        if not isinstance(data, list):
-            return None
-        for item in reversed(data):
-            if not isinstance(item, dict):
-                continue
-            info = item.get("info") if isinstance(item.get("info"), dict) else {}
-            if info.get("role") != "assistant":
-                continue
-            parts = item.get("parts") if isinstance(item.get("parts"), list) else []
-            content: list[dict[str, Any]] = []
-            text_parts: list[str] = []
-            for part in parts:
-                if not isinstance(part, dict):
-                    continue
-                part_type = part.get("type")
-                if part_type == "text":
-                    text = OpenCodeAdapter._text(part.get("text"))
-                    if text:
-                        text_parts.append(text)
-                        content.append({"type": "text", "text": text})
-                elif part_type == "reasoning":
-                    text = OpenCodeAdapter._text(part.get("text"))
-                    if text:
-                        content.append({"type": "reasoning", "text": text})
-                elif part_type == "tool":
-                    state = part.get("state") if isinstance(part.get("state"), dict) else {}
-                    content.append({
-                        "type": "tool",
-                        "id": OpenCodeAdapter._text(part.get("callID") or part.get("id")),
-                        "name": OpenCodeAdapter._text(part.get("tool") or part.get("name")),
-                        "state": state,
-                    })
-            return {
-                "id": info.get("id"),
-                "text": "\n".join(text_parts).strip(),
-                "finish": info.get("finish"),
-                "cost": info.get("cost"),
-                "tokens": info.get("tokens") or {},
-                "content": content,
-            }
-        return None
 
     def _to_token_usage(self, tokens: Optional[dict[str, Any]]) -> Optional[TokenUsage]:
         if not isinstance(tokens, dict):
@@ -402,6 +257,7 @@ class OpenCodeAdapter(AgentBackend):
             return None
         return {
             "stop": "completed",
+            "length": "max-tokens",
             "max_tokens": "max-tokens",
             "max-tokens": "max-tokens",
             "cancelled": "aborted",
@@ -534,129 +390,56 @@ class OpenCodeAdapter(AgentBackend):
             return str(state)
 
     async def _consume_sse(
-        self,
-        session_id: str,
-        request: AgentRunRequest,
-        on_event: AgentEventSink,
+        self, session_id: str, request: AgentRunRequest, on_event: AgentEventSink,
     ) -> tuple[dict[str, Any], set[str]]:
-        """订阅 /global/event 持久流，再发送 prompt_async，消费事件。
-
-        注意：
-        - 使用 `/global/event` 而不是 `/api/event`。`/api/event` 在回放当前
-          快照后会关闭连接，无法收到后续 assistant 实时事件；`/global/event`
-          是持久 SSE 流，会持续推送 `message.updated`、`message.part.updated`、
-          `session.updated` 等事件。
-        - 使用 `prompt_async` 发送消息，避免同步 prompt 接口持有连接直到回合
-          结束，导致事件虽然已产生却迟迟不被消费。
-        - 全局流包含所有会话事件，因此按 `sessionID` 过滤。
-        """
+        """Open the v2 live stream before submitting the prompt to its inbox."""
         client = await self._ensure_client()
-        result_payload: dict[str, Any] = {}
         seen_types: set[str] = set()
-        message_roles: dict[str, str] = {}
-        message_agents: dict[str, str] = {}
-        known_model: Optional[str] = None
-
-        async with client.stream(
-            "GET",
-            f"{self.server_url}/global/event",
-        ) as response:
+        sent = False
+        finish_reason = "completed"
+        async with client.stream("GET", f"{self.server_url}/api/event", timeout=httpx.Timeout(30.0, read=None)) as response:
             if response.status_code != 200:
-                raise AgentError(
-                    f"OpenCode event stream failed: HTTP {response.status_code} {response.text[:300]}"
-                )
-
-            # 使用 /global/event 持久流：/api/event 只回放当前快照后会关闭，
-            # 无法收到后续 assistant 实时事件；/global/event 会持续推送。
-            # 流已就绪后再发送 prompt_async，期间产生的 SSE 事件由 httpx 缓冲。
-            await self._send_prompt(session_id, request)
-
+                raise AgentError(f"OpenCode event stream failed: HTTP {response.status_code}")
             async for line in response.aiter_lines():
                 if not line.startswith("data:"):
                     continue
-                raw_text = line[5:].strip()
-                if not raw_text:
-                    continue
                 try:
-                    raw_frame = json.loads(raw_text)
-                except json.JSONDecodeError:
+                    event = json.loads(line[5:].strip())
+                    if isinstance(event, str):
+                        event = json.loads(event)
+                except (ValueError, TypeError):
                     continue
-                # /global/event 外层是 { directory, project, payload }，
-                # payload 才是真正的 OpenCode 事件；sync 只是重复投递，跳过。
-                raw_event = raw_frame.get("payload") if isinstance(raw_frame.get("payload"), dict) else raw_frame
-                if not isinstance(raw_event, dict) or raw_event.get("type") == "sync":
+                if not isinstance(event, dict):
                     continue
-                # 全局事件流包含所有会话事件，只处理当前会话的数据。
-                event_payload = raw_event.get("data") if isinstance(raw_event.get("data"), dict) else (
-                    raw_event.get("properties") if isinstance(raw_event.get("properties"), dict) else {}
-                )
-                if self._text(event_payload.get("sessionID")) != session_id:
+                if event.get("type") == "server.connected" and not sent:
+                    await self._send_prompt(session_id, request)
+                    sent = True
                     continue
-                raw_type = self._text(raw_event.get("type"))
-                if raw_type == "session.updated":
-                    info = event_payload.get("info") if isinstance(event_payload.get("info"), dict) else {}
-                    model_ref = info.get("model") if isinstance(info.get("model"), dict) else {}
-                    model_name = self._text(
-                        model_ref.get("id") or model_ref.get("modelID") or info.get("modelID")
-                    )
-                    if model_name and model_name != known_model:
-                        known_model = model_name
-                        await on_event(AgentEvent(
-                            type="session_started",
-                            payload={
-                                "provider_session_id": session_id,
-                                "provider": "opencode",
-                                "model": model_name,
-                                "directory": request.project_path,
-                            },
-                            provider="opencode",
-                        ))
-                if raw_type == "message.updated":
-                    info = event_payload.get("info") if isinstance(event_payload.get("info"), dict) else {}
-                    mid = self._text(info.get("id"))
-                    role = self._text(info.get("role"))
-                    agent = self._text(info.get("agent"))
-                    if mid and role:
-                        message_roles[mid] = role
-                        self._message_ids.add(mid)
-                        if role == "user":
-                            self._user_message_id = mid
-                    if mid and agent:
-                        message_agents[mid] = agent
-                    # 标题/摘要等内部消息不是真正的用户回复，忽略其终态，
-                    # 避免在 build agent 真正完成前误判回合结束。
-                    if agent in ("title", "summary"):
-                        continue
-                # message.part.* 不携带 role/agent，需要根据 message.updated 记录的
-                # 消息角色与 agent 过滤用户消息和内部标题/摘要消息。
-                msg_id = ""
-                if raw_type == "message.part.updated":
-                    part = event_payload.get("part") if isinstance(event_payload.get("part"), dict) else {}
-                    msg_id = self._text(part.get("messageID"))
-                elif raw_type == "message.part.delta":
-                    msg_id = self._text(event_payload.get("messageID"))
-                if msg_id and message_roles.get(msg_id) == "user":
+                data = event.get("data")
+                if not sent or not isinstance(data, dict) or data.get("sessionID") != session_id:
                     continue
-                if msg_id and message_agents.get(msg_id) in ("title", "summary"):
-                    continue
-                for unified in map_opencode_event(raw_event):
+                kind = event.get("type")
+                if kind in {"session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"}:
+                    success = kind == "session.execution.succeeded"
+                    if kind == "session.execution.failed":
+                        await on_event(AgentEvent(type="error", payload={"success": False, "finish_reason": "error", "result": str(data.get("error") or "OpenCode execution failed")}, provider="opencode", raw=event))
+                    return {"success": success, "finish_reason": finish_reason if success else ("interrupted" if kind.endswith("interrupted") else "error")}, seen_types
+                message_id = data.get("assistantMessageID") or data.get("messageID")
+                if message_id:
+                    self._message_ids.add(str(message_id))
+                if kind in {"session.model.switched", "session.step.started"}:
+                    model = data.get("model") or {}
+                    if model.get("id"):
+                        await on_event(AgentEvent(type="model", payload={"model": model["id"], "provider_session_id": session_id}, provider="opencode"))
+                for unified in map_opencode_event(event):
                     seen_types.add(unified.type)
                     if unified.type == "result":
-                        # 不在 SSE 中重复发 result；由 run() 在拿到最终 message 后补发
-                        # 带完整文本的 result。
-                        result_payload = {
-                            "finish_reason": unified.payload.get("finish_reason") or "completed",
-                            "success": True,
-                        }
-                        return result_payload, seen_types
+                        finish_reason = unified.payload.get("finish_reason") or finish_reason
+                        continue
                     await on_event(unified)
                     if unified.type == "error":
-                        result_payload = {
-                            "finish_reason": unified.payload.get("finish_reason") or "error",
-                            "success": False,
-                        }
-                        return result_payload, seen_types
-        return result_payload, seen_types
+                        finish_reason = "error"
+        raise AgentError("OpenCode v2 event stream closed before the turn completed")
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
@@ -762,13 +545,7 @@ class OpenCodeAdapter(AgentBackend):
             self._run_id = None
 
     async def _abort_session(self, sid: str) -> "AgentStopResult":
-        """中止 OpenCode 当前正在运行的回合（唯一停止结果协议，doc §5.2）。
-
-        OpenCode Server 没有 /interrupt 接口，只有 v1 /abort：
-        POST /session/{id}/abort（已实测 4097 端口返回 true）。
-        只有约定的成功状态码才算停止被确认；其他状态码与网络错误必须
-        以结构化结果返回，不得静默吞掉。
-        """
+        """Interrupt the v2 worker and verify quiescence before acknowledging stop."""
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
         if self._client is None:
@@ -779,7 +556,7 @@ class OpenCodeAdapter(AgentBackend):
                 error_message="OpenCode client is closed; abort not sent",
             )
         try:
-            response = await self._client.post(f"{self.server_url}/session/{sid}/abort")
+            response = await self._client.post(self._session_url(sid, "/interrupt"), params={"resume": "false"})
         except Exception as exc:
             return AgentStopResult(
                 execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -787,11 +564,15 @@ class OpenCodeAdapter(AgentBackend):
                 failure_code="OPENCODE_ABORT_NETWORK_ERROR",
                 error_message=str(exc) or type(exc).__name__,
             )
-        if response.status_code in (200, 202, 204):
-            return AgentStopResult(
-                execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-                stop_acknowledged=True,
-            )
+        if response.status_code == 200 and self._is_json_response(response):
+            payload = response.json()
+            if isinstance(payload, dict) and isinstance(payload.get("interrupted"), bool):
+                try:
+                    await self.wait_until_idle(sid)
+                except (AgentError, httpx.HTTPError, ValueError) as exc:
+                    return AgentStopResult(execution_kind=EXECUTION_KIND_REMOTE_SESSION, stop_acknowledged=False,
+                                           failure_code="REMOTE_STOP_UNCONFIRMED", error_message=str(exc))
+                return AgentStopResult(execution_kind=EXECUTION_KIND_REMOTE_SESSION, stop_acknowledged=True)
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
             stop_acknowledged=False,
@@ -868,86 +649,50 @@ class OpenCodeAdapter(AgentBackend):
         if ask_user_id.startswith("per") or ask_user_id.startswith("permission"):
             reply = "once" if response.lower() != "reject" else "reject"
             url = self._session_url(sid, f"/permission/{ask_user_id}/reply")
-            body = {"reply": reply}
+            body = {"decision": reply}
+        elif ask_user_id.startswith("frm_"):
+            detail = await client.get(self._session_url(sid, f"/form/{ask_user_id}"))
+            self._check_response(detail, "get form")
+            fields = detail.json().get("data", {}).get("fields", [])
+            try:
+                answer = json.loads(response)
+            except ValueError:
+                answer = None
+            if not isinstance(answer, dict):
+                if len(fields) != 1 or fields[0].get("type") != "string":
+                    raise AgentError("OpenCode form requires a JSON object keyed by its field names")
+                answer = {fields[0]["key"]: response}
+            url = self._session_url(sid, f"/form/{ask_user_id}/reply")
+            body = {"answer": answer}
         else:
-            url = self._session_url(sid, f"/question/{ask_user_id}/reply")
-            body = {"answers": [[response]]}
+            raise AgentError("OpenCode v2 requires a permission or form request id")
         result = await client.post(url, json=body)
-        if result.status_code != 200:
-            raise AgentError(
-                f"OpenCode HITL reply failed: HTTP {result.status_code} {result.text[:300]}"
-            )
+        self._check_response(result, "HITL reply")
 
     # ── 会话 fork（baseline → 评审线程）────────────────────────
     async def _fork_create(self, client: httpx.AsyncClient, session_id: str) -> str:
-        """调用 fork API，返回新会话 id。v1 路由优先，v2 路由回退。"""
-        responses = (
-            # v1（v1.18.21+ 已发布）: POST /session/{id}/fork, 可选 body {messageID}
-            ("post", f"{self.server_url}/session/{session_id}/fork", None),
-            # v2: POST /api/session/{id}/fork, body boundary=through 表示复制全部历史
-            ("post", f"{self.server_url}/api/session/{session_id}/fork", {
-                "boundary": {"type": "through"},
-            }),
-        )
-        last_error = ""
-        for _method, url, body in responses:
-            response = await client.post(url, json=body)
-            if response.status_code == 200:
-                data = response.json()
-                payload = data.get("data") if isinstance(data, dict) else None
-                if not isinstance(payload, dict):
-                    payload = data if isinstance(data, dict) else {}
-                new_id = str(payload.get("id") or "").strip()
-                if new_id:
-                    return new_id
-                last_error = f"fork response missing session id: {str(data)[:200]}"
-                continue
-            last_error = f"HTTP {response.status_code} {response.text[:200]}"
-        raise SessionForkError(f"OpenCode session fork failed for {session_id}: {last_error}")
+        response = await client.post(self._session_url(session_id, "/fork"), json={})
+        try:
+            self._check_response(response, "fork")
+        except AgentError as exc:
+            raise SessionForkError(str(exc)) from exc
+        new_id = response.json().get("data", {}).get("id")
+        if not new_id:
+            raise SessionForkError("OpenCode fork returned no session id")
+        return str(new_id)
 
-    async def _fork_move(
-        self,
-        client: httpx.AsyncClient,
-        session_id: str,
-        target_dir: str,
-    ) -> None:
-        """把 fork 出的会话挪到线程工作目录（决定工具执行 cwd）。"""
-        abs_dir = os.path.abspath(target_dir)
-        moves = (
-            # v1: experimental control-plane
-            ("post", f"{self.server_url}/experimental/control-plane/move-session", {
-                "sessionID": session_id,
-                "destination": {"directory": abs_dir},
-            }),
-            # v2
-            ("post", f"{self.server_url}/api/session/{session_id}/move", {
-                "directory": abs_dir,
-            }),
-        )
-        last_error = ""
-        for _method, url, body in moves:
-            response = await client.post(url, json=body)
-            if response.status_code == 200:
-                return
-            last_error = f"HTTP {response.status_code} {response.text[:200]}"
-        raise SessionForkError(
-            f"OpenCode forked session {session_id} could not be moved to {abs_dir}: {last_error}"
-        )
+    async def _fork_move(self, client: httpx.AsyncClient, session_id: str, target_dir: str) -> None:
+        response = await client.post(self._session_url(session_id, "/move"), json={"directory": target_dir})
+        try:
+            self._check_response(response, "move")
+        except AgentError as exc:
+            raise SessionForkError(str(exc)) from exc
 
     async def delete_session(self, session_id: str) -> bool:
-        """尽力删除会话（fork 演练清理用）；不支持时返回 False。"""
         client = await self._ensure_client()
-        for url in (
-            f"{self.server_url}/session/{session_id}",
-            f"{self.server_url}/api/session/{session_id}",
-        ):
-            try:
-                response = await client.delete(url)
-            except Exception:
-                continue
-            if response.status_code in (200, 204):
-                return True
-        return False
+        response = await client.delete(self._session_url(session_id))
+        self._check_response(response, "delete session")
+        return True
 
     async def fork_session(
         self,
@@ -966,7 +711,7 @@ class OpenCodeAdapter(AgentBackend):
         try:
             # baseline 已直接在任务目录执行时，fork 出的新会话目录与源一致，
             # 无需再 move；仅当源/目标目录不同才迁移。
-            if os.path.abspath(source_dir or "") != os.path.abspath(target_dir or ""):
+            if (source_dir or "").replace("\\", "/").rstrip("/") != (target_dir or "").replace("\\", "/").rstrip("/"):
                 await self._fork_move(client, new_id, target_dir)
         except SessionForkError:
             # move 失败时清理 fork 产物，避免遗留孤儿会话

@@ -168,7 +168,7 @@ class TaskAgentEngine:
         """
         from app.agents.selection import create_agent_backend_by_name
 
-        return create_agent_backend_by_name(self.backend_name)
+        return create_agent_backend_by_name(self.backend_name, task_id=self.task_id)
 
     async def _on_process_started(self, identity: Any) -> bool:
         """Attach a local process before its stdout/stderr readers are created."""

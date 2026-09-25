@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { ArrowLeft, Plus, Trash2, X } from 'lucide-vue-next'
 import { ElMessage } from 'element-plus'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import BaseSelect from '@/components/BaseSelect.vue'
 import RequirementSpecificationBlock from '@/components/workspace-assets/requirements/RequirementSpecificationBlock.vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import { useProvisioningStore } from '@/stores/provisioning'
@@ -595,11 +596,7 @@ onMounted(() => {
 
               <div class="form-group priority-field-group">
                 <label class="field-label">{{ t('workspace_assets.requirements.fields.priority') }}</label>
-                <select v-model="activeItem.priority" class="field-select">
-                  <option v-for="opt in priorityOptions" :key="opt.value" :value="opt.value">
-                    {{ opt.label }}
-                  </option>
-                </select>
+                <BaseSelect v-model="activeItem.priority" :options="priorityOptions" class="field-select" size="sm" />
               </div>
             </div>
 

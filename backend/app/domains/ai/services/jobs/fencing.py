@@ -136,7 +136,7 @@ def update_job_state_sync(
             return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         if job.channel == AiJobChannel.TASK_CHAT and job.task_id and job.session_revision is not None:
             task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if not task or int(task.session_revision or -1) != int(job.session_revision):
+            if not task or int(task.session_revision if task.session_revision is not None else -1) != int(job.session_revision):
                 # An undo or a newer session generation has fenced this worker.
                 # Do not let a late callback resurrect the old job state.
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}

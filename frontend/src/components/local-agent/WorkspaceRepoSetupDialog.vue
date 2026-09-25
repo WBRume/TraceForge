@@ -1,8 +1,9 @@
 <!-- Multi-repository local mapping onboarding dialog. -->
 <script setup lang="ts">
-import { computed, watch } from 'vue'
-import { GitBranch, Info } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { GitBranch } from 'lucide-vue-next'
 import { useLocalAgentStore } from '@/stores/localAgent'
+import LocalServiceForm from '@/components/local-resource/LocalServiceForm.vue'
 import RepoMappingRow from './RepoMappingRow.vue'
 
 type WorkspaceLike = {
@@ -24,6 +25,7 @@ const emit = defineEmits<{
 }>()
 
 const localAgent = useLocalAgentStore()
+const step = ref(0)
 
 const repoRows = computed(() => {
   const repos = Array.isArray(props.workspace?.repositories) ? props.workspace.repositories : []
@@ -46,6 +48,7 @@ const boundCount = computed(() => (
 
 const hydrate = async () => {
   if (!props.show) return
+  step.value = 0
   await localAgent.loadLocalConfig()
   await localAgent.setWorkspaceContext(props.workspace)
 }
@@ -71,42 +74,31 @@ watch(
           <GitBranch class="w-6 h-6" />
         </div>
         <div>
-          <h2 class="title-gradient-small">配置本地仓库映射</h2>
+          <h2 class="title-gradient-small">{{ ['本地开发配置', '本地仓库映射', '本地服务地址'][step] }}</h2>
           <p class="subtitle">
             {{ workspace?.name || '当前工作区' }} 包含 {{ repoRows.length }} 个仓库，为每个仓库绑定本机路径以启用本地开发与代码应用能力。
           </p>
         </div>
       </header>
 
-      <div v-if="!localAgent.electronAvailable" class="warning-box mt-4">
-        <Info class="w-4 h-4 flex-shrink-0" />
-        <span>当前是 Web 调试模式，本地仓库映射只在 Electron 客户端可用。</span>
+      <div v-if="step === 0" class="rows-area mt-6">
+        <p>本地仓库映射用于检查个人 fork 仓库并应用变更；本地服务配置用于让任务在你的开发机器上运行。</p>
+        <p>Web 与 Electron 均可创建本地任务，需要可访问的 Agent 与同机资源服务。当前只支持内网部署，不支持公网部署。</p>
+        <p>跳过后不再自动提示，可以随时在设置的个人设置中配置。</p>
       </div>
-
-      <div v-if="repoRows.length === 0" class="warning-box mt-4">
-        <Info class="w-4 h-4 flex-shrink-0" />
-        <span>当前工作区没有配置仓库集合，无需绑定本地路径。</span>
+      <div v-else-if="step === 1" class="rows-area mt-6">
+        <p v-if="!repoRows.length">当前工作区没有仓库，无需配置映射。</p>
+        <template v-else>
+          <RepoMappingRow v-for="row in repoRows" :key="row.remoteUrl" :remote-url="row.remoteUrl" :repo-name="row.repoName" />
+          <p>已绑定 {{ boundCount }} / {{ repoRows.length }} 个仓库</p>
+        </template>
       </div>
-
-      <div v-else class="rows-area mt-6">
-        <div class="rows-title">
-          {{ $t('settings.local_dev.multi_repo_title', { count: repoRows.length }) }} · {{ $t('settings.local_dev.repo_row_hint') }}
-        </div>
-        <div class="rows-list">
-          <RepoMappingRow
-            v-for="row in repoRows"
-            :key="row.remoteUrl"
-            :remote-url="row.remoteUrl"
-            :repo-name="row.repoName"
-            @changed="emit('saved')"
-          />
-        </div>
-      </div>
+      <LocalServiceForm v-else :workspace-id="String(workspace?.id || '')" />
 
       <footer class="dialog-actions mt-8">
         <button class="btn-ghost" type="button" @click="emit('skip')">暂不配置</button>
-        <button class="btn-primary action-button" type="button" @click="emit('close')">
-          完成（已绑定 {{ boundCount }} / {{ repoRows.length }}）
+        <button class="btn-primary action-button" type="button" @click="step < 2 ? step++ : emit('saved')">
+          {{ step < 2 ? '下一步' : '完成' }}
         </button>
       </footer>
     </section>

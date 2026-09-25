@@ -126,6 +126,30 @@ const readySocket = async (frame: Record<string, any> = { type: 'resume_ok', epo
 }
 
 describe('useChatViewModel session state single flight', () => {
+  it('blocks creator send and undo while local resources are offline and unlocks on recovery', async () => {
+    await mountViewModel()
+    await vm.selectTask({ ...task('t1'), execution_location: 'LOCAL', creator_id: 'u1', session_generation: 1 })
+    const socket = await readySocket()
+    const message = { id: 'm1', role: 'user', content: 'hello', session_turn_id: 'turn1', session_generation: 1 }
+    expect(vm.localResourceBlocked.value).toBe(true)
+    socket.receive({ type: 'local_resource_status', payload: { task_id: 't1', status: 'online' } })
+    await flushPromises()
+    expect(vm.canManageTaskStatus.value).toBe(true)
+    expect(vm.canUndoMessage(message)).toBe(true)
+    socket.receive({ type: 'local_resource_status', payload: { task_id: 't1', status: 'offline' } })
+    await flushPromises()
+    expect(vm.isChatLocked.value).toBe(true)
+    expect(vm.canManageTaskStatus.value).toBe(false)
+    expect(vm.canUndoMessage(message)).toBe(false)
+    const before = apiMock.post.mock.calls.length
+    vm.chatInput.value = 'must not send'
+    await vm.sendChat()
+    expect(apiMock.post.mock.calls.length).toBe(before)
+    socket.receive({ type: 'local_resource_status', payload: { task_id: 't1', status: 'online' } })
+    await flushPromises()
+    expect(vm.localResourceBlocked.value).toBe(false)
+    expect(vm.canUndoMessage(message)).toBe(true)
+  })
   beforeEach(() => {
     apiMock.get.mockReset()
     apiMock.post.mockReset()

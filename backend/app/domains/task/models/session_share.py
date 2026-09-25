@@ -91,6 +91,7 @@ class TaskShareSuggestion(Base):
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     # 溯源字段（无外键）：撤销删除分享行后仅作历史来源标识保留
+    source_kind = Column(String(16), nullable=False, default="SHARE", server_default="SHARE")
     share_id = Column(String(36), nullable=False, index=True)
     task_id = Column(String(36), nullable=False, index=True)
     session_generation = Column(Integer, nullable=False, default=0)

@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 const desktopApi = {
   platform: process.platform,
+  resources: { configureRoots: (payload: { backend: string; resourceServiceUrl: string; workspaceRoot: string; repoRoots: string[] }) => ipcRenderer.invoke('sdd:resources:configure-roots', payload), start: (payload: { backend: string }) => ipcRenderer.invoke('sdd:resources:start', payload) },
   download: {
     save: (payload: { suggestedName: string; data: ArrayBuffer | Uint8Array; mimeType?: string }) =>
       ipcRenderer.invoke('sdd:download:save', payload),
@@ -9,6 +10,8 @@ const desktopApi = {
   git: {
     selectDirectory: () => ipcRenderer.invoke('sdd:git:select-directory'),
     validateGitRepo: (repoPath: string) => ipcRenderer.invoke('sdd:git:validate-repo', { repoPath }),
+    getFetchRemotes: (repoPath: string) => ipcRenderer.invoke('sdd:git:get-remotes', { repoPath }),
+    preparePatchWorktree: (payload: { repoPath: string; remoteUrl: string; baseSha: string; baseBranch: string; branch: string }) => ipcRenderer.invoke('sdd:git:prepare-patch-worktree', payload),
     getRemoteUrl: (repoPath: string) => ipcRenderer.invoke('sdd:git:get-remote-url', { repoPath }),
     getStatus: (repoPath: string) => ipcRenderer.invoke('sdd:git:get-status', { repoPath }),
     fetchOrigin: (repoPath: string) => ipcRenderer.invoke('sdd:git:fetch-origin', { repoPath }),

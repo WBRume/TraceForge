@@ -89,6 +89,7 @@ async def create_task_change_proposal(
             session,
             WorkspacePermission.MANAGE_TASK_STATUS,
             "No permission to create change proposals",
+            task_id=task_id, operation="generate_patch",
         ),
     )
     # Permission checks are complete; no dependency Session is allowed to

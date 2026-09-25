@@ -53,8 +53,19 @@ def verify_workspace_permission(
     db: Session,
     permission: WorkspacePermission,
     detail: str,
+    *, task_id: str | None = None, operation: str = "execute",
 ) -> None:
     verify_workspace_access(ws_id, user_id, db)
+    if task_id:
+        from app.domains.local_resource.service import is_local, require_operation
+        from app.domains.local_resource.client import ResourceError
+        task = get_task_or_404(db, task_id, ws_id)
+        if is_local(task):
+            try:
+                require_operation(db, task, user_id, operation)
+            except ResourceError as exc:
+                raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
+            return
     if not workspace_service.user_has_permission(db, ws_id, user_id, permission):
         raise HTTPException(status_code=403, detail=detail)
 

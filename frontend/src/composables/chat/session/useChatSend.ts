@@ -1,3 +1,5 @@
+import api from '@/utils/api'
+import { formatApiError } from '@/utils/error'
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
@@ -13,6 +15,8 @@ import type { HitlCard } from '../types'
  * 3. 其余 → WebSocket 直发。
  */
 export function useChatSend(options: {
+  resourceBlocked?: () => boolean
+  suggestionOnly?: () => boolean
   getWorkspaceId: () => string
   getTaskId: () => string
   task: {
@@ -56,6 +60,8 @@ export function useChatSend(options: {
   const sendingChat = ref(false)
 
   const chatInputPlaceholder = computed(() => {
+    if (!options.suggestionOnly?.() && options.resourceBlocked?.()) return '本地资源未连接，恢复在线后可发送消息'
+    if (options.suggestionOnly?.()) return '输入建议，提交后由任务创建者采纳'
     if (options.task.isTaskProvisioning.value) return t('chat.task_provisioning_hint')
     if (options.task.isTaskPreStart.value) return t('chat.start_before_chat')
     if (options.task.isTerminalStatus.value) return t('chat.terminal_status_hint')
@@ -73,6 +79,21 @@ export function useChatSend(options: {
     content: string,
     sendOptions: { displayContent?: string; metadata?: Record<string, any> } = {},
   ): Promise<boolean> => {
+    if (!options.suggestionOnly?.() && options.resourceBlocked?.()) {
+      ElMessage.warning('本地资源未连接，恢复在线后才能操作')
+      return false
+    }
+    if (options.suggestionOnly?.()) {
+      if (sendOptions.metadata?.interaction_id) { ElMessage.warning('本地任务仅创建者或专家可以处理确认'); return false }
+      if (sendingChat.value || !content.trim()) return false
+      sendingChat.value = true
+      try {
+        await api.post(`/workspaces/${options.getWorkspaceId()}/tasks/${options.getTaskId()}/member-suggestions`, { content: content.trim(), client_submission_id: generateClientMessageId() })
+        ElMessage.success('建议已提交给任务创建者')
+        return true
+      } catch (e) { ElMessage.error(formatApiError(e, '提交建议失败')); return false }
+      finally { sendingChat.value = false }
+    }
     if (options.task.isTaskPreStart.value) {
       ElMessage.warning(t('chat.start_before_chat'))
       return false

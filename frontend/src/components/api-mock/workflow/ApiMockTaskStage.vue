@@ -1,16 +1,21 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import BaseSelect from '@/components/BaseSelect.vue'
+
 type TaskOption = {
   id: string
   name: string
 }
 
-defineProps<{
+const props = defineProps<{
   tasks: TaskOption[]
   selectedTaskId: string
   selectedTask: TaskOption | null
   sourcesCount: number
   endpointsCount: number
 }>()
+
+const taskOptions = computed(() => props.tasks.map(task => ({ label: task.name, value: task.id })))
 
 const emit = defineEmits<{
   (e: 'update:task-id', value: string): void
@@ -33,14 +38,13 @@ const emit = defineEmits<{
       <article class="content-panel primary-panel">
         <label class="field-block">
           <span>{{ $t('api_mock.task') }}</span>
-          <select
+          <BaseSelect
             class="input-field task-select"
-            :value="selectedTaskId"
-            @change="emit('update:task-id', ($event.target as HTMLSelectElement).value)"
-          >
-            <option value="">{{ $t('api_mock.task_empty') }}</option>
-            <option v-for="task in tasks" :key="task.id" :value="task.id">{{ task.name }}</option>
-          </select>
+            :model-value="selectedTaskId"
+            :options="taskOptions"
+            :placeholder="$t('api_mock.task_empty')"
+            @update:model-value="emit('update:task-id', String($event))"
+          />
         </label>
 
         <p class="helper-copy">

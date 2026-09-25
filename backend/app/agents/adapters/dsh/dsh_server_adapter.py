@@ -26,6 +26,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 import httpx
+from app.agents.http_transport import agent_ssl_context
 import websockets
 
 from app.agents.contract import (
@@ -224,8 +225,10 @@ class DshServerAdapter(AgentBackend):
         execution_kind="REMOTE_SESSION",
     )
 
-    def __init__(self, server_url: str = "http://127.0.0.1:3080") -> None:
+    def __init__(self, server_url: str = "http://127.0.0.1:3080", *, browser_token: str | None = None, browser_cookie: str | None = None) -> None:
         self.server_url = server_url.rstrip("/")
+        self._browser_token = browser_token
+        self._browser_cookie = browser_cookie
         self._client: Optional[httpx.AsyncClient] = None
         self._running = False
         self._session_id: Optional[str] = None
@@ -235,16 +238,16 @@ class DshServerAdapter(AgentBackend):
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             headers: dict[str, str] = {}
-            cookie = str(os.environ.get("DSH_BROWSER_COOKIE") or settings.DSH_BROWSER_COOKIE or "").strip()
+            cookie = self._browser_cookie if self._browser_cookie is not None else str(os.environ.get("DSH_BROWSER_COOKIE") or settings.DSH_BROWSER_COOKIE or "").strip()
             if cookie:
                 headers["Cookie"] = cookie
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0, read=None),
                 headers=headers,
-                follow_redirects=True,
-                trust_env=False,
+                follow_redirects=self._browser_token is None,
+                trust_env=False, verify=agent_ssl_context(),
             )
-            token = str(os.environ.get("DSH_BROWSER_TOKEN") or settings.DSH_BROWSER_TOKEN or "").strip()
+            token = self._browser_token if self._browser_token is not None else str(os.environ.get("DSH_BROWSER_TOKEN") or settings.DSH_BROWSER_TOKEN or "").strip()
             if token and not cookie:
                 response = await self._client.get(
                     f"{self.server_url}/?token={quote(token, safe='')}"

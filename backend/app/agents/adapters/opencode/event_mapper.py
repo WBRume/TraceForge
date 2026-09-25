@@ -1,8 +1,8 @@
 """OpenCode Server/SSE 事件 → 统一 AgentEvent 映射。
 
-映射基于 OpenCode 1.18.19 实测 SSE 事件样本（`/api/session/{id}/event`）。
+映射基于 OpenCode 2.0.16 实测 SSE 事件样本（`/api/event`）。
 事件 JSON 形如：
-    {"id":"evt_...","type":"session.next.text.ended","data":{...}}
+    {"id":"evt_...","type":"session.text.ended","data":{...}}
 OpenAPI schema 中同样事件可能把字段放在 `properties`，这里两种都兼容。
 """
 
@@ -74,6 +74,7 @@ def _normalize_finish_reason(finish: str) -> Optional[str]:
     """把 OpenCode finish 值归一化到契约受控词表。"""
     return {
         "stop": "completed",
+        "length": "max-tokens",
         "max_tokens": "max-tokens",
         "max-tokens": "max-tokens",
         "cancelled": "aborted",
@@ -117,7 +118,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
     data = _event_data(event)
     session_id = _text(data.get("sessionID"))
 
-    if event_type == "session.next.text.ended":
+    if event_type == "session.text.ended":
         text = _text(data.get("text"))
         if text:
             events.append(AgentEvent(
@@ -127,8 +128,8 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 raw=event,
                 time=_iso_time(),
             ))
-    elif event_type == "session.next.text.delta":
-        delta = _text(data.get("delta"))
+    elif event_type == "session.text.delta":
+        delta = str(data.get("delta") or "")
         if delta:
             events.append(AgentEvent(
                 type="text_delta",
@@ -137,7 +138,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 raw=event,
                 time=_iso_time(),
             ))
-    elif event_type == "session.next.reasoning.ended":
+    elif event_type == "session.reasoning.ended":
         text = _text(data.get("text"))
         if text:
             events.append(AgentEvent(
@@ -147,8 +148,8 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 raw=event,
                 time=_iso_time(),
             ))
-    elif event_type == "session.next.reasoning.delta":
-        delta = _text(data.get("delta"))
+    elif event_type == "session.reasoning.delta":
+        delta = str(data.get("delta") or "")
         if delta:
             # 统一事件目前没有 thinking_delta；用 delta 标记让引擎累积上行。
             events.append(AgentEvent(
@@ -158,7 +159,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 raw=event,
                 time=_iso_time(),
             ))
-    elif event_type == "session.next.tool.called":
+    elif event_type == "session.tool.called":
         events.append(AgentEvent(
             type="tool_use",
             payload={
@@ -170,7 +171,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             raw=event,
             time=_iso_time(),
         ))
-    elif event_type == "session.next.tool.success":
+    elif event_type == "session.tool.success":
         events.append(AgentEvent(
             type="tool_result",
             payload={
@@ -182,7 +183,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             raw=event,
             time=_iso_time(),
         ))
-    elif event_type == "session.next.tool.failed":
+    elif event_type == "session.tool.failed":
         error = data.get("error")
         if isinstance(error, dict):
             error_message = _text(error.get("message") or error.get("name"))
@@ -199,7 +200,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             raw=event,
             time=_iso_time(),
         ))
-    elif event_type == "session.next.step.ended":
+    elif event_type == "session.step.ended":
         usage = _extract_usage(data)
         if usage:
             events.append(AgentEvent(
@@ -228,7 +229,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 time=_iso_time(),
             ))
         # finish=tool-calls 只是步骤结束，等待后续文本/结果步骤
-    elif event_type == "session.next.step.failed":
+    elif event_type == "session.step.failed":
         usage = _extract_usage(data)
         if usage:
             events.append(AgentEvent(
@@ -365,7 +366,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                     time=_iso_time(),
                 ))
     elif event_type == "message.part.delta":
-        delta = _text(data.get("delta"))
+        delta = str(data.get("delta") or "")
         field = _text(data.get("field"))
         if delta:
             if field in ("reasoning", "thinking"):
@@ -463,10 +464,10 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 raw=event,
                 time=_iso_time(),
             ))
-    elif event_type in ("session.next.text.started", "session.next.step.started",
-                        "session.next.tool.input.started", "session.next.tool.input.ended",
-                        "session.next.tool.progress", "session.next.prompted",
-                        "session.next.prompt.admitted", "session.idle", "message.updated"):
+    elif event_type in ("session.text.started", "session.step.started",
+                        "session.tool.input.started", "session.tool.input.ended",
+                        "session.tool.progress", "session.prompted",
+                        "session.prompt.admitted", "session.idle", "message.updated"):
         # 这些事件对 TaskAgentEngine 不是必需事件；作为 log 保留审计信息。
         events.append(AgentEvent(
             type="log",

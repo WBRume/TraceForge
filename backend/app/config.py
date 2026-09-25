@@ -28,6 +28,10 @@ def _resolve_backend_path(raw_value: Optional[str], *, fallback: str) -> str:
 class Settings(BaseSettings):
     """应用全局配置"""
 
+    LOCAL_RESOURCES_MODE: Literal["disabled", "intranet"] = "disabled"
+    LOCAL_RESOURCES_ENCRYPTION_KEY: str = ""
+    LOCAL_RESOURCES_ALLOWED_NETWORKS: str = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128"
+
     DIAGNOSIS_PLAYBOOK_WORKER_ENABLED: bool = False
     DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL: Literal[
         "ADVISORY_GUARD", "WORKTREE_BROKER", "CONTAINER_SANDBOX"

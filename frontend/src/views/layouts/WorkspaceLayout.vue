@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { storeToRefs } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useWorkspaceStore } from '@/stores/workspace'
@@ -14,7 +14,8 @@ const route = useRoute()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const localAgent = useLocalAgentStore()
-const { electronAvailable } = storeToRefs(localAgent)
+const authStore = useAuthStore()
+const setupKey = () => `local-resource-setup:${location.origin}:${authStore.user?.id}:${wsStore.currentWorkspace?.id}`
 const { t } = useI18n()
 
 const loading = ref(true)
@@ -27,17 +28,12 @@ const maybePromptRepoSetup = async () => {
   if (!workspace) return
   await localAgent.loadLocalConfig()
   await localAgent.setWorkspaceContext(workspace)
-  if (!electronAvailable.value) return
-  const hasRemotes = (
-    String(workspace.git_repo_url || '').trim()
-    || (Array.isArray(workspace.repositories) && workspace.repositories.length > 0)
-  )
-  if (!hasRemotes) return
-  if (localAgent.missingRemotes.length === 0) return
+  if (localStorage.getItem(setupKey())) return
   showRepoSetupDialog.value = true
 }
 
 const skipRepoSetup = () => {
+  localStorage.setItem(setupKey(), 'dismissed')
   showRepoSetupDialog.value = false
 }
 
@@ -149,9 +145,9 @@ const sidebarFooterItems = computed(() => {
     <WorkspaceRepoSetupDialog
       :show="showRepoSetupDialog"
       :workspace="wsStore.currentWorkspace"
-      @close="showRepoSetupDialog = false"
+      @close="skipRepoSetup"
       @skip="skipRepoSetup"
-      @saved="showRepoSetupDialog = false"
+      @saved="skipRepoSetup"
     />
   </div>
 </template>

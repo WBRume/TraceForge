@@ -284,3 +284,60 @@ async def patch_share_suggestion(
     )
 
     return ShareSuggestionItem(**serialized)
+
+
+from pydantic import BaseModel, Field
+
+
+class MemberSuggestionInput(BaseModel):
+    content: str = Field(min_length=1, max_length=20000)
+    client_submission_id: str = Field(min_length=1, max_length=128)
+
+
+@router.post("/{task_id}/member-suggestions")
+async def submit_member_suggestion(ws_id: str, task_id: str, data: MemberSuggestionInput,
+                                   current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    import uuid
+    from app.domains.local_resource.service import is_local
+    from app.domains.task.models.session_share import TaskShareSuggestion
+    bind = get_db_bind(db)
+    actor_id = current_user.id
+    actor_name = current_user.display_name
+    db.close()
+
+    def submit(session):
+        verify_workspace_access(ws_id, actor_id, session)
+        task = get_task_or_404(session, task_id, ws_id)
+        if not is_local(task):
+            raise HTTPException(409, "Only local resource tasks accept member suggestions")
+        source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"member:{task_id}:{task.session_generation}"))
+        row = session.query(TaskShareSuggestion).filter_by(share_id=source_id, visitor_id=actor_id,
+                                                          client_submission_id=data.client_submission_id).first()
+        text = data.content.strip()
+        if not text:
+            raise HTTPException(422, "Input is empty")
+        if row:
+            if row.original_content != text:
+                raise HTTPException(409, "Submission ID reused with different content")
+        else:
+            row = TaskShareSuggestion(share_id=source_id, source_kind="MEMBER", task_id=task_id,
+                session_generation=int(task.session_generation or 0), recipient_user_id=task.creator_id,
+                visitor_id=actor_id, sender_user_id=actor_id, display_name=actor_name, original_content=text,
+                client_submission_id=data.client_submission_id, version=1)
+            session.add(row)
+            session.flush()
+            from app.domains.task.models.task_event_outbox import TaskEventOutbox
+            event_id = str(uuid.uuid4())
+            session.add(TaskEventOutbox(event_id=event_id, task_id=task_id,
+                payload_json={"event_type": "share_suggestion_update", "event_id": event_id,
+                              "task_id": task_id, "recipient_user_id": task.creator_id}))
+        result = share_suggestion_service.serialize_receipt(row)
+        result["recipient_user_id"] = task.creator_id
+        session.commit()
+        return result
+
+    async with lock_task(task_id):
+        receipt = await run_route_db_txn(db, bind, submit)
+    from app.domains.task.services.chat_submission_service import wake_event_publisher
+    await wake_event_publisher()
+    return receipt

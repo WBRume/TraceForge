@@ -18,6 +18,7 @@ import { createResolveActionError } from './shared/requestGuards'
 import { createMessagePresenters, formatMessageTime } from './message/presenters'
 import { messageAuthorColor, memberColorFor, memberColorRgba } from './message/memberColor'
 import { useCurrentTask } from './session/useCurrentTask'
+import { useLocalResourceAvailability } from './session/useLocalResourceAvailability'
 import { useTaskWebSocket } from './session/useTaskWebSocket'
 import { useSessionState } from './session/useSessionState'
 import { createTaskWsEventRouter } from './session/wsEventRouter'
@@ -64,7 +65,15 @@ export function useChatViewModel() {
 
   // ─── 会话实体与协作对象 ───
   const taskState = useCurrentTask()
+  const localResource = useLocalResourceAvailability(() => taskState.currentTask.value)
   const workspaceContext = useWorkspaceContext({ getWorkspaceId })
+  const localTaskActor = computed(() => {
+    const task = taskState.currentTask.value
+    return task?.creator_id === authStore.user?.id || workspaceContext.isWorkspaceExpert()
+  })
+  const suggestionOnly = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' && !localTaskActor.value)
+  const canManageTaskStatus = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' ? localTaskActor.value && !localResource.blocked.value : workspaceContext.canManageTaskStatus.value)
+  const canStartTask = computed(() => taskState.currentTask.value?.execution_location === 'LOCAL' ? localTaskActor.value && !localResource.blocked.value : workspaceContext.canStartTask.value)
   const historyContext = useChatMessageContext()
   const submissions = useChatSubmissions({
     workspaceId: getWorkspaceId,
@@ -120,7 +129,7 @@ export function useChatViewModel() {
   })
   const isUndoing = computed(() => Boolean(undoingMessageId.value))
   const isChatLocked = computed(() => (
-    taskState.isTerminalStatus.value
+    localResource.blocked.value || taskState.isTerminalStatus.value
     || taskState.isTaskPreStart.value
     || taskState.isTaskProvisioning.value
     || isUndoing.value
@@ -397,6 +406,10 @@ export function useChatViewModel() {
       onEvent: (event) => handleWsMessage({ type: event.event_type, payload: event.payload }),
       onControlFrame: (frame, taskId) => {
         const frameType = String(frame?.type || '')
+        if (frameType === 'local_resource_status') {
+          localResource.receive(frame.payload)
+          return
+        }
         if (frameType === 'resume_ok' || frameType === 'resync_ok') {
           // 首次订阅就绪：replay/屏障已完成，此时 HTTP 快照不会被旧的 WS 增量覆盖
           const wasReady = ws.isSubscriptionReady(taskId)
@@ -426,6 +439,7 @@ export function useChatViewModel() {
         }
       },
       onSocketClose: (taskId, code) => {
+        localResource.disconnected(taskId)
         if (code === 1008) {
           ws.showAuthExpiredToast()
           return
@@ -520,6 +534,8 @@ export function useChatViewModel() {
 
   // ─── 发送 / 消息动作 / 任务动作 ───
   const send = useChatSend({
+    resourceBlocked: () => localResource.blocked.value,
+    suggestionOnly: () => suggestionOnly.value,
     getWorkspaceId,
     getTaskId: taskState.getTaskId,
     task: {
@@ -566,7 +582,7 @@ export function useChatViewModel() {
 
   const messageActions = useMessageActions({
     getCurrentTask: () => taskState.currentTask.value,
-    canManageTaskStatus: workspaceContext.canManageTaskStatus,
+    canManageTaskStatus: canManageTaskStatus,
     getWorkspaceId,
     undoingMessageId,
     sendingChat: () => send.sendingChat.value,
@@ -613,7 +629,7 @@ export function useChatViewModel() {
   }
 
   const canEditTaskRuntimeSkills = computed(() => (
-    Boolean(taskState.currentTask.value) && workspaceContext.canManageTaskStatus.value
+    Boolean(taskState.currentTask.value) && canManageTaskStatus.value
   ))
   const canShareTaskSession = computed(() => Boolean(
     taskState.currentTask.value && workspaceContext.workspacePermissions.value?.share_task_session
@@ -623,8 +639,8 @@ export function useChatViewModel() {
     getCurrentTask: () => taskState.currentTask.value,
     isTaskPreStart: taskState.isTaskPreStart,
     isTaskProvisioning: taskState.isTaskProvisioning,
-    canStartTask: workspaceContext.canStartTask,
-    canManageTaskStatus: workspaceContext.canManageTaskStatus,
+    canStartTask: canStartTask,
+    canManageTaskStatus: canManageTaskStatus,
     getWorkspaceId,
     engineRunning: engine.engineRunning,
     submissionsClear: submissions.clear,
@@ -648,7 +664,7 @@ export function useChatViewModel() {
   const statusActions = useTaskStatusActions({
     getCurrentTask: () => taskState.currentTask.value,
     isTaskProvisioning: taskState.isTaskProvisioning,
-    canManageTaskStatus: workspaceContext.canManageTaskStatus,
+    canManageTaskStatus: canManageTaskStatus,
     getWorkspaceId,
     engineRunning: engine.engineRunning,
     interruptingTask: taskSessionControls.interruptingTask,
@@ -931,7 +947,7 @@ export function useChatViewModel() {
     // 工作区权限
     currentWorkspace: workspaceContext.currentWorkspace,
     canCreateTask: workspaceContext.canCreateTask,
-    canManageTaskStatus: workspaceContext.canManageTaskStatus,
+    canManageTaskStatus: canManageTaskStatus,
     canDeleteTask: workspaceContext.canDeleteTask,
     canExportTask: workspaceContext.canExportTask,
     canEditSuperpowersDocs: workspaceContext.canEditSuperpowersDocs,
@@ -945,6 +961,10 @@ export function useChatViewModel() {
     isDiagnosisTask: taskState.isDiagnosisTask,
     hidePatchWorkflows: taskState.hidePatchWorkflows,
     isChatLocked,
+    isLocalTask: localResource.isLocal,
+    localResourceBlocked: localResource.blocked,
+    localResourceStatus: localResource.status,
+    localResourceLabel: localResource.label,
 
     // 消息与历史
     messages: messages.visibleMessages,
@@ -979,6 +999,7 @@ export function useChatViewModel() {
     chatInput: send.chatInput,
     sendingChat: send.sendingChat,
     chatInputPlaceholder: send.chatInputPlaceholder,
+    suggestionOnly,
     sendChat: send.sendChat,
     sendChatContent: send.sendChatContent,
     sendVerification: send.sendVerification,

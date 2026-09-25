@@ -115,6 +115,7 @@ def task_summary(
         plan_node_count = count_rows(db, SddPlanNode, task.workspace_id, task_id=task.id)
     return TaskSummary(
         id=task.id,
+        execution_location=task.execution_location or "SERVER",
         workspace_id=task.workspace_id,
         creator_id=task.creator_id,
         name=task.name,

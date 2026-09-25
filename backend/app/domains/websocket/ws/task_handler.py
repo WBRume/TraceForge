@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
+from contextlib import suppress
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -91,6 +93,7 @@ class TaskWebSocketHandler:
         if self._resume_epoch is not None or self._last_sequence is not None:
             connect_kwargs.update(epoch=self._resume_epoch, last_sequence=self._last_sequence)
         self._outbound = await self._manager.connect(self._websocket, self._task_id, **connect_kwargs)
+        resource_monitor = asyncio.create_task(self._monitor_local_resource())
         try:
             while True:
                 try:
@@ -112,7 +115,45 @@ class TaskWebSocketHandler:
         except Exception:
             task_logger.exception("Task websocket endpoint failed")
         finally:
+            resource_monitor.cancel()
+            with suppress(asyncio.CancelledError):
+                await resource_monitor
             self._manager.disconnect(self._websocket, self._task_id)
+
+    def _local_resource_status_sync(self):
+        from app.domains.local_resource import service
+        from app.domains.local_resource.client import ResourceError
+        try:
+            with self._session_factory() as db:
+                task = db.get(SddTask, self._task_id)
+                if not task or not service.is_local(task):
+                    return None
+                config = service.runtime_profile(db, service.binding(db, task.id))
+            service.require_online(config)
+            return {"task_id": self._task_id, "status": "online"}
+        except ResourceError:
+            return {"task_id": self._task_id, "status": "offline"}
+
+    async def _monitor_local_resource(self):
+        # Each connection receives an initial snapshot and subsequent transitions.
+        # These ephemeral control frames do not belong in the durable room journal.
+        previous = None
+        while True:
+            try:
+                status = await run_db(self._local_resource_status_sync)
+                if status is None:
+                    return
+                if status != previous:
+                    self._send_to_self({"type": "local_resource_status", "payload": status})
+                    previous = status
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                task_logger.exception("Local resource status check failed for %s", self._task_id)
+                status = {"task_id": self._task_id, "status": "offline"}
+                self._send_to_self({"type": "local_resource_status", "payload": status})
+                previous = status
+            await asyncio.sleep(10)
 
     def _send_to_self(self, payload: dict) -> bool:
         """本连接回执：经出站队列发送（非阻塞；失败仅返回 False，不断开连接）。"""
@@ -178,6 +219,13 @@ class TaskWebSocketHandler:
         if not request.content.strip():
             return
 
+        from app.domains.local_resource.client import ResourceError
+        try:
+            await run_db(self._check_local_actor_sync)
+        except ResourceError as exc:
+            await self._send_chat_ack(request, status="failed", message=str(exc))
+            return
+
         # Do not persist prompt text in logs; undo must be able to forget it.
         task_logger.info(
             f"User chat for task {self._task_id}: message_length={len(request.content)}"
@@ -229,6 +277,12 @@ class TaskWebSocketHandler:
 
         if created is not None:
             await self._publish_chat_message(request, created)
+
+    def _check_local_actor_sync(self):
+        from app.domains.local_resource.service import require_operation
+        with self._session_factory() as db:
+            task = db.get(SddTask, self._task_id)
+            require_operation(db, task, self._user.id)
 
     def _load_task_status_sync(self, task_id: str) -> str | None:
         """任务状态轻量查询（调用方需在事件循环外经 run_db 执行）。"""

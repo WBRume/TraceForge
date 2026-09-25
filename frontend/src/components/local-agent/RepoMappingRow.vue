@@ -1,10 +1,11 @@
 <!-- Single repository local-path mapping row (shared by settings and setup dialog). -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { CheckCircle2, FolderOpen, Unlink, XCircle, Info, Save } from 'lucide-vue-next'
+import LocalGitRemoteSelect from '@/components/local-agent/LocalGitRemoteSelect.vue'
 import { useLocalAgentStore } from '@/stores/localAgent'
 
 const props = defineProps<{
@@ -21,18 +22,21 @@ const localAgent = useLocalAgentStore()
 const { electronAvailable } = storeToRefs(localAgent)
 
 const localPath = ref('')
+const gitRemoteUrl = shallowRef('')
 const validating = ref(false)
 const saving = ref(false)
 
 const statusText = computed(() => localAgent.statusFor(props.remoteUrl))
 const mapping = computed(() => localAgent.mappingFor(props.remoteUrl))
+const remoteSelectId = computed(() => `repo-mapping-git-remote-${encodeURIComponent(props.remoteUrl)}`)
 
 const isBound = computed(() => Boolean(mapping.value?.localPath))
-const isSuccessStatus = computed(() => statusText.value.startsWith('Clean'))
-const isErrorStatus = computed(() => Boolean(statusText.value) && !statusText.value.startsWith('Clean'))
+const isSuccessStatus = computed(() => (statusText.value.startsWith('Clean') || statusText.value.startsWith('Dirty')))
+const isErrorStatus = computed(() => Boolean(statusText.value) && !(statusText.value.startsWith('Clean') || statusText.value.startsWith('Dirty')))
 
 const hydrate = () => {
   localPath.value = mapping.value?.localPath || ''
+  gitRemoteUrl.value = mapping.value?.gitRemoteUrl || ''
 }
 
 const chooseLocal = async () => {
@@ -41,6 +45,12 @@ const chooseLocal = async () => {
   if (result.canceled || !result.path) return
   localPath.value = result.path
   await localAgent.validateRemote(props.remoteUrl, result.path)
+}
+
+const onLocalPathChange = () => {
+  if (localPath.value.trim()) {
+    void localAgent.validateRemote(props.remoteUrl, localPath.value.trim())
+  }
 }
 
 const validateWithFeedback = async () => {
@@ -56,8 +66,8 @@ const validateWithFeedback = async () => {
       ElMessage.error(t('settings.local_dev.validate_not_git'))
       return
     }
-    if (!status.startsWith('Clean')) {
-      ElMessage.warning(t('settings.local_dev.validate_dirty'))
+    if (!status.startsWith('Clean') && !status.startsWith('Dirty')) {
+      ElMessage.error(status)
       return
     }
     ElMessage.success(t('settings.local_dev.validate_success'))
@@ -72,7 +82,7 @@ const saveMapping = async () => {
   if (!localPath.value) return
   saving.value = true
   try {
-    const ok = await localAgent.saveMappingFor(props.remoteUrl, localPath.value)
+    const ok = await localAgent.saveMappingFor(props.remoteUrl, localPath.value, null, gitRemoteUrl.value)
     if (ok) {
       emit('changed')
     }
@@ -84,11 +94,12 @@ const saveMapping = async () => {
 const removeMapping = async () => {
   await localAgent.removeMappingFor(props.remoteUrl)
   localPath.value = ''
+  gitRemoteUrl.value = ''
   emit('changed')
 }
 
 watch(
-  () => [props.remoteUrl, mapping.value?.localPath],
+  () => [props.remoteUrl, mapping.value?.localPath, mapping.value?.gitRemoteUrl],
   () => {
     hydrate()
   },
@@ -109,19 +120,30 @@ watch(
     </div>
 
     <div class="repo-row-body">
+      <p class="repo-row-purpose">选择用于应用服务器补丁的本地仓库，可为主仓或个人 fork。保存即确认映射；应用时检查基准 commit 并创建独立 worktree。</p>
       <div class="repo-row-path">
         <input
           v-model="localPath"
           type="text"
           class="mgmt-input"
-          readonly
-          :placeholder="$t('settings.local_dev.choose_repo_hint')"
-          @click="chooseLocal"
+          :placeholder="electronAvailable ? $t('settings.local_dev.choose_repo_hint') : '请输入本机仓库绝对路径，例如 G:/my-repo 或 /home/repo'"
+          @click="electronAvailable ? chooseLocal() : undefined"
+          @change="onLocalPathChange"
         />
         <button class="btn-icon" type="button" :title="$t('settings.local_dev.choose_repo')" @click="chooseLocal">
           <FolderOpen class="w-4 h-4" />
         </button>
       </div>
+
+      <template v-if="localPath">
+        <label class="repo-row-remote-select-label" :for="remoteSelectId">映射使用的 Git 远端</label>
+        <LocalGitRemoteSelect
+          :id="remoteSelectId"
+          v-model="gitRemoteUrl"
+          :repo-path="localPath"
+          :preferred-url="remoteUrl"
+        />
+      </template>
 
       <div v-if="statusText" class="repo-row-status" :class="{ success: isSuccessStatus, error: isErrorStatus }">
         <CheckCircle2 v-if="isSuccessStatus" class="w-4 h-4 flex-shrink-0" />
@@ -134,7 +156,7 @@ watch(
         <button
           class="btn-secondary action-button"
           type="button"
-          :disabled="!electronAvailable || !localPath || validating"
+          :disabled="!localPath || validating"
           @click="validateWithFeedback"
         >
           <CheckCircle2 class="w-4 h-4" />
@@ -143,7 +165,7 @@ watch(
         <button
           class="btn-primary action-button"
           type="button"
-          :disabled="!electronAvailable || !localPath || saving"
+          :disabled="!localPath || saving"
           @click="saveMapping"
         >
           <Save class="w-4 h-4" />
@@ -153,7 +175,7 @@ watch(
           v-if="isBound"
           class="btn-secondary danger action-button"
           type="button"
-          :disabled="!electronAvailable"
+          :disabled="saving"
           @click="removeMapping"
         >
           <Unlink class="w-4 h-4" />
@@ -226,6 +248,8 @@ watch(
   flex-direction: column;
   gap: 0.5rem;
 }
+
+.repo-row-purpose { margin: 0; color: #64748b; font-size: 0.78rem; line-height: 1.5; }
 
 .repo-row-path {
   display: flex;

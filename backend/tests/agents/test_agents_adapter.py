@@ -292,14 +292,14 @@ class ClaudeEventMapperFixtureTest(unittest.TestCase):
 class OpenCodeEventMapperTest(unittest.TestCase):
     def test_maps_text_and_step_result(self):
         events = map_opencode_event({
-            "type": "session.next.text.ended",
+            "type": "session.text.ended",
             "data": {"sessionID": "ses-1", "text": "hello"},
         })
         self.assertTrue(any(e.type == "text" for e in events))
         self.assertEqual(next(e for e in events if e.type == "text").payload["text"], "hello")
 
         step_events = map_opencode_event({
-            "type": "session.next.step.ended",
+            "type": "session.step.ended",
             "data": {
                 "sessionID": "ses-1",
                 "finish": "stop",
@@ -315,7 +315,7 @@ class OpenCodeEventMapperTest(unittest.TestCase):
 
     def test_maps_tool_events(self):
         use_events = map_opencode_event({
-            "type": "session.next.tool.called",
+            "type": "session.tool.called",
             "data": {"sessionID": "ses-1", "callID": "call-1", "tool": "read", "input": {"path": "."}},
         })
         self.assertTrue(any(e.type == "tool_use" for e in use_events))
@@ -323,7 +323,7 @@ class OpenCodeEventMapperTest(unittest.TestCase):
         self.assertEqual(tool_use.payload["tool_use_id"], "call-1")
 
         result_events = map_opencode_event({
-            "type": "session.next.tool.success",
+            "type": "session.tool.success",
             "data": {
                 "sessionID": "ses-1",
                 "callID": "call-1",
@@ -347,7 +347,7 @@ class OpenCodeEventMapperTest(unittest.TestCase):
 
     def test_maps_step_failed_to_error(self):
         events = map_opencode_event({
-            "type": "session.next.step.failed",
+            "type": "session.step.failed",
             "data": {
                 "sessionID": "ses-1",
                 "error": {"message": "boom"},
@@ -368,34 +368,26 @@ class OpenCodeUndoApiTest(unittest.IsolatedAsyncioTestCase):
         def handler(request: httpx.Request) -> httpx.Response:
             calls.append((request.method, str(request.url), request.content and json.loads(request.content)))
             path = request.url.path
-            if path.endswith("/api/session/s1/revert"):
-                return httpx.Response(404)
-            if path.endswith("/session/s1/revert"):
-                return httpx.Response(204)
-            if path.endswith("/api/session/s1/message/m-user"):
-                return httpx.Response(405)
-            if path.endswith("/session/s1/message/m-user"):
+            if path.endswith("/revert/stage") or path.endswith("/revert/commit"):
                 return httpx.Response(204)
             if path.endswith("/api/session/s1/message"):
-                return httpx.Response(404)
-            if path.endswith("/session/s1/message"):
-                return httpx.Response(200, json={"data": [{"info": {"id": "m-before"}}]})
+                return httpx.Response(200, json={"data": [{"id": "m-before"}], "cursor": {}})
             return httpx.Response(500)
 
         adapter = OpenCodeAdapter("http://provider")
         adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         try:
             self.assertTrue(await adapter.revert_message("s1", "m-user"))
-            self.assertTrue(await adapter.delete_message("s1", "m-user"))
             messages = await adapter.list_messages("s1")
         finally:
             await adapter.close()
 
-        self.assertEqual(messages[0]["info"]["id"], "m-before")
-        self.assertEqual(calls[0][0:2], ("POST", "http://provider/api/session/s1/revert"))
-        self.assertEqual(calls[1][0:2], ("POST", "http://provider/session/s1/revert"))
-        self.assertEqual(calls[1][2], {"messageID": "m-user"})
-        self.assertEqual(calls[3][0:2], ("DELETE", "http://provider/session/s1/message/m-user"))
+        self.assertEqual(messages[0]["id"], "m-before")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[0][0:2], ("POST", "http://provider/api/session/s1/revert/stage"))
+        self.assertEqual(calls[0][2], {"messageID": "m-user", "files": False})
+        self.assertEqual(calls[1][0:2], ("POST", "http://provider/api/session/s1/revert/commit"))
+
 
 
 class OpenCodeEventMapperFixtureTest(unittest.TestCase):
@@ -511,19 +503,24 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
 
         async def get(self, url: str, params: dict | None = None, **kwargs):
             if url.endswith("/message"):
-                return OpenCodeAdapterRunTest._FakeResponse(200, {"data": [{
-                    "type": "assistant",
-                    "content": [{"type": "text", "text": "ok"}],
-                    "finish": "stop",
-                    "cost": 0,
-                    "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-                }]})
+                return OpenCodeAdapterRunTest._FakeResponse(200,
+                    {'data': [{'id':'msg_test','type':'user'}, {'id':'reply', 'finish': 'stop',
+                               'cost': 0,
+                               'tokens': {'input': 1,
+                                          'output': 1,
+                                          'reasoning': 0,
+                                          'cache': {'read': 0, 'write': 0}},
+                               'type': 'assistant',
+                      'content': [{'type': 'text', 'text': 'ok'}]}], 'cursor': {}}
+                )
             return OpenCodeAdapterRunTest._FakeResponse(200, {})
 
         def stream(self, method: str, url: str, **kwargs):
             return OpenCodeAdapterRunTest._FakeStream([
-                'data: {"id":"e1","type":"session.next.text.ended","data":{"sessionID":"ses_test","text":"ok"}}',
-                'data: {"id":"e2","type":"session.next.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
+                'data: {"type":"server.connected","data":{}}',
+                'data: {"id":"e1","type":"session.text.ended","data":{"sessionID":"ses_test","text":"ok"}}',
+                'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
+                'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
             ])
 
     async def test_run_creates_session_streams_events_and_returns_result(self):
@@ -573,28 +570,32 @@ class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
 
         async def get(self, url: str, params: dict | None = None, **kwargs):
             if url.endswith("/message"):
-                return OpenCodeAdapterRunTest._FakeResponse(200, {"data": [{
-                    "type": "assistant",
-                    "content": [
-                        {"type": "text", "text": "done"},
-                        {"type": "reasoning", "text": "thinking here"},
-                        {"type": "tool", "id": "call-1", "name": "read", "state": {
-                            "status": "completed",
-                            "input": {"path": "a"},
-                            "structured": {"entries": [{"path": "a"}]},
-                            "content": [{"type": "text", "text": "file content"}],
-                        }},
-                    ],
-                    "finish": "stop",
-                    "cost": 0,
-                    "tokens": {"input": 10, "output": 2, "reasoning": 3, "cache": {"read": 0, "write": 0}},
-                }]})
+                return OpenCodeAdapterRunTest._FakeResponse(200,
+                    {'data': [{'id':'msg_test','type':'user'}, {'id':'reply', 'finish': 'stop',
+                               'cost': 0,
+                               'tokens': {'input': 10,
+                                          'output': 2,
+                                          'reasoning': 3,
+                                          'cache': {'read': 0, 'write': 0}},
+                               'type': 'assistant',
+                      'content': [{'type': 'text', 'text': 'done'},
+                                {'type': 'reasoning', 'text': 'thinking here'},
+                                {'type': 'tool',
+                                 'id': 'call-1',
+                                 'name': 'read',
+                                 'state': {'status': 'completed',
+                                           'input': {'path': 'a'},
+                                           'structured': {'entries': [{'path': 'a'}]},
+                                           'content': [{'type': 'text', 'text': 'file content'}]}}]}], 'cursor': {}}
+                )
             return OpenCodeAdapterRunTest._FakeResponse(200, {})
 
         def stream(self, method: str, url: str, **kwargs):
             # 只回放终态 step.ended，不提供 reasoning/tool SSE，验证 fallback
             return OpenCodeAdapterRunTest._FakeStream([
-                'data: {"id":"e2","type":"session.next.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":0,"write":0}}}}',
+                'data: {"type":"server.connected","data":{}}',
+                'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":0,"write":0}}}}',
+                'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
             ])
 
     async def test_run_falls_back_to_final_message_for_missing_events(self):
@@ -634,17 +635,21 @@ class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OpenCodeAdapterInterruptAbortTest(unittest.IsolatedAsyncioTestCase):
-    """OpenCode Server 没有 /interrupt，interrupt/cancel 必须走 /abort。"""
+    """OpenCode v2 interrupt confirms the session worker is idle."""
 
     class _FakeClient:
         def __init__(self):
+            self.is_closed = False
             self.posted: list[str] = []
 
         async def post(self, url: str, **kwargs):
-            if not url.endswith("/abort"):
-                raise AssertionError(f"interrupt/cancel must use /abort, got: {url}")
+            if not url.endswith("/interrupt"):
+                raise AssertionError(f"interrupt/cancel must use /interrupt, got: {url}")
             self.posted.append(url)
-            return OpenCodeAdapterRunTest._FakeResponse(200, {})
+            return OpenCodeAdapterRunTest._FakeResponse(200, {"interrupted": True})
+
+        async def get(self, url: str, **kwargs):
+            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {}})
 
     async def _make_adapter(self, client):
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
@@ -660,7 +665,7 @@ class OpenCodeAdapterInterruptAbortTest(unittest.IsolatedAsyncioTestCase):
 
         await adapter.interrupt()
 
-        self.assertEqual(client.posted, ["http://127.0.0.1:9999/session/ses_test/abort"])
+        self.assertEqual(client.posted, ["http://127.0.0.1:9999/api/session/ses_test/interrupt"])
         self.assertTrue(adapter._interrupted)
 
     async def test_interrupt_explicit_session_uses_abort_endpoint(self):
@@ -669,7 +674,7 @@ class OpenCodeAdapterInterruptAbortTest(unittest.IsolatedAsyncioTestCase):
 
         await adapter.interrupt(session_id="other-ses")
 
-        self.assertEqual(client.posted, ["http://127.0.0.1:9999/session/other-ses/abort"])
+        self.assertEqual(client.posted, ["http://127.0.0.1:9999/api/session/other-ses/interrupt"])
         self.assertTrue(adapter._interrupted)
 
     async def test_cancel_uses_abort_endpoint(self):
@@ -678,7 +683,7 @@ class OpenCodeAdapterInterruptAbortTest(unittest.IsolatedAsyncioTestCase):
 
         await adapter.cancel()
 
-        self.assertEqual(client.posted, ["http://127.0.0.1:9999/session/ses_test/abort"])
+        self.assertEqual(client.posted, ["http://127.0.0.1:9999/api/session/ses_test/interrupt"])
         self.assertFalse(adapter.is_running())
 
 
@@ -823,7 +828,7 @@ class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
         backend = _CloseTrackingBackend(acknowledged=True)
         with patch(
             "app.agents.selection.create_agent_backend_by_name",
-            lambda name: backend,
+            lambda name, *, task_id=None: backend,
         ):
             ack = await ai_reaper.stop_remote_session(dict(row))
             self.assertTrue(ack.stop_acknowledged)

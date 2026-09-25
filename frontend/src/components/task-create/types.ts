@@ -35,6 +35,7 @@ export interface SkillSummary {
 
 /** 表单提交时的草稿快照（含 File 对象，保持普通对象不代理） */
 export interface TaskDraftSnapshot {
+  execution?: import('@/composables/useLocalResources').TaskExecution
   diagnosisPlaybookSpecId?: string
   taskType: TaskTypeValue
   name: string

@@ -9,6 +9,7 @@ interface ChatTaskListItemData {
   name?: string | null
   status?: string | null
   task_type?: string | null
+  execution_location?: string | null
   creator_name?: string | null
   created_at?: string | null
   is_following?: boolean
@@ -47,13 +48,14 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 
       <span class="task-state-row">
         <span class="task-state-group">
+          <span v-if="task.execution_location === 'LOCAL'" class="task-type-tag is-local">本地</span>
           <span
             class="task-type-tag"
             :class="isDiagnosis ? 'is-diagnosis' : 'is-development'"
           >
             {{ isDiagnosis ? $t('task_types.diagnosis') : $t('task_types.development') }}
           </span>
-          <span class="task-status">
+          <span class="task-status" :title="task.status || ''">
             <span class="status-dot" :class="normalizedStatus"></span>
             {{ task.status }}
           </span>
@@ -100,7 +102,7 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 .task-select {
   display: block;
   width: 100%;
-  padding: 10px 76px 10px 12px;
+  padding: 10px 58px 10px 10px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: inherit;
@@ -162,18 +164,18 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 .task-state-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   min-width: 0;
 }
 
 .task-status {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   overflow: hidden;
   color: var(--color-text-muted);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 500;
   line-height: 1;
   text-overflow: ellipsis;
@@ -182,13 +184,19 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 
 .task-type-tag {
   flex-shrink: 0;
-  padding: 3px 7px;
+  padding: 2px 5.5px;
   border-radius: 999px;
-  font-size: 0.64rem;
+  font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.01em;
   line-height: 1;
   white-space: nowrap;
+}
+
+.task-type-tag.is-local {
+  border: 1px solid rgba(100, 116, 139, 0.22);
+  color: #475569;
+  background: #f1f5f9;
 }
 
 .task-type-tag.is-development {
@@ -201,6 +209,12 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   border: 1px solid rgba(245, 158, 11, 0.3);
   color: #92400e;
   background: #fef3c7;
+}
+
+.task-item.active .task-type-tag.is-local {
+  border-color: rgba(100, 116, 139, 0.35);
+  background: #e2e8f0;
+  color: #1e293b;
 }
 
 .task-item.active .task-type-tag.is-development {
@@ -287,11 +301,11 @@ const toggleFollow = () => emit('toggleFollow', props.task)
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  padding: 6px;
+  width: 22px;
+  height: 22px;
+  padding: 3px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   color: #94a3b8;
   background: transparent;
   cursor: pointer;
@@ -301,16 +315,16 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 }
 
 .follow-btn {
-  right: 38px;
+  right: 31px;
 }
 
 .delete-btn.delete-action-btn {
-  right: 10px;
+  right: 7px;
 }
 
 .follow-icon {
-  width: 0.85rem;
-  height: 0.85rem;
+  width: 0.8rem;
+  height: 0.8rem;
 }
 
 /* 选中或悬停任务项时：按钮透明度提升并加深背景颜色 */

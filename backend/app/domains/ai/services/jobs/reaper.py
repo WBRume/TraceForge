@@ -95,6 +95,7 @@ def list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, 
             result.append(
                 {
                     "job_id": str(job.id),
+                    "task_id": str(job.task_id or "") or None,
                     "run_token": str(job.run_token or ""),
                     "expected_run_token": str(job.run_token or "") or None,
                     "process_pid": job.process_pid,
@@ -217,7 +218,7 @@ async def stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
     from app.agents.selection import create_agent_backend_by_name
 
     try:
-        backend = create_agent_backend_by_name(backend_name)
+        backend = create_agent_backend_by_name(backend_name, task_id=row.get("task_id"))
     except Exception as exc:
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -413,6 +414,7 @@ def mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
             result.append(
                 {
                     "job_id": str(job.id),
+                    "task_id": str(job.task_id or "") or None,
                     "run_token": str(job.run_token or ""),
                     "process_pid": job.process_pid,
                     "process_started_at": job.process_started_at,

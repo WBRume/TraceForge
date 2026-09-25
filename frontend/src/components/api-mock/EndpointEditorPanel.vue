@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, reactive, watch } from 'vue'
 import { Save } from 'lucide-vue-next'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { ApiMockEndpoint, ApiMockRule } from '@/types/apiMock'
 
 const props = defineProps<{
@@ -69,6 +70,12 @@ const ruleForm = reactive({
   delay_ms: 0,
   enabled: true,
 })
+
+const ruleModeOptions = [
+  { label: 'STATIC', value: 'STATIC' },
+  { label: 'MOCKJS', value: 'MOCKJS' },
+  { label: 'PROXY', value: 'PROXY' },
+]
 
 let suppressDraftEmit = false
 let draftEmitTimer: number | null = null
@@ -283,11 +290,7 @@ const submitRule = () => {
         <div class="grid">
           <label class="field">
             <span>{{ $t('api_mock.rule_mode') }}</span>
-            <select v-model="ruleForm.mode" class="input-field" :disabled="!canManage">
-              <option value="STATIC">STATIC</option>
-              <option value="MOCKJS">MOCKJS</option>
-              <option value="PROXY">PROXY</option>
-            </select>
+            <BaseSelect v-model="ruleForm.mode" :options="ruleModeOptions" class="input-field" :disabled="!canManage" />
           </label>
           <label class="field">
             <span>{{ $t('api_mock.status_code') }}</span>

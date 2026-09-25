@@ -512,6 +512,11 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
 
 async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
                             *, workspace_id: str, workspace_name: str, task_id: str, task_name: str) -> dict[str, Any]:
+    from app.domains.local_resource.service import task_profile
+    from app.domains.local_resource import snapshots as remote
+    from app.core.offload import run_db
+    if await run_db(task_profile, task_id):
+        return await remote.create(task_id, provider, session_id)
     from app.core.offload import run_git_job
 
     import asyncio
@@ -533,6 +538,9 @@ async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider:
 async def restore_provider(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:
     from app.core.offload import run_git_job
 
+    from app.domains.local_resource import snapshots as remote
+    if checkpoint_root.startswith(remote.PREFIX):
+        return await remote.action(checkpoint_root, "restore_provider", provider=provider, session_id=current_session_id)
     await run_git_job(_restore_provider_sync, checkpoint_root, provider, project_path, current_session_id)
 
 
@@ -544,6 +552,9 @@ async def backup_current_provider(
 ) -> dict[str, Any]:
     from app.core.offload import run_git_job
 
+    from app.domains.local_resource import snapshots as remote
+    if checkpoint_root.startswith(remote.PREFIX):
+        return await remote.action(checkpoint_root, "backup_provider", provider=provider, session_id=session_id)
     return await run_git_job(
         _backup_current_provider_sync,
         checkpoint_root,
@@ -556,6 +567,9 @@ async def backup_current_provider(
 async def restore_provider_backup(checkpoint_root: str) -> None:
     from app.core.offload import run_git_job
 
+    from app.domains.local_resource import snapshots as remote
+    if checkpoint_root.startswith(remote.PREFIX):
+        return await remote.action(checkpoint_root, "restore_provider_backup")
     await run_git_job(_restore_provider_backup_sync, checkpoint_root)
 
 
@@ -628,26 +642,46 @@ def _cleanup_dsh_session_sync(session_id: str) -> None:
     shutil.rmtree(os.path.dirname(log_path), ignore_errors=False)
 
 
-async def fork_dsh_session(session_id: str, target_cwd: str) -> Optional[str]:
+async def fork_dsh_session(session_id: str, target_cwd: str, *, checkpoint_root: str | None = None) -> Optional[str]:
     from app.core.offload import run_file_job
 
+    from app.domains.local_resource import snapshots as remote
+    if checkpoint_root and checkpoint_root.startswith(remote.PREFIX):
+        return (await remote.action(checkpoint_root, "fork_dsh", provider="dsh", session_id=session_id))["session_id"]
     return await run_file_job(_fork_dsh_session_sync, session_id, target_cwd)
 
 
-async def cleanup_dsh_session(session_id: str) -> None:
+async def cleanup_dsh_session(session_id: str, *, checkpoint_root: str | None = None) -> None:
     from app.core.offload import run_file_job
 
+    from app.domains.local_resource import snapshots as remote
+    if checkpoint_root and checkpoint_root.startswith(remote.PREFIX):
+        return await remote.action(checkpoint_root, "cleanup_dsh", provider="dsh", session_id=session_id)
     await run_file_job(_cleanup_dsh_session_sync, session_id)
 
 
 async def restore_worktree(checkpoint_root: str, task_root: str, current_backup_path: str) -> None:
     from app.core.offload import run_git_job
 
+    from app.domains.local_resource import snapshots as remote
+    if checkpoint_root.startswith(remote.PREFIX):
+        return await remote.action(checkpoint_root, "restore_worktree", backup_path=current_backup_path)
     await run_git_job(_restore_worktree_sync, checkpoint_root, task_root, current_backup_path)
 
 
 async def cleanup_checkpoint(path: Optional[str]) -> None:
+    from app.domains.local_resource import snapshots as remote
+    if path and path.startswith(remote.PREFIX):
+        return await remote.action(path, "cleanup")
     if path:
         from app.core.offload import run_file_job
 
         await run_file_job(_cleanup_checkpoint_sync, path)
+
+
+async def checkpoint_exists(checkpoint_root: str) -> bool:
+    from app.domains.local_resource import snapshots as remote
+    from app.core.offload import run_file_job
+    if checkpoint_root.startswith(remote.PREFIX):
+        return bool((await remote.action(checkpoint_root, "exists"))["exists"])
+    return await run_file_job(os.path.isfile, os.path.join(checkpoint_root, "worktree.json"))

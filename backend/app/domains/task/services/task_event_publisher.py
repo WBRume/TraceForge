@@ -109,7 +109,7 @@ async def publish_once() -> int:
             # subscribers still counts as success because the journal keeps it.
             await manager.send_message_to_room(
                 task_id,
-                WSMessage(type="chat_submission_update", payload=payload),
+                WSMessage(type="share_suggestion_update" if payload.get("event_type") == "share_suggestion_update" else "chat_submission_update", payload=payload),
             )
             published += 1
             # 公开 READ 分享页的实时 nudge：正式消息事件（payload 含 message）

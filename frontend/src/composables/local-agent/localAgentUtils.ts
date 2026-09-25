@@ -1,13 +1,13 @@
 export const normalizeRemoteUrl = (value: string | null | undefined): string => {
   const raw = String(value || '').trim()
   if (!raw) return ''
-  const sshMatch = raw.match(/^git@([^:]+):(.+)$/)
+  const sshMatch = raw.match(/^[^@/]+@([^:]+):(.+)$/)
   if (sshMatch?.[1] && sshMatch?.[2]) {
-    return `${sshMatch[1]}/${sshMatch[2]}`.replace(/\.git$/i, '').toLowerCase()
+    return `${sshMatch[1].toLowerCase()}/${sshMatch[2]}`.replace(/\/+$/, '').replace(/\.git$/i, '')
   }
   try {
     const url = new URL(raw)
-    return `${url.host}${url.pathname}`.replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase()
+    return `${url.host.toLowerCase()}${url.pathname}`.replace(/\/+$/, '').replace(/\.git$/i, '')
   } catch {
     return raw.replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase()
   }

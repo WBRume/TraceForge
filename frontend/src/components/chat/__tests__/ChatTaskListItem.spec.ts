@@ -29,6 +29,13 @@ const mountItem = () => mount(ChatTaskListItem, {
 })
 
 describe('ChatTaskListItem', () => {
+  it('identifies local tasks and leaves server tasks unmarked', async () => {
+    const wrapper = mountItem()
+    expect(wrapper.find('.task-state-row').text()).not.toContain('本地')
+    await wrapper.setProps({ task: { ...task, execution_location: 'LOCAL' } })
+    expect(wrapper.find('.task-state-row').text()).toContain('本地')
+    expect(wrapper.find('.task-type-tag.is-local').exists()).toBe(true)
+  })
   it('gives the title its own row and separates task state from metadata', () => {
     const wrapper = mountItem()
 

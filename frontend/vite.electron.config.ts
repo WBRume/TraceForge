@@ -18,6 +18,8 @@ export default defineConfig({
       entry: {
         main: resolve(__dirname, 'electron/main.ts'),
         preload: resolve(__dirname, 'electron/preload.ts'),
+        resourceHost: resolve(__dirname, 'electron/resourceHost.ts'),
+        resourceWorker: resolve(__dirname, 'electron/resourceWorker.ts'),
       },
       formats: ['es'],
       fileName: (_format, entryName) => `${entryName}.js`,

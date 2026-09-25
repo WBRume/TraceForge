@@ -5,9 +5,11 @@ import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { AlertTriangle, FileText, GitPullRequest, Loader2, RefreshCw, Settings, GitBranch, ArrowUpRight, Zap, Info, Copy } from 'lucide-vue-next'
+import OwnResourceApply from '@/components/local-resource/OwnResourceApply.vue'
 import AppSideDrawer from '@/components/AppSideDrawer.vue'
 import { applyProposalPatch, applyProposalRepoPatches, type ApplyPatchProgress } from '@/composables/local-agent/useLocalAgentApplyPatch'
 import { normalizeRemoteUrl } from '@/composables/local-agent/localAgentUtils'
+import { useAuthStore } from '@/stores/auth'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import type { AgentTask } from '@/types/agent'
 import { formatApiError } from '@/utils/error'
@@ -16,6 +18,7 @@ const props = defineProps<{
   show: boolean
   task: Record<string, any> | null
   workspace: Record<string, any> | null
+  resourceBlocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -25,6 +28,8 @@ const emit = defineEmits<{
 const router = useRouter()
 const { t } = useI18n()
 const localAgent = useLocalAgentStore()
+const authStore = useAuthStore()
+const canGenerate = computed(() => props.task?.execution_location !== 'LOCAL' || (!props.resourceBlocked && props.task?.creator_id === authStore.user?.id))
 const {
   electronAvailable,
   proposal,
@@ -92,7 +97,7 @@ const proposalStatusText = computed(() => {
 })
 
 const generateProposal = async () => {
-  if (!agentTask.value || !workspaceId.value || proposalGenerating.value) return
+  if (!canGenerate.value || !agentTask.value || !workspaceId.value || proposalGenerating.value) return
   generationAttempted.value = true
   generationError.value = ''
   try {
@@ -309,7 +314,7 @@ watch(
       <GitPullRequest class="w-4 h-4" />
     </template>
     <template #actions>
-      <button class="btn-secondary drawer-action-button" type="button" :disabled="proposalGenerating || proposalLoading" @click="refreshProposal">
+      <button class="btn-secondary drawer-action-button" type="button" :disabled="!canGenerate || proposalGenerating || proposalLoading" :title="canGenerate ? '' : '请等待任务创建者生成并上传变更'" @click="refreshProposal">
         <Loader2 v-if="proposalGenerating" class="w-4 h-4 spin" />
         <RefreshCw v-else class="w-4 h-4" />
         {{ proposalGenerating ? $t('chat.change_apply_syncing') : (proposal ? $t('chat.change_apply_resync') : $t('chat.change_apply_sync_now')) }}
@@ -317,6 +322,7 @@ watch(
     </template>
 
     <section class="apply-patch-drawer">
+      <OwnResourceApply v-if="proposal" :workspace-id="workspaceId" :proposal-id="proposal.id" />
       <!-- Top Bar: Task & Status Context -->
       <div class="drawer-top-bar glass-panel">
         <div class="task-context-brief">

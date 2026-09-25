@@ -108,6 +108,12 @@ def _existing_submission_sync(db, task_id, actor_id, client_id, content, metadat
     task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().one_or_none()
     if task is None:
         raise SubmissionError("Task not found", "TASK_NOT_FOUND", 404)
+    from app.domains.local_resource.service import require_operation
+    from app.domains.local_resource.client import ResourceError
+    try:
+        require_operation(db, task, actor_id)
+    except ResourceError as exc:
+        raise SubmissionError(str(exc), exc.code, exc.status_code) from exc
     fingerprint = hashlib.sha256(json.dumps([content, metadata], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     previous = db.query(TaskChatSubmission).filter_by(
         task_id=task_id, creator_id=actor_id, client_message_id=client_id,

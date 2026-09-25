@@ -104,6 +104,7 @@ def task_summary_from_counts(db: Session, task: SddTask) -> TaskSummary:
 
     return TaskSummary(
         id=task.id,
+        execution_location=task.execution_location or "SERVER",
         workspace_id=task.workspace_id,
         creator_id=task.creator_id,
         creator_display_name=creator_display_name,

@@ -64,7 +64,7 @@ def _sync_engine_session_sync(
     task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
     if task and (
         job.session_revision is None
-        or int(task.session_revision or -1) == int(job.session_revision)
+        or int(task.session_revision if task.session_revision is not None else -1) == int(job.session_revision)
     ):
         task.session_id = session_id
         return True

@@ -1,0 +1,7 @@
+{
+  "state_root": "G:/TraceForgeResource/state",
+  "allowed_roots": ["G:/workspaces", "G:/repositories"],
+  "token": "replace-with-a-private-random-token-at-least-32-characters",
+  "listen_host": "0.0.0.0",
+  "port": 4098
+}

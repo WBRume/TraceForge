@@ -54,6 +54,11 @@ describe('validateTaskDraft', () => {
 })
 
 describe('buildTaskCreatePayload', () => {
+  it('preserves the selected local resource revision for server validation', () => {
+    const execution = { location: 'LOCAL' as const, resource_id: 'mine', profile_revision: 3 }
+    expect(buildTaskCreatePayload(draft({ execution }), payloadCtx()).execution).toEqual(execution)
+    expect(buildTaskCreatePayload(draft({ execution: { location: 'SERVER' } }), payloadCtx())).not.toHaveProperty('execution')
+  })
   it('builds a development payload with duration and skills', () => {
     const payload = buildTaskCreatePayload(
       draft(),

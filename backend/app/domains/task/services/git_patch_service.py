@@ -384,6 +384,12 @@ def generate_task_repo_patch_snapshots(
     Falls back to the legacy single-repository snapshot when the task has no
     repository bindings.
     """
+    from app.domains.local_resource.service import is_local, remote_patches
+    if is_local(task):
+        if db is None:
+            raise GitPatchError("Local patch generation requires a task binding")
+        return remote_patches(db, task)
+
     from app.domains.task.models.task_repository import TaskRepositoryState
     from app.domains.task.services import task_service
 

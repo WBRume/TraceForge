@@ -14,7 +14,11 @@ class TaskRepositoryBranchInput(BaseModel):
     branch_name: str = Field(..., min_length=1, max_length=255)
 
 
+from app.domains.local_resource.schemas import TaskExecutionInput
+
+
 class TaskCreate(BaseModel):
+    execution: TaskExecutionInput = Field(default_factory=TaskExecutionInput)
     name: str = Field(..., min_length=1, max_length=300)
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None
@@ -68,7 +72,9 @@ class TaskResponse(BaseModel):
     name: str
     description: Optional[str] = None
     spec_doc_path: Optional[str] = None
-    project_path: str
+    project_path: Optional[str] = None
+    execution_location: str = "SERVER"
+    local_resource_id: Optional[str] = None
     git_repo_url: Optional[str] = None
     status: str
     retry_count: int

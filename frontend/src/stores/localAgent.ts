@@ -17,13 +17,16 @@ import type {
 } from '@/types/agent'
 import type { DesktopRepoMapping } from '@/types/sddDesktop'
 import { DEFAULT_SERVER_URL, setApiServerUrl } from '@/utils/api'
+import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
+import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
 import { getSddDesktop, isElectron } from '@/utils/runtime'
-import { normalizeRemoteUrl, remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
+import { normalizeRemoteUrl } from '@/composables/local-agent/localAgentUtils'
+import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
 
 type WorkspaceLike = {
   id?: string
   git_repo_url?: string | null
-  repositories?: { id?: string; repo_url?: string; repo_name?: string }[]
+  repositories?: { id?: string; repository_id?: string; repo_url?: string; repo_name?: string }[]
 }
 
 type TaskLike = Partial<AgentTask> & {
@@ -87,7 +90,7 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
   const repoReadyFor = (remote: string): boolean => {
     const mapping = mappingFor(remote)
     const status = statusFor(remote)
-    return Boolean(mapping?.localPath && status.startsWith('Clean'))
+    return Boolean(mapping?.localPath && (status.startsWith('Clean') || status.startsWith('Dirty')))
   }
 
   const repoReady = computed(() => (
@@ -258,20 +261,109 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
     }
   }
 
+  const repositoryIdForRemote = (remote: string): string => {
+    const ws = workspace.value
+    if (!ws) return ''
+    const repos = Array.isArray(ws.repositories) ? ws.repositories : []
+    const found = repos.find(r => remoteUrlsMatch(r.repo_url, remote))
+    return found?.repository_id || found?.id || ''
+  }
+
+  const syncToPreferences = (wsId: string, userId: string, mapping: DesktopRepoMapping) => {
+    const current = readRepoPreferences(wsId, userId)
+    const repoId = repositoryIdForRemote(mapping.remoteUrl)
+    const next = current.filter(r => (
+      (repoId ? r.repository_id !== repoId : true) &&
+      !remoteUrlsMatch(r.configured_git_url, mapping.remoteUrl)
+    ))
+    next.push({
+      repository_id: repoId || mapping.remoteUrl,
+      local_path: mapping.localPath,
+      configured_git_url: mapping.gitRemoteUrl || mapping.remoteUrl,
+    })
+    saveRepoPreferences(wsId, userId, next)
+  }
+
+  const removeFromPreferences = (wsId: string, userId: string, remote: string) => {
+    const current = readRepoPreferences(wsId, userId)
+    const repoId = repositoryIdForRemote(remote)
+    const next = current.filter(r => (
+      (repoId ? r.repository_id !== repoId : true) &&
+      !remoteUrlsMatch(r.configured_git_url, remote)
+    ))
+    saveRepoPreferences(wsId, userId, next)
+  }
+
   const loadRepoMapping = async () => {
     resetRepoState()
-    if (!desktop || !workspaceId.value) return
+    const targetWsId = workspaceId.value
+    if (!targetWsId) return
     const remotes = expectedRemoteUrls.value
     activeRemoteUrl.value = remotes[0] || ''
     if (remotes.length === 0) return
+
+    
+
+    const userId = String(authStore.user?.id || '')
+    const localPrefs = readRepoPreferences(targetWsId, userId)
+
     for (const remote of remotes) {
       try {
-        const mapping = await desktop.config.getRepoMapping({
-          workspaceId: workspaceId.value,
-          remoteUrl: remote,
-        })
+        let mapping: DesktopRepoMapping | null = null
+
+        // 1. 若有桌面客户端，先从 desktop.config 读取
+        let fromDesktop = false
+        if (desktop) {
+          mapping = await desktop.config.getRepoMapping({
+            workspaceId: targetWsId,
+            remoteUrl: remote,
+          })
+          if (mapping?.localPath) fromDesktop = true
+        }
+
+        const repoId = repositoryIdForRemote(remote)
+
+        // 2. 若未从 desktop 获取到有效路径，尝试从 localStorage preferences 回显
+        if (!mapping?.localPath) {
+          const matchedPref = localPrefs.find(p => (
+            (repoId && p.repository_id === repoId) ||
+            remoteUrlsMatch(p.configured_git_url, remote)
+          ))
+          if (matchedPref?.local_path) {
+            mapping = {
+              workspaceId: targetWsId,
+              remoteUrl: remote,
+              localPath: matchedPref.local_path,
+              gitRemoteUrl: matchedPref.configured_git_url || remote,
+              updatedAt: new Date().toISOString(),
+            }
+          }
+        }
+
+        
+
         if (mapping?.localPath) {
+          if (!mapping.gitRemoteUrl) {
+            if (desktop) {
+              const availableRemotes = await getLocalGitRemotes(mapping.localPath)
+              mapping.gitRemoteUrl = chooseGitRemote(availableRemotes, { preferredUrl: remote })?.fetchUrl || remote
+            } else {
+              mapping.gitRemoteUrl = remote
+            }
+          }
           repoMappings.value[keyFor(remote)] = mapping
+
+          // 保持双向同步：如果不是来自桌面端的有效映射，补全写入 desktop.config
+          if (desktop && !fromDesktop) {
+            void desktop.config.setRepoMapping({
+              workspaceId: targetWsId,
+              remoteUrl: remote,
+              localPath: mapping.localPath,
+              gitRemoteUrl: mapping.gitRemoteUrl,
+            }).catch(() => {})
+          }
+          syncToPreferences(targetWsId, userId, mapping)
+
           await validateRemote(remote, mapping.localPath)
         }
       } catch {
@@ -297,79 +389,125 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
   }
 
   const validateRepo = async () => {
-    if (!desktop) return
     const targetPath = repoPath.value || pendingLocalPath.value
     if (!targetPath) return
     await validateRemote(activeRemoteUrl.value, targetPath)
   }
 
   const validateRemote = async (remote: string, localPath: string) => {
-    if (!desktop || !localPath) return
+    if (!localPath) return
     const key = keyFor(remote)
-    const valid = await desktop.git.validateGitRepo(localPath)
-    if (!valid.ok) {
-      repoStatusMap.value[key] = valid.stderr || '所选目录不是 Git 仓库'
-      return
+    if (desktop) {
+      const valid = await desktop.git.validateGitRepo(localPath)
+      if (!valid.ok) {
+        repoStatusMap.value[key] = valid.stderr || '所选目录不是 Git 仓库'
+        return
+      }
+      const remotes = desktop.git.getFetchRemotes
+        ? await desktop.git.getFetchRemotes(localPath)
+        : [{ name: 'origin', fetchUrl: (await desktop.git.getRemoteUrl(localPath)).remoteUrl }]
+      // Mapping is a user-selected patch destination, not remote identity validation.
+      const remoteInfo = { remoteUrl: remotes.map(item => item.fetchUrl).filter(Boolean).join(', ') || '无 fetch remote' }
+      const status = await desktop.git.getStatus(localPath)
+      repoStatusMap.value[key] = status.isClean
+        ? 'Clean · ' + remoteInfo.remoteUrl
+        : 'Dirty · ' + remoteInfo.remoteUrl
+    } else {
+      const normalizedPath = localPath.trim()
+      const isPathLike = /^[a-zA-Z]:[\\/]/.test(normalizedPath) || normalizedPath.startsWith('/')
+      if (!isPathLike) {
+        repoStatusMap.value[key] = '请输入有效的本机绝对路径（如 G:/repo 或 /home/repo）'
+        return
+      }
+      repoStatusMap.value[key] = 'Clean · 本机路径已就绪'
     }
-    const remoteInfo = await desktop.git.getRemoteUrl(localPath)
-    const status = await desktop.git.getStatus(localPath)
-    repoStatusMap.value[key] = status.isClean
-      ? 'Clean · ' + normalizeRemoteUrl(remoteInfo.remoteUrl)
-      : 'Dirty · ' + status.entries.length + ' changed files'
   }
 
-  const saveRepoMapping = async (lastVerificationCommand?: string | null) => {
-    if (!desktop || !workspaceId.value) return
+  const saveRepoMapping = async (lastVerificationCommand?: string | null, gitRemoteUrl?: string) => {
+    if (!workspaceId.value) return
     const remote = activeRemoteUrl.value
     const localPath = pendingLocalPath.value || repoPath.value
     if (!remote || !localPath) return
-    await saveMappingFor(remote, localPath, lastVerificationCommand)
+    await saveMappingFor(remote, localPath, lastVerificationCommand, gitRemoteUrl)
   }
 
   const saveMappingFor = async (
     remote: string,
     localPath: string,
     lastVerificationCommand?: string | null,
+    gitRemoteUrl?: string,
   ): Promise<boolean> => {
-    if (!desktop || !workspaceId.value) return false
+    const targetWsId = workspaceId.value
+    if (!targetWsId) return false
     await validateRemote(remote, localPath)
     const status = statusFor(remote)
-    const detectedRemote = status.startsWith('Clean · ') ? status.slice('Clean · '.length) : ''
-    if (detectedRemote && !remoteUrlsMatch(detectedRemote, remote)) {
-      ElMessage.error('本地仓库 remote.origin.url 与仓库地址不一致')
+    if (!status.startsWith('Clean') && !status.startsWith('Dirty')) {
+      ElMessage.error(status || '本地仓库检测失败')
       return false
     }
-    if (!status.startsWith('Clean')) {
-      ElMessage.error('本地仓库存在未提交修改，请清理后再绑定')
-      return false
+
+    let finalGitRemoteUrl = gitRemoteUrl?.trim()
+    if (!finalGitRemoteUrl) {
+      if (desktop) {
+        const defaultGitRemote = chooseGitRemote(await getLocalGitRemotes(localPath), {
+          currentUrl: mappingFor(remote)?.gitRemoteUrl,
+          preferredUrl: remote,
+        })
+        finalGitRemoteUrl = defaultGitRemote?.fetchUrl || remote
+      } else {
+        finalGitRemoteUrl = mappingFor(remote)?.gitRemoteUrl || remote
+      }
     }
-    const mapping = await desktop.config.setRepoMapping({
-      workspaceId: workspaceId.value,
-      remoteUrl: remote,
-      localPath,
-      lastVerificationCommand: lastVerificationCommand ?? null,
-    })
+
+    let mapping: DesktopRepoMapping
+    if (desktop) {
+      mapping = await desktop.config.setRepoMapping({
+        workspaceId: targetWsId,
+        remoteUrl: remote,
+        localPath,
+        gitRemoteUrl: finalGitRemoteUrl,
+        lastVerificationCommand: lastVerificationCommand ?? null,
+      })
+    } else {
+      mapping = {
+        workspaceId: targetWsId,
+        remoteUrl: remote,
+        localPath,
+        gitRemoteUrl: finalGitRemoteUrl,
+        lastVerificationCommand: lastVerificationCommand ?? null,
+        updatedAt: new Date().toISOString(),
+      }
+    }
+
     repoMappings.value[keyFor(remote)] = mapping
+    const userId = String(authStore.user?.id || '')
+    syncToPreferences(targetWsId, userId, mapping)
+
     ElMessage.success('本地仓库已绑定')
     return true
   }
 
   const removeRepoMapping = async () => {
-    if (!desktop || !workspaceId.value || !activeRemoteUrl.value) return
+    if (!workspaceId.value || !activeRemoteUrl.value) return
     await removeMappingFor(activeRemoteUrl.value)
   }
 
   const removeMappingFor = async (remote: string): Promise<void> => {
-    if (!desktop || !workspaceId.value) return
-    await desktop.config.removeRepoMapping({
-      workspaceId: workspaceId.value,
-      remoteUrl: remote,
-    })
+    const targetWsId = workspaceId.value
+    if (!targetWsId) return
+    if (desktop) {
+      await desktop.config.removeRepoMapping({
+        workspaceId: targetWsId,
+        remoteUrl: remote,
+      })
+    }
+    const userId = String(authStore.user?.id || '')
+    removeFromPreferences(targetWsId, userId, remote)
+
     delete repoMappings.value[keyFor(remote)]
     delete repoStatusMap.value[keyFor(remote)]
     ElMessage.success('本地仓库关联已取消')
   }
-
   return {
     authStore,
     desktop: computed(() => desktop),

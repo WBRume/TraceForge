@@ -204,7 +204,7 @@ watch(
 
       <template v-if="vm.chatWorkbenchMode === 'platform'">
       <DiagnosisSopLayout :enabled="sopEnabled" :guide="guideSession.state" :run="playbook.run as any"
-        :busy="guideSession.busy || playbook.busy || vm.isChatLocked" :running="vm.engineRunning" :error="guideSession.error || playbook.error"
+        :busy="guideSession.busy || playbook.busy || vm.isChatLocked" :running="!vm.suggestionOnly && vm.engineRunning" :error="guideSession.error || playbook.error"
         :tail="playbook.tail" :can-continue="playbook.canContinue" :agent-text="playbook.agentText"
         @guide-command="guideSession.command" @command="playbook.command" @investigate="investigate"
         @retry="() => { guideSession.reload(); playbook.reload() }">
@@ -236,7 +236,7 @@ watch(
       />
 
       <!-- 分享邀请输入：发起人收到的待采纳输入（入口 + 面板） -->
-      <template v-if="vm.currentTask && vm.canShareTaskSession && shareSuggestions.pendingCount.value > 0">
+      <template v-if="vm.currentTask && shareSuggestions.pendingCount.value > 0">
         <button
           v-if="!suggestionPanelOpen"
           type="button"
@@ -265,18 +265,18 @@ watch(
       <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
            收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
       <ChatExecutionInput
-        v-if="!vm.preInputIsCollecting"
+        v-if="vm.suggestionOnly || !vm.preInputIsCollecting"
         ref="chatInputRef"
         v-model="vm.chatInput"
         v-model:pre-input-mode="preInputMode"
-        :disabled="vm.isChatLocked || vm.sendingChat || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))"
-        :running="vm.engineRunning"
+        :disabled="vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
+        :running="!vm.suggestionOnly && vm.engineRunning"
         :can-interrupt="vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"
         :placeholder="vm.chatInputPlaceholder"
-        :send-title="$t('chat.send_message')"
+        :send-title="vm.suggestionOnly ? '提交建议' : $t('chat.send_message')"
         :interrupt-title="$t('chat.temporary_interrupt_desc')"
-        :can-start-pre-input="!vm.activePreInput"
+        :can-start-pre-input="!vm.suggestionOnly && !vm.activePreInput"
         :search-members="vm.searchPreInputMembers"
         @submit="vm.sendChat"
         @interrupt="vm.interruptCurrentRun"
@@ -312,6 +312,7 @@ watch(
 
     <ApplyPatchDrawer
       :show="showApplyPatchDrawer"
+      :resource-blocked="vm.localResourceBlocked"
       :task="vm.currentTask"
       :workspace="vm.currentWorkspace"
       @close="showApplyPatchDrawer = false"
@@ -437,4 +438,193 @@ watch(
   </div>
 </template>
 
-<style scoped src="@/styles/chat-view/chat-view-layout.css"></style>
+<style scoped>
+/* ChatView 布局骨架：三栏结构、会话忙状态与撤销操作遮罩。
+   区块内部样式随 components/chat/sections/* 组件走；图标/按钮工具类见 assets/main.css。 */
+
+/* ─── Layout ─── */
+.chat-layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+/* ─── Chat Main ─── */
+.chat-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  container-name: chat-main;
+  container-type: inline-size;
+}
+.chat-main.empty-state {
+  justify-content: center;
+  align-items: center;
+}
+.chat-main.is-session-busy::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  pointer-events: auto;
+  background: rgba(255, 255, 255, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  backdrop-filter: blur(6px) saturate(0.88);
+  -webkit-backdrop-filter: blur(6px) saturate(0.88);
+  animation: session-operation-glass-in 0.2s ease-out;
+}
+.empty-text {
+  margin-top: var(--space-4);
+  color: var(--color-text-muted);
+}
+
+/* 会话忙（撤销进行中）时头部与操作遮罩的层叠约束 */
+.chat-main.is-session-busy .chat-header {
+  position: relative;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.session-operation-overlay {
+  position: absolute;
+  inset: 60px 0 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  pointer-events: none;
+  isolation: isolate;
+  animation: session-operation-in 0.18s ease-out;
+}
+
+.session-operation-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 11px;
+  min-width: min(220px, 88%);
+  padding: 16px 24px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.session-operation-progress-ring {
+  display: block;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  color: var(--color-primary-600, #0284c7);
+  overflow: visible;
+  transform-origin: center;
+  animation: session-operation-rotator 1.4s linear infinite;
+}
+
+.session-operation-progress-track,
+.session-operation-progress-path {
+  fill: none;
+  stroke-width: 3;
+  transform-origin: center;
+}
+
+.session-operation-progress-track {
+  stroke: var(--color-primary-200, #bae6fd);
+  opacity: 0.82;
+}
+
+.session-operation-progress-path {
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-dasharray: 2 98;
+  stroke-dashoffset: 0;
+  animation: session-operation-dash 1.4s ease-in-out infinite;
+}
+
+.session-operation-copy {
+  display: block;
+  margin: 0;
+  color: var(--color-primary-900, #0c4a6e);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.4;
+  pointer-events: none;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(255, 255, 255, 0.72);
+}
+
+@keyframes session-operation-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes session-operation-glass-in {
+  from { opacity: 0; backdrop-filter: blur(0) saturate(1); }
+  to { opacity: 1; backdrop-filter: blur(6px) saturate(0.88); }
+}
+
+@keyframes session-operation-rotator {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes session-operation-dash {
+  0% {
+    stroke-dasharray: 2 98;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 72 98;
+    stroke-dashoffset: -18;
+  }
+  100% {
+    stroke-dasharray: 2 98;
+    stroke-dashoffset: -100;
+  }
+}
+
+.cli-shell-wrapper {
+  flex: 1;
+  min-height: 0;
+  padding: 10px var(--space-6) var(--space-6);
+}
+
+/* ConfirmActionModal 的 content slot 渲染在本组件作用域内，动作行样式由本组件提供 */
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+/* ── 分享邀请输入：待采纳入口（输入区上方） ── */
+/* 左右边距与工具栏 / 输入卡 / 协作预输入面板对齐（var(--space-6) = 24px） */
+.suggestion-entry-btn {
+  align-self: flex-start;
+  margin: 0 var(--space-6, 24px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #b45309;
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+.suggestion-entry-btn:hover {
+  background: #fef3c7;
+}
+.suggestion-entry-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f59e0b;
+  flex-shrink: 0;
+}
+</style>
+

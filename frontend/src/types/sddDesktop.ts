@@ -35,8 +35,10 @@ export type DesktopConfig = {
 
 export type DesktopRepoMapping = {
   workspaceId: string
+  // remoteUrl identifies the workspace repository; gitRemoteUrl is the selected URL from the local repo's remotes.
   remoteUrl: string
   localPath: string
+  gitRemoteUrl?: string
   lastVerificationCommand?: string | null
   updatedAt: string
 }
@@ -100,6 +102,7 @@ export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => v
 import type { OAuthClientType, OAuthIntent } from './oauth'
 
 export type SddDesktopApi = {
+  resources?: { configureRoots?: (payload: { backend: string; resourceServiceUrl: string; workspaceRoot: string; repoRoots: string[] }) => Promise<{ managed: boolean }>; start: (payload: { backend: string }) => Promise<{ service_url: string; resource_service_url: string; host_token: string; agent_token: string }> }
   platform: string
   download: {
     save: (payload: DesktopSaveRequest) => Promise<DesktopSaveResult>
@@ -107,6 +110,8 @@ export type SddDesktopApi = {
   git: {
     selectDirectory: () => Promise<DesktopDirectorySelection>
     validateGitRepo: (repoPath: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>
+    getFetchRemotes?: (repoPath: string) => Promise<{ name: string; fetchUrl: string }[]>
+    preparePatchWorktree?: (payload: { repoPath: string; remoteUrl: string; baseSha: string; baseBranch: string; branch: string }) => Promise<{ path: string }>
     getRemoteUrl: (repoPath: string) => Promise<{ remoteUrl: string }>
     getStatus: (repoPath: string) => Promise<DesktopGitStatus>
     fetchOrigin: (repoPath: string) => Promise<DesktopGitCommandResult>

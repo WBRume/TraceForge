@@ -158,9 +158,9 @@ def _build_asset_thread_run_sync(
         if task
         else "."
     )
-    if not os.path.isdir(project_path):
+    if getattr(task, "execution_location", "SERVER") != "LOCAL" and not os.path.isdir(project_path):
         project_path = (task.project_path if task and task.project_path else ".").strip() or "."
-    if not os.path.isdir(project_path):
+    if getattr(task, "execution_location", "SERVER") != "LOCAL" and not os.path.isdir(project_path):
         project_path = "."
     thread_cwd = project_path
 

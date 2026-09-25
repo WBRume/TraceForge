@@ -203,8 +203,6 @@ def test_live_provider_revert_forgets_old_context_and_accepts_re_edit(provider_n
                 await adapter.interrupt(session_id=first_session_id)
                 await adapter.wait_until_idle(first_session_id)
                 assert await adapter.revert_message(first_session_id, target_user_id)
-                for message_id in reversed(list(dict.fromkeys(provider_message_ids))):
-                    assert await adapter.delete_message(first_session_id, message_id)
                 remaining = await adapter.list_messages(first_session_id)
                 _assert_secret_absent(
                     old_secret in json.dumps(remaining, ensure_ascii=False),
@@ -258,11 +256,6 @@ def test_live_provider_revert_forgets_old_context_and_accepts_re_edit(provider_n
         finally:
             if provider_name == "opencode":
                 if provider_session_ids:
-                    for message_id in reversed(list(dict.fromkeys(provider_message_ids))):
-                        try:
-                            await adapter.delete_message(provider_session_ids[0], message_id)
-                        except Exception:
-                            pass
                     try:
                         await adapter.delete_session(provider_session_ids[0])
                     except Exception:

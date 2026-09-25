@@ -337,6 +337,13 @@ def _create_pre_input_sync(
     if not task:
         raise PreInputError("Task not found", status_code=404)
 
+    from app.domains.local_resource.service import require_operation
+    from app.domains.local_resource.client import ResourceError
+    try:
+        require_operation(db, task, creator_id)
+    except ResourceError as exc:
+        raise PreInputError(str(exc), status_code=exc.status_code) from exc
+
     task_status = task.status if isinstance(task.status, TaskStatus) else TaskStatus(str(task.status))
     if task_status in _PRE_INPUT_TERMINAL_TASK_STATUSES or task_status not in _PRE_INPUT_ALLOWED_TASK_STATUSES:
         raise PreInputError(
@@ -377,7 +384,7 @@ def _create_pre_input_sync(
         edit_permission=_normalize_edit_permission(edit_permission),
         status=PreInputStatus.COLLECTING,
         wait_seconds=wait,
-        deadline_at=now + timedelta(seconds=wait),
+        deadline_at=None if getattr(task, "execution_location", "SERVER") == "LOCAL" else now + timedelta(seconds=wait),
     )
     # 发起人即首批参与者
     db.add(pre_input)
@@ -496,6 +503,9 @@ def _record_participation(db: Session, pre_input: SddTaskPreInput, user_id: str)
 
 def _maybe_auto_submit(db: Session, pre_input: SddTaskPreInput) -> Optional[dict]:
     """所有 @成员 均已参与（编辑过或标记完成）则立即提交。"""
+    from app.domains.local_resource.service import is_local
+    if is_local(db.get(SddTask, pre_input.task_id)):
+        return False
     mentioned_ids = [str(m) for m in (pre_input.mentioned_user_ids or [])]
     participant_ids = [c.user_id for c in (pre_input.contributions or [])]
     if mentioned_ids and all(uid in participant_ids for uid in mentioned_ids):
@@ -765,6 +775,14 @@ def _claim_submit_sync(
 ) -> dict:
     """CAS 抢占段（线程内）：状态检查 + COLLECTING→SUBMITTED + 合并内容组装。"""
     pre_input = _get_pre_input_sync(db, pre_input_id)
+    from app.domains.local_resource.service import require_operation
+    from app.domains.local_resource.client import ResourceError
+    try:
+        require_operation(db, db.get(SddTask, pre_input.task_id), actor_user_id)
+    except ResourceError as exc:
+        raise PreInputError(str(exc), status_code=exc.status_code) from exc
+    if getattr(db.get(SddTask, pre_input.task_id), "execution_location", "SERVER") == "LOCAL" and reason != "manual":
+        raise PreInputError("本地任务已关闭自动提交", status_code=403)
     current_status = (
         pre_input.status
         if isinstance(pre_input.status, PreInputStatus)
