@@ -253,11 +253,105 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(files, "trace file should wait for real session id")
         self.assertFalse(any("_new.log" in name for name in files))
-        content = open(
+        with open(
             os.path.join(settings.AI_SESSION_LOG_DIR, files[0]),
             encoding="utf-8",
-        ).read()
+        ) as f:
+            content = f.read()
         self.assertIn("pre-session event", content)
+
+    async def test_trace_and_logger_filter_out_streaming_text_and_thinking_events(self):
+        sink_events: list[AgentEvent] = []
+
+        async def sink(event: AgentEvent) -> None:
+            sink_events.append(event)
+
+        class _StreamingBackend:
+            name = "opencode"
+
+            async def run(self, request: AgentRunRequest, on_event):
+                await on_event(AgentEvent(
+                    type="session_started",
+                    payload={"provider_session_id": "ses-filter-test", "model": "test-model"},
+                    provider="opencode",
+                ))
+                # 模拟高频思考与流式增量事件
+                await on_event(AgentEvent(
+                    type="thinking",
+                    payload={"text": "正在分析问题..."},
+                    provider="opencode",
+                ))
+                await on_event(AgentEvent(
+                    type="text_delta",
+                    payload={"delta": "你好", "text": "你好"},
+                    provider="opencode",
+                ))
+                await on_event(AgentEvent(
+                    type="text_delta",
+                    payload={"delta": "，世界", "text": "，世界"},
+                    provider="opencode",
+                ))
+                await on_event(AgentEvent(
+                    type="thinking",
+                    payload={"text": "组织最终回答"},
+                    provider="opencode",
+                ))
+                await on_event(AgentEvent(
+                    type="text",
+                    payload={"text": "你好，世界"},
+                    provider="opencode",
+                ))
+                await on_event(AgentEvent(
+                    type="result",
+                    payload={"success": True, "result": "你好，世界", "finish_reason": "completed"},
+                    provider="opencode",
+                ))
+                return AgentRunResult(
+                    run_id=request.run_id,
+                    session_id="ses-filter-test",
+                    success=True,
+                    result_text="你好，世界",
+                    finish_reason="completed",
+                )
+
+        request = AgentRunRequest(run_id="run-streaming-filter", prompt="你好")
+        with patch("app.agents.run_logging.logger") as mock_logger:
+            mock_logger.bind.return_value = mock_logger
+            result = await run_agent_backend_with_logging(_StreamingBackend(), request, sink)
+
+        self.assertEqual(result.result_text, "你好，世界")
+        # 验证前端/外部 sink 仍能正常接收流式打字与思考事件
+        self.assertEqual([e.type for e in sink_events], [
+            "session_started", "thinking", "text_delta", "text_delta", "thinking", "text", "result"
+        ])
+
+        # 验证 logger debug 中不应记录 agent text / agent thinking
+        debug_messages = [str(call.args[0]) for call in mock_logger.debug.call_args_list if call.args]
+        self.assertNotIn("agent text", debug_messages)
+        self.assertNotIn("agent thinking", debug_messages)
+
+        # 验证 trace 文件中不包含 [thinking], [text_delta], [text] 等无意义心跳/碎片
+        files = [
+            name
+            for name in os.listdir(settings.AI_SESSION_LOG_DIR)
+            if name.endswith(".log") and "ses-filter-test" in name
+        ]
+        self.assertTrue(files, "trace file should be created")
+        with open(os.path.join(settings.AI_SESSION_LOG_DIR, files[0]), encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn("=== AGENT SESSION TRACE ===", content)
+        self.assertIn("[session_started]", content)
+        self.assertIn("[result]", content)
+        self.assertIn("----- RESULT TEXT BEGIN -----", content)
+        self.assertIn("你好，世界", content)
+        self.assertIn("----- RESULT TEXT END -----", content)
+
+        # 重点：必须过滤掉 [thinking], [text_delta], [text] 及 text_length=
+        self.assertNotIn("[thinking]", content)
+        self.assertNotIn("[text_delta]", content)
+        self.assertNotIn("[text]", content)
+        self.assertNotIn("text_length=", content)
 
 
 if __name__ == "__main__":

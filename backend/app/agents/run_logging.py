@@ -30,6 +30,7 @@ _PROMPT_LIMIT = 300
 _RESULT_LIMIT = 500
 _ERROR_LIMIT = 1000
 _TRACE_SUPPRESSED_LOG_LEVELS = {"trace", "debug"}
+_TRACE_SUPPRESSED_EVENT_TYPES = {"text", "text_delta", "thinking"}
 
 
 def _safe_text(value: Any, limit: int = _TEXT_LIMIT) -> str:
@@ -41,7 +42,9 @@ def _trace_includes_debug() -> bool:
 
 
 def _visible_in_trace(event: AgentEvent, payload: dict[str, Any]) -> bool:
-    """provider debug/trace 心跳（如 thinking_tokens 进度）不写入会话 trace。"""
+    """provider debug/trace 心跳与无意义的流式碎片（thinking/text_delta/text）不写入会话 trace。"""
+    if event.type in _TRACE_SUPPRESSED_EVENT_TYPES:
+        return False
     if event.type != "log":
         return True
     if _trace_includes_debug():
@@ -327,14 +330,9 @@ async def run_agent_backend_with_logging(
                 sid = str(payload.get("provider_session_id") or request.session_id or "")
                 extra["provider_session_id"] = sid
                 logger.bind(**extra).info("agent session started")
-            elif event.type in ("text", "text_delta"):
-                text = _safe_text(payload.get("text"))
-                if text:
-                    logger.bind(**extra, text_length=len(text)).debug("agent text")
-            elif event.type == "thinking":
-                text = _safe_text(payload.get("text"), 500)
-                if text:
-                    logger.bind(**extra, text_length=len(text)).debug("agent thinking")
+            elif event.type in ("text", "text_delta", "thinking"):
+                # 流式文本/思考碎片与长度心跳不单独记录 debug 日志，避免高频刷屏无意义的 text_length 计数
+                pass
             elif event.type == "tool_use":
                 logger.bind(
                     **extra,
