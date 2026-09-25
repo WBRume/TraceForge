@@ -87,6 +87,7 @@ async def upload_task_spec(
                         db,
                         WorkspacePermission.UPLOAD_TASK_SPEC,
                         "No permission to upload task specification",
+                        task_id=task_id,
                     )
                     task = get_task_or_404(db, task_id, ws_id)
                     ensure_task_not_baselined(task)
@@ -174,6 +175,7 @@ async def run_task_spec_bootstrap(
                     db,
                     WorkspacePermission.UPLOAD_TASK_SPEC,
                     "No permission to run task specification baseline",
+                    task_id=task_id,
                 )
                 get_task_or_404(db, task_id, ws_id)
                 task_cli_state_service.request_bootstrap_run(
@@ -261,6 +263,7 @@ def save_task_superpowers_doc_content(
         db,
         WorkspacePermission.UPLOAD_TASK_SPEC,
         "No permission to edit plan documents",
+        task_id=task_id,
     )
 
     task = get_task_or_404(db, task_id, ws_id)

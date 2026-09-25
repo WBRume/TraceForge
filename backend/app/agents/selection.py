@@ -123,7 +123,7 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
     return resolved
 
 
-def create_agent_backend_by_name(backend_name: Optional[str] = None):
+def create_agent_backend_by_name(backend_name: Optional[str] = None, *, task_id: str | None = None):
     """按名称创建统一 AgentBackend 实例（engine 路径使用）。
 
     claude-code 返回双接口 ClaudeCodeAdapter；dsh 固定走 Web Host server 模式
@@ -131,6 +131,11 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None):
     """
     from app.agents.registry import get_agent_backend
 
+    if task_id:
+        from app.domains.local_resource.service import provider_for_task
+        local = provider_for_task(task_id)
+        if local is not None:
+            return local
     name = normalize_backend_name(backend_name) or default_backend_name()
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
@@ -144,7 +149,7 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None):
     return get_agent_backend(name)
 
 
-def create_legacy_bridge(backend_name: Optional[str] = None):
+def create_legacy_bridge(backend_name: Optional[str] = None, *, task_id: str | None = None):
     """创建满足旧 CliBridgeBase 鸠尾接口的 bridge。
 
     - claude-code/mock：沿用 create_cli_bridge()（含 SDD_CLI_MODE mock 兼容）
@@ -153,7 +158,7 @@ def create_legacy_bridge(backend_name: Optional[str] = None):
     name = normalize_backend_name(backend_name) or default_backend_name()
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
-    backend = create_agent_backend_by_name(name)
+    backend = create_agent_backend_by_name(name, task_id=task_id)
     return LegacyBridgeShim(backend, backend_name=name)
 
 
@@ -410,12 +415,20 @@ async def fork_session_for_backend(
     *,
     source_dir: str,
     target_dir: str,
+    task_id: str | None = None,
 ) -> str:
     """把 source_dir 下的会话 fork 成 target_dir 下的独立新会话，返回新会话 id。"""
     from app.agents.errors import SessionForkError
 
     name = normalize_backend_name(backend_name) or default_backend_name()
-    bridge = create_legacy_bridge(name)
+    if task_id:
+        from app.core.offload import run_db, run_file_job
+        from app.domains.local_resource.service import task_profile, task_operation
+        config = await run_db(task_profile, task_id)
+        if config and name == "dsh":
+            result = await run_file_job(task_operation, task_id, "provider_fork", {"session_id": session_id})
+            return result["session_id"]
+    bridge = create_legacy_bridge(name, task_id=task_id)
     fork = getattr(bridge, "fork_session", None)
     if fork is None:
         raise SessionForkError(f"agent backend {name!r} does not support session fork")
@@ -434,11 +447,28 @@ async def probe_session_fork(
     session_id: str,
     *,
     source_dir: str,
+    task_id: str | None = None,
 ) -> bool:
     """baseline 完成后的 fork 演练：尽早暴露不可 fork 的情况，产物随即清理。"""
     from app.agents.errors import SessionForkError
 
     name = normalize_backend_name(backend_name) or default_backend_name()
+    if task_id:
+        from app.core.offload import run_db, run_file_job
+        from app.domains.local_resource.service import task_profile, task_operation
+        config = await run_db(task_profile, task_id)
+        if config:
+            if name == "dsh":
+                await run_file_job(task_operation, task_id, "provider_fork", {"session_id": session_id, "drill": True})
+            else:
+                bridge = create_legacy_bridge(name, task_id=task_id)
+                try:
+                    new_id = await bridge.fork_session(session_id, source_dir=source_dir, target_dir=source_dir)
+                    if not await bridge.backend.delete_session(new_id):
+                        raise SessionForkError("Local provider fork cleanup failed")
+                finally:
+                    await bridge.close()
+            return True
     if not backend_supports_fork(name):
         return False
     try:

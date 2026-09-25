@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
+import LocalServiceForm from '@/components/local-resource/LocalServiceForm.vue'
 import SettingsAgentSection from '@/components/settings/SettingsAgentSection.vue'
 import SettingsAppearanceSection from '@/components/settings/SettingsAppearanceSection.vue'
 import SettingsConnectedAccountsSection from '@/components/settings/SettingsConnectedAccountsSection.vue'
@@ -34,6 +35,7 @@ const vm = proxyRefs(rawVm)
             <SettingsMembersSection v-else-if="vm.activeSection === 'members'" key="members" :vm="rawVm" />
             <SettingsConnectedAccountsSection v-else-if="vm.activeSection === 'connected_accounts'" key="connected_accounts" />
             <SettingsLocalDevSection v-else-if="vm.activeSection === 'local_dev'" key="local_dev" />
+            <LocalServiceForm v-else-if="vm.activeSection === 'local_service'" key="local_service" :workspace-id="vm.workspaceId" />
             <SettingsAgentSection v-else-if="vm.activeSection === 'agent'" key="agent" />
           </transition>
         </main>

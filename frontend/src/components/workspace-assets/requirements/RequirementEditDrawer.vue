@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementEditableStatus, RequirementMutationPayload, RequirementSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -23,6 +24,7 @@ const statusOptions: RequirementEditableStatus[] = [
   'REJECTED',
   'ARCHIVED',
 ]
+const statusSelectOptions = statusOptions.map((status) => ({ label: status, value: status }))
 
 const form = reactive({
   title: '',
@@ -101,9 +103,7 @@ function submit() {
           <div class="field-grid">
             <label>
               <span>{{ t('workspace_assets.requirements.fields.status') }}</span>
-              <select v-model="form.status">
-                <option v-for="option in statusOptions" :key="option" :value="option">{{ option }}</option>
-              </select>
+              <BaseSelect v-model="form.status" :options="statusSelectOptions" size="sm" />
             </label>
             <label>
               <span>{{ t('workspace_assets.requirements.fields.priority') }}</span>

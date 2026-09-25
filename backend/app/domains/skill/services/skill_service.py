@@ -1617,6 +1617,25 @@ def materialize_task_skills(
     if not task:
         raise ValueError("Task not found")
 
+    from app.domains.local_resource.service import is_local, execute
+    if is_local(task):
+        import tempfile
+        import base64
+        import hashlib
+        from pathlib import Path
+        with tempfile.TemporaryDirectory(prefix="tf-skills-") as staging:
+            destination = Path(staging) / "skills"
+            _replace_skills_atomically(get_task_skills(db, task_id), str(destination), preserve_deleted_runtime_skills=False)
+            rel_root = resolve_task_skills_rel_root(db, task).replace("\\", "/")
+            files = []
+            for path in destination.rglob("*"):
+                if path.is_file():
+                    content = path.read_bytes()
+                    files.append({"path": rel_root + "/" + path.relative_to(destination).as_posix(),
+                                  "content": base64.b64encode(content).decode(), "sha256": hashlib.sha256(content).hexdigest()})
+            execute(db, task, "skills", {"action": "replace", "files": files, "preserve": preserve_deleted_runtime_skills})
+        return [rel_root]
+
     skills = get_task_skills(db, task_id)
     copied_targets = [resolve_task_skills_root(db, task)]
 

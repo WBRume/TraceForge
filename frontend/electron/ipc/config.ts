@@ -6,6 +6,7 @@ type RepoMapping = {
   workspaceId: string
   remoteUrl: string
   localPath: string
+  gitRemoteUrl?: string
   lastVerificationCommand?: string | null
   updatedAt: string
 }
@@ -104,6 +105,7 @@ export const registerConfigIpc = () => {
       workspaceId: String(payload.workspaceId || '').trim(),
       remoteUrl: String(payload.remoteUrl || '').trim(),
       localPath: String(payload.localPath || '').trim(),
+      gitRemoteUrl: String(payload.gitRemoteUrl || '').trim() || undefined,
       lastVerificationCommand: payload.lastVerificationCommand
         ? String(payload.lastVerificationCommand)
         : null,

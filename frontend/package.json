@@ -15,7 +15,8 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:watch": "vitest --watch",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "build:resource-host": "npm --prefix ../resource-host run build"
   },
   "dependencies": {
     "@guolao/vue-monaco-editor": "^1.6.0",

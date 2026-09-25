@@ -78,12 +78,12 @@ async def test_advisory_output_records_proposals_not_receipts_and_rolls_back_inv
 async def test_opencode_advisory_does_not_mutate_host_mcp_or_tools():
     from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
     backend = OpenCodeAdapter()
-    client = SimpleNamespace(post=AsyncMock(return_value=SimpleNamespace(status_code=204)))
+    client = SimpleNamespace(post=AsyncMock(return_value=SimpleNamespace(status_code=200, json=lambda: {"data": {"id": "msg_test"}})))
     backend._ensure_client = AsyncMock(return_value=client)
     await backend._send_prompt("session", AgentRunRequest(provider_options={"execution_policy": {"enforcement": "ADVISORY_GUARD"}}))
     assert client.post.await_count == 1
     args, kwargs = client.post.call_args
-    assert args[0].endswith("/session/session/prompt_async")
+    assert args[0].endswith("/api/session/session/prompt")
     assert "tools" not in kwargs["json"]
 
 

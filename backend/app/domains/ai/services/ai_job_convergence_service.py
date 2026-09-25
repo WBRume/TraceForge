@@ -907,7 +907,7 @@ def converge_job_attempt_in_txn(
         task_revision_row = (
             db.query(SddTask.session_revision).filter(SddTask.id == job.task_id).first()
         )
-        if not task_revision_row or int(task_revision_row[0] or -1) != int(job.session_revision):
+        if not task_revision_row or int(task_revision_row[0] if task_revision_row[0] is not None else -1) != int(job.session_revision):
             return _noop()
 
     # 5. 按 intent 校验来源状态。

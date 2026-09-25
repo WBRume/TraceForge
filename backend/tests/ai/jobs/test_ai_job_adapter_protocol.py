@@ -171,9 +171,14 @@ def test_opencode_abort_success_returns_acknowledged():
 
     class _Resp:
         status_code = 200
+        def json(self): return {"interrupted": True}
 
     class _Client:
-        async def post(self, url):
+        is_closed = False
+        async def get(self, url):
+            from types import SimpleNamespace
+            return SimpleNamespace(status_code=200, json=lambda: {"data": {}})
+        async def post(self, url, **kwargs):
             return _Resp()
 
     adapter = OpenCodeAdapter(server_url="http://opencode.test")
@@ -194,7 +199,11 @@ def test_opencode_abort_rejected_status_returns_structured_nack():
         status_code = 500
 
     class _Client:
-        async def post(self, url):
+        is_closed = False
+        async def get(self, url):
+            from types import SimpleNamespace
+            return SimpleNamespace(status_code=200, json=lambda: {"data": {}})
+        async def post(self, url, **kwargs):
             return _Resp()
 
     adapter = OpenCodeAdapter(server_url="http://opencode.test")
@@ -212,7 +221,11 @@ def test_opencode_abort_network_error_is_visible_not_swallowed():
     from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
     class _Client:
-        async def post(self, url):
+        is_closed = False
+        async def get(self, url):
+            from types import SimpleNamespace
+            return SimpleNamespace(status_code=200, json=lambda: {"data": {}})
+        async def post(self, url, **kwargs):
             raise OSError("connection reset")
 
     adapter = OpenCodeAdapter(server_url="http://opencode.test")

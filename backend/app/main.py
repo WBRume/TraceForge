@@ -673,6 +673,14 @@ def readiness_check():
         },
     )
 
+from app.domains.local_resource.router import router as local_resource_router
+from app.domains.local_resource.client import ResourceError
+app.include_router(local_resource_router, prefix="/api")
+
+@app.exception_handler(ResourceError)
+async def local_resource_error_handler(request, exc):
+    return JSONResponse(status_code=exc.status_code, content={"detail": {"code": exc.code, "message": str(exc)}})
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

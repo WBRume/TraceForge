@@ -133,6 +133,7 @@ def write_task_runtime_skill_file_content(
         db,
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to edit runtime task skills",
+        task_id=task_id,
     )
     try:
         task = get_task_or_404(db, task_id, ws_id)

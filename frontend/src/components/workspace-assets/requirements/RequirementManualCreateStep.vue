@@ -2,6 +2,7 @@
 import { computed, reactive, watch } from 'vue'
 import { Sparkles } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementEditableStatus } from '@/types/workspaceAssets'
 import type { RequirementManualPayload, RequirementPreviewPayload } from './requirementCreateTypes'
 
@@ -26,6 +27,7 @@ const statusOptions: RequirementEditableStatus[] = [
   'REJECTED',
   'ARCHIVED',
 ]
+const statusSelectOptions = statusOptions.map((status) => ({ label: status, value: status }))
 
 const form = reactive({
   title: '',
@@ -109,9 +111,7 @@ function createPreview() {
     <div class="field-grid">
       <label>
         <span>{{ t('workspace_assets.requirements.fields.status') }}</span>
-        <select v-model="form.status">
-          <option v-for="option in statusOptions" :key="option" :value="option">{{ option }}</option>
-        </select>
+        <BaseSelect v-model="form.status" :options="statusSelectOptions" size="sm" />
       </label>
       <label>
         <span>{{ t('workspace_assets.requirements.fields.priority') }}</span>

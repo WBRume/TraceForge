@@ -587,6 +587,7 @@ export type KnowledgeAsset = {
 
 export type TaskSummary = {
   id: string
+  execution_location?: 'SERVER' | 'LOCAL'
   workspace_id: string
   creator_id?: string | null
   creator_display_name?: string | null

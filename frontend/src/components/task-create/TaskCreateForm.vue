@@ -4,6 +4,8 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { BookOpen, ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from 'lucide-vue-next'
+import TaskResourcePicker from '@/components/local-resource/TaskResourcePicker.vue'
+import type { TaskExecution } from '@/composables/useLocalResources'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import type { TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 
@@ -31,6 +33,7 @@ const isDiagnosisTask = computed(() => props.taskType === 'DIAGNOSIS')
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
 
 // ── 草稿字段 ──
+const execution = shallowRef<TaskExecution>({ location: 'SERVER' })
 const name = shallowRef('')
 const description = shallowRef('')
 const phenomenon = shallowRef('')
@@ -67,6 +70,7 @@ const removeDiagnosisFile = (index: number) => {
 const submitDraft = () => {
   emit('submit', {
     taskType: props.taskType,
+    execution: execution.value,
     name: name.value,
     description: description.value,
     phenomenon: phenomenon.value,
@@ -96,6 +100,7 @@ defineExpose({ reset })
 
 <template>
   <form class="modal-form-main" @submit.prevent="submitDraft">
+    <TaskResourcePicker :workspace-id="wsId" @change="execution = $event" />
     <!-- 行 1：任务名称 -->
     <div class="form-row">
       <div class="form-group">

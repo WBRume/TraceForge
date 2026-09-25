@@ -2,6 +2,7 @@
 import { reactive, watch, ref, nextTick, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { DeltaLineRef, DecisionMutationPayload } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -21,6 +22,11 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const statusOptions = computed(() => [
+  { label: t('workspace_assets.task_detail.workbench.status.proposed'), value: 'PROPOSED' },
+  { label: t('workspace_assets.task_detail.workbench.status.accepted'), value: 'ACCEPTED' },
+  { label: t('workspace_assets.task_detail.workbench.status.rejected'), value: 'REJECTED' },
+])
 
 const form = reactive({
   title: '',
@@ -103,11 +109,7 @@ const fileBase = computed(() => props.filePath.split('/').pop() || props.filePat
           :placeholder="t('workspace_assets.task_detail.workbench.fields.decision_body')"
           rows="2"
         />
-        <select v-model="form.status" class="popover-select">
-          <option value="PROPOSED">{{ t('workspace_assets.task_detail.workbench.status.proposed') }}</option>
-          <option value="ACCEPTED">{{ t('workspace_assets.task_detail.workbench.status.accepted') }}</option>
-          <option value="REJECTED">{{ t('workspace_assets.task_detail.workbench.status.rejected') }}</option>
-        </select>
+        <BaseSelect v-model="form.status" :options="statusOptions" class="popover-select" size="sm" />
       </div>
 
       <div class="popover-actions">

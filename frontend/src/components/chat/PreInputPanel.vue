@@ -216,9 +216,10 @@ const cancelCollect = () => {
       />
       <span class="panel-title">{{ $t('preInput.panel_title') }}</span>
       <span class="panel-sub">· {{ preInput.creator?.display_name }}</span>
-      <span class="countdown" :class="{ 'is-urgent': remainingSeconds <= 30 && !isDeadlineReached, 'is-expired': isDeadlineReached }">
+      <span v-if="preInput.deadline_at" class="countdown" :class="{ 'is-urgent': remainingSeconds <= 30 && !isDeadlineReached, 'is-expired': isDeadlineReached }">
         {{ countdownText }}
       </span>
+      <span v-else class="panel-sub">仅手动提交</span>
     </div>
 
     <!-- 共享文档：字符级归属渲染，框选文字直接提交输入 -->

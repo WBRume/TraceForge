@@ -90,7 +90,8 @@ def serialize_runtime_event(event: SddSkillRuntimeEvent) -> Dict[str, Any]:
 
 def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIndexItem]:
     records = task_skill_runtime_service.get_task_runtime_skill_records(db, task)
-    project_path = os.path.abspath(str(task.project_path or "."))
+    from app.domains.local_resource.service import is_local, local_path
+    project_path = local_path(db, task).replace("\\", "/") if is_local(task) else os.path.abspath(str(task.project_path or "."))
     rel_root = skill_service.resolve_task_skills_rel_root(db, task)
     items: List[RuntimeSkillIndexItem] = []
     for record in records:
@@ -102,7 +103,7 @@ def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIn
                 skill_id=record.skill_id if record.skill is not None and not record.config_deleted else None,
                 skill_name=record.name,
                 materialized_dir=folder,
-                runtime_root_abs=os.path.abspath(os.path.join(project_path, rel_root, folder)),
+                runtime_root_abs=(project_path.rstrip("/") + "/" + rel_root + "/" + folder) if is_local(task) else os.path.abspath(os.path.join(project_path, rel_root, folder)),
                 runtime_root_rel=storage_service.normalize_path(os.path.join(rel_root, folder)),
             )
         )

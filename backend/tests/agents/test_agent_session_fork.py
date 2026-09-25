@@ -340,7 +340,7 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
 
 
 class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
-    async def test_fork_uses_v1_route_then_moves_session(self):
+    async def test_fork_uses_v2_route_then_moves_session(self):
         from httpx import AsyncClient, MockTransport, Response
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
@@ -351,9 +351,9 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
             body = json.loads(request.content or b"{}")
             calls.append((f"{request.method} {request.url.path}", body))
             path = request.url.path
-            if path == "/session/base-1/fork":
-                return Response(200, json={"id": "fork-9"})
-            if path == "/experimental/control-plane/move-session":
+            if path == "/api/session/base-1/fork":
+                return Response(200, json={"data": {"id": "fork-9"}})
+            if path == "/api/session/fork-9/move":
                 return Response(200, json={})
             return Response(404, json={})
 
@@ -364,11 +364,10 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(new_id, "fork-9")
         paths = [c[0] for c in calls]
-        self.assertIn("POST /session/base-1/fork", paths)
-        self.assertIn("POST /experimental/control-plane/move-session", paths)
-        move_body = next(body for path, body in calls if "move-session" in path)
-        self.assertEqual(move_body["sessionID"], "fork-9")
-        self.assertEqual(move_body["destination"]["directory"], os.path.abspath("C:/t"))
+        self.assertIn("POST /api/session/base-1/fork", paths)
+        self.assertIn("POST /api/session/fork-9/move", paths)
+        move_body = next(body for path, body in calls if path.endswith("/move"))
+        self.assertEqual(move_body["directory"], "C:/t")
         await adapter._client.aclose()
 
     async def test_fork_same_source_and_target_skips_move(self):
@@ -380,8 +379,8 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
         def handler(request) -> Response:
             calls.append(f"{request.method} {request.url.path}")
-            if request.url.path == "/session/base-1/fork":
-                return Response(200, json={"id": "fork-same"})
+            if request.url.path == "/api/session/base-1/fork":
+                return Response(200, json={"data": {"id": "fork-same"}})
             return Response(404, json={})
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
@@ -390,10 +389,10 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
             "base-1", source_dir=same_dir, target_dir=same_dir
         )
         self.assertEqual(new_id, "fork-same")
-        self.assertEqual(calls, ["POST /session/base-1/fork"])
+        self.assertEqual(calls, ["POST /api/session/base-1/fork"])
         await adapter._client.aclose()
 
-    async def test_fork_falls_back_to_v2_routes(self):
+    async def test_fork_uses_only_v2_routes(self):
         from httpx import AsyncClient, MockTransport, Response
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
@@ -421,9 +420,9 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
         def handler(request) -> Response:
             path = request.url.path
-            if path == "/session/base-1/fork":
-                return Response(200, json={"id": "fork-x"})
-            if path.startswith("/session/fork-x") and request.method == "DELETE":
+            if path == "/api/session/base-1/fork":
+                return Response(200, json={"data": {"id": "fork-x"}})
+            if path.startswith("/api/session/fork-x") and request.method == "DELETE":
                 deleted.append(path)
                 return Response(204)
             return Response(404, json={})
@@ -431,7 +430,7 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
         adapter._client = AsyncClient(transport=MockTransport(handler))
         with self.assertRaises(SessionForkError):
             await adapter.fork_session("base-1", source_dir="C:/b", target_dir="C:/t")
-        self.assertEqual(deleted, ["/session/fork-x"])  # move 失败时清理 fork 产物
+        self.assertEqual(deleted, ["/api/session/fork-x"])  # move 失败时清理 fork 产物
         await adapter._client.aclose()
 
 

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CloudUpload, RefreshCw, DatabaseZap, Upload } from 'lucide-vue-next'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { ApiMockProject, ApiMockSourceVersion } from '@/types/apiMock'
 
 type TaskOption = {
@@ -53,6 +54,14 @@ const uploadFile = ref<File | null>(null)
 const proxyBaseUrl = ref('')
 
 const taskOptions = computed(() => props.tasks)
+const taskSelectOptions = computed(() => taskOptions.value.map(task => ({ label: task.name, value: task.id })))
+const sourceVersionOptions = computed(() => [
+  { label: t('api_mock.source_auto'), value: '' },
+  ...props.sourceVersions.map(version => ({
+    label: `${version.source_type} · ${version.source_name || version.id.slice(0, 8)}`,
+    value: version.id,
+  })),
+])
 const jobTitle = computed(() => {
   if (!props.jobState) return ''
   return props.jobState.job_type === 'IMPORT_SWAGGER'
@@ -141,27 +150,22 @@ watch(() => props.project?.proxy_base_url, refreshProxyBase)
     >
       <label v-if="showTaskPicker" class="field">
         <span>{{ $t('api_mock.task') }}</span>
-        <select
+        <BaseSelect
           class="input-field"
-          :value="selectedTaskId"
-          @change="emit('update:task-id', ($event.target as HTMLSelectElement).value)"
-        >
-          <option v-for="task in taskOptions" :key="task.id" :value="task.id">{{ task.name }}</option>
-        </select>
+          :model-value="selectedTaskId"
+          :options="taskSelectOptions"
+          @update:model-value="emit('update:task-id', String($event))"
+        />
       </label>
       <label v-if="showSourceVersionPicker" class="field">
         <span>{{ $t('api_mock.source_version') }}</span>
-        <select
+        <BaseSelect
           class="input-field"
-          :value="selectedSourceVersionId"
+          :model-value="selectedSourceVersionId"
+          :options="sourceVersionOptions"
           :disabled="!canManage"
-          @change="emit('source-change', ($event.target as HTMLSelectElement).value)"
-        >
-          <option value="">{{ $t('api_mock.source_auto') }}</option>
-          <option v-for="version in sourceVersions" :key="version.id" :value="version.id">
-            {{ version.source_type }} · {{ version.source_name || version.id.slice(0, 8) }}
-          </option>
-        </select>
+          @update:model-value="emit('source-change', String($event))"
+        />
       </label>
     </div>
 

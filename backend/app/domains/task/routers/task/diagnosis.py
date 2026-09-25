@@ -101,6 +101,7 @@ async def upload_task_diagnosis_doc(
             session,
             WorkspacePermission.UPLOAD_TASK_SPEC,
             "No permission to upload diagnosis documents",
+            task_id=task_id,
         ),
     )
     db.close()
@@ -161,6 +162,7 @@ def upsert_diagnosis_result(
         db,
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to update diagnosis results",
+        task_id=task_id,
     )
     task = _require_diagnosis_task(db, task_id, ws_id)
 

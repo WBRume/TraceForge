@@ -46,6 +46,7 @@ async def start_task(
             session,
             WorkspacePermission.START_TASK,
             "No permission to start tasks",
+            task_id=task_id,
         ),
     )
     # Permission checks are complete; no dependency Session is allowed to
@@ -86,6 +87,7 @@ async def initialize_task(
             session,
             WorkspacePermission.MANAGE_TASK_STATUS,
             "No permission to initialize tasks",
+            task_id=task_id,
         ),
     )
     db.close()

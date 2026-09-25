@@ -6,7 +6,6 @@ import {
   createRepoPatchBranchName,
   excerptText,
   normalizeRemoteUrl,
-  remoteUrlsMatch,
 } from './localAgentUtils'
 
 export type ApplyPatchProgress = {
@@ -65,7 +64,8 @@ const applySingleRepoPatch = async (options: {
   repoPath: string
   onProgress?: (event: ApplyPatchProgress) => void
 }): Promise<{ status: 'applied' | 'conflict'; branchName: string }> => {
-  const { desktop, task, proposal, repo, repoPath } = options
+  const { desktop, task, proposal, repo } = options
+  let repoPath = options.repoPath
   const expectedRemote = repo.repo_url || proposal.base_repo_url || task.git_repo_url || ''
   ensure(Boolean(repoPath), '仓库 ' + repo.repo_name + ' 未绑定本地路径')
   ensure(Boolean(repo.patch_text.trim()), '仓库 ' + repo.repo_name + ' 的补丁内容为空')
@@ -74,36 +74,13 @@ const applySingleRepoPatch = async (options: {
   const repoValidation = await desktop.git.validateGitRepo(repoPath)
   ensure(repoValidation.ok, repoValidation.stderr || '所选目录不是 Git 仓库')
 
-  const remote = await desktop.git.getRemoteUrl(repoPath)
-  ensure(
-    remoteUrlsMatch(remote.remoteUrl, expectedRemote),
-    '本地仓库 remote.origin.url 与云端仓库不一致',
-  )
-
-  const status = await desktop.git.getStatus(repoPath)
-  ensure(status.isClean, '本地仓库存在未提交修改，请先提交或清理后再应用补丁')
-
-  emit(options, { step: 'fetch', repoName: repo.repo_name, detail: 'git fetch origin' })
-  await desktop.git.fetchOrigin(repoPath)
-
-  emit(options, { step: 'checkout-base', repoName: repo.repo_name, detail: 'git checkout ' + repo.base_branch })
-  await desktop.git.checkoutBranch(repoPath, repo.base_branch)
-
-  emit(options, { step: 'pull', repoName: repo.repo_name, detail: 'git pull --ff-only origin ' + repo.base_branch })
-  await desktop.git.pullFfOnly(repoPath, repo.base_branch)
-
-  const baseHead = await desktop.git.getHeadSha(repoPath)
-  ensure(
-    baseHead.headSha === repo.base_commit_sha,
-    '仓库 ' + repo.repo_name + ' 本地主干 HEAD(' + baseHead.headSha + ') 与补丁 base_commit_sha(' + repo.base_commit_sha + ') 不一致',
-  )
-
   const isLegacySingleRepo = repo.repo_slug === 'repo'
   const branchName = isLegacySingleRepo
     ? createPatchBranchName(task.id, proposal.patch_set_no)
     : createRepoPatchBranchName(task.id, proposal.patch_set_no, repo.repo_slug)
-  emit(options, { step: 'create-branch', repoName: repo.repo_name, detail: 'git checkout -b ' + branchName })
-  await desktop.git.createLocalBranch(repoPath, branchName)
+  ensure(Boolean(desktop.git.preparePatchWorktree), '当前客户端不支持独立补丁 worktree，请更新客户端后重试')
+  emit(options, { step: 'create-branch', repoName: repo.repo_name, detail: '检查基准 commit 并创建独立补丁 worktree' })
+  repoPath = (await desktop.git.preparePatchWorktree!({ repoPath, remoteUrl: expectedRemote, baseSha: repo.base_commit_sha, baseBranch: repo.base_branch, branch: branchName })).path
 
   emit(options, { step: 'apply', repoName: repo.repo_name, detail: 'git apply --3way' })
   const applyResult = await desktop.git.applyPatchWithThreeWay(repoPath, repo.patch_text)
@@ -111,7 +88,7 @@ const applySingleRepoPatch = async (options: {
   try {
     localHead = await desktop.git.getHeadSha(repoPath)
   } catch {
-    localHead = { headSha: baseHead.headSha }
+    localHead = { headSha: repo.base_commit_sha }
   }
 
   if (applyResult.ok) {

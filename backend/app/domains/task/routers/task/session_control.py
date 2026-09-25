@@ -60,6 +60,7 @@ def _prepare_task_undo_context_sync(
         db,
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to undo task messages",
+            task_id=task_id,
     )
     task = get_task_or_404(db, task_id, ws_id)
     try:
@@ -88,6 +89,7 @@ async def interrupt_task(
             session,
             WorkspacePermission.MANAGE_TASK_STATUS,
             "No permission to interrupt tasks",
+            task_id=task_id,
         ),
     )
     db.close()
@@ -121,14 +123,11 @@ async def resume_interrupted_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user.id,
-        db,
-        WorkspacePermission.START_TASK,
-        "No permission to resume tasks",
-    )
     db_bind = get_db_bind(db)
+    await run_route_db_txn(db, db_bind, lambda session: verify_workspace_permission(
+        ws_id, current_user.id, session, WorkspacePermission.START_TASK,
+        "No permission to resume tasks", task_id=task_id,
+    ))
     db.close()
 
     try:

@@ -70,6 +70,15 @@ def _find_running_task_job(db: Session, task_id: str, engine: TaskAgentEngine) -
     return query.order_by(SddAiJob.created_at.desc()).first()
 
 
+def _require_local_actor(db: Session, task_id: str, actor_id: str) -> None:
+    from app.domains.local_resource.service import require_operation
+    from app.domains.local_resource.client import ResourceError
+    try:
+        require_operation(db, db.get(SddTask, task_id), actor_id)
+    except ResourceError as exc:
+        raise TaskSessionControlError(str(exc), status_code=exc.status_code) from exc
+
+
 def _find_active_task_job(db: Session, task_id: str) -> Optional[SddAiJob]:
     """查找尚未结束的 TASK_CHAT 作业（PENDING/RUNNING/WAITING_HITL）。"""
     return (
@@ -145,6 +154,7 @@ def _prepare_interrupt_sync(
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
+    _require_local_actor(db, task_id, actor_user_id)
     query = db.query(SddAiJob.id).filter(
         SddAiJob.task_id == task_id,
         SddAiJob.channel == AiJobChannel.TASK_CHAT,
@@ -429,6 +439,7 @@ async def resume_interrupted_task(
     idempotency_key = str(client_message_id or "").strip()
 
     def _prepare_resume_sync(db: Session) -> Dict[str, Any]:
+        _require_local_actor(db, task_id, actor_user_id)
         if idempotency_key:
             existing_jobs = (
                 db.query(SddAiJob)
@@ -746,6 +757,7 @@ async def start_task_session(
     依赖 Session 只用于解析 bind（路由层已在等待锁前关闭它）。
     """
     run_txn = _bind_txn_runner(db, _session_bind(db))
+    await run_txn(lambda session: _require_local_actor(session, task_id, actor_user_id))
     state = await run_txn(
         lambda session: load_start_task_context_sync(
             session, ws_id=ws_id, task_id=task_id, requested_prompt=requested_prompt
@@ -869,6 +881,7 @@ async def initialize_task_session(
     → 落 init_reason 消息 → 创建新会话 turn → 入队执行。
     """
     run_txn = _bind_txn_runner(db, _session_bind(db))
+    await run_txn(lambda session: _require_local_actor(session, task_id, actor_user_id))
     prepared = await run_txn(
         lambda session: prepare_initialize_sync(session, ws_id=ws_id, task_id=task_id)
     )

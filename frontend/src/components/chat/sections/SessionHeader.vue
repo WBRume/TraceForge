@@ -54,6 +54,16 @@ const { t } = useI18n()
       </button>
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
       <span class="badge" :class="props.vm.currentTask.status.toLowerCase()">{{ props.vm.currentTask.status }}</span>
+      <span
+        v-if="props.vm.isLocalTask"
+        class="badge local-resource-badge"
+        :class="`is-${props.vm.localResourceStatus}`"
+        role="status"
+        :title="props.vm.localResourceBlocked ? '恢复在线后才能发送、撤回或操作本地资源' : '本地资源服务已连接'"
+      >
+        <span class="resource-status-dot"></span>
+        {{ props.vm.localResourceLabel }}
+      </span>
     </div>
     <div class="header-actions">
       <button
@@ -196,6 +206,65 @@ const { t } = useI18n()
 .badge.done { background-color: #D1FAE5; color: #065F46; }
 .badge.failed { background-color: #FEE2E2; color: #991B1B; }
 .badge.interrupted { background-color: #FEF3C7; color: #92400E; }
+
+.badge.local-resource-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px 2px 7px;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border: 1px solid transparent;
+  transition: all var(--transition-fast, 150ms ease);
+}
+
+.resource-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.badge.local-resource-badge.is-online {
+  background-color: #ecfdf5;
+  color: #047857;
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+.badge.local-resource-badge.is-online .resource-status-dot {
+  background-color: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.2);
+}
+
+.badge.local-resource-badge.is-offline {
+  background-color: #fef2f2;
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+.badge.local-resource-badge.is-offline .resource-status-dot {
+  background-color: #ef4444;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
+}
+
+.badge.local-resource-badge.is-checking {
+  background-color: #fffbeb;
+  color: #b45309;
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.badge.local-resource-badge.is-checking .resource-status-dot {
+  background-color: #f59e0b;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.18);
+  animation: resource-dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes resource-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
 
 .header-actions {
   display: flex;

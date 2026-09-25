@@ -5,3 +5,5 @@ from app.models.session_turn import (  # noqa: F401
     TaskSessionOperation,
     TaskSessionOperationStatus,
 )
+
+from app.domains.local_resource.models import LocalResource, TaskExecutionBinding, LocalResourceOperation  # noqa: F401

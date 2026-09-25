@@ -158,6 +158,8 @@ def create_change_proposal(
     summary: Optional[str] = None,
     risk_notes: Optional[str] = None,
 ) -> SddTaskChangeProposal:
+    from app.domains.local_resource.service import require_operation
+    require_operation(db, task, creator_id, "generate_patch")
     try:
         snapshots = git_patch_service.generate_task_repo_patch_snapshots(task, workspace, db=db)
         primary = snapshots[0]

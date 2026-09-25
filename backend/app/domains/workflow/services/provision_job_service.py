@@ -28,6 +28,7 @@ from app.domains.workflow.models.provision_job import (
 from app.domains.auth.models.user import User, Workspace
 from app.domains.skill.services import skill_service
 from app.domains.task.services import task_service
+from app.domains.local_resource.client import ResourceError
 from app.domains.task.services.task_service import ProvisionJobCancelled
 from app.domains.workspace.services import workspace_service
 from app.domains.task.services import git_worktree_service
@@ -828,6 +829,10 @@ async def run_create_task_job(job_id: str) -> None:
                 job_id=job_id,
                 reason=err,
             )
+        except ResourceError as exc:
+            # A timed-out resource command may still be executing. Keep the binding
+            # and operation ID so verification can reconcile the same worktree.
+            mark_failed(job_id, stage="RESOURCE_UNAVAILABLE", message="本地资源暂不可用；在个人设置重新检测后恢复准备", error_message=str(exc))
         except Exception as exc:
             mark_failed(
                 job_id,

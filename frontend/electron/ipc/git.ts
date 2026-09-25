@@ -1,11 +1,16 @@
 import { dialog, ipcMain } from 'electron'
 import { execFile } from 'node:child_process'
+import { mkdir } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { remoteUrlsMatch } from '../../src/composables/local-agent/localAgentUtils'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const GIT_TIMEOUT_MS = 120_000
 const GIT_MAX_BUFFER = 20 * 1024 * 1024
 const ALLOWED_GIT_COMMANDS = new Set([
+  'remote',
+  'worktree',
   'rev-parse',
   'config',
   'status',
@@ -128,6 +133,15 @@ export const listUnmergedFiles = async (repoPath: string): Promise<string[]> => 
   return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
 }
 
+const getFetchRemotes = async (repoPath: string) => {
+  const names = (await runGit(repoPath, ['remote'])).stdout.trim().split(/\r?\n/).filter(Boolean)
+  const result: { name: string; fetchUrl: string }[] = []
+  for (const name of names) {
+    for (const fetchUrl of (await runGit(repoPath, ['remote', 'get-url', '--all', name])).stdout.trim().split(/\r?\n/).filter(Boolean)) result.push({ name, fetchUrl })
+  }
+  return result
+}
+
 export const registerGitIpc = () => {
   ipcMain.handle('sdd:git:select-directory', async () => {
     const result = await dialog.showOpenDialog({
@@ -156,6 +170,33 @@ export const registerGitIpc = () => {
     const repoPath = assertRepoPath(payload?.repoPath)
     const result = await runGit(repoPath, ['config', '--get', 'remote.origin.url'])
     return { remoteUrl: result.stdout.trim() }
+  })
+
+  ipcMain.handle('sdd:git:get-remotes', async (_event, payload: { repoPath: string }) => {
+    return getFetchRemotes(assertRepoPath(payload.repoPath))
+  })
+  ipcMain.handle('sdd:git:prepare-patch-worktree', async (_event, payload: { repoPath: string; remoteUrl: string; baseSha: string; baseBranch: string; branch: string }) => {
+    const repoPath = assertRepoPath(payload.repoPath)
+    if (!/^[0-9a-f]{40,64}$/i.test(payload.baseSha) || !/^sdd\/[a-zA-Z0-9_-]+\/v[0-9]+(?:-[a-zA-Z0-9_.-]+)?$/.test(payload.branch)) throw new Error('Invalid patch identity')
+    if (!payload.baseBranch || payload.baseBranch.startsWith('-')) throw new Error('Invalid base branch')
+    const hasBase = async () => (await runGit(repoPath, ['rev-parse', '--verify', `${payload.baseSha}^{commit}`], { allowFailure: true })).ok
+    if (!await hasBase()) {
+      // Forks need not expose the server's URL or branch name. Fetch only remotes
+      // already configured by the user, without modifying the current branch/index.
+      const remotes = await getFetchRemotes(repoPath)
+      const preferred = remotes.filter(item => remoteUrlsMatch(item.fetchUrl, payload.remoteUrl))
+      const names = [...new Set([...preferred, ...remotes].map(item => item.name))]
+      for (const name of names) {
+        await runGit(repoPath, ['fetch', '--no-tags', '--', name], { allowFailure: true, timeoutMs: 300_000 })
+        if (await hasBase()) break
+      }
+      if (!await hasBase()) throw new Error(`本地仓库缺少补丁基准 commit ${payload.baseSha}，请同步包含该提交的主仓或 fork 后重试；尚未创建 worktree`)
+    }
+    const parent = resolve(dirname(repoPath), '.traceforge-patch-worktrees')
+    const target = join(parent, payload.branch.replaceAll('/', '-'))
+    await mkdir(parent, { recursive: true })
+    await runGit(repoPath, ['worktree', 'add', '-b', payload.branch, target, payload.baseSha])
+    return { path: target }
   })
 
   ipcMain.handle('sdd:git:get-status', async (_event, payload: { repoPath?: string }) => {

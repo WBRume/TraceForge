@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { registerLocalResourcesIpc } from './ipc/localResources'
 import { registerConfigIpc } from './ipc/config'
 import { registerDownloadIpc } from './ipc/download'
 import { registerGitIpc } from './ipc/git'
@@ -45,6 +46,7 @@ const createWindow = async () => {
 }
 
 const registerIpc = () => {
+  registerLocalResourcesIpc()
   registerConfigIpc()
   registerDownloadIpc()
   registerGitIpc()

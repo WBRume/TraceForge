@@ -137,8 +137,8 @@ class SessionGate:
                 return False
             if job.task_id:
                 task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-                if not task or int(task.session_revision or -1) != int(self.session_revision):
+                if not task or int(task.session_revision if task.session_revision is not None else -1) != int(self.session_revision):
                     return False
-            return int(job.session_revision or -1) == int(self.session_revision)
+            return int(job.session_revision if job.session_revision is not None else -1) == int(self.session_revision)
         except Exception:
             return False

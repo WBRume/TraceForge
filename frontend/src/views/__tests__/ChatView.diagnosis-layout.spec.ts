@@ -135,4 +135,12 @@ describe('ChatView diagnosis summary layout containment', () => {
     expect(confirmActionModalSource).toContain('<div class="modal" :class="toneClass">')
     expect(confirmActionModalSource).not.toContain('class="modal glass-panel"')
   })
+
+  it('embeds self-contained scoped layout styles directly to prevent Vite scopeId loss', () => {
+    expect(chatViewSource).toContain('<style scoped>')
+    expect(chatViewSource).not.toContain('<style scoped src=')
+    expect(chatViewSource).toContain('.chat-layout {')
+    expect(chatViewSource).toContain('.chat-main {')
+    expect(chatViewSource).toContain('.chat-main.empty-state {')
+  })
 })

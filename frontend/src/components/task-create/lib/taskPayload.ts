@@ -57,6 +57,8 @@ export function buildTaskCreatePayload(
     payload.requirement_duration_hours = Number(draft.requirementDurationHours)
   }
 
+  if (draft.execution?.location === 'LOCAL') payload.execution = draft.execution
+
   const selectedSet = new Set(ctx.selectedRepoIds)
   const bindingIds = ctx.repos.map(workspaceRepoBindingId).filter(Boolean)
   if (selectedSet.size > 0 && selectedSet.size < bindingIds.length) {

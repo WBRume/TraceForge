@@ -181,6 +181,8 @@ def complete_task_closeout(
     payload: CompleteTaskCloseoutRequest,
 ) -> TaskCloseoutResponse:
     task = _get_open_task(db, workspace_id, task_id)
+    from app.domains.local_resource.service import require_operation
+    require_operation(db, task, actor_id)
     evidence_payloads = _complete_evidence_payloads(payload)
 
     evidence_ids = [
@@ -224,6 +226,8 @@ def fail_task_closeout(
     payload: FailTaskCloseoutRequest,
 ) -> TaskCloseoutResponse:
     task = _get_open_task(db, workspace_id, task_id)
+    from app.domains.local_resource.service import require_operation
+    require_operation(db, task, actor_id)
     evidence_payloads = _failure_evidence_payloads(payload)
 
     evidence_ids = [

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.distributed_lock import get_lock_provider, lock_task
 from app.core.logging import get_logger
-from app.core.offload import run_db_txn, run_db_txn_with_bind
+from app.core.offload import run_db, run_db_txn, run_db_txn_with_bind
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.ai.services.jobs import constants as ai_job_constants
@@ -674,14 +674,15 @@ async def _stop_engine_and_wait(task_id: str) -> bool:
     raise TaskSessionUndoError("Agent process did not exit before undo", code="UNDO_AGENT_STILL_RUNNING")
 
 
-async def _cancel_dsh_without_engine(session_id: Optional[str]) -> None:
+async def _cancel_dsh_without_engine(session_id: Optional[str], task_id: str | None = None) -> None:
     """Best-effort cancellation when the API process has no local engine object."""
     sid = str(session_id or "").strip()
     if not sid:
         return
     from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
-    adapter = DshServerAdapter(str(settings.DSH_SERVER_URL or "http://127.0.0.1:3080"))
+    from app.domains.local_resource.service import provider_for_task
+    adapter = (await run_db(provider_for_task, task_id) if task_id else None) or DshServerAdapter(str(settings.DSH_SERVER_URL or "http://127.0.0.1:3080"))
     try:
         await adapter.cancel(session_id=sid)
     finally:
@@ -711,7 +712,8 @@ async def _restore_provider_for_suffix(
             return
         if not target_user_id:
             raise TaskSessionUndoError("OpenCode message boundary is unavailable", code="UNDO_PROVIDER_BOUNDARY_MISSING")
-        adapter = OpenCodeAdapter(str(settings.OPENCODE_SERVER_URL or "http://127.0.0.1:4097"))
+        from app.domains.local_resource.service import provider_for_task
+        adapter = await run_db(provider_for_task, task.id) or OpenCodeAdapter(str(settings.OPENCODE_SERVER_URL or "http://127.0.0.1:4097"))
         try:
             await adapter.wait_until_idle(
                 session_id,
@@ -719,16 +721,13 @@ async def _restore_provider_for_suffix(
             )
             if not await adapter.revert_message(session_id, target_user_id):
                 raise TaskSessionUndoError("OpenCode provider does not support revert", code="UNDO_PROVIDER_REVERT_FAILED")
-            for message_id in dict.fromkeys(reversed(provider_ids)):
-                if not await adapter.delete_message(session_id, message_id):
-                    raise TaskSessionUndoError("OpenCode provider message deletion failed", code="UNDO_PROVIDER_DELETE_FAILED")
             remaining = await adapter.list_messages(session_id)
             remaining_ids = {
                 str((item.get("info") or item).get("id") or "").strip()
                 for item in remaining
                 if isinstance(item, dict)
             }
-            if remaining_ids.intersection(set(provider_ids)):
+            if remaining_ids.intersection(set(provider_ids) | {target_user_id}):
                 raise TaskSessionUndoError("OpenCode provider still exposes reverted messages", code="UNDO_PROVIDER_VERIFY_FAILED")
         finally:
             await adapter.close()
@@ -747,6 +746,7 @@ async def _restore_provider_for_suffix(
         return await task_session_snapshot_service.fork_dsh_session(
             current_session_id,
             str(task.project_path or ""),
+            checkpoint_root=checkpoint,
         )
     return None
 
@@ -852,6 +852,12 @@ def _prepare_undo_sync(
     task = db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
     if not task:
         raise TaskSessionUndoError("Task not found", code="TASK_NOT_FOUND", status_code=404)
+    from app.domains.local_resource.service import require_operation
+    from app.domains.local_resource.client import ResourceError
+    try:
+        require_operation(db, task, actor_user_id)
+    except ResourceError as exc:
+        raise TaskSessionUndoError(str(exc), code=exc.code, status_code=exc.status_code) from exc
     from app.domains.task.services.chat_submission_service import assert_no_preparing_submission, SubmissionError
     try:
         assert_no_preparing_submission(db, task_id)
@@ -1064,7 +1070,7 @@ async def undo_task_message(
         async def _compensate_live_state() -> None:
             if forked_dsh_session_id:
                 try:
-                    await task_session_snapshot_service.cleanup_dsh_session(forked_dsh_session_id)
+                    await task_session_snapshot_service.cleanup_dsh_session(forked_dsh_session_id, checkpoint_root=str(target.checkpoint_path))
                 except Exception as fork_exc:
                     logger.error(
                         "Task session undo DSH fork compensation failed: task={}, operation={}, error={}",
@@ -1084,7 +1090,7 @@ async def undo_task_message(
                         operation_id,
                         str(provider_exc),
                     )
-            if os.path.isfile(os.path.join(context["current_backup"], "worktree.json")):
+            if await task_session_snapshot_service.checkpoint_exists(context["current_backup"]):
                 try:
                     await task_session_snapshot_service.restore_worktree(
                         context["current_backup"],
@@ -1105,7 +1111,7 @@ async def undo_task_message(
         try:
             engine_was_stopped = await _stop_engine_and_wait(resolved_task_id)
             if provider_name in {"dsh", "dsh-webhost", "webhost"} and not engine_was_stopped:
-                await _cancel_dsh_without_engine(context["provider_session_id"])
+                await _cancel_dsh_without_engine(context["provider_session_id"], resolved_task_id)
             await skill_runtime_trace_service.wait_for_pending_writes(
                 float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0)
             )

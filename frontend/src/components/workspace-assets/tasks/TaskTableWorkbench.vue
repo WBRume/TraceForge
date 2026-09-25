@@ -200,6 +200,7 @@ function handleRowClick(row: TaskSummary) {
         <template #default="{ row }">
           <div class="title-cell">
             <span class="title-text">{{ row.name }}</span>
+            <el-tag v-if="row.execution_location === 'LOCAL'" size="small" type="info">本地</el-tag>
             <span v-if="row.description" class="parent-hint">{{ row.description }}</span>
           </div>
         </template>

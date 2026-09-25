@@ -69,20 +69,6 @@ const pairedSections = computed(() => parsedFindings.value.filter(s => s.type ==
 // 独立单行展示的小节
 const nonPairedSections = computed(() => parsedFindings.value.filter(s => s.type !== 'paired'))
 
-// 提取简短文件引用路径（例如将 G:\...\app.py:24-32 提炼为 app.py: 24-32）
-const getShortRef = (ref: string) => {
-  if (!ref) return ''
-  const normalized = ref.replace(/\\/g, '/')
-  const segments = normalized.split('/')
-  return segments[segments.length - 1] || ref
-}
-
-// 检查证据是否为代码段落
-const isCodeContent = (text: string) => {
-  if (!text) return false
-  return text.includes('def ') || text.includes('key = ') || text.includes('import ') || text.includes('return ') || text.includes('class ')
-}
-
 // 解析代码行与 diff 检测
 const codeLines = computed(() => {
   if (!report.value?.code) return []

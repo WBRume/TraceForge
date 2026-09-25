@@ -1,7 +1,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bell, Bot, Languages, Link, MonitorCog, Palette, Shield, Users } from 'lucide-vue-next'
+import { Bot, Languages, Link, MonitorCog, Palette, Users } from 'lucide-vue-next'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'
@@ -198,20 +198,7 @@ export function useSettingsViewModel() {
       label: 'settings.agent.title',
       description: 'settings.agent.subtitle',
     },
-    {
-      id: 'notifications',
-      icon: Bell,
-      label: 'settings.notifications',
-      description: 'settings.notifications_desc',
-      disabled: true,
-    },
-    {
-      id: 'security',
-      icon: Shield,
-      label: 'settings.security',
-      description: 'settings.security_desc',
-      disabled: true,
-    },
+    { id: 'local_service', icon: MonitorCog, label: '本地服务地址', description: '个人本地 Agent 与同机资源服务' },
   ])
   
   const canManageMembers = computed(() => Boolean(myPermissionPayload.value?.permissions?.manage_members))

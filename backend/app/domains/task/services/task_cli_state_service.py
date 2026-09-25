@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session, joinedload
 
+from app.domains.task.services import task_service
 from app.config import settings
 from app.core.distributed_lock import (
     LockAcquireTimeout,
@@ -371,6 +372,9 @@ def upsert_bootstrap_for_upload(
         if task is not None and str(task.project_path or "").strip()
         else _baseline_dir_for(workspace_id, task_id)
     )
+    from app.domains.local_resource.service import is_local, local_path
+    if task is not None and is_local(task):
+        baseline_dir = local_path(db, task)
     normalized_mode = str(refresh_mode or "FULL").strip().upper() or "FULL"
     if normalized_mode not in {"FULL", "DELTA"}:
         normalized_mode = "FULL"
@@ -519,6 +523,7 @@ def _load_bootstrap_run_context_sync(task_id: str) -> Optional[Dict[str, Any]]:
             db, record.workspace_id
         )
         return {
+            "execution_location": getattr(task, "execution_location", "SERVER"),
             "task_spec_doc_path": str(task.spec_doc_path or "").strip(),
             "version_original_path": str((version.original_path if version else "") or "").strip(),
             "baseline_dir": record.baseline_dir or _baseline_dir_for(record.workspace_id, record.task_id),
@@ -628,7 +633,7 @@ async def _run_bootstrap(
                                 baseline_dir=baseline_dir,
                                 error_message=None,
                             )
-                            spec_path = await run_file_job(
+                            spec_path = task_spec_doc_path if context.get("execution_location") == "LOCAL" else await run_file_job(
                                 _resolve_bootstrap_spec_path,
                                 task_spec_doc_path=task_spec_doc_path,
                                 version_original_path=version_original_path,
@@ -646,7 +651,7 @@ async def _run_bootstrap(
                                 ),
                             )
 
-                            bridge = create_legacy_bridge(agent_backend)
+                            bridge = create_legacy_bridge(agent_backend, task_id=task_id)
                             ready_seen = False
                             resume_session_id: Optional[str] = None
                             if (
@@ -701,7 +706,7 @@ async def _run_bootstrap(
                                     mode=refresh_mode,
                                     refresh_context=refresh_context,
                                 ),
-                                project_path=os.path.abspath(baseline_dir),
+                                project_path=baseline_dir if context.get("execution_location") == "LOCAL" else os.path.abspath(baseline_dir),
                                 event_callback=on_event,
                                 session_id=resume_session_id,
                                 env_overrides=env_overrides,
@@ -775,7 +780,7 @@ async def _run_bootstrap(
                             # 避免到发起讨论时才发现上下文无法复用。
                             # 探测失败会直接抛错走 FAILED；成功与否不再写入 message（状态标签已足够表达）。
                             await probe_session_fork(
-                                agent_backend, final_session_id, source_dir=baseline_dir
+                                agent_backend, final_session_id, source_dir=baseline_dir, task_id=task_id
                             )
 
                             await _update_bootstrap_state(
@@ -1191,7 +1196,8 @@ def _load_thread_session_inputs_sync(
                 session_id=None,
                 baseline_session_id=str(record.baseline_session_id or "").strip() or None,
             ),
-            "task_dir": str(thread.task.project_path or "").strip() if thread.task else "",
+            "task_id": thread.task_id,
+            "task_dir": task_service.resolve_task_cli_dir(db, thread.task) if thread.task else "",
             "baseline_dir": str(record.baseline_dir or "").strip(),
         }
     finally:
@@ -1283,6 +1289,7 @@ async def ensure_thread_session(
                             baseline_session_id,
                             source_dir=baseline_dir,
                             target_dir=task_dir,
+                        task_id=inputs.get("task_id"),
                         )
                     except SessionForkError as exc:
                         # claude 快照是我们自己的产物，缺失说明状态损坏，应显式失败
@@ -1297,6 +1304,7 @@ async def ensure_thread_session(
                         baseline_session_id,
                         source_dir=baseline_dir,
                         target_dir=task_dir,
+                        task_id=inputs.get("task_id"),
                     )
                 except SessionForkError as exc:
                     logger.warning(

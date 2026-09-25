@@ -39,6 +39,7 @@ const createDesktop = (overrides: Partial<SddDesktopApi['git']> = {}): SddDeskto
   platform: 'win32',
   git: {
     selectDirectory: vi.fn(),
+    preparePatchWorktree: vi.fn().mockResolvedValue({ path: 'C:/patch-worktree' }),
     validateGitRepo: vi.fn().mockResolvedValue({ ok: true, stdout: '', stderr: '' }),
     getRemoteUrl: vi.fn().mockResolvedValue({ remoteUrl: 'git@github.com:acme/repo.git' }),
     getStatus: vi.fn().mockResolvedValue({ isClean: true, raw: '', entries: [], unmergedFiles: [] }),
@@ -60,16 +61,18 @@ describe('applyProposalPatch', () => {
   it('applies a clean patch on a local branch', async () => {
     const desktop = createDesktop()
     await applyProposalPatch({ desktop, task, proposal, repoPath: 'C:/repo', patchText: 'diff --git a/a b/a' })
-    expect(desktop.git.fetchOrigin).toHaveBeenCalledWith('C:/repo')
-    expect(desktop.git.createLocalBranch).toHaveBeenCalledWith('C:/repo', 'sdd/task-1/v1')
-    expect(desktop.git.applyPatchWithThreeWay).toHaveBeenCalled()
+    expect(desktop.git.preparePatchWorktree).toHaveBeenCalledWith(expect.objectContaining({ repoPath: 'C:/repo', baseSha: proposal.base_commit_sha }))
+    expect(desktop.git.fetchOrigin).not.toHaveBeenCalled()
+    expect(desktop.git.checkoutBranch).not.toHaveBeenCalled()
+    expect(desktop.git.applyPatchWithThreeWay).toHaveBeenCalledWith('C:/patch-worktree', 'diff --git a/a b/a')
   })
 
-  it('stops before fetch when local worktree is dirty', async () => {
+  it('uses a separate worktree even when the mapped fork has uncommitted edits', async () => {
     const desktop = createDesktop({
       getStatus: vi.fn().mockResolvedValue({ isClean: false, raw: ' M x', entries: [{ code: 'M', path: 'x' }], unmergedFiles: [] }),
     })
-    await expect(applyProposalPatch({ desktop, task, proposal, repoPath: 'C:/repo', patchText: 'patch' })).rejects.toThrow('未提交修改')
+    await applyProposalPatch({ desktop, task, proposal, repoPath: 'C:/repo', patchText: 'patch' })
+    expect(desktop.git.applyPatchWithThreeWay).toHaveBeenCalledWith('C:/patch-worktree', 'patch')
     expect(desktop.git.fetchOrigin).not.toHaveBeenCalled()
   })
 
@@ -80,4 +83,11 @@ describe('applyProposalPatch', () => {
     const result = await applyProposalPatch({ desktop, task, proposal, repoPath: 'C:/repo', patchText: 'patch' })
     expect(result.status).toBe('conflict')
   })
+})
+
+it('does not apply or fall back to branch checkout when the base commit is missing', async () => {
+  const desktop = createDesktop({ preparePatchWorktree: vi.fn().mockRejectedValue(new Error('缺少补丁基准 commit')) })
+  await expect(applyProposalPatch({ desktop, task, proposal, repoPath: 'C:/fork', patchText: 'patch' })).rejects.toThrow('基准 commit')
+  expect(desktop.git.applyPatchWithThreeWay).not.toHaveBeenCalled()
+  expect(desktop.git.checkoutBranch).not.toHaveBeenCalled()
 })

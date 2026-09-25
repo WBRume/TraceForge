@@ -5,6 +5,7 @@ import { ChevronDown } from 'lucide-vue-next'
 interface Option {
   label: string
   value: any
+  disabled?: boolean
 }
 
 const props = defineProps<{
@@ -29,6 +30,7 @@ const toggleDropdown = () => {
 }
 
 const selectOption = (option: Option) => {
+  if (option.disabled) return
   emit('update:modelValue', option.value)
   isOpen.value = false
 }
@@ -83,7 +85,8 @@ onUnmounted(() => {
             v-for="option in options"
             :key="option.value"
             class="option-item"
-            :class="{ 'is-selected': option.value === modelValue }"
+            :class="{ 'is-selected': option.value === modelValue, 'is-disabled': option.disabled }"
+            :aria-disabled="option.disabled || undefined"
             @click="selectOption(option)"
           >
             {{ option.label }}
@@ -201,6 +204,16 @@ onUnmounted(() => {
   background: var(--color-primary-500);
   color: white;
   box-shadow: 0 4px 12px rgba(14, 165, 233, 0.2);
+}
+
+.option-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.option-item.is-disabled:hover {
+  background: transparent;
+  color: #475569;
 }
 
 /* Sizes */

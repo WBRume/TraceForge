@@ -58,6 +58,18 @@ class SessionGateTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(gate.fence_sync(_fake_db(job=job, task=task)))
         self.assertTrue(gate.is_current())
 
+    def test_zero_revision_is_current_but_missing_or_newer_revision_is_not(self):
+        gate = _armed_gate(session_revision=0)
+        job = SimpleNamespace(status=AiJobStatus.RUNNING, task_id="task-1", session_revision=0)
+        task = SimpleNamespace(session_revision=0)
+        self.assertTrue(gate.fence_sync(_fake_db(job=job, task=task)))
+        for revision in (None, 1):
+            task.session_revision = revision
+            self.assertFalse(gate.fence_sync(_fake_db(job=job, task=task)))
+        task.session_revision = 0
+        job.session_revision = None
+        self.assertFalse(gate.fence_sync(_fake_db(job=job, task=task)))
+
     def test_fence_sync_rejects_reverted_or_cancelled_job(self):
         gate = _armed_gate()
         for status in (AiJobStatus.REVERTED, AiJobStatus.CANCELLED):

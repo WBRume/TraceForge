@@ -2,6 +2,7 @@
 import { computed, shallowRef } from 'vue'
 import { GitBranch, History, Link2Off, MessageSquare, Scissors } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
+import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementDetail, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -31,6 +32,14 @@ const availableTasks = computed(() => {
   const linked = new Set(linkedTasks.value.map((item) => item.task_id))
   return props.tasks.filter((task) => !linked.has(task.id))
 })
+const linkTaskOptions = computed(() => [
+  { label: t('workspace_assets.requirements.detail.select_task'), value: '' },
+  ...availableTasks.value.map((task) => ({ label: task.name, value: task.id })),
+])
+const relationTypeOptions = [
+  { label: 'RELATES_TO', value: 'RELATES_TO' },
+  { label: 'COVERS', value: 'COVERS' },
+]
 
 function submitLink() {
   if (!linkTaskId.value) return
@@ -130,16 +139,8 @@ function submitLink() {
         </div>
 
         <form class="link-form" @submit.prevent="submitLink">
-          <select v-model="linkTaskId" :disabled="!availableTasks.length">
-            <option value="">{{ t('workspace_assets.requirements.detail.select_task') }}</option>
-            <option v-for="task in availableTasks" :key="task.id" :value="task.id">
-              {{ task.name }}
-            </option>
-          </select>
-          <select v-model="linkRelationType">
-            <option value="RELATES_TO">RELATES_TO</option>
-            <option value="COVERS">COVERS</option>
-          </select>
+          <BaseSelect v-model="linkTaskId" :options="linkTaskOptions" :disabled="!availableTasks.length" size="sm" />
+          <BaseSelect v-model="linkRelationType" :options="relationTypeOptions" size="sm" />
           <input v-model="linkReason" :placeholder="t('workspace_assets.requirements.fields.change_reason')" />
           <button type="submit" class="secondary-action" :disabled="!linkTaskId">{{ t('workspace_assets.requirements.actions.link_task') }}</button>
         </form>

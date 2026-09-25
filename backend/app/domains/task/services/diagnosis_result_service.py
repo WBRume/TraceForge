@@ -651,6 +651,12 @@ def prepare_diagnosis_summary_sync(
     )
     if not task:
         raise DiagnosisSummaryError("Task not found", status_code=404)
+    from app.domains.local_resource.service import require_operation
+    from app.domains.local_resource.client import ResourceError
+    try:
+        require_operation(db, task, actor_user_id)
+    except ResourceError as exc:
+        raise DiagnosisSummaryError(str(exc), status_code=exc.status_code) from exc
     if getattr(task, "task_type", None) != "DIAGNOSIS":
         raise DiagnosisSummaryError(
             "Only diagnosis tasks support diagnosis results", status_code=403

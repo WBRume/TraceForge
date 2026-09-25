@@ -59,7 +59,7 @@ async def run_cli_single_turn(
         current_attempt = current_agent_attempt()
         effective_run_token = run_token or (current_attempt.run_token if current_attempt else None)
         # 指定 backend（工作区配置或线程粘性）走统一适配层；否则保持旧全局行为
-        bridge = create_legacy_bridge(backend_name) if backend_name else create_cli_bridge()
+        bridge = create_legacy_bridge(backend_name, task_id=current_attempt.task_id if current_attempt else None) if backend_name else create_cli_bridge()
         # P1（07e04775 §4.2）：provider 终局证据必须在 result 事件到达时按
         # call 身份登记，而不是 helper 返回后补记。每次调用（含重试）新建
         # 记录，绝不复用上一轮 ENDED。

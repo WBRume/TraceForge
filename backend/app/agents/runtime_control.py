@@ -201,9 +201,9 @@ does not send a prompt, and transport reconnect never establishes quiescence.
             existence = "MISSING"
         elif self.backend.name == "opencode":
             client = await self.backend._ensure_client()
-            response = await client.get(f"{self.backend.server_url}/session/{sid}")
+            response = await client.get(self.backend._session_url(sid))
             if response.status_code == 200 and self.backend._is_json_response(response):
-                existence = "PRESENT" if response.json().get("id") == sid else "UNKNOWN"
+                existence = "PRESENT" if response.json().get("data", {}).get("id") == sid else "UNKNOWN"
             elif response.status_code == 404 and self.backend._is_json_response(response):
                 existence = "MISSING"
         elif self.backend.name == "dsh":

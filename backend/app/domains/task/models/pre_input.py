@@ -48,7 +48,7 @@ class SddTaskPreInput(Base):
         nullable=False, default=PreInputStatus.COLLECTING, index=True,
     )
     wait_seconds = Column(Integer, nullable=False, default=180)
-    deadline_at = Column(DateTime, nullable=False, index=True)
+    deadline_at = Column(DateTime, nullable=True, index=True)
     submitted_at = Column(DateTime, nullable=True)
     submitted_message_id = Column(String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True)
     submitted_by_id = Column(String(36), ForeignKey("users.id"), nullable=True)

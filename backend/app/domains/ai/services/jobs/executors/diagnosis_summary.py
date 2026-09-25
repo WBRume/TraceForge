@@ -30,6 +30,10 @@ logger = get_logger(__name__, category="ai_session")
 
 def _resolve_task_project_path(task) -> str:
     """解析任务 CLI 工作目录（与正常会话引擎一致）。"""
+    from app.domains.local_resource.service import is_local, local_path
+    from sqlalchemy.orm import object_session
+    if is_local(task):
+        return local_path(object_session(task), task)
     project_path = str(getattr(task, "project_path", None) or "").strip() or "."
     try:
         os.makedirs(project_path, exist_ok=True)
@@ -183,6 +187,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
                     source_session_id,
                     source_dir=project_path,
                     target_dir=project_path,
+                    task_id=task_id,
                 )
                 # Claude's adapter stages the snapshot and the CLI performs the
                 # actual child-session creation with --fork-session.  Server

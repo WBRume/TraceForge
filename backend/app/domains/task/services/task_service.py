@@ -221,6 +221,9 @@ def resolve_task_cli_dir(db: Session, task: SddTask) -> str:
     # (<task_root>/<repo_slug>/...). Running the CLI anywhere deeper (e.g. the
     # primary repository worktree) would hide the other repositories from the
     # session, so keep the root for both single- and multi-repository tasks.
+    from app.domains.local_resource.service import is_local, local_path
+    if is_local(task):
+        return local_path(db, task)
     return str(task.project_path or "").strip() or "."
 
 
@@ -268,6 +271,7 @@ def create_task_record_for_provision(
     repository_branches: Optional[List[Dict[str, str]]] = None,
     repository_ids: Optional[List[str]] = None,
     diagnosis_playbook_spec_id: Optional[str] = None,
+    execution=None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -347,6 +351,10 @@ def create_task_record_for_provision(
         )
         db.flush()
 
+        if execution and execution.location == "LOCAL":
+            from app.domains.local_resource.service import bind_task
+            bind_task(db, task, execution)
+
         skill_service.bind_task_skills(db, task, selected_skills)
         db.flush()
 
@@ -386,6 +394,17 @@ def prepare_task_resources_for_provision(
         # 由 provision job 终局回滚删除任务记录。
         if cancel_check is not None and cancel_check():
             raise ProvisionJobCancelled("Task creation cancelled by user")
+
+    from app.domains.local_resource.service import is_local, provision_task
+    if is_local(task):
+        _checkpoint()
+        provision_task(db, task)
+        skill_service.materialize_task_skills(db, task.id)
+        _checkpoint()
+        task.status = TaskStatus.PENDING
+        task.current_phase = None
+        db.commit()
+        return task
 
     use_git_worktree = git_worktree_service.should_use_git_worktree(ws.project_path, ws.git_repo_url)
     task_repos = get_task_repositories(db, task.id)
@@ -476,6 +495,13 @@ def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> 
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
         return False
+
+    from app.domains.local_resource.service import is_local, release_or_defer
+    if is_local(task):
+        release_or_defer(db, task)
+        db.delete(task)
+        db.commit()
+        return True
 
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     workspace_project_path = str(ws.project_path or "").strip() if ws else ""
@@ -663,21 +689,18 @@ def upload_task_spec(
             "Legacy .doc files are not supported; please convert to .docx or upload a PDF"
         )
 
-    # 使用任务关联的 project_path 作为基准
-    base_dir = task.project_path
-    target_dir = os.path.join(base_dir, ".sdd", "spec")
-    
-    if not os.path.exists(target_dir):
+    from app.domains.local_resource.service import is_local, materialize_file
+    from app.domains.asset.services.document.storage import normalize_filename
+    file_name = normalize_filename(file_name)
+    if is_local(task):
+        task.spec_doc_path = materialize_file(task, ".sdd/spec/" + file_name, file_content)
+    else:
+        target_dir = os.path.join(task.project_path, ".sdd", "spec")
         os.makedirs(target_dir, exist_ok=True)
-    
-    file_path = os.path.join(target_dir, file_name)
-    
-    # 写入文件
-    with open(file_path, "wb") as f:
-        f.write(file_content)
-    
-    # 更新数据库中的绝对路径
-    task.spec_doc_path = os.path.abspath(file_path)
+        file_path = os.path.join(target_dir, file_name)
+        with open(file_path, "wb") as f:
+            f.write(file_content)
+        task.spec_doc_path = os.path.abspath(file_path)
     asset, version = document_versioning.create_asset_version_from_upload(
         db,
         task,
@@ -857,6 +880,9 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
 
 
 def list_superpowers_docs(task: SddTask) -> dict:
+    from app.domains.local_resource.service import is_local, task_operation
+    if is_local(task):
+        return task_operation(task.id, "documents", {"action": "list"})
     return {
         "task_id": task.id,
         "root_relative_path": plan_doc_root_label(),
@@ -871,6 +897,9 @@ def read_superpowers_doc(
     name: Optional[str] = None,
     path: Optional[str] = None,
 ) -> dict:
+    from app.domains.local_resource.service import is_local, task_operation
+    if is_local(task):
+        return task_operation(task.id, "documents", {"action": "read", "section": section, "path": path or name})
     file_path, section_path = _resolve_superpowers_doc_path(
         task,
         section,
@@ -898,6 +927,9 @@ def save_superpowers_doc(
     name: Optional[str] = None,
     path: Optional[str] = None,
 ) -> dict:
+    from app.domains.local_resource.service import is_local, task_operation
+    if is_local(task):
+        return task_operation(task.id, "documents", {"action": "save", "section": section, "path": path or name, "content": content})
     file_path, section_path = _resolve_superpowers_doc_path(
         task,
         section,
@@ -1102,6 +1134,13 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
     if not task:
         return False
 
+    from app.domains.local_resource.service import is_local, release_or_defer
+    if is_local(task):
+        release_or_defer(db, task)
+        db.delete(task)
+        db.commit()
+        return True
+
     workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     workspace_project_path = (
         str(workspace.project_path or "").strip()
@@ -1173,6 +1212,8 @@ def export_task_session(db: Session, task_id: str, workspace_id: str) -> Optiona
         "description": task.description,
         "status": task.status,
         "project_path": task.project_path,
+        "execution_location": task.execution_location,
+        "local_resource_id": task.local_resource_id,
         "created_at": task.created_at.isoformat(),
         "messages": [
             {

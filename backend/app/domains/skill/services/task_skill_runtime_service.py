@@ -116,6 +116,15 @@ def _fallback_runtime_dir_records(root: str, existing_folders: set[str]) -> List
     return records
 
 
+def _remote_skill(db, task, action, **payload):
+    from app.domains.local_resource.service import execute
+    return execute(db, task, "skills", {"action": action, **payload})
+
+
+def _local_resource(task):
+    return getattr(task, "execution_location", "SERVER") == "LOCAL"
+
+
 def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSkillRecord]:
     root = _task_skills_root(db, task)
     skills = skill_service.get_task_skills(db, task.id)
@@ -141,6 +150,19 @@ def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSk
         )
         seen_skill_ids.add(skill.id)
         seen_folders.add(folder)
+
+    if _local_resource(task):
+        manifest = _remote_skill(db, task, "manifest")
+        for item in manifest["items"]:
+            folder = item.get("materialized_dir")
+            if not folder or folder in seen_folders or folder not in manifest["folders"]:
+                continue
+            records.append(RuntimeSkillRecord(skill_id=item["skill_id"], name=item.get("name", folder), description=item.get("description"), dimension=item.get("dimension", "TASK_RUNTIME"), materialized_dir=folder, config_deleted=True))
+            seen_folders.add(folder)
+        for folder in manifest["folders"]:
+            if folder not in seen_folders:
+                records.append(RuntimeSkillRecord(skill_id="runtime:" + folder, name=folder, description=None, dimension="TASK_RUNTIME", materialized_dir=folder, config_deleted=True))
+        return records
 
     for item in _read_runtime_manifest(db, task):
         record = _record_from_manifest_item(item, root=root)
@@ -260,11 +282,12 @@ def list_task_runtime_skills(db: Session, task: SddTask) -> Dict[str, object]:
     )
     root = _task_skills_root(db, task)
 
+    remote_folders = set(_remote_skill(db, task, "manifest")["folders"]) if _local_resource(task) else None
     items: List[Dict[str, object]] = []
     for record in records:
         folder = record.materialized_dir
         skill_root = os.path.join(root, folder) if folder else ""
-        is_materialized = bool(folder) and os.path.isdir(skill_root)
+        is_materialized = folder in remote_folders if remote_folders is not None else bool(folder) and os.path.isdir(skill_root)
         if record.skill is not None:
             try:
                 publish = skill_service.get_skill_package_publish_status(record.skill)
@@ -316,6 +339,12 @@ def build_task_runtime_skill_file_tree(
     *,
     skill_id: str,
 ) -> List[Dict[str, object]]:
+    if _local_resource(task):
+        record = next((r for r in get_task_runtime_skill_records(db, task) if r.skill_id == skill_id), None)
+        if not record:
+            raise ValueError("Skill runtime copy is not available")
+        result = _remote_skill(db, task, "tree", folder=record.materialized_dir)
+        return result["tree"]
     _, _, skill_root = _resolve_runtime_skill_root(db, task, skill_id)
     if not os.path.isdir(skill_root):
         return []
@@ -352,6 +381,12 @@ def read_task_runtime_skill_file(
     skill_id: str,
     path: str,
 ) -> Dict[str, object]:
+    if _local_resource(task):
+        record = next((r for r in get_task_runtime_skill_records(db, task) if r.skill_id == skill_id), None)
+        if not record:
+            raise ValueError("Skill runtime copy is not available")
+        result = _remote_skill(db, task, "read", folder=record.materialized_dir, path=path)
+        return result
     _, _, skill_root = _resolve_runtime_skill_root(db, task, skill_id)
     if not os.path.isdir(skill_root):
         raise FileNotFoundError("Skill runtime directory not found")
@@ -382,6 +417,12 @@ def write_task_runtime_skill_file(
     path: str,
     content: str,
 ) -> Dict[str, object]:
+    if _local_resource(task):
+        record = next((r for r in get_task_runtime_skill_records(db, task) if r.skill_id == skill_id), None)
+        if not record:
+            raise ValueError("Skill runtime copy is not available")
+        result = _remote_skill(db, task, "write", folder=record.materialized_dir, path=path, content=content)
+        return result
     _, _, skill_root = _resolve_runtime_skill_root(db, task, skill_id)
     if not os.path.isdir(skill_root):
         raise FileNotFoundError("Skill runtime directory not found")

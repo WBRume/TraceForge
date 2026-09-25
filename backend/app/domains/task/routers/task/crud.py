@@ -17,6 +17,8 @@ from app.domains.task.routers.task.deps import (
     TASKS_ROUTE_PREFIX,
     ensure_task_not_baselined,
     get_task_or_404,
+    get_db_bind,
+    run_route_db_txn,
     raise_task_lock_conflict,
     raise_workspace_lock_conflict,
     verify_workspace_access,
@@ -43,7 +45,7 @@ router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
 
 @router.post("", response_model=ProvisionJobAcceptedResponse, status_code=202)
-async def create_task(
+def create_task(
     ws_id: str,
     data: TaskCreate,
     background_tasks: BackgroundTasks,
@@ -66,6 +68,7 @@ async def create_task(
             current_user,
             ws_id,
             name=data.name,
+            execution=data.execution,
             description=desc.strip(),
             spec_doc_path=data.spec_doc_path,
             requirement_duration_hours=data.requirement_duration_hours,
@@ -282,13 +285,10 @@ async def delete_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user.id,
-        db,
-        WorkspacePermission.DELETE_TASK,
-        "No permission to delete tasks",
-    )
+    await run_route_db_txn(db, get_db_bind(db), lambda session: verify_workspace_permission(
+        ws_id, current_user.id, session, WorkspacePermission.DELETE_TASK,
+        "No permission to delete tasks", task_id=task_id,
+    ))
 
     current_task = get_task_or_404(db, task_id, ws_id)
     ensure_task_not_baselined(current_task)
@@ -392,13 +392,10 @@ async def clear_task_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    verify_workspace_permission(
-        ws_id,
-        current_user.id,
-        db,
-        WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to clear task history",
-    )
+    await run_route_db_txn(db, get_db_bind(db), lambda session: verify_workspace_permission(
+        ws_id, current_user.id, session, WorkspacePermission.MANAGE_TASK_STATUS,
+        "No permission to clear task history", task_id=task_id,
+    ))
     try:
         async with lock_task(task_id):
             task = get_task_or_404(db, task_id, ws_id)
