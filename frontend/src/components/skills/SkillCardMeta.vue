@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { FolderOpen, Wrench } from 'lucide-vue-next'
+import { FolderOpen, Wrench } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 
 import type { SkillItem } from '@/composables/skills/useSkillsListQuery'

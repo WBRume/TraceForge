@@ -6,7 +6,7 @@
 import { onMounted, ref, shallowRef, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Hammer, Plus, Stethoscope, X } from 'lucide-vue-next'
+import { Hammer, Plus, BugAntIcon, X } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useProvisioningStore } from '@/stores/provisioning'
@@ -157,7 +157,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
           :class="{ active: taskType === 'DIAGNOSIS' }"
           @click="switchTaskType('DIAGNOSIS')"
         >
-          <Stethoscope class="w-3.5 h-3.5" />
+          <BugAntIcon class="w-3.5 h-3.5" />
           <span>{{ $t('task_types.diagnosis') }}</span>
         </button>
       </div>

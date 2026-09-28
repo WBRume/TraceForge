@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckCircle2, RotateCcw } from 'lucide-vue-next'
+import { CheckCircle2, RotateCcw } from '@/components/icons'
 import WorkflowStatusPill from './WorkflowStatusPill.vue'
 
 const props = defineProps<{

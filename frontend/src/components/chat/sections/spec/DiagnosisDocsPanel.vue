@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { FileText, Loader2, Upload } from 'lucide-vue-next'
+import { FileText, Loader2, Upload } from '@/components/icons'
 import type { DiagnosisDocItem, DiagnosisDocsModelView } from '@/composables/useDiagnosisDocs'
 
 /**

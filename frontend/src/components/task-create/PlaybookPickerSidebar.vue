@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { watch } from 'vue'
-import { BookOpen, Loader2, RefreshCw, Search } from 'lucide-vue-next'
+import { BookOpen, Loader2, RefreshCw, Search } from '@/components/icons'
 import SidebarPanel from './SidebarPanel.vue'
 import { useTaskPlaybookPicker } from './composables/useTaskPlaybookPicker'
 import type { PlaybookSpec } from '@/types/diagnosisPlaybook'

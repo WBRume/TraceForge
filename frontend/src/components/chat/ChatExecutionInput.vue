@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Search, ShieldCheck, Send, X, Loader2, Square } from 'lucide-vue-next'
+import { Check, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 

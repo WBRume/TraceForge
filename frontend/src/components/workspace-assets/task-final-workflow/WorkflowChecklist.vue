@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, CheckCircle2, CircleAlert } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, CircleAlert } from '@/components/icons'
 import type { BaselineCheckItem } from '@/types/workspaceAssets'
 import WorkflowStatusPill from './WorkflowStatusPill.vue'
 

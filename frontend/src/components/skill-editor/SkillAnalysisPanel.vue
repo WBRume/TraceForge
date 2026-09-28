@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, proxyRefs } from 'vue'
-import { AlertTriangle, CheckCircle2, FileSearch, FileText, Loader2, RefreshCw, Shield, Zap, BarChart3, Clock, AlertCircle } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, FileSearch, FileText, Loader2, RefreshCw, Shield, Zap, BarChart3, Clock, AlertCircle } from '@/components/icons'
 import SkillAnalysisRiskDetail from '@/components/skill-editor/SkillAnalysisRiskDetail.vue'
 import SkillAnalysisRiskList from '@/components/skill-editor/SkillAnalysisRiskList.vue'
 import type { SkillEditorViewModel } from '@/composables/useSkillEditorViewModel'

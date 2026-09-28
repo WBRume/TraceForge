@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { X, Loader2 } from 'lucide-vue-next'
+import { X, Loader2 } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { PermissionKey, PermissionFlags } from '@/utils/settingsPermissions'
 import { defaultPermissionsByRole } from '@/utils/settingsPermissions'

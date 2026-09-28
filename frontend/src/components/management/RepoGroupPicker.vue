@@ -4,7 +4,7 @@
      whole page instead of being confined to the parent card. -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Search } from 'lucide-vue-next'
+import { Search } from '@/components/icons'
 import RepoGroupPickerNode from '@/components/management/RepoGroupPickerNode.vue'
 import { getRepoGroupTree } from '@/services/managementApi'
 import type { RepoGroupRepo, RepoGroupTreeNode } from '@/types/management'

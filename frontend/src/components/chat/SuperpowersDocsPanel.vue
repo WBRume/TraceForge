@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ChevronRight, FileText, Folder, Loader2, RefreshCw, Save, Brain } from 'lucide-vue-next'
+import { ChevronRight, FileText, Folder, Loader2, RefreshCw, Save, Brain } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 

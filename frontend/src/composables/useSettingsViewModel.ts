@@ -1,7 +1,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bot, Languages, Link, MonitorCog, Palette, Users } from 'lucide-vue-next'
+import { Bot, Languages, Link, MonitorCog, Palette, Users } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, proxyRefs } from 'vue'
-import { Loader2, Palette, Save, UploadCloud, CheckCircle2, Info } from 'lucide-vue-next'
+import { Loader2, Palette, Save, UploadCloud, CheckCircle2, Info } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'

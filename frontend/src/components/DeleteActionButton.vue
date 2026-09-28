@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Loader2, Trash2 } from 'lucide-vue-next'
+import { Loader2, Trash2 } from '@/components/icons'
 
 type Mode = 'icon' | 'mini'
 

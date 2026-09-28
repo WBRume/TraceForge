@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, useSlots, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { ElMessage } from "element-plus";
-import { ChevronDown, FileText, Clock } from "lucide-vue-next";
+import { ChevronDown, FileText, Clock } from '@/components/icons';
 import api from "@/utils/api";
 import { formatApiError } from "@/utils/error";
 import {

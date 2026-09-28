@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
-import { GitBranch, History, Link2Off, MessageSquare, Scissors } from 'lucide-vue-next'
+import { GitBranch, History, Link2Off, MessageSquare, Scissors } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementDetail, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'

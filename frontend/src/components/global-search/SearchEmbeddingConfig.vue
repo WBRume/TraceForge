@@ -2,7 +2,7 @@
 import { onMounted, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { BrainCircuit, RefreshCw } from 'lucide-vue-next'
+import { BrainCircuit, RefreshCw } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 

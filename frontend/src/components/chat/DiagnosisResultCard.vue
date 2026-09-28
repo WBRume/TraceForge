@@ -21,7 +21,7 @@ import {
   Save,
   Trash2,
   X,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import {
   normalizeDiagnosisPayload,
   type DiagnosisCallChainNode,

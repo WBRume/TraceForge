@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Loader2, ShieldCheck } from 'lucide-vue-next'
+import { Loader2, ShieldCheck } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { createRepository, updateRepository, validateRepositoryAccess } from '@/services/managementApi'
 import { formatApiError } from '@/utils/error'

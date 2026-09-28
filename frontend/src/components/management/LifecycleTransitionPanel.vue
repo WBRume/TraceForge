@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft, ArrowRight } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import LifecycleBadge from '@/components/management/LifecycleBadge.vue'
 import { transitionProjectLifecycle } from '@/services/managementApi'

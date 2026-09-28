@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, CheckCircle2, LogIn } from 'lucide-vue-next'
+import { AlertTriangle, CheckCircle2, LogIn } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import { useAuthStore } from '@/stores/auth'

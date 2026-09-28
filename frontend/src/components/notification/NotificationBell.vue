@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, useTemplateRef, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Bell } from 'lucide-vue-next'
+import { Bell } from '@/components/icons'
 import { useNotificationStore } from '@/stores/notification'
 import type { AppNotificationItem } from '@/stores/notification'
 import { resolveNotificationTarget } from '@/components/notification/registry'

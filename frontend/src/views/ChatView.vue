@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { proxyRefs } from 'vue'
-import { ChevronDown, Loader2 } from 'lucide-vue-next'
+import { ChevronDown, Loader2 } from '@/components/icons'
 import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import ChatExecutionInput from '@/components/chat/ChatExecutionInput.vue'

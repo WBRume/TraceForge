@@ -13,7 +13,7 @@ import {
   FileText,
   GitBranch,
   MessageSquare,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'traceability' | 'knowledgeBase'
 type TraceabilityView = 'coverage' | 'evidence' | 'delta' | 'risk'

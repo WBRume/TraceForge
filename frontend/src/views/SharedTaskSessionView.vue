@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Inbox, Loader2, LogIn, Send } from 'lucide-vue-next'
+import { AlertTriangle, Inbox, Loader2, LogIn, Send } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import {
   clearShareSession,

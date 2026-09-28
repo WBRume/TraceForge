@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { Loader2, Star, X } from 'lucide-vue-next'
+import { Loader2, Star, X } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
 import SkillAnalysisPanel from '@/components/skill-editor/SkillAnalysisPanel.vue'

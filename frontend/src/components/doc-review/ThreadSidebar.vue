@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArrowLeft } from "lucide-vue-next";
+import { ArrowLeft } from '@/components/icons';
 import ThreadTimeline from "./ThreadTimeline.vue";
 
 type ThreadProposal = {

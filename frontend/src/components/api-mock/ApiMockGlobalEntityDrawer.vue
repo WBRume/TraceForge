@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { X } from 'lucide-vue-next'
+import { X } from '@/components/icons'
 import EntityPanel from './EntityPanel.vue'
 import type { ApiMockEntity } from '@/types/apiMock'
 

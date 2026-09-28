@@ -11,7 +11,7 @@ import {
   Loader2,
   Sparkles,
   Search,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import api from '@/utils/api'
 import { useWorkspaceStore } from '@/stores/workspace'
 import BaseSelect from '@/components/BaseSelect.vue'

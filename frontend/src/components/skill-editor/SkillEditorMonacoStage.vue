@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, proxyRefs, shallowRef, watch, onBeforeUnmount } from 'vue'
-import { Info, Loader2 } from 'lucide-vue-next'
+import { Info, Loader2 } from '@/components/icons'
 import { VueMonacoDiffEditor, VueMonacoEditor } from '@guolao/vue-monaco-editor'
 import SkillFileTabs from '@/components/skill-editor/SkillFileTabs.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'

@@ -5,7 +5,7 @@ import {
   Terminal, Workflow, Cpu,
   Layers, Globe, Lock,
   MessageSquareDiff, Settings, ServerCog, Code
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 const router = useRouter()
 </script>

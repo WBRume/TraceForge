@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Search } from 'lucide-vue-next'
+import { Search } from '@/components/icons'
 import { useGlobalSearchStore } from '@/stores/globalSearch'
 
 withDefaults(

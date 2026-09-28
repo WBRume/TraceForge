@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Laptop, Server } from 'lucide-vue-next'
+import { Laptop, Server } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import api from '@/utils/api'
 import { useLocalResources, type TaskExecution } from '@/composables/useLocalResources'

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Search, Plus } from 'lucide-vue-next'
+import { Search, Plus } from '@/components/icons'
 import type { ApiMockEndpoint } from '@/types/apiMock'
 
 const props = defineProps<{

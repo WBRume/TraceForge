@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CheckCircle2, XCircle, Clock, DollarSign, Loader2 } from 'lucide-vue-next'
+import { CheckCircle2, XCircle, Clock, DollarSign, Loader2 } from '@/components/icons'
 import { statusMessageText, statusModelText } from '@/composables/chat/cards/presenters'
 import type { ChatStatusCard, ResultsSummaryState } from '@/composables/chat/types'
 

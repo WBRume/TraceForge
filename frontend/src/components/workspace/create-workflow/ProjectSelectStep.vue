@@ -1,7 +1,7 @@
 <!-- Workspace creation workflow: step 2 project selection. -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { FolderKanban, Search } from 'lucide-vue-next'
+import { FolderKanban, Search } from '@/components/icons'
 import type { Project } from '@/types/management'
 
 const props = defineProps<{

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { ChevronDown } from 'lucide-vue-next'
+import { ChevronDown } from '@/components/icons'
 
 interface Option {
   label: string

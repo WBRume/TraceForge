@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
-import { FolderTree } from 'lucide-vue-next'
+import { FolderTree } from '@/components/icons'
 import type { SkillFileNode } from '@/composables/useSkillEditorViewModel'
 import { resolveSkillTreeVisual } from '@/utils/skillFileTreeVisual'
 

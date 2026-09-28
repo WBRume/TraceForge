@@ -23,7 +23,7 @@ import {
   History,
   MessagesSquare,
   BookMarked,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import { useCaseCenter } from '@/composables/useCaseCenter'
 import CaseReportSection from './CaseReportSection.vue'
 import CaseReviewTimeline from './CaseReviewTimeline.vue'

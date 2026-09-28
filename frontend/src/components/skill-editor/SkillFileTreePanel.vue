@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, proxyRefs, type Component } from 'vue'
-import { FilePlus2, FolderPlus, Trash2, Edit3, FolderTree } from 'lucide-vue-next'
+import { FilePlus2, FolderPlus, Trash2, Edit3, FolderTree } from '@/components/icons'
 import type { SkillEditorViewModel, SkillFileNode } from '@/composables/useSkillEditorViewModel'
 import { resolveSkillTreeVisual } from '@/utils/skillFileTreeVisual'
 

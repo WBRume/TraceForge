@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import { formatTime } from '@/utils/chatFormatters'
-import { Star } from 'lucide-vue-next'
+import { Star } from '@/components/icons'
 
 interface ChatTaskListItemData {
   id: string

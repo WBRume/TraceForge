@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import { Plus, Save, Trash2, ArrowLeft, ExternalLink } from 'lucide-vue-next'
+import { Plus, Save, Trash2, ArrowLeft, ExternalLink } from '@/components/icons'
 import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
 import type * as Monaco from 'monaco-editor'
 import type { ApiMockEndpoint, ApiMockMockCase } from '@/types/apiMock'

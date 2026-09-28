@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, watch } from 'vue'
-import { Sparkles } from 'lucide-vue-next'
+import { Sparkles } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementEditableStatus } from '@/types/workspaceAssets'

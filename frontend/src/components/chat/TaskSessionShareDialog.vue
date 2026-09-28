@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Copy, Link2, Loader2, Share2, Trash2, X } from 'lucide-vue-next'
+import { Check, Copy, Link2, Loader2, Share2, Trash2, X } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { CreatedShare, SessionShareItem } from '@/composables/useTaskSessionShares'
 

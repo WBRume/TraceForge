@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Activity, Database, FileText, ShieldCheck, UserRound } from 'lucide-vue-next'
+import { Activity, Database, FileText, ShieldCheck, UserRound } from '@/components/icons'
 import type { TaskDetail, TaskDetailSummaryResponse } from '@/types/workspaceAssets'
 
 const props = defineProps<{

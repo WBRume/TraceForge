@@ -1,6 +1,6 @@
 <!-- Workspace creation workflow: step 3 product selection. -->
 <script setup lang="ts">
-import { Package } from 'lucide-vue-next'
+import { Package } from '@/components/icons'
 import type { ProjectProduct } from '@/types/management'
 
 const props = defineProps<{

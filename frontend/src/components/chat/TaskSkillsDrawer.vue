@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
-import { Activity, File, Folder, FolderTree, RefreshCw, Save, X } from 'lucide-vue-next'
+import { Activity, File, Folder, FolderTree, RefreshCw, Save, X } from '@/components/icons'
 import { VueMonacoEditor } from '@guolao/vue-monaco-editor'
 import AppSideDrawer from '@/components/AppSideDrawer.vue'
 import SkillRuntimeTracePanel from '@/components/chat/SkillRuntimeTracePanel.vue'

@@ -1,6 +1,6 @@
 <!-- Unified icon action button for management tables/detail headers. -->
 <script setup lang="ts">
-import { Loader2 } from 'lucide-vue-next'
+import { Loader2 } from '@/components/icons'
 import type { Component } from 'vue'
 
 withDefaults(defineProps<{

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, FilePlus2 } from 'lucide-vue-next'
+import { Loader2, FilePlus2 } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 
 const props = defineProps<{

@@ -6,7 +6,7 @@ import {
   Braces, Layers, Database,
   Save, Plus, Trash2, Copy,
   FileCode2,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import type {
   ApiMockDocument,
   ApiMockEndpoint,

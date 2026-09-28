@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, Info, Loader2 } from 'lucide-vue-next'
+import { Bot, Info, Loader2 } from '@/components/icons'
 import { useAgentBackendSettings } from '@/composables/useAgentBackendSettings'
 
 const { t } = useI18n()

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Minus, Sparkles, X } from 'lucide-vue-next'
+import { Minus, Sparkles, X } from '@/components/icons'
 import RequirementCreateMethodStep from './RequirementCreateMethodStep.vue'
 import RequirementImportContentStep from './RequirementImportContentStep.vue'
 import RequirementManualCreateStep from './RequirementManualCreateStep.vue'

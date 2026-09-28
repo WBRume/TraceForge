@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { Check, Languages } from 'lucide-vue-next'
+import { Check, Languages } from '@/components/icons'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const props = defineProps<{ vm: SettingsViewModel }>()

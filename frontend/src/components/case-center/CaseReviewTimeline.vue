@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { History, UserCheck, CheckCircle2, XCircle } from 'lucide-vue-next'
+import { History, UserCheck, CheckCircle2, XCircle } from '@/components/icons'
 
 defineProps<{ records: any[] }>()
 const { t } = useI18n()

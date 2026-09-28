@@ -9,7 +9,7 @@ import {
   TrendingUp,
   Plus, 
   TerminalSquare
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import api from '@/utils/api'
 import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import {

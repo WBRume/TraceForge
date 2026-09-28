@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Sparkles, Database, TestTube, Loader2 } from 'lucide-vue-next'
+import { Sparkles, Database, TestTube, Loader2 } from '@/components/icons'
 import RunSummaryCard from './RunSummaryCard.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 

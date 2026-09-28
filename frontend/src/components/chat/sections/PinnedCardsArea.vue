@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Brain, ChevronDown } from 'lucide-vue-next'
+import { Brain, ChevronDown } from '@/components/icons'
 import HitlInteractionCard from './HitlInteractionCard.vue'
 import type { HitlCard } from '@/composables/chat/types'
 

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { ChevronRight } from 'lucide-vue-next'
+import { ChevronRight } from '@/components/icons'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const props = defineProps<{ vm: SettingsViewModel }>()

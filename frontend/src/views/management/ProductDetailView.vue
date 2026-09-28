@@ -6,7 +6,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
-import { ArrowLeft } from 'lucide-vue-next';
+import { ArrowLeft } from '@/components/icons';
 import AdminGuard from '@/components/management/AdminGuard.vue';
 import ProductBaseReposPanel from '@/components/management/ProductBaseReposPanel.vue';
 import ProductFormModal from '@/components/management/ProductFormModal.vue';

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ArrowLeft } from 'lucide-vue-next'
+import { ArrowLeft } from '@/components/icons'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { formatApiError } from '@/utils/error'
 import {

@@ -3,7 +3,7 @@
 import { computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
-import { GitBranch, Info } from 'lucide-vue-next'
+import { GitBranch, Info } from '@/components/icons'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import RepoMappingRow from '@/components/local-agent/RepoMappingRow.vue'

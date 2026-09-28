@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, watch, ref, nextTick, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { X } from 'lucide-vue-next'
+import { X } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { DeltaLineRef, DecisionMutationPayload } from '@/types/workspaceAssets'
 

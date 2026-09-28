@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Settings2, RefreshCw, Clock, Globe, FileUp } from 'lucide-vue-next'
+import { Settings2, RefreshCw, Clock, Globe, FileUp } from '@/components/icons'
 import CollabPresenceBar from '@/components/api-mock/CollabPresenceBar.vue'
 
 type JobState = {

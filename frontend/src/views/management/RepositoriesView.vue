@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Plus } from 'lucide-vue-next'
+import { Plus } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import BaseSelect from '@/components/BaseSelect.vue'

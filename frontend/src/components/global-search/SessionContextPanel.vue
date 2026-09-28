@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { AlertCircle, Loader2 } from 'lucide-vue-next'
+import { AlertCircle, Loader2 } from '@/components/icons'
 import api from '@/utils/api'
 
 interface HistoryMessageItem {

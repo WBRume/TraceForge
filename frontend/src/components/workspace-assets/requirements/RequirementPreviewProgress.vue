@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Check, LoaderCircle, TriangleAlert } from 'lucide-vue-next'
+import { Check, LoaderCircle, TriangleAlert } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import type { RequirementPreviewJob } from '@/types/workspaceAssets'
 

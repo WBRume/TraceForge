@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { FileDiff } from 'lucide-vue-next'
+import { FileDiff } from '@/components/icons'
 import type { SkillEditorViewModel } from '@/composables/useSkillEditorViewModel'
 
 const props = defineProps<{ vm: SkillEditorViewModel }>()

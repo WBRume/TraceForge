@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Braces, FolderTree, Search } from 'lucide-vue-next'
+import { Braces, FolderTree, Search } from '@/components/icons'
 import type { ApiMockEndpoint } from '@/types/apiMock'
 
 const props = defineProps<{

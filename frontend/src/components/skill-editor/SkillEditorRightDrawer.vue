@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs, shallowRef, watch, onBeforeUnmount } from 'vue'
-import { ChevronRight, ChevronLeft, Info, Loader2, Maximize2, Minimize2 } from 'lucide-vue-next'
+import { ChevronRight, ChevronLeft, Info, Loader2, Maximize2, Minimize2 } from '@/components/icons'
 import { VueMonacoEditor, VueMonacoDiffEditor } from '@guolao/vue-monaco-editor'
 import SkillEditorSidebar from './SkillEditorSidebar.vue'
 import SkillDiffFileList from './SkillDiffFileList.vue'

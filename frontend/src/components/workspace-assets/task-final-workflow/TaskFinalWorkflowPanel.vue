@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LockKeyhole, RotateCw } from 'lucide-vue-next'
+import { LockKeyhole, RotateCw } from '@/components/icons'
 import { useTaskFinalWorkflow } from '@/composables/useTaskFinalWorkflow'
 import type {
   FinalWorkflowStepKey,

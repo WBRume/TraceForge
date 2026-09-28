@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, reactive, watch } from 'vue'
-import { Save } from 'lucide-vue-next'
+import { Save } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { ApiMockEndpoint, ApiMockRule } from '@/types/apiMock'
 

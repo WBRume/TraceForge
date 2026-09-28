@@ -3,7 +3,7 @@
      勾选集经 v-model 交给对话框，提交时组装 skill_ids。 -->
 <script setup lang="ts">
 import { onMounted } from 'vue'
-import { FolderOpen, Globe, Loader2, RefreshCw, Search, Sparkles, X } from 'lucide-vue-next'
+import { FolderOpen, Globe, Loader2, RefreshCw, Search, Sparkles, X } from '@/components/icons'
 import SidebarPanel from './SidebarPanel.vue'
 import { isDraftSkill, useTaskSkillPicker } from './composables/useTaskSkillPicker'
 

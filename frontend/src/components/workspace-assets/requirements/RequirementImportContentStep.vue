@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
-import { FileText, Sparkles, UploadCloud } from 'lucide-vue-next'
+import { FileText, Sparkles, UploadCloud } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import type {
   RequirementDirectImportPayload,

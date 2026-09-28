@@ -20,11 +20,11 @@
   },
   "dependencies": {
     "@guolao/vue-monaco-editor": "^1.6.0",
+    "@heroicons/vue": "^2.2.0",
     "axios": "^1.13.6",
     "cross-spawn": "^7.0.6",
     "echarts": "^6.0.0",
     "element-plus": "^2.13.6",
-    "lucide-vue-next": "^0.577.0",
     "mockjs": "^1.1.0",
     "monaco-editor": "^0.55.1",
     "pdfjs-dist": "^4.10.38",

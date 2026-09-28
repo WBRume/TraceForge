@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { Loader2 } from 'lucide-vue-next'
+import { Loader2 } from '@/components/icons'
 import ChatMessageBubble from '@/components/chat/ChatMessageBubble.vue'
 import ReadingResumeBanner from '@/components/chat/reading/ReadingResumeBanner.vue'
 import type { Ref } from 'vue'

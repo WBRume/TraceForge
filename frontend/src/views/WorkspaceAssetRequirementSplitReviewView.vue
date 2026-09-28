@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeft, Plus, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, Plus, Trash2, X } from '@/components/icons'
 import { ElMessage } from 'element-plus'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import BaseSelect from '@/components/BaseSelect.vue'

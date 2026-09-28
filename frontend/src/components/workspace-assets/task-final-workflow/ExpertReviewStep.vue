@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Eye, Pencil, Plus, ShieldCheck } from 'lucide-vue-next'
+import { Eye, Pencil, Plus, ShieldCheck } from '@/components/icons'
 import type {
   FinalWorkflowReviewPayload,
   HumanReview,

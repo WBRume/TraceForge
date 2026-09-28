@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { GitBranch, Tag } from 'lucide-vue-next'
+import { GitBranch, Tag } from '@/components/icons'
 import RepoSelectTree from './RepoSelectTree.vue'
 import type { RepoSelectTreeNode, RepoSelectTreeRepo } from './RepoSelectTree.vue'
 import type { ProjectRepoSetItem } from '@/types/management'

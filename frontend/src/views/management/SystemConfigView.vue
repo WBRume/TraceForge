@@ -9,7 +9,7 @@ SystemConfigView: 系统配置项（管理员）。三项配置以 Tab 切换，
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { BrainCircuit, FolderRoot, SlidersHorizontal } from 'lucide-vue-next'
+import { BrainCircuit, FolderRoot, SlidersHorizontal } from '@/components/icons'
 import SearchEmbeddingConfig from '@/components/global-search/SearchEmbeddingConfig.vue'
 import AdminGuard from '@/components/management/AdminGuard.vue'
 import { formatApiError } from '@/utils/error'

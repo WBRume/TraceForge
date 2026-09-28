@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
-import { Play, Copy } from 'lucide-vue-next'
+import { Play, Copy } from '@/components/icons'
 import type { ApiMockEndpoint, ApiMockPreviewResponse } from '@/types/apiMock'
 
 const props = defineProps<{

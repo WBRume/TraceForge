@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, Circle, Send, X } from 'lucide-vue-next'
+import { Check, Circle, Send, X } from '@/components/icons'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 
 const props = defineProps<{
