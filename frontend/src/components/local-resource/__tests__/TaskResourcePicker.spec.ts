@@ -21,15 +21,22 @@ describe('TaskResourcePicker', () => {
     }))
   })
 
-  it('selects a saved resource without requiring the obsolete full verification', async () => {
+  it('switches to a saved local resource and emits its profile revision', async () => {
     const wrapper = mount(TaskResourcePicker, { props: { workspaceId: 'ws' } })
     await flushPromises()
-    const select = wrapper.getComponent(BaseSelect)
-    expect(select.props('options')).toEqual([
-      { label: '服务器资源', value: '' },
-      { label: '本地 · 我的本地服务', value: 'saved', disabled: false },
+
+    // 默认停留在服务器执行
+    expect(wrapper.emitted('change')?.at(-1)).toEqual([{ location: 'SERVER' }])
+    expect(wrapper.findComponent(BaseSelect).exists()).toBe(false)
+
+    const localButton = wrapper.findAll('.exec-seg-item')[1]
+    expect(localButton.attributes('disabled')).toBeUndefined()
+    await localButton.trigger('click')
+
+    expect(localButton.classes()).toContain('active')
+    expect(wrapper.getComponent(BaseSelect).props('options')).toEqual([
+      { label: '我的本地服务', value: 'saved' },
     ])
-    await select.vm.$emit('update:modelValue', 'saved')
     expect(wrapper.emitted('change')?.at(-1)).toEqual([
       { location: 'LOCAL', resource_id: 'saved', profile_revision: 3 },
     ])
@@ -37,11 +44,14 @@ describe('TaskResourcePicker', () => {
     wrapper.unmount()
   })
 
-  it('keeps local resources disabled when the server has not enabled them', async () => {
+  it('keeps the local segment disabled when the server has not enabled local resources', async () => {
     enabled = false
     const wrapper = mount(TaskResourcePicker, { props: { workspaceId: 'ws' } })
     await flushPromises()
-    expect(wrapper.getComponent(BaseSelect).props('options')[1].disabled).toBe(true)
+
+    const localButton = wrapper.findAll('.exec-seg-item')[1]
+    expect(localButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.findComponent(BaseSelect).exists()).toBe(false)
     wrapper.unmount()
   })
 })
