@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Eye, Pencil, Trash2 } from 'lucide-vue-next'
+import { Eye, Pencil, Trash2 } from '@/components/icons'
 import IconActionButton from '@/components/management/IconActionButton.vue'
 import LifecycleBadge from '@/components/management/LifecycleBadge.vue'
 import type { Project } from '@/types/management'

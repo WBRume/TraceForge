@@ -10,7 +10,7 @@ import {
   FileText,
   FileType,
   Folder,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 export type SkillTreeTone =
   | 'folder'

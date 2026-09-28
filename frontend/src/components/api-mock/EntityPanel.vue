@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, provide } from 'vue'
-import { Database, Globe, Link, Pencil, Trash2, Save, X } from 'lucide-vue-next'
+import { Database, Globe, Link, Pencil, Trash2, Save, X } from '@/components/icons'
 import ApiMockSchemaNode from './ApiMockSchemaNode.vue'
 import type { ApiMockEndpoint, ApiMockEntity } from '@/types/apiMock'
 

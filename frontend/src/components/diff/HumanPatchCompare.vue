@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, User, GitCompareArrows, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { Bot, User, GitCompareArrows, ChevronDown, ChevronRight } from '@/components/icons'
 import MonacoDiffViewer from '@/components/diff/MonacoDiffViewer.vue'
 import SideBySideHunkViewer from '@/components/diff/SideBySideHunkViewer.vue'
 import type { HumanDeltaFileDiff, DeltaRegion } from '@/types/workspaceAssets'

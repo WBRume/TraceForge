@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { ArrowLeft, Eye, FileCode2, GitBranch, Loader2, Pencil, RefreshCw, Save, ShieldCheck } from 'lucide-vue-next'
+import { ArrowLeft, Eye, FileCode2, GitBranch, Loader2, Pencil, RefreshCw, Save, ShieldCheck } from '@/components/icons'
 import type { SkillEditorViewModel } from '@/composables/useSkillEditorViewModel'
 
 const props = defineProps<{ vm: SkillEditorViewModel }>()

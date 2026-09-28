@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { Loader2, Trash2, Users, X } from 'lucide-vue-next'
+import { Loader2, Trash2, Users, X } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import SettingsMembersAddModal from '@/components/settings/SettingsMembersAddModal.vue'
 import SettingsMembersTable from '@/components/settings/SettingsMembersTable.vue'

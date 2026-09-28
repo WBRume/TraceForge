@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRoute } from 'vue-router'
-import { ArrowLeft } from 'lucide-vue-next'
+import { ArrowLeft } from '@/components/icons'
 import TaskFinalWorkflowPanel from '@/components/workspace-assets/task-final-workflow/TaskFinalWorkflowPanel.vue'
 
 const route = useRoute()

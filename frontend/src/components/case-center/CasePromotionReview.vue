@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Sparkles, ChevronLeft, ChevronRight, FileText } from 'lucide-vue-next'
+import { Sparkles, ChevronLeft, ChevronRight, FileText } from '@/components/icons'
 import type { PromotionDraft } from '@/types/playbookPromotion'
 
 const draft = defineModel<PromotionDraft>({ required: true })

@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Info, Plus, Search } from 'lucide-vue-next'
+import { Info, Plus, Search } from '@/components/icons'
 import RepoGroupTreeNodeRow from '@/components/management/RepoGroupTreeNodeRow.vue'
 import RepoGroupFormModal from '@/components/management/RepoGroupFormModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'

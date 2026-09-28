@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ChevronRight, ShieldAlert, Target, Info, CheckCircle2 } from 'lucide-vue-next'
+import { ChevronRight, ShieldAlert, Target, Info, CheckCircle2 } from '@/components/icons'
 import type { SkillAnalysisLevel, SkillAnalysisRiskItem } from '@/types/skillAnalysis'
 import { fallbackRiskKey, formatConfidence, riskLocation, riskSummary, riskTitle } from '@/utils/skillAnalysisRisk'
 

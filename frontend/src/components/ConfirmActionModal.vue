@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { AlertTriangle, Loader2 } from 'lucide-vue-next'
+import { AlertTriangle, Loader2 } from '@/components/icons'
 
 type Tone = 'danger' | 'primary' | 'success'
 

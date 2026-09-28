@@ -2,7 +2,7 @@
 ProductListTable: product rows with open / edit / delete actions.
 -->
 <script setup lang="ts">
-import { Eye, Pencil, Trash2 } from 'lucide-vue-next';
+import { Eye, Pencil, Trash2 } from '@/components/icons';
 import IconActionButton from '@/components/management/IconActionButton.vue';
 import type { Product } from '@/types/management';
 

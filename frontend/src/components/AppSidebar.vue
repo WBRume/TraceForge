@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { Component } from 'vue'
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { ArrowLeft, ChevronLeft, ChevronRight } from '@/components/icons'
 
 export interface SidebarItem {
   key: string

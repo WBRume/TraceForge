@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeft, AlertCircle } from 'lucide-vue-next'
+import { ArrowLeft, AlertCircle } from '@/components/icons'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
 import { useTaskSpecBootstrapFeed } from '@/composables/useTaskSpecBootstrapFeed'
 import api from '@/utils/api'

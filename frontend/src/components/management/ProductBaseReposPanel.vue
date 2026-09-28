@@ -7,7 +7,7 @@ its own branches/tags and may add version-specific repositories.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { GitBranch, Plus, Trash2 } from 'lucide-vue-next'
+import { GitBranch, Plus, Trash2 } from '@/components/icons'
 import IconActionButton from '@/components/management/IconActionButton.vue'
 import RepoGroupPicker from '@/components/management/RepoGroupPicker.vue'
 import { addProductBaseRepo, removeProductBaseRepo } from '@/services/managementApi'

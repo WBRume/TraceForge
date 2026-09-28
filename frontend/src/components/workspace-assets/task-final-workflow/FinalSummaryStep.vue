@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { FilePenLine, ShieldCheck } from 'lucide-vue-next'
+import { FilePenLine, ShieldCheck } from '@/components/icons'
 import type { BaselineCheckItem, TaskFinalSummary, TaskFinalSummaryPayload } from '@/types/workspaceAssets'
 import WorkflowChecklist from './WorkflowChecklist.vue'
 import WorkflowStatusPill from './WorkflowStatusPill.vue'

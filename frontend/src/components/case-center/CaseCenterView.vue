@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, proxyRefs, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { Search, Plus, Loader2, BookMarked, RefreshCw, Workflow } from 'lucide-vue-next'
+import { Search, Plus, Loader2, BookMarked, RefreshCw, Workflow } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import { useCaseCenter } from '@/composables/useCaseCenter'
 import CaseStatusPill from './CaseStatusPill.vue'

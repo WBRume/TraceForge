@@ -8,7 +8,7 @@ defineOptions({
 import {
   Plus,
   X,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 
 const TYPES = ['string', 'number', 'integer', 'boolean', 'object', 'array'] as const

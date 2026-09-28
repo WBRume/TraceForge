@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowRight, Code, Zap, Shield, GitBranch, ExternalLink, Loader2, Languages, Database, Eye } from 'lucide-vue-next'
+import { ArrowRight, Code, Zap, Shield, GitBranch, ExternalLink, Loader2, Languages, Database, Eye } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import api, { getApiServerUrl } from '@/utils/api'
 import { formatApiError } from '@/utils/error'

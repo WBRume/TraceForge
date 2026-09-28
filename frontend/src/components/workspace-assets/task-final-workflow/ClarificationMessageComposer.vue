@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageCircle, MessageSquarePlus, SendHorizontal } from 'lucide-vue-next'
+import { MessageCircle, MessageSquarePlus, SendHorizontal } from '@/components/icons'
 import type { ClarificationMessagePayload, ClarificationMessageType } from '@/types/workspaceAssets'
 
 defineProps<{

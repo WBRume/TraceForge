@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2 } from 'lucide-vue-next'
+import { Loader2 } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 

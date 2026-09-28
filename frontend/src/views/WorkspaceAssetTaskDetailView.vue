@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   TerminalSquare,
   LayoutGrid,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import TaskDetailHeader from '@/components/workspace-assets/task-detail/TaskDetailHeader.vue'
 import TaskFilePanel from '@/components/workspace-assets/task-detail/TaskFilePanel.vue'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'

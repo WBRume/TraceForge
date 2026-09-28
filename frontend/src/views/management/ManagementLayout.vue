@@ -9,7 +9,7 @@ Serves centers distinguished by route meta.center:
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Package, FolderKanban, GitFork, ServerCog, Wrench, BookMarked, Briefcase, Layers, SlidersHorizontal } from 'lucide-vue-next'
+import { Package, FolderKanban, GitFork, ServerCog, Wrench, BookMarked, Briefcase, Layers, SlidersHorizontal } from '@/components/icons'
 import AppSidebar from '@/components/AppSidebar.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSystemConfigStore } from '@/stores/systemConfig'

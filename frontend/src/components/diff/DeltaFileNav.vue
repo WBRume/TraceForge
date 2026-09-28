@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, User, GitCompareArrows, FilePlus, FileX, FileEdit, ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { Bot, User, GitCompareArrows, FilePlus, FileX, FileEdit, ChevronDown, ChevronRight } from '@/components/icons'
 import type { HumanDeltaFileDiff, DeltaRegion, DeltaRegionSource } from '@/types/workspaceAssets'
 
 const props = defineProps<{

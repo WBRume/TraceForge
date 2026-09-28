@@ -16,7 +16,7 @@ import {
   Copy,
   Check,
   Workflow,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import api from '@/utils/api'
 import type { PlaybookSpec } from '@/types/diagnosisPlaybook'
 import { DEMO_PLAYBOOK_YAML } from './demoPlaybook'

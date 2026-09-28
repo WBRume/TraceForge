@@ -30,7 +30,7 @@ import {
   Brain,
   ClipboardList,
   GitMerge
-} from 'lucide-vue-next'
+} from '@/components/icons'
 
 const canvas = ref<HTMLElement | null>(null)
 

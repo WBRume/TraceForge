@@ -6,7 +6,7 @@ import {
   CheckCircle, ArrowRight, Info,
   Settings, MessageSquareDiff, ServerCog, Verified, Layers,
   Network
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import Flowchart from '@/components/Flowchart.vue'
 
 const router = useRouter()

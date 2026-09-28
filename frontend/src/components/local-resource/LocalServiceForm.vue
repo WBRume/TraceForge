@@ -18,7 +18,7 @@ import {
   Loader2,
   Check,
   RefreshCw,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import api from '@/utils/api'
 import BaseSelect from '@/components/BaseSelect.vue'
 import LocalGitRemoteSelect from '@/components/local-agent/LocalGitRemoteSelect.vue'

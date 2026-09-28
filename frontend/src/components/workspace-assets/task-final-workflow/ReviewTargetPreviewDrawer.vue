@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, FileSearch } from 'lucide-vue-next'
+import { AlertCircle, FileSearch } from '@/components/icons'
 import DeltaFileNav from '@/components/diff/DeltaFileNav.vue'
 import HumanPatchCompare from '@/components/diff/HumanPatchCompare.vue'
 import type {

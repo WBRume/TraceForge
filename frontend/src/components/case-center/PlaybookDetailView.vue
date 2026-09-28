@@ -17,7 +17,7 @@ import {
   Boxes,
   Layers,
   Link as LinkIcon,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import api from '@/utils/api'
 
 const route = useRoute()

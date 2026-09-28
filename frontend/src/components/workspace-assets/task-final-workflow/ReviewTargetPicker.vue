@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Search, X } from 'lucide-vue-next'
+import { Search, X } from '@/components/icons'
 import type { ReviewTarget, ReviewTargetRef, ReviewTargetType } from '@/types/workspaceAssets'
 
 const props = defineProps<{

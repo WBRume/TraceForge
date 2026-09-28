@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Activity, Info, RefreshCw } from 'lucide-vue-next'
+import { Activity, Info, RefreshCw } from '@/components/icons'
 import type { SkillRuntimeEvent } from '@/types/runtimeSkillTrace'
 
 type RuntimeSkillItem = {

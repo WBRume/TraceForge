@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bot, User, FileDiff, Plus, Minus } from 'lucide-vue-next'
+import { Bot, User, FileDiff, Plus, Minus } from '@/components/icons'
 import type { WorkbenchDelta } from '@/types/workspaceAssets'
 
 const props = defineProps<{

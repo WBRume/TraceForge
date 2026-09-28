@@ -9,7 +9,7 @@ import {
   Loader2,
   MessageSquareText,
   RefreshCw,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import AppSideDrawer from '@/components/AppSideDrawer.vue'
 import ContextCompactionView from '@/components/chat/context-window/ContextCompactionView.vue'

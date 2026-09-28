@@ -5,7 +5,7 @@ import {
   Minus,
   Copy,
   Check,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import { ElMessage } from 'element-plus'
 import { usePinnedFloatsStore, type PinnedSearchItem } from '@/stores/pinnedFloats'
 import UserAvatar from '@/components/user/UserAvatar.vue'

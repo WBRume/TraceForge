@@ -2,7 +2,7 @@
 import { ref, watch, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Github, Loader2, X } from 'lucide-vue-next'
+import { Github, Loader2, X } from '@/components/icons'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'

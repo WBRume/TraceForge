@@ -3,7 +3,7 @@
      仓库 / Skills 侧栏入口条只负责发出切换事件，不做任何业务判断。 -->
 <script setup lang="ts">
 import { computed, shallowRef, watch } from 'vue'
-import { BookOpen, ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from 'lucide-vue-next'
+import { BookOpen, ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from '@/components/icons'
 import TaskResourcePicker from '@/components/local-resource/TaskResourcePicker.vue'
 import type { TaskExecution } from '@/composables/useLocalResources'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'

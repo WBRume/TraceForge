@@ -9,7 +9,7 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import TaskAssetEmptyState from './TaskAssetEmptyState.vue'
 import type { TaskFileItemLight } from '@/types/workspaceAssets'
 

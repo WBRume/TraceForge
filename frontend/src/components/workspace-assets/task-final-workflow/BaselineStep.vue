@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Copy, LockKeyhole, ShieldCheck } from 'lucide-vue-next'
+import { Copy, LockKeyhole, ShieldCheck } from '@/components/icons'
 import type { BaselineCheckItem, TaskBaseline } from '@/types/workspaceAssets'
 import WorkflowChecklist from './WorkflowChecklist.vue'
 import WorkflowStatusPill from './WorkflowStatusPill.vue'

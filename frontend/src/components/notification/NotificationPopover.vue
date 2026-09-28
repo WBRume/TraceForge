@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckCheck, X } from 'lucide-vue-next'
+import { CheckCheck, X } from '@/components/icons'
 import type { AppNotificationItem } from '@/stores/notification'
 
 const props = defineProps<{

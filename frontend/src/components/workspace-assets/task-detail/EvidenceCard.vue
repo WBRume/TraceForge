@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Copy, GitCommitHorizontal, GitPullRequest, FileText, Info } from 'lucide-vue-next'
+import { Copy, GitCommitHorizontal, GitPullRequest, FileText, Info } from '@/components/icons'
 import type { EvidenceLight } from '@/types/workspaceAssets'
 
 const props = defineProps<{

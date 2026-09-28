@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { proxyRefs, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, ChevronRight, Brain, FileText, GitFork } from 'lucide-vue-next'
+import { ChevronLeft, ChevronRight, Brain, FileText, GitFork } from '@/components/icons'
 import DocReviewWorkbench from '@/components/doc-review/DocReviewWorkbench.vue'
 import SuperpowersDocsPanel from '@/components/chat/SuperpowersDocsPanel.vue'
 import { useDiagnosisDocs } from '@/composables/useDiagnosisDocs'

@@ -8,7 +8,7 @@ import {
   GitBranch,
   Link2,
   SearchX,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import type {
   ContextCompactionEvent,

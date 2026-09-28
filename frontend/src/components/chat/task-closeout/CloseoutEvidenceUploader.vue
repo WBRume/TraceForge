@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { UploadCloud, X } from 'lucide-vue-next'
+import { UploadCloud, X } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{

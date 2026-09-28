@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Minus, ArrowRightLeft, Sparkles } from 'lucide-vue-next'
+import { Plus, Minus, ArrowRightLeft, Sparkles } from '@/components/icons'
 import type { DeltaRegion } from '@/types/workspaceAssets'
 
 const props = defineProps<{

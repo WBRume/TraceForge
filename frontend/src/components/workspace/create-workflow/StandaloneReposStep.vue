@@ -7,7 +7,7 @@ all repositories inside it, and each selected repo needs a branch.
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { GitBranch } from 'lucide-vue-next'
+import { GitBranch } from '@/components/icons'
 import { getRepositoryRefs } from '@/services/managementApi'
 import RepoSelectTree from './RepoSelectTree.vue'
 import type { RepoSelectTreeNode, RepoSelectTreeRepo } from './RepoSelectTree.vue'

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
-import { FileText, GitBranch } from 'lucide-vue-next'
+import { FileText, GitBranch } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import type {
   SpecCoverageMatrixCoverageStatus,

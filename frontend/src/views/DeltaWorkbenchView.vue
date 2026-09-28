@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeft, Loader2 } from 'lucide-vue-next'
+import { ArrowLeft, Loader2 } from '@/components/icons'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'
 import { useTaskDetailAssets } from '@/composables/useTaskDetailAssets'
 import WorkbenchSummaryBar from '@/components/diff/WorkbenchSummaryBar.vue'

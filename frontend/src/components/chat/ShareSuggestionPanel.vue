@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, ChevronDown, Copy, Inbox, Loader2, Pencil, X } from 'lucide-vue-next'
+import { Check, ChevronDown, Copy, Inbox, Loader2, Pencil, X } from '@/components/icons'
 import type { ShareSuggestion } from '@/composables/useShareSuggestions'
 
 /**

@@ -2,7 +2,7 @@
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Copy, GitCommitHorizontal, GitPullRequest, FileText, CheckCircle2, XCircle, Clock, AlertTriangle } from 'lucide-vue-next'
+import { Copy, GitCommitHorizontal, GitPullRequest, FileText, CheckCircle2, XCircle, Clock, AlertTriangle } from '@/components/icons'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'
 import type { Evidence, TaskFinalSummary } from '@/types/workspaceAssets'
 

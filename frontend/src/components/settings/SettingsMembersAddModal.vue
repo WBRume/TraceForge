@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs, ref } from 'vue'
-import { AlertCircle, CheckCircle2, Copy, Link2, Loader2, Mail, Plus, Trash2, X } from 'lucide-vue-next'
+import { AlertCircle, CheckCircle2, Copy, Link2, Loader2, Mail, Plus, Trash2, X } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { SettingsViewModel } from '@/composables/useSettingsViewModel'
 

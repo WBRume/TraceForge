@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle } from 'lucide-vue-next'
+import { AlertCircle } from '@/components/icons'
 import { hitlOptionValue, hitlOptionLabel } from '@/composables/chat/cards/presenters'
 import type { HitlCard } from '@/composables/chat/types'
 

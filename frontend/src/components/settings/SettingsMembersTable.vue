@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, proxyRefs, ref } from 'vue'
-import { ChevronDown, Loader2, Search } from 'lucide-vue-next'
+import { ChevronDown, Loader2, Search } from '@/components/icons'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import SettingsMemberPermissionDrawer from './SettingsMemberPermissionDrawer.vue'
 import type { PermissionFlags } from '@/utils/settingsPermissions'

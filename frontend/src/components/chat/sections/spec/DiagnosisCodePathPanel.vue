@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { GitFork, Loader2 } from 'lucide-vue-next'
+import { GitFork, Loader2 } from '@/components/icons'
 import type { DiagnosisDocsModelView } from '@/composables/useDiagnosisDocs'
 
 /**

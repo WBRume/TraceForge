@@ -3,7 +3,7 @@ RepoPickerDialog: pick a repository with search and type filter chips.
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Search } from 'lucide-vue-next'
+import { Search } from '@/components/icons'
 import { listRepositories } from '@/services/managementApi'
 import type { Repository, RepositoryType } from '@/types/management'
 

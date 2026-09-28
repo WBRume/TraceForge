@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { MessageSquare, FileText, ScrollText, PencilLine } from 'lucide-vue-next'
+import { MessageSquare, FileText, ScrollText, PencilLine } from '@/components/icons'
 import type { DecisionSource } from '@/types/workspaceAssets'
 
 const props = defineProps<{

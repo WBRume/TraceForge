@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, RefreshCw, AlertCircle, Sparkles, CheckCircle2 } from 'lucide-vue-next'
+import { ArrowLeft, RefreshCw, AlertCircle, Sparkles, CheckCircle2 } from '@/components/icons'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import type { PromotionDraft, PromotionJob } from '@/types/playbookPromotion'

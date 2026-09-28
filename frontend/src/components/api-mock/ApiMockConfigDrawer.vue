@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { CloudUpload, FolderCog, RefreshCw, Upload, X } from 'lucide-vue-next'
+import { CloudUpload, FolderCog, RefreshCw, Upload, X } from '@/components/icons'
 import { Editor as MonacoEditor } from '@guolao/vue-monaco-editor'
 import type { ApiMockProject, ApiMockSourceVersion } from '@/types/apiMock'
 

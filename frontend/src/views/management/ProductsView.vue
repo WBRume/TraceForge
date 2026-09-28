@@ -6,7 +6,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 import { ElMessage } from 'element-plus';
-import { Plus } from 'lucide-vue-next';
+import { Plus } from '@/components/icons';
 import AdminGuard from '@/components/management/AdminGuard.vue';
 import ProductListTable from '@/components/management/ProductListTable.vue';
 import ProductFormModal from '@/components/management/ProductFormModal.vue';

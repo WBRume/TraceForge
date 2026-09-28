@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, SlidersHorizontal, Loader2 } from 'lucide-vue-next'
+import { Plus, SlidersHorizontal, Loader2 } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import TaskAdvancedFilterDrawer from '@/components/chat/TaskAdvancedFilterDrawer.vue'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'

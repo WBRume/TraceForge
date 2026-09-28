@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, RotateCcw } from 'lucide-vue-next'
+import { AlertCircle, RotateCcw } from '@/components/icons'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**

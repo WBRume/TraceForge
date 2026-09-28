@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { ArrowLeft, ArrowRight, ExternalLink, ShieldAlert, Target, Info, FileCode2, Lightbulb, ClipboardList } from 'lucide-vue-next'
+import { ArrowLeft, ArrowRight, ExternalLink, ShieldAlert, Target, Info, FileCode2, Lightbulb, ClipboardList } from '@/components/icons'
 import type { SkillAnalysisLevel, SkillAnalysisRiskItem } from '@/types/skillAnalysis'
 import {
   fallbackRiskKey,

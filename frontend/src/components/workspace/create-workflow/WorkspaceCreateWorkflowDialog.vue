@@ -4,7 +4,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Briefcase, Check, FolderGit2 } from 'lucide-vue-next'
+import { Briefcase, Check, FolderGit2 } from '@/components/icons'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'

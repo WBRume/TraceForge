@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { X, ChevronLeft, ChevronRight } from 'lucide-vue-next'
+import { X, ChevronLeft, ChevronRight } from '@/components/icons'
 
 const props = withDefaults(defineProps<{
   show: boolean

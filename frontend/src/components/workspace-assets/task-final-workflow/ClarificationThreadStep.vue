@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { MessageCircle, Plus } from 'lucide-vue-next'
+import { MessageCircle, Plus } from '@/components/icons'
 import type {
   Clarification,
   ClarificationMessagePayload,

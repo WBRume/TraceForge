@@ -9,7 +9,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Link2, Loader2, Unlink } from 'lucide-vue-next'
+import { Link2, Loader2, Unlink } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import { useOAuthStore } from '@/stores/oauth'
 import { useOAuthFlow } from '@/composables/useOAuthFlow'

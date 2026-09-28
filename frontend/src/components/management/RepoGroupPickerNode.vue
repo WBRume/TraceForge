@@ -4,7 +4,7 @@ Checking a group selects all repositories inside it (including descendants).
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Folder } from 'lucide-vue-next'
+import { Folder } from '@/components/icons'
 import type { RepoGroupRepo, RepoGroupTreeNode } from '@/types/management'
 
 const props = defineProps<{

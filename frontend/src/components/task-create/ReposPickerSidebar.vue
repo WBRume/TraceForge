@@ -4,7 +4,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { GitBranch, GitFork, Loader2 } from 'lucide-vue-next'
+import { GitBranch, GitFork, Loader2 } from '@/components/icons'
 import SidebarPanel from './SidebarPanel.vue'
 import RepoSelectTree from '@/components/workspace/create-workflow/RepoSelectTree.vue'
 import { useRepoGroups } from './composables/useRepoGroups'

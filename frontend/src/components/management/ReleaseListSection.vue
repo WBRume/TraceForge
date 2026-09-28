@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { GitFork, Pencil, Plus, Trash2 } from 'lucide-vue-next'
+import { GitFork, Pencil, Plus, Trash2 } from '@/components/icons'
 import IconActionButton from '@/components/management/IconActionButton.vue'
 import type { ProjectRelease, ReleaseStatus } from '@/types/management'
 

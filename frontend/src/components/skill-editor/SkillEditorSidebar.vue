@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { proxyRefs } from 'vue'
-import { ArrowRight, GitCompare, History, Info, Loader2, MessageSquare, RotateCcw, Star } from 'lucide-vue-next'
+import { ArrowRight, GitCompare, History, Info, Loader2, MessageSquare, RotateCcw, Star } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import type { SkillEditorViewModel } from '@/composables/useSkillEditorViewModel'
 

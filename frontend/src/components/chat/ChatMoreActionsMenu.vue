@@ -7,7 +7,7 @@ import {
   MoreHorizontal,
   Search,
   Share2,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import { useGlobalSearchStore } from '@/stores/globalSearch'
 
 /**

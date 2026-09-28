@@ -4,7 +4,7 @@ When showHint is true, non-admins see a readonly banner instead.
 -->
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Info } from 'lucide-vue-next'
+import { Info } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 
 const props = withDefaults(defineProps<{

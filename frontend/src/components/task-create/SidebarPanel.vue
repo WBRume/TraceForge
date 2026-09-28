@@ -3,7 +3,7 @@
      内容绝对定位填充，不参与高度计算，弹窗高度始终由表单决定，避免纵向跳动。
      Skills / 仓库两个侧栏经插槽注入标题、工具行、过滤行与内容区。 -->
 <script setup lang="ts">
-import { X } from 'lucide-vue-next'
+import { X } from '@/components/icons'
 
 defineProps<{
   open: boolean

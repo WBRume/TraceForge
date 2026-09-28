@@ -1,7 +1,7 @@
 <!-- Multi-repository local mapping onboarding dialog. -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { GitBranch } from 'lucide-vue-next'
+import { GitBranch } from '@/components/icons'
 import { useLocalAgentStore } from '@/stores/localAgent'
 import LocalServiceForm from '@/components/local-resource/LocalServiceForm.vue'
 import RepoMappingRow from './RepoMappingRow.vue'

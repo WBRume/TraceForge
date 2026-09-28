@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
-import { X, Loader2, Plus, Trash2 } from 'lucide-vue-next'
+import { X, Loader2, Plus, Trash2 } from '@/components/icons'
 import api from '@/utils/api'
 import type { PlaybookSpec } from '@/types/diagnosisPlaybook'
 const props = defineProps<{ item: PlaybookSpec }>()

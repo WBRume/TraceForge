@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { X, ArrowDown } from 'lucide-vue-next'
+import { X, ArrowDown } from '@/components/icons'
 
 /**
  * 阅读进度轻量提示条（方案一：居中悬浮磨砂胶囊）：

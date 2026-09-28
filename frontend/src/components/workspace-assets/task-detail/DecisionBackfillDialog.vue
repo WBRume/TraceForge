@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { ClipboardList, X } from 'lucide-vue-next'
+import { ClipboardList, X } from '@/components/icons'
 import { useTaskDetailAssets } from '@/composables/useTaskDetailAssets'
 import DecisionBackfillForm from './DecisionBackfillForm.vue'
 import type {

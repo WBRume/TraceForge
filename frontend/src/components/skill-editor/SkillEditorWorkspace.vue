@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, proxyRefs } from 'vue'
-import { GitCompare, Info, MousePointer2 } from 'lucide-vue-next'
+import { GitCompare, Info, MousePointer2 } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import SkillEditorMonacoStage from '@/components/skill-editor/SkillEditorMonacoStage.vue'
 import SkillDiffFileList from '@/components/skill-editor/SkillDiffFileList.vue'

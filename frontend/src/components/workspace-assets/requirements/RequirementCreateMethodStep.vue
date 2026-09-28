@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FilePlus2, Link2, UploadCloud } from 'lucide-vue-next'
+import { FilePlus2, Link2, UploadCloud } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import type { RequirementCreateStep } from './requirementCreateTypes'
 

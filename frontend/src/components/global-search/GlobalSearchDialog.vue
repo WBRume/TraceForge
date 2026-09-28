@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter } from 'vue-router'
-import { Search, X, Loader2, Sparkles, AlertTriangle } from 'lucide-vue-next'
+import { Search, X, Loader2, Sparkles, AlertTriangle } from '@/components/icons'
 import { useGlobalSearch } from '@/composables/useGlobalSearch'
 import BaseSelect from '@/components/BaseSelect.vue'
 import GlobalSearchResultItem from './GlobalSearchResultItem.vue'

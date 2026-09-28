@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { Plus } from 'lucide-vue-next'
+import { Plus } from '@/components/icons'
 import TaskAssetEmptyState from './TaskAssetEmptyState.vue'
 import EvidenceCard from './EvidenceCard.vue'
 import EvidenceMountDialog from './EvidenceMountDialog.vue'

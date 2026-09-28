@@ -11,7 +11,7 @@ import {
   FileText,
   PanelLeftClose,
   PanelLeftOpen,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'

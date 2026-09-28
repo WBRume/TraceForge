@@ -257,7 +257,14 @@ button {
 .text-slate-500 { color: #64748B; }
 .text-slate-700 { color: #334155; }
 
-/* ─── 图标工具类（lucide 图标尺寸/着色，供各视图区块组件共用） ─── */
+/* ─── 图标工具类（Heroicons 24/outline 尺寸/着色/动效，供各视图区块组件共用） ─── */
+:where(svg[data-slot="icon"]) {
+  width: 1.5rem;
+  height: 1.5rem;
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .spin { animation: spin 1s linear infinite; }
 .text-primary { color: var(--color-primary-600); }
@@ -266,11 +273,13 @@ button {
 .text-error { color: var(--color-accent-rose); }
 .text-amber { color: var(--color-accent-amber); }
 .w-3 { width: 12px; height: 12px; }
+.w-3\.5 { width: 14px; height: 14px; }
 .w-4 { width: 16px; height: 16px; }
 .w-5 { width: 20px; height: 20px; }
 .w-6 { width: 24px; height: 24px; }
 .w-8 { width: 32px; height: 32px; }
 .h-3 { width: 12px; height: 12px; }
+.h-3\.5 { width: 14px; height: 14px; }
 .h-4 { width: 16px; height: 16px; }
 .h-5 { width: 20px; height: 20px; }
 .h-6 { width: 24px; height: 24px; }

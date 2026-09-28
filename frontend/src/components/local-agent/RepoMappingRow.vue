@@ -4,7 +4,7 @@ import { computed, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
-import { CheckCircle2, FolderOpen, Unlink, XCircle, Info, Save } from 'lucide-vue-next'
+import { CheckCircle2, FolderOpen, Unlink, XCircle, Info, Save } from '@/components/icons'
 import LocalGitRemoteSelect from '@/components/local-agent/LocalGitRemoteSelect.vue'
 import { useLocalAgentStore } from '@/stores/localAgent'
 

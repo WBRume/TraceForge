@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from 'vue'
-import { CircleCheckBig } from 'lucide-vue-next'
+import { CircleCheckBig } from '@/components/icons'
 
 type WorkflowStageKey = 'task' | 'source' | 'browse' | 'build'
 

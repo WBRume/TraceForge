@@ -7,7 +7,7 @@ import {
   Check,
   Undo2,
   Loader2,
-} from 'lucide-vue-next'
+} from '@/components/icons'
 import DecisionMarkPopover from './DecisionMarkPopover.vue'
 import DiagnosisResultCard from './DiagnosisResultCard.vue'
 import UserAvatar from '@/components/user/UserAvatar.vue'

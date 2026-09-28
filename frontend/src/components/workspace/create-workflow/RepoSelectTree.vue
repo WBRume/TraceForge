@@ -22,7 +22,7 @@ export interface RepoSelectTreeNode {
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Folder, Search } from 'lucide-vue-next'
+import { Folder, Search } from '@/components/icons'
 
 const props = defineProps<{
   nodes: RepoSelectTreeNode[]
