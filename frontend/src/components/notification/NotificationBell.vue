@@ -151,11 +151,12 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: 0.625rem var(--space-4);
   border-radius: var(--radius-md);
   color: var(--color-text-body);
-  font-weight: 500;
-  font-size: 0.9375rem;
+  font-weight: 400;
+  font-size: 0.875rem;
+  line-height: 1.4;
   transition: all var(--transition-fast);
   cursor: pointer;
   overflow: hidden;
@@ -163,6 +164,7 @@ onUnmounted(() => {
   border: none;
   background: transparent;
   text-align: left;
+  user-select: none;
 }
 
 .notification-nav-item:hover {
@@ -221,7 +223,7 @@ onUnmounted(() => {
 <style>
 .sidebar.is-collapsed .notification-nav-item {
   justify-content: center;
-  padding: var(--space-3) 0;
+  padding: 0.625rem 0;
   gap: 0;
 }
 
