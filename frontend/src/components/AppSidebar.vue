@@ -67,6 +67,7 @@ const handleItemClick = (item: SidebarItem) => {
       <button
         v-if="showBack"
         class="back-btn"
+        type="button"
         :title="backTitle"
         @click="$emit('back')"
       >
@@ -136,6 +137,7 @@ const handleItemClick = (item: SidebarItem) => {
       <button
         v-if="showToggleButton"
         class="toggle-btn"
+        type="button"
         :title="toggleTitle"
         @click="toggleSidebar"
       >
@@ -149,15 +151,21 @@ const handleItemClick = (item: SidebarItem) => {
 <style scoped>
 .sidebar {
   width: 200px;
+  height: 100%;
   display: flex;
   flex-direction: column;
-  border-radius: 0 var(--radius-xl) var(--radius-xl) 0;
-  margin-right: var(--space-1);
-  box-shadow: 2px 0 10px rgba(0,0,0,0.02);
+  border-radius: 0;
+  margin-right: 0;
+  border: none;
+  border-right: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: none;
   z-index: 10;
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   overflow: hidden;
   flex-shrink: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .sidebar.is-collapsed {
@@ -165,11 +173,14 @@ const handleItemClick = (item: SidebarItem) => {
 }
 
 .sidebar-header {
-  padding: var(--space-6) var(--space-4);
+  height: 56px;
+  box-sizing: border-box;
+  padding: 0 var(--space-4);
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  border-bottom: 1px solid rgba(0,0,0,0.05);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  flex-shrink: 0;
 }
 
 .back-btn {
@@ -186,14 +197,16 @@ const handleItemClick = (item: SidebarItem) => {
 }
 
 .back-btn:hover {
-  background: rgba(0,0,0,0.05);
+  background: rgba(0, 0, 0, 0.05);
   color: var(--color-text-title);
 }
 
 .ws-name {
   font-weight: 600;
   color: var(--color-primary-900);
-  font-size: 1rem;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
 }
 
 .truncate {
@@ -232,14 +245,17 @@ const handleItemClick = (item: SidebarItem) => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
+  padding: 0.625rem var(--space-4);
   border-radius: var(--radius-md);
   color: var(--color-text-body);
   text-decoration: none;
-  font-weight: 500;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.4;
   transition: all var(--transition-fast);
   cursor: pointer;
   overflow: hidden;
+  user-select: none;
 }
 
 button.nav-item {
@@ -257,15 +273,16 @@ button.nav-item {
 .nav-item.active {
   background-color: var(--color-primary-100);
   color: var(--color-primary-600);
-  font-weight: 600;
+  font-weight: 500;
 }
 
 .sidebar-footer {
-  padding: var(--space-4) var(--space-2);
-  border-top: 1px solid rgba(0,0,0,0.05);
+  padding: var(--space-3) var(--space-2);
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  flex-shrink: 0;
 }
 
 .sidebar-footer-extra {
@@ -279,10 +296,13 @@ button.nav-item {
   border: none;
   color: var(--color-text-muted);
   cursor: pointer;
-  padding: 8px;
+  padding: 6px 8px;
   border-radius: var(--radius-md);
   transition: all var(--transition-fast);
-  margin-top: var(--space-2);
+  margin-top: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .is-collapsed .toggle-btn {
@@ -291,7 +311,7 @@ button.nav-item {
 }
 
 .toggle-btn:hover {
-  background: rgba(0,0,0,0.05);
+  background: rgba(0, 0, 0, 0.05);
   color: var(--color-primary-600);
 }
 
@@ -301,12 +321,12 @@ button.nav-item {
 
 .is-collapsed .nav-item {
   justify-content: center;
-  padding: var(--space-3) 0;
+  padding: 0.625rem 0;
   gap: 0;
 }
 
 .is-collapsed .sidebar-header {
   justify-content: center;
-  padding: var(--space-6) 0;
+  padding: 0;
 }
 </style>
