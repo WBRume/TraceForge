@@ -17,6 +17,17 @@ from app.domains.task.models.task import SddTask
 logger = get_logger(__name__, category="task_execution")
 
 
+def task_model_sync(task_id: str, job_id: Optional[str] = None) -> Optional[str]:
+    from app.agents.model_selection import task_selection
+    from app.domains.ai.models.ai_job import SddAiJob
+    with SessionLocal() as db:
+        task = db.get(SddTask, task_id)
+        job = db.get(SddAiJob, job_id) if job_id else None
+        selected = (job.context_json or {}).get("agent_model") if job else None
+        selected = selected or (task_selection(task) if task else None)
+        return selected.get("model") if selected else None
+
+
 def playbook_context_sync(task_id: str) -> str:
     from app.domains.diagnosis_playbook.analysis_guide import prompt_suffix
     with SessionLocal() as db:
@@ -127,11 +138,13 @@ def build_agent_run_request(
     job_id: Optional[str],
     attempt: Optional[AgentAttemptContext],
     on_process_started: Callable[[Any, Optional[AgentAttemptContext]], Any],
+    model: Optional[str] = None,
 ) -> AgentRunRequest:
     """按全局超时配置与 backend capability 声明构建统一运行请求。"""
     return AgentRunRequest(
         run_id=f"{task_id}-{job_id or 'turn'}",
         prompt=prompt,
+        model=model,
         project_path=project_path,
         session_id=session_id,
         env=env_overrides,

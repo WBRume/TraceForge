@@ -5,6 +5,8 @@
 import { computed, shallowRef, watch } from 'vue'
 import { BookOpen, ChevronRight, Clock, FileText, GitFork, Loader2, Sparkles, Upload, X } from '@/components/icons'
 import TaskResourcePicker from '@/components/local-resource/TaskResourcePicker.vue'
+import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
+import { useAgentModels } from '@/composables/useAgentModels'
 import type { TaskExecution } from '@/composables/useLocalResources'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
 import type { TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
@@ -34,6 +36,11 @@ const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const
 
 // ── 草稿字段 ──
 const execution = shallowRef<TaskExecution>({ location: 'SERVER' })
+const models = useAgentModels(() => ({
+  workspaceId: props.wsId,
+  resourceId: execution.value.location === 'LOCAL' ? execution.value.resource_id : undefined,
+  resourceRevision: execution.value.profile_revision,
+}))
 const name = shallowRef('')
 const description = shallowRef('')
 const phenomenon = shallowRef('')
@@ -71,6 +78,7 @@ const submitDraft = () => {
   emit('submit', {
     taskType: props.taskType,
     execution: execution.value,
+    agentModel: models.selection.value,
     name: name.value,
     description: description.value,
     phenomenon: phenomenon.value,
@@ -101,6 +109,16 @@ defineExpose({ reset })
 <template>
   <form class="modal-form-main" @submit.prevent="submitDraft">
     <TaskResourcePicker :workspace-id="wsId" @change="execution = $event" />
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">模型</label>
+        <AgentModelSelect
+          :model-value="models.selected.value" :options="models.options.value"
+          :loading="models.loading.value" :error="models.error.value" :disabled="creating"
+          @update:model-value="models.select" @retry="models.reload" @refresh="models.reload"
+        />
+      </div>
+    </div>
     <!-- 行 1：任务名称 -->
     <div class="form-row">
       <div class="form-group">

@@ -68,6 +68,7 @@ def create_task(
             current_user,
             ws_id,
             name=data.name,
+            agent_model=data.agent_model.model_dump() if data.agent_model else None,
             execution=data.execution,
             description=desc.strip(),
             spec_doc_path=data.spec_doc_path,

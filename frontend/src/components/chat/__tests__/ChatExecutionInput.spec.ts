@@ -34,6 +34,18 @@ const pressEnter = (wrapper: ReturnType<typeof mountInput>) => (
 )
 
 describe('ChatExecutionInput', () => {
+  it('shows the current model and emits a change from the selector next to send', async () => {
+    const wrapper = mountInput({ showModelSelector: true, selectedModel: 'private/a', modelOptions: [
+      { value: 'private/a', label: 'Model A' }, { value: 'private/b', label: 'Model B' },
+    ] })
+    expect(wrapper.find('.agent-model-select').text()).toContain('Model A')
+    await wrapper.find('.agent-model-select .select-trigger').trigger('click')
+    expect(wrapper.emitted('reload-models')).toHaveLength(1)
+    await wrapper.findAll('.agent-model-select .option-item')[1]!.trigger('click')
+    expect(wrapper.emitted('update:selectedModel')).toEqual([['private/b']])
+    expect(wrapper.find('.agent-model-select').element.compareDocumentPosition(wrapper.find('.send-btn').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    wrapper.unmount()
+  })
   it('submits on Enter when the engine is idle', async () => {
     const wrapper = mountInput()
 

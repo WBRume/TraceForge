@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useProvisioningStore } from '@/stores/provisioning'
 import { useChatMessageContext } from '@/composables/useChatMessageContext'
 import { useChatSubmissions } from '@/composables/useChatSubmissions'
+import { useAgentModels } from '@/composables/useAgentModels'
 import { useTaskSessionControls } from '@/composables/useTaskSessionControls'
 import { useChatWorkbenchScroll, type ChatWorkbenchMode } from '@/composables/useChatWorkbenchScroll'
 import { useChatDecision } from '@/composables/useChatDecision'
@@ -65,6 +66,10 @@ export function useChatViewModel() {
 
   // ─── 会话实体与协作对象 ───
   const taskState = useCurrentTask()
+  const agentModels = useAgentModels(() => ({
+    workspaceId: taskState.currentTask.value ? getWorkspaceId() : '',
+    taskId: taskState.getTaskId(),
+  }))
   const localResource = useLocalResourceAvailability(() => taskState.currentTask.value)
   const workspaceContext = useWorkspaceContext({ getWorkspaceId })
   const localTaskActor = computed(() => {
@@ -220,7 +225,8 @@ export function useChatViewModel() {
     isEngineRunning: () => engine.engineRunning.value,
     isChatLocked: () => isChatLocked.value,
     isWorkspaceExpert: () => workspaceContext.isWorkspaceExpert(),
-    sendAction: (action, payload) => sendPreInputAction(action, payload),
+    sendAction: (action, payload) => sendPreInputAction(action, action === 'pre_input_create'
+      ? { ...payload, agent_model: agentModels.selection.value } : payload),
     getSignal: () => sessionState.getAbortSignal(),
   })
 
@@ -413,6 +419,7 @@ export function useChatViewModel() {
         if (frameType === 'resume_ok' || frameType === 'resync_ok') {
           // 首次订阅就绪：replay/屏障已完成，此时 HTTP 快照不会被旧的 WS 增量覆盖
           const wasReady = ws.isSubscriptionReady(taskId)
+          if (wasReady) void agentModels.reload()
           ws.markSubscriptionReady(taskId)
           sessionState.onInitialSubscriptionReady(taskId, wasReady)
           // 就绪后补取一次个人阅读快照（覆盖断线期间的私有变更）
@@ -526,6 +533,7 @@ export function useChatViewModel() {
     onMessagesRetracted: () => { void readingProgress.refresh(taskState.getTaskId()) },
     onSessionGenerationBump: () => history.bumpGeneration(),
     contextWindowScheduleRefresh: contextPanel.scheduleRefresh,
+    onModelObserved: agentModels.observe,
     scrollTo: scrollToBottom,
     isHistoryAnchored: () => historyContext.anchored.value,
     getRouteMessageId: () => String(route.query.messageId || ''),
@@ -534,6 +542,8 @@ export function useChatViewModel() {
 
   // ─── 发送 / 消息动作 / 任务动作 ───
   const send = useChatSend({
+    getModelSelection: () => agentModels.selection.value,
+    onModelSubmitted: agentModels.submitted,
     resourceBlocked: () => localResource.blocked.value,
     suggestionOnly: () => suggestionOnly.value,
     getWorkspaceId,
@@ -1000,6 +1010,12 @@ export function useChatViewModel() {
     sendingChat: send.sendingChat,
     chatInputPlaceholder: send.chatInputPlaceholder,
     suggestionOnly,
+    agentModel: agentModels.selected,
+    agentModelOptions: agentModels.options,
+    agentModelsLoading: agentModels.loading,
+    agentModelsError: agentModels.error,
+    selectAgentModel: agentModels.select,
+    reloadAgentModels: agentModels.reload,
     sendChat: send.sendChat,
     sendChatContent: send.sendChatContent,
     sendVerification: send.sendVerification,

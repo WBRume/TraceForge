@@ -144,6 +144,7 @@ async def resume_interrupted_task(
                 prompt=body.prompt,
                 confirm_continue=body.confirm_continue,
                 client_message_id=body.client_message_id,
+                metadata_json={"agent_model": body.agent_model.model_dump()} if body.agent_model else None,
             )
     except chat_submission_service.SubmissionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

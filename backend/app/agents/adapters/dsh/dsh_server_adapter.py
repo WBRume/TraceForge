@@ -323,6 +323,16 @@ class DshServerAdapter(AgentBackend):
         await self._rpc("session.list", {})
         return f"DSH JSON-RPC server is reachable at {self.server_url}"
 
+    async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
+        from app.agents.model_selection import model_option
+        data = await self._rpc("session.modelCatalog", {})
+        default = data.get("default") or {}
+        options = [
+            model_option(f"{group['id']}/{model['id']}", f"{model.get('name') or model['id']} · {group.get('name') or group['id']}")
+            for group in data.get("groups", []) for model in group.get("models", [])
+        ]
+        return {"options": options, "default_model": _format_dsh_model(default.get("provider"), default.get("model"))}
+
     async def _create_session(self, request: AgentRunRequest) -> str:
         payload = await self._rpc(
             "session.create",
@@ -625,6 +635,12 @@ class DshServerAdapter(AgentBackend):
                 session_id = await self._create_session(request)
             await self._ensure_event_protocol()
             self._session_id = session_id
+
+            if request.model:
+                provider, separator, model = request.model.partition("/")
+                if not separator or not provider or not model:
+                    raise AgentError("DSH model must be provider/model")
+                await self._rpc("session.selectModel", {"sessionId": session_id, "provider": provider, "model": model})
 
             policy = request.provider_options.get("execution_policy")
             if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":

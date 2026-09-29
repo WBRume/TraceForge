@@ -147,6 +147,13 @@ def _accept_sync(db, task_id, actor_id, client_id, content, metadata):
     if db.query(SddAiJob.id).filter(SddAiJob.task_id == task_id,
             SddAiJob.channel == AiJobChannel.TASK_CHAT, SddAiJob.status.in_(BLOCKING)).first():
         raise SubmissionError("当前回合正在执行，请等待完成")
+    from app.agents.model_selection import apply_task_selection
+    try:
+        apply_task_selection(db, task, metadata.get("agent_model"))
+    except ValueError as exc:
+        raise SubmissionError(str(exc), "MODEL_SELECTION_INVALID", 422) from exc
+    # Preserve the caller's exact metadata/hash for durable duplicate detection.
+    # The task preference is frozen into the job when preparing this receipt.
     row = TaskChatSubmission(task_id=task_id, workspace_id=task.workspace_id,
         creator_id=actor_id, client_message_id=client_id, content=content,
         metadata_json=metadata, payload_hash=fingerprint, active_task_id=task_id,

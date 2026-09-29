@@ -15,9 +15,11 @@ class TaskRepositoryBranchInput(BaseModel):
 
 
 from app.domains.local_resource.schemas import TaskExecutionInput
+from app.agents.model_selection import ModelSelection
 
 
 class TaskCreate(BaseModel):
+    agent_model: Optional[ModelSelection] = None
     execution: TaskExecutionInput = Field(default_factory=TaskExecutionInput)
     name: str = Field(..., min_length=1, max_length=300)
     description: Optional[str] = None
@@ -123,6 +125,7 @@ class TaskInterruptRequest(BaseModel):
 
 
 class TaskResumeInterruptedRequest(BaseModel):
+    agent_model: Optional[ModelSelection] = None
     prompt: Optional[str] = None
     confirm_continue: bool = False
     client_message_id: Optional[str] = None

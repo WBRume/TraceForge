@@ -86,6 +86,9 @@ const task = (id: string, skillIds: string[] = []) => ({
 })
 
 const resolveByUrl = (target: string) => {
+  if (target.endsWith('/agent-models')) return Promise.resolve({ data: {
+    backend: 'dsh', current_model: 'private/a', options: [{ value: 'private/a', label: 'A' }, { value: 'private/b', label: 'B' }],
+  } })
   if (target.endsWith('/tasks')) return Promise.resolve({ data: { items: [], total: 0, page: 1, page_size: 20 } })
   if (target.includes('/permissions/me')) return Promise.resolve({ data: { permissions: {} } })
   if (target.endsWith('/history')) return Promise.resolve({ data: { messages: [], logs: [], has_more: false } })
@@ -126,6 +129,20 @@ const readySocket = async (frame: Record<string, any> = { type: 'resume_ok', epo
 }
 
 describe('useChatViewModel session state single flight', () => {
+  it('sends the chosen model with the durable message receipt', async () => {
+    await mountViewModel()
+    await vm.selectTask(task('t1'))
+    await readySocket()
+    vm.selectAgentModel('private/b')
+    apiMock.post.mockImplementation((_url, body) => Promise.resolve({ data: {
+      id: 'receipt', task_id: 't1', client_message_id: body.client_message_id, content: body.content,
+      status: 'SUCCEEDED', version: 1,
+    } }))
+    vm.chatInput.value = 'hello'
+    await vm.sendChat()
+    const sent = apiMock.post.mock.calls.find(([url]) => String(url).endsWith('/chat-submissions'))
+    expect(sent?.[1]).toMatchObject({ content: 'hello', metadata: { agent_model: { backend: 'dsh', model: 'private/b' } } })
+  })
   it('blocks creator send and undo while local resources are offline and unlocks on recovery', async () => {
     await mountViewModel()
     await vm.selectTask({ ...task('t1'), execution_location: 'LOCAL', creator_id: 'u1', session_generation: 1 })
@@ -151,6 +168,7 @@ describe('useChatViewModel session state single flight', () => {
     expect(vm.canUndoMessage(message)).toBe(true)
   })
   beforeEach(() => {
+    localStorage.clear()
     apiMock.get.mockReset()
     apiMock.post.mockReset()
     apiMock.put.mockReset()

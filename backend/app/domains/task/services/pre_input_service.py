@@ -331,6 +331,7 @@ def _create_pre_input_sync(
     mentioned_user_ids: Optional[List[str]],
     edit_permission: str,
     wait_seconds: int,
+    agent_model=None,
 ) -> dict:
     """创建段（线程内单事务）：状态校验 + @成员校验 + 落库。"""
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
@@ -389,6 +390,14 @@ def _create_pre_input_sync(
     # 发起人即首批参与者
     db.add(pre_input)
     db.flush()
+    if agent_model is not None:
+        from app.agents.model_selection import apply_task_selection
+        try:
+            selected = apply_task_selection(db, task, agent_model)
+        except ValueError as exc:
+            raise PreInputError(str(exc), status_code=422) from exc
+        task.task_meta_json = {**(task.task_meta_json or {}),
+                              "pre_input_model": {"id": pre_input.id, "selection": selected}}
     db.add(SddTaskPreInputContribution(pre_input_id=pre_input.id, user_id=creator_id, content=""))
     db.commit()
     return {
@@ -409,6 +418,7 @@ async def create_pre_input(
     mentioned_user_ids: Optional[List[str]] = None,
     edit_permission: str = "NONE",
     wait_seconds: int = DEFAULT_WAIT_SECONDS,
+    agent_model=None,
 ) -> dict:
     text = str(main_text or "").strip()
     if not text:
@@ -423,6 +433,7 @@ async def create_pre_input(
             mentioned_user_ids=mentioned_user_ids,
             edit_permission=edit_permission,
             wait_seconds=wait_seconds,
+            agent_model=agent_model,
         )
     )
 
@@ -841,6 +852,9 @@ def _claim_submit_sync(
         "segments": segments_meta,
         "submit_reason": reason,
     }
+    selected = (task.task_meta_json or {}).get("pre_input_model") or {}
+    if selected.get("id") == pre_input_id:
+        metadata["agent_model"] = selected["selection"]
     return {
         "claimed": True,
         "terminal": None,

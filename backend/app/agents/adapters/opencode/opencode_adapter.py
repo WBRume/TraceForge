@@ -124,6 +124,96 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentError("OpenCode create session returned no session id")
         return session_id
 
+    async def _available_models(self, params: dict[str, str]) -> list[dict[str, Any]]:
+        client = await self._ensure_client()
+
+        async def snapshot():
+            response = await client.get(f"{self.server_url}/api/model", params=params)
+            self._check_response(response, "list models")
+            payload = response.json()
+            return [m for m in payload["data"] if m.get("enabled", True)], payload.get("location")
+
+        models, location = await snapshot()
+        if models:
+            return models
+        # OpenCode boots location plugins asynchronously. An initial empty
+        # snapshot can precede catalog.updated; it is not yet a settled list.
+        try:
+            async with asyncio.timeout(5):
+                async with client.stream("GET", f"{self.server_url}/api/event") as response:
+                    if response.status_code != 200:
+                        raise AgentError(f"OpenCode model events failed: HTTP {response.status_code}")
+                    async for line in response.aiter_lines():
+                        if not line.startswith("data:"):
+                            continue
+                        event = json.loads(line[5:])
+                        kind = event.get("type")
+                        event_location = event.get("location") or {}
+                        same_location = location and all(
+                            event_location.get(key) == location.get(key)
+                            for key in ("directory", "workspaceID")
+                        )
+                        if kind == "server.connected":
+                            # Subscribe before re-reading so an update between
+                            # the first GET and SSE subscription cannot be lost.
+                            models, location = await snapshot()
+                            if models:
+                                return models
+                        elif kind == "catalog.updated" and same_location:
+                            models, _ = await snapshot()
+                            return models
+        except TimeoutError:
+            pass
+        # Bound waiting for genuinely empty catalogues and recover an update
+        # missed if the event stream closes before delivering it.
+        models, _ = await snapshot()
+        return models
+
+    async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
+        from app.agents.model_selection import model_option
+        client = await self._ensure_client()
+        params = {"location[directory]": project_path} if project_path else {}
+        models = await self._available_models(params)
+        models.sort(key=lambda m: (m.get("time") or {}).get("released", 0), reverse=True)
+        options = [model_option(f"{m['providerID']}/{m['id']}", f"{m.get('name') or m['id']} · {m['providerID']}")
+                   for m in models if m.get("enabled", True)]
+        default = None
+        session_agent = None
+        if session_id:
+            response = await client.get(self._session_url(session_id))
+            self._check_response(response, "session model")
+            session = response.json().get("data", {})
+            selected = session.get("model") or {}
+            session_agent = session.get("agent")
+            if selected.get("id") and selected.get("providerID"):
+                default = f"{selected['providerID']}/{selected['id']}"
+        if not default:
+            response = await client.get(f"{self.server_url}/api/config", params=params)
+            self._check_response(response, "model configuration")
+            documents = response.json()
+            agent = "build"
+            for document in documents if isinstance(documents, list) else []:
+                config = document.get("info") or {}
+                agent = config.get("default_agent") or agent
+                selected = config.get("model")
+                if isinstance(selected, str) and selected:
+                    default = selected
+                elif isinstance(selected, dict) and selected.get("providerID"):
+                    model_id = selected.get("id") or selected.get("model")
+                    if model_id:
+                        default = f"{selected['providerID']}/{model_id}"
+            response = await client.get(f"{self.server_url}/api/agent", params=params)
+            self._check_response(response, "default agent model")
+            active_agent = next((item for item in response.json()["data"] if item["id"] == (session_agent or agent)), {})
+            selected = active_agent.get("model") or {}
+            if selected.get("id") and selected.get("providerID"):
+                default = f"{selected['providerID']}/{selected['id']}"
+            # OpenCode's catalogue defaults to the newest available model if
+            # no valid deployment/agent default is configured.
+            if default not in {item["value"] for item in options}:
+                default = options[0]["value"] if options else None
+        return {"options": options, "default_model": default}
+
     async def _send_prompt(self, session_id: str, request: AgentRunRequest) -> None:
         client = await self._ensure_client()
         prompt_text = request.prompt
@@ -445,7 +535,8 @@ class OpenCodeAdapter(AgentBackend):
                 if kind in {"session.model.switched", "session.step.started"}:
                     model = data.get("model") or {}
                     if model.get("id"):
-                        await on_event(AgentEvent(type="model", payload={"model": model["id"], "provider_session_id": session_id}, provider="opencode"))
+                        name = f"{model['providerID']}/{model['id']}" if model.get("providerID") else model["id"]
+                        await on_event(AgentEvent(type="model", payload={"model": name, "provider_session_id": session_id}, provider="opencode"))
                 for unified in map_opencode_event(event):
                     seen_types.add(unified.type)
                     if unified.type == "result":

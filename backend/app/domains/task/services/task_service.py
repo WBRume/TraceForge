@@ -272,6 +272,7 @@ def create_task_record_for_provision(
     repository_ids: Optional[List[str]] = None,
     diagnosis_playbook_spec_id: Optional[str] = None,
     execution=None,
+    agent_model=None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
@@ -328,6 +329,9 @@ def create_task_record_for_provision(
     )
 
     try:
+        if agent_model is not None:
+            from app.agents.model_selection import apply_task_selection
+            apply_task_selection(db, task, agent_model)
         db.add(task)
         db.flush()
 

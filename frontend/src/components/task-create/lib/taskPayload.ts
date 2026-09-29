@@ -58,6 +58,7 @@ export function buildTaskCreatePayload(
   }
 
   if (draft.execution?.location === 'LOCAL') payload.execution = draft.execution
+  if (draft.agentModel) payload.agent_model = draft.agentModel
 
   const selectedSet = new Set(ctx.selectedRepoIds)
   const bindingIds = ctx.repos.map(workspaceRepoBindingId).filter(Boolean)

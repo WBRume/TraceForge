@@ -58,6 +58,7 @@ export function createTaskWsEventRouter(deps: {
   onSessionGenerationBump: () => void
   onMessagesRetracted?: () => void
   contextWindowScheduleRefresh: () => void
+  onModelObserved?: (model?: string) => void
   scrollTo: (target: 'chat' | 'terminal') => void
   isHistoryAnchored: () => boolean
   getRouteMessageId: () => string
@@ -315,6 +316,7 @@ export function createTaskWsEventRouter(deps: {
           ? 'CODING'
           : payload.status
         deps.engine.engineRunning.value = payload.status === 'INIT' || payload.status === 'RUNNING'
+        deps.onModelObserved?.(payload.model)
         deps.cards.dropStatusCards()
         deps.cards.pushStatusCard({
           id: Date.now().toString(),

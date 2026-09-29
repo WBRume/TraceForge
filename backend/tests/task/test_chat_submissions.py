@@ -205,6 +205,154 @@ def accepted(db, client_id="c", content="private prompt"):
     return db.get(TaskChatSubmission, result["id"])
 
 
+def test_model_selection_is_durable_and_part_of_idempotency(task_db):
+    task = task_db.get(SddTask, "t")
+    task.agent_backend = "dsh"
+    task.task_meta_json = {"phenomenon": "slow"}
+    chosen = {"backend": "dsh", "model": "private/new-model"}
+    result = service._accept_sync(task_db, "t", "u", "model-send", "hello", {"agent_model": chosen})
+    task_db.commit()
+    task_db.expire_all()
+    row = task_db.get(TaskChatSubmission, result["id"])
+    assert row.metadata_json["agent_model"] == chosen
+    assert task_db.get(SddTask, "t").task_meta_json == {"phenomenon": "slow", "agent_model": chosen}
+    assert service._existing_submission_sync(task_db, "t", "u", "model-send", "hello", {"agent_model": chosen})["id"] == row.id
+    with pytest.raises(service.SubmissionError, match="相同消息标识"):
+        service._existing_submission_sync(task_db, "t", "u", "model-send", "hello", {"agent_model": {**chosen, "model": "private/other"}})
+
+
+def test_wrong_engine_model_is_rejected_before_acceptance(task_db):
+    task_db.get(SddTask, "t").agent_backend = "claude-code"
+    task_db.commit()
+    with pytest.raises(service.SubmissionError) as exc:
+        service._accept_sync(task_db, "t", "u", "new", "hello", {"agent_model": {"backend": "dsh", "model": "private/m"}})
+    assert exc.value.status_code == 422
+    assert task_db.query(TaskChatSubmission).count() == 0
+
+
+def test_turn_freezes_model_for_execution_and_restart(task_db, monkeypatch):
+    from app.engine.session import turn_setup
+    from app.domains.task.services import context_token_service
+    task = task_db.get(SddTask, "t")
+    task.agent_backend = "dsh"
+    chosen = {"backend": "dsh", "model": "private/new-model"}
+    monkeypatch.setattr(context_token_service, "seed_snapshot_for_job", lambda *a, **k: None)
+    result = task_session_service._persist_chat_turn_sync(task_db,
+        prepared={"task_id": "t", "workspace_id": "w", "generation": 1, "revision": 0,
+                  "provider": "dsh", "provider_session_id": "session", "actor_user_id": "u"},
+        content="hi", prompt="hi", context_json={"agent_model": chosen}, client_message_id="frozen")
+    task_db.commit()
+    assert task_db.get(SddAiJob, result.job_id).context_json["agent_model"] == chosen
+    task.task_meta_json = {"agent_model": {"backend": "dsh", "model": "private/later"}}
+    task_db.commit()
+    from sqlalchemy.orm import sessionmaker
+    monkeypatch.setattr(turn_setup, "SessionLocal", sessionmaker(bind=task_db.get_bind()))
+    assert turn_setup.task_model_sync("t", result.job_id) == "private/new-model"
+
+
+def test_model_catalogue_scope_uses_sticky_task_engine_and_checks_access(task_db):
+    from fastapi import HTTPException
+    from app.domains.auth.models.user import WorkspaceMember
+    from app.domains.task.routers.task.models import catalogue_context
+    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
+    task_db.get(Workspace, "w").agent_backend = "opencode"
+    task_db.get(SddTask, "t").agent_backend = "dsh"
+    task_db.commit()
+    assert catalogue_context(task_db, "w", "u")["backend"] == "opencode"
+    assert catalogue_context(task_db, "w", "u", "t")["backend"] == "dsh"
+    with pytest.raises(HTTPException) as exc:
+        catalogue_context(task_db, "w", "outsider", "t")
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_model_catalogue_failure_keeps_persisted_model(task_db, monkeypatch):
+    from types import SimpleNamespace
+    from app.agents.errors import AgentError
+    from app.domains.auth.models.user import WorkspaceMember
+    from app.domains.task.routers.task import models
+    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
+    task_db.get(SddTask, "t").agent_backend = "dsh"
+    task_db.get(SddTask, "t").task_meta_json = {"agent_model": {"backend": "dsh", "model": "private/current"}}
+    task_db.commit()
+    async def txn(db, bind, body):
+        return body(db)
+    monkeypatch.setattr(models, "run_route_db_txn", txn)
+    monkeypatch.setattr(models, "create_agent_backend_by_name", lambda _: SimpleNamespace(
+        model_catalog=AsyncMock(side_effect=AgentError("offline"))))
+    result = await models.get_agent_models("w", task_id="t", current_user=SimpleNamespace(id="u"), db=task_db)
+    assert result["current_model"] == "private/current"
+    assert result["options"] == [{"value": "private/current", "label": "private/current"}]
+    assert result["error"]
+
+
+@pytest.mark.asyncio
+async def test_opencode_creation_and_chat_share_catalogue_but_keep_session_model(task_db, monkeypatch):
+    from types import SimpleNamespace
+    from app.domains.auth.models.user import WorkspaceMember
+    from app.domains.task.routers.task import models
+    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
+    workspace = task_db.get(Workspace, "w")
+    workspace.agent_backend = "opencode"
+    workspace.project_path = "/workspace"
+    task = task_db.get(SddTask, "t")
+    task.agent_backend = "opencode"
+    task.project_path = "/workspace/task"
+    task.session_id = "session"
+    task.task_meta_json = {"agent_model": {"backend": "opencode", "model": "p/selected"}}
+    task_db.commit()
+    async def txn(db, bind, body):
+        return body(db)
+    catalogue = AsyncMock(return_value={"options": [
+        {"value": "p/default", "label": "Default"},
+        {"value": "p/selected", "label": "Selected"},
+    ], "default_model": "p/default"})
+    monkeypatch.setattr(models, "run_route_db_txn", txn)
+    monkeypatch.setattr(models, "create_agent_backend_by_name", lambda _: SimpleNamespace(model_catalog=catalogue))
+    created = await models.get_agent_models("w", current_user=SimpleNamespace(id="u"), db=task_db)
+    chat = await models.get_agent_models("w", task_id="t", current_user=SimpleNamespace(id="u"), db=task_db)
+    assert created["options"] == chat["options"]
+    assert created["current_model"] == "p/default"
+    assert chat["current_model"] == "p/selected"
+    assert [call.kwargs for call in catalogue.call_args_list] == [
+        {"project_path": "/workspace", "session_id": None},
+        {"project_path": "/workspace", "session_id": "session"},
+    ]
+
+
+def test_local_opencode_catalogue_uses_bound_resource_workspace(task_db, monkeypatch):
+    from types import SimpleNamespace
+    from app.domains.auth.models.user import WorkspaceMember
+    from app.domains.task.routers.task import models
+    task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
+    task_db.get(Workspace, "w").agent_backend = "opencode"
+    task_db.get(SddTask, "t").agent_backend = "opencode"
+    task_db.commit()
+    config = {"backend": "opencode", "workspace_root": "/local/workspace"}
+    monkeypatch.setattr(models.resources, "is_local", lambda _: True)
+    monkeypatch.setattr(models.resources, "binding", lambda *args: SimpleNamespace(receipt_json={"task_root": "/local/task"}))
+    monkeypatch.setattr(models.resources, "runtime_profile", lambda *args: config)
+    monkeypatch.setattr(models.resources, "owned", lambda *args: object())
+    monkeypatch.setattr(models.resources, "profile", lambda *args: config)
+    created = models.catalogue_context(task_db, "w", "u", resource_id="local")
+    chat = models.catalogue_context(task_db, "w", "u", task_id="t")
+    assert created["path"] == chat["path"] == "/local/workspace"
+    assert created["config"] == chat["config"] == config
+
+
+def test_create_task_persists_model_preference_without_losing_diagnosis_metadata(task_db):
+    from app.domains.task.services.task_service import create_task_record_for_provision
+    task_db.get(Workspace, "w").agent_backend = "dsh"
+    task_db.commit()
+    chosen = {"backend": "dsh", "model": "private/new-task"}
+    task = create_task_record_for_provision(task_db, task_db.get(User, "u"), "w", "New diagnosis",
+                                          task_type="DIAGNOSIS", phenomenon="slow", agent_model=chosen)
+    task_db.refresh(task)
+    assert task.agent_backend == "dsh"
+    assert task.task_meta_json["agent_model"] == chosen
+    assert task.task_meta_json["phenomenon"] == "slow"
+
+
 def execution(db, row, status=AiJobStatus.RUNNING):
     job = SddAiJob(id="job", task_id="t", workspace_id="w", creator_id="u",
         channel=AiJobChannel.TASK_CHAT, queue_key="TASK_CHAT:t", status=status, session_generation=1)

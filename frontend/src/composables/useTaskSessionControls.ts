@@ -9,6 +9,7 @@ interface UseTaskSessionControlsOptions {
 }
 
 interface ResumeInterruptedOptions {
+  agentModel?: import('@/composables/useAgentModels').AgentModelSelection
   prompt?: string
   confirmContinue?: boolean
   clientMessageId?: string
@@ -47,6 +48,7 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
         prompt: String(resumeOptions.prompt || '').trim() || undefined,
         confirm_continue: Boolean(resumeOptions.confirmContinue),
         client_message_id: String(resumeOptions.clientMessageId || '').trim() || undefined,
+        agent_model: resumeOptions.agentModel,
       })
       return res.data
     } finally {
