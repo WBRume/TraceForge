@@ -453,6 +453,10 @@ def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> 
             workspace_id=workspace_id,
             task_id=task_id,
             cancel_check=cancel_check,
+            snapshot_progress=(lambda: mark_progress(
+                job_id, stage="INITIALIZING_SNAPSHOT", progress=80,
+                message="建立初始工作区快照",
+            )) if job_id else None,
         )
         return {
             "workspace_id": task.workspace_id,

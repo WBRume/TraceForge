@@ -257,6 +257,7 @@ def _prepare_chat_turn_sync(
         "workspace_id": task.workspace_id,
         "workspace_name": str(task.workspace.name or ""),
         "task_name": str(task.name or ""),
+        "initial_workspace_checkpoint": (task.task_meta_json or {}).get("initial_workspace_checkpoint"),
         "project_path": str(task.project_path or ""),
         "repo_rel_paths": _repo_rel_paths(task),
         "generation": int(task.session_generation),
@@ -407,9 +408,10 @@ async def create_task_chat_turn(
 
     Callers must hold ``lock_task``.  The provider/worktree copy occurs before
     the message is exposed to the queue, so every undoable turn has a stable
-    boundary even if the agent immediately starts producing events.  The
-    explicit initialization turn may set ``skip_checkpoint`` because it is the
-    first session boundary and is intentionally not undoable.
+    boundary even if the agent immediately starts producing events. Task
+    provisioning seeds the persistent index; initialization and ordinary chat
+    both capture incremental boundaries. Explicit internal callers can still
+    skip checkpoints, but initialization no longer uses that exemption.
 
     同步 DB 全部经 DB executor 执行（准备段/持久化段各自单事务、线程内自建
     session），checkpoint 走 git executor；事件循环不执行任何 DB/文件 IO。
@@ -442,6 +444,7 @@ async def create_task_chat_turn(
             workspace_name=prepared["workspace_name"],
             task_id=str(prepared["task_id"]),
             task_name=prepared["task_name"],
+            initial_checkpoint=prepared.get("initial_workspace_checkpoint"),
         )
         checkpoint_root = str(checkpoint["root"])
         prepared["checkpoint_root"] = checkpoint_root
@@ -742,13 +745,11 @@ async def _restore_provider_for_suffix(
         str(task.project_path or ""),
         current_session_id,
     )
-    if provider in {"dsh", "dsh-webhost", "webhost"} and current_session_id:
-        return await task_session_snapshot_service.fork_dsh_session(
-            current_session_id,
-            str(task.project_path or ""),
-            checkpoint_root=checkpoint,
-        )
-    return None
+    from app.agents.session_checkpoint import session_checkpoint_adapter
+
+    return await session_checkpoint_adapter(provider).resume_restored(
+        current_session_id, str(task.project_path or ""), checkpoint,
+    )
 
 
 def _redact_suffix(db: Session, task: SddTask, suffix: list[TaskSessionTurn], message_ids: list[str], operation_id: Optional[str] = None) -> None:
@@ -982,7 +983,10 @@ def _complete_undo_sync(
         raise TaskSessionUndoError("Undo operation not found", code="UNDO_OPERATION_NOT_FOUND")
     operation.status = TaskSessionOperationStatus.REVERTED
     operation.finished_at = now
-    task.session_id = forked_dsh_session_id if context["provider_name"] in {"dsh", "dsh-webhost", "webhost"} else task.session_id
+    from app.agents.session_checkpoint import session_checkpoint_adapter
+
+    if session_checkpoint_adapter(context["provider_name"]).replaces_session_id:
+        task.session_id = forked_dsh_session_id
     task.status = TaskStatus.CODING
     task.error_message = None
     db.commit()
@@ -1070,7 +1074,11 @@ async def undo_task_message(
         async def _compensate_live_state() -> None:
             if forked_dsh_session_id:
                 try:
-                    await task_session_snapshot_service.cleanup_dsh_session(forked_dsh_session_id, checkpoint_root=str(target.checkpoint_path))
+                    from app.agents.session_checkpoint import session_checkpoint_adapter
+
+                    await session_checkpoint_adapter(provider_name).cleanup_restored(
+                        forked_dsh_session_id, str(target.checkpoint_path),
+                    )
                 except Exception as fork_exc:
                     logger.error(
                         "Task session undo DSH fork compensation failed: task={}, operation={}, error={}",

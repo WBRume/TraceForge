@@ -18,6 +18,8 @@ import tempfile
 import uuid
 from typing import Any, Iterable, Optional
 
+from loguru import logger
+
 from app.config import settings
 from app.domains.task.services import task_snapshot_store as store
 
@@ -114,6 +116,8 @@ def _candidate_repo_paths(task_root: str, repo_rel_paths: Iterable[str]) -> list
         if normalized in seen or not os.path.isdir(candidate):
             continue
         top = _run_git(candidate, ["rev-parse", "--show-toplevel"], check=False)
+        if top.returncode < 0:
+            raise TaskSessionSnapshotError("Repository discovery failed", code="SNAPSHOT_GIT_ERROR")
         if top.returncode != 0 or os.path.normcase(os.path.abspath(top.stdout.strip())) != normalized:
             continue
         seen.add(normalized)
@@ -230,22 +234,10 @@ def _provider_checkpoint_sync(provider: str, project_path: str, session_id: Opti
     sid = str(session_id or "").strip() or None
     provider_dir = os.path.join(checkpoint_root, "provider")
     os.makedirs(provider_dir, exist_ok=True)
-    source: Optional[str] = None
-    kind = "none"
-    if provider in {"claude", "claude-code"}:
-        kind = "claude_jsonl"
-        if sid:
-            source = _locate_claude_file(_claude_store_dir(project_path), sid)
-    elif provider in {"dsh", "dsh-webhost", "webhost"}:
-        kind = "dsh_session_dir"
-        if sid:
-            try:
-                from app.agents.adapters.dsh.session_files import locate_session_log
+    from app.agents.session_checkpoint import session_checkpoint_adapter
 
-                log_path, _suffix = locate_session_log(_dsh_root(), sid)
-                source = os.path.dirname(log_path)
-            except Exception:
-                source = None
+    adapter = session_checkpoint_adapter(provider)
+    kind, source = adapter.kind, adapter.locate(project_path, sid)
 
     copied = None
     if source and os.path.isfile(source):
@@ -284,6 +276,12 @@ def _provider_checkpoint_sync(provider: str, project_path: str, session_id: Opti
         "source_size": source_size,
         "record_boundary": record_boundary,
     }
+    if copied and os.path.isfile(copied) and _sha256_file(copied) != source_sha256:
+        raise ValueError("Provider changed during checkpoint capture")
+    if copied and os.path.isdir(copied):
+        payload["files"] = _file_manifest(copied)
+        if payload["files"] != _file_manifest(source):
+            raise ValueError("Provider changed during checkpoint capture")
     _write_json(os.path.join(checkpoint_root, "provider.json"), payload)
     return payload
 
@@ -303,32 +301,12 @@ def _atomic_copy_file(source: str, target: str) -> None:
 def _restore_provider_sync(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:
     with open(os.path.join(checkpoint_root, "provider.json"), "r", encoding="utf-8") as handle:
         metadata = json.load(handle)
-    kind = str(metadata.get("kind") or "")
-    source = metadata.get("source")
-    copied = metadata.get("copy")
-    sid = str(current_session_id or metadata.get("session_id") or "").strip()
-    if kind == "claude_jsonl":
-        target = source or _locate_claude_file(_claude_store_dir(project_path), sid)
-        if copied and target:
-            _atomic_copy_file(copied, target)
-        elif target and os.path.exists(target):
-            os.remove(target)
-        return
-    if kind == "dsh_session_dir":
-        target = source
-        if not target and sid:
-            try:
-                from app.agents.adapters.dsh.session_files import locate_session_log
+    from app.agents.session_checkpoint import session_checkpoint_adapter
 
-                target = os.path.dirname(locate_session_log(_dsh_root(), sid)[0])
-            except Exception:
-                target = None
-        if copied and target:
-            if os.path.isdir(target):
-                shutil.rmtree(target)
-            shutil.copytree(copied, target)
-        elif target and os.path.isdir(target):
-            shutil.rmtree(target)
+    adapter = session_checkpoint_adapter(provider)
+    if adapter.kind != metadata.get("kind"):
+        raise ValueError("Provider checkpoint kind differs")
+    adapter.restore(metadata, project_path, current_session_id or metadata.get("session_id"))
 
 
 def _locate_provider_source_sync(
@@ -336,21 +314,10 @@ def _locate_provider_source_sync(
     project_path: str,
     session_id: Optional[str],
 ) -> tuple[str, Optional[str]]:
-    provider = str(provider or "").strip().lower()
-    sid = str(session_id or "").strip() or None
-    if provider in {"claude", "claude-code"}:
-        return "claude_jsonl", _locate_claude_file(_claude_store_dir(project_path), sid)
-    if provider in {"dsh", "dsh-webhost", "webhost"} and sid:
-        try:
-            from app.agents.adapters.dsh.session_files import locate_session_log
+    from app.agents.session_checkpoint import session_checkpoint_adapter
 
-            log_path, _suffix = locate_session_log(_dsh_root(), sid)
-            return "dsh_session_dir", os.path.dirname(log_path)
-        except Exception:
-            return "dsh_session_dir", None
-    if provider in {"dsh", "dsh-webhost", "webhost"}:
-        return "dsh_session_dir", None
-    return "none", None
+    adapter = session_checkpoint_adapter(provider)
+    return adapter.kind, adapter.locate(project_path, str(session_id or "").strip() or None)
 
 
 def _backup_current_provider_sync(
@@ -378,6 +345,10 @@ def _backup_current_provider_sync(
         "source_exists": bool(source),
         "copy": copied,
     }
+    if copied and os.path.isfile(copied):
+        metadata["source_sha256"] = _sha256_file(copied)
+    elif copied and os.path.isdir(copied):
+        metadata["files"] = _file_manifest(copied)
     _write_json(os.path.join(checkpoint_root, "current-provider.json"), metadata)
     return metadata
 
@@ -388,27 +359,20 @@ def _restore_provider_backup_sync(checkpoint_root: str) -> None:
         return
     with open(metadata_path, "r", encoding="utf-8") as handle:
         metadata = json.load(handle)
-    kind = str(metadata.get("kind") or "")
-    target = metadata.get("source")
-    copied = metadata.get("copy")
-    if kind == "claude_jsonl":
-        if copied and target:
-            _atomic_copy_file(copied, target)
-        elif target and os.path.exists(target):
-            os.remove(target)
-    elif kind == "dsh_session_dir":
-        if copied and target:
-            if os.path.isdir(target):
-                shutil.rmtree(target)
-            shutil.copytree(copied, target)
-        elif target and os.path.isdir(target):
-            shutil.rmtree(target)
+    from app.agents.session_checkpoint import session_checkpoint_adapter
+
+    session_checkpoint_adapter(metadata["provider"]).restore(metadata, "", metadata.get("session_id"))
 
 
 def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_path: str) -> None:
     task_root = _task_root(task_root)
     with open(os.path.join(checkpoint_root, "worktree.json"), encoding="utf-8") as handle:
         metadata = json.load(handle)
+    if metadata.get("version") == 4:
+        from app.domains.task.services import task_git_snapshot_store
+
+        task_git_snapshot_store.restore(checkpoint_root, task_root, current_backup_path)
+        return
     if metadata.get("version") != 2:
         raise TaskSessionSnapshotError("Unsupported checkpoint version", code="WORKTREE_CHECKPOINT_VERSION")
     object_store = metadata["object_store"]
@@ -456,6 +420,26 @@ def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_
                 raise TaskSessionSnapshotError("Restored Git index differs", code="WORKTREE_VERIFY_FAILED")
 
 
+def _restore_git_metadata(repositories: list[dict]) -> None:
+    """Restore real indexes independently of the private snapshot index."""
+    for repo in repositories:
+        repo_path = repo["repo_path"]
+        branch, head = repo.get("branch"), repo.get("head")
+        if branch:
+            ref = f"refs/heads/{branch}"
+            _run_git(repo_path, ["symbolic-ref", "HEAD", ref])
+            _run_git(repo_path, ["update-ref", ref, head] if head else ["update-ref", "-d", ref])
+        elif head:
+            _run_git(repo_path, ["update-ref", "--no-deref", "HEAD", head])
+        index_copy, index_path = repo.get("index_copy"), repo.get("index_path")
+        if index_copy:
+            if _sha256_file(index_copy) != repo["index_sha256"]:
+                raise ValueError("Snapshot Git index is corrupt")
+            _atomic_copy_file(index_copy, index_path)
+        elif index_path and os.path.isfile(index_path):
+            os.remove(index_path)
+
+
 def _directory_label(identity: str, name: str) -> str:
     # IDs are stable and authoritative; names are bounded human-readable labels.
     identity = str(identity or "").strip()
@@ -474,10 +458,14 @@ def _cleanup_checkpoint_sync(path: str) -> None:
         if os.path.isdir(path):
             shutil.rmtree(path)
         store.collect(object_store)
+        from app.domains.task.services import task_git_snapshot_store
+
+        task_git_snapshot_store.collect(object_store)
 
 
 def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
-                            workspace_id: str, workspace_name: str, task_id: str, task_name: str) -> dict[str, Any]:
+                            workspace_id: str, workspace_name: str, task_id: str, task_name: str,
+                            initial_checkpoint: str | None = None) -> dict[str, Any]:
     task_root = _task_root(task_root)
     configured_root = str(settings.TASK_SESSION_SNAPSHOT_ROOT or "").strip()
     if not configured_root:
@@ -494,11 +482,30 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
     except ValueError:
         # Different Windows drives are necessarily outside one another.
         pass
-    root = os.path.join(root, _directory_label(workspace_id, workspace_name), _directory_label(task_id, task_name))
+    if initial_checkpoint:
+        # Pin storage to creation-time ownership, even after display-name edits.
+        initial_checkpoint = os.path.abspath(initial_checkpoint)
+        if os.path.commonpath([os.path.normcase(root), os.path.normcase(initial_checkpoint)]) != os.path.normcase(root):
+            raise TaskSessionSnapshotError("Initial checkpoint is outside snapshot root", code="SNAPSHOT_PATH_INVALID")
+        with open(os.path.join(initial_checkpoint, "worktree.json"), encoding="utf-8") as handle:
+            initial = json.load(handle)
+        if initial.get("version") != 4 or os.path.normcase(initial["task_root"]) != os.path.normcase(task_root):
+            raise TaskSessionSnapshotError("Initial checkpoint identity differs", code="SNAPSHOT_IDENTITY_CHANGED")
+        root = os.path.dirname(initial_checkpoint)
+        if os.path.normcase(initial["object_store"]) != os.path.normcase(root):
+            raise TaskSessionSnapshotError("Initial checkpoint store differs", code="SNAPSHOT_IDENTITY_CHANGED")
+        for part in initial["partitions"]:
+            if not os.path.isfile(os.path.join(part["git_dir"], "index")):
+                raise TaskSessionSnapshotError("Initial snapshot index is missing", code="SNAPSHOT_INDEX_MISSING")
+    else:
+        root = os.path.join(root, _directory_label(workspace_id, workspace_name), _directory_label(task_id, task_name))
     os.makedirs(root, exist_ok=True)
     operation_root = tempfile.mkdtemp(prefix="turn-", dir=root)
     try:
-        worktree = _create_worktree_checkpoint_sync(task_root, repo_rel_paths, operation_root)
+        from app.domains.task.services import task_git_snapshot_store
+
+        with store.store_lock(root):
+            worktree = task_git_snapshot_store.capture(task_root, repo_rel_paths, operation_root, root, _snapshot_policy())
         provider_state = _provider_checkpoint_sync(provider, task_root, session_id, operation_root)
         return {
             "root": operation_root,
@@ -506,23 +513,27 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
             "provider": provider_state,
         }
     except Exception:
-        _cleanup_checkpoint_sync(operation_root)
+        try:
+            _cleanup_checkpoint_sync(operation_root)
+        except Exception:
+            logger.exception("Snapshot cleanup failed after capture error: {}", operation_root)
         raise
 
 
 async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
-                            *, workspace_id: str, workspace_name: str, task_id: str, task_name: str) -> dict[str, Any]:
+                            *, workspace_id: str, workspace_name: str, task_id: str, task_name: str,
+                            initial_checkpoint: str | None = None) -> dict[str, Any]:
     from app.domains.local_resource.service import task_profile
     from app.domains.local_resource import snapshots as remote
     from app.core.offload import run_db
     if await run_db(task_profile, task_id):
-        return await remote.create(task_id, provider, session_id)
+        return await remote.create(task_id, provider, session_id, initial_checkpoint=initial_checkpoint)
     from app.core.offload import run_git_job
 
     import asyncio
     operation = asyncio.create_task(run_git_job(
         _create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id,
-        workspace_id, workspace_name, task_id, task_name,
+        workspace_id, workspace_name, task_id, task_name, initial_checkpoint,
     ))
     try:
         return await asyncio.shield(operation)
@@ -585,11 +596,11 @@ def _fork_dsh_session_sync(session_id: str, target_cwd: str) -> Optional[str]:
     if not sid:
         return None
     from app.agents.adapters.dsh import session_files
-    from app.agents.errors import SessionForkError
+    from app.agents.errors import SessionLogNotFoundError
 
     try:
         source_path, _source_suffix = session_files.locate_session_log(_dsh_root(), sid)
-    except SessionForkError:
+    except SessionLogNotFoundError:
         # A task may have a session id before its first provider event.  In
         # that case there is no persisted DSH session to fork.
         return None

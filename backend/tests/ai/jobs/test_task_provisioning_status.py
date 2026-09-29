@@ -51,10 +51,11 @@ from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _sess
 
 
 @pytest.fixture(autouse=True)
-def local_task_locks(monkeypatch):
+def local_task_locks(monkeypatch, tmp_path):
     # These route tests use SQLite and a single event loop, not live Redis.
     from app.core import distributed_lock
     monkeypatch.setattr(distributed_lock, "_PROVIDER", distributed_lock.LocalLockProvider())
+    monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path.with_name(tmp_path.name + "-snapshots")))
 
 
 def _build_app(SessionLocal, user):
@@ -306,12 +307,13 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
 
 
 @pytest.mark.parametrize("recovery", ["unresolved", "late_finalizer", "stop_failure"])
-def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, recovery):
+def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, recovery, tmp_path):
     monkeypatch.setattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 0.3)
     engine, factory = _build_db()
     try:
         with _session(factory) as db:
             user, workspace, task = _seed_workspace(db, workspace_id="ws-blocked", task_id="task-blocked")
+            task.project_path = str(tmp_path)
             task.session_id = "preserve-session"
             task.session_generation = 7
             task.error_message = "original failure"

@@ -60,6 +60,9 @@ export function useTaskSessionControls(options: UseTaskSessionControlsOptions) {
       const res = await api.post(
         `${taskUrl(taskId, `messages/${encodeURIComponent(messageId)}/undo`)}`,
         { operation_id: undoOptions.operationId },
+        // Undo returns only after restore/verification. A client-side deadline
+        // cannot cancel those writes and would falsely report failure.
+        { timeout: 0 },
       )
       return res.data
     } finally {

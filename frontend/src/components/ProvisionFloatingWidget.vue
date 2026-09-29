@@ -106,6 +106,7 @@ const stageText = (job: ProvisionJobView) => {
     CREATING_WORKSPACE: t('provisioning.stage_creating_workspace'),
     PREPARING_TASK: t('provisioning.stage_preparing_task'),
     PREPARING_WORKTREE: t('provisioning.stage_preparing_worktree'),
+    INITIALIZING_SNAPSHOT: t('provisioning.stage_initializing_snapshot'),
     PREPARING_LOCAL_WORKSPACE: t('provisioning.stage_preparing_local'),
     CANCELLING: t('provisioning.stage_cancelling'),
     CANCELLED: t('provisioning.stage_cancelled'),

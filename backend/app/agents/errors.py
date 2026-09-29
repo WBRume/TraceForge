@@ -80,3 +80,7 @@ class AgentProtocolError(AgentError):
 
 class SessionForkError(AgentError):
     """会话 fork 失败（后端不支持或快照不可用）。"""
+
+
+class SessionLogNotFoundError(SessionForkError):
+    """No persisted provider log exists yet; distinct from corrupt/ambiguous state."""

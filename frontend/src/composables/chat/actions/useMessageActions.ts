@@ -66,6 +66,7 @@ export function useMessageActions(options: {
   }
 
   const undoMessage = async (msg: any): Promise<boolean> => {
+    if (isUndoing.value) return false
     if (!canUndoMessage(msg) || !options.getCurrentTask()?.id) return false
     const messageId = String(msg.id)
     options.undoingMessageId.value = messageId
