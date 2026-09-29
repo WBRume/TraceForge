@@ -29,7 +29,6 @@ import CaseReportSection from './CaseReportSection.vue'
 import CaseReviewTimeline from './CaseReviewTimeline.vue'
 import { useMarkdownExport } from '@/composables/useMarkdownExport'
 import CaseFormDialog from './CaseFormDialog.vue'
-import CasePlaybookHistory from './CasePlaybookHistory.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 
 const { t } = useI18n()
@@ -224,7 +223,6 @@ const callChainItems = computed(() => {
       </div>
 
       <!-- ─── Report Body ─── -->
-      <CasePlaybookHistory :workspace-id="wsId" :case-id="caseId" :can-manage="vm.myCanManage && vm.currentCase?.status === 'APPROVED'" />
       <div class="report-grid">
         <div class="report-main">
           <CaseReportSection index="01" :title="t('case_center.field.problem_description')" :icon="AlertCircle" tone="rose">
