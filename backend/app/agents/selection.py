@@ -123,6 +123,19 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
     return resolved
 
 
+def opencode_server_kwargs() -> Dict[str, str]:
+    """服务端 OpenCode 适配器参数：URL + 可选 HTTP Basic 认证。
+
+    ``opencode serve`` 设置 ``OPENCODE_SERVER_PASSWORD`` 后会要求 Basic 认证；
+    平台侧必须用同一组凭据访问，否则 ``/api/info`` 返回 401 被误判为协议不兼容。
+    """
+    return {
+        "server_url": str(getattr(settings, "OPENCODE_SERVER_URL", "") or "http://127.0.0.1:4097"),
+        "username": str(getattr(settings, "OPENCODE_SERVER_USERNAME", "") or "opencode"),
+        "password": str(getattr(settings, "OPENCODE_SERVER_PASSWORD", "") or ""),
+    }
+
+
 def create_agent_backend_by_name(backend_name: Optional[str] = None, *, task_id: str | None = None):
     """按名称创建统一 AgentBackend 实例（engine 路径使用）。
 
@@ -140,10 +153,7 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None, *, task_id:
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
     if name == "opencode":
-        return get_agent_backend(
-            "opencode",
-            server_url=getattr(settings, "OPENCODE_SERVER_URL", "http://127.0.0.1:4097"),
-        )
+        return get_agent_backend("opencode", **opencode_server_kwargs())
     if name == "dsh":
         return get_agent_backend("dsh", server_url=str(settings.DSH_SERVER_URL).strip())
     return get_agent_backend(name)

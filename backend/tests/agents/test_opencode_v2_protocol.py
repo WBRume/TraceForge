@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -71,6 +72,48 @@ async def test_probe_requires_v2(payload):
         assert calls == ['/api/info']
     finally:
         await adapter.close()
+
+
+@pytest.mark.asyncio
+async def test_probe_sends_basic_auth_when_password_configured():
+    seen = {}
+    def handler(request):
+        seen['authorization'] = request.headers.get('authorization')
+        return httpx.Response(200, json={'version': '2.0.16'})
+    adapter = OpenCodeAdapter('http://agent', username='opencode', password='secret')
+    try:
+        client = await adapter._ensure_client()
+        client._transport = httpx.MockTransport(handler)
+        await adapter.probe()
+    finally:
+        await adapter.close()
+    assert seen['authorization'] == 'Basic ' + base64.b64encode(b'opencode:secret').decode()
+
+
+@pytest.mark.asyncio
+async def test_probe_surfaces_authentication_rejection():
+    def handler(request):
+        return httpx.Response(401, headers={'www-authenticate': 'Basic realm="Secure Area"'})
+    adapter = OpenCodeAdapter('http://agent', username='opencode', password='wrong')
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(AgentError) as excinfo:
+            await adapter.probe()
+    finally:
+        await adapter.close()
+    message = str(excinfo.value)
+    assert 'rejected authentication' in message
+    assert 'OPENCODE_SERVER_PASSWORD' in message
+
+
+def test_server_backend_reads_opencode_credentials_from_settings(monkeypatch):
+    from app.agents import selection
+    monkeypatch.setattr(selection.settings, "OPENCODE_SERVER_URL", "http://oc.example:4097")
+    monkeypatch.setattr(selection.settings, "OPENCODE_SERVER_USERNAME", "opencode")
+    monkeypatch.setattr(selection.settings, "OPENCODE_SERVER_PASSWORD", "s3cret")
+    backend = selection.create_agent_backend_by_name("opencode")
+    assert backend.server_url == "http://oc.example:4097"
+    assert backend._auth == ("opencode", "s3cret")
 
 
 def test_native_v2_delta_keeps_whitespace():
