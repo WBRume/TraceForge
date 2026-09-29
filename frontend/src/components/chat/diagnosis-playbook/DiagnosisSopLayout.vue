@@ -95,7 +95,6 @@ const layoutStyle = computed(() => ({ gridTemplateColumns: `${widths.value.left}
     </main>
     <div class="sop-splitter" :class="{ 'drag-source': dragState?.side === 'right' }" role="separator" aria-orientation="vertical" aria-label="调整对话区宽度" tabindex="0" @pointerdown="startDrag('right', $event)" @pointermove="onDrag" @pointerup="endDrag" @pointercancel="endDrag" @keydown="onSplitterKey('right', $event)" @dblclick="resetWidths" />
     <aside class="sop-conversation" aria-label="Agent 诊断对话">
-      <header class="agent-heading">Agent 诊断副驾驶 <span v-if="running">执行中</span></header>
       <pre v-if="run && agentText" class="agent-output">{{ agentText }}</pre>
       <slot />
     </aside>
@@ -111,7 +110,6 @@ const layoutStyle = computed(() => ({ gridTemplateColumns: `${widths.value.left}
 .sop-splitter:hover::before { background:#cbd5e1 }
 .sop-layout.dragging .sop-splitter.drag-source::before { background:#93c5fd }
 .sop-workspace { overflow:auto; min-width:0; min-height:0 }.sop-conversation { display:flex; flex-direction:column; min-height:0; min-width:0; background:white }
-.agent-heading { display:flex; justify-content:space-between; gap:8px; font-size:13px; font-weight:600; padding:16px; border-bottom:1px solid #dbe5f1; flex-shrink:0 }.agent-heading span { color:#2563eb; font-weight:400; font-size:11px }
 .workspace-error { margin:12px 16px; color:#b45309; font-size:12px }.physical-workspace { padding:16px; font-size:13px }.physical-workspace header { display:flex; gap:12px; justify-content:space-between; align-items:center }.physical-workspace h2 { font-size:14px }.physical-actions { display:flex; gap:12px }
 .physical-workspace button,.workspace-error button { border:1px solid #dbe5f1; border-radius:5px; padding:6px 10px; background:white; color:#2563eb; cursor:pointer }.physical-workspace button:disabled { opacity:.5 }.empty,.loading { color:#94a3b8; font-size:13px }.loading { padding:20px }.agent-output { white-space:pre-wrap; overflow:auto; max-height:40%; font-size:12px; padding:12px; margin:10px; background:#eff6ff; border-radius:6px }
 </style>

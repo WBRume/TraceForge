@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
 import AgentModelSelect from '../AgentModelSelect.vue'
-import {
-  BRAND_STYLE_RULES,
-  parseModelOption,
-  resolveBrandStyle,
-} from '../modelBrandRules'
+import { parseModelOption } from '../modelBrandRules'
 import type { AgentModelOption } from '@/composables/useAgentModels'
 
 describe('AgentModelSelect 品牌规则表与模型解析', () => {
