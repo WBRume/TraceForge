@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { ChevronDown } from '@/components/icons'
 
 interface Option {
@@ -19,6 +19,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: any): void
+  (e: 'open'): void
 }>()
 
 const isOpen = ref(false)
@@ -27,6 +28,7 @@ const selectRef = ref<HTMLElement | null>(null)
 const toggleDropdown = () => {
   if (props.disabled) return
   isOpen.value = !isOpen.value
+  if (isOpen.value) emit('open')
 }
 
 const selectOption = (option: Option) => {
@@ -41,15 +43,10 @@ const handleClickOutside = (event: MouseEvent) => {
   }
 }
 
-const selectedLabel = ref('')
-
-const updateLabel = () => {
+const selectedLabel = computed(() => {
   const selected = (props.options || []).find(opt => opt.value === props.modelValue)
-  selectedLabel.value = selected ? selected.label : (props.placeholder || '')
-}
-
-watch(() => props.modelValue, updateLabel, { immediate: true })
-watch(() => props.options, updateLabel)
+  return selected ? selected.label : (props.placeholder || '')
+})
 
 onMounted(() => {
   window.addEventListener('click', handleClickOutside)

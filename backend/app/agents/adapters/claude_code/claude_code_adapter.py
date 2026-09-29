@@ -106,6 +106,10 @@ class ClaudeCodeAdapter(AgentBackend):
             raise AgentError(f"Claude Code CLI not found: {cli_path!r}")
         return f"Claude Code CLI is available: {resolved}"
 
+    async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
+        from .models import model_catalog
+        return await asyncio.to_thread(model_catalog, project_path)
+
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         self._validate_request(request)
         self._cancelled = False
@@ -128,6 +132,8 @@ class ClaudeCodeAdapter(AgentBackend):
             await self._handle_raw_event(event, _tracked_event)
 
         runtime_kwargs = {}
+        if request.model:
+            runtime_kwargs["model"] = request.model
         if request.provider_options.get("execution_policy") is not None:
             runtime_kwargs["runtime_policy"] = request.provider_options["execution_policy"]
 

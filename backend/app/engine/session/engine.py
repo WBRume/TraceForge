@@ -339,6 +339,7 @@ class TaskAgentEngine:
                 if isinstance(self.cli, AgentBackend):
                     request = turn_setup.build_agent_run_request(
                         backend=self.cli,
+                        model=await run_db(turn_setup.task_model_sync, self.task_id, self.current_job_id),
                         prompt=prompt,
                         project_path=project_path,
                         session_id=self.session_id,

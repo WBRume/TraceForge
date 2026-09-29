@@ -201,6 +201,7 @@ class SubprocessCliBridge(CliBridgeBase):
         on_process_started: Optional[Callable[[Any], Any]] = None,
         process_attach_timeout_seconds: Optional[float] = None,
         runtime_policy: Optional[dict] = None,
+        model: Optional[str] = None,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -211,6 +212,8 @@ class SubprocessCliBridge(CliBridgeBase):
         args = self._resolve_cli_base_args()
 
         cli_permission_args = resolve_claude_permission_args(permission_mode)
+        if model:
+            args.extend(["--model", model])
         args.extend([
             "-p",
             "--output-format", "stream-json",

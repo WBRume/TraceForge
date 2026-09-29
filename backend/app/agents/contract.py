@@ -772,6 +772,10 @@ class AgentBackend(ABC):
     name: str
     capabilities: AgentCapabilities
 
+    async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
+        """Return selectable models and the provider's configured default."""
+        raise AgentError(f"{self.name} backend does not expose a model catalogue")
+
     def get_runtime_control(self):
         """Optional SOP control plane; old adapters retain their exact contract."""
         from app.agents.runtime_control import UnsupportedRuntimeControl

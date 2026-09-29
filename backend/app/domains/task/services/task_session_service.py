@@ -297,6 +297,13 @@ def _persist_chat_turn_sync(
     checkpoint_root = str(prepared.get("checkpoint_root") or "").strip() or None
 
     metadata = dict(context_json or {})
+    from app.agents.model_selection import apply_task_selection
+    try:
+        selected = apply_task_selection(db, task, metadata.get("agent_model"))
+    except ValueError as exc:
+        raise TaskSessionUndoError(str(exc), code="MODEL_SELECTION_INVALID", status_code=422) from exc
+    if selected:
+        metadata["agent_model"] = selected
     if client_message_id:
         metadata["client_message_id"] = client_message_id
     metadata.update({

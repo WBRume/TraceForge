@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { generateClientMessageId } from '../shared/messageIdentity'
 import { createResolveActionError } from '../shared/requestGuards'
 import type { HitlCard } from '../types'
+import type { AgentModelSelection } from '@/composables/useAgentModels'
 
 /**
  * 消息发送（composer）：普通输入、HITL 回复、快捷验证三种入口共用
@@ -15,6 +16,8 @@ import type { HitlCard } from '../types'
  * 3. 其余 → WebSocket 直发。
  */
 export function useChatSend(options: {
+  getModelSelection?: () => AgentModelSelection | undefined
+  onModelSubmitted?: (value?: AgentModelSelection) => void
   resourceBlocked?: () => boolean
   suggestionOnly?: () => boolean
   getWorkspaceId: () => string
@@ -45,7 +48,7 @@ export function useChatSend(options: {
     connect: (taskId: string) => void
   }
   recoverSession: (reason: string) => Promise<boolean>
-  resumeInterruptedTask: (taskId: string, resumeOptions: { prompt?: string; clientMessageId?: string }) => Promise<any>
+  resumeInterruptedTask: (taskId: string, resumeOptions: { prompt?: string; clientMessageId?: string; agentModel?: AgentModelSelection }) => Promise<any>
   applyTaskSessionPayload: (payload: any) => void
   isUndoing: () => boolean
   isHistoryAnchored: () => boolean
@@ -105,6 +108,10 @@ export function useChatSend(options: {
     if (options.isHistoryAnchored()) await options.returnToLatest()
     const displayContent = String(sendOptions.displayContent || normalized).trim()
     const clientMessageId = generateClientMessageId()
+    const modelSelection = options.getModelSelection?.()
+    if (modelSelection && !sendOptions.metadata?.interaction_id) {
+      sendOptions = { ...sendOptions, metadata: { ...sendOptions.metadata, agent_model: modelSelection } }
+    }
     options.noteSentTime(clientMessageId)
     sendingChat.value = true
     const taskId = options.getTaskId()
@@ -112,6 +119,7 @@ export function useChatSend(options: {
       try {
         // POST 回执直接应用；后续状态由 outbox 事件（chat_submission_update）驱动。
         const accepted = await options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata)
+        if (accepted) options.onModelSubmitted?.(modelSelection)
         if (options.getTaskId() === taskId && accepted) options.scrollTo('chat')
         if (!accepted && options.submissions.current.value.some((row: any) =>
           row.client_message_id === clientMessageId && row.status === 'UNKNOWN')) {
@@ -127,6 +135,7 @@ export function useChatSend(options: {
         const payload = await options.resumeInterruptedTask(taskId, {
           prompt: normalized,
           clientMessageId,
+          agentModel: modelSelection,
         })
         options.messages.upsert({
           id: `local-${clientMessageId}`,
@@ -140,6 +149,7 @@ export function useChatSend(options: {
           metadata: sendOptions.metadata || null,
         })
         options.applyTaskSessionPayload(payload)
+        options.onModelSubmitted?.(modelSelection)
         options.engine.engineRunning.value = true
         if (!options.isHistoryAnchored()) options.scrollTo('chat')
         return true

@@ -26,6 +26,7 @@ from . import (
     crud,
     diagnosis,
     reading,
+    models,
     session_control,
     session_runs,
     session_shares,
@@ -35,6 +36,7 @@ from . import (
 
 router = APIRouter(tags=["Tasks"])
 for _submodule in (
+    models,
     crud,
     session_runs,
     session_control,

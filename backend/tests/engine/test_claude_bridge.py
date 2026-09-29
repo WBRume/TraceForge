@@ -30,7 +30,7 @@ class ClaudeBridgePromptInputTest(unittest.IsolatedAsyncioTestCase):
                     bridge, "_resolve_cli_base_args", return_value=[sys.executable, "-c", script]
                 ):
                     try:
-                        await bridge.start_session(prompt, cwd, events.append, session_id=session_id, fork_session=fork)
+                        await bridge.start_session(prompt, cwd, events.append, session_id=session_id, fork_session=fork, model="custom-model")
                         await bridge.wait()
                     finally:
                         if bridge.is_running():
@@ -38,6 +38,7 @@ class ClaudeBridgePromptInputTest(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(len(events), 1)
                 self.assertEqual(events[0]["digest"], hashlib.sha256(prompt.encode("utf-8")).hexdigest())
                 args = events[0]["args"]
+                self.assertEqual(args[args.index("--model") + 1], "custom-model")
                 self.assertNotIn(prompt, args)
                 self.assertEqual("--resume" in args, session_id is not None)
                 self.assertEqual("--fork-session" in args, fork)

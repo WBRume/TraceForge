@@ -610,6 +610,7 @@ class TaskWebSocketHandler:
                 mentioned_user_ids=payload.get("mentioned_user_ids") or [],
                 edit_permission=str(payload.get("edit_permission") or "NONE"),
                 wait_seconds=int(payload.get("wait_seconds") or 180),
+                agent_model=payload.get("agent_model"),
             )
             return
 

@@ -1,5 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+
+const api = vi.hoisted(() => ({ get: vi.fn() }))
+vi.mock('@/utils/api', () => ({ default: api }))
+beforeEach(() => api.get.mockResolvedValue({ data: {
+  backend: 'dsh', current_model: 'private/a', items: [], options: [
+    { value: 'private/a', label: 'Model A' }, { value: 'private/b', label: 'Model B' },
+  ],
+} }))
 
 vi.mock('vue-i18n', () => ({
   useI18n: () => ({ t: (key: string) => key }),
@@ -32,6 +40,34 @@ const mountForm = () =>
   })
 
 describe('TaskCreateForm spec upload', () => {
+  it('refreshes the catalogue on opening without replacing the selected draft', async () => {
+    const wrapper = mountForm()
+    await flushPromises()
+    await wrapper.find('.agent-model-select .select-trigger').trigger('click')
+    await wrapper.findAll('.agent-model-select .option-item')[1]!.trigger('click')
+    await flushPromises()
+    api.get.mockResolvedValue({ data: {
+      backend: 'dsh', current_model: 'private/a', options: [
+        { value: 'private/a', label: 'Model A' }, { value: 'private/b', label: 'Model B' },
+        { value: 'private/c', label: 'New Model C' },
+      ],
+    } })
+    await wrapper.find('.agent-model-select .select-trigger').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.agent-model-select .option-item')).toHaveLength(3)
+    expect(wrapper.find('.agent-model-select .selected-text').text()).toBe('Model B')
+    wrapper.unmount()
+  })
+  it('includes the selected engine model in the task draft', async () => {
+    const wrapper = mountForm()
+    await flushPromises()
+    expect(wrapper.find('.agent-model-select').text()).toContain('Model A')
+    await wrapper.find('.agent-model-select .select-trigger').trigger('click')
+    await wrapper.findAll('.agent-model-select .option-item')[1]!.trigger('click')
+    await wrapper.find('form').trigger('submit')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({ agentModel: { backend: 'dsh', model: 'private/b' } })
+    wrapper.unmount()
+  })
   it('accept 不再包含 .doc', () => {
     const wrapper = mountForm()
     expect(findSpecInput(wrapper).attributes('accept')).toBe('.pdf,.docx,.md,.txt')

@@ -3,6 +3,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
+import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
+import type { AgentModelOption } from '@/composables/useAgentModels'
 import UserAvatar from '@/components/user/UserAvatar.vue'
 
 const { t } = useI18n()
@@ -27,12 +29,19 @@ const props = defineProps<{
   preInputMode?: boolean
   canStartPreInput?: boolean
   searchMembers?: (keyword: string) => Promise<MentionOption[]>
+  selectedModel?: string
+  modelOptions?: AgentModelOption[]
+  modelsLoading?: boolean
+  modelsError?: string
+  showModelSelector?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'update:preInputMode', value: boolean): void
   (e: 'submit'): void
+  (e: 'update:selectedModel', value: string): void
+  (e: 'reload-models'): void
   (e: 'interrupt'): void
   (e: 'start-pre-input', payload: {
     main_text: string
@@ -341,6 +350,13 @@ defineExpose({ resetPreInputForm, focusInput })
 
         <div class="toolbar-spacer"></div>
 
+        <AgentModelSelect
+          v-if="showModelSelector" compact
+          :model-value="selectedModel || ''" :options="modelOptions || []"
+          :loading="modelsLoading" :error="modelsError"
+          @update:model-value="emit('update:selectedModel', $event)" @retry="emit('reload-models')"
+          @refresh="emit('reload-models')"
+        />
         <!-- 主按钮：运行中切换为停止（替换发送位置，带过渡动效） -->
         <Transition name="action-swap" mode="out-in">
           <button
