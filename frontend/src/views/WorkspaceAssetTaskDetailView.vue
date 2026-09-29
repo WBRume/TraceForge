@@ -8,10 +8,8 @@ import {
   Database,
   FileText,
   GitBranch,
-  History,
   ShieldCheck,
   TerminalSquare,
-  LayoutGrid,
 } from '@/components/icons'
 import TaskDetailHeader from '@/components/workspace-assets/task-detail/TaskDetailHeader.vue'
 import TaskFilePanel from '@/components/workspace-assets/task-detail/TaskFilePanel.vue'
@@ -22,7 +20,6 @@ const TaskFinalWorkflowEntryPanel = defineAsyncComponent(() => import('@/compone
 const HumanDeltaPanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/HumanDeltaPanel.vue'))
 const EvidencePanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/EvidencePanel.vue'))
 const DecisionPanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/DecisionPanel.vue'))
-const TaskProcessAuditPanel = defineAsyncComponent(() => import('@/components/workspace-assets/task-detail/TaskProcessAuditPanel.vue'))
 
 type WorkbenchSection = {
   key: TaskWorkbenchSectionKey
@@ -55,7 +52,6 @@ const sectionKeys: TaskWorkbenchSectionKey[] = [
   'humanDelta',
   'evidence',
   'decisions',
-  'processAudit',
 ]
 
 const normalizeSection = (value: unknown): TaskWorkbenchSectionKey | null => {
@@ -95,12 +91,6 @@ const sections = computed<WorkbenchSection[]>(() => [
     title: t('workspace_assets.task_detail.workbench.nav.decisions'),
     body: t('workspace_assets.task_detail.workbench.nav.decisions_body'),
     icon: GitBranch,
-  },
-  {
-    key: 'processAudit',
-    title: t('workspace_assets.task_detail.workbench.nav.process_audit'),
-    body: t('workspace_assets.task_detail.workbench.nav.process_audit_body'),
-    icon: History,
   },
 ])
 
@@ -179,10 +169,6 @@ onMounted(() => {
 
     <div v-loading="summaryLoading" class="task-workbench">
       <nav class="workbench-nav">
-        <div class="nav-header">
-          <LayoutGrid class="nav-header-icon" />
-          <span>{{ t('workspace_assets.task_detail.workbench.nav_title') }}</span>
-        </div>
         <div class="nav-items-grid">
           <button
             v-for="section in sections"
@@ -264,12 +250,6 @@ onMounted(() => {
                 :page-size="sectionStates.decisions.pageSize"
                 @mutated="handleMutated('decisions')"
                 @page-change="(p) => handlePageChange('decisions', p)"
-              />
-              <TaskProcessAuditPanel
-                v-else-if="activeSection === 'processAudit'"
-                :audit-logs="sectionStates.processAudit.data ?? []"
-                :workspace-id="wsId"
-                :task-id="taskId"
               />
             </template>
           </div>
@@ -355,23 +335,6 @@ onMounted(() => {
   top: 32px;
 }
 
-.nav-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 8px 8px;
-  border-bottom: 1px solid #f1f5f9;
-  color: #64748b;
-  font-size: 0.75rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.nav-header-icon {
-  width: 16px;
-  height: 16px;
-}
 
 .nav-items-grid {
   display: flex;

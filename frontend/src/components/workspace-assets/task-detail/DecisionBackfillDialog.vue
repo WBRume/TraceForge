@@ -62,7 +62,6 @@ function handleOverlayPointerDown(e: PointerEvent) {
           </div>
 
           <div class="header-text">
-            <span class="eyebrow">{{ t('workspace_assets.task_detail.workbench.decisions.eyebrow') }}</span>
             <h2>{{ t('workspace_assets.task_detail.workbench.backfill_dialog.title') }}</h2>
           </div>
 

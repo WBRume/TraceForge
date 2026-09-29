@@ -2215,7 +2215,6 @@
     },
     "task_detail": {
       "back_to_tasks": "Back to Tasks",
-      "eyebrow": "Task process asset workbench",
       "title": "Task Detail",
       "subtitle": "Task Detail is the core carrier page for process assets such as Spec, Plan, AI Runs, Human Review, Human Delta, Evidence, Decisions, and Clarifications.",
       "workspace_id": "Workspace ID",
@@ -2306,21 +2305,16 @@
       "final_workflow": {
         "route": {
           "back_to_task_detail": "Back to Task Detail",
-          "eyebrow": "Task final state",
           "title": "Final Workflow"
         },
         "entry": {
-          "eyebrow": "Final workflow",
           "title": "Final Workflow",
-          "subtitle": "Review, clarification, summary, and freeze operations now live on a dedicated page.",
           "open": "Open Final Workflow",
           "readonly_title": "Task is frozen. Only the final snapshot can be viewed.",
           "readonly_body": "Open the dedicated page to view reviews, clarifications, summaries, and the baseline snapshot."
         },
         "panel": {
-          "eyebrow": "Final state workflow",
           "title": "Final Workflow",
-          "subtitle": "Expert review, clarification, final summary, and baseline freeze close in one path.",
           "readonly_title": "Task is baselined and read-only.",
           "readonly_body": "Editing actions are hidden or disabled. Read-only views and snapshot inspection remain available."
         },
@@ -2573,7 +2567,6 @@
       "workbench": {
         "saved": "Real process asset record saved",
         "real_records_only": "Real records only",
-        "nav_title": "Task Detail workspaces",
         "nav": {
           "task_file": "Task File",
           "task_file_body": "Spec, Plan, AI Output, patch and verification records",
@@ -2643,7 +2636,6 @@
           "TASK_DETAIL_BACKFILL": "Task Detail backfill"
         },
         "task_file": {
-          "eyebrow": "Task File",
           "title": "Real Task output and file records",
           "empty_title": "No real Task File records",
           "empty": "Waiting for Spec, Plan, AI Output, change proposals, verification logs, or conflict reports."
@@ -2659,9 +2651,7 @@
           "empty": "Waiting for a reviewer to submit real conclusions, comments, or required changes. Plain notes are not treated as accepted review."
         },
         "human_delta": {
-          "eyebrow": "Human Delta",
           "title": "AI Patch vs Final Patch Comparison",
-          "description": "Automatically compares AI-generated patches with developer's final commits to compute the real change delta.",
           "boundary": "The page does not calculate AI contribution or assume the platform owns final code.",
           "suggest_title": "Patch Pairs to Compare",
           "suggest_empty": "No unpaired AI Patch and Human Patch combinations available",
@@ -2716,9 +2706,7 @@
           "select_file_hint": "Select a file from the left navigation to view the diff"
         },
         "evidence": {
-          "eyebrow": "Evidence",
           "title": "Real evidence attachment point",
-          "description": "After task completion, attach Commit, MR, or human confirmation evidence. After failure, attach failure evidence and run logs.",
           "task_running_hint": "Task is running. Evidence can be attached after completion.",
           "action_commit": "Link Commit",
           "action_mr": "Link MR/PR",
@@ -2786,9 +2774,7 @@
           "load_failed": "Failed to load evidence details"
         },
         "decisions": {
-          "eyebrow": "Decisions",
           "title": "Task-scoped key decisions",
-          "description": "Shows key human decisions from chat, Spec / Plan edits, and task closeout, with source jump-back.",
           "submit": "Record Decision",
           "backfill": "Backfill Decision",
           "empty_title": "No real Decision",

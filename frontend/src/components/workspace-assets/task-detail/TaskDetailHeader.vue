@@ -90,7 +90,6 @@ const metaItems = computed(() => [
     <div class="header-main">
       <div class="title-section">
         <div class="eyebrow-row">
-          <span class="eyebrow-tag">{{ t('workspace_assets.task_detail.eyebrow') }}</span>
           <div class="id-badges">
             <span class="badge">WS: {{ workspaceId }}</span>
             <span class="badge">TASK: {{ taskId }}</span>
@@ -161,16 +160,8 @@ const metaItems = computed(() => [
 .eyebrow-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
-}
-
-.eyebrow-tag {
-  color: #2563eb;
-  font-size: 0.7rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .id-badges {

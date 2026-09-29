@@ -2217,7 +2217,6 @@
     },
     "task_detail": {
       "back_to_tasks": "返回 Tasks",
-      "eyebrow": "Task 过程资产工作台",
       "title": "Task Detail",
       "subtitle": "Task Detail 是 Spec、Plan、AI Runs、Human Review、Human Delta、Evidence、Decision 和 Clarification 等过程资产的核心承载页。",
       "workspace_id": "Workspace ID",
@@ -2308,21 +2307,16 @@
       "final_workflow": {
         "route": {
           "back_to_task_detail": "返回 Task 详情",
-          "eyebrow": "Task final state",
           "title": "最终状态流程"
         },
         "entry": {
-          "eyebrow": "Final workflow",
           "title": "最终状态流程",
-          "subtitle": "完整审查、澄清、摘要和冻结操作已移到独立页面。",
           "open": "打开最终状态流程",
           "readonly_title": "Task 已冻结，只能查看最终状态快照。",
           "readonly_body": "进入独立页面可查看审查、澄清、摘要和 baseline snapshot。"
         },
         "panel": {
-          "eyebrow": "Final state workflow",
           "title": "最终状态流程",
-          "subtitle": "专家审查、澄清问题、最终摘要和基线冻结在同一路径中闭环。",
           "readonly_title": "Task 已基线冻结，当前为只读状态。",
           "readonly_body": "编辑动作已隐藏或禁用；仍可查看只读内容和 baseline snapshot。"
         },
@@ -2575,7 +2569,6 @@
       "workbench": {
         "saved": "已保存真实过程资产记录",
         "real_records_only": "仅展示真实记录",
-        "nav_title": "Task Detail 工作区",
         "nav": {
           "task_file": "任务文件",
           "task_file_body": "Spec、Plan、AI Output、patch 与验证记录",
@@ -2645,9 +2638,8 @@
           "TASK_DETAIL_BACKFILL": "Task Detail 补录"
         },
         "task_file": {
-          "eyebrow": "Task File",
-          "title": "Task File 真实产出与文件记录",
-          "empty_title": "暂无真实 Task File 记录",
+          "title": "真实产出与文件记录",
+          "empty_title": "暂无真实产出与文件记录",
           "empty": "等待 Spec、Plan、AI Output、change proposal、验证日志或冲突报告接入。"
         },
         "human_review": {
@@ -2661,9 +2653,7 @@
           "empty": "等待审查人提交真实结论、意见或 required changes；不会把普通说明伪造成审查通过。"
         },
         "human_delta": {
-          "eyebrow": "Human Delta",
           "title": "AI Patch vs Final Patch 对比",
-          "description": "自动对比 AI 生成的 patch 与开发者最终提交的 patch，计算真实的修改差异。",
           "boundary": "不计算 AI 贡献率，不假设平台拥有最终代码。",
           "suggest_title": "待对比的 Patch 组合",
           "suggest_empty": "暂无待对比的 AI Patch 和 Final Patch 组合",
@@ -2721,9 +2711,7 @@
           "select_file_hint": "请从左侧文件导航中选择一个文件查看差异"
         },
         "evidence": {
-          "eyebrow": "Evidence",
           "title": "真实证据挂载入口",
-          "description": "任务完成后可挂载 Commit、MR、人工确认等证据；任务失败后可挂载失败证据和运行日志。",
           "task_running_hint": "任务运行中，完成后可挂载证据",
           "action_commit": "关联 Commit",
           "action_mr": "关联 MR/PR",
@@ -2791,9 +2779,7 @@
           "load_failed": "加载证据详情失败"
         },
         "decisions": {
-          "eyebrow": "关键决策",
           "title": "Task 内关键技术决策",
-          "description": "展示从会话、Spec / Plan 修改和任务收束中产生的关键人类决策，并保留来源回跳。",
           "submit": "记录关键决策",
           "backfill": "补录决策",
           "empty_title": "暂无真实关键决策",

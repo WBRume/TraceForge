@@ -213,9 +213,6 @@ function submitForm() {
           </div>
 
           <div class="header-text">
-            <span class="eyebrow" :class="isFailed ? 'text-fail' : 'text-success'">
-              {{ t('workspace_assets.task_detail.workbench.evidence.eyebrow') }}
-            </span>
             <h2>{{ t('workspace_assets.task_detail.workbench.evidence_mount.title') }}</h2>
             <p class="description">{{ t('workspace_assets.task_detail.workbench.evidence_mount.description') }}</p>
           </div>
