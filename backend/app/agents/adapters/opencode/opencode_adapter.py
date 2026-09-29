@@ -85,10 +85,25 @@ class OpenCodeAdapter(AgentBackend):
         client = await self._ensure_client()
         try:
             response = await client.get(self.server_url + "/api/info")
-            if response.status_code != 200 or not self._is_json_response(response) or not str(response.json().get("version", "")).startswith("2."):
-                raise AgentError("OpenCode v2 /api/info response is invalid; OpenCode 2.x is required")
         except Exception as exc:
             raise AgentError(f"OpenCode server unreachable: {exc}") from exc
+        if response.status_code in (401, 403):
+            raise AgentError(
+                f"OpenCode server at {self.server_url} rejected authentication "
+                f"(HTTP {response.status_code}); check OPENCODE_SERVER_USERNAME/OPENCODE_SERVER_PASSWORD"
+            )
+        if response.status_code != 200 or not self._is_json_response(response):
+            raise AgentError(
+                f"OpenCode /api/info returned an unexpected response (HTTP {response.status_code})"
+            )
+        try:
+            version = str(response.json().get("version", ""))
+        except Exception as exc:
+            raise AgentError("OpenCode /api/info returned invalid JSON") from exc
+        if not version.startswith("2."):
+            raise AgentError(
+                f"OpenCode 2.x is required (server reported version {version or 'unknown'})"
+            )
         return f"OpenCode server is reachable at {self.server_url} (HTTP {response.status_code})"
 
     async def _create_session(self, request: AgentRunRequest) -> str:

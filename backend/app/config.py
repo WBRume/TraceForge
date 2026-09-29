@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     # ── Agent Backend ──
     AGENT_BACKEND: str = "claude-code"  # claude-code | opencode | dsh | mock
     OPENCODE_SERVER_URL: str = "http://127.0.0.1:4097"
+    # 服务端 OpenCode serve 的 HTTP Basic 认证凭据。启动时设置了
+    # OPENCODE_SERVER_PASSWORD（例如绑定 0.0.0.0 时）就必须在此同步配置；
+    # 密码留空表示服务端未启用认证。
+    OPENCODE_SERVER_USERNAME: str = "opencode"
+    OPENCODE_SERVER_PASSWORD: str = ""
     # DSH 会话持久化根（空 = 跟随 dsh 默认 ~/.dsh/sessions）；
     # Web Host fork 读取与写入都指向该目录树
     DSH_SESSION_ROOT: str = ""

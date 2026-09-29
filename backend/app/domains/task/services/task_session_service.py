@@ -716,7 +716,8 @@ async def _restore_provider_for_suffix(
         if not target_user_id:
             raise TaskSessionUndoError("OpenCode message boundary is unavailable", code="UNDO_PROVIDER_BOUNDARY_MISSING")
         from app.domains.local_resource.service import provider_for_task
-        adapter = await run_db(provider_for_task, task.id) or OpenCodeAdapter(str(settings.OPENCODE_SERVER_URL or "http://127.0.0.1:4097"))
+        from app.agents.selection import opencode_server_kwargs
+        adapter = await run_db(provider_for_task, task.id) or OpenCodeAdapter(**opencode_server_kwargs())
         try:
             await adapter.wait_until_idle(
                 session_id,
