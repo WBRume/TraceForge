@@ -119,13 +119,12 @@ let collabConsumer: ReturnType<typeof createSerializedWsConsumer> | null = null
 let collabSocketManualClose = false
 let collabReconnectTimer: number | null = null
 let keywordTimer: number | null = null
-let autoMockPollTimer: number | null = null
-let autoMockPolling = false
 const handledAutoMockDoneJobIds = new Set<string>()
-let jobWaitSeq = 0
+const contextVersion = ref(0)
+const observedJobs = ref<Record<string, ActiveJobState>>({})
+let collabProjectId = ''
 const COLLAB_RECONNECT_DELAY_MS = 1200
 let collabReconnectAttempt = 0
-const AUTO_MOCK_POLL_INTERVAL_MS = 1500
 
 const canView = computed(() => Boolean(permissions.value?.view_api_mock))
 const canManage = computed(() => Boolean(permissions.value?.manage_api_mock))
@@ -288,6 +287,15 @@ const mergeIncomingAutoMockJobState = (incoming: ActiveJobState) => {
   }
 }
 
+const acceptJobState = (incoming: ActiveJobState) => {
+  const previous = observedJobs.value[incoming.id]
+  if (previous?.status === 'SUCCESS' || previous?.status === 'FAILED') return
+  observedJobs.value = { ...observedJobs.value, [incoming.id]: incoming }
+  mergeIncomingJobState(incoming)
+  mergeIncomingAutoMockJobState(incoming)
+  if (incoming.status === 'SUCCESS' || incoming.status === 'FAILED') handleAutoMockJobCompletion(incoming)
+}
+
 const parseLockedDetail = (err: unknown): ApiMockLockedDetail | null => {
   const detail = ((err as { response?: { data?: ApiMockErrorBody } })?.response?.data?.detail || null) as
     | ApiMockLockedDetail
@@ -314,13 +322,6 @@ const scheduleCollabReconnect = () => {
     if (collabSocket && collabSocket.readyState !== WebSocket.CLOSED) return
     connectCollab()
   }, delay)
-}
-
-const stopAutoMockPolling = () => {
-  if (autoMockPollTimer !== null) {
-    window.clearTimeout(autoMockPollTimer)
-    autoMockPollTimer = null
-  }
 }
 
 const handleAutoMockJobCompletion = (parsedJob: ActiveJobState) => {
@@ -356,41 +357,6 @@ const handleAutoMockJobCompletion = (parsedJob: ActiveJobState) => {
   }
 }
 
-const pollActiveAutoMockJob = async () => {
-  if (autoMockPolling) return
-  const currentJob = activeAutoMockJob.value
-  const workspaceId = String(wsId.value || '').trim()
-  const taskId = String(selectedTaskId.value || '').trim()
-  if (!currentJob || !workspaceId || !taskId) return
-  if (currentJob.status !== 'PENDING' && currentJob.status !== 'RUNNING') return
-
-  autoMockPolling = true
-  try {
-    const snapshot = await fetchJobSnapshot(currentJob.id, workspaceId, taskId)
-    if (!snapshot || snapshot.job_type !== AUTO_MOCK_JOB_TYPE) {
-      await loadActiveJobs()
-      return
-    }
-    if (snapshot.status === 'SUCCESS' || snapshot.status === 'FAILED') {
-      handleAutoMockJobCompletion(snapshot)
-      return
-    }
-  } catch {
-    // polling is a fallback path; keep silent and retry.
-    await loadActiveJobs()
-  } finally {
-    autoMockPolling = false
-  }
-
-  const nextJob = activeAutoMockJob.value
-  if (nextJob && (nextJob.status === 'PENDING' || nextJob.status === 'RUNNING')) {
-    autoMockPollTimer = window.setTimeout(() => {
-      autoMockPollTimer = null
-      void pollActiveAutoMockJob()
-    }, AUTO_MOCK_POLL_INTERVAL_MS)
-  }
-}
-
 const closeSocket = () => {
   clearCollabReconnectTimer()
   collabConsumer?.close()
@@ -400,11 +366,14 @@ const closeSocket = () => {
     collabSocket.close()
     collabSocket = null
   }
+  collabProjectId = ''
   collabConnected.value = false
   onlineUserIds.value = []
 }
 
 const connectCollab = () => {
+  if (collabProjectId === project.value?.id && collabSocket &&
+      (collabSocket.readyState === WebSocket.OPEN || collabSocket.readyState === WebSocket.CONNECTING)) return
   closeSocket()
   if (!project.value?.id) return
   const token = authStore.token || ''
@@ -415,6 +384,7 @@ const connectCollab = () => {
   })
   const socket = new WebSocket(url)
   collabSocket = socket
+  collabProjectId = project.value.id
   const consumer = createSerializedWsConsumer({
     room,
     onEvent: (event) => applyCollabMessage(event.payload || {}),
@@ -478,11 +448,7 @@ const connectCollab = () => {
       if (data?.type === 'job_update' || data?.type === 'job_done') {
         const parsedJob = toActiveJobState(data.job)
         if (parsedJob) {
-          mergeIncomingJobState(parsedJob)
-          mergeIncomingAutoMockJobState(parsedJob)
-          if (data?.type === 'job_done') {
-            handleAutoMockJobCompletion(parsedJob)
-          }
+          acceptJobState(parsedJob)
         }
       }
       if (data?.type === 'event' && data?.user_id && data.user_id !== authStore.user?.id) {
@@ -556,6 +522,15 @@ const loadTasks = async () => {
 }
 
 const resetTaskContext = () => {
+  contextVersion.value += 1
+  observedJobs.value = {}
+  syncBusy.value = false
+  importBusy.value = false
+  documentLoading.value = false
+  if (keywordTimer !== null) {
+    window.clearTimeout(keywordTimer)
+    keywordTimer = null
+  }
   project.value = null
   sourceVersions.value = []
   endpoints.value = []
@@ -569,13 +544,14 @@ const resetTaskContext = () => {
   activeAutoMockJob.value = null
   autoMockStartBusy.value = false
   handledAutoMockDoneJobIds.clear()
-  stopAutoMockPolling()
   closeSocket()
 }
 
 const loadProject = async () => {
   if (!selectedTaskId.value) return null
+  const version = contextVersion.value
   const res = await api.get(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}`)
+  if (version !== contextVersion.value) return
   project.value = res.data
   return res.data as ApiMockProject
 }
@@ -586,32 +562,44 @@ const loadActiveJobs = async () => {
     activeAutoMockJob.value = null
     return []
   }
-  const res = await api.get(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/jobs`, {
+  const version = contextVersion.value
+  const workspaceId = wsId.value
+  const taskId = selectedTaskId.value
+  const trackedIds = Object.values(observedJobs.value)
+    .filter((job) => job.status === 'PENDING' || job.status === 'RUNNING').map((job) => job.id)
+  const res = await api.get(`/workspaces/${workspaceId}/api-mock/projects/${taskId}/jobs`, {
     params: {
       active_only: true,
       limit: 50,
     },
   })
+  if (version !== contextVersion.value) return []
   const items = ((res.data as ApiMockJobListResponse)?.items || [])
     .map((item) => toActiveJobState(item))
     .filter((item): item is ActiveJobState => Boolean(item))
-  activeJob.value = items[0] || null
-  activeAutoMockJob.value = items.find((item) => item.job_type === AUTO_MOCK_JOB_TYPE) || null
+  for (const job of items) acceptJobState(job)
+  // Active-only lists omit jobs completed while disconnected. Recover those once.
+  await Promise.all(trackedIds.filter((id) => !items.some((job) => job.id === id))
+    .map((id) => fetchJobSnapshot(id, workspaceId, taskId)))
   return items
 }
 
 const loadSourceVersions = async () => {
   if (!selectedTaskId.value) return []
+  const version = contextVersion.value
   const res = await api.get(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/source-versions`)
+  if (version !== contextVersion.value) return
   sourceVersions.value = res.data.items || []
   return sourceVersions.value
 }
 
 const loadEndpoints = async () => {
   if (!selectedTaskId.value) return []
+  const version = contextVersion.value
   const res = await api.get(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/endpoints`, {
     params: { keyword: endpointKeyword.value || undefined },
   })
+  if (version !== contextVersion.value) return
   endpoints.value = res.data.items || []
   if (endpoints.value.length > 0) {
     const nextCache = { ...endpointCache.value }
@@ -625,7 +613,9 @@ const loadEndpoints = async () => {
 
 const loadEntities = async () => {
   if (!selectedTaskId.value) return []
+  const version = contextVersion.value
   const res = await api.get(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/entities`)
+  if (version !== contextVersion.value) return
   entities.value = res.data.items || []
   return entities.value
 }
@@ -635,15 +625,18 @@ const loadDocument = async () => {
     documentData.value = null
     return
   }
+  const version = contextVersion.value
   documentLoading.value = true
   try {
     const res = await api.get(`/workspaces/${wsId.value}/api-mock/projects/${project.value.id}/document`)
+    if (version !== contextVersion.value) return
     documentData.value = res.data
   } catch (err) {
+    if (version !== contextVersion.value) return
     documentData.value = null
     notifyError(err, t('api_mock.document_load_failed'))
   } finally {
-    documentLoading.value = false
+    if (version === contextVersion.value) documentLoading.value = false
   }
 }
 
@@ -653,7 +646,9 @@ const loadMockCases = async (options?: { fallbackToFirst?: boolean }) => {
     selectedMockCaseId.value = ''
     return
   }
+  const version = contextVersion.value
   const res = await api.get(`/workspaces/${wsId.value}/api-mock/endpoints/${selectedEndpointId.value}/mock-cases`)
+  if (version !== contextVersion.value) return
   mockCases.value = res.data.items || []
   const shouldFallbackToFirst = options?.fallbackToFirst === true
   if (!mockCases.value.some((item) => item.id === selectedMockCaseId.value)) {
@@ -663,10 +658,13 @@ const loadMockCases = async (options?: { fallbackToFirst?: boolean }) => {
 
 const refreshProjectContext = async (options?: { preserveKey?: string; explicitEndpointId?: string }) => {
   if (!selectedTaskId.value) return
+  const version = contextVersion.value
   loading.value = true
   try {
     await loadProject()
+    if (version !== contextVersion.value) return
     await Promise.all([loadSourceVersions(), loadEndpoints(), loadEntities()])
+    if (version !== contextVersion.value) return
     const explicitEndpointId = options?.explicitEndpointId || ''
     if (explicitEndpointId && endpoints.value.some((item) => item.id === explicitEndpointId)) {
       selectedEndpointId.value = explicitEndpointId
@@ -677,70 +675,61 @@ const refreshProjectContext = async (options?: { preserveKey?: string; explicitE
       selectedEndpointId.value = ''
     }
     await loadMockCases()
+    if (version !== contextVersion.value) return
     await loadDocument()
+    if (version !== contextVersion.value) return
     await loadActiveJobs()
-    connectCollab()
   } finally {
-    loading.value = false
+    if (version === contextVersion.value) loading.value = false
   }
 }
 
 const fetchJobSnapshot = async (jobId: string, workspaceId: string, taskId: string) => {
+  const version = contextVersion.value
   const res = await api.get(`/workspaces/${workspaceId}/api-mock/projects/${taskId}/jobs/${jobId}`)
+  if (version !== contextVersion.value) return null
   const parsedJob = toActiveJobState(res.data as ApiMockJob)
   if (parsedJob) {
-    mergeIncomingJobState(parsedJob)
-    mergeIncomingAutoMockJobState(parsedJob)
+    acceptJobState(parsedJob)
   }
   return parsedJob
 }
 
+// Job events are authoritative; REST is used once on submission and on resync.
 const waitForJobDone = async (jobId: string, jobType: ActiveJobState['job_type'], queuedMessage: string) => {
-  const workspaceId = String(wsId.value || '').trim()
-  const taskId = String(selectedTaskId.value || '').trim()
-  if (!workspaceId || !taskId) {
-    throw new Error(t('api_mock.job_context_missing'))
+  const version = contextVersion.value
+  if (!observedJobs.value[jobId]) {
+    acceptJobState({ id: jobId, job_type: jobType, status: 'PENDING', progress: 0,
+      message: queuedMessage, result_json: null })
   }
-  const currentWaitSeq = ++jobWaitSeq
-
-  activeJob.value = {
-    id: jobId,
-    job_type: jobType,
-    status: 'PENDING',
-    progress: 0,
-    message: queuedMessage,
-    result_json: null,
-  }
-
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 6 * 60 * 1000) {
-    if (currentWaitSeq !== jobWaitSeq) {
-      return
+  return new Promise<boolean>((resolve, reject) => {
+    const finish = (error?: Error, completed = false) => {
+      stop()
+      window.clearTimeout(timer)
+      if (error) reject(error)
+      else resolve(completed)
     }
-
-    let tracked = activeJob.value?.id === jobId ? activeJob.value : null
-    try {
-      const snapshot = await fetchJobSnapshot(jobId, workspaceId, taskId)
-      if (snapshot) tracked = snapshot
-    } catch (err) {
-      if (currentWaitSeq !== jobWaitSeq) {
-        return
-      }
-      throw err
-    }
-
-    if (tracked && (tracked.status === 'SUCCESS' || tracked.status === 'FAILED')) {
-      if (tracked.status === 'SUCCESS') {
+    const check = () => {
+      if (version !== contextVersion.value) return finish()
+      const job = observedJobs.value[jobId]
+      if (job?.status === 'SUCCESS') {
         notifySuccess(t('api_mock.job_success'))
-        return
+        finish(undefined, true)
+      } else if (job?.status === 'FAILED') {
+        finish(new Error(job.result_json?.cancelled ? t('api_mock.job_cancelled') :
+          (job.message || t('api_mock.job_failed'))))
       }
-      const payload = tracked.result_json as Record<string, unknown> | null
-      const cancelled = Boolean(payload?.cancelled)
-      throw new Error(cancelled ? t('api_mock.job_cancelled') : (tracked.message || t('api_mock.job_failed')))
     }
-    await new Promise((resolve) => setTimeout(resolve, collabConnected.value ? 1200 : 900))
-  }
-  throw new Error(t('api_mock.job_timeout'))
+    const stop = watch([() => observedJobs.value[jobId], contextVersion], check, { flush: 'sync' })
+    const timer = window.setTimeout(() => finish(new Error(t('api_mock.job_timeout'))), 6 * 60 * 1000)
+    check()
+    if (observedJobs.value[jobId]?.status === 'PENDING' || observedJobs.value[jobId]?.status === 'RUNNING') {
+      // Covers a job that completed before the POST response / subscription.
+      void fetchJobSnapshot(jobId, wsId.value, selectedTaskId.value).catch(() => {
+        // The existing WS connection / reconnect snapshot will recover state.
+      })
+    }
+  })
 }
 
 const onSync = async () => {
@@ -749,12 +738,15 @@ const onSync = async () => {
     notifyProjectSwaggerLocked()
     return
   }
+  const version = contextVersion.value
   syncBusy.value = true
   try {
     const res = await api.post(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/sync`)
-    await waitForJobDone(res.data.job_id, 'SYNC_TASK_SOURCE', t('api_mock.sync_queued'))
+    if (version !== contextVersion.value) return
+    if (!await waitForJobDone(res.data.job_id, 'SYNC_TASK_SOURCE', t('api_mock.sync_queued'))) return
     await refreshProjectContext({ preserveKey: endpointIdentity(selectedEndpoint.value) })
   } catch (err) {
+    if (version !== contextVersion.value) return
     if (isAutoMockProjectLockError(err)) {
       notifyProjectSwaggerLocked()
       await loadActiveJobs()
@@ -762,7 +754,7 @@ const onSync = async () => {
     }
     notifyError(err, t('api_mock.sync_failed'))
   } finally {
-    syncBusy.value = false
+    if (version === contextVersion.value) syncBusy.value = false
   }
 }
 
@@ -772,6 +764,7 @@ const onImportSwagger = async (payload: { source_name?: string; raw_content?: st
     notifyProjectSwaggerLocked()
     return
   }
+  const version = contextVersion.value
   importBusy.value = true
   try {
     console.log('Import payload received:', {
@@ -802,9 +795,11 @@ const onImportSwagger = async (payload: { source_name?: string; raw_content?: st
     }
     
     const res = await api.post(`/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/swagger/import`, formData)
-    await waitForJobDone(res.data.job_id, 'IMPORT_SWAGGER', t('api_mock.import_queued'))
+    if (version !== contextVersion.value) return
+    if (!await waitForJobDone(res.data.job_id, 'IMPORT_SWAGGER', t('api_mock.import_queued'))) return
     await refreshProjectContext({ preserveKey: endpointIdentity(selectedEndpoint.value) })
   } catch (err) {
+    if (version !== contextVersion.value) return
     if (isAutoMockProjectLockError(err)) {
       notifyProjectSwaggerLocked()
       await loadActiveJobs()
@@ -812,7 +807,7 @@ const onImportSwagger = async (payload: { source_name?: string; raw_content?: st
     }
     notifyError(err, t('api_mock.import_failed'))
   } finally {
-    importBusy.value = false
+    if (version === contextVersion.value) importBusy.value = false
   }
 }
 
@@ -827,24 +822,26 @@ const onStartAutoMock = async () => {
     })
     return
   }
+  const version = contextVersion.value
   autoMockStartBusy.value = true
   try {
     const res = await api.post(
       `/workspaces/${wsId.value}/api-mock/projects/${selectedTaskId.value}/endpoints/${selectedEndpointId.value}/auto-mock`,
     )
+    if (version !== contextVersion.value) return
     const jobId = String(res.data?.job_id || '').trim()
-    activeAutoMockJob.value = {
+    if (!observedJobs.value[jobId]) acceptJobState({
       id: jobId,
       job_type: AUTO_MOCK_JOB_TYPE,
       status: 'PENDING',
       progress: 0,
       message: String(res.data?.message || t('api_mock.ai_auto_mock_running')),
       result_json: { target_endpoint_id: selectedEndpointId.value },
-    }
-    activeJob.value = activeAutoMockJob.value
+    })
     notifySuccess(t('api_mock.ai_auto_mock_started'))
-    await loadActiveJobs()
+    await fetchJobSnapshot(jobId, wsId.value, selectedTaskId.value)
   } catch (err) {
+    if (version !== contextVersion.value) return
     if (isAutoMockProjectLockError(err)) {
       ElMessage({
         type: 'warning',
@@ -857,7 +854,7 @@ const onStartAutoMock = async () => {
     }
     notifyError(err, t('api_mock.ai_auto_mock_start_failed'))
   } finally {
-    autoMockStartBusy.value = false
+    if (version === contextVersion.value) autoMockStartBusy.value = false
   }
 }
 
@@ -870,7 +867,7 @@ const onCancelActiveJob = async () => {
     )
     const parsedJob = toActiveJobState(res.data as ApiMockJob)
     if (parsedJob) {
-      mergeIncomingJobState(parsedJob)
+      acceptJobState(parsedJob)
     }
     notifySuccess(t('api_mock.cancel_requested'))
   } catch (err) {
@@ -1201,7 +1198,9 @@ watch(selectedTaskId, async (next, prev) => {
     return
   }
   resetTaskContext()
+  const version = contextVersion.value
   await refreshProjectContext()
+  if (version === contextVersion.value) connectCollab()
 })
 
 watch(endpointKeyword, () => {
@@ -1214,20 +1213,6 @@ watch(endpointKeyword, () => {
     await loadEndpoints()
   }, 260)
 })
-
-watch(
-  activeAutoMockJob,
-  (job) => {
-    stopAutoMockPolling()
-    if (!job) return
-    if (job.status !== 'PENDING' && job.status !== 'RUNNING') return
-    autoMockPollTimer = window.setTimeout(() => {
-      autoMockPollTimer = null
-      void pollActiveAutoMockJob()
-    }, 350)
-  },
-  { deep: true },
-)
 
 onMounted(async () => {
   window.addEventListener('keydown', onShortcuts)
@@ -1248,8 +1233,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
-  jobWaitSeq += 1
-  stopAutoMockPolling()
+  contextVersion.value += 1
   clearCollabReconnectTimer()
   if (keywordTimer !== null) {
     window.clearTimeout(keywordTimer)

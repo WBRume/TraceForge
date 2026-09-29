@@ -222,7 +222,7 @@ export const resolveBrandStyle = (modelName: string, modelId: string, rawValue: 
   const words = modelName.match(/[a-zA-Z0-9]+/g) || []
   let fallbackText = 'AI'
   if (words.length >= 2) {
-    fallbackText = (words[0][0] + words[1][0]).toUpperCase()
+    fallbackText = words.slice(0, 2).map(word => word.charAt(0)).join('').toUpperCase()
   } else if (words.length === 1) {
     fallbackText = words[0].slice(0, 3).toUpperCase()
   }

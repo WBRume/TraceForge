@@ -72,9 +72,7 @@ onBeforeUnmount(() => {
 })
 
 import {
-  BRAND_STYLE_RULES,
   parseModelOption,
-  resolveBrandStyle,
   type BrandPatternRule,
   type ParsedModel,
 } from './modelBrandRules'
