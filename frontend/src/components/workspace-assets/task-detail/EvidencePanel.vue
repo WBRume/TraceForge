@@ -72,9 +72,7 @@ function handleSizeChange(newSize: number) {
   <section class="panel-shell">
     <header class="panel-head">
       <div>
-        <span class="eyebrow">{{ t('workspace_assets.task_detail.workbench.evidence.eyebrow') }}</span>
         <h2>{{ t('workspace_assets.task_detail.workbench.evidence.title') }}</h2>
-        <p>{{ t('workspace_assets.task_detail.workbench.evidence.description') }}</p>
       </div>
       <button
         v-if="canMount"
@@ -161,28 +159,13 @@ function handleSizeChange(newSize: number) {
   flex: 1;
 }
 
-.eyebrow {
-  color: #2563eb;
-  font-size: 0.75rem;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
 .panel-head h2 {
-  margin: 5px 0 0;
+  margin: 0;
   color: #0f172a;
   font-family: 'Poppins', sans-serif;
   font-size: 1.5rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-}
-
-.panel-head p {
-  margin: 8px 0 0;
-  color: #64748b;
-  font-size: 0.95rem;
-  line-height: 1.6;
 }
 
 .mount-btn {

@@ -25,7 +25,6 @@ const taskDetailRoute = computed(() => ({
         <span>{{ t('workspace_assets.task_detail.final_workflow.route.back_to_task_detail') }}</span>
       </RouterLink>
       <div class="view-title">
-        <p>{{ t('workspace_assets.task_detail.final_workflow.route.eyebrow') }}</p>
         <h1>{{ t('workspace_assets.task_detail.final_workflow.route.title') }}</h1>
       </div>
     </div>
@@ -80,13 +79,7 @@ const taskDetailRoute = computed(() => ({
   text-align: right;
 }
 
-.view-title p {
-  margin: 0 0 4px;
-  color: #64748b;
-  font-size: 0.72rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
+
 
 .view-title h1 {
   margin: 0;

@@ -100,9 +100,7 @@ onMounted(loadSuggestions)
   <section class="panel-shell">
     <header class="panel-head">
       <div class="head-text">
-        <span class="eyebrow">{{ t('workspace_assets.task_detail.workbench.human_delta.eyebrow') }}</span>
         <h3>{{ t('workspace_assets.task_detail.workbench.human_delta.title') }}</h3>
-        <p>{{ t('workspace_assets.task_detail.workbench.human_delta.description') }}</p>
       </div>
     </header>
 
@@ -229,25 +227,11 @@ onMounted(loadSuggestions)
   align-items: start;
 }
 
-.head-text .eyebrow {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-primary-700, #1e3a8a);
-  font-weight: 600;
-}
-
 .head-text h3 {
-  margin: 4px 0 0;
+  margin: 0;
   font-family: 'Poppins', sans-serif;
   font-size: 1.125rem;
   color: #1e3a8a;
-}
-
-.head-text p {
-  margin: 4px 0 0;
-  font-size: 0.8125rem;
-  color: #475569;
 }
 
 .boundary-alert {

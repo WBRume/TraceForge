@@ -70,9 +70,7 @@ watch(
           <ShieldCheck class="entry-icon" />
         </div>
         <div>
-          <p class="eyebrow">{{ t(`${baseKey}.entry.eyebrow`) }}</p>
           <h3>{{ t(`${baseKey}.entry.title`) }}</h3>
-          <span>{{ t(`${baseKey}.entry.subtitle`) }}</span>
         </div>
       </div>
       <div class="entry-actions">
@@ -174,13 +172,7 @@ watch(
   height: 22px;
 }
 
-.eyebrow {
-  margin: 0 0 4px;
-  color: #64748b;
-  font-size: 0.72rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
+
 
 .entry-title-block h3 {
   margin: 0;
@@ -189,12 +181,7 @@ watch(
   line-height: 1.25;
 }
 
-.entry-title-block span {
-  display: block;
-  margin-top: 5px;
-  color: #64748b;
-  font-size: 0.84rem;
-}
+
 
 .entry-actions {
   flex-wrap: wrap;

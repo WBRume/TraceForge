@@ -113,9 +113,7 @@ watch(
   <section class="task-final-workflow-panel" v-loading="loading">
     <header class="workflow-header">
       <div class="workflow-title-block">
-        <p class="eyebrow">{{ t(`${baseKey}.panel.eyebrow`) }}</p>
         <h2>{{ t(`${baseKey}.panel.title`) }}</h2>
-        <span>{{ t(`${baseKey}.panel.subtitle`) }}</span>
       </div>
       <div class="workflow-header-actions">
         <WorkflowStatusPill :status="workflowStatus" />
@@ -251,26 +249,13 @@ watch(
   min-width: 0;
 }
 
-.eyebrow {
-  margin: 0 0 4px;
-  color: #64748b;
-  font-size: 0.74rem;
-  font-weight: 800;
-  text-transform: uppercase;
-}
+
 
 .workflow-title-block h2 {
   margin: 0;
   color: #0f172a;
   font-size: 1.32rem;
   line-height: 1.2;
-}
-
-.workflow-title-block span {
-  display: block;
-  margin-top: 6px;
-  color: #64748b;
-  font-size: 0.86rem;
 }
 
 .workflow-header-actions {
