@@ -25,6 +25,7 @@
     "maximize": "Maximize",
     "restore": "Restore",
     "saving": "Saving...",
+    "enter": "Enter",
     "yes": "Yes",
     "no": "No"
   },
@@ -3037,6 +3038,8 @@
     "entry_config_center": "Config Center",
     "entry_ops_center": "Management Center",
     "entry_knowledge_center": "Knowledge Center",
+    "entry_matrix_title": "Platform Service Matrix",
+    "entry_global_access": "Global Direct Access",
     "back_to_workspaces": "Back to Workspaces",
     "layout_title": "Config Center",
     "layout_subtitle": "Base config · Projects / Products / Repositories",

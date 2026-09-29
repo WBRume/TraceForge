@@ -25,6 +25,7 @@
     "maximize": "全屏",
     "restore": "还原",
     "saving": "保存中...",
+    "enter": "进入",
     "yes": "是",
     "no": "否"
   },
@@ -3042,6 +3043,8 @@
     "entry_config_center": "配置中心",
     "entry_ops_center": "管理中心",
     "entry_knowledge_center": "知识中心",
+    "entry_matrix_title": "平台支撑与服务矩阵",
+    "entry_global_access": "全站通用直达",
     "back_to_workspaces": "返回工作区",
     "layout_title": "配置中心",
     "layout_subtitle": "基础配置 · 项目 / 产品 / 仓库",
