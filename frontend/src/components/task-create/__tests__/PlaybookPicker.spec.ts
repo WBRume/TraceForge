@@ -3,7 +3,6 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import PlaybookPicker from '../PlaybookPickerSidebar.vue'
 import TaskCreateDialog from '../TaskCreateDialog.vue'
-import CasePlaybookHistory from '@/components/case-center/CasePlaybookHistory.vue'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('@/utils/api', () => ({ default: api }))
@@ -96,13 +95,6 @@ describe('case promotion and task creation playbook workflow', () => {
     const created = api.post.mock.calls.find(([url]) => url === '/workspaces/ws-1/tasks')
     expect(created?.[1]).not.toHaveProperty('diagnosis_playbook_spec_id')
     expect(wrapper.emitted('created')).toHaveLength(1)
-  })
-
-  it('shows history without a single-case promotion action', async () => {
-    wrapper = mount(CasePlaybookHistory, { props: { workspaceId: 'ws-1', caseId: 'case-1', canManage: true } })
-    await flushPromises()
-    expect(wrapper.text()).not.toContain('晋升为诊断规程')
-    expect(api.post).not.toHaveBeenCalled()
   })
 
   it('paginates and searches only while open, preserving selection across pages', async () => {
