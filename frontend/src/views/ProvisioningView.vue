@@ -50,6 +50,7 @@ const stageText = computed(() => {
     CREATING_WORKSPACE: t('provisioning.stage_creating_workspace'),
     PREPARING_TASK: t('provisioning.stage_preparing_task'),
     PREPARING_WORKTREE: t('provisioning.stage_preparing_worktree'),
+    INITIALIZING_SNAPSHOT: t('provisioning.stage_initializing_snapshot'),
     PREPARING_LOCAL_WORKSPACE: t('provisioning.stage_preparing_local'),
     COMPLETED: t('provisioning.stage_completed'),
     FAILED: t('provisioning.stage_failed'),

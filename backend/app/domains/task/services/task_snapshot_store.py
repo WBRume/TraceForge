@@ -102,6 +102,44 @@ def safe_path(root: str, relative: str) -> str:
     return target
 
 
+class ReadPhasePaths:
+    """Validate shared parents once within a read-only filesystem phase.
+
+    Do not reuse this cache across restore mutations. Every caller creates a
+    new instance for each tree enumeration; changed files are checked again
+    with safe_path immediately before writes.
+    """
+
+    def __init__(self, root: str):
+        self.root = os.path.abspath(root)
+        self.checked = {self.root}
+
+    def __call__(self, relative: str) -> str:
+        if not relative or "\\" in relative or ":" in relative or any(
+            p.lower() in {"", ".", "..", ".git"} for p in relative.split("/")
+        ):
+            raise ValueError(f"Invalid snapshot path: {relative!r}")
+        target = os.path.abspath(os.path.join(self.root, relative))
+        if os.path.commonpath([self.root, target]) != self.root:
+            raise ValueError("Snapshot path escapes root")
+        parent = os.path.dirname(target)
+        pending = []
+        while parent not in self.checked:
+            try:
+                info = os.lstat(parent)
+            except (FileNotFoundError, NotADirectoryError):
+                pass  # A saved directory can currently be absent or a file.
+            else:
+                if stat.S_ISLNK(info.st_mode) or (
+                    getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                ):
+                    raise ValueError("Snapshot path traverses a link")
+            pending.append(parent)
+            parent = os.path.dirname(parent)
+        self.checked.update(pending)
+        return target
+
+
 def excluded(relative: str, policy: dict) -> bool:
     parts = relative.split("/")
     return any(p in policy["excluded_dirs"] for p in parts) or parts[-1].endswith(tuple(policy["excluded_suffixes"]))
@@ -242,6 +280,8 @@ def collect(store: str) -> None:
     for manifest_path in Path(store).glob("turn-*/**/worktree.json"):
         with manifest_path.open(encoding="utf-8") as handle:
             payload = json.load(handle)
+        if payload.get("version") == 4:
+            continue
         if payload.get("version") != 2:
             raise ValueError("Unsupported snapshot manifest")
         live.update(e["sha256"] for e in payload["manifest"].values() if e["kind"] == "file")

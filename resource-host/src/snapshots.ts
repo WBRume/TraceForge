@@ -3,6 +3,7 @@ import * as path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { atomic, child, fail, git, gitRaw, hash, inside, readJson, writeJson, type Receipt } from './filesystem'
 import { captureProvider, cleanupSession, forkSession, restoreProvider } from './provider'
+import { captureGitSnapshot, restoreGitSnapshot, collectGitSnapshots } from './git-snapshots'
 
 const excludedDirs = new Set(['node_modules', 'dist', 'build', 'coverage', '.next', '.nuxt', '.output', '.vite', '.cache', '.turbo', '.parcel-cache', '.svelte-kit', 'target', '.gradle', '.venv', 'venv', '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.nox', 'htmlcov'])
 type Entry = { hash?: string; link?: string; mode: number }
@@ -95,32 +96,51 @@ function restore(receipt: Receipt, checkpoint: string, backup: string, objects: 
     if (repo.index) atomic(index, get(objects, repo.index)); else fs.rmSync(index, { force: true })
   }
 }
-export function snapshot(state: string, resourceId: string, receipt: Receipt, payload: any, dshRoot: string): any {
+function snapshotUnlocked(state: string, resourceId: string, receipt: Receipt, payload: any, dshRoot: string): any {
   const owner = path.join(state, 'snapshots', resourceId + '_resource', receipt.task_id + '_task')
   const objects = path.join(owner, 'objects')
   if (!['opencode', 'dsh'].includes(payload.provider || 'opencode')) fail('UNSUPPORTED_LOCAL_PROVIDER')
   if (payload.action === 'create') {
+    if (payload.initial_checkpoint) {
+      const initialPath = inside(payload.initial_checkpoint, [owner])
+      const initial = readJson(path.join(initialPath, 'worktree.json'))
+      if (initial.version !== 4 || initial.task_root !== path.resolve(receipt.task_root) || initial.object_store !== owner) fail('SNAPSHOT_IDENTITY_CHANGED')
+      for (const part of initial.partitions) if (!fs.existsSync(path.join(inside(part.git_dir, [owner]), 'index'))) fail('SNAPSHOT_INDEX_MISSING')
+    }
     const root = path.join(owner, 'turn-' + randomUUID())
-    const worktree = capture(receipt, root, objects)
+    const worktree = captureGitSnapshot(receipt, root, owner)
     const provider = captureProvider(dshRoot, root, payload.provider || 'opencode', payload.session_id || null)
     return { root, worktree, provider }
   }
   const checkpoint = inside(payload.checkpoint_root, [owner])
-  if (checkpoint === path.resolve(owner) || checkpoint === objects || checkpoint.startsWith(objects + path.sep)) fail('INVALID_CHECKPOINT_PATH')
+  const isTurnPath = (value: string) => path.relative(owner, value).split(path.sep)[0].startsWith('turn-')
+  if (!isTurnPath(checkpoint)) fail('INVALID_CHECKPOINT_PATH')
   switch (payload.action) {
     case 'exists': return { exists: fs.existsSync(path.join(checkpoint, 'worktree.json')) }
     case 'restore_worktree': {
       const backup = inside(payload.backup_path, [owner])
-      if (backup === checkpoint || backup === path.resolve(owner) || backup.startsWith(objects)) fail('INVALID_BACKUP_PATH')
-      restore(receipt, checkpoint, backup, objects); break
+      if (backup === checkpoint || !isTurnPath(backup)) fail('INVALID_BACKUP_PATH')
+      if (readJson(path.join(checkpoint, 'worktree.json')).version === 4) restoreGitSnapshot(receipt, checkpoint, backup, owner)
+      else restore(receipt, checkpoint, backup, objects)
+      break
     }
     case 'backup_provider': return captureProvider(dshRoot, checkpoint, payload.provider, payload.session_id, true)
     case 'restore_provider': restoreProvider(dshRoot, checkpoint); break
     case 'restore_provider_backup': restoreProvider(dshRoot, checkpoint, true); break
     case 'fork_dsh': return { session_id: forkSession(dshRoot, payload.session_id, receipt.task_root) }
     case 'cleanup_dsh': cleanupSession(dshRoot, payload.session_id); break
-    case 'cleanup': fs.rmSync(checkpoint, { recursive: true, force: true }); break
+    case 'cleanup': fs.rmSync(checkpoint, { recursive: true, force: true }); collectGitSnapshots(owner); break
     default: fail('Unsupported snapshot action')
   }
   return { ok: true }
+}
+
+export function snapshot(state: string, resourceId: string, receipt: Receipt, payload: any, dshRoot: string): any {
+  const owner = path.join(state, 'snapshots', resourceId + '_resource', receipt.task_id + '_task')
+  fs.mkdirSync(owner, { recursive: true })
+  const lock = path.join(owner, '.snapshot.lock')
+  // A second host must not race an index, restore, or garbage collection.
+  const fd = fs.openSync(lock, 'wx')
+  try { return snapshotUnlocked(state, resourceId, receipt, payload, dshRoot) }
+  finally { fs.closeSync(fd); fs.unlinkSync(lock) }
 }

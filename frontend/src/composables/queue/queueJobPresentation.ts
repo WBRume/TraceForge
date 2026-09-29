@@ -50,6 +50,7 @@ const STAGE_KEY_MAP: Record<string, string> = {
   PREPARING_TASK: 'workspaces.queue.stage.preparing_task',
   WAITING_TASK_QUEUE: 'workspaces.queue.stage.waiting_task_queue',
   PREPARING_WORKTREE: 'workspaces.queue.stage.preparing_worktree',
+  INITIALIZING_SNAPSHOT: 'workspaces.queue.stage.initializing_snapshot',
   PREPARING_LOCAL_WORKSPACE: 'workspaces.queue.stage.preparing_local_workspace',
   RUNNING: 'workspaces.queue.stage.running',
   COMPLETED: 'workspaces.queue.stage.completed',

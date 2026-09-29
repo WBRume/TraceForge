@@ -17,7 +17,7 @@ import os
 import re
 from typing import Optional, Tuple
 
-from app.agents.errors import SessionForkError
+from app.agents.errors import SessionForkError, SessionLogNotFoundError
 
 _SAFE_UNIT = re.compile(r"[A-Za-z0-9._-]")
 
@@ -77,7 +77,7 @@ def locate_session_log(root: str, session_id: str) -> Tuple[str, str]:
     """
     segment = encode_segment(session_id)
     if not os.path.isdir(root):
-        raise SessionForkError(f"DSH sessions root not found: {root}")
+        raise SessionLogNotFoundError(f"DSH sessions root not found: {root}")
     matches: list[Tuple[str, str]] = []
     for entry in os.listdir(root):
         proj_path = os.path.join(root, entry)
@@ -88,7 +88,7 @@ def locate_session_log(root: str, session_id: str) -> Tuple[str, str]:
             if os.path.isfile(candidate):
                 matches.append((candidate, suffix))
     if not matches:
-        raise SessionForkError(
+        raise SessionLogNotFoundError(
             f"DSH session log not found for fork: id={session_id}, root={root}"
         )
     if len(matches) > 1:

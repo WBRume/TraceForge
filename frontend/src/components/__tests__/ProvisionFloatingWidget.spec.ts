@@ -81,9 +81,12 @@ describe('ProvisionFloatingWidget', () => {
     vi.useRealTimers()
   })
 
-  it('tracks a newly created task and shows progress', async () => {
+  it.each([
+    ['PREPARING_WORKTREE', 'provisioning.stage_preparing_worktree'],
+    ['INITIALIZING_SNAPSHOT', 'provisioning.stage_initializing_snapshot'],
+  ])('tracks a newly created task and shows %s progress', async (stage, label) => {
     apiMock.get.mockResolvedValue({
-      data: { job_id: 'job-1', job_type: 'CREATE_TASK', status: 'RUNNING', progress: 40, stage: 'PREPARING_WORKTREE', message: 'Preparing worktree' },
+      data: { job_id: 'job-1', job_type: 'CREATE_TASK', status: 'RUNNING', progress: 40, stage, message: 'Preparing task' },
     })
 
     const store = useProvisioningStore()
@@ -94,7 +97,7 @@ describe('ProvisionFloatingWidget', () => {
     const wrapper = mountWidget()
     expect(store.expanded).toBe(true)
     expect(wrapper.text()).toContain('test-task')
-    expect(wrapper.text()).toContain('provisioning.stage_preparing_worktree')
+    expect(wrapper.text()).toContain(label)
     expect(wrapper.text()).toContain('40%')
 
     store.dismiss('job-1')

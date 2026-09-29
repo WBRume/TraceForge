@@ -374,12 +374,39 @@ def create_task_record_for_provision(
         raise
 
 
+def _prepare_initial_workspace_checkpoint(db: Session, ws: Workspace, task: SddTask) -> None:
+    """Seed persistent snapshot indexes while the task is still PROVISIONING."""
+    from app.domains.local_resource import service as resource
+    from app.domains.local_resource.snapshots import encode
+    from app.domains.task.services import task_session_snapshot_service as snapshots
+
+    metadata = dict(task.task_meta_json or {})
+    if metadata.get("initial_workspace_checkpoint"):
+        return
+    if resource.is_local(task):
+        result = resource.execute(db, task, "snapshot", {
+            "action": "create", "provider": "opencode", "session_id": None,
+        }, "snapshot-initial-" + task.id)
+        checkpoint = encode(task.id, result["root"])
+    else:
+        result = snapshots._create_checkpoint_sync(
+            task.project_path, [repo.rel_path for repo in get_task_repositories(db, task.id)],
+            "none", None, ws.id, ws.name, task.id, task.name,
+        )
+        checkpoint = result["root"]
+    metadata["initial_workspace_checkpoint"] = checkpoint
+    task.task_meta_json = metadata
+    # Persist ownership before the next cancellation check / terminal rollback.
+    db.commit()
+
+
 def prepare_task_resources_for_provision(
     db: Session,
     *,
     workspace_id: str,
     task_id: str,
     cancel_check: Optional[Callable[[], bool]] = None,
+    snapshot_progress: Optional[Callable[[], None]] = None,
 ) -> SddTask:
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
@@ -395,12 +422,23 @@ def prepare_task_resources_for_provision(
         if cancel_check is not None and cancel_check():
             raise ProvisionJobCancelled("Task creation cancelled by user")
 
+    def _initialize_snapshot() -> None:
+        _checkpoint()
+        db.commit()
+        if snapshot_progress:
+            snapshot_progress()
+        _prepare_initial_workspace_checkpoint(db, ws, task)
+        _checkpoint()
+        db.refresh(task)
+        if task.status != TaskStatus.PROVISIONING:
+            raise ProvisionJobCancelled("Task no longer provisioning")
+
     from app.domains.local_resource.service import is_local, provision_task
     if is_local(task):
         _checkpoint()
         provision_task(db, task)
         skill_service.materialize_task_skills(db, task.id)
-        _checkpoint()
+        _initialize_snapshot()
         task.status = TaskStatus.PENDING
         task.current_phase = None
         db.commit()
@@ -431,6 +469,8 @@ def prepare_task_resources_for_provision(
             _checkpoint()
             if task.skill_links:
                 skill_service.materialize_task_skills(db, task.id)
+
+            _initialize_snapshot()
 
             # 最终检查点：确认任务仍处于 PROVISIONING（防止用户已标记失败/关闭后复活）
             db.expire(task)
@@ -495,6 +535,20 @@ def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> 
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
         return False
+
+    checkpoint = (task.task_meta_json or {}).get("initial_workspace_checkpoint")
+    if checkpoint:
+        from app.domains.task.services import task_session_snapshot_service as snapshots
+        from app.domains.local_resource import snapshots as remote
+        try:
+            if checkpoint.startswith(remote.PREFIX):
+                from app.domains.local_resource.service import execute
+                _, path = remote.decode(checkpoint)
+                execute(db, task, "snapshot", {"action": "cleanup", "checkpoint_root": path})
+            else:
+                snapshots._cleanup_checkpoint_sync(checkpoint)
+        except Exception as exc:
+            logger.warning("Failed to clean initial checkpoint for task {}: {}", task.id, exc)
 
     from app.domains.local_resource.service import is_local, release_or_defer
     if is_local(task):

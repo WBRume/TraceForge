@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from typing import List, Mapping, Optional
+from typing import BinaryIO, List, Mapping, Optional
 
 from app.config import settings
 
@@ -107,6 +107,8 @@ def run_process(
     timeout_seconds: Optional[float] = None,
     env: Optional[Mapping[str, str]] = None,
     decode_text: bool = True,
+    input_data: str | bytes | None = None,
+    stdin_file: BinaryIO | None = None,
 ) -> subprocess.CompletedProcess:
     """执行子进程（独立进程组 + 硬超时 + 超时整组回收）。
 
@@ -123,6 +125,12 @@ def run_process(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if input_data is not None:
+        popen_kwargs["stdin"] = subprocess.PIPE
+    if stdin_file is not None:
+        if input_data is not None:
+            raise ValueError("Specify stdin_file or input_data, not both")
+        popen_kwargs["stdin"] = stdin_file
     if decode_text:
         popen_kwargs.update(text=True, encoding="utf-8", errors="replace")
     if env is not None:
@@ -131,7 +139,7 @@ def run_process(
 
     process = subprocess.Popen(list(args), **popen_kwargs)
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
+        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         terminate_process_tree(process)
         _reap_after_kill(process)
@@ -156,6 +164,8 @@ def run_git(
     timeout_seconds: Optional[float] = None,
     env_extra: Optional[Mapping[str, str]] = None,
     decode_text: bool = True,
+    input_data: str | bytes | None = None,
+    stdin_file: BinaryIO | None = None,
 ) -> subprocess.CompletedProcess:
     """执行 git 命令：防挂 env + 独立进程组 + 硬超时（详见 run_process）。"""
     command = ["git", *args]
@@ -165,6 +175,8 @@ def run_git(
         timeout_seconds=timeout_seconds,
         env=_git_safe_env(env_extra),
         decode_text=decode_text,
+        input_data=input_data,
+        stdin_file=stdin_file,
     )
 
 

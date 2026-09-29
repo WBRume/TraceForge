@@ -26,8 +26,14 @@ def _call(task_id, payload):
     return ResourceClient(config).operation(task_id, "snapshot", payload)
 
 
-async def create(task_id, provider, session_id):
-    result = await run_file_job(_call, task_id, {"action": "create", "provider": provider, "session_id": session_id})
+async def create(task_id, provider, session_id, *, initial_checkpoint=None):
+    payload = {"action": "create", "provider": provider, "session_id": session_id}
+    if initial_checkpoint:
+        owner, path = decode(initial_checkpoint)
+        if owner != task_id:
+            raise ValueError("Initial checkpoint belongs to a different task")
+        payload["initial_checkpoint"] = path
+    result = await run_file_job(_call, task_id, payload)
     result["root"] = encode(task_id, result["root"])
     return result
 

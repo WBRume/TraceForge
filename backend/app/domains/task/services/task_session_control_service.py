@@ -939,7 +939,6 @@ async def initialize_task_session(
             "initialize_reason": init_reason_text,
         },
         fresh_session=True,
-        skip_checkpoint=True,
     )
     await ai_job_publishing.enqueue_task_chat_job(created.job_id)
     job_payload = await run_txn(

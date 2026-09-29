@@ -163,7 +163,8 @@ def test_configurable_hierarchy_and_name_sanitization(tmp_path, monkeypatch):
     assert root.parent == tmp_path / "configured/ws-1_工作区_测试/task-2_任务___"
     assert root.name.startswith("turn-")
     assert (root / "worktree.json").is_file()
-    assert (root.parent / "objects").is_dir()
+    assert (root.parent / "shadow").is_dir()
+    assert result["worktree"]["version"] == 4
     snapshots._cleanup_checkpoint_sync(str(root))
     assert not objects(root.parent)
 
