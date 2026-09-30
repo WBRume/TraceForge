@@ -24,9 +24,13 @@ const searchQuery = ref('')
 const containerRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 
-// 切换下拉弹窗
+// 切换下拉弹窗（或失败状态下点击直接重试）
 const toggleOpen = () => {
   if (props.disabled || props.loading) return
+  if (props.error) {
+    emit('retry')
+    return
+  }
   isOpen.value = !isOpen.value
   if (isOpen.value) {
     searchQuery.value = ''
@@ -117,13 +121,13 @@ const selectedItem = computed(() => {
   return parsedOptions.value.find(o => o.value === props.modelValue) || null
 })
 
-// 触发器中展示的文本：已选中模型永远优先展示，绝不跳变成“加载中…”
+// 触发器中展示的文本：失败时直接提示加载失败（点击可重试），平时优先展示已选中模型
 const triggerLabel = computed(() => {
+  if (props.error) return '加载失败'
   if (selectedItem.value) {
     return props.compact ? selectedItem.value.modelName : selectedItem.value.label
   }
   if (props.loading) return '加载中…'
-  if (props.error) return '加载失败'
   if (props.options?.length) return '选择模型'
   return '暂无可选模型'
 })
@@ -150,21 +154,21 @@ const selectOption = (opt: ParsedModel) => {
     <button
       type="button"
       class="model-trigger select-trigger"
-      :disabled="disabled || loading || !options.length"
-      :title="error || (selectedItem ? `${selectedItem.modelName} (${selectedItem.provider || '默认'})` : '模型选择')"
+      :disabled="disabled || loading || (!options.length && !error)"
+      :title="error ? `${error} (点击下拉框重试)` : (selectedItem ? `${selectedItem.modelName} (${selectedItem.provider || '默认'})` : '模型选择')"
       aria-haspopup="listbox"
       :aria-expanded="isOpen"
       @click="toggleOpen"
     >
-      <!-- 状态图标：初次无选中且加载时转圈，已有选中时稳稳显示品牌色圆点 -->
+      <!-- 状态图标：加载中显示转圈，失败显示红点，选中显示品牌色圆点 -->
       <span class="trigger-indicator">
-        <Loader2 v-if="loading && !selectedItem" class="spin-icon" :size="12" />
+        <Loader2 v-if="loading" class="spin-icon" :size="12" />
+        <span v-else-if="error" class="status-dot error-dot"></span>
         <span
           v-else-if="selectedItem"
           class="status-dot"
           :style="{ backgroundColor: selectedItem.dotColor }"
         ></span>
-        <span v-else-if="error" class="status-dot error-dot"></span>
         <span v-else class="status-dot empty-dot"></span>
       </span>
 
@@ -183,18 +187,6 @@ const selectOption = (opt: ParsedModel) => {
 
       <!-- 箭头图标 -->
       <ChevronDown class="trigger-arrow" :class="{ 'is-rotated': isOpen }" :size="12" />
-    </button>
-
-    <!-- 外部重试快捷按钮 -->
-    <button
-      v-if="error && !isOpen"
-      type="button"
-      class="model-retry-btn"
-      :disabled="loading"
-      title="重试加载模型"
-      @click.stop="$emit('retry')"
-    >
-      重试
     </button>
 
     <!-- 弹窗面板 (Popover) -->
@@ -458,22 +450,6 @@ const selectOption = (opt: ParsedModel) => {
   transform: rotate(180deg);
 }
 
-/* 重试按钮 */
-.model-retry-btn {
-  color: #EF4444;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  white-space: nowrap;
-  font-size: 11px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  transition: background 0.15s;
-}
-
-.model-retry-btn:hover {
-  background: #FEE2E2;
-}
 
 /* ── 弹窗面板 (Popover) ── */
 .model-popover {
