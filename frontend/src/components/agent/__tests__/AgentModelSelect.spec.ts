@@ -278,4 +278,52 @@ describe('AgentModelSelect 品牌规则表与模型解析', () => {
     const dot = wrapper.find('.status-dot')
     expect(dot.attributes('style')).toContain('background-color: rgb(245, 158, 11)') // #F59E0B
   })
+
+  it('加载失败时无独立按钮，直接显示“加载失败”，点击下拉框触发重试', async () => {
+    const wrapper = mount(AgentModelSelect, {
+      props: {
+        modelValue: 'opencode/deepseek-v4.1-flash',
+        options: [],
+        error: 'Network Timeout',
+      },
+    })
+
+    // 1. 独立重试按钮必须不存在
+    expect(wrapper.find('.model-retry-btn').exists()).toBe(false)
+
+    // 2. 触发器按钮显示“加载失败”
+    const trigger = wrapper.find('.model-trigger')
+    expect(trigger.exists()).toBe(true)
+    expect(trigger.text()).toContain('加载失败')
+
+    // 3. 错误指示点
+    expect(wrapper.find('.status-dot.error-dot').exists()).toBe(true)
+
+    // 4. 触发器未被禁用（即使 options 为空）
+    expect(trigger.attributes('disabled')).toBeUndefined()
+
+    // 5. 点击下拉框直接触发 retry 事件
+    await trigger.trigger('click')
+    expect(wrapper.emitted('retry')).toHaveLength(1)
+  })
+
+  it('已选择模型但在刷新中失败时，优先明确提示“加载失败”并可通过下拉框重试', async () => {
+    const wrapper = mount(AgentModelSelect, {
+      props: {
+        modelValue: 'opencode/deepseek-v4.1-flash',
+        options: [
+          { value: 'opencode/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash · opencode' },
+        ],
+        error: '500 Server Error',
+      },
+    })
+
+    // 独立按钮不存在
+    expect(wrapper.find('.model-retry-btn').exists()).toBe(false)
+    // 文本展示“加载失败”
+    expect(wrapper.find('.model-trigger').text()).toContain('加载失败')
+    // 点击触发重试
+    await wrapper.find('.model-trigger').trigger('click')
+    expect(wrapper.emitted('retry')).toHaveLength(1)
+  })
 })
