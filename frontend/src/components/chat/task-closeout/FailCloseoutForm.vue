@@ -22,7 +22,6 @@ const { t } = useI18n()
 const files = shallowRef<File[]>([])
 const errors = reactive({
   summary: false,
-  evidence: false,
 })
 
 const form = reactive({
@@ -61,13 +60,11 @@ function trimmed(value: string): string | null {
 
 function updateFiles(nextFiles: File[]) {
   files.value = nextFiles
-  if (nextFiles.length > 0) errors.evidence = false
 }
 
 function submitForm() {
   errors.summary = !trimmed(form.failure_summary)
-  errors.evidence = files.value.length === 0
-  if (errors.summary || errors.evidence) return
+  if (errors.summary) return
   emit('submit', {
     failure_stage: form.failure_stage,
     failure_reason: form.failure_reason,
@@ -103,9 +100,9 @@ function submitForm() {
     </div>
 
     <div class="form-section">
-      <div class="form-field" :class="{ invalid: errors.evidence }">
-        <label class="required">{{ t('chat.closeout.failure_evidence') }}</label>
-        <CloseoutEvidenceUploader :files="files" :disabled="saving" :invalid="errors.evidence" @update:files="updateFiles" />
+      <div class="form-field">
+        <label>{{ t('chat.closeout.failure_evidence') }}（{{ t('task_rail.optional') }}）</label>
+        <CloseoutEvidenceUploader :files="files" :disabled="saving" @update:files="updateFiles" />
       </div>
     </div>
 

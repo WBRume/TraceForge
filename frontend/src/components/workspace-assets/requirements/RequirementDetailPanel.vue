@@ -3,6 +3,7 @@ import { computed, shallowRef } from 'vue'
 import { GitBranch, History, Link2Off, MessageSquare, Scissors } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
+import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
 import type { RequirementDetail, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -72,6 +73,8 @@ function submitLink() {
           </button>
         </div>
       </header>
+
+      <RequirementDeliveryContext :requirement="requirement" />
 
       <dl class="meta-grid">
         <div>

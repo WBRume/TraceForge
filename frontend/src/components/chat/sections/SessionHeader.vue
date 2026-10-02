@@ -33,6 +33,7 @@ const emit = defineEmits<{
   (event: 'share'): void
   (event: 'open-apply-patch'): void
   (event: 'toggle-tasklist'): void
+  (event: 'link-requirement'): void
 }>()
 
 const { t } = useI18n()
@@ -79,6 +80,14 @@ const { t } = useI18n()
       </button>
 
       <div class="action-divider"></div>
+
+      <button
+        v-if="props.vm.isDiagnosisTask && props.vm.currentTask.status === 'DONE' && props.vm.canManageTaskStatus"
+        class="btn-micro"
+        @click="emit('link-requirement')"
+      >
+        <FileText class="w-4 h-4" /> {{ t('task_rail.link_requirement') }}
+      </button>
 
       <button class="btn-micro" :disabled="!props.vm.currentTask" @click="props.vm.openTaskSkillsDrawer">
         <Wrench class="w-4 h-4" />
@@ -184,7 +193,7 @@ const { t } = useI18n()
 }
 .header-left h2 {
   margin: 0;
-  flex: 0 1 auto;
+  flex: 1 1 160px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -193,6 +202,10 @@ const { t } = useI18n()
 }
 .header-left > :not(h2) {
   flex: 0 0 auto;
+}
+.header-left > .task-requirement-badges {
+  flex: 0 1 auto;
+  max-width: min(35%, 220px);
 }
 
 .badge {

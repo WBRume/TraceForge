@@ -91,7 +91,10 @@ def create_requirement(
         source_kind=clean_optional(payload.source_kind, limit=80),
         source_uri=clean_optional(payload.source_uri, limit=1000),
         source_ref=clean_optional(payload.source_ref, limit=300),
-        source_metadata_json=json_dict(payload.source_metadata),
+        source_metadata_json={
+            **(json_dict(payload.source_metadata) or {}),
+            "task_prompt": clean_optional(payload.task_prompt or (payload.source_metadata or {}).get("task_prompt") or payload.body),
+        },
     )
     db.add(requirement)
     db.flush()
@@ -145,6 +148,8 @@ def update_requirement(
         requirement.source_ref = clean_optional(payload.source_ref, limit=300)
     if payload_has_field(payload, "source_metadata"):
         requirement.source_metadata_json = json_dict(payload.source_metadata)
+    if payload_has_field(payload, "task_prompt"):
+        requirement.source_metadata_json = {**(requirement.source_metadata_json or {}), "task_prompt": clean_optional(payload.task_prompt)}
 
     db.flush()
     after = requirement_snapshot(requirement)

@@ -1096,6 +1096,7 @@ export function useChatViewModel() {
     completeTaskNow: async () => statusActions.handleCompleteClick(),
     closeTaskCloseout: statusActions.closeTaskCloseout,
     handleTaskCloseoutSuccess: statusActions.handleTaskCloseoutSuccess,
+    handleTaskRequirementLinked: statusActions.handleTaskRequirementLinked,
     interruptingTask: taskSessionControls.interruptingTask,
 
     // 管理动作

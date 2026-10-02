@@ -46,7 +46,7 @@ const selectedSkillIds = ref<string[]>([])
 const initialParent = props.initialRequirement && (props.initialRequirement.child_count || 0) > 0 ? props.initialRequirement : null
 const selectedRequirement = shallowRef<RequirementOption | null>(initialParent ? null : props.initialRequirement ?? null)
 const lockedRequirementId = initialParent ? undefined : props.initialRequirement?.id
-const requirementContext = useTaskRequirementContext(() => props.wsId, () => selectedRequirement.value?.id)
+const requirementContext = useTaskRequirementContext(() => props.wsId, () => taskType.value === 'DEVELOPMENT' ? selectedRequirement.value?.id : undefined)
 if (initialParent) activeSidebar.value = 'requirements'
 const selectedPlaybook = shallowRef<PlaybookSpec | null>(null)
 const playbookContext = shallowRef({ name: '', description: '' })
@@ -63,6 +63,7 @@ const toggleSidebar = (name: TaskCreateSidebarName) => {
 const switchTaskType = (type: TaskTypeValue) => {
   if (taskType.value === type) return
   taskType.value = type
+  if (type === 'DIAGNOSIS' && activeSidebar.value === 'requirements') activeSidebar.value = 'none'
   if (type !== 'DIAGNOSIS') {
     selectedPlaybook.value = null
     if (activeSidebar.value === 'playbooks') activeSidebar.value = 'none'
@@ -70,7 +71,7 @@ const switchTaskType = (type: TaskTypeValue) => {
 }
 
 const handleSubmit = async (draft: TaskDraftSnapshot) => {
-  if (requirementContext.loading.value || requirementContext.error.value || (props.initialRequirement && !selectedRequirement.value)) return
+  if (taskType.value === 'DEVELOPMENT' && (requirementContext.loading.value || requirementContext.error.value || (props.initialRequirement && !selectedRequirement.value))) return
   if (!draft.name.trim()) return
   const invalid = validateTaskDraft(draft, {
     reposTotal: repos.repos.length,
@@ -201,7 +202,7 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         @retry-requirement="requirementContext.load"
       />
 
-      <RequirementPickerSidebar :workspace-id="props.wsId" :open="activeSidebar === 'requirements'" :selected="selectedRequirement"
+      <RequirementPickerSidebar v-if="taskType === 'DEVELOPMENT'" :workspace-id="props.wsId" :open="activeSidebar === 'requirements'" :selected="selectedRequirement"
         :locked-id="lockedRequirementId" :disabled="creatingTask" :initial-parent="initialParent"
         @select="selectedRequirement = $event" @close="activeSidebar = 'none'" />
 

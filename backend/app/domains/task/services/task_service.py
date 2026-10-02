@@ -282,6 +282,8 @@ def create_task_record_for_provision(
 
     requirement = None
     if requirement_id:
+        if task_type == "DIAGNOSIS":
+            raise ValueError("Diagnosis tasks may link a Requirement when completed, not during creation")
         requirement = db.query(SddRequirement).filter(
             SddRequirement.id == requirement_id,
             SddRequirement.workspace_id == workspace_id,

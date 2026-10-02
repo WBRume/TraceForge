@@ -68,7 +68,7 @@ let inheritedPrompt = ''
 let inheritedFile: File | null = null
 watch(() => props.requirementContext, (requirement) => {
   const nextName = requirement?.title || ''
-  const rawPrompt = requirement?.source_metadata?.task_prompt
+  const rawPrompt = requirement?.task_prompt ?? requirement?.source_metadata?.task_prompt
   const nextPrompt = typeof rawPrompt === 'string' && rawPrompt.trim() ? rawPrompt : requirement?.body || ''
   if (!name.value || name.value === inheritedName) name.value = nextName
   if (!description.value || description.value === inheritedPrompt) description.value = nextPrompt
@@ -109,7 +109,7 @@ const submitDraft = () => {
     execution: execution.value,
     agentModel: models.selection.value,
     name: name.value,
-    requirementId: props.selectedRequirement?.id,
+    requirementId: isDiagnosisTask.value ? undefined : props.selectedRequirement?.id,
     description: description.value,
     phenomenon: phenomenon.value,
     priority: priority.value,
@@ -139,7 +139,7 @@ defineExpose({ reset })
 <template>
   <form class="modal-form-main" @submit.prevent="submitDraft">
     <TaskResourcePicker :workspace-id="wsId" @change="execution = $event" />
-    <div class="form-meta-container">
+    <div v-if="!isDiagnosisTask" class="form-meta-container">
       <button type="button" class="meta-skills-bar skills-entry-card requirement-entry-card"
         :class="{ active: activeSidebar === 'requirements', 'has-selection': Boolean(selectedRequirement) }" :disabled="creating"
         :aria-expanded="activeSidebar === 'requirements'" @click="emit('toggle-sidebar', 'requirements')">
@@ -227,7 +227,7 @@ defineExpose({ reset })
         <div class="file-upload-box glass-panel compact-upload">
           <Upload v-if="!creating" class="w-4 h-4 text-primary flex-shrink-0" />
           <Loader2 v-else class="w-4 h-4 spin text-primary flex-shrink-0" />
-          <div class="file-name text-slate-600">
+          <div class="file-name text-slate-600" :title="specFile?.name">
             {{ specFile?.name || $t('dashboard.spec_placeholder') }}
           </div>
           <input
@@ -391,7 +391,7 @@ defineExpose({ reset })
       </div>
       <div class="footer-actions">
         <button type="button" class="btn-secondary modal-btn" @click="emit('cancel')">{{ $t('common.cancel') }}</button>
-        <button type="submit" class="btn-primary modal-btn" :disabled="creating || requirementLoading || requirementError || (requirementRequired && !selectedRequirement)">
+        <button type="submit" class="btn-primary modal-btn" :disabled="creating || (!isDiagnosisTask && (requirementLoading || requirementError || (requirementRequired && !selectedRequirement)))">
           <Loader2 v-if="creating" class="w-4 h-4 spin" />
           <span>{{ creating ? $t('common.loading') : $t('chat.initialize') }}</span>
         </button>
@@ -422,11 +422,12 @@ defineExpose({ reset })
 
 .form-grid-2 {
   display: grid;
-  grid-template-columns: 1fr 1.35fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
   gap: 12px;
 }
 
 .form-group {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -570,6 +571,7 @@ defineExpose({ reset })
 
 .file-name {
   flex: 1;
+  min-width: 0;
   font-size: 0.8rem;
   white-space: nowrap;
   overflow: hidden;
@@ -577,6 +579,7 @@ defineExpose({ reset })
 }
 
 .file-choose-btn {
+  flex-shrink: 0;
   padding: 3px 10px;
   font-size: 0.72rem;
   cursor: pointer;

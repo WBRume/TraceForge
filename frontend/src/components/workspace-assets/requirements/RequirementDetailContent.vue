@@ -5,6 +5,7 @@ import RequirementAuditSection from './RequirementAuditSection.vue'
 import RequirementChildrenSection from './RequirementChildrenSection.vue'
 import RequirementSpecificationBlock from './RequirementSpecificationBlock.vue'
 import RequirementTaskLinksSection from './RequirementTaskLinksSection.vue'
+import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
 import type { RequirementDetail, RequirementLinkedTask, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -59,9 +60,6 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
     <div class="detail-grid">
       <!-- Main Content Area -->
       <div class="main-column">
-        <RequirementTaskLinksSection
-          :workspace-id="workspaceId" :requirement="activeRequirement" :linked-tasks="linkedTasks" :tasks="tasks" :loading="loading" class="content-card"
-          @link="emit('link', $event)" @unlink="emit('unlink', $event)" />
         <section class="content-card">
           <div class="card-header">
             <h3>{{ t('workspace_assets.requirements.detail.specification_title') }}</h3>
@@ -86,6 +84,8 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
           </div>
         </section>
 
+        <RequirementDeliveryContext :requirement="activeRequirement" class="content-card" />
+
         <section class="content-card">
           <div class="card-header">
             <h3>{{ t('workspace_assets.requirements.fields.acceptance_criteria') }}</h3>
@@ -106,6 +106,10 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
           @open="emit('openChild', $event)"
           @create-child="emit('createChild', activeRequirement)"
         />
+
+        <RequirementTaskLinksSection
+          :workspace-id="workspaceId" :requirement="activeRequirement" :linked-tasks="linkedTasks" :tasks="tasks" :loading="loading" class="content-card"
+          @link="emit('link', $event)" @unlink="emit('unlink', $event)" />
 
       </div>
 

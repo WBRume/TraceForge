@@ -68,6 +68,7 @@ def create_requirement_direct_import(
     source_uri: Optional[str] = None,
     source_ref: Optional[str] = None,
     change_reason: Optional[str] = None,
+    task_prompt: Optional[str] = None,
 ) -> RequirementDetailResponse:
     """上传文档不经 AI preview，直接按文档标题创建一条 Requirement。"""
     parsed = parse_requirement_document(file_name, raw)
@@ -83,7 +84,10 @@ def create_requirement_direct_import(
         source_kind=clean_optional(source_kind, limit=80) or "document",
         source_uri=clean_optional(source_uri, limit=1000),
         source_ref=clean_optional(source_ref, limit=300),
-        source_metadata_json=document_metadata(parsed, extra={"created_from": "direct_import", "source_filename": file_name}),
+        source_metadata_json=document_metadata(parsed, extra={
+            "created_from": "direct_import", "source_filename": file_name,
+            "task_prompt": clean_optional(task_prompt) or markdown,
+        }),
     )
     db.add(requirement)
     db.flush()

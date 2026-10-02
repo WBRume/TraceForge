@@ -314,10 +314,40 @@ def test_requirement_direct_import_creates_single_requirement_without_preview(tm
         assert response.status_code == 201
         assert response.json()["requirement"]["title"] == "Payment validation"
         assert response.json()["requirement"]["body"].count("#") == 2
+        assert response.json()["requirement"]["task_prompt"] == response.json()["requirement"]["body"]
         with _session(SessionLocal) as db:
             requirements = db.query(SddRequirement).filter(SddRequirement.workspace_id == workspace.id).all()
             assert len(requirements) == 1
             assert requirements[0].source_metadata_json["created_from"] == "direct_import"
+    finally:
+        engine.dispose()
+
+
+def test_direct_import_prompt_location_and_edits_preserve_document_metadata():
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, _ = _seed_workspace(db)
+        client = TestClient(_build_app(sessions, user))
+        base = f"/api/workspaces/{workspace.id}/workspace-assets/requirements"
+        response = client.post(f"{base}/imports/direct", files={"file": ("checkout.md", b"# Checkout\nValidate payment")},
+                               data={"source_uri": "docs/business/checkout.md", "task_prompt": "Implement checkout validation"})
+        assert response.status_code == 201
+        requirement = response.json()["requirement"]
+        assert requirement["task_prompt"] == "Implement checkout validation"
+        assert requirement["source_uri"] == "docs/business/checkout.md"
+        assert requirement["source_metadata"]["source_filename"] == "checkout.md"
+        edited = client.patch(f"{base}/{requirement['id']}", json={"task_prompt": "Edited implementation prompt", "source_uri": "docs/new-checkout.md"})
+        assert edited.status_code == 200
+        result = edited.json()["requirement"]
+        assert result["task_prompt"] == result["source_metadata"]["task_prompt"] == "Edited implementation prompt"
+        assert result["source_metadata"]["source_filename"] == "checkout.md"
+        assert result["source_metadata"]["created_from"] == "direct_import"
+        assert result["source_uri"] == "docs/new-checkout.md"
+        cleared = client.patch(f"{base}/{requirement['id']}", json={"task_prompt": None})
+        assert cleared.json()["requirement"]["task_prompt"] is None
+        with _session(sessions) as db:
+            assert db.query(SddRequirement).count() == 1
     finally:
         engine.dispose()
 

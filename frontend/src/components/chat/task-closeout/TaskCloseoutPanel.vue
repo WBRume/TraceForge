@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, shallowRef } from 'vue'
 import { CheckCircle2, X, XCircle } from '@/components/icons'
 import { useI18n } from 'vue-i18n'
 import CompleteCloseoutForm from './CompleteCloseoutForm.vue'
 import FailCloseoutForm from './FailCloseoutForm.vue'
 import { useTaskCloseout } from '@/composables/useTaskCloseout'
 import type { CompleteCloseoutPayload, FailCloseoutPayload } from '@/types/taskCloseout'
+import RequirementPickerSidebar from '@/components/task-create/RequirementPickerSidebar.vue'
+import type { RequirementOption } from '@/types/taskRail'
 
 const props = defineProps<{
   show: boolean
@@ -13,15 +15,18 @@ const props = defineProps<{
   workspaceId: string
   taskId: string
   taskName?: string
+  taskType?: string
 }>()
 
 const emit = defineEmits<{
   close: []
-  success: [status: string]
+  success: [status: string, requirement?: RequirementOption | null]
 }>()
 
 const { t } = useI18n()
 const closeout = useTaskCloseout()
+const selectedRequirement = shallowRef<RequirementOption | null>(null)
+const requirementPickerOpen = shallowRef(false)
 
 const title = computed(() => props.mode === 'complete'
   ? t('chat.closeout.complete_title')
@@ -33,7 +38,7 @@ const description = computed(() => props.mode === 'complete'
 
 async function submitComplete(payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>, files: File[]) {
   const result = await closeout.completeTask(props.workspaceId, props.taskId, payload, files)
-  if (result) emit('success', result.status)
+  if (result) emit('success', result.status, selectedRequirement.value)
 }
 
 async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attachments'>, files: File[]) {
@@ -47,7 +52,7 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
     <div v-if="show" class="modal-overlay" @pointerdown.self="emit('close')">
       <section
         class="modal glass-panel closeout-modal"
-        :class="mode === 'complete' ? 'complete-modal' : 'fail-modal'"
+        :class="[mode === 'complete' ? 'complete-modal' : 'fail-modal', { 'with-requirement-picker':requirementPickerOpen }]"
         role="dialog"
         aria-modal="true"
       >
@@ -77,10 +82,12 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
           </button>
         </header>
 
-        <div class="modal-content">
+        <div class="closeout-body"><div class="modal-content">
           <CompleteCloseoutForm
             v-if="mode === 'complete'"
             :saving="closeout.saving.value"
+            :task-type="taskType" :selected-requirement="selectedRequirement" :requirement-picker-open="requirementPickerOpen"
+            @toggle-requirement-picker="requirementPickerOpen = !requirementPickerOpen"
             @cancel="emit('close')"
             @submit="submitComplete"
           />
@@ -98,12 +105,18 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
             </div>
           </Transition>
         </div>
+        <RequirementPickerSidebar v-if="mode === 'complete' && taskType === 'DIAGNOSIS'" :workspace-id="workspaceId" :open="requirementPickerOpen" :selected="selectedRequirement" :disabled="closeout.saving.value"
+          @select="selectedRequirement = $event" @close="requirementPickerOpen = false" />
+        </div>
       </section>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
+.closeout-body { display:flex; min-height:0; flex:1; overflow:hidden; }
+.closeout-body .modal-content { flex:1; min-width:0; }
+.modal.with-requirement-picker { width:min(1240px, 100%); }
 .modal-overlay {
   position: fixed;
   inset: 0;

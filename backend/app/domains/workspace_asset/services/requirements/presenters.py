@@ -186,6 +186,7 @@ def requirement_summary(
     children = sorted(list(requirement.child_requirements or []), key=lambda item: item.created_at or datetime.min, reverse=True)
     child_count = len(children)
     return RequirementSummary(
+        task_prompt=clean_optional((requirement.source_metadata_json or {}).get("task_prompt")) if isinstance(requirement.source_metadata_json, dict) else None,
         id=requirement.id,
         workspace_id=requirement.workspace_id,
         title=requirement.title,

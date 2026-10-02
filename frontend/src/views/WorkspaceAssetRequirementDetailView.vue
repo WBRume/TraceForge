@@ -405,7 +405,7 @@ watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() 
     </button>
     <div v-if="currentRequirement" class="requirement-task-action">
       <h2>{{ currentRequirement.title }}</h2>
-      <button type="button" class="btn-primary" :disabled="!taskCreation.canCreateTask.value || !currentRequirement.can_link_task || currentRequirement.child_count > 0" :title="currentRequirement.child_count > 0 ? t('task_rail.leaf_only') : undefined" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
+      <button v-if="currentRequirement.can_link_task && currentRequirement.child_count === 0" type="button" class="btn-primary" :disabled="!taskCreation.canCreateTask.value" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
     </div>
     <RequirementTaskCreateDialog :workspace-id="wsId" :requirement="taskCreation.selectedRequirement.value" @close="taskCreation.close" @created="reloadDetail" />
 

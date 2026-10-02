@@ -132,6 +132,7 @@ class RequirementCoverageSummary(BaseModel):
 
 
 class RequirementSummary(BaseModel):
+    task_prompt: Optional[str] = None
     id: str
     workspace_id: str
     title: str
@@ -180,6 +181,7 @@ class RequirementDetailResponse(BaseModel):
 
 
 class RequirementCreateRequest(BaseModel):
+    task_prompt: Optional[str] = None
     title: str
     body: Optional[str] = None
     acceptance_criteria: List[str] = Field(default_factory=list)
@@ -194,6 +196,7 @@ class RequirementCreateRequest(BaseModel):
 
 
 class RequirementUpdateRequest(BaseModel):
+    task_prompt: Optional[str] = None
     title: Optional[str] = None
     body: Optional[str] = None
     acceptance_criteria: Optional[List[str]] = None

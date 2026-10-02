@@ -35,6 +35,7 @@ export type CloseoutEvidenceAttachment = {
 }
 
 export type CompleteCloseoutPayload = {
+  requirement_id?: string
   completion_summary: string
   landing_method: LandingMethod
   commit_id?: string | null

@@ -68,6 +68,7 @@ export type RequirementCoverageSummary = {
 }
 
 export type RequirementSummary = {
+  task_prompt?: string | null
   id: string
   workspace_id: string
   title: string
@@ -116,6 +117,7 @@ export type RequirementDetail = {
 }
 
 export type RequirementMutationPayload = {
+  task_prompt?: string | null
   title?: string
   body?: string | null
   acceptance_criteria?: string[]

@@ -48,6 +48,7 @@ class CloseoutEvidenceAttachment(BaseModel):
 
 
 class CompleteTaskCloseoutRequest(BaseModel):
+    requirement_id: Optional[str] = Field(default=None, min_length=1, max_length=36)
     completion_summary: str = Field(min_length=1)
     landing_method: LandingMethodValue
     commit_id: Optional[str] = None

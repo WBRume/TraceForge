@@ -240,6 +240,7 @@ export function useWorkspaceAssets() {
       source_uri?: string | null
       source_ref?: string | null
       change_reason?: string | null
+      task_prompt?: string | null
     },
   ): Promise<RequirementDetail | null> {
     return mutate(async () => {
@@ -253,6 +254,7 @@ export function useWorkspaceAssets() {
       if (payload.source_uri) form.append('source_uri', payload.source_uri)
       if (payload.source_ref) form.append('source_ref', payload.source_ref)
       if (payload.change_reason) form.append('change_reason', payload.change_reason)
+      if (payload.task_prompt) form.append('task_prompt', payload.task_prompt)
       const response = await api.post<RequirementDetail>(
         `/workspaces/${workspaceId}/workspace-assets/requirements/imports/direct`,
         form,
