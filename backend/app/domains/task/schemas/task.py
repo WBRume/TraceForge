@@ -19,6 +19,7 @@ from app.agents.model_selection import ModelSelection
 
 
 class TaskCreate(BaseModel):
+    requirement_id: Optional[str] = Field(default=None, min_length=1, max_length=36)
     agent_model: Optional[ModelSelection] = None
     execution: TaskExecutionInput = Field(default_factory=TaskExecutionInput)
     name: str = Field(..., min_length=1, max_length=300)
@@ -65,6 +66,15 @@ class PlanNodeResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class TaskRequirementSummary(BaseModel):
+    id: str
+    title: str
+    status: str
+    source_ref: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
 class TaskResponse(BaseModel):
     id: str
     workspace_id: str
@@ -96,6 +106,7 @@ class TaskResponse(BaseModel):
     skill_ids: List[str] = Field(default_factory=list)
     creator_name: Optional[str] = None
     is_following: bool = False
+    requirements: List[TaskRequirementSummary] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

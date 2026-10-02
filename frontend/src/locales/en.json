@@ -1,4 +1,16 @@
 {
+  "task_rail": {
+    "back_to_session": "Back to task session",
+    "views": "Task views", "all": "All tasks", "following": "My favorites", "independent": "Independent tasks",
+    "more": "More requirements", "search_placeholder": "Search requirement titles",
+    "search": "Search requirement titles", "optional": "Optional", "selected_requirement": "Linked", "select_requirement": "Browse requirements",
+    "leaf_only": "Expand parent requirements and select a child", "clear_requirement": "Clear requirement", "loading_context": "Loading requirement prompt and document…",
+    "context_error": "Requirement content could not load or has children. Retry or select another requirement.",
+    "no_requirements": "No requirements found", "pin": "Pin requirement (up to 2)", "unpin": "Unpin requirement",
+    "reset": "Reset to all tasks", "requirement_optional": "Requirement (optional)", "inherited": "Inherited current requirement",
+    "create_for_requirement": "Create task for requirement", "owner_unknown": "Unknown creator", "retry": "Load failed. Retry",
+    "load_more": "Load more", "empty_tasks": "No tasks in {view}"
+  },
   "common": {
     "login": "Login",
     "register": "Register",
@@ -84,7 +96,7 @@
   },
   "layout": {
     "dashboard": "Dashboard",
-    "chat": "SDD Session",
+    "chat": "Task Session",
     "case_center": "Case Knowledge Center",
     "api_mock": "API MOCK",
     "workspaces": "My Workspaces",

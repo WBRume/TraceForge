@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent } from 'vue'
+import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { useChatViewModel } from '@/composables/chat/useChatViewModel'
 
@@ -168,6 +169,7 @@ describe('useChatViewModel session state single flight', () => {
     expect(vm.canUndoMessage(message)).toBe(true)
   })
   beforeEach(() => {
+    setActivePinia(createPinia())
     localStorage.clear()
     apiMock.get.mockReset()
     apiMock.post.mockReset()

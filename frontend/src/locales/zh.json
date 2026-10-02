@@ -1,4 +1,16 @@
 {
+  "task_rail": {
+    "back_to_session": "返回任务会话",
+    "views": "任务视图", "all": "全部任务", "following": "我的收藏", "independent": "独立任务",
+    "more": "更多需求", "search_placeholder": "搜索需求标题",
+    "search": "搜索需求标题", "optional": "可选", "selected_requirement": "已关联", "select_requirement": "展开选择需求",
+    "leaf_only": "有子需求的父需求请展开后选择子需求", "clear_requirement": "取消关联", "loading_context": "正在载入需求提示词与文档…",
+    "context_error": "需求内容载入失败或已有子需求，请重试或重新选择",
+    "no_requirements": "未找到需求", "pin": "固定需求（最多 2 个）", "unpin": "取消固定",
+    "reset": "重置为全部任务", "requirement_optional": "关联需求（可选）", "inherited": "已继承当前需求",
+    "create_for_requirement": "为此需求创建任务", "owner_unknown": "创建人未知", "retry": "加载失败，点击重试",
+    "load_more": "加载更多", "empty_tasks": "「{view}」暂无任务"
+  },
   "common": {
     "login": "登录",
     "register": "注册",
@@ -84,7 +96,7 @@
   },
   "layout": {
     "dashboard": "仪表盘",
-    "chat": "SDD 会话",
+    "chat": "任务会话",
     "case_center": "案例知识中心",
     "api_mock": "API MOCK",
     "workspaces": "我的工作区",

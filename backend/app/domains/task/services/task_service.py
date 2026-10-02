@@ -7,11 +7,12 @@ import shutil
 from typing import Callable, Dict, Optional, List, Tuple
 from pathlib import Path
 from datetime import datetime
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import func as sqlfunc, or_, exists
 
 from app.core.logging import bind_task_context, get_logger
 from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
+from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement
 from app.domains.task.models.chat import ChatMessage, MessageRole
 from app.domains.task.models.pre_input import SddTaskPreInput
 from app.domains.task.models.log import SddExecutionLog, LogType
@@ -273,10 +274,22 @@ def create_task_record_for_provision(
     diagnosis_playbook_spec_id: Optional[str] = None,
     execution=None,
     agent_model=None,
+    requirement_id: Optional[str] = None,
 ) -> SddTask:
     ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     if not ws:
         raise ValueError("Workspace not found")
+
+    requirement = None
+    if requirement_id:
+        requirement = db.query(SddRequirement).filter(
+            SddRequirement.id == requirement_id,
+            SddRequirement.workspace_id == workspace_id,
+        ).first()
+        if not requirement:
+            raise ValueError("Requirement not found in this workspace")
+        if db.query(SddRequirement.id).filter(SddRequirement.parent_requirement_id == requirement.id).first():
+            raise ValueError("Parent Requirement has child Requirements; create Task for a child Requirement")
 
     selected_skills = skill_service.validate_task_skill_ids(
         db, workspace_id=workspace_id, skill_ids=skill_ids or []
@@ -334,6 +347,22 @@ def create_task_record_for_provision(
             apply_task_selection(db, task, agent_model)
         db.add(task)
         db.flush()
+
+        if requirement:
+            from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
+            from app.domains.workspace_asset.models.workspace_asset import RequirementAuditAction
+
+            db.add(SddTaskRequirement(
+                workspace_id=workspace_id, requirement_id=requirement.id,
+                task_id=task.id, created_by_id=user.id,
+            ))
+            requirement.updated_at = datetime.utcnow()
+            add_requirement_audit(
+                db, workspace_id=workspace_id, requirement_id=requirement.id,
+                task_id=task.id, actor_id=user.id, action=RequirementAuditAction.LINKED_TASK,
+                after={"task_id": task.id, "relation_type": "RELATES_TO"},
+                source_metadata={"created_from": "task_create"},
+            )
 
         # Multi-repository workspace: snapshot the workspace repo set onto the task.
         branch_overrides = {
@@ -1019,8 +1048,29 @@ def list_tasks(
     task_type: Optional[str] = None,
     relation: Optional[str] = None,
     current_user_id: Optional[str] = None,
+    requirement_id: Optional[str] = None,
+    independent: bool = False,
+    following: bool = False,
 ) -> Tuple[List[SddTask], int]:
-    query = db.query(SddTask).options(joinedload(SddTask.creator)).filter(SddTask.workspace_id == workspace_id)
+    query = db.query(SddTask).options(
+        joinedload(SddTask.creator),
+        selectinload(SddTask.requirement_links).selectinload(SddTaskRequirement.requirement),
+    ).filter(SddTask.workspace_id == workspace_id)
+
+    linked = exists().where(
+        SddTaskRequirement.task_id == SddTask.id,
+        SddTaskRequirement.workspace_id == workspace_id,
+    )
+    if independent:
+        query = query.filter(~linked)
+    if requirement_id:
+        query = query.filter(linked.where(SddTaskRequirement.requirement_id == requirement_id))
+    if following:
+        query = query.filter(exists().where(
+            SddTaskFollower.task_id == SddTask.id,
+            SddTaskFollower.workspace_id == workspace_id,
+            SddTaskFollower.user_id == str(current_user_id or ""),
+        ))
 
     # 准备中的任务不在任务列表展示：进度由创建人的全局浮窗跟踪，
     # 任务就绪（PENDING）后才会出现在列表中。
@@ -1133,7 +1183,7 @@ def set_task_following(
 def get_task(db: Session, task_id: str, workspace_id: str) -> Optional[SddTask]:
     return (
         db.query(SddTask)
-        .options(joinedload(SddTask.creator))
+        .options(joinedload(SddTask.creator), selectinload(SddTask.requirement_links).selectinload(SddTaskRequirement.requirement))
         .filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id)
         .first()
     )

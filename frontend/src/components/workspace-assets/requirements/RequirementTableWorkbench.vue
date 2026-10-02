@@ -6,6 +6,7 @@ import BaseSelect from '@/components/BaseSelect.vue'
 import type { RequirementListQuery, RequirementSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
+  canCreateTask?: boolean
   items: readonly RequirementSummary[]
   total: number
   page: number
@@ -20,6 +21,7 @@ const emit = defineEmits<{
   createChild: [requirement: RequirementSummary]
   edit: [requirement: RequirementSummary]
   split: [requirement: RequirementSummary]
+  createTask: [requirement: RequirementSummary]
 }>()
 
 const tableRef = ref<TableInstance>()
@@ -250,10 +252,11 @@ function handleRowClick(row: RequirementSummary) {
           <span>{{ row.updated_at || row.created_at || t('workspace_assets.requirements.detail.time_pending') }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('workspace_assets.requirements.table.operations')" fixed="right" width="260">
+      <el-table-column :label="t('workspace_assets.requirements.table.operations')" fixed="right" width="380">
         <template #default="{ row }">
           <div class="operation-row">
             <el-button size="small" @click.stop="emit('open', row)">{{ t('workspace_assets.requirements.table.view_detail') }}</el-button>
+            <el-button size="small" :disabled="!canCreateTask || !row.can_link_task || row.child_count > 0" :title="row.child_count > 0 ? t('task_rail.leaf_only') : undefined" @click.stop="emit('createTask', row)">{{ t('task_rail.create_for_requirement') }}</el-button>
             <el-button size="small" type="primary" @click.stop="emit('edit', row)">{{ t('workspace_assets.requirements.actions.edit') }}</el-button>
             <el-button v-if="isParent(row)" size="small" type="success" @click.stop="emit('createChild', row)">
               {{ t('workspace_assets.requirements.table.add_child') }}

@@ -8,8 +8,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from sqlalchemy import or_
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from app.domains.task.models.task import SddTask
 from app.domains.workspace_asset.models.workspace_asset import (
@@ -18,6 +18,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
 )
 from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementDetailResponse,
+    RequirementOptionsResponse,
     WorkspaceAssetsRequirementsResponse,
 )
 from app.domains.workspace_asset.services.common.primitives import (
@@ -41,6 +42,48 @@ _REQUIREMENT_SORT_FIELDS = {
     "child_count",
     "related_task_count",
 }
+
+
+def list_requirement_options(
+    db: Session, workspace_id: str, *, q: Optional[str] = None,
+    ids: Optional[list[str]] = None, page: int = 1, page_size: int = 40,
+    scope: str = "all", parent_id: Optional[str] = None,
+) -> RequirementOptionsResponse:
+    """SQL-paged picker: no bodies, evidence, child trees or audit collections."""
+    query = db.query(SddRequirement).filter(SddRequirement.workspace_id == workspace_id)
+    if scope == "roots":
+        query = query.filter(SddRequirement.parent_requirement_id.is_(None))
+    elif scope == "children":
+        query = query.filter(SddRequirement.parent_requirement_id == parent_id) if parent_id else query.filter(False)
+    if ids is not None:
+        query = query.filter(SddRequirement.id.in_(ids))
+    search = str(q or "").strip()
+    if search:
+        query = query.filter(or_(
+            SddRequirement.id.ilike(f"%{search}%"),
+            SddRequirement.title.ilike(f"%{search}%"),
+            SddRequirement.source_ref.ilike(f"%{search}%"),
+        ))
+    total = query.count()
+    parent = aliased(SddRequirement)
+    child = aliased(SddRequirement)
+    child_count = select(func.count(child.id)).where(
+        child.parent_requirement_id == SddRequirement.id,
+        child.workspace_id == workspace_id,
+    ).correlate(SddRequirement).scalar_subquery()
+    items = query.outerjoin(parent, SddRequirement.parent_requirement_id == parent.id).with_entities(
+        SddRequirement.id, SddRequirement.title, SddRequirement.status, SddRequirement.source_ref,
+        SddRequirement.parent_requirement_id, parent.title.label("parent_title"), child_count.label("child_count"),
+    ).order_by(SddRequirement.updated_at.desc(), SddRequirement.id.asc()).offset(
+        (page - 1) * page_size
+    ).limit(page_size).all()
+    return RequirementOptionsResponse(
+        items=[{"id": item.id, "title": item.title, "status": enum_value(item.status),
+                "source_ref": item.source_ref, "parent_requirement_id": item.parent_requirement_id,
+                "parent_title": item.parent_title, "child_count": item.child_count,
+                "can_link_task": item.child_count == 0} for item in items],
+        total=total, page=page, page_size=page_size,
+    )
 
 
 def requirement_load_options() -> tuple[Any, ...]:
@@ -78,6 +121,9 @@ def requirement_load_options() -> tuple[Any, ...]:
         selectinload(SddRequirement.task_links)
         .selectinload(SddTaskRequirement.task)
         .selectinload(SddTask.human_deltas),
+        selectinload(SddRequirement.task_links).selectinload(SddTaskRequirement.task).selectinload(SddTask.creator),
+        selectinload(SddRequirement.child_requirements).selectinload(SddRequirement.task_links)
+        .selectinload(SddTaskRequirement.task).selectinload(SddTask.creator),
         selectinload(SddRequirement.evidence_items),
         selectinload(SddRequirement.audit_logs),
     )

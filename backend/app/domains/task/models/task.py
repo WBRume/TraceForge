@@ -111,6 +111,7 @@ class SddTask(Base):
     session_turns = relationship("TaskSessionTurn", back_populates="task", cascade="all, delete-orphan")
     session_operations = relationship("TaskSessionOperation", back_populates="task", cascade="all, delete-orphan")
     requirement_links = relationship("SddTaskRequirement", back_populates="task", cascade="all, delete-orphan")
+
     ai_outputs = relationship("SddAiOutput", back_populates="task", cascade="all, delete-orphan")
     human_reviews = relationship("SddHumanReview", back_populates="task", cascade="all, delete-orphan")
     human_review_comments = relationship("SddHumanReviewComment", back_populates="task", cascade="all, delete-orphan")
@@ -156,6 +157,10 @@ class SddTask(Base):
         back_populates="task",
         cascade="all, delete-orphan",
     )
+
+    @property
+    def requirements(self):
+        return [link.requirement for link in self.requirement_links if link.requirement]
 
     @property
     def skill_ids(self):

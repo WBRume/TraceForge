@@ -38,7 +38,7 @@ function uniqueById<T extends { id: string }>(items: readonly T[]): T[] {
 function uniqueLinkedTasks(items: readonly RequirementLinkedTask[]): RequirementLinkedTask[] {
   const seen = new Set<string>()
   return items.filter((item) => {
-    const key = item.link_id || item.task_id
+    const key = item.task_id
     if (seen.has(key)) return false
     seen.add(key)
     return true
@@ -59,6 +59,9 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
     <div class="detail-grid">
       <!-- Main Content Area -->
       <div class="main-column">
+        <RequirementTaskLinksSection
+          :workspace-id="workspaceId" :requirement="activeRequirement" :linked-tasks="linkedTasks" :tasks="tasks" :loading="loading" class="content-card"
+          @link="emit('link', $event)" @unlink="emit('unlink', $event)" />
         <section class="content-card">
           <div class="card-header">
             <h3>{{ t('workspace_assets.requirements.detail.specification_title') }}</h3>
@@ -104,17 +107,6 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
           @create-child="emit('createChild', activeRequirement)"
         />
 
-        <RequirementTaskLinksSection
-          v-if="!hasChildRequirements"
-          :workspace-id="workspaceId"
-          :requirement="activeRequirement"
-          :linked-tasks="linkedTasks"
-          :tasks="tasks"
-          :loading="loading"
-          class="content-card"
-          @link="emit('link', $event)"
-          @unlink="emit('unlink', $event)"
-        />
       </div>
 
       <!-- Sidebar Area -->

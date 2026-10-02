@@ -91,12 +91,32 @@ class ExternalEvidenceRef(BaseModel):
     source_metadata: Optional[Dict[str, Any]] = None
 
 
+class RequirementOptionResponse(BaseModel):
+    id: str
+    title: str
+    status: str
+    source_ref: Optional[str] = None
+    parent_requirement_id: Optional[str] = None
+    parent_title: Optional[str] = None
+    child_count: int = 0
+    can_link_task: bool = True
+
+
+class RequirementOptionsResponse(BaseModel):
+    items: List[RequirementOptionResponse]
+    total: int
+    page: int
+    page_size: int
+
+
 class RequirementLinkedTaskResponse(BaseModel):
     link_id: str
     task_id: str
     task_name: str
     task_status: str
     current_phase: Optional[str] = None
+    creator_name: Optional[str] = None
+    total_duration_ms: int = 0
     relation_type: str
     coverage_status: CoverageStatus = "not_available"
     created_at: Optional[datetime] = None

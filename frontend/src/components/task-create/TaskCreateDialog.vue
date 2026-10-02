@@ -14,12 +14,15 @@ import TaskCreateForm from './TaskCreateForm.vue'
 import SkillsPickerSidebar from './SkillsPickerSidebar.vue'
 import ReposPickerSidebar from './ReposPickerSidebar.vue'
 import PlaybookPicker from './PlaybookPickerSidebar.vue'
+import RequirementPickerSidebar from './RequirementPickerSidebar.vue'
+import { useTaskRequirementContext } from './composables/useTaskRequirementContext'
 import type { PlaybookSpec } from '@/types/diagnosisPlaybook'
+import type { RequirementOption } from '@/types/taskRail'
 import { useWorkspaceRepos } from './composables/useWorkspaceRepos'
 import { buildTaskCreatePayload, validateTaskDraft } from './lib/taskPayload'
 import type { TaskCreatedEvent, TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 
-const props = defineProps<{ wsId: string; initialTaskType?: TaskTypeValue }>()
+const props = defineProps<{ wsId: string; initialTaskType?: TaskTypeValue; initialRequirement?: RequirementOption | null }>()
 
 const emit = defineEmits<{
   close: []
@@ -40,6 +43,11 @@ const formRef = useTemplateRef<{ reset: () => void }>('taskForm')
 // ── 领域状态 ──
 const repos = useWorkspaceRepos(() => props.wsId)
 const selectedSkillIds = ref<string[]>([])
+const initialParent = props.initialRequirement && (props.initialRequirement.child_count || 0) > 0 ? props.initialRequirement : null
+const selectedRequirement = shallowRef<RequirementOption | null>(initialParent ? null : props.initialRequirement ?? null)
+const lockedRequirementId = initialParent ? undefined : props.initialRequirement?.id
+const requirementContext = useTaskRequirementContext(() => props.wsId, () => selectedRequirement.value?.id)
+if (initialParent) activeSidebar.value = 'requirements'
 const selectedPlaybook = shallowRef<PlaybookSpec | null>(null)
 const playbookContext = shallowRef({ name: '', description: '' })
 
@@ -62,6 +70,7 @@ const switchTaskType = (type: TaskTypeValue) => {
 }
 
 const handleSubmit = async (draft: TaskDraftSnapshot) => {
+  if (requirementContext.loading.value || requirementContext.error.value || (props.initialRequirement && !selectedRequirement.value)) return
   if (!draft.name.trim()) return
   const invalid = validateTaskDraft(draft, {
     reposTotal: repos.repos.length,
@@ -172,6 +181,12 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
       <TaskCreateForm
         ref="taskForm"
         :ws-id="props.wsId"
+        :selected-requirement="selectedRequirement"
+        :requirement-context="requirementContext.requirement.value"
+        :requirement-loading="requirementContext.loading.value"
+        :requirement-error="requirementContext.error.value"
+        :requirement-locked="Boolean(lockedRequirementId)"
+        :requirement-required="Boolean(props.initialRequirement)"
         :task-type="taskType"
         :creating="creatingTask"
         :repos-total="repos.repos.length"
@@ -183,7 +198,12 @@ const handleSubmit = async (draft: TaskDraftSnapshot) => {
         @submit="handleSubmit"
         @cancel="emit('close')"
         @toggle-sidebar="toggleSidebar"
+        @retry-requirement="requirementContext.load"
       />
+
+      <RequirementPickerSidebar :workspace-id="props.wsId" :open="activeSidebar === 'requirements'" :selected="selectedRequirement"
+        :locked-id="lockedRequirementId" :disabled="creatingTask" :initial-parent="initialParent"
+        @select="selectedRequirement = $event" @close="activeSidebar = 'none'" />
 
       <!-- 右侧平滑横向展开的 Skills 侧边栏 -->
       <SkillsPickerSidebar

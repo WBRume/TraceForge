@@ -3,6 +3,8 @@ import { computed } from 'vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import { formatTime } from '@/utils/chatFormatters'
 import { Star } from '@/components/icons'
+import TaskRequirementBadges from './task-rail/TaskRequirementBadges.vue'
+import type { RequirementOption } from '@/types/taskRail'
 
 interface ChatTaskListItemData {
   id: string
@@ -13,6 +15,8 @@ interface ChatTaskListItemData {
   creator_name?: string | null
   created_at?: string | null
   is_following?: boolean
+  workspace_id?: string
+  requirements?: RequirementOption[]
 }
 
 const props = defineProps<{
@@ -71,6 +75,11 @@ const toggleFollow = () => emit('toggleFollow', props.task)
       </span>
     </button>
 
+    <div class="task-requirement-row">
+      <TaskRequirementBadges v-if="task.requirements?.length" :workspace-id="task.workspace_id || ''" :task-id="task.id" :requirements="task.requirements" />
+      <span v-else class="independent-label">{{ $t('task_rail.independent') }}</span>
+    </div>
+
     <button
       class="follow-btn"
       :class="{ active: task.is_following }"
@@ -94,16 +103,21 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 </template>
 
 <style scoped>
+.task-requirement-row { padding:0 10px 8px; }
+.independent-label { color:var(--color-text-muted); font-size:.7rem; }
 .task-item {
   position: relative;
   margin-bottom: var(--space-1);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .task-select {
   display: block;
   width: 100%;
   padding: 10px 58px 10px 10px;
-  border: 1px solid transparent;
+  border: none;
   border-radius: var(--radius-md);
   color: inherit;
   background: transparent;
@@ -116,18 +130,18 @@ const toggleFollow = () => emit('toggleFollow', props.task)
     box-shadow var(--transition-fast);
 }
 
-.task-item:hover .task-select,
-.task-select:focus-visible {
+.task-item:hover,
+.task-item:has(.task-select:focus-visible) {
   background-color: var(--color-primary-50);
 }
 
-.task-select:focus-visible {
+.task-item:has(.task-select:focus-visible) {
   border-color: rgba(37, 99, 235, 0.35);
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
 }
 
-.task-item.active .task-select,
-.task-item.active:hover .task-select {
+.task-item.active,
+.task-item.active:hover {
   background-color: var(--color-surface-white);
   border-color: rgba(14, 165, 233, 0.25);
   box-shadow:

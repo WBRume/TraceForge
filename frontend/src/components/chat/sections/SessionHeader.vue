@@ -14,6 +14,7 @@ import {
 } from '@/components/icons'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
+import TaskRequirementBadges from '@/components/chat/task-rail/TaskRequirementBadges.vue'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**
@@ -53,6 +54,7 @@ const { t } = useI18n()
         <PanelLeftOpen v-else class="w-4 h-4" />
       </button>
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
+      <TaskRequirementBadges v-if="props.vm.currentTask.requirements?.length" :workspace-id="String(props.vm.route.params.wsId || '')" :task-id="props.vm.currentTask.id" :requirements="props.vm.currentTask.requirements" />
       <span class="badge" :class="props.vm.currentTask.status.toLowerCase()">{{ props.vm.currentTask.status }}</span>
       <span
         v-if="props.vm.isLocalTask"

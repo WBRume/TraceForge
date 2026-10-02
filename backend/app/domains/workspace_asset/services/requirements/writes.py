@@ -179,7 +179,7 @@ def link_requirement_task(
     requirement = get_requirement(db, workspace_id, requirement_id)
     if not requirement:
         return None
-    if not requirement.parent_requirement_id and requirement.child_requirements:
+    if requirement.child_requirements:
         raise WorkspaceAssetError(
             "Parent Requirement has child Requirements; link Task to a child Requirement.",
             status_code=409,

@@ -47,6 +47,8 @@ import { useTaskAdminActions } from './actions/useTaskAdminActions'
 import { useMessageActions } from './actions/useMessageActions'
 import { useTaskReadingProgress } from './reading/useTaskReadingProgress'
 import { fetchReadingResume } from '@/services/taskReadingApi'
+import { useTaskRailStore } from '@/stores/taskRail'
+import { requirementLabel, type RequirementOption } from '@/types/taskRail'
 
 /**
  * Chat 视图模型组合根：把各领域模块（任务列表、消息、历史、卡片、jobs、
@@ -60,6 +62,11 @@ export function useChatViewModel() {
   const route = useRoute()
   const router = useRouter()
   const authStore = useAuthStore()
+  const taskRail = useTaskRailStore()
+  taskRail.setContext(String(route.params.wsId || ''), String(authStore.user?.id || ''))
+  const newTaskRequirement = ref<RequirementOption | null>(null)
+  const taskViewLabel = computed(() => taskRail.view === 'requirement' && taskRail.selectedRequirement
+    ? requirementLabel(taskRail.selectedRequirement) : t(`task_rail.${taskRail.view}`))
 
   const getWorkspaceId = () => String(route.params.wsId || '')
   const resolveActionError = createResolveActionError(t)
@@ -145,7 +152,23 @@ export function useChatViewModel() {
     getWorkspaceId,
     selectRouteTask: (loadOptions) => selectRouteTask(loadOptions),
     canCreateTask: () => workspaceContext.canCreateTask.value,
+    getRailFilter: () => ({ view: taskRail.view, requirementId: taskRail.selectedRequirement?.id }),
   })
+  watch(() => [getWorkspaceId(), taskRail.view, taskRail.selectedRequirement?.id], () => {
+    void taskList.loadTasks({ reset: true, trySelectRouteTask: false })
+  })
+
+  const openNewTaskModal = () => {
+    newTaskRequirement.value = taskRail.view === 'requirement' ? taskRail.selectedRequirement : null
+    taskList.openNewTaskModal()
+  }
+  const resetTaskView = () => {
+    taskList.taskStatusFilter.value = 'ALL'
+    taskList.taskTypeFilter.value = 'ALL'
+    taskList.taskRelationFilter.value = []
+    if (taskRail.view === 'all') void taskList.loadTasks({ reset: true, trySelectRouteTask: false })
+    else taskRail.selectView('all')
+  }
 
   const jobs = useChatJobs({
     getWorkspaceId,
@@ -747,7 +770,9 @@ export function useChatViewModel() {
     // 任务列表中暂无该任务时按需拉取（受 filters/loadTasks 场景约束）
     if (!selectOptions?.allowFetch) return
     try {
-      const taskRes = await api.get(`/workspaces/${getWorkspaceId()}/tasks/${routeTaskId}`)
+      const workspaceId = getWorkspaceId()
+      const taskRes = await api.get(`/workspaces/${workspaceId}/tasks/${routeTaskId}`)
+      if (getWorkspaceId() !== workspaceId || String(route.params.taskId || '') !== routeTaskId) return
       const routeTask = taskRes.data
       if (!routeTask?.id) return
       // 准备中的任务不出现在任务列表（进度由全局浮窗跟踪），也不自动选中
@@ -907,6 +932,7 @@ export function useChatViewModel() {
   })
 
   onUnmounted(() => {
+    taskList.dispose()
     document.removeEventListener('visibilitychange', handleVisibilityRecovery)
     history.bumpGeneration()
     historyContext.reset()
@@ -943,6 +969,13 @@ export function useChatViewModel() {
     taskListHasMore: taskList.taskListHasMore,
     taskListLoading: taskList.taskListLoading,
     taskListLoadingMore: taskList.taskListLoadingMore,
+    taskListTotal: taskList.taskListTotal,
+    taskListError: taskList.taskListError,
+    retryTaskList: () => taskList.loadTasks({ reset: true, trySelectRouteTask: false }),
+    taskViewLabel,
+    taskRailView: computed(() => taskRail.view),
+    resetTaskView,
+    newTaskRequirement,
     applyTaskStatusFilter: taskList.applyTaskStatusFilter,
     applyTaskTypeFilter: taskList.applyTaskTypeFilter,
     applyTaskRelationFilter: taskList.applyTaskRelationFilter,
@@ -950,7 +983,7 @@ export function useChatViewModel() {
     handleTaskListScroll: taskList.handleTaskListScroll,
     toggleTaskFollow,
     showTaskModal: taskList.showTaskModal,
-    openNewTaskModal: taskList.openNewTaskModal,
+    openNewTaskModal,
     onTaskCreated,
     selectTask,
 

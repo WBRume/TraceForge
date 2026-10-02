@@ -7,6 +7,8 @@ import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import RequirementEditDrawer from './RequirementEditDrawer.vue'
 import RequirementImportDialog from './RequirementImportDialog.vue'
 import RequirementTableWorkbench from './RequirementTableWorkbench.vue'
+import RequirementTaskCreateDialog from './RequirementTaskCreateDialog.vue'
+import { useRequirementTaskCreation } from '@/composables/useRequirementTaskCreation'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import { useProvisioningStore, type ProvisionJobView } from '@/stores/provisioning'
 import { formatApiError } from '@/utils/error'
@@ -50,6 +52,7 @@ const {
   findRequirementSplitDraft,
 } = useWorkspaceAssets()
 const provisioningStore = useProvisioningStore()
+const taskCreation = useRequirementTaskCreation(() => props.workspaceId)
 
 function routeString(key: string): string | undefined {
   const value = route.query[key]
@@ -569,6 +572,8 @@ watch(
     <p v-if="error" class="error-note">{{ error }}</p>
 
     <RequirementTableWorkbench
+      :can-create-task="taskCreation.canCreateTask.value"
+      @create-task="taskCreation.open"
       :items="requirementItems"
       :total="activeResponse.total"
       :page="activeResponse.page"
@@ -581,6 +586,7 @@ watch(
       @edit="openEdit"
       @split="openSplit"
     />
+    <RequirementTaskCreateDialog :workspace-id="workspaceId" :requirement="taskCreation.selectedRequirement.value" @close="taskCreation.close" @created="reloadRequirements()" />
 
     <RequirementEditDrawer
       :open="editorOpen"

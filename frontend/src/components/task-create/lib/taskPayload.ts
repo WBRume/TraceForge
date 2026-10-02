@@ -47,6 +47,7 @@ export function buildTaskCreatePayload(
     task_type: draft.taskType,
     skill_ids: ctx.skillIds,
   }
+  if (draft.requirementId) payload.requirement_id = draft.requirementId
   if (draft.taskType === 'DIAGNOSIS') {
     if (draft.diagnosisPlaybookSpecId) payload.diagnosis_playbook_spec_id = draft.diagnosisPlaybookSpecId
     payload.phenomenon = draft.phenomenon

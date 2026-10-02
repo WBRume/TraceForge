@@ -7,7 +7,7 @@
 export type TaskTypeValue = 'DEVELOPMENT' | 'DIAGNOSIS'
 
 /** 右侧滑出侧栏；同一时刻至多展开一个，none = 全部收起 */
-export type TaskCreateSidebar = 'none' | 'skills' | 'repos' | 'playbooks'
+export type TaskCreateSidebar = 'none' | 'skills' | 'repos' | 'playbooks' | 'requirements'
 
 /** 可展开的侧栏名称（入口条 / 内部切换用） */
 export type TaskCreateSidebarName = Exclude<TaskCreateSidebar, 'none'>
@@ -35,6 +35,7 @@ export interface SkillSummary {
 
 /** 表单提交时的草稿快照（含 File 对象，保持普通对象不代理） */
 export interface TaskDraftSnapshot {
+  requirementId?: string
   agentModel?: import('@/composables/useAgentModels').AgentModelSelection
   execution?: import('@/composables/useLocalResources').TaskExecution
   diagnosisPlaybookSpecId?: string
