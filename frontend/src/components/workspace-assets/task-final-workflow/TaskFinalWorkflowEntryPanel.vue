@@ -84,6 +84,8 @@ watch(
   },
   { immediate: true },
 )
+
+defineExpose({ refresh, workflowStatus })
 </script>
 
 <template>

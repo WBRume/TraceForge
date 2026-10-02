@@ -154,8 +154,12 @@ export function useChatViewModel() {
     canCreateTask: () => workspaceContext.canCreateTask.value,
     getRailFilter: () => ({ view: taskRail.view, requirementId: taskRail.selectedRequirement?.id }),
   })
-  watch(() => [getWorkspaceId(), taskRail.view, taskRail.selectedRequirement?.id], () => {
-    void taskList.loadTasks({ reset: true, trySelectRouteTask: false })
+  let lastWorkspaceId = getWorkspaceId()
+  watch(() => [getWorkspaceId(), taskRail.view, taskRail.selectedRequirement?.id], ([nextWsId]) => {
+    const wsId = String(nextWsId || '')
+    const wsChanged = wsId !== lastWorkspaceId
+    lastWorkspaceId = wsId
+    void taskList.loadTasks({ reset: true, clear: wsChanged, trySelectRouteTask: false })
   })
 
   const openNewTaskModal = () => {
@@ -744,7 +748,7 @@ export function useChatViewModel() {
     if (taskId) taskList.patchTask(taskId, { status })
   }
 
-  function loadTasks(loadOptions?: { reset?: boolean; trySelectRouteTask?: boolean }) {
+  function loadTasks(loadOptions?: { reset?: boolean; clear?: boolean; trySelectRouteTask?: boolean }) {
     return taskList.loadTasks({
       ...loadOptions,
       onLoaded: () => taskList.syncCurrentTaskFromList(taskState.currentTask.value, taskState.getTaskId()),
