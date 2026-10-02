@@ -4,6 +4,7 @@ import { createI18n } from 'vue-i18n'
 import ElementPlus from 'element-plus'
 import RequirementDetailContent from '../RequirementDetailContent.vue'
 import RequirementDetailPanel from '../RequirementDetailPanel.vue'
+import RequirementEditDrawer from '../RequirementEditDrawer.vue'
 import RequirementImportDialog from '../RequirementImportDialog.vue'
 import RequirementRepositoryPanel from '../RequirementRepositoryPanel.vue'
 import RequirementSpecificationBlock from '../RequirementSpecificationBlock.vue'
@@ -80,6 +81,24 @@ function task(): TaskSummary {
 }
 
 describe('Requirement panels', () => {
+  it('shows the saved document location and prompt before linked tasks and edits both fields', async () => {
+    const record = requirement({ source_uri:'docs/checkout.md', task_prompt:'Implement checkout validation', source_metadata:{ source_filename:'checkout.md', task_prompt:'Implement checkout validation' } })
+    const wrapper = mount(RequirementDetailContent, { props:{ workspaceId:'ws-1', requirement:record, detail:null, tasks:[] }, global:{ plugins:[i18nPlugin(), ElementPlus] } })
+    expect(wrapper.text()).toContain('docs/checkout.md')
+    expect(wrapper.text()).toContain('Implement checkout validation')
+    expect(wrapper.text().indexOf('Initialization prompt')).toBeLessThan(wrapper.text().indexOf('Related Tasks'))
+    const editor = mount(RequirementEditDrawer, { props:{ open:true, requirement:record }, global:{ plugins:[i18nPlugin()], stubs:{ Teleport:true } } })
+    const promptLabel = editor.findAll('label').find((label) => label.text() === 'Initialization prompt')!
+    expect(promptLabel.find('textarea').element).toHaveProperty('value', 'Implement checkout validation')
+    await promptLabel.find('textarea').setValue('Edited checkout instructions')
+    const locationLabel = editor.findAll('label').find((label) => label.text() === 'Document location')!
+    await locationLabel.find('input').setValue('docs/new-checkout.md')
+    await editor.find('form').trigger('submit')
+    expect(editor.emitted('submit')?.[0]?.[0]).toMatchObject({ task_prompt:'Edited checkout instructions', source_uri:'docs/new-checkout.md' })
+    expect(editor.emitted('submit')?.[0]?.[0]).not.toHaveProperty('source_metadata')
+    wrapper.unmount()
+    editor.unmount()
+  })
   it('renders a real requirement repository without fake records', async () => {
     const wrapper = mount(RequirementRepositoryPanel, {
       props: {

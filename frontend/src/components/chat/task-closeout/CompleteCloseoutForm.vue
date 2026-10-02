@@ -4,14 +4,20 @@ import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import CloseoutEvidenceUploader from './CloseoutEvidenceUploader.vue'
 import type { CompleteCloseoutPayload, LandingMethod } from '@/types/taskCloseout'
+import { ChevronRight, FileText } from '@/components/icons'
+import type { RequirementOption } from '@/types/taskRail'
 
-defineProps<{
+const props = defineProps<{
   saving?: boolean
+  taskType?: string
+  selectedRequirement?: RequirementOption | null
+  requirementPickerOpen?: boolean
 }>()
 
 const emit = defineEmits<{
   submit: [payload: Omit<CompleteCloseoutPayload, 'evidence_attachments'>, files: File[]]
   cancel: []
+  'toggle-requirement-picker': []
 }>()
 
 const { t } = useI18n()
@@ -48,6 +54,7 @@ function submitForm() {
   errors.summary = !trimmed(form.completion_summary)
   if (errors.summary) return
   emit('submit', {
+    requirement_id: props.taskType === 'DIAGNOSIS' ? props.selectedRequirement?.id : undefined,
     completion_summary: form.completion_summary.trim(),
     landing_method: form.landing_method,
     commit_id: trimmed(form.commit_id),
@@ -59,6 +66,9 @@ function submitForm() {
 
 <template>
   <form class="closeout-form" @submit.prevent="submitForm">
+    <button v-if="taskType === 'DIAGNOSIS'" type="button" class="closeout-requirement-entry" :disabled="saving" :aria-expanded="requirementPickerOpen" @click="emit('toggle-requirement-picker')">
+      <FileText class="w-4 h-4" /><span>{{ t('task_rail.requirement_optional') }}</span><strong>{{ selectedRequirement?.title || t('task_rail.select_requirement') }}</strong><ChevronRight class="w-4 h-4" />
+    </button>
     <div class="form-section">
       <div class="form-field full-width" :class="{ invalid: errors.summary }">
         <label class="required">{{ t('chat.closeout.completion_summary') }}</label>
@@ -112,6 +122,9 @@ function submitForm() {
 </template>
 
 <style scoped>
+.closeout-requirement-entry { display:flex; align-items:center; gap:8px; padding:12px; width:100%; min-width:0; text-align:left; border:1px solid #e0f2fe; border-radius:10px; background:#f0f9ff; color:#0369a1; font-size:.8rem; cursor:pointer; }
+.closeout-requirement-entry strong { min-width:0; flex:1; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.closeout-requirement-entry svg { flex-shrink:0; }
 .closeout-form {
   display: flex;
   flex-direction: column;

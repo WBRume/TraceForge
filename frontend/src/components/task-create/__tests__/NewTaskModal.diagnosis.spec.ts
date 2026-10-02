@@ -69,6 +69,8 @@ describe('NewTaskModal diagnosis mode', () => {
     expect(textareas[0].attributes('required')).toBeDefined()
     expect(wrapper.find('textarea[placeholder="dashboard.desc_placeholder"]').exists()).toBe(false)
     expect(wrapper.find('.playbook-entry-card').exists()).toBe(true)
+    expect(wrapper.find('.requirement-entry-card').exists()).toBe(false)
+    expect(wrapper.find('.requirement-picker-sidebar').exists()).toBe(false)
   })
 
   it('shows multi-file upload for diagnosis docs', async () => {
@@ -117,6 +119,7 @@ describe('NewTaskModal diagnosis mode', () => {
     )
     const callArgs = apiMock.post.mock.calls[0][1] as Record<string, unknown>
     expect(callArgs.description).toBeUndefined()
+    expect(callArgs.requirement_id).toBeUndefined()
 
     const provisioningStore = useProvisioningStore()
     const pending = provisioningStore.consumePendingTaskDocs('job-1')

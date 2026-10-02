@@ -12,8 +12,8 @@ TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
-from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.workspace_asset.models.workspace_asset import SddEvidence, SddHumanReview, SddTaskFinalSummary
+from app.domains.task.models.task import SddTask, TaskStatus, TaskType
+from app.domains.workspace_asset.models.workspace_asset import SddEvidence, SddHumanReview, SddTaskFinalSummary, SddRequirement, SddTaskRequirement, SddRequirementAuditLog
 from app.domains.task.routers import task as task_router
 from app.domains.task.routers import task_closeout as task_closeout_router
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
@@ -164,5 +164,54 @@ def test_failure_closeout_records_failure_evidence_and_rejected_summary():
         assert body["evidence"][0]["evidence_type"] == "FAILURE"
         assert body["final_summary"]["final_status"] == "REJECTED"
         assert body["clarifications"] == []
+    finally:
+        engine.dispose()
+
+
+def test_failure_closeout_allows_no_attachment_and_preserves_summary():
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+        client = TestClient(_build_closeout_app(sessions, user))
+        response = client.post(f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/fail", json={
+            "failure_stage": "CODING", "failure_reason": "OTHER", "failure_summary": "Unable to reproduce the issue"})
+        assert response.status_code == 200
+        assert response.json()["evidence_ids"] == []
+        with _session(sessions) as db:
+            assert db.get(SddTask, task.id).status == TaskStatus.FAILED
+            assert db.query(SddEvidence).count() == 0
+            assert db.query(SddTaskFinalSummary).one().summary == "Unable to reproduce the issue"
+    finally:
+        engine.dispose()
+
+
+def test_diagnosis_completion_links_leaf_requirement_and_rejects_parent_before_writes():
+    engine, sessions = _build_db()
+    try:
+        with _session(sessions) as db:
+            user, workspace, task = _seed_workspace(db)
+            task.task_type = TaskType.DIAGNOSIS
+            db.add_all([SddRequirement(id="parent", workspace_id=workspace.id, title="Parent"),
+                        SddRequirement(id="leaf", workspace_id=workspace.id, title="Leaf", parent_requirement_id="parent")])
+            db.commit()
+        client = TestClient(_build_closeout_app(sessions, user))
+        endpoint = f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/complete"
+        payload = {"completion_summary": "Root cause confirmed", "landing_method": "HUMAN_ADJUSTED", "requirement_id": "parent"}
+        assert client.post(endpoint, json=payload).status_code == 409
+        payload["requirement_id"] = "foreign-or-missing"
+        assert client.post(endpoint, json=payload).status_code == 404
+        with _session(sessions) as db:
+            assert db.get(SddTask, task.id).status != TaskStatus.DONE
+            assert db.query(SddTaskRequirement).count() == 0
+            assert db.query(SddTaskFinalSummary).count() == 0
+        payload["requirement_id"] = "leaf"
+        assert client.post(endpoint, json=payload).status_code == 200
+        with _session(sessions) as db:
+            assert db.get(SddTask, task.id).status == TaskStatus.DONE
+            assert db.query(SddTaskRequirement).one().requirement_id == "leaf"
+            assert db.query(SddRequirementAuditLog).one().source_metadata_json["created_from"] == "task_closeout"
+        detail = client.get(f"/api/workspaces/{workspace.id}/workspace-assets/requirements/leaf").json()
+        assert detail["linked_tasks"][0]["task_id"] == task.id
     finally:
         engine.dispose()

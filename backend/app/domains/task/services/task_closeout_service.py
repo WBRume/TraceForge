@@ -7,12 +7,19 @@ workspace_asset task_process writes and does not mutate Traceability directly.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.workspace_asset.models.workspace_asset import (
+    RequirementAuditAction,
+    SddRequirement,
+    SddTaskRequirement,
+)
+from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
 from app.domains.task.schemas.task_closeout import (
     CloseoutEvidenceAttachment,
     CompleteTaskCloseoutRequest,
@@ -150,8 +157,6 @@ def _failure_evidence_payloads(payload: FailTaskCloseoutRequest) -> List[Evidenc
         )
         for attachment in payload.evidence_attachments
     ]
-    if not evidence:
-        raise TaskCloseoutError("Task failure requires at least one uploaded failure evidence attachment.", status_code=422)
     return evidence
 
 
@@ -184,6 +189,40 @@ def complete_task_closeout(
     from app.domains.local_resource.service import require_operation
     require_operation(db, task, actor_id)
     evidence_payloads = _complete_evidence_payloads(payload)
+
+    if payload.requirement_id:
+        requirement = (
+            db.query(SddRequirement)
+            .filter_by(id=payload.requirement_id, workspace_id=workspace_id)
+            .first()
+        )
+        if not requirement:
+            raise TaskCloseoutError("Requirement not found in this workspace", status_code=404)
+        if db.query(SddRequirement.id).filter_by(parent_requirement_id=requirement.id).first():
+            raise TaskCloseoutError("Parent Requirement has children; select a child Requirement", status_code=409)
+        existing_link = (
+            db.query(SddTaskRequirement.id)
+            .filter_by(task_id=task_id, requirement_id=requirement.id)
+            .first()
+        )
+        if not existing_link:
+            requirement.updated_at = datetime.now(timezone.utc)
+            db.add(SddTaskRequirement(
+                workspace_id=workspace_id,
+                task_id=task_id,
+                requirement_id=requirement.id,
+                created_by_id=actor_id,
+            ))
+            add_requirement_audit(
+                db,
+                workspace_id=workspace_id,
+                requirement_id=requirement.id,
+                task_id=task_id,
+                actor_id=actor_id,
+                action=RequirementAuditAction.LINKED_TASK,
+                after={"task_id": task_id, "relation_type": "RELATES_TO"},
+                source_metadata={"created_from": "task_closeout"},
+            )
 
     evidence_ids = [
         evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)

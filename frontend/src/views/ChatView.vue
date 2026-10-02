@@ -9,6 +9,7 @@ import PreInputPanel from '@/components/chat/PreInputPanel.vue'
 import ChatCliWorkbench from '@/components/chat/terminal/ChatCliWorkbench.vue'
 import ApplyPatchDrawer from '@/components/local-agent/ApplyPatchDrawer.vue'
 import TaskCloseoutPanel from '@/components/chat/task-closeout/TaskCloseoutPanel.vue'
+import TaskRequirementLinkDrawer from '@/components/chat/task-rail/TaskRequirementLinkDrawer.vue'
 import TaskSessionShareDialog from '@/components/chat/TaskSessionShareDialog.vue'
 import ShareSuggestionPanel from '@/components/chat/ShareSuggestionPanel.vue'
 import TaskSkillsDrawer from '@/components/chat/TaskSkillsDrawer.vue'
@@ -76,6 +77,8 @@ const investigate = (text: string) => {
 
 // ── 视图装配态 ──
 const showApplyPatchDrawer = ref(false)
+const showRequirementLinkDrawer = ref(false)
+watch(() => vm.currentTask?.id, () => { showRequirementLinkDrawer.value = false })
 const preInputMode = ref(false)
 const chatInputRef = ref<any>(null)
 
@@ -182,6 +185,7 @@ watch(
         @toggle-tasklist="toggleSopTasks"
         @share="openShareDialog"
         @open-apply-patch="showApplyPatchDrawer = true"
+        @link-requirement="showRequirementLinkDrawer = true"
       />
 
       <div
@@ -367,11 +371,20 @@ watch(
       :workspace-id="String(vm.route.params.wsId || '')"
       :task-id="vm.currentTask.id"
       :task-name="vm.currentTask.name"
+      :task-type="vm.currentTask.task_type"
       @close="vm.closeTaskCloseout"
       @success="vm.handleTaskCloseoutSuccess"
     />
 
     <StartTaskModal :vm="vm" />
+
+    <TaskRequirementLinkDrawer
+      v-if="showRequirementLinkDrawer && vm.currentTask?.task_type === 'DIAGNOSIS' && vm.currentTask.status === 'DONE'"
+      :workspace-id="String(vm.route.params.wsId || '')" :task-id="vm.currentTask.id"
+      :task-name="vm.currentTask.name" :requirements="vm.currentTask.requirements || []"
+      @close="showRequirementLinkDrawer = false"
+      @linked="vm.handleTaskRequirementLinked($event); showRequirementLinkDrawer = false"
+    />
 
     <InitializeTaskModal :vm="vm" />
 

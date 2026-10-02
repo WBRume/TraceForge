@@ -29,6 +29,7 @@ const statusSelectOptions = statusOptions.map((status) => ({ label: status, valu
 const form = reactive({
   title: '',
   body: '',
+  taskPrompt: '',
   acceptanceCriteriaText: '',
   priority: '',
   status: 'DRAFT' as RequirementEditableStatus,
@@ -46,6 +47,7 @@ watch(
     const requirement = props.requirement
     form.title = requirement?.title || ''
     form.body = requirement?.body || ''
+    form.taskPrompt = String(requirement?.task_prompt ?? requirement?.source_metadata?.task_prompt ?? '')
     form.acceptanceCriteriaText = (requirement?.acceptance_criteria || []).join('\n')
     form.priority = requirement?.priority || ''
     form.status = (requirement?.status as RequirementEditableStatus) || 'DRAFT'
@@ -61,6 +63,7 @@ function submit() {
   emit('submit', {
     title: form.title,
     body: form.body || null,
+    task_prompt: form.taskPrompt || null,
     acceptance_criteria: form.acceptanceCriteriaText
       .split('\n')
       .map((item) => item.trim())
@@ -96,6 +99,8 @@ function submit() {
             <span>{{ t('workspace_assets.requirements.fields.description') }}</span>
             <textarea v-model="form.body" rows="5" />
           </label>
+          <label><span>{{ t('task_rail.initial_prompt') }}</span><textarea v-model="form.taskPrompt" rows="5" /></label>
+          <label v-if="requirement?.source_metadata?.source_filename"><span>{{ t('task_rail.source_document') }}</span><input :value="String(requirement.source_metadata.source_filename)" readonly /></label>
           <label>
             <span>{{ t('workspace_assets.requirements.fields.acceptance_criteria') }}</span>
             <textarea v-model="form.acceptanceCriteriaText" rows="4" :placeholder="t('workspace_assets.requirements.placeholders.criteria')" />
@@ -121,8 +126,8 @@ function submit() {
             </label>
           </div>
           <label>
-            <span>{{ t('workspace_assets.requirements.fields.source_uri') }}</span>
-            <input v-model="form.sourceUri" maxlength="1000" :placeholder="t('workspace_assets.requirements.placeholders.source_uri')" />
+            <span>{{ t('task_rail.document_location') }}</span>
+            <input v-model="form.sourceUri" maxlength="1000" :placeholder="t('task_rail.document_location_placeholder')" />
           </label>
           <label>
             <span>{{ t('workspace_assets.requirements.fields.change_reason') }}</span>

@@ -134,7 +134,7 @@ describe('NewTaskModal layout & skills sidebar slide-out interaction', () => {
     expect(wrapper.find('.modal-skills-sidebar.open .skills-selected-badge').text()).toContain('count":1')
 
     // 翻到下一页
-    const nextBtn = wrapper.findAll('.page-nav-btn')[1]
+    const nextBtn = wrapper.findAll('.modal-skills-sidebar.open .page-nav-btn')[1]
     await nextBtn.trigger('click')
     await flushPromises()
 

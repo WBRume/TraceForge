@@ -1,6 +1,10 @@
 {
   "task_rail": {
     "back_to_session": "Back to task session",
+    "link_requirement": "Link requirement",
+    "document_location": "Document location", "document_location_placeholder": "Document URL or path (optional; otherwise stored in the requirement)",
+    "stored_document": "Workspace requirement content", "source_document": "Source document", "initial_prompt": "Initialization prompt", "no_prompt": "No initialization prompt",
+    "direct_prompt": "Direct import prompt (optional)", "direct_prompt_placeholder": "Defaults to document content; AI preview prompts can be edited in the next step", "clear_search": "Clear search",
     "views": "Task views", "all": "All tasks", "following": "My favorites", "independent": "Independent tasks",
     "more": "More requirements", "search_placeholder": "Search requirement titles",
     "search": "Search requirement titles", "optional": "Optional", "selected_requirement": "Linked", "select_requirement": "Browse requirements",

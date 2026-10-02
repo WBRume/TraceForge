@@ -32,6 +32,7 @@ const statusSelectOptions = statusOptions.map((status) => ({ label: status, valu
 const form = reactive({
   title: '',
   body: '',
+  taskPrompt: '',
   acceptanceCriteriaText: '',
   priority: '',
   status: 'DRAFT' as RequirementEditableStatus,
@@ -53,6 +54,7 @@ watch(
   () => {
     form.title = ''
     form.body = ''
+    form.taskPrompt = ''
     form.acceptanceCriteriaText = ''
     form.priority = ''
     form.status = 'DRAFT'
@@ -64,6 +66,7 @@ function submit() {
   emit('submit', {
     title: form.title,
     body: form.body || null,
+    task_prompt: form.taskPrompt || null,
     acceptance_criteria: form.acceptanceCriteriaText
       .split('\n')
       .map((item) => item.trim())
@@ -100,6 +103,7 @@ function createPreview() {
       <span>{{ t('workspace_assets.requirements.fields.description') }}</span>
       <textarea v-model="form.body" rows="5" />
     </label>
+    <label><span>{{ t('task_rail.initial_prompt') }}</span><textarea v-model="form.taskPrompt" rows="4" :placeholder="t('task_rail.direct_prompt_placeholder')" /></label>
     <label>
       <span>{{ t('workspace_assets.requirements.fields.acceptance_criteria') }}</span>
       <textarea

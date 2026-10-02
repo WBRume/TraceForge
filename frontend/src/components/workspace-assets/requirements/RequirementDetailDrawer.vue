@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import RequirementAuditSection from './RequirementAuditSection.vue'
 import RequirementChildrenSection from './RequirementChildrenSection.vue'
 import RequirementTaskLinksSection from './RequirementTaskLinksSection.vue'
+import RequirementDeliveryContext from './RequirementDeliveryContext.vue'
 import type { RequirementDetail, RequirementSummary, TaskSummary } from '@/types/workspaceAssets'
 
 const props = defineProps<{
@@ -87,6 +88,8 @@ function close() {
           <small>{{ t('workspace_assets.requirements.table.coverage_readonly') }}</small>
         </article>
       </section>
+
+      <RequirementDeliveryContext :requirement="activeRequirement" class="drawer-section" />
 
       <section class="drawer-section">
         <header class="section-head">

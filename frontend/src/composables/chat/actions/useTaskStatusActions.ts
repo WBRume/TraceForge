@@ -3,6 +3,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { Router } from 'vue-router'
+import type { RequirementOption } from '@/types/taskRail'
 
 /**
  * 任务状态动作：临时中断、标记完成/失败（closeout 面板入口）、
@@ -127,7 +128,17 @@ export function useTaskStatusActions(options: {
     closeoutMode.value = null
   }
 
-  const handleTaskCloseoutSuccess = (status: string) => {
+  const handleTaskRequirementLinked = (requirement: RequirementOption) => {
+    const task = options.getCurrentTask()
+    if (!task) return
+    if (!(task.requirements || []).some((item: RequirementOption) => item.id === requirement.id)) {
+      task.requirements = [...(task.requirements || []), requirement]
+    }
+    options.patchTask(task.id, { requirements: task.requirements })
+    void options.loadTasks({ reset: true, trySelectRouteTask: false })
+  }
+
+  const handleTaskCloseoutSuccess = (status: string, requirement?: RequirementOption | null) => {
     const task = options.getCurrentTask()
     if (!task) return
     closeoutMode.value = null
@@ -136,6 +147,7 @@ export function useTaskStatusActions(options: {
     options.jobsReset()
     task.status = status
     options.patchTask(task.id, { status })
+    if (requirement) handleTaskRequirementLinked(requirement)
     options.messagesPush({
       id: Date.now().toString(),
       role: 'system',
@@ -182,6 +194,7 @@ export function useTaskStatusActions(options: {
     interruptCurrentRun,
     closeTaskCloseout,
     handleTaskCloseoutSuccess,
+    handleTaskRequirementLinked,
     cancelTaskProvision,
   }
 }

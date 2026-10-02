@@ -52,6 +52,23 @@ const createMockVm = (overrides: Record<string, any> = {}): any => ({
 })
 
 describe('SessionHeader local resource badge', () => {
+  it('offers requirement linking only for completed diagnosis tasks with permission', async () => {
+    const wrapper = mount(SessionHeader, {
+      props: { vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: true }) },
+      global: { plugins: [i18n] },
+    })
+    const entry = wrapper.findAll('button').find(button => button.text() === '关联需求')!
+    await entry.trigger('click')
+    expect(wrapper.emitted('link-requirement')).toHaveLength(1)
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'RUNNING' }, isDiagnosisTask: true }) })
+    expect(wrapper.text()).not.toContain('关联需求')
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: false }) })
+    expect(wrapper.text()).not.toContain('关联需求')
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: true, canManageTaskStatus: false }) })
+    expect(wrapper.text()).not.toContain('关联需求')
+    wrapper.unmount()
+  })
+
   it('does not render local resource badge for cloud/server tasks', () => {
     const wrapper = mount(SessionHeader, {
       props: { vm: createMockVm({ isLocalTask: false }) },

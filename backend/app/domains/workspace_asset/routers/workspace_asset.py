@@ -298,6 +298,7 @@ async def create_workspace_asset_requirement_direct_import(
     source_uri: Optional[str] = Form(default=None),
     source_ref: Optional[str] = Form(default=None),
     change_reason: Optional[str] = Form(default=None),
+    task_prompt: Optional[str] = Form(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -321,6 +322,7 @@ async def create_workspace_asset_requirement_direct_import(
             source_uri=source_uri,
             source_ref=source_ref,
             change_reason=change_reason,
+            task_prompt=task_prompt,
         )
     except WorkspaceAssetError as exc:
         _raise_write_error(exc)

@@ -130,6 +130,21 @@ const readySocket = async (frame: Record<string, any> = { type: 'resume_ok', epo
 }
 
 describe('useChatViewModel session state single flight', () => {
+  it('keeps a completed diagnosis task active when its requirement association refreshes the list', async () => {
+    await mountViewModel()
+    await vm.selectTask({ ...task('t1'), task_type: 'DIAGNOSIS', status: 'DONE' })
+    await readySocket()
+    const before = countCalls('/tasks')
+    const requirement = { id: 'leaf', title: '权限检查', status: 'READY', can_link_task: true }
+    vm.handleTaskRequirementLinked(requirement)
+    await flushPromises()
+    expect(vm.currentTask.value).toMatchObject({ id: 't1', status: 'DONE', requirements: [requirement] })
+    expect(countCalls('/tasks')).toBe(before + 1)
+    vm.handleTaskRequirementLinked(requirement)
+    await flushPromises()
+    expect(vm.currentTask.value?.requirements).toHaveLength(1)
+  })
+
   it('sends the chosen model with the durable message receipt', async () => {
     await mountViewModel()
     await vm.selectTask(task('t1'))

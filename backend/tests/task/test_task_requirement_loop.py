@@ -36,6 +36,14 @@ def test_creation_binds_requirement_and_audit_in_one_transaction(seeded):
         assert TaskResponse.model_validate(task).requirements[0].source_ref == "REQ-101"
 
 
+def test_diagnosis_creation_cannot_link_requirement_before_closeout(seeded):
+    sessions, user, workspace, _ = seeded
+    with _session(sessions) as db:
+        with pytest.raises(ValueError, match="when completed"):
+            task_service.create_task_record_for_provision(db, user, workspace.id, "Diagnose", task_type="DIAGNOSIS", requirement_id="req-101")
+        assert db.query(SddTaskRequirement).count() == 0
+
+
 def test_task_create_api_accepts_requirement_and_detail_exposes_binding(seeded, monkeypatch):
     sessions, user, workspace, _ = seeded
     monkeypatch.setattr(crud.provision_job_service, "run_create_task_job", lambda job_id: None)

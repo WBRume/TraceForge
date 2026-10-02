@@ -7,6 +7,7 @@ export type RequirementCreateStep = 'method' | 'manual' | 'file' | 'source_link'
 export type RequirementReturnStep = 'manual' | 'file'
 
 export type RequirementDirectImportPayload = {
+  task_prompt?: string | null
   file?: File | null
   text?: string | null
   source_kind?: string | null

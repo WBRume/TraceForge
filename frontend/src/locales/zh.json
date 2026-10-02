@@ -1,6 +1,10 @@
 {
   "task_rail": {
     "back_to_session": "返回任务会话",
+    "link_requirement": "关联需求",
+    "document_location": "文档位置", "document_location_placeholder": "文档链接或路径（可选，留空保存在需求正文中）",
+    "stored_document": "工作区需求正文", "source_document": "源文档", "initial_prompt": "初始化提示词", "no_prompt": "暂无初始化提示词",
+    "direct_prompt": "直接导入初始化提示词（可选）", "direct_prompt_placeholder": "留空时使用文档正文；AI 预览可在下一步编辑每项提示词", "clear_search": "清空搜索",
     "views": "任务视图", "all": "全部任务", "following": "我的收藏", "independent": "独立任务",
     "more": "更多需求", "search_placeholder": "搜索需求标题",
     "search": "搜索需求标题", "optional": "可选", "selected_requirement": "已关联", "select_requirement": "展开选择需求",
