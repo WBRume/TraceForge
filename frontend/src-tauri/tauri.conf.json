@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TraceForge",
+  "mainBinaryName": "TraceForge",
+  "version": "../package.json",
+  "identifier": "com.sddnative.desktop.tauri",
+  "build": {
+    "beforeDevCommand": "npm run build:desktop:host && npm run dev -- --host 127.0.0.1",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build:tauri:frontend",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "label": "main", "create": false, "title": "TraceForge", "width": 1440, "height": 960,
+      "minWidth": 1120, "minHeight": 720, "backgroundColor": "#f8fafc"
+    }],
+    "security": { "csp": null, "capabilities": ["desktop"] }
+  },
+  "bundle": {
+    "useLocalToolsDir": true,
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "externalBin": ["binaries/traceforge-desktop-host"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": { "installMode": "currentUser", "compression": "lzma" }
+    }
+  }
+}

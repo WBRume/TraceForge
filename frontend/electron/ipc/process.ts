@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { ipcMain } from '../../desktop/native'
 import spawn from 'cross-spawn'
 import { randomUUID } from 'node:crypto'
 
@@ -14,6 +14,11 @@ type RunningCommand = {
 }
 
 const runningCommands = new Map<string, RunningCommand>()
+
+export function shutdownCommands() {
+  for (const running of runningCommands.values()) running.child.kill()
+  runningCommands.clear()
+}
 const deniedExecutables = new Set(['rm', 'del', 'erase', 'rmdir', 'rd', 'remove-item'])
 const deniedGitSubcommands = new Set(['push', 'commit', 'clean', 'reset'])
 

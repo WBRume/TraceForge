@@ -31,7 +31,7 @@ const localAgent = useLocalAgentStore()
 const authStore = useAuthStore()
 const canGenerate = computed(() => props.task?.execution_location !== 'LOCAL' || (!props.resourceBlocked && props.task?.creator_id === authStore.user?.id))
 const {
-  electronAvailable,
+  desktopAvailable,
   proposal,
   proposalFiles,
   patchText,
@@ -77,7 +77,7 @@ const repoConfigured = computed(() => {
   return Boolean(repoMapping.value?.localPath)
 })
 const canApply = computed(() => (
-  electronAvailable.value
+  desktopAvailable.value
   && Boolean(agentTask.value)
   && Boolean(proposal.value)
   && Boolean(patchText.value.trim())
@@ -348,7 +348,7 @@ watch(
       </div>
 
       <!-- Warning Boxes (Global) -->
-      <div v-if="!electronAvailable" class="warning-box glass-panel error">
+      <div v-if="!desktopAvailable" class="warning-box glass-panel error">
         <div class="icon-container amber">
           <AlertTriangle :size="16" :stroke-width="2.5" />
         </div>
@@ -372,7 +372,7 @@ watch(
       </div>
 
       <!-- Repository patch list (multi-repository proposals) -->
-      <div v-if="hasRepoPatches && electronAvailable" class="repo-patch-list glass-panel">
+      <div v-if="hasRepoPatches && desktopAvailable" class="repo-patch-list glass-panel">
         <div class="repo-patch-header">
           <GitBranch :size="12" />
           <span>{{ $t('chat.change_apply_repo_patches_title', { count: repoPatches.length }) }}</span>

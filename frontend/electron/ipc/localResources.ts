@@ -1,4 +1,4 @@
-import { app, ipcMain, utilityProcess } from 'electron'
+import { app, ipcMain, utilityProcess } from '../../desktop/native'
 import spawn from 'cross-spawn'
 import { createHash, randomBytes } from 'node:crypto'
 import { closeSync, createWriteStream, existsSync, openSync } from 'node:fs'
@@ -11,6 +11,13 @@ import type { AddressInfo } from 'node:net'
 const starts = new Map<string, Promise<unknown>>()
 const resourceChildren = new Set<ReturnType<typeof utilityProcess.fork>>()
 const children = new Set<ReturnType<typeof spawn>>()
+
+export function shutdownLocalServices() {
+  for (const child of children) child.kill()
+  for (const child of resourceChildren) child.kill()
+  children.clear()
+  resourceChildren.clear()
+}
 const freePort = async () => {
   const server = createServer()
   await new Promise<void>((ok, fail) => { server.once('error', fail); server.listen(0, '0.0.0.0', ok) })

@@ -16,6 +16,7 @@ release
 .verify-build
 .verify-electron
 .verify-smoke/
+/.verify/
 .tmp-shots/
 .tmp-*.mjs
 *.local

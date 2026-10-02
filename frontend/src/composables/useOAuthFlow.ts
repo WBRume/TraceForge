@@ -13,7 +13,7 @@ import {
   getOAuthAuthorizeUrl,
   resolveOAuthTicket,
 } from '@/services/oauthApi'
-import { getSddDesktop, isElectron } from '@/utils/runtime'
+import { getSddDesktop, isDesktop } from '@/utils/runtime'
 import type {
   OAuthClientType,
   OAuthIntent,
@@ -50,12 +50,12 @@ export const useOAuthFlow = () => {
     options: StartAuthorizeOptions = {},
   ): Promise<OAuthResolveResult | undefined> => {
     const intent: OAuthIntent = options.intent ?? 'login'
-    const clientType: OAuthClientType = options.clientType ?? (isElectron() ? 'desktop' : 'web')
+    const clientType: OAuthClientType = options.clientType ?? (isDesktop() ? 'desktop' : 'web')
 
     // T05：Electron 走本地回环（RFC 8252），主进程打开系统浏览器并接收回调，
     // 把 ticket 回抛后由前端复用既有 /resolve + 绑定流程。
     const desktopOAuth = getSddDesktop()?.oauth
-    if (isElectron() && desktopOAuth?.start) {
+    if (isDesktop() && desktopOAuth?.start) {
       const result = await desktopOAuth.start({ provider, intent, clientType })
       if (result?.error) {
         throw new Error(`oauth_desktop_error:${result.error}`)

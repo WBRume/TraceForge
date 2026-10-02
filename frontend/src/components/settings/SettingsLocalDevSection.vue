@@ -11,11 +11,11 @@ import RepoMappingRow from '@/components/local-agent/RepoMappingRow.vue'
 const wsStore = useWorkspaceStore()
 const localAgent = useLocalAgentStore()
 const { t } = useI18n()
-const { electronAvailable, expectedRemoteUrls } = storeToRefs(localAgent)
+const { desktopAvailable, expectedRemoteUrls } = storeToRefs(localAgent)
 
 const modeLabel = computed(() => (
-  electronAvailable.value
-    ? t('settings.local_dev.mode_electron')
+  desktopAvailable.value
+    ? t('settings.local_dev.mode_desktop')
     : t('settings.local_dev.mode_web')
 ))
 
@@ -70,7 +70,7 @@ watch(
             <p class="subtitle">{{ t('settings.local_dev.repo_mapping_desc') }}</p>
           </div>
         </div>
-        <span class="mode-pill" :class="{ active: electronAvailable }">{{ modeLabel }}</span>
+        <span class="mode-pill" :class="{ active: desktopAvailable }">{{ modeLabel }}</span>
       </div>
 
       <div v-if="!expectedRemoteUrls.length" class="warning-box mt-4">

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-desktop-bridge"
+description = "Use the registered desktop command bridge"
+commands.allow = ["desktop_invoke", "desktop_platform"]

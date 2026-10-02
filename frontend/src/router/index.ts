@@ -1,10 +1,10 @@
 import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { isElectron } from '@/utils/runtime'
+import { isDesktop } from '@/utils/runtime'
 
 const router = createRouter({
-  history: isElectron()
-    ? createWebHashHistory(import.meta.env.BASE_URL)
+  history: isDesktop()
+    ? createWebHashHistory()
     : createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {

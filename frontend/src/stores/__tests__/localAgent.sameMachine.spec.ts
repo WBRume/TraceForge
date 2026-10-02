@@ -4,7 +4,7 @@ import { useLocalAgentStore } from '@/stores/localAgent'
 import { saveRepoPreferences, readRepoPreferences } from '@/composables/localRepoPreferences'
 
 const { mockEnv, desktopMock } = vi.hoisted(() => {
-  const mockEnv = { isElectron: false }
+  const mockEnv = { isDesktop: false }
   const desktopMock = {
     platform: 'win32',
     git: {
@@ -24,8 +24,8 @@ const { mockEnv, desktopMock } = vi.hoisted(() => {
 })
 
 vi.mock('@/utils/runtime', () => ({
-  isElectron: () => mockEnv.isElectron,
-  getSddDesktop: () => (mockEnv.isElectron ? desktopMock : null),
+  isDesktop: () => mockEnv.isDesktop,
+  getSddDesktop: () => (mockEnv.isDesktop ? desktopMock : null),
 }))
 
 vi.mock('@/utils/api', () => ({
@@ -35,7 +35,7 @@ vi.mock('@/utils/api', () => ({
 
 describe('localAgent store same machine environment auto-reuse', () => {
   beforeEach(() => {
-    mockEnv.isElectron = false
+    mockEnv.isDesktop = false
     setActivePinia(createPinia())
     localStorage.clear()
     vi.clearAllMocks()
@@ -122,7 +122,7 @@ describe('localAgent store same machine environment auto-reuse', () => {
   })
 
   it('syncs mapping from desktop config into local preferences when running on electron', async () => {
-    mockEnv.isElectron = true
+    mockEnv.isDesktop = true
     const store = useLocalAgentStore()
     const workspaceId = 'ws-same-machine-3'
     const remoteUrl = 'https://github.com/org/repo-d.git'

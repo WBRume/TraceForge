@@ -1,0 +1,25 @@
+[package]
+name = "traceforge-desktop"
+version = "0.0.0"
+description = "TraceForge Tauri desktop client"
+authors = ["TraceForge"]
+edition = "2021"
+rust-version = "1.85"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

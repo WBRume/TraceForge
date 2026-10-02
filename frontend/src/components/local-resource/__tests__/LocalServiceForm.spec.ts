@@ -35,7 +35,7 @@ const desktopMock = vi.hoisted(() => ({
 }))
 
 vi.mock('@/utils/runtime', () => ({
-  isElectron: () => true,
+  isDesktop: () => true,
   getSddDesktop: () => desktopMock,
 }))
 

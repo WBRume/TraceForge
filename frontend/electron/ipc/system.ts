@@ -1,4 +1,4 @@
-import { ipcMain, shell } from 'electron'
+import { ipcMain, shell } from '../../desktop/native'
 
 export const registerSystemIpc = () => {
   ipcMain.handle('sdd:system:open-external', async (_event, payload: { url?: string }) => {

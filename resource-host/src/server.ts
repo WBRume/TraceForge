@@ -7,13 +7,13 @@ import { hash, readJson, writeJson } from './filesystem'
 import type { Config } from './runtime'
 import { renderDashboardHtml } from './dashboard'
 
-export async function startServer(config: Config) {
+export async function startServer(config: Config, options: { workerUrl?: string } = {}) {
   if (!config.token || config.token.length < 32 || !Array.isArray(config.allowed_roots) || !path.isAbsolute(config.state_root) || config.allowed_roots.some(root => !path.isAbsolute(root))) throw new Error('Config requires absolute state_root / allowed_roots and a token of at least 32 characters')
   fs.mkdirSync(config.state_root, { recursive: true })
   const identityFile = path.join(config.state_root, 'identity.json')
   if (!fs.existsSync(identityFile)) writeJson(identityFile, { host_id: randomUUID(), protocol_version: 1 })
   const identity = readJson(identityFile)
-  const worker = new Worker(new URL('./worker.ts', import.meta.url).href)
+  const worker = new Worker(options.workerUrl ?? new URL('./worker.ts', import.meta.url).href)
   const pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
   worker.onmessage = event => {
     const item = pending.get(event.data.id)

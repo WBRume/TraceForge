@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from '../../desktop/native'
 import { writeFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 

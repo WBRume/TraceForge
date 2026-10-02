@@ -1,9 +1,9 @@
 import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
-import { isElectron, getSddDesktop } from '@/utils/runtime'
+import { isDesktop, getSddDesktop } from '@/utils/runtime'
 
 export const DEFAULT_SERVER_URL =
-  typeof window !== 'undefined' && !isElectron()
+  typeof window !== 'undefined' && !isDesktop()
     ? window.location.origin
     : 'http://localhost:8000'
 
@@ -43,6 +43,7 @@ export const initializeApiFromDesktopConfig = async (): Promise<void> => {
   }
 
   const config = await desktop.config.getConfig()
+  setApiServerUrl(config.serverUrl)
   if (config.token) {
     const authStore = useAuthStore()
     authStore.setToken(config.token)
