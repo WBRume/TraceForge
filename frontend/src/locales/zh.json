@@ -1937,6 +1937,29 @@
       },
       "related_tasks_title": "关联 Task",
       "related_tasks_empty": "暂无关联 Task。",
+      "relation_types": {
+        "covers": "核心覆盖 (COVERS)",
+        "covers_short": "核心覆盖",
+        "covers_desc": "该任务直接实现本需求的业务规格与验收条件，执行通过后计入需求覆盖率。",
+        "relates_to": "协同参考 (RELATES)",
+        "relates_to_short": "协同参考",
+        "relates_to_desc": "与本需求存在上下文协同、前置依赖或调研参考关系，不直接作为交付物验收。"
+      },
+      "link_task_modal": {
+        "title": "关联执行 Task",
+        "subtitle": "将工作空间已有任务与本需求建立追溯链接",
+        "select_task_label": "选择任务",
+        "select_task_placeholder": "请选择要关联的 Task",
+        "search_task_placeholder": "搜索任务名称...",
+        "select_task_tip": "仅显示当前工作空间中尚未关联该需求的可选任务",
+        "relation_type_label": "关联关系类型",
+        "reason_label": "关联原因 / 追溯说明 (选填)",
+        "reason_placeholder": "例如：负责实现核心接口交付与联调，记录至审计历史",
+        "submit": "确认关联",
+        "cancel": "取消",
+        "unlink_confirm_title": "解除关联确认",
+        "unlink_confirm_message": "确定要解除与任务「{name}」的关联吗？解除后该任务的产出将不再计入本需求的覆盖率统计。"
+      },
       "actions": {
         "new": "新建需求",
         "edit": "编辑",
