@@ -2255,7 +2255,6 @@
     "task_detail": {
       "back_to_tasks": "Back to Tasks",
       "title": "Task Detail",
-      "subtitle": "Task Detail is the core carrier page for process assets such as Spec, Plan, AI Runs, Human Review, Human Delta, Evidence, Decisions, and Clarifications.",
       "workspace_id": "Workspace ID",
       "task_id": "Task ID",
       "nav_label": "Task Detail section navigation",
@@ -2452,7 +2451,18 @@
         "summary": {
           "generate_draft": "Generate Draft",
           "save_draft": "Save Draft",
-          "verify": "Verify Final Summary"
+          "verify": "Verify Final Summary",
+          "blocked_card_title": "Final summary is currently blocked from verification",
+          "blocked_card_body": "Before verification, the following required preconditions must be satisfied:",
+          "ready_card_title": "All preconditions satisfied · No blockers",
+          "ready_card_body": "Task, evidence, reviews, and clarifications are all closed. Ready to verify.",
+          "reason_task_done": "Task is not marked DONE",
+          "reason_active_jobs": "Active background or AI job detected",
+          "reason_evidence": "No confirmed test evidence archived",
+          "reason_coverage": "Coverage confirmation missing",
+          "reason_review": "Expert review items not ready or pending",
+          "reason_clarification": "Unresolved blocking clarification exists",
+          "blocking_guide": "Resolution Guide: Complete development and submit test evidence to clear blockers."
         },
         "baseline": {
           "version": "Baseline v{version}",
@@ -2548,9 +2558,11 @@
           "labels": {
             "task_done": "Task is marked DONE",
             "no_active_jobs": "No active AI/session job",
+            "active_session": "No active AI/session job",
             "confirmed_evidence": "Confirmed evidence exists",
             "evidence": "Confirmed evidence exists",
             "coverage_confirmed": "Coverage has human confirmation",
+            "coverage_verified": "Coverage has human confirmation",
             "expert_review": "Expert review items clear",
             "clarifications": "Blocking clarifications resolved",
             "final_summary": "Final summary verified",
@@ -2560,9 +2572,11 @@
           "details": {
             "task_done": "Only DONE or BASELINED tasks can be frozen.",
             "no_active_jobs": "No AI, session, or background job can be running before freeze.",
+            "active_session": "No AI, session, or background job can be running before freeze.",
             "confirmed_evidence": "At least one confirmed evidence item is required.",
             "evidence": "At least one confirmed evidence item is required.",
             "coverage_confirmed": "Coverage must come from evidence and human confirmation.",
+            "coverage_verified": "Coverage must come from evidence and human confirmation.",
             "expert_review": "At least one expert review item is required, and every blocking clarification must be confirmed.",
             "clarifications": "Blocking clarifications must be accepted, closed, or cancelled.",
             "final_summary": "The final summary must pass VERIFIED validation.",
@@ -2600,7 +2614,16 @@
           "failed": "Failed",
           "cancelled": "Cancelled",
           "draft": "Draft",
-          "running": "Running"
+          "running": "Running",
+          "coding": "Coding",
+          "provisioning": "Provisioning",
+          "brainstorming": "Brainstorming",
+          "planning": "Planning",
+          "testing": "Testing",
+          "reviewing": "Reviewing",
+          "deploying": "Deploying",
+          "suspended": "Suspended",
+          "interrupted": "Interrupted"
         }
       },
       "workbench": {

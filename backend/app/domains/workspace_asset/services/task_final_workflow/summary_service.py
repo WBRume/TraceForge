@@ -49,9 +49,9 @@ def draft_final_summary(
     delta_count = len(task.human_deltas or [])
     decision_count = len(task.decisions or [])
     summary_text = (
-        f"Task '{task.name}' is ready for final review with {len(evidence_ids)} evidence item(s), "
-        f"{review_count} review(s), {clarification_count} clarification(s), "
-        f"{delta_count} human delta(s), and {decision_count} decision record(s)."
+        f"任务「{task.name}」已进入最终状态审查阶段。当前已累计归档 {len(evidence_ids)} 项有效测试证据、"
+        f"{review_count} 项专家审查记录、{clarification_count} 项澄清会话、"
+        f"{delta_count} 项人工代码修改差异及 {decision_count} 项关键决策记录。"
     )
     return upsert_final_summary(
         db,
@@ -61,14 +61,14 @@ def draft_final_summary(
         WorkflowFinalSummaryUpsertRequest(
             final_status="PARTIAL",
             summary=summary_text,
-            remaining_risk="Review checklist items before marking the final summary VERIFIED.",
-            next_steps="Resolve blocking clarifications, confirm evidence, then verify the final summary.",
+            remaining_risk="请在核验最终摘要前复核各项前置检查条件，确保无阻断级质量隐患。",
+            next_steps="解决所有阻塞澄清项，确认测试证据，随后完成最终摘要验证并冻结基线。",
             final_evidence_ids=evidence_ids,
             review_checklist={"review_count": review_count},
             clarification_summary={"clarification_count": clarification_count},
             delta_summary={"human_delta_count": delta_count},
             decision_summary={"decision_count": decision_count, "hard_blocking": False},
-            change_reason=payload.change_reason or "Generated final summary draft.",
+            change_reason=payload.change_reason or "生成最终状态摘要草稿。",
         ),
     )
 

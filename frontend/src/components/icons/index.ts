@@ -36,6 +36,7 @@ import {
   ChevronDownIcon as RawChevronDownIcon,
   ChevronLeftIcon as RawChevronLeftIcon,
   ChevronRightIcon as RawChevronRightIcon,
+  ChevronUpIcon as RawChevronUpIcon,
   CircleStackIcon as RawCircleStackIcon,
   ClipboardDocumentIcon as RawClipboardDocumentIcon,
   ClipboardDocumentListIcon as RawClipboardDocumentListIcon,
@@ -92,6 +93,7 @@ import {
   QuestionMarkCircleIcon as RawQuestionMarkCircleIcon,
   QueueListIcon as RawQueueListIcon,
   RocketLaunchIcon as RawRocketLaunchIcon,
+  ScaleIcon as RawScaleIcon,
   ScissorsIcon as RawScissorsIcon,
   ServerIcon as RawServerIcon,
   ServerStackIcon as RawServerStackIcon,
@@ -193,6 +195,7 @@ export const CheckIcon = wrapIcon(RawCheckIcon, 'CheckIcon')
 export const ChevronDownIcon = wrapIcon(RawChevronDownIcon, 'ChevronDownIcon')
 export const ChevronLeftIcon = wrapIcon(RawChevronLeftIcon, 'ChevronLeftIcon')
 export const ChevronRightIcon = wrapIcon(RawChevronRightIcon, 'ChevronRightIcon')
+export const ChevronUpIcon = wrapIcon(RawChevronUpIcon, 'ChevronUpIcon')
 export const CircleStackIcon = wrapIcon(RawCircleStackIcon, 'CircleStackIcon')
 export const ClipboardDocumentIcon = wrapIcon(RawClipboardDocumentIcon, 'ClipboardDocumentIcon')
 export const ClipboardDocumentListIcon = wrapIcon(RawClipboardDocumentListIcon, 'ClipboardDocumentListIcon')
@@ -249,6 +252,7 @@ export const PowerIcon = wrapIcon(RawPowerIcon, 'PowerIcon')
 export const QuestionMarkCircleIcon = wrapIcon(RawQuestionMarkCircleIcon, 'QuestionMarkCircleIcon')
 export const QueueListIcon = wrapIcon(RawQueueListIcon, 'QueueListIcon')
 export const RocketLaunchIcon = wrapIcon(RawRocketLaunchIcon, 'RocketLaunchIcon')
+export const ScaleIcon = wrapIcon(RawScaleIcon, 'ScaleIcon')
 export const ScissorsIcon = wrapIcon(RawScissorsIcon, 'ScissorsIcon')
 export const ServerIcon = wrapIcon(RawServerIcon, 'ServerIcon')
 export const ServerStackIcon = wrapIcon(RawServerStackIcon, 'ServerStackIcon')
@@ -312,6 +316,7 @@ export const CheckCircle2 = CheckCircleIcon
 export const ChevronDown = ChevronDownIcon
 export const ChevronLeft = ChevronLeftIcon
 export const ChevronRight = ChevronRightIcon
+export const ChevronUp = ChevronUpIcon
 export const Circle = MinusCircleIcon
 export const CircleAlert = ExclamationCircleIcon
 export const CircleCheckBig = CheckCircleIcon
@@ -425,6 +430,7 @@ export const Rocket = RocketLaunchIcon
 export const RotateCcw = ArrowUturnLeftIcon
 export const RotateCw = ArrowPathIcon
 export const Save = ArrowDownOnSquareIcon
+export const Scale = ScaleIcon
 export const Scissors = ScissorsIcon
 export const ScrollText = DocumentTextIcon
 export const Search = MagnifyingGlassIcon

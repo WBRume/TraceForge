@@ -99,8 +99,8 @@ onMounted(loadSuggestions)
 <template>
   <section class="panel-shell">
     <header class="panel-head">
-      <div class="head-text">
-        <h3>{{ t('workspace_assets.task_detail.workbench.human_delta.title') }}</h3>
+      <div>
+        <h2>{{ t('workspace_assets.task_detail.workbench.human_delta.title') }}</h2>
       </div>
     </header>
 
@@ -221,17 +221,21 @@ onMounted(loadSuggestions)
 }
 
 .panel-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 16px;
-  align-items: start;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e2e8f0;
 }
 
-.head-text h3 {
+.panel-head h2 {
   margin: 0;
+  color: #0f172a;
   font-family: 'Poppins', sans-serif;
-  font-size: 1.125rem;
-  color: #1e3a8a;
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .boundary-alert {

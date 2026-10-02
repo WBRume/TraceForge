@@ -14,6 +14,7 @@ const props = defineProps<{
 const { t } = useI18n()
 
 const task = computed(() => props.detail?.task || null)
+const taskPrompt = computed(() => task.value?.description?.trim() || '')
 const requirementLinks = computed(() => props.detail?.requirement_links || [])
 const summary = computed(() => props.detail?.process_summary || null)
 
@@ -96,7 +97,7 @@ const metaItems = computed(() => [
           </div>
         </div>
         <h1 class="task-title">{{ task?.name || t('workspace_assets.task_detail.title') }}</h1>
-        <p class="task-desc">{{ task?.description || t('workspace_assets.task_detail.subtitle') }}</p>
+        <p v-if="taskPrompt" class="task-desc">{{ taskPrompt }}</p>
       </div>
 
       <div class="meta-grid">
