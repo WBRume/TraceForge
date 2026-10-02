@@ -38,8 +38,8 @@ const taskDetailRoute = computed(() => ({
 <style scoped>
 .task-final-workflow-view {
   min-height: 100vh;
-  padding: 32px;
-  background: #f8fafc;
+  padding: 32px 40px;
+  background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
   color: #0f172a;
 }
 
@@ -55,62 +55,72 @@ const taskDetailRoute = computed(() => ({
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 8px 16px;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 12px;
   background: #ffffff;
   color: #475569;
   font-size: 0.84rem;
   font-weight: 700;
   text-decoration: none;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+  transition: all 0.2s ease;
 }
 
 .back-link:hover {
-  border-color: #bfdbfe;
-  color: #2563eb;
+  border-color: #bae6fd;
+  color: #0284c7;
+  transform: translateX(-2px);
+  box-shadow: 0 4px 10px rgba(2, 132, 199, 0.08);
 }
 
 .back-icon {
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
 }
 
 .view-title {
   text-align: right;
 }
 
-
-
 .view-title h1 {
   margin: 0;
   color: #0f172a;
   font-size: 1.45rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   line-height: 1.2;
 }
 
 .workflow-shell {
-  padding: 24px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #ffffff;
+  padding: 32px;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
+}
+
+@media (max-width: 900px) {
+  .task-final-workflow-view {
+    padding: 20px;
+  }
+
+  .workflow-shell {
+    padding: 20px;
+    border-radius: 20px;
+  }
 }
 
 @media (max-width: 700px) {
-  .task-final-workflow-view {
-    padding: 16px;
-  }
-
   .view-header-bar {
     align-items: flex-start;
     flex-direction: column;
+    gap: 12px;
   }
 
   .view-title {
     text-align: left;
-  }
-
-  .workflow-shell {
-    padding: 16px;
   }
 }
 </style>

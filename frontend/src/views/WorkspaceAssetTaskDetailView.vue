@@ -48,10 +48,10 @@ const backToTasks = computed(() => `/workspaces/${wsId.value}/assets/tasks`)
 
 const sectionKeys: TaskWorkbenchSectionKey[] = [
   'taskFile',
-  'finalWorkflow',
   'humanDelta',
   'evidence',
   'decisions',
+  'finalWorkflow',
 ]
 
 const normalizeSection = (value: unknown): TaskWorkbenchSectionKey | null => {
@@ -67,12 +67,6 @@ const sections = computed<WorkbenchSection[]>(() => [
     title: t('workspace_assets.task_detail.workbench.nav.task_file'),
     body: t('workspace_assets.task_detail.workbench.nav.task_file_body'),
     icon: FileText,
-  },
-  {
-    key: 'finalWorkflow',
-    title: t('workspace_assets.task_detail.workbench.nav.final_workflow'),
-    body: t('workspace_assets.task_detail.workbench.nav.final_workflow_body'),
-    icon: ShieldCheck,
   },
   {
     key: 'humanDelta',
@@ -91,6 +85,12 @@ const sections = computed<WorkbenchSection[]>(() => [
     title: t('workspace_assets.task_detail.workbench.nav.decisions'),
     body: t('workspace_assets.task_detail.workbench.nav.decisions_body'),
     icon: GitBranch,
+  },
+  {
+    key: 'finalWorkflow',
+    title: t('workspace_assets.task_detail.workbench.nav.final_workflow'),
+    body: t('workspace_assets.task_detail.workbench.nav.final_workflow_body'),
+    icon: ShieldCheck,
   },
 ])
 
@@ -209,11 +209,6 @@ onMounted(() => {
                 :page-size="sectionStates.taskFile.pageSize"
                 @page-change="(p) => handlePageChange('taskFile', p)"
               />
-              <TaskFinalWorkflowEntryPanel
-                v-else-if="activeSection === 'finalWorkflow'"
-                :workspace-id="wsId"
-                :task-id="taskId"
-              />
               <HumanDeltaPanel
                 v-else-if="activeSection === 'humanDelta'"
                 :deltas="sectionStates.humanDelta.data ?? []"
@@ -250,6 +245,11 @@ onMounted(() => {
                 :page-size="sectionStates.decisions.pageSize"
                 @mutated="handleMutated('decisions')"
                 @page-change="(p) => handlePageChange('decisions', p)"
+              />
+              <TaskFinalWorkflowEntryPanel
+                v-else-if="activeSection === 'finalWorkflow'"
+                :workspace-id="wsId"
+                :task-id="taskId"
               />
             </template>
           </div>

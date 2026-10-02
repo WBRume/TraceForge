@@ -305,3 +305,119 @@ button {
   color: var(--color-primary-600);
   border-color: var(--color-primary-200);
 }
+
+/* ─── Element Plus 全局组件规范统一（大圆角、现代阴影、磨砂层次与高质感按钮） ─── */
+.el-dialog {
+  border-radius: 20px !important;
+  overflow: hidden;
+  box-shadow: 0 20px 45px -10px rgba(15, 23, 42, 0.18), 0 0 0 1px rgba(226, 232, 240, 0.8) !important;
+  border: 1px solid rgba(226, 232, 240, 0.9) !important;
+  background: #ffffff !important;
+}
+
+.el-dialog__header {
+  padding: 20px 24px !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid #f1f5f9 !important;
+  background: #ffffff !important;
+}
+
+.el-dialog__title {
+  font-size: 1.05rem !important;
+  font-weight: 800 !important;
+  color: #0f172a !important;
+  letter-spacing: -0.01em;
+}
+
+.el-dialog__headerbtn {
+  top: 18px !important;
+  right: 20px !important;
+}
+
+.el-dialog__headerbtn .el-dialog__close {
+  font-size: 1.1rem !important;
+  color: #64748b !important;
+  transition: all 0.2s ease;
+}
+
+.el-dialog__headerbtn .el-dialog__close:hover {
+  color: #0f172a !important;
+}
+
+.el-dialog__body {
+  padding: 22px 24px !important;
+}
+
+.el-dialog__footer {
+  padding: 16px 24px !important;
+  border-top: 1px solid #f1f5f9 !important;
+  background: #f8fafc !important;
+}
+
+.el-drawer {
+  border-top-left-radius: 24px !important;
+  border-bottom-left-radius: 24px !important;
+  box-shadow: -12px 0 40px rgba(15, 23, 42, 0.12) !important;
+}
+
+.el-drawer__header {
+  padding: 20px 24px !important;
+  margin-bottom: 0 !important;
+  border-bottom: 1px solid #f1f5f9 !important;
+}
+
+.el-drawer__title {
+  font-size: 1.05rem !important;
+  font-weight: 800 !important;
+  color: #0f172a !important;
+}
+
+.el-drawer__body {
+  padding: 20px 24px !important;
+}
+
+/* 统一按钮与输入控件圆角与质感 */
+.el-button {
+  border-radius: 10px !important;
+  font-weight: 600 !important;
+  transition: all 0.2s ease !important;
+}
+
+.el-button--primary {
+  background-color: #0284c7 !important;
+  border-color: #0284c7 !important;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25) !important;
+}
+
+.el-button--primary:hover {
+  background-color: #0369a1 !important;
+  border-color: #0369a1 !important;
+  transform: translateY(-0.5px);
+}
+
+.el-button--primary:disabled,
+.el-button--primary.is-disabled {
+  background-color: #cbd5e1 !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: none !important;
+  color: #64748b !important;
+  cursor: not-allowed !important;
+  transform: none !important;
+}
+
+.el-input__wrapper,
+.el-textarea__inner {
+  border-radius: 10px !important;
+  box-shadow: 0 0 0 1px #e2e8f0 inset !important;
+  transition: all 0.2s ease !important;
+}
+
+.el-input__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px #93c5fd inset !important;
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2) inset, 0 0 0 1px #0284c7 inset !important;
+}

@@ -42,7 +42,6 @@ const {
   updateReview,
   createClarification,
   addClarificationMessage,
-  generateDraft,
   upsertFinalSummary,
   baseline,
   loadReviewTargetPreview,
@@ -66,6 +65,22 @@ const latestUpdatedAt = computed(() =>
   || workflow.value?.task.updated_at
   || '-',
 )
+
+function formatTime(isoString?: string | null) {
+  if (!isoString || isoString === '-') return '-'
+  try {
+    const d = new Date(isoString)
+    if (isNaN(d.getTime())) return isoString
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    return `${y}年${m}月${day}日 ${hh}:${mm}`
+  } catch {
+    return isoString
+  }
+}
 
 async function refresh() {
   if (!props.workspaceId || !props.taskId) return
@@ -113,11 +128,19 @@ watch(
   <section class="task-final-workflow-panel" v-loading="loading">
     <header class="workflow-header">
       <div class="workflow-title-block">
-        <h2>{{ t(`${baseKey}.panel.title`) }}</h2>
+        <div class="header-icon-box">
+          <svg class="header-icon" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+        </div>
+        <div>
+          <h2>{{ t(`${baseKey}.panel.title`) }}</h2>
+          <p class="header-subtitle">全流程覆盖专家审查、澄清会话、最终业务摘要与基线快照固化</p>
+        </div>
       </div>
       <div class="workflow-header-actions">
         <WorkflowStatusPill :status="workflowStatus" />
-        <el-button :disabled="loading" @click="refresh">
+        <el-button :disabled="loading" class="refresh-btn" @click="refresh">
           <RotateCw class="button-icon" />
           {{ t('common.refresh') }}
         </el-button>
@@ -142,11 +165,15 @@ watch(
     <el-alert v-if="error" class="workflow-alert" type="error" :closable="false" :title="error" />
 
     <div v-if="workflow" class="workflow-grid">
+      <!-- 顶部信息仪表盘横幅 -->
       <div class="workflow-status-strip">
         <dl>
           <div>
             <dt>{{ t(`${baseKey}.fields.task`) }}</dt>
-            <dd>{{ statusLabel(workflow.task.status) }}</dd>
+            <dd>
+              <span class="status-dot" :class="workflow.task.status === 'DONE' ? 'is-done' : 'is-coding'"></span>
+              {{ statusLabel(workflow.task.status) }}
+            </dd>
           </div>
           <div>
             <dt>{{ t(`${baseKey}.fields.workflow`) }}</dt>
@@ -154,19 +181,22 @@ watch(
           </div>
           <div>
             <dt>{{ t(`${baseKey}.fields.baseline`) }}</dt>
-            <dd>v{{ workflow.task.baseline_version ?? 0 }}</dd>
+            <dd>第 {{ workflow.task.baseline_version ?? 0 }} 版</dd>
           </div>
           <div>
             <dt>{{ t(`${baseKey}.fields.blocking`) }}</dt>
-            <dd>{{ blockingCount }}</dd>
+            <dd :class="blockingCount > 0 ? 'text-amber-600 font-bold' : 'text-emerald-600 font-bold'">
+              {{ blockingCount }} 项待办
+            </dd>
           </div>
           <div>
             <dt>{{ t(`${baseKey}.fields.updated`) }}</dt>
-            <dd>{{ latestUpdatedAt }}</dd>
+            <dd class="text-slate-600 font-medium">{{ formatTime(latestUpdatedAt) }}</dd>
           </div>
         </dl>
       </div>
 
+      <!-- 左侧垂直时间轴导引器 -->
       <aside class="workflow-rail">
         <FinalWorkflowStepper
           :steps="workflow.steps"
@@ -175,6 +205,7 @@ watch(
         />
       </aside>
 
+      <!-- 右侧步骤内容视窗 -->
       <main class="workflow-main">
         <ExpertReviewStep
           v-if="activeStep === 'expert_review'"
@@ -204,7 +235,11 @@ watch(
           :checklist="workflow.checklist"
           :readonly="operationReadonly"
           :saving="saving"
-          @generate-draft="afterMutation(() => generateDraft(workspaceId, taskId))"
+          :reviews="workflow.reviews"
+          :clarification-count="workflow.clarifications?.length ?? 0"
+          :evidence-count="workflow.task.evidence_count ?? 0"
+          :delta-count="workflow.task.human_delta_count ?? 0"
+          :decision-count="workflow.task.decision_count ?? 0"
           @save="(payload) => afterMutation(() => upsertFinalSummary(workspaceId, taskId, payload))"
         />
         <BaselineStep
@@ -232,47 +267,77 @@ watch(
 .task-final-workflow-panel {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 20px;
   min-height: 520px;
 }
 
 .workflow-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #f1f5f9;
 }
 
 .workflow-title-block {
+  display: flex;
+  align-items: center;
+  gap: 14px;
   min-width: 0;
 }
 
+.header-icon-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: rgba(14, 165, 233, 0.1);
+  color: #0284c7;
+  flex-shrink: 0;
+}
 
+.header-icon {
+  width: 22px;
+  height: 22px;
+}
 
 .workflow-title-block h2 {
   margin: 0;
   color: #0f172a;
-  font-size: 1.32rem;
+  font-size: 1.25rem;
+  font-weight: 800;
   line-height: 1.2;
+}
+
+.header-subtitle {
+  margin: 2px 0 0;
+  color: #64748b;
+  font-size: 0.76rem;
 }
 
 .workflow-header-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
+}
+
+.refresh-btn {
+  border-radius: 10px;
+  font-weight: 600;
 }
 
 .button-icon,
 .lock-icon {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
   margin-right: 6px;
 }
 
 .workflow-alert {
-  border-radius: 8px;
+  border-radius: 12px;
 }
 
 .lock-copy {
@@ -287,41 +352,60 @@ watch(
   gap: 24px;
 }
 
+/* 顶部状态仪表横幅 */
 .workflow-status-strip {
   grid-column: 1 / -1;
-  padding: 12px 14px;
+  padding: 14px 18px;
   border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border-radius: 14px;
   background: #f8fafc;
 }
 
 .workflow-status-strip dl {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
   margin: 0;
 }
 
 .workflow-status-strip dt {
   color: #64748b;
-  font-size: 0.68rem;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 0.72rem;
+  font-weight: 600;
 }
 
 .workflow-status-strip dd {
   margin: 4px 0 0;
   overflow: hidden;
   color: #0f172a;
-  font-size: 0.82rem;
+  font-size: 0.86rem;
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.status-dot.is-coding {
+  background: #f59e0b;
+}
+
+.status-dot.is-done {
+  background: #10b981;
 }
 
 .workflow-rail {
   padding-right: 18px;
-  border-right: 1px solid #e2e8f0;
+  border-right: 1px solid #f1f5f9;
 }
 
 .workflow-main {
@@ -335,9 +419,9 @@ watch(
 
   .workflow-rail {
     padding-right: 0;
-    padding-bottom: 12px;
+    padding-bottom: 14px;
     border-right: 0;
-    border-bottom: 1px solid #e2e8f0;
+    border-bottom: 1px solid #f1f5f9;
   }
 
   .workflow-status-strip dl {
@@ -348,11 +432,87 @@ watch(
 @media (max-width: 700px) {
   .workflow-header {
     flex-direction: column;
+    align-items: flex-start;
   }
 
   .workflow-header-actions {
     width: 100%;
     justify-content: space-between;
   }
+}
+
+:deep(.el-dialog) {
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.16);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+:deep(.el-dialog__header) {
+  padding: 20px 24px;
+  margin-right: 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+:deep(.el-dialog__title) {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+:deep(.el-dialog__body) {
+  padding: 22px 24px;
+}
+
+:deep(.el-dialog__footer) {
+  padding: 16px 24px;
+  border-top: 1px solid #f1f5f9;
+  background: #f8fafc;
+}
+
+:deep(.el-drawer) {
+  border-top-left-radius: 24px;
+  border-bottom-left-radius: 24px;
+  box-shadow: -10px 0 35px rgba(15, 23, 42, 0.12);
+}
+
+:deep(.el-drawer__header) {
+  padding: 20px 24px;
+  margin-bottom: 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+:deep(.el-button) {
+  border-radius: 10px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+:deep(.el-button--primary) {
+  background: #0284c7;
+  border-color: #0284c7;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.25);
+}
+
+:deep(.el-button--primary:hover) {
+  background: #0369a1;
+  border-color: #0369a1;
+}
+
+:deep(.el-input__wrapper),
+:deep(.el-textarea__inner) {
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e2e8f0 inset;
+  transition: all 0.2s;
+}
+
+:deep(.el-input__wrapper:hover),
+:deep(.el-textarea__inner:hover) {
+  box-shadow: 0 0 0 1px #93c5fd inset;
+}
+
+:deep(.el-input__wrapper.is-focus),
+:deep(.el-textarea__inner:focus) {
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.2) inset, 0 0 0 1px #0284c7 inset;
 }
 </style>
