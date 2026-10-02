@@ -18,7 +18,7 @@
  * 对应 backend/.env 的 OAUTH_GITHUB_REDIRECT_URI_DESKTOP（host=127.0.0.1, path=/callback）。
  * 可通过环境变量 SDD_OAUTH_LOOPBACK_PORT 覆盖（修改后须同步更新 GitHub OAuth App 回调地址）。
  */
-import { ipcMain, shell, BrowserWindow } from 'electron'
+import { ipcMain, shell, BrowserWindow } from '../../desktop/native'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { URL } from 'node:url'
 import { readConfig, type DesktopConfig } from './config'

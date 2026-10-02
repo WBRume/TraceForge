@@ -1,4 +1,4 @@
-import { dialog, ipcMain } from 'electron'
+import { dialog, ipcMain } from '../../desktop/native'
 import { execFile } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
@@ -83,7 +83,7 @@ export const runGit = async (
     throw new Error('Git command is not allowed')
   }
   if (args.includes('push') || args.includes('commit')) {
-    throw new Error('Git push/commit is not allowed from SDD Native')
+    throw new Error('Git push/commit is not allowed from TraceForge')
   }
 
   try {

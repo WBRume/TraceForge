@@ -1,16 +1,23 @@
 {
-  "name": "frontend",
+  "name": "traceforge",
+  "productName": "TraceForge",
   "private": true,
   "version": "0.0.0",
-  "description": "TraceForge Electron desktop client",
-  "author": "SDD Native",
+  "description": "TraceForge Electron and Tauri desktop client",
+  "author": "TraceForge",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "build:electron:main": "vite build --config vite.electron.config.ts",
-    "build:electron": "npm run build && npm run build:electron:main && electron-builder",
+    "build:electron": "npm run build:desktop:frontend && npm run build:electron:main && electron-builder",
+    "build:desktop:frontend": "cross-env TRACEFORGE_DESKTOP=1 npm run build",
+    "tauri": "tauri",
+    "dev:tauri": "tauri dev",
+    "build:tauri": "tauri build",
+    "build:tauri:frontend": "npm run build:desktop:frontend && npm run build:desktop:host",
+    "build:desktop:host": "tsc -p tsconfig.desktop-host.json && bun desktop/build-sidecar.ts",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"vite build --config vite.electron.config.ts --watch\" \"wait-on http://127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "preview": "vite preview",
     "test": "vitest",
@@ -21,6 +28,7 @@
   "dependencies": {
     "@guolao/vue-monaco-editor": "^1.6.0",
     "@heroicons/vue": "^2.2.0",
+    "@tauri-apps/api": "2.12.1",
     "axios": "^1.13.6",
     "cross-spawn": "^7.0.6",
     "echarts": "^6.0.0",
@@ -35,11 +43,14 @@
     "vue-router": "^5.0.4"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "@types/bun": "1.4.2",
     "@types/cross-spawn": "^6.0.6",
     "@types/node": "^24.12.0",
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/test-utils": "^2.4.6",
     "@vue/tsconfig": "^0.9.0",
+    "bun": "1.4.2",
     "concurrently": "^9.2.1",
     "cross-env": "^10.1.0",
     "electron": "^39.2.7",
@@ -53,7 +64,7 @@
   },
   "build": {
     "appId": "com.sddnative.desktop",
-    "productName": "SDD Native",
+    "productName": "TraceForge",
     "directories": {
       "output": "release"
     },
@@ -64,7 +75,7 @@
     ],
     "win": {
       "target": "nsis",
-      "signAndEditExecutable": false,
+      "signAndEditExecutable": true,
       "forceCodeSigning": false,
       "verifyUpdateCodeSignature": false
     },

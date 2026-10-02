@@ -19,7 +19,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const localAgent = useLocalAgentStore()
-const { electronAvailable } = storeToRefs(localAgent)
+const { desktopAvailable } = storeToRefs(localAgent)
 
 const localPath = ref('')
 const gitRemoteUrl = shallowRef('')
@@ -126,8 +126,8 @@ watch(
           v-model="localPath"
           type="text"
           class="mgmt-input"
-          :placeholder="electronAvailable ? $t('settings.local_dev.choose_repo_hint') : '请输入本机仓库绝对路径，例如 G:/my-repo 或 /home/repo'"
-          @click="electronAvailable ? chooseLocal() : undefined"
+          :placeholder="desktopAvailable ? $t('settings.local_dev.choose_repo_hint') : '请输入本机仓库绝对路径，例如 G:/my-repo 或 /home/repo'"
+          @click="desktopAvailable ? chooseLocal() : undefined"
           @change="onLocalPathChange"
         />
         <button class="btn-icon" type="button" :title="$t('settings.local_dev.choose_repo')" @click="chooseLocal">

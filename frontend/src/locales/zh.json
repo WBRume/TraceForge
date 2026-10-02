@@ -169,10 +169,10 @@
       "repo_row_hint": "为每个仓库选择本机已 clone 的目录",
       "title": "本地开发环境",
       "subtitle": "配置当前工作区的本机仓库映射。",
-      "description": "配置当前工作区在本机的代码仓库映射。TraceForge 的页面和云端能力保持同一套路由，本地 Git 与应用补丁只在 Electron 环境启用。",
-      "mode_electron": "Electron Desktop",
+      "description": "配置当前工作区在本机的代码仓库映射。TraceForge 的页面和云端能力保持同一套路由，本地 Git 与应用补丁只在 桌面客户端启用。",
+      "mode_desktop": "Desktop",
       "mode_web": "Web Debug",
-      "web_disabled": "Web 调试模式不会暴露本地 Git 或命令执行能力。请使用 Electron 客户端完成本地仓库绑定和应用补丁。",
+      "web_disabled": "Web 调试模式不会暴露本地 Git 或命令执行能力。请使用 桌面客户端完成本地仓库绑定和应用补丁。",
       "repo_mapping_title": "本地仓库映射",
       "repo_mapping_desc": "本地仓库必须是当前工作区企业仓库的 clone，remote.origin.url 会和工作区仓库地址校验一致。",
       "no_workspace_remote": "当前工作区没有配置 Git 仓库地址，无法绑定本地仓库。",
@@ -206,7 +206,7 @@
       "current_local_path": "当前本地路径",
       "keep_mapping": "保留关联",
       "remove_success": "本地仓库关联已取消",
-      "remove_unavailable": "当前客户端缺少取消关联能力，请重启 Electron 客户端后重试。"
+      "remove_unavailable": "当前客户端缺少取消关联能力，请重启 桌面客户端后重试。"
     },
     "appearance": {
       "title": "外观偏好",
@@ -776,7 +776,7 @@
     "change_apply_copy_success": "补丁内容已复制到剪贴板",
     "change_apply_copy_failed": "复制失败",
     "change_apply_base_label": "基线",
-    "change_apply_web_disabled": "Web 调试模式不暴露本地 Git 能力。请使用 Electron 客户端应用补丁。",
+    "change_apply_web_disabled": "Web 调试模式不暴露本地 Git 能力。请使用 桌面客户端应用补丁。",
     "change_apply_repo_missing_title": "尚未配置本地仓库映射",
     "change_apply_repo_missing_desc": "进入工作区设置选择本机仓库，系统会校验 remote.origin.url 与工作区仓库地址一致。",
     "change_apply_go_settings": "去设置",

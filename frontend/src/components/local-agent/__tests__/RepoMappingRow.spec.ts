@@ -7,7 +7,7 @@ import { useLocalAgentStore } from '@/stores/localAgent'
 import { normalizeRemoteUrl } from '@/composables/local-agent/localAgentUtils'
 
 const { mockEnv, desktopMock } = vi.hoisted(() => {
-  const mockEnv = { isElectron: true }
+  const mockEnv = { isDesktop: true }
   const desktopMock = {
     platform: 'win32',
     git: {
@@ -27,8 +27,8 @@ const { mockEnv, desktopMock } = vi.hoisted(() => {
 })
 
 vi.mock('@/utils/runtime', () => ({
-  isElectron: () => mockEnv.isElectron,
-  getSddDesktop: () => (mockEnv.isElectron ? desktopMock : null),
+  isDesktop: () => mockEnv.isDesktop,
+  getSddDesktop: () => (mockEnv.isDesktop ? desktopMock : null),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -37,7 +37,7 @@ vi.mock('vue-i18n', () => ({
 
 describe('RepoMappingRow Component', () => {
   beforeEach(() => {
-    mockEnv.isElectron = true
+    mockEnv.isDesktop = true
     setActivePinia(createPinia())
     vi.clearAllMocks()
     localStorage.clear()
@@ -153,7 +153,7 @@ describe('RepoMappingRow Component', () => {
   })
 
   it('supports typing path and saving mapping in web environment without electron', async () => {
-    mockEnv.isElectron = false
+    mockEnv.isDesktop = false
     const store = useLocalAgentStore()
     await store.setWorkspaceContext({ id: 'ws-web', git_repo_url: 'git@github.com:owner/web-repo.git' })
 

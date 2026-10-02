@@ -1,17 +1,20 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerLocalResourcesIpc } from './ipc/localResources'
-import { registerConfigIpc } from './ipc/config'
-import { registerDownloadIpc } from './ipc/download'
-import { registerGitIpc } from './ipc/git'
-import { registerOauthIpc } from './ipc/oauth'
-import { registerPatchIpc } from './ipc/patch'
-import { registerProcessIpc } from './ipc/process'
-import { registerSystemIpc } from './ipc/system'
+import { registerDesktopCommands } from '../desktop/register'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
+
+// 沿用已有配置目录，避免应用改名后丢失登录和本地资源配置。
+const userDataPath = app.getPath('userData')
+if (userDataPath === join(app.getPath('appData'), app.getName()) && !existsSync(join(userDataPath, 'config.json'))) {
+  const legacyUserData = ['SDD Native', 'frontend']
+    .map(name => join(app.getPath('appData'), name))
+    .find(path => existsSync(join(path, 'config.json')))
+  if (legacyUserData) app.setPath('userData', legacyUserData)
+}
 
 let mainWindow: BrowserWindow | null = null
 
@@ -21,7 +24,7 @@ const createWindow = async () => {
     height: 960,
     minWidth: 1120,
     minHeight: 720,
-    title: 'SDD Native',
+    title: app.getName(),
     backgroundColor: '#f8fafc',
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
@@ -45,19 +48,8 @@ const createWindow = async () => {
   await mainWindow.loadFile(join(__dirname, '../dist/index.html'))
 }
 
-const registerIpc = () => {
-  registerLocalResourcesIpc()
-  registerConfigIpc()
-  registerDownloadIpc()
-  registerGitIpc()
-  registerOauthIpc()
-  registerPatchIpc()
-  registerProcessIpc()
-  registerSystemIpc()
-}
-
 app.whenReady().then(async () => {
-  registerIpc()
+  registerDesktopCommands()
   await createWindow()
 
   app.on('activate', () => {

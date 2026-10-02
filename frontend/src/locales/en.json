@@ -169,10 +169,10 @@
       "repo_row_hint": "Choose the locally cloned directory for each repository",
       "title": "Local Development",
       "subtitle": "Configure this workspace's local repository mapping.",
-      "description": "Configure the local code repository mapping for this workspace. TraceForge keeps the same routes for cloud capabilities, while local Git and Apply Patch are only enabled in Electron.",
-      "mode_electron": "Electron Desktop",
+      "description": "Configure the local code repository mapping for this workspace. TraceForge keeps the same routes for cloud capabilities, while local Git and Apply Patch are enabled in the desktop client.",
+      "mode_desktop": "Desktop",
       "mode_web": "Web Debug",
-      "web_disabled": "Web debug mode does not expose local Git or command execution. Use the Electron client to bind a local repository and apply patches.",
+      "web_disabled": "Web debug mode does not expose local Git or command execution. Use the desktop client to bind a local repository and apply patches.",
       "repo_mapping_title": "Local Repository Mapping",
       "repo_mapping_desc": "The local repository must be a clone of this workspace's enterprise repository. remote.origin.url is checked against the workspace repository URL.",
       "no_workspace_remote": "This workspace has no Git repository URL configured, so a local repository cannot be bound.",
@@ -206,7 +206,7 @@
       "current_local_path": "Current Local Path",
       "keep_mapping": "Keep Link",
       "remove_success": "Local repository link removed",
-      "remove_unavailable": "This client is missing the remove-link capability. Restart the Electron client and try again."
+      "remove_unavailable": "This client is missing the remove-link capability. Restart the desktop client and try again."
     },
     "appearance": {
       "title": "Appearance",
@@ -776,7 +776,7 @@
     "change_apply_copy_success": "Patch copied to clipboard",
     "change_apply_copy_failed": "Copy failed",
     "change_apply_base_label": "Base",
-    "change_apply_web_disabled": "Web debug mode does not expose local Git capabilities. Use the Electron client to apply patches.",
+    "change_apply_web_disabled": "Web debug mode does not expose local Git capabilities. Use the desktop client to apply patches.",
     "change_apply_repo_missing_title": "Local repository mapping is not configured",
     "change_apply_repo_missing_desc": "Open workspace settings and select the local repository. The system will verify that remote.origin.url matches the workspace repository URL.",
     "change_apply_go_settings": "Open Settings",

@@ -19,7 +19,7 @@ import type { DesktopRepoMapping } from '@/types/sddDesktop'
 import { DEFAULT_SERVER_URL, setApiServerUrl } from '@/utils/api'
 import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import { remoteUrlsMatch } from '@/composables/local-agent/localAgentUtils'
-import { getSddDesktop, isElectron } from '@/utils/runtime'
+import { getSddDesktop, isDesktop } from '@/utils/runtime'
 import { normalizeRemoteUrl } from '@/composables/local-agent/localAgentUtils'
 import { chooseGitRemote, getLocalGitRemotes } from '@/composables/local-agent/localGitRemotes'
 
@@ -40,7 +40,7 @@ const keyFor = (remote: string) => normalizeRemoteUrl(remote)
 export const useLocalAgentStore = defineStore('localAgent', () => {
   const authStore = useAuthStore()
   const desktop = getSddDesktop()
-  const electronAvailable = computed(() => isElectron() && Boolean(desktop))
+  const desktopAvailable = computed(() => isDesktop() && Boolean(desktop))
 
   const initialized = ref(false)
   const token = ref(authStore.token || '')
@@ -511,7 +511,7 @@ export const useLocalAgentStore = defineStore('localAgent', () => {
   return {
     authStore,
     desktop: computed(() => desktop),
-    electronAvailable,
+    desktopAvailable,
     initialized,
     token,
     workspace,

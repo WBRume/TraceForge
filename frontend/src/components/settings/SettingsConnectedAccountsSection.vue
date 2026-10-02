@@ -13,7 +13,7 @@ import { Link2, Loader2, Unlink } from '@/components/icons'
 import { useAuthStore } from '@/stores/auth'
 import { useOAuthStore } from '@/stores/oauth'
 import { useOAuthFlow } from '@/composables/useOAuthFlow'
-import { isElectron } from '@/utils/runtime'
+import { isDesktop as isDesktopRuntime } from '@/utils/runtime'
 import { formatApiError, formatOAuthApiError } from '@/utils/error'
 import {
   bindOAuthIdentity,
@@ -47,7 +47,7 @@ const adminPassword = ref('')
 const adminLoading = ref(false)
 const adminError = ref('')
 
-const isDesktop = isElectron()
+const isDesktop = isDesktopRuntime()
 
 const linkedProviderSet = computed(() => new Set(identities.value.map(i => i.provider)))
 
