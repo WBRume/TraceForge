@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
-import { ChevronDown } from '@/components/icons'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { ChevronDown, Search } from '@/components/icons'
 
 interface Option {
   label: string
@@ -15,6 +15,8 @@ const props = defineProps<{
   disabled?: boolean
   size?: 'sm' | 'md' | 'lg'
   dropUp?: boolean
+  searchable?: boolean
+  searchPlaceholder?: string
 }>()
 
 const emit = defineEmits<{
@@ -24,27 +26,45 @@ const emit = defineEmits<{
 
 const isOpen = ref(false)
 const selectRef = ref<HTMLElement | null>(null)
+const searchInputRef = ref<HTMLInputElement | null>(null)
+const searchQuery = ref('')
 
 const toggleDropdown = () => {
   if (props.disabled) return
   isOpen.value = !isOpen.value
-  if (isOpen.value) emit('open')
+  if (isOpen.value) {
+    searchQuery.value = ''
+    emit('open')
+    if (props.searchable) {
+      void nextTick(() => {
+        searchInputRef.value?.focus()
+      })
+    }
+  }
 }
 
 const selectOption = (option: Option) => {
   if (option.disabled) return
   emit('update:modelValue', option.value)
   isOpen.value = false
+  searchQuery.value = ''
 }
 
 const handleClickOutside = (event: MouseEvent) => {
   if (selectRef.value && !selectRef.value.contains(event.target as Node)) {
     isOpen.value = false
+    searchQuery.value = ''
   }
 }
 
+const filteredOptions = computed(() => {
+  if (!props.searchable || !searchQuery.value.trim()) return props.options || []
+  const q = searchQuery.value.trim().toLowerCase()
+  return (props.options || []).filter((opt) => (opt.label || '').toLowerCase().includes(q))
+})
+
 const selectedLabel = computed(() => {
-  const selected = (props.options || []).find(opt => opt.value === props.modelValue)
+  const selected = (props.options || []).find((opt) => opt.value === props.modelValue)
   return selected ? selected.label : (props.placeholder || '')
 })
 
@@ -77,16 +97,32 @@ onUnmounted(() => {
 
     <transition name="dropdown">
       <div v-if="isOpen" class="select-dropdown glass-panel">
-        <ul class="options-list">
+        <div v-if="searchable" class="select-search-box" @click.stop>
+          <Search class="search-box-icon" />
+          <input
+            ref="searchInputRef"
+            v-model="searchQuery"
+            type="text"
+            class="search-box-input"
+            :placeholder="searchPlaceholder || '搜索...'"
+            @keydown.stop
+          />
+        </div>
+
+        <ul class="options-list custom-scrollbar">
           <li
-            v-for="option in options"
+            v-for="option in filteredOptions"
             :key="option.value"
             class="option-item"
             :class="{ 'is-selected': option.value === modelValue, 'is-disabled': option.disabled }"
             :aria-disabled="option.disabled || undefined"
+            :title="option.label"
             @click="selectOption(option)"
           >
             {{ option.label }}
+          </li>
+          <li v-if="filteredOptions.length === 0" class="no-options-item">
+            暂无匹配选项
           </li>
         </ul>
       </div>
@@ -99,6 +135,7 @@ onUnmounted(() => {
   position: relative;
   width: 100%;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .select-trigger {
@@ -135,6 +172,9 @@ onUnmounted(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+  margin-right: 0.5rem;
 }
 
 .is-placeholder {
@@ -146,6 +186,7 @@ onUnmounted(() => {
   height: 1.25rem;
   color: #64748b;
   transition: transform 0.3s ease;
+  flex-shrink: 0;
 }
 
 .select-arrow.is-rotated {
@@ -159,13 +200,55 @@ onUnmounted(() => {
   right: 0;
   z-index: 1000;
   padding: 0.5rem;
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.95);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-radius: 12px;
   box-shadow: var(--shadow-lg);
   transform-origin: top;
+  box-sizing: border-box;
+}
+
+/* 搜索框 */
+.select-search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 6px;
+  background: rgba(248, 250, 252, 0.9);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+.search-box-icon {
+  width: 14px;
+  height: 14px;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.search-box-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-size: 0.8125rem;
+  color: #0f172a;
+  padding: 0;
+}
+
+.search-box-input::placeholder {
+  color: #94a3b8;
+}
+
+.no-options-item {
+  padding: 0.75rem 1rem;
+  font-size: 0.8125rem;
+  color: #94a3b8;
+  text-align: center;
 }
 
 /* 向上展开（用于位于页面底部的表单，如下方输入区） */
@@ -181,6 +264,9 @@ onUnmounted(() => {
   padding: 0;
   max-height: 240px;
   overflow-y: auto;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  scrollbar-gutter: stable;
 }
 
 .option-item {
@@ -190,6 +276,10 @@ onUnmounted(() => {
   color: #475569;
   cursor: pointer;
   transition: all 0.2s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
 }
 
 .option-item:hover {
@@ -262,5 +352,4 @@ onUnmounted(() => {
 .drop-up .dropdown-leave-to {
   transform: translateY(10px) scale(0.95);
 }
-
 </style>

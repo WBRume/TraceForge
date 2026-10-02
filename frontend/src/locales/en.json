@@ -1935,6 +1935,29 @@
       },
       "related_tasks_title": "Related Tasks",
       "related_tasks_empty": "No linked Tasks yet.",
+      "relation_types": {
+        "covers": "Covers (COVERS)",
+        "covers_short": "Covers",
+        "covers_desc": "Directly implements this requirement's specification and criteria. Counts toward coverage.",
+        "relates_to": "Relates To (RELATES)",
+        "relates_to_short": "Relates To",
+        "relates_to_desc": "Contextual, dependency or research relation. Does not directly count toward acceptance coverage."
+      },
+      "link_task_modal": {
+        "title": "Link Execution Task",
+        "subtitle": "Link workspace tasks to establish traceability with this requirement",
+        "select_task_label": "Select Task",
+        "select_task_placeholder": "Select a task to link",
+        "search_task_placeholder": "Search task name...",
+        "select_task_tip": "Only unlinked tasks in the current workspace are shown",
+        "relation_type_label": "Relationship Type",
+        "reason_label": "Reason / Trace Note (Optional)",
+        "reason_placeholder": "e.g. Implements core API endpoints, recorded in audit logs",
+        "submit": "Link Task",
+        "cancel": "Cancel",
+        "unlink_confirm_title": "Confirm Unlink",
+        "unlink_confirm_message": "Are you sure you want to unlink task \"{name}\"? Its assets will no longer count toward requirement coverage."
+      },
       "actions": {
         "new": "New Requirement",
         "edit": "Edit",

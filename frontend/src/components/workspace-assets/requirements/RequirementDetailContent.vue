@@ -107,10 +107,6 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
           @create-child="emit('createChild', activeRequirement)"
         />
 
-        <RequirementTaskLinksSection
-          :workspace-id="workspaceId" :requirement="activeRequirement" :linked-tasks="linkedTasks" :tasks="tasks" :loading="loading" class="content-card"
-          @link="emit('link', $event)" @unlink="emit('unlink', $event)" />
-
       </div>
 
       <!-- Sidebar Area -->
@@ -158,6 +154,18 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
               </div>
             </div>
           </div>
+
+          <!-- Linked Tasks (Scheme 1: Sidebar Traceability Card) -->
+          <RequirementTaskLinksSection
+            :workspace-id="workspaceId"
+            :requirement="activeRequirement"
+            :linked-tasks="linkedTasks"
+            :tasks="tasks"
+            :loading="loading"
+            class="content-card task-links-card"
+            @link="emit('link', $event)"
+            @unlink="emit('unlink', $event)"
+          />
 
           <!-- Source Reference -->
           <div class="content-card source-card">
@@ -288,6 +296,10 @@ const shouldShowParentSpecification = computed(() => Boolean(activeRequirement.v
 
 .actions-card {
   padding: 16px;
+}
+
+.task-links-card {
+  padding: 18px 16px;
 }
 
 .detail-actions {
