@@ -68,6 +68,7 @@ def create_task(
             current_user,
             ws_id,
             name=data.name,
+            requirement_id=data.requirement_id,
             agent_model=data.agent_model.model_dump() if data.agent_model else None,
             execution=data.execution,
             description=desc.strip(),
@@ -165,6 +166,9 @@ def list_tasks(
     status: Optional[str] = None,
     task_type: Optional[str] = Query(default=None),
     relation: Optional[str] = Query(default=None),
+    requirement_id: Optional[str] = Query(default=None),
+    independent: bool = Query(default=False),
+    following: bool = Query(default=False),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -180,6 +184,9 @@ def list_tasks(
         task_type=task_type,
         relation=relation,
         current_user_id=current_user.id,
+        requirement_id=requirement_id,
+        independent=independent,
+        following=following,
     )
     following_ids = task_service.list_following_task_ids(
         db,

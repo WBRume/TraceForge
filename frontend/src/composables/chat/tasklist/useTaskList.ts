@@ -3,6 +3,7 @@ import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { TaskRelationFilter, TaskSessionFilter, TaskTypeFilterValue } from '../types'
+import type { TaskRailView } from '@/types/taskRail'
 
 /**
  * 会话（任务）列表：分页加载、状态/类型/关系三维筛选、跟随切换、滚动加载。
@@ -12,6 +13,7 @@ export function useTaskList(options: {
   getWorkspaceId: () => string
   selectRouteTask: (loadOptions?: { allowFetch?: boolean }) => Promise<void>
   canCreateTask: () => boolean
+  getRailFilter?: () => { view: TaskRailView; requirementId?: string }
 }) {
   const { t } = useI18n()
 
@@ -27,6 +29,9 @@ export function useTaskList(options: {
   const taskListLoading = ref(false)
   const taskListLoadingMore = ref(false)
   const showTaskModal = ref(false)
+  const taskListError = ref(false)
+  let requestGeneration = 0
+  let requestController: AbortController | undefined
 
   const taskListHasMore = computed(() => tasks.value.length < taskListTotal.value)
 
@@ -41,20 +46,31 @@ export function useTaskList(options: {
     !resolveTaskStatusQuery()
     && taskRelationFilter.value.length === 0
     && taskTypeFilter.value === 'ALL'
+    && (!options.getRailFilter || options.getRailFilter().view === 'all')
   )
 
   const loadTasks = async (loadOptions?: { reset?: boolean; trySelectRouteTask?: boolean; onLoaded?: () => void }) => {
     const reset = loadOptions?.reset ?? true
     const trySelectRouteTask = loadOptions?.trySelectRouteTask ?? reset
     if (reset) {
-      if (taskListLoading.value) return
+      requestGeneration++
+      requestController?.abort()
       taskListLoading.value = true
+      taskListLoadingMore.value = false
       taskListPage.value = 1
+      tasks.value = []
+      taskListTotal.value = 0
+      if (taskListContainer.value) taskListContainer.value.scrollTop = 0
     } else {
       if (taskListLoading.value || taskListLoadingMore.value || !taskListHasMore.value) return
       taskListLoadingMore.value = true
       taskListPage.value += 1
     }
+
+    requestController = new AbortController()
+    const generation = requestGeneration
+    const requestPage = taskListPage.value
+    taskListError.value = false
 
     const wsId = options.getWorkspaceId()
     const statusQuery = resolveTaskStatusQuery()
@@ -72,29 +88,35 @@ export function useTaskList(options: {
       if (taskRelationFilter.value.length > 0) {
         params.relation = taskRelationFilter.value.join(',')
       }
+      const rail = options.getRailFilter?.()
+      if (rail?.view === 'following') params.following = 'true'
+      if (rail?.view === 'independent') params.independent = 'true'
+      if (rail?.view === 'requirement' && rail.requirementId) params.requirement_id = rail.requirementId
 
-      const res = await api.get(`/workspaces/${wsId}/tasks`, { params })
+      const res = await api.get(`/workspaces/${wsId}/tasks`, { params, signal: requestController.signal })
+      if (generation !== requestGeneration || wsId !== options.getWorkspaceId()) return
       const items = Array.isArray(res.data?.items) ? res.data.items : []
       taskListTotal.value = Number(res.data?.total || 0)
       tasks.value = reset ? items : [...tasks.value, ...items]
       loadOptions?.onLoaded?.()
 
       if (trySelectRouteTask) {
-        // 筛选状态下仅支持从已加载列表中选择，不做单任务补拉
+        // 深链接始终可打开目标会话；unshiftTask 会阻止其混入筛选列表。
         await options.selectRouteTask({
-          allowFetch: reset && canAutoFetchRouteTask(),
+          allowFetch: reset,
         })
       }
     } catch (e) {
+      if (generation !== requestGeneration || wsId !== options.getWorkspaceId()) return
+      taskListError.value = true
       if (!reset) {
-        taskListPage.value = Math.max(1, taskListPage.value - 1)
+        taskListPage.value = Math.max(1, requestPage - 1)
       }
       console.error('Failed to load tasks', e)
     } finally {
-      if (reset) {
-        taskListLoading.value = false
-      } else {
-        taskListLoadingMore.value = false
+      if (generation === requestGeneration) {
+        if (reset) taskListLoading.value = false
+        else taskListLoadingMore.value = false
       }
     }
   }
@@ -143,6 +165,9 @@ export function useTaskList(options: {
       tasks.value = tasks.value.map((item: any) => (
         item.id === taskId ? { ...item, is_following: nextFollowing } : item
       ))
+      if (!nextFollowing && options.getRailFilter?.().view === 'following') {
+        await loadTasks({ reset: true, trySelectRouteTask: false })
+      }
       return nextFollowing
     } catch (error) {
       console.error('Failed to update task follow state', error)
@@ -165,6 +190,7 @@ export function useTaskList(options: {
 
   /** 把任务置顶插入列表（路由补拉的场景：移除旧条目并置顶）。 */
   const unshiftTask = (task: any) => {
+    if (!canAutoFetchRouteTask()) return
     tasks.value = [task, ...tasks.value.filter((item: any) => item.id !== task.id)]
   }
 
@@ -191,6 +217,9 @@ export function useTaskList(options: {
   }
 
   return {
+    taskListTotal,
+    taskListError,
+    dispose: () => { requestGeneration++; requestController?.abort() },
     tasks,
     taskListContainer,
     taskStatusFilter,

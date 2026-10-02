@@ -157,6 +157,8 @@ def requirement_linked_task(link: SddTaskRequirement) -> RequirementLinkedTaskRe
         task_name=task.name if task else "",
         task_status=enum_value(task.status) if task else "unknown",
         current_phase=task.current_phase if task else None,
+        creator_name=task.creator_name if task else None,
+        total_duration_ms=task.total_duration_ms if task else 0,
         relation_type=enum_value(link.relation_type),
         coverage_status=coverage_status(requirement_count, evidence_items),
         created_at=link.created_at,
@@ -198,7 +200,7 @@ def requirement_summary(
             requirement_summary(child, include_linked_tasks=True, include_children=False)
             for child in children
         ] if include_children else [],
-        can_link_task=bool(requirement.parent_requirement_id or child_count == 0),
+        can_link_task=child_count == 0,
         import_batch_id=requirement.import_batch_id,
         source_kind=requirement.source_kind,
         source_uri=requirement.source_uri,

@@ -6,11 +6,13 @@
 import TaskCreateDialog from './TaskCreateDialog.vue'
 import { useOverlayCloseGesture } from './composables/useOverlayCloseGesture'
 import type { TaskCreatedEvent } from './types'
+import type { RequirementOption } from '@/types/taskRail'
 
 defineProps<{
   show: boolean
   wsId: string
   initialTaskType?: 'DEVELOPMENT' | 'DIAGNOSIS'
+  initialRequirement?: RequirementOption | null
 }>()
 
 const emit = defineEmits<{
@@ -23,7 +25,7 @@ const gesture = useOverlayCloseGesture(() => emit('close'))
 
 <template>
   <div v-if="show" class="modal-overlay" v-on="gesture.handlers">
-    <TaskCreateDialog :ws-id="wsId" :initial-task-type="initialTaskType" @close="emit('close')" @created="emit('created', $event)" />
+    <TaskCreateDialog :ws-id="wsId" :initial-task-type="initialTaskType" :initial-requirement="initialRequirement" @close="emit('close')" @created="emit('created', $event)" />
   </div>
 </template>
 

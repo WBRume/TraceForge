@@ -9,12 +9,19 @@ import { LayoutDashboard, MessageSquare, Box, BookMarked, Settings, Network } fr
 import AppSidebar from '@/components/AppSidebar.vue'
 import NotificationBell from '@/components/notification/NotificationBell.vue'
 import WorkspaceRepoSetupDialog from '@/components/local-agent/WorkspaceRepoSetupDialog.vue'
+import TaskHostRail from '@/components/chat/task-rail/TaskHostRail.vue'
+import { useTaskRailStore } from '@/stores/taskRail'
 
 const route = useRoute()
 const router = useRouter()
 const wsStore = useWorkspaceStore()
 const localAgent = useLocalAgentStore()
 const authStore = useAuthStore()
+const taskRail = useTaskRailStore()
+const isTaskModule = computed(() => ['chat', 'taskChat'].includes(String(route.name || '')))
+watch(() => [String(route.params.wsId || ''), String(authStore.user?.id || '')], ([wsId, userId]) => {
+  taskRail.setContext(wsId || '', userId || '')
+}, { immediate: true })
 const setupKey = () => `local-resource-setup:${location.origin}:${authStore.user?.id}:${wsStore.currentWorkspace?.id}`
 const { t } = useI18n()
 
@@ -132,6 +139,11 @@ const sidebarFooterItems = computed(() => {
       :footer-items="sidebarFooterItems"
       @back="goBack"
     >
+      <template #context-chat="{ collapsed }">
+        <Transition name="host-rail">
+          <TaskHostRail v-if="isTaskModule && !loading" :key="`${route.params.wsId}:${authStore.user?.id}`" :workspace-id="String(route.params.wsId || '')" :collapsed="collapsed" />
+        </Transition>
+      </template>
       <template #footer-extra>
         <NotificationBell />
       </template>
@@ -161,6 +173,7 @@ const sidebarFooterItems = computed(() => {
 }
 
 .main-content {
+  min-width: 0;
   flex-grow: 1;
   overflow-y: auto;
   position: relative;
@@ -168,4 +181,8 @@ const sidebarFooterItems = computed(() => {
   display: flex;
   flex-direction: column;
 }
+.host-rail-enter-active, .host-rail-leave-active { transition:opacity .16s ease, max-height .18s ease; overflow:hidden; }
+.host-rail-enter-from, .host-rail-leave-to { opacity:0; max-height:0; }
+.host-rail-enter-to, .host-rail-leave-from { opacity:1; max-height:240px; }
+@media (prefers-reduced-motion:reduce) { .host-rail-enter-active, .host-rail-leave-active { transition:none; } }
 </style>

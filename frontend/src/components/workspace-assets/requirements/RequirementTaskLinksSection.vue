@@ -50,9 +50,19 @@ function submit() {
     <header class="section-head">
       <div>
         <h4>{{ t('workspace_assets.requirements.related_tasks_title') }}</h4>
-        <p>{{ t('workspace_assets.requirements.detail.related_tasks_body') }}</p>
       </div>
     </header>
+
+    <div v-if="linkedTasks.length" class="linked-task-cards">
+      <article v-for="task in linkedTasks" :key="task.link_id" class="linked-task-card">
+        <RouterLink class="linked-task-main" :to="`/workspaces/${workspaceId}/chat/${task.task_id}`" :aria-disabled="task.task_status === 'PROVISIONING' || undefined" @click="task.task_status === 'PROVISIONING' && $event.preventDefault()">
+          <strong>{{ task.task_name }}</strong><span class="linked-task-status">{{ task.task_status }}<span v-if="task.current_phase"> · {{ task.current_phase }}</span></span>
+          <small>{{ task.creator_name || t('task_rail.owner_unknown') }} · {{ ((task.total_duration_ms || 0) / 60000).toFixed(1) }} min</small>
+        </RouterLink>
+        <el-button size="small" type="danger" plain :disabled="loading" @click="emit('unlink', task.task_id)">{{ t('workspace_assets.requirements.actions.unlink_task') }}</el-button>
+      </article>
+    </div>
+    <el-empty v-else :description="t('workspace_assets.requirements.related_tasks_empty')" />
 
     <el-alert
       v-if="!requirement.can_link_task"
@@ -90,27 +100,15 @@ function submit() {
       </el-form-item>
     </el-form>
 
-    <el-table v-if="linkedTasks.length" :data="linkedTasks" row-key="link_id" size="small">
-      <el-table-column prop="task_name" :label="t('workspace_assets.requirements.drawer.task')" min-width="220">
-        <template #default="{ row }">
-          <RouterLink :to="`/workspaces/${workspaceId}/assets/tasks/${row.task_id}`">{{ row.task_name }}</RouterLink>
-        </template>
-      </el-table-column>
-      <el-table-column prop="relation_type" :label="t('workspace_assets.requirements.drawer.relation_type')" width="140" />
-      <el-table-column prop="coverage_status" :label="t('workspace_assets.requirements.fields.coverage')" width="170" />
-      <el-table-column :label="t('workspace_assets.requirements.table.operations')" width="140">
-        <template #default="{ row }">
-          <el-button size="small" type="danger" plain :disabled="loading" @click="emit('unlink', row.task_id)">
-            {{ t('workspace_assets.requirements.actions.unlink_task') }}
-          </el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-    <el-empty v-else :description="t('workspace_assets.requirements.related_tasks_empty')" />
   </section>
 </template>
 
 <style scoped>
+.linked-task-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr)); gap:10px; }
+.linked-task-card { display:flex; align-items:center; gap:12px; padding:14px; border:1px solid var(--color-primary-100); border-radius:10px; }
+.linked-task-main { flex:1; min-width:0; display:grid; gap:6px; color:var(--color-text-body); text-decoration:none; }
+.linked-task-main strong { overflow:hidden; text-overflow:ellipsis; font-size:.85rem; }
+.linked-task-main small, .linked-task-status { color:var(--color-text-muted); font-size:.75rem; }
 .requirement-section {
   display: grid;
   gap: 12px;

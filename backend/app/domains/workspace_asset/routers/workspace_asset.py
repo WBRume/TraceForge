@@ -31,6 +31,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     HumanReviewResponse,
     RequirementCreateRequest,
     RequirementDetailResponse,
+    RequirementOptionsResponse,
     RequirementImportBatchResponse,
     RequirementImportConfirmRequest,
     RequirementPreviewJobResponse,
@@ -116,6 +117,25 @@ def _verify_view_assets(ws_id: str, current_user: User, db: Session) -> None:
         raise HTTPException(status_code=403, detail="No access to this workspace")
     if not workspace_service.user_has_permission(db, ws_id, current_user.id, WorkspacePermission.VIEW_ASSETS):
         raise HTTPException(status_code=403, detail="Missing VIEW_ASSETS permission")
+
+
+@router.get("/requirement-options", response_model=RequirementOptionsResponse)
+def list_requirement_options(
+    ws_id: str,
+    q: Optional[str] = None,
+    ids: Optional[str] = None,
+    scope: str = Query("all", pattern="^(all|roots|children)$"),
+    parent_id: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(40, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _verify_view_assets(ws_id, current_user, db)
+    return requirement_queries.list_requirement_options(
+        db, ws_id, q=q, ids=ids.split(",") if ids is not None else None,
+        page=page, page_size=page_size, scope=scope, parent_id=parent_id,
+    )
 
 
 def _verify_manage_requirements(ws_id: str, current_user: User, db: Session) -> None:

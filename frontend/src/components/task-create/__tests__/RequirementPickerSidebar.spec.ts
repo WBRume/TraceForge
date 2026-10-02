@@ -1,0 +1,46 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { flushPromises, mount } from '@vue/test-utils'
+import RequirementPickerSidebar from '../RequirementPickerSidebar.vue'
+const fetchOptions = vi.hoisted(() => vi.fn())
+vi.mock('@/services/requirementOptions', () => ({ fetchRequirementOptions: fetchOptions }))
+const parent = { id:'parent', title:'Payment system', status:'READY', child_count:1, can_link_task:false }
+const child = { id:'child', title:'Payment validation', parent_requirement_id:'parent', parent_title:'Payment system', status:'READY', child_count:0, can_link_task:true }
+beforeEach(() => {
+  vi.useFakeTimers()
+  fetchOptions.mockReset()
+  fetchOptions.mockImplementation(async (_id, params) => ({ items:params.scope === 'children' || params.q ? [child] : [parent], total:1 }))
+})
+afterEach(() => vi.useRealTimers())
+describe('requirement task picker', () => {
+  it('expands a parent without selecting it, then selects a leaf and searches with its ancestry', async () => {
+    const wrapper = mount(RequirementPickerSidebar, { props:{ workspaceId:'ws', open:true, selected:null }, global:{ mocks:{ $t:(key:string) => key } } })
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(fetchOptions).toHaveBeenCalledWith('ws', expect.objectContaining({ scope:'roots' }), expect.anything())
+    await wrapper.find('.requirement-node-button').trigger('click')
+    expect(wrapper.emitted('select')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(0)
+    await flushPromises()
+    expect(wrapper.findAll('.requirement-node-button')).toHaveLength(2)
+    await wrapper.findAll('.requirement-node-button')[1]!.trigger('click')
+    expect(wrapper.emitted('select')?.[0]).toEqual([child])
+    await wrapper.find('input').setValue('validation')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+    expect(fetchOptions).toHaveBeenLastCalledWith('ws', expect.objectContaining({ scope:'all', q:'validation' }), expect.anything())
+    expect(wrapper.find('.requirement-node-button').text()).toContain('Payment system')
+    wrapper.unmount()
+  })
+  it('allows clearing optional selection but keeps inherited leaf selection locked', async () => {
+    const wrapper = mount(RequirementPickerSidebar, { props:{ workspaceId:'ws', open:true, selected:child }, global:{ mocks:{ $t:(key:string) => key } } })
+    await wrapper.find('.skills-filter-row button').trigger('click')
+    expect(wrapper.emitted('select')?.[0]).toEqual([null])
+    await wrapper.setProps({ lockedId:child.id })
+    expect(wrapper.find('.skills-filter-row button').exists()).toBe(false)
+    await wrapper.find('input').setValue('validation')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+    expect(wrapper.find('.requirement-node-button').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+})

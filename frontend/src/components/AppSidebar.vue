@@ -101,6 +101,7 @@ const handleItemClick = (item: SidebarItem) => {
           <component :is="item.icon" v-if="item.icon" class="w-5 h-5" />
           <span class="item-label sidebar-text" :class="{ 'is-hidden': isCollapsed }">{{ item.label }}</span>
         </button>
+        <slot :name="`context-${item.key}`" :collapsed="isCollapsed"></slot>
       </template>
     </nav>
 
@@ -234,6 +235,8 @@ const handleItemClick = (item: SidebarItem) => {
 }
 
 .sidebar-nav {
+  min-height: 0;
+  overflow-y: auto;
   padding: var(--space-4) var(--space-2);
   display: flex;
   flex-direction: column;

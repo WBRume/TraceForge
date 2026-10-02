@@ -51,6 +51,8 @@ export type RequirementLinkedTask = {
   task_name: string
   task_status: string
   current_phase?: string | null
+  creator_name?: string | null
+  total_duration_ms?: number
   relation_type: string
   coverage_status: CoverageStatus
   created_at?: string | null

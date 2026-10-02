@@ -9,6 +9,8 @@ import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
 import { useAgentModels } from '@/composables/useAgentModels'
 import type { TaskExecution } from '@/composables/useLocalResources'
 import ToggleSwitch from '@/components/ToggleSwitch.vue'
+import type { RequirementOption } from '@/types/taskRail'
+import type { RequirementSummary } from '@/types/workspaceAssets'
 import type { TaskCreateSidebar, TaskCreateSidebarName, TaskDraftSnapshot, TaskTypeValue } from './types'
 
 const props = defineProps<{
@@ -21,6 +23,12 @@ const props = defineProps<{
   selectedSkillCount: number
   activeSidebar: TaskCreateSidebar
   selectedPlaybook?: { id: string; title: string } | null
+  selectedRequirement?: RequirementOption | null
+  requirementContext?: RequirementSummary | null
+  requirementLoading?: boolean
+  requirementError?: boolean
+  requirementLocked?: boolean
+  requirementRequired?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +36,7 @@ const emit = defineEmits<{
   cancel: []
   'toggle-sidebar': [name: TaskCreateSidebarName]
   'playbook-context': [context: { name: string; description: string }]
+  'retry-requirement': []
 }>()
 
 const isDiagnosisTask = computed(() => props.taskType === 'DIAGNOSIS')
@@ -54,6 +63,26 @@ watch(() => [name.value, description.value, phenomenon.value, props.taskType], (
 // ── 附件：研发态规范文档（单文件）/ 诊断态文档（多文件，类型不限） ──
 const specFile = shallowRef<File | null>(null)
 const diagnosisFiles = shallowRef<File[]>([])
+let inheritedName = ''
+let inheritedPrompt = ''
+let inheritedFile: File | null = null
+watch(() => props.requirementContext, (requirement) => {
+  const nextName = requirement?.title || ''
+  const rawPrompt = requirement?.source_metadata?.task_prompt
+  const nextPrompt = typeof rawPrompt === 'string' && rawPrompt.trim() ? rawPrompt : requirement?.body || ''
+  if (!name.value || name.value === inheritedName) name.value = nextName
+  if (!description.value || description.value === inheritedPrompt) description.value = nextPrompt
+  if (!phenomenon.value || phenomenon.value === inheritedPrompt) phenomenon.value = nextPrompt
+  const document = requirement ? [requirement.body?.trim(), requirement.acceptance_criteria.length
+    ? `## 验收标准\n${requirement.acceptance_criteria.map((criterion) => `- ${criterion}`).join('\n')}` : ''].filter(Boolean).join('\n\n') : ''
+  const nextFile = document ? new File([document], `${nextName.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 100) || '需求规范'}.md`, { type: 'text/markdown' }) : null
+  if (!specFile.value || specFile.value === inheritedFile) specFile.value = nextFile
+  diagnosisFiles.value = diagnosisFiles.value.filter((file) => file !== inheritedFile)
+  if (nextFile) diagnosisFiles.value = [nextFile, ...diagnosisFiles.value]
+  inheritedName = nextName
+  inheritedPrompt = nextPrompt
+  inheritedFile = nextFile
+}, { immediate: true })
 
 const isPdfSpecFile = computed(() => (specFile.value?.name || '').toLowerCase().endsWith('.pdf'))
 
@@ -80,13 +109,14 @@ const submitDraft = () => {
     execution: execution.value,
     agentModel: models.selection.value,
     name: name.value,
+    requirementId: props.selectedRequirement?.id,
     description: description.value,
     phenomenon: phenomenon.value,
     priority: priority.value,
     sopAutoRun: sopAutoRun.value,
     requirementDurationHours: Number(requirementDuration.value),
-    specFile: specFile.value,
-    diagnosisFiles: [...diagnosisFiles.value],
+    specFile: isDiagnosisTask.value ? null : specFile.value,
+    diagnosisFiles: isDiagnosisTask.value ? [...diagnosisFiles.value] : [],
     diagnosisPlaybookSpecId: props.selectedPlaybook?.id,
   })
 }
@@ -109,6 +139,17 @@ defineExpose({ reset })
 <template>
   <form class="modal-form-main" @submit.prevent="submitDraft">
     <TaskResourcePicker :workspace-id="wsId" @change="execution = $event" />
+    <div class="form-meta-container">
+      <button type="button" class="meta-skills-bar skills-entry-card requirement-entry-card"
+        :class="{ active: activeSidebar === 'requirements', 'has-selection': Boolean(selectedRequirement) }" :disabled="creating"
+        :aria-expanded="activeSidebar === 'requirements'" @click="emit('toggle-sidebar', 'requirements')">
+        <span class="skills-bar-left"><span class="skills-bar-icon-box"><FileText class="w-3.5 h-3.5 text-primary" /></span><span class="skills-bar-title">{{ $t('task_rail.requirement_optional') }}</span></span>
+        <span class="skills-bar-right"><span class="skills-bar-action-text requirement-selection">{{ selectedRequirement?.title || $t('task_rail.select_requirement') }}</span><ChevronRight class="w-3.5 h-3.5 chevron-icon" :class="{ open: activeSidebar === 'requirements' }" /></span>
+      </button>
+      <small v-if="requirementLocked" class="requirement-context-hint">{{ $t('task_rail.inherited') }}</small>
+      <small v-if="requirementLoading" class="requirement-context-hint">{{ $t('task_rail.loading_context') }}</small>
+      <div v-if="requirementError" class="requirement-context-error" role="alert">{{ $t('task_rail.context_error') }} <button type="button" @click="emit('retry-requirement')">{{ $t('task_rail.retry') }}</button></div>
+    </div>
     <div class="form-row">
       <div class="form-group">
         <label class="form-label">模型</label>
@@ -317,7 +358,7 @@ defineExpose({ reset })
     <!-- 行 5：Skills 载入触发条（独占一行，整行可点击，研发 / 诊断态均可用） -->
     <div class="form-meta-container">
       <div
-        class="meta-skills-bar skills-entry-card"
+        class="meta-skills-bar skills-entry-card skill-picker-entry-card"
         :class="{ active: activeSidebar === 'skills', 'has-selection': selectedSkillCount > 0 }"
         @click="emit('toggle-sidebar', 'skills')"
       >
@@ -350,7 +391,7 @@ defineExpose({ reset })
       </div>
       <div class="footer-actions">
         <button type="button" class="btn-secondary modal-btn" @click="emit('cancel')">{{ $t('common.cancel') }}</button>
-        <button type="submit" class="btn-primary modal-btn" :disabled="creating">
+        <button type="submit" class="btn-primary modal-btn" :disabled="creating || requirementLoading || requirementError || (requirementRequired && !selectedRequirement)">
           <Loader2 v-if="creating" class="w-4 h-4 spin" />
           <span>{{ creating ? $t('common.loading') : $t('chat.initialize') }}</span>
         </button>
@@ -361,6 +402,9 @@ defineExpose({ reset })
 
 <style scoped src="@/styles/task-create/task-create-shared.css"></style>
 <style scoped>
+.requirement-context-hint { color:var(--color-text-muted); font-size:.72rem; }
+.requirement-selection { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.requirement-context-error { color:#b91c1c; font-size:.75rem; }
 .modal-form-main {
   flex: 1;
   min-width: 0;
@@ -723,12 +767,18 @@ defineExpose({ reset })
 
 /* 底部操作区 */
 .modal-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  flex-shrink: 0;
+  background: #ffffff;
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: auto;
   padding-top: 10px;
   border-top: 1px solid #f1f5f9;
+  box-shadow: 0 -8px 12px #ffffff;
 }
 
 .footer-left-hint {

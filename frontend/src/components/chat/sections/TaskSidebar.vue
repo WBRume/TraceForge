@@ -25,7 +25,7 @@ const advancedFilterOpen = ref(false)
   <aside class="task-sidebar glass-panel">
     <div class="sidebar-header">
       <div class="sidebar-title-row">
-        <h3>{{ t('chat.terminal') }}</h3>
+        <h3 :title="props.vm.taskViewLabel">{{ props.vm.taskViewLabel }} <span class="task-total">{{ props.vm.taskListTotal }}</span></h3>
         <div class="sidebar-title-actions">
           <span class="advanced-filter-anchor">
             <button
@@ -51,6 +51,7 @@ const advancedFilterOpen = ref(false)
           </button>
         </div>
       </div>
+      <button v-if="props.vm.taskRailView !== 'all' || props.vm.taskRelationFilter.length || props.vm.taskStatusFilter !== 'ALL' || props.vm.taskTypeFilter !== 'ALL'" type="button" class="reset-view" @click="props.vm.resetTaskView">{{ t('task_rail.reset') }}</button>
       <div class="sidebar-filter-row">
         <div class="sidebar-filter-item">
           <span class="sidebar-filter-label">{{ t('chat.session_filter_label') }}</span>
@@ -96,8 +97,9 @@ const advancedFilterOpen = ref(false)
       <div v-if="props.vm.taskListLoading && props.vm.tasks.length === 0" class="empty-hint">
         {{ t('common.loading') }}
       </div>
+      <button v-else-if="props.vm.taskListError" type="button" class="empty-hint retry-list" @click="props.vm.retryTaskList">{{ t('task_rail.retry') }}</button>
       <div v-else-if="props.vm.tasks.length === 0" class="empty-hint">
-        {{ t('chat.empty_hint') }}
+        {{ t('task_rail.empty_tasks', { view: props.vm.taskViewLabel }) }}
       </div>
       <div v-if="props.vm.taskListLoadingMore" class="task-list-footer">
         <Loader2 class="w-4 h-4 spin" />
@@ -111,6 +113,11 @@ const advancedFilterOpen = ref(false)
 </template>
 
 <style scoped>
+.sidebar-title-row h3 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; }
+.sidebar-title-actions { flex-shrink:0; }
+.task-total { color:var(--color-text-muted); font-size:.75rem; font-weight:400; }
+.reset-view { align-self:flex-start; border:0; padding:0; background:transparent; font-size:.72rem; color:var(--color-primary-600); cursor:pointer; }
+.retry-list { border:0; background:transparent; cursor:pointer; }
 .task-sidebar {
   width: 280px;
   border-radius: 0;

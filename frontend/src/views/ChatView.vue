@@ -309,6 +309,7 @@ watch(
 
     <NewTaskModal
       :show="vm.showTaskModal"
+      :initial-requirement="vm.newTaskRequirement"
       :wsId="(vm.route.params.wsId as string)"
       @close="vm.showTaskModal = false"
       @created="vm.onTaskCreated"

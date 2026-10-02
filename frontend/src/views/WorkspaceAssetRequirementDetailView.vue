@@ -6,6 +6,8 @@ import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@/components/icons'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import RequirementDetailContent from '@/components/workspace-assets/requirements/RequirementDetailContent.vue'
+import RequirementTaskCreateDialog from '@/components/workspace-assets/requirements/RequirementTaskCreateDialog.vue'
+import { useRequirementTaskCreation } from '@/composables/useRequirementTaskCreation'
 import RequirementEditDrawer from '@/components/workspace-assets/requirements/RequirementEditDrawer.vue'
 import RequirementImportDialog from '@/components/workspace-assets/requirements/RequirementImportDialog.vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
@@ -45,14 +47,23 @@ const provisioningStore = useProvisioningStore()
 
 const wsId = computed(() => String(route.params.wsId || ''))
 const requirementId = computed(() => String(route.params.requirementId || ''))
+const taskCreation = useRequirementTaskCreation(() => wsId.value)
+watch(requirementId, () => taskCreation.close())
 
 const backLabelKey = computed(() =>
-  route.query.from === 'task'
+  route.query.from === 'session' ? 'task_rail.back_to_session' : route.query.from === 'task'
     ? 'workspace_assets.requirements.actions.back_to_task'
     : 'workspace_assets.requirements.actions.back_to_list',
 )
 
 function goBack() {
+  if (route.query.from === 'session') {
+    const taskId = typeof route.query.taskId === 'string' ? route.query.taskId : ''
+    void router.push(taskId
+      ? { name:'taskChat', params:{ wsId:wsId.value, taskId } }
+      : { name:'chat', params:{ wsId:wsId.value } })
+    return
+  }
   // 从 Task 上下文进入（?from=task）时回到来源 Task 页；其余一律显式回列表页。
   // 绝不能无脑 router.back()：详情可能由拆分评审页 push 而来，back() 会落回编辑页。
   if (route.query.from === 'task' && window.history.length > 1) {
@@ -77,7 +88,9 @@ async function reloadDetail() {
     detail.value = null
     return null
   }
+  const seq = ++detailLoadSeq
   const nextDetail = await loadRequirementDetail(wsId.value, requirementId.value)
+  if (seq !== detailLoadSeq) return null
   detail.value = nextDetail
   return nextDetail
 }
@@ -381,6 +394,7 @@ watch(
   },
   { immediate: true },
 )
+watch(() => provisioningStore.taskListRefreshToken, () => { void reloadDetail() })
 </script>
 
 <template>
@@ -389,6 +403,11 @@ watch(
       <ArrowLeft class="back-icon" />
       <span>{{ t(backLabelKey) }}</span>
     </button>
+    <div v-if="currentRequirement" class="requirement-task-action">
+      <h2>{{ currentRequirement.title }}</h2>
+      <button type="button" class="btn-primary" :disabled="!taskCreation.canCreateTask.value || !currentRequirement.can_link_task || currentRequirement.child_count > 0" :title="currentRequirement.child_count > 0 ? t('task_rail.leaf_only') : undefined" @click="taskCreation.open(currentRequirement)">{{ t('task_rail.create_for_requirement') }}</button>
+    </div>
+    <RequirementTaskCreateDialog :workspace-id="wsId" :requirement="taskCreation.selectedRequirement.value" @close="taskCreation.close" @created="reloadDetail" />
 
     <el-alert
       v-if="error"
@@ -450,6 +469,9 @@ watch(
 
 <style scoped>
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
+
+.requirement-task-action { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:8px 0 20px; }
+.requirement-task-action h2 { font-size:1.1rem; margin:0; }
 
 .requirement-detail-view {
   min-height: 100%;

@@ -209,7 +209,7 @@ describe('NewTaskModal diagnosis mode', () => {
     await flushPromises()
 
     // 诊断态同样显示 Skills 入口条（不含仓库/诊断规程入口），可展开侧栏勾选
-    const skillsEntry = wrapper.find('.skills-entry-card:not(.repo-entry-card):not(.playbook-entry-card)')
+    const skillsEntry = wrapper.find('.skill-picker-entry-card')
     expect(skillsEntry.exists()).toBe(true)
     await skillsEntry.trigger('click')
     await flushPromises()
