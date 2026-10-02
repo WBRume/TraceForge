@@ -49,17 +49,20 @@ export function useTaskList(options: {
     && (!options.getRailFilter || options.getRailFilter().view === 'all')
   )
 
-  const loadTasks = async (loadOptions?: { reset?: boolean; trySelectRouteTask?: boolean; onLoaded?: () => void }) => {
+  const loadTasks = async (loadOptions?: { reset?: boolean; clear?: boolean; trySelectRouteTask?: boolean; onLoaded?: () => void }) => {
     const reset = loadOptions?.reset ?? true
     const trySelectRouteTask = loadOptions?.trySelectRouteTask ?? reset
+    const shouldClear = loadOptions?.clear ?? (tasks.value.length === 0)
     if (reset) {
       requestGeneration++
       requestController?.abort()
       taskListLoading.value = true
       taskListLoadingMore.value = false
       taskListPage.value = 1
-      tasks.value = []
-      taskListTotal.value = 0
+      if (shouldClear) {
+        tasks.value = []
+        taskListTotal.value = 0
+      }
       if (taskListContainer.value) taskListContainer.value.scrollTop = 0
     } else {
       if (taskListLoading.value || taskListLoadingMore.value || !taskListHasMore.value) return

@@ -58,4 +58,25 @@ describe('task list rail filters', () => {
     expect(api.get.mock.calls.at(-1)?.[1].params).toMatchObject({ following:'true' })
     wrapper.unmount()
   })
+
+  it('preserves existing tasks during reload to avoid jumping to empty loading state', async () => {
+    const { list, wrapper } = harness()
+    list.tasks.value = [{ id: 'task-1' }, { id: 'task-2' }]
+    let resolveReload!: (value: unknown) => void
+    api.get.mockImplementationOnce(() => new Promise((resolve) => { resolveReload = resolve }))
+    const flight = list.loadTasks({ trySelectRouteTask: false })
+    // While loading in flight, tasks must NOT be wiped out to []
+    expect(list.taskListLoading.value).toBe(true)
+    expect(list.tasks.value).toHaveLength(2)
+
+    resolveReload({ data: { items: [{ id: 'task-1' }], total: 1 } })
+    await flight
+    expect(list.tasks.value).toEqual([{ id: 'task-1' }])
+
+    // Explicit clear: true wipes immediately
+    api.get.mockImplementationOnce(() => new Promise(() => {}))
+    void list.loadTasks({ clear: true })
+    expect(list.tasks.value).toEqual([])
+    wrapper.unmount()
+  })
 })

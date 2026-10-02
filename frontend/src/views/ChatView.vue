@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { proxyRefs } from 'vue'
-import { ChevronDown, Loader2 } from '@/components/icons'
+import { ChevronDown, Loader2, MessageSquare } from '@/components/icons'
 import NewTaskModal from '@/components/task-create/NewTaskModal.vue'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import ChatExecutionInput from '@/components/chat/ChatExecutionInput.vue'
@@ -301,8 +301,9 @@ watch(
 
     <!-- Empty State -->
     <section class="chat-main empty-state" v-else>
-      <Loader2 class="w-8 h-8 spin text-primary-light" />
-      <p class="empty-text">{{ $t('chat.empty_hint') }}</p>
+      <Loader2 v-if="vm.route.params.taskId" class="w-8 h-8 spin text-primary-light" />
+      <MessageSquare v-else class="empty-icon" />
+      <p class="empty-text">{{ vm.route.params.taskId ? $t('common.loading') : $t('chat.empty_hint') }}</p>
     </section>
 
     <!-- Right: Spec / Diagnosis Drawer -->
@@ -497,6 +498,12 @@ watch(
   backdrop-filter: blur(6px) saturate(0.88);
   -webkit-backdrop-filter: blur(6px) saturate(0.88);
   animation: session-operation-glass-in 0.2s ease-out;
+}
+.empty-icon {
+  width: 44px;
+  height: 44px;
+  color: var(--color-text-muted);
+  opacity: 0.36;
 }
 .empty-text {
   margin-top: var(--space-4);

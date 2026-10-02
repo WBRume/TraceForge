@@ -253,19 +253,24 @@ const router = createRouter({
           component: () => import('../views/DashboardView.vue')
         },
         {
-          path: 'chat',
-          name: 'chat',
-          component: () => import('../views/ChatView.vue')
-        },
-        {
           path: 'chat/:taskId/spec',
           name: 'taskSpec',
           component: () => import('../views/TaskSpecView.vue')
         },
         {
-          path: 'chat/:taskId',
+          path: 'chat/:taskId?',
           name: 'taskChat',
           component: () => import('../views/ChatView.vue')
+        },
+        {
+          path: 'chat',
+          name: 'chat',
+          redirect: (to) => ({
+            name: 'taskChat',
+            params: { wsId: to.params.wsId },
+            query: to.query,
+            hash: to.hash,
+          }),
         },
         {
           path: 'assets',
