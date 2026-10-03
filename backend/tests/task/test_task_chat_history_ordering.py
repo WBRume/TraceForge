@@ -25,7 +25,10 @@ from app.domains.task.models.task import SddTask  # noqa: E402
 from app.domains.task.models.chat import ChatMessage, MessageType  # noqa: E402
 from app.domains.task.models.log import LogType, SddExecutionLog  # noqa: E402
 from app.domains.task.schemas.diagnosis import DiagnosisResultPayload  # noqa: E402
-from app.domains.task.services import diagnosis_result_service, task_service  # noqa: E402
+from app.domains.task.services import diagnosis_result_service  # noqa: E402
+
+from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.conversation import messages as task_conversation_messages
 
 
 @pytest.fixture()
@@ -64,7 +67,7 @@ def test_task_history_keeps_streamed_bubbles_in_insertion_order(db_session):
     task = _seed_task(db)
 
     for index in range(3):
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -81,7 +84,7 @@ def test_task_history_keeps_streamed_bubbles_in_insertion_order(db_session):
     )
     db.commit()
 
-    history = task_service.get_task_history(db, task.id, task.workspace_id)
+    history = task_conversation_history.get_task_history(db, task.id, task.workspace_id)
     contents = [m["content"] for m in history["messages"]]
     assert contents == ["stream-chunk-0", "stream-chunk-1", "stream-chunk-2"]
     assert len(history["messages"]) == 3
@@ -93,7 +96,7 @@ def test_task_history_pagination_returns_latest_page_first(db_session):
 
     total = 120
     for index in range(total):
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -110,17 +113,17 @@ def test_task_history_pagination_returns_latest_page_first(db_session):
     )
     db.commit()
 
-    page1 = task_service.get_task_history(db, task.id, task.workspace_id, page=1, page_size=50)
+    page1 = task_conversation_history.get_task_history(db, task.id, task.workspace_id, page=1, page_size=50)
     assert len(page1["messages"]) == 50
     assert page1["has_more"] is True
     assert [m["content"] for m in page1["messages"]] == [f"msg-{i}" for i in range(70, 120)]
 
-    page2 = task_service.get_task_history(db, task.id, task.workspace_id, page=2, page_size=50)
+    page2 = task_conversation_history.get_task_history(db, task.id, task.workspace_id, page=2, page_size=50)
     assert len(page2["messages"]) == 50
     assert page2["has_more"] is True
     assert [m["content"] for m in page2["messages"]] == [f"msg-{i}" for i in range(20, 70)]
 
-    page3 = task_service.get_task_history(db, task.id, task.workspace_id, page=3, page_size=50)
+    page3 = task_conversation_history.get_task_history(db, task.id, task.workspace_id, page=3, page_size=50)
     assert len(page3["messages"]) == 20
     assert page3["has_more"] is False
     assert [m["content"] for m in page3["messages"]] == [f"msg-{i}" for i in range(20)]
@@ -170,7 +173,7 @@ def test_task_history_limits_terminal_logs_and_excludes_provider_noise(db_sessio
     ])
     db.commit()
 
-    history = task_service.get_task_history(
+    history = task_conversation_history.get_task_history(
         db,
         task.id,
         task.workspace_id,
@@ -195,7 +198,7 @@ def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):
     db.commit()
 
     for index in range(3):
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -219,7 +222,7 @@ def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):
     )
     db.commit()
 
-    history = task_service.get_task_history(db, task.id, task.workspace_id)
+    history = task_conversation_history.get_task_history(db, task.id, task.workspace_id)
     types = [m["type"] for m in history.get("messages", [])]
     # 最后一条必须是定位结果卡片，而不是与上一个 assistant 文本气泡倒转
     assert types[-1] == MessageType.DIAGNOSIS_RESULT.value
@@ -233,7 +236,7 @@ def test_diagnosis_result_card_moves_to_end_when_updated_again(db_session):
     db.commit()
 
     for index in range(3):
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -252,7 +255,7 @@ def test_diagnosis_result_card_moves_to_end_when_updated_again(db_session):
 
     # 卡片生成后，会话又追加了两条回复
     for index in range(2):
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db,
             task_id=task.id,
             workspace_id=task.workspace_id,
@@ -276,7 +279,7 @@ def test_diagnosis_result_card_moves_to_end_when_updated_again(db_session):
     )
     db.commit()
 
-    history = task_service.get_task_history(db, task.id, task.workspace_id)
+    history = task_conversation_history.get_task_history(db, task.id, task.workspace_id)
     types = [m["type"] for m in history.get("messages", [])]
     assert types == [
         "text",

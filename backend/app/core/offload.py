@@ -18,7 +18,7 @@
     rows = await run_db(load_history, task_id)
 
     # 事务闭包（线程内创建 SessionLocal，body 正常返回即 commit）
-    msg = await run_db_txn(lambda db: task_service.save_chat_message(
+    msg = await run_db_txn(lambda db: messages.save_chat_message(
         db, task_id, workspace_id, creator_id, role="user", content=content,
     ))
 """

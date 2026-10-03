@@ -25,6 +25,8 @@ from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError, attemp
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import diagnosis_result_service
 
+from app.domains.task.services.conversation import history as task_conversation_history
+
 logger = get_logger(__name__, category="ai_session")
 
 
@@ -45,7 +47,7 @@ def _resolve_task_project_path(task) -> str:
 def collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int = 60000) -> str:
     """汇总问题定位任务的会话文本（user/assistant/system），供一键总结使用。"""
     from app.domains.task.models.chat import ChatMessage, MessageType
-    from app.domains.task.services import task_service as task_service_module
+
 
     rows = (
         db.query(ChatMessage)
@@ -55,7 +57,7 @@ def collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int 
         )
         .all()
     )
-    rows = task_service_module.sort_chat_messages(rows)
+    rows = task_conversation_history.sort_chat_messages(rows)
     parts = []
     for row in rows:
         role = str(row.role.value) if hasattr(row.role, "value") else str(row.role)

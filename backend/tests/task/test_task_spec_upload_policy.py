@@ -13,8 +13,10 @@ if TEST_ROOT not in sys.path:
 import pytest  # noqa: E402
 
 from app.domains.task.models.task_cli_bootstrap import SddTaskCliBootstrap  # noqa: E402
-from app.domains.task.services import task_service  # noqa: E402
+  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
+
+from app.domains.task.services.task_workspace import specification as task_task_workspace_specification
 
 
 def test_upload_task_spec_rejects_doc(tmp_path):
@@ -25,7 +27,7 @@ def test_upload_task_spec_rejects_doc(tmp_path):
             task.project_path = str(tmp_path)
             db.commit()
             with pytest.raises(ValueError, match=r"\.doc"):
-                task_service.upload_task_spec(db, task.id, "spec.doc", b"legacy")
+                task_task_workspace_specification.upload_task_spec(db, task.id, "spec.doc", b"legacy")
             # 不应留下任何文件/资产
             assert not os.path.exists(os.path.join(tmp_path, ".sdd", "spec", "spec.doc"))
     finally:
@@ -39,7 +41,7 @@ def test_upload_task_spec_accepts_pdf_and_stores_original(tmp_path):
             _user, _ws, task = _seed_workspace(db)
             task.project_path = str(tmp_path)
             db.commit()
-            _path, asset_id, version_id = task_service.upload_task_spec(
+            _path, asset_id, version_id = task_task_workspace_specification.upload_task_spec(
                 db, task.id, "spec.pdf", b"%PDF-1.4 fake"
             )
             from app.domains.asset.services.document.repository import get_asset_version
@@ -53,10 +55,10 @@ def test_upload_task_spec_accepts_pdf_and_stores_original(tmp_path):
 
 
 def test_spec_bootstrap_enabled_for_ext():
-    assert task_service.spec_bootstrap_enabled_for_ext(".docx") is True
-    assert task_service.spec_bootstrap_enabled_for_ext(".md") is True
-    assert task_service.spec_bootstrap_enabled_for_ext(".txt") is True
-    assert task_service.spec_bootstrap_enabled_for_ext(".pdf") is False
+    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".docx") is True
+    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".md") is True
+    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".txt") is True
+    assert task_task_workspace_specification.spec_bootstrap_enabled_for_ext(".pdf") is False
 
 
 def test_serialize_asset_includes_source_ext():

@@ -11,9 +11,11 @@ from sqlalchemy.orm import Session
 from app.domains.task.models.task import SddTask
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.services.history_window_service import keyset, ORDER_COLUMNS
-from app.domains.task.services.task_service import serialize_history_messages
+
 from app.domains.search.service import authorized_scope
 from app.domains.search.sessions import sign, unsign
+
+from app.domains.task.services.conversation.history import serialize_history_messages
 
 
 def window(db: Session, user, ws, task_id, message_id=None, cursor=None, direction="before", before=15, after=15, limit=30):

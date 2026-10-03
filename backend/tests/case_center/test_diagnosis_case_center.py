@@ -27,6 +27,9 @@ from app.domains.task.routers import task as task_router  # noqa: E402
 from app.domains.case_center.routers import case as case_center_router  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
+from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+from app.domains.task.services.task_records.queries import list_tasks
+
 
 def _build_app(SessionLocal, user):
     def _override_db():
@@ -56,7 +59,7 @@ def _seed_diagnosis_task(db, workspace_id="ws-diag", task_id="task-diag"):
 
 
 def test_create_diagnosis_task_via_service_and_filter():
-    from app.domains.task.services.task_service import create_task_record_for_provision, list_tasks
+
 
     engine, SessionLocal = _build_db()
     try:

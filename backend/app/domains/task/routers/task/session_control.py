@@ -29,14 +29,9 @@ from app.domains.task.schemas.task import (
     TaskResumeInterruptedRequest,
     TaskUndoMessageRequest,
 )
-from app.domains.task.services import (
-    chat_submission_service,
-    context_token_service,
-    pre_input_service,
-    task_service,
-    task_session_control_service,
-    task_session_service,
-)
+from app.domains.task.services import chat_submission_service, context_token_service, pre_input_service, task_session_control_service, task_session_service
+
+from app.domains.task.services.task_records import queries as task_task_records_queries
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
@@ -207,7 +202,7 @@ async def submit_chat(
 
     def authorize(session: Session) -> None:
         verify_workspace_access(ws_id, actor_id, session)
-        if not task_service.get_task(session, task_id, ws_id):
+        if not task_task_records_queries.get_task(session, task_id, ws_id):
             raise HTTPException(404, "Task not found")
 
     await run_route_db_txn(db, bind, authorize)
@@ -235,7 +230,7 @@ def get_task_session_state(
     """Initialization and exception-recovery snapshot: active receipt, receipts for
     the caller's unconfirmed idempotency keys, active jobs and their messages."""
     verify_workspace_access(ws_id, current_user.id, db)
-    if not task_service.get_task(db, task_id, ws_id):
+    if not task_task_records_queries.get_task(db, task_id, ws_id):
         raise HTTPException(404, "Task not found")
     keys = [value for value in (client_message_ids or "").split(",") if value.strip()]
     state = chat_submission_service.build_session_state(

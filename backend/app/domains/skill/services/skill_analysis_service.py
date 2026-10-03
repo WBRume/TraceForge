@@ -28,8 +28,10 @@ from app.domains.skill.models.skill import (
     SkillRiskLevel,
 )
 from app.domains.auth.models.user import User
-from app.domains.skill.services import skill_service
-from app.domains.skill.services.skill import git_service, storage_service
+
+from app.domains.skill.services.packages import git as git_service, storage as storage_service
+
+from app.domains.skill.services.packages import versions as skill_packages_versions
 
 
 LARGE_FILE_BYTES = 1024 * 1024
@@ -239,13 +241,13 @@ def _resolve_ref(
     if kind == SkillAnalysisRefKind.VERSION:
         if not version_id:
             raise ValueError("version_id is required for VERSION analysis")
-        version = skill_service.get_skill_version(db, skill.id, version_id)
+        version = skill_packages_versions.get_skill_version(db, skill.id, version_id)
         if not version:
             raise ValueError("Skill version not found")
         return kind, version, version.commit_sha
 
     if kind == SkillAnalysisRefKind.LATEST:
-        version = skill_service.get_latest_skill_version(db, skill.id)
+        version = skill_packages_versions.get_latest_skill_version(db, skill.id)
         if not version:
             return SkillAnalysisRefKind.WORKTREE, None, None
         return kind, version, version.commit_sha

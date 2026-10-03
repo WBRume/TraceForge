@@ -2,12 +2,14 @@
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.reading import TaskReadingItem
 from app.domains.task.services import reading_capture_service as rcs
-from app.domains.task.services import task_service
+
+from app.domains.task.services.conversation import messages as task_conversation_messages
+
 
 
 def _save(env, *, role, content, message_type="text", creator="user-a", metadata=None):
     db = env["db"]
-    return task_service.save_chat_message(
+    return task_conversation_messages.save_chat_message(
         db, task_id=env["task_id"], workspace_id=env["ws_id"], creator_id=creator,
         role=role, content=content, message_type=message_type, metadata_json=metadata,
     )
@@ -117,7 +119,7 @@ def test_capture_failure_aborts_transaction(seeded_db):
     db = env["db"]
     # 任务不存在：序号分配/捕获抛错，源消息不得残留
     try:
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db, task_id="missing-task", workspace_id=env["ws_id"], creator_id="user-a",
             role="user", content="orphan", message_type="text",
         )

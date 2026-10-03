@@ -243,7 +243,7 @@ async def run(kind, once=False, stop_event=None):
     from app.domains.search.registry import load_models
     load_models()
     # Load the application's model registry without starting its runtime.
-    from app.domains.task.services import task_service  # noqa: F401
+      # noqa: F401
     if kind == 'search' and stop_event is None:
         from .sqlite_index import bootstrap
         await bootstrap(asyncio.Event())

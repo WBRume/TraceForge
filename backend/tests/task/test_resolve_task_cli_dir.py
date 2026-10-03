@@ -22,7 +22,9 @@ from app.domains.task.models.task_repository import (  # noqa: E402
     SddTaskRepository,
     TaskRepositoryState,
 )
-from app.domains.task.services import task_service  # noqa: E402
+
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
+  # noqa: E402
 
 
 def _build_session():
@@ -95,7 +97,7 @@ def test_multi_repo_task_cli_dir_is_task_root_not_primary_repo(tmp_path, monkeyp
     task.project_path = str(root)
     db.commit()
 
-    cli_dir = task_service.resolve_task_cli_dir(db, task)
+    cli_dir = task_task_workspace_repositories.resolve_task_cli_dir(db, task)
     assert os.path.normcase(os.path.abspath(cli_dir)) == os.path.normcase(os.path.abspath(str(root)))
     # It must NOT point into the first repository worktree.
     assert cli_dir != os.path.join(str(root), "repo-a")
@@ -111,7 +113,7 @@ def test_single_repo_task_cli_dir_is_task_root(tmp_path):
     task.project_path = str(root)
     db.commit()
 
-    cli_dir = task_service.resolve_task_cli_dir(db, task)
+    cli_dir = task_task_workspace_repositories.resolve_task_cli_dir(db, task)
     assert os.path.normcase(os.path.abspath(cli_dir)) == os.path.normcase(os.path.abspath(str(root)))
 
 
@@ -131,4 +133,4 @@ def test_resolve_task_cli_dir_falls_back_to_dot_when_project_path_empty():
     db.add_all([user, workspace, task])
     db.commit()
 
-    assert task_service.resolve_task_cli_dir(db, task) == "."
+    assert task_task_workspace_repositories.resolve_task_cli_dir(db, task) == "."

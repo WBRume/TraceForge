@@ -37,6 +37,8 @@ from app.domains.search.capture import install_capture
 from app.domains.search.models import SearchOutbox, SearchDocumentState
 from app.domains.search.projection import build_search_projection
 
+from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+
 
 @pytest.fixture(autouse=True)
 def local_submission_locks(monkeypatch):
@@ -341,7 +343,7 @@ def test_local_opencode_catalogue_uses_bound_resource_workspace(task_db, monkeyp
 
 
 def test_create_task_persists_model_preference_without_losing_diagnosis_metadata(task_db):
-    from app.domains.task.services.task_service import create_task_record_for_provision
+
     task_db.get(Workspace, "w").agent_backend = "dsh"
     task_db.commit()
     chosen = {"backend": "dsh", "model": "private/new-task"}

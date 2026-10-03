@@ -11,8 +11,11 @@ from app.config import settings
 from app.core.logging import get_logger
 from app.database import SessionLocal
 from app.domains.auth.services import auth_service
-from app.domains.skill.services import skill_runtime_trace_service, skill_service
+from app.domains.skill.services import skill_runtime_trace_service
 from app.domains.task.models.task import SddTask
+
+from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -53,14 +56,14 @@ def record_playbook_result_sync(task_id, fence, text, job_id, streamed_text=""):
 
 def resolve_project_path_sync(task_id: str) -> str:
     """线程内执行：解析任务的工作目录（CLI cwd）。"""
-    from app.domains.task.services import task_service
+
 
     db = SessionLocal()
     try:
         task = db.query(SddTask).filter(SddTask.id == task_id).first()
         if not task:
             return "."
-        return task_service.resolve_task_cli_dir(db, task)
+        return task_task_workspace_repositories.resolve_task_cli_dir(db, task)
     finally:
         db.close()
 
@@ -69,7 +72,7 @@ def materialize_task_skills_sync(task_id: str) -> None:
     """线程内执行（run_git_job）：把任务装配的技能物化到工作目录。"""
     db = SessionLocal()
     try:
-        skill_service.materialize_task_skills(db, task_id)
+        skill_runtime_materialization.materialize_task_skills(db, task_id)
     finally:
         db.close()
 

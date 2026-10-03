@@ -12,8 +12,12 @@ if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
 from app.domains.skill.models.skill import SddSkill, SkillDimension  # noqa: E402
-from app.domains.skill.services import skill_service  # noqa: E402
-from app.domains.skill.services.skill import git_service, github_import_service, storage_service  # noqa: E402
+  # noqa: E402
+from app.domains.skill.services.packages import git as git_service, github_source as github_import_service, storage as storage_service
+
+from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import github as skill_packages_github
+from app.domains.skill.services.packages import versions as skill_packages_versions
 
 
 def _write_text(path: str, content: str) -> None:
@@ -82,7 +86,7 @@ class GithubImportFlowTest(unittest.TestCase):
             with (
                 mock.patch.object(storage_service.settings, "SKILLS_STORAGE_ROOT", storage_root),
                 mock.patch.object(
-                    skill_service,
+                    skill_catalog_policy,
                     "_resolve_creation_target_scope",
                     return_value=(SkillDimension.WORKSPACE, "ws-1"),
                 ),
@@ -94,12 +98,12 @@ class GithubImportFlowTest(unittest.TestCase):
                 mock.patch.object(git_service, "ensure_repo_initialized"),
                 mock.patch.object(git_service, "commit_all", return_value=commit_meta),
                 mock.patch.object(
-                    skill_service,
-                    "_create_version_row",
-                    return_value=SimpleNamespace(version_no=1),
-                ) as mock_create_version,
+                    skill_packages_versions,
+                    "_next_version_no",
+                    return_value=1,
+                ),
             ):
-                imported = skill_service.import_skill_from_github(
+                imported = skill_packages_github.import_skill_from_github(
                     db=db,
                     user=user,
                     context_workspace_id="ws-1",
@@ -124,9 +128,9 @@ class GithubImportFlowTest(unittest.TestCase):
                 self.assertTrue(db.committed)
                 self.assertFalse(db.rollback_called)
 
-                _, kwargs = mock_create_version.call_args
-                self.assertIn("Import from GitHub", str(kwargs.get("change_note") or ""))
-                self.assertIn("#skills/demo-skill", str(kwargs.get("change_note") or ""))
+                version = db.added[-1]
+                self.assertIn("Import from GitHub", version.change_note)
+                self.assertIn("#skills/demo-skill", version.change_note)
 
     def test_import_package_from_directory_rejects_symlink(self):
         with tempfile.TemporaryDirectory() as temp_root:

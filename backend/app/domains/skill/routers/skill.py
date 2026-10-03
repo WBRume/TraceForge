@@ -43,8 +43,18 @@ from app.domains.skill.schemas.skill import (
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
 from app.domains.auth.services import auth_service
 from app.domains.workflow.services import provision_job_service
-from app.domains.skill.services import skill_analysis_service, skill_service
+from app.domains.skill.services import skill_analysis_service
 from app.domains.workspace.services import workspace_service
+
+from app.domains.skill.services.catalog import commands as skill_catalog_commands
+from app.domains.skill.services.catalog import creation as skill_catalog_creation
+from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.catalog import queries as skill_catalog_queries
+from app.domains.skill.services.packages import editing as skill_packages_editing
+from app.domains.skill.services.packages import github as skill_packages_github
+from app.domains.skill.services.packages import versions as skill_packages_versions
+from app.domains.skill.services.reviews import comments as skill_reviews_comments
+from app.domains.skill.services.reviews import ratings as skill_reviews_ratings
 
 router = APIRouter(prefix="/skills", tags=["Skills"])
 _SKILL_BUSY_MSG = "Skill is being modified by another request. Please retry later."
@@ -86,9 +96,9 @@ def _skill_dimension_value(skill) -> str:
 
 def _to_skill_response(db: Session, ws_id: str | None, skill, current_user: User) -> SkillResponse:
     context_ws_id = _normalize_workspace_id(ws_id) or _normalize_workspace_id(skill.workspace_id)
-    latest_version = skill_service.get_latest_skill_version(db, skill.id)
+    latest_version = skill_packages_versions.get_latest_skill_version(db, skill.id)
     try:
-        publish_status = skill_service.get_skill_package_publish_status(skill)
+        publish_status = skill_packages_versions.get_skill_package_publish_status(skill)
     except Exception:
         publish_status = {
             "publish_state": "PUBLISHED",
@@ -102,13 +112,13 @@ def _to_skill_response(db: Session, ws_id: str | None, skill, current_user: User
     can_review = False
     is_workspace_expert = False
     if context_ws_id and workspace_service.get_workspace_member(db, context_ws_id, current_user.id):
-        average_score, review_count, my_score, my_note = skill_service.get_skill_rating_summary(
+        average_score, review_count, my_score, my_note = skill_reviews_ratings.get_skill_rating_summary(
             db,
             context_ws_id,
             skill,
             current_user.id,
         )
-        can_review = skill_service.can_review_skill(db, current_user, context_ws_id, skill)
+        can_review = skill_catalog_policy.can_review_skill(db, current_user, context_ws_id, skill)
         is_workspace_expert = workspace_service.is_workspace_expert(db, context_ws_id, current_user.id)
 
     return SkillResponse(
@@ -135,7 +145,7 @@ def _to_skill_response(db: Session, ws_id: str | None, skill, current_user: User
         source_last_synced_at=skill.source_last_synced_at,
         created_at=skill.created_at,
         updated_at=skill.updated_at,
-        can_manage=skill_service.can_manage_skill(db, skill, current_user),
+        can_manage=skill_catalog_policy.can_manage_skill(db, skill, current_user),
         publish_state=str(publish_status.get("publish_state") or "PUBLISHED"),
         has_pending_changes=bool(publish_status.get("has_pending_changes")),
         changed_files_count=int(publish_status.get("changed_files_count") or 0),
@@ -214,7 +224,7 @@ def _to_rating_item(rating) -> SkillRatingItem:
 
 
 def _get_visible_skill_or_404(db: Session, ws_id: str | None, skill_id: str):
-    skill = skill_service.get_skill(db, skill_id)
+    skill = skill_catalog_queries.get_skill(db, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     normalized_ws_id = _normalize_workspace_id(ws_id)
@@ -222,7 +232,7 @@ def _get_visible_skill_or_404(db: Session, ws_id: str | None, skill_id: str):
         if _skill_dimension_value(skill) != "GLOBAL":
             raise HTTPException(status_code=422, detail="workspace_id is required for workspace skill")
         return skill
-    if not skill_service.ensure_skill_visible_in_workspace(skill, normalized_ws_id):
+    if not skill_catalog_policy.ensure_skill_visible_in_workspace(skill, normalized_ws_id):
         raise HTTPException(status_code=404, detail="Skill not found in this workspace scope")
     return skill
 
@@ -237,7 +247,7 @@ def _get_skill_for_manage(db: Session, current_user: User, workspace_id: str | N
     if workspace_id:
         _verify_manage_skills_permission(workspace_id, current_user, db)
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
-    if not skill_service.can_manage_skill(db, skill, current_user):
+    if not skill_catalog_policy.can_manage_skill(db, skill, current_user):
         raise HTTPException(status_code=403, detail="No permission to modify this skill")
     return skill
 
@@ -253,7 +263,7 @@ def list_skills(
     db: Session = Depends(get_db),
 ):
     try:
-        skills, total = skill_service.list_skills_paginated(
+        skills, total = skill_catalog_queries.list_skills_paginated(
             db,
             current_user,
             workspace_id=workspace_id,
@@ -287,7 +297,7 @@ def create_skill(
             raise HTTPException(status_code=422, detail="workspace_id is required for workspace skill")
         _verify_manage_skills_permission(context_workspace_id, current_user, db)
     try:
-        skill = skill_service.create_skill(
+        skill = skill_catalog_creation.create_skill(
             db,
             current_user,
             context_workspace_id=context_workspace_id,
@@ -431,7 +441,7 @@ def _update_skill_common(
         _verify_manage_skills_permission(requested_workspace_id, current_user, db)
 
     try:
-        updated = skill_service.update_skill_metadata(
+        updated = skill_catalog_commands.update_skill_metadata(
             db,
             current_user,
             skill,
@@ -484,7 +494,7 @@ async def sync_skill_official_source(
 
     try:
         async with lock_skill(skill_id):
-            skill_service.sync_skill_from_official_source(
+            skill_packages_github.sync_skill_from_official_source(
                 db,
                 current_user,
                 skill,
@@ -515,7 +525,7 @@ async def delete_skill(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    skill = skill_service.get_skill(db, skill_id)
+    skill = skill_catalog_queries.get_skill(db, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill not found")
     skill_dimension = skill.dimension.value if hasattr(skill.dimension, "value") else str(skill.dimension)
@@ -523,12 +533,12 @@ async def delete_skill(
         if not workspace_id:
             raise HTTPException(status_code=422, detail="workspace_id is required for workspace skill deletion")
         _verify_manage_skills_permission(workspace_id, current_user, db)
-        if not skill_service.ensure_skill_visible_in_workspace(skill, workspace_id):
+        if not skill_catalog_policy.ensure_skill_visible_in_workspace(skill, workspace_id):
             raise HTTPException(status_code=404, detail="Skill not found in this workspace scope")
 
     try:
         async with lock_skill(skill_id):
-            skill_service.delete_skill(db, current_user, skill)
+            skill_catalog_commands.delete_skill(db, current_user, skill)
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
@@ -666,7 +676,7 @@ def get_skill_file_tree(
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
 
     try:
-        nodes = skill_service.build_skill_file_tree(db, skill, ref=ref)
+        nodes = skill_packages_editing.build_skill_file_tree(db, skill, ref=ref)
         return SkillFileTreeResponse(ref=ref or "WORKTREE", nodes=nodes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -684,7 +694,7 @@ def get_skill_file_content(
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
 
     try:
-        content, is_binary, size = skill_service.read_skill_file(db, skill, path=path, ref=ref)
+        content, is_binary, size = skill_packages_editing.read_skill_file(db, skill, path=path, ref=ref)
         return SkillFileContentResponse(
             ref=ref or "WORKTREE",
             path=path,
@@ -710,7 +720,7 @@ async def write_skill_file_content(
 
     try:
         async with lock_skill(skill_id):
-            size = skill_service.write_skill_file(skill, path=data.path, content=data.content)
+            size = skill_packages_editing.write_skill_file(skill, path=data.path, content=data.content)
         return SkillFileContentResponse(
             ref="WORKTREE",
             path=data.path,
@@ -738,7 +748,7 @@ async def create_skill_file_or_dir(
 
     try:
         async with lock_skill(skill_id):
-            skill_service.create_skill_file_or_dir(skill, path=data.path, node_type=data.node_type, content=data.content)
+            skill_packages_editing.create_skill_file_or_dir(skill, path=data.path, node_type=data.node_type, content=data.content)
         return {"msg": "Created"}
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
@@ -760,7 +770,7 @@ async def delete_skill_file_or_dir(
 
     try:
         async with lock_skill(skill_id):
-            skill_service.delete_skill_file_or_dir(skill, path=path)
+            skill_packages_editing.delete_skill_file_or_dir(skill, path=path)
         return {"msg": "Deleted"}
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
@@ -784,7 +794,7 @@ async def move_skill_file_or_dir(
 
     try:
         async with lock_skill(skill_id):
-            skill_service.move_skill_file_or_dir(skill, old_path=data.old_path, new_path=data.new_path)
+            skill_packages_editing.move_skill_file_or_dir(skill, old_path=data.old_path, new_path=data.new_path)
         return {"msg": "Moved"}
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
@@ -804,7 +814,7 @@ def list_skill_versions(
     db: Session = Depends(get_db),
 ):
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
-    versions = skill_service.list_skill_versions(db, skill.id)
+    versions = skill_packages_versions.list_skill_versions(db, skill.id)
     current_version_no = versions[0].version_no if versions else 0
     return SkillVersionListResponse(
         items=[_to_version_response(version) for version in versions],
@@ -822,7 +832,7 @@ def get_skill_publish_status(
 ):
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
     try:
-        status = skill_service.get_skill_package_publish_status(skill)
+        status = skill_packages_versions.get_skill_package_publish_status(skill)
         return SkillPublishStatusResponse(
             publish_state=str(status.get("publish_state") or "PUBLISHED"),
             has_pending_changes=bool(status.get("has_pending_changes")),
@@ -844,7 +854,7 @@ async def commit_skill_version(
 
     try:
         async with lock_skill(skill_id):
-            version = skill_service.commit_skill_package(
+            version = skill_packages_versions.commit_skill_package(
                 db,
                 current_user,
                 skill,
@@ -899,12 +909,12 @@ def compare_skill_versions(
 ):
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
 
-    from_version = skill_service.get_skill_version(db, skill.id, from_version_id)
-    to_version = skill_service.get_skill_version(db, skill.id, to_version_id)
+    from_version = skill_packages_versions.get_skill_version(db, skill.id, from_version_id)
+    to_version = skill_packages_versions.get_skill_version(db, skill.id, to_version_id)
     if not from_version or not to_version:
         raise HTTPException(status_code=404, detail="Version not found")
 
-    files = skill_service.compare_skill_versions(
+    files = skill_packages_versions.compare_skill_versions(
         db,
         skill,
         from_version=from_version,
@@ -930,13 +940,13 @@ def compare_skill_file(
 ):
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
 
-    from_version = skill_service.get_skill_version(db, skill.id, from_version_id)
-    to_version = skill_service.get_skill_version(db, skill.id, to_version_id)
+    from_version = skill_packages_versions.get_skill_version(db, skill.id, from_version_id)
+    to_version = skill_packages_versions.get_skill_version(db, skill.id, to_version_id)
     if not from_version or not to_version:
         raise HTTPException(status_code=404, detail="Version not found")
 
     try:
-        payload = skill_service.compare_skill_file_between_versions(
+        payload = skill_packages_versions.compare_skill_file_between_versions(
             skill,
             from_version=from_version,
             to_version=to_version,
@@ -964,7 +974,7 @@ def get_skill_version_detail(
     db: Session = Depends(get_db),
 ):
     skill = _get_skill_for_read(db, current_user, workspace_id, skill_id)
-    version = skill_service.get_skill_version(db, skill.id, version_id)
+    version = skill_packages_versions.get_skill_version(db, skill.id, version_id)
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
 
@@ -981,13 +991,13 @@ async def restore_skill_version(
     db: Session = Depends(get_db),
 ):
     skill = _get_skill_for_manage(db, current_user, workspace_id, skill_id)
-    version = skill_service.get_skill_version(db, skill.id, version_id)
+    version = skill_packages_versions.get_skill_version(db, skill.id, version_id)
     if not version:
         raise HTTPException(status_code=404, detail="Version not found")
 
     try:
         async with lock_skill(skill_id):
-            restored = skill_service.restore_skill_version(db, current_user, skill, version)
+            restored = skill_packages_versions.restore_skill_version(db, current_user, skill, version)
         return _to_version_response(restored)
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
@@ -1006,14 +1016,14 @@ def get_skill_review_overview(
     _verify_workspace_access(workspace_id, current_user, db)
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
 
-    latest = skill_service.get_latest_skill_version(db, skill.id)
-    average_score, review_count, my_score, my_note = skill_service.get_skill_rating_summary(
+    latest = skill_packages_versions.get_latest_skill_version(db, skill.id)
+    average_score, review_count, my_score, my_note = skill_reviews_ratings.get_skill_rating_summary(
         db,
         workspace_id,
         skill,
         current_user.id,
     )
-    can_review = skill_service.can_review_skill(db, current_user, workspace_id, skill)
+    can_review = skill_catalog_policy.can_review_skill(db, current_user, workspace_id, skill)
     return SkillReviewOverviewResponse(
         average_score=average_score,
         review_count=review_count,
@@ -1036,7 +1046,7 @@ def upsert_skill_rating(
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
 
     try:
-        rating = skill_service.upsert_skill_rating(
+        rating = skill_reviews_ratings.upsert_skill_rating(
             db,
             current_user,
             workspace_id,
@@ -1069,7 +1079,7 @@ def list_skill_ratings(
     _verify_workspace_access(workspace_id, current_user, db)
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
 
-    ratings = skill_service.list_skill_ratings(db, workspace_id, skill)
+    ratings = skill_reviews_ratings.list_skill_ratings(db, workspace_id, skill)
     return SkillRatingsResponse(
         items=[_to_rating_item(r) for r in ratings],
         total=len(ratings),
@@ -1089,7 +1099,7 @@ def list_skill_review_comments(
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
 
     try:
-        comments, resolved_version_id = skill_service.list_skill_review_comments(
+        comments, resolved_version_id = skill_reviews_comments.list_skill_review_comments(
             db,
             workspace_id,
             skill,
@@ -1119,7 +1129,7 @@ def create_skill_review_comment(
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
 
     try:
-        comment = skill_service.create_skill_review_comment(
+        comment = skill_reviews_comments.create_skill_review_comment(
             db,
             current_user,
             workspace_id,
@@ -1135,7 +1145,7 @@ def create_skill_review_comment(
             char_end=data.char_end,
             selected_text=data.selected_text,
         )
-        reloaded = skill_service.get_skill_review_comment(db, skill_id, comment.id) or comment
+        reloaded = skill_reviews_comments.get_skill_review_comment(db, skill_id, comment.id) or comment
         return _to_comment_response(reloaded)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
@@ -1153,12 +1163,12 @@ def delete_skill_review_comment(
 ):
     _verify_workspace_access(workspace_id, current_user, db)
     skill = _get_visible_skill_or_404(db, workspace_id, skill_id)
-    comment = skill_service.get_skill_review_comment(db, skill_id, comment_id)
+    comment = skill_reviews_comments.get_skill_review_comment(db, skill_id, comment_id)
     if not comment:
         raise HTTPException(status_code=404, detail="Review comment not found")
 
     try:
-        skill_service.delete_skill_review_comment(db, current_user, skill, comment)
+        skill_reviews_comments.delete_skill_review_comment(db, current_user, skill, comment)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
 

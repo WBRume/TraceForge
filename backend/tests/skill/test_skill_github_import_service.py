@@ -9,7 +9,7 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-from app.domains.skill.services.skill.github_import_service import (  # noqa: E402
+from app.domains.skill.services.packages.github_source import (  # noqa: E402
     GithubImportError,
     _run_git_checked,
     _resolve_sparse_skill_subdir,
@@ -17,7 +17,7 @@ from app.domains.skill.services.skill.github_import_service import (  # noqa: E4
     parse_public_repo_url,
     read_skill_description,
 )
-from app.domains.skill.services.skill import github_import_service  # noqa: E402
+from app.domains.skill.services.packages import github_source as github_import_service
 
 
 def _write_text(path: str, content: str) -> None:
@@ -73,7 +73,7 @@ class GithubImportGitCommandTest(unittest.TestCase):
             def poll(self):
                 return None
 
-            def communicate(self, timeout=None):
+            def communicate(self, input=None, timeout=None):
                 self.communicate_calls += 1
                 if self.communicate_calls == 1:
                     raise subprocess.TimeoutExpired(["git", "clone"], timeout)

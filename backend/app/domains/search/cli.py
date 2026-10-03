@@ -220,7 +220,7 @@ def status(db):
 async def main(args):
     from app.domains.search.registry import load_models
     load_models()
-    from app.domains.task.services import task_service  # noqa: F401
+      # noqa: F401
     async with create_client() as es, httpx.AsyncClient(follow_redirects=False) as http:
         if args.command == "configure":
             result = await configure(http)

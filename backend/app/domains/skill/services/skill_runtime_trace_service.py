@@ -30,10 +30,12 @@ from app.domains.skill.models.skill import (
 )
 from app.domains.task.models.task import SddTask
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.skill.services import skill_service, task_skill_runtime_service
+from app.domains.skill.services import task_skill_runtime_service
 from app.domains.task.services import context_token_service
-from app.domains.skill.services.skill import storage_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.websocket.ws.manager import manager as ws_manager
+
+from app.domains.skill.services.runtime import layout as skill_runtime_layout
 
 
 RESULT_PREVIEW_LIMIT = 2000
@@ -92,7 +94,7 @@ def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIn
     records = task_skill_runtime_service.get_task_runtime_skill_records(db, task)
     from app.domains.local_resource.service import is_local, local_path
     project_path = local_path(db, task).replace("\\", "/") if is_local(task) else os.path.abspath(str(task.project_path or "."))
-    rel_root = skill_service.resolve_task_skills_rel_root(db, task)
+    rel_root = skill_runtime_layout.resolve_task_skills_rel_root(db, task)
     items: List[RuntimeSkillIndexItem] = []
     for record in records:
         folder = str(record.materialized_dir or "").strip()

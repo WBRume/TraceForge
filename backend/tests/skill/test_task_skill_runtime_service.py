@@ -11,6 +11,7 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
+from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 from app.domains.skill.services import skill_runtime_trace_service, task_skill_runtime_service
 
 
@@ -37,7 +38,7 @@ class TaskSkillRuntimeServiceTest(unittest.TestCase):
                     '"dimension":"WORKSPACE","materialized_dir":"git-commit"}]}'
                 )
 
-            with patch.object(task_skill_runtime_service.skill_service, "get_task_skills", return_value=[]):
+            with patch.object(skill_runtime_bindings, "get_task_skills", return_value=[]):
                 records = task_skill_runtime_service.get_task_runtime_skill_records(SimpleNamespace(), task)
                 tree = task_skill_runtime_service.build_task_runtime_skill_file_tree(
                     SimpleNamespace(),

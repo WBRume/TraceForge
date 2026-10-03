@@ -31,7 +31,7 @@ from app.domains.task.models.pre_input import (
     SddTaskPreInputContribution,
 )
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import task_service
+
 from app.domains.task.services import task_session_control_service
 from app.domains.task.services import task_session_service
 from app.domains.websocket.ws.manager import manager as task_ws_manager

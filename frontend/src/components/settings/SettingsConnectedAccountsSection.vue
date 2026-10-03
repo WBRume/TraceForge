@@ -315,7 +315,7 @@ onMounted(async () => {
   </section>
 </template>
 
-<style scoped src="@/styles/settings/settings-view-shared.css"></style>
+<style scoped src="@/styles/settings/accounts.css"></style>
 <style scoped>
 .block {
   margin-top: var(--space-6, 1.5rem);

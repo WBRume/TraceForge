@@ -36,14 +36,15 @@ from app.domains.auth.models.user import User, Workspace, WorkspaceMember, Works
 from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from app.domains.task.services import git_worktree_service  # noqa: E402
-from app.domains.task.services.task_service import (  # noqa: E402
-    create_task_record_for_provision,
-    list_tasks,
-)
+
 from app.domains.workflow.models.provision_job import ProvisionJobType, SddProvisionJob  # noqa: E402
 from app.domains.workflow.routers import provision as provision_router  # noqa: E402
 from app.domains.workflow.services import provision_job_service  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session  # noqa: E402
+
+from app.domains.task.services.provisioning import resources as task_provisioning_resources
+from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+from app.domains.task.services.task_records.queries import list_tasks
 
 
 @pytest.fixture(autouse=True)
@@ -276,7 +277,7 @@ def test_success_path_still_moves_task_to_pending(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("cancel_after_snapshot", [False, True])
 def test_snapshot_failure_or_cancel_never_publishes_ready_task(tmp_path, monkeypatch, cancel_after_snapshot):
-    from app.domains.task.services import task_service
+
 
     engine, SessionLocal = _build_db()
     try:
@@ -286,7 +287,7 @@ def test_snapshot_failure_or_cancel_never_publishes_ready_task(tmp_path, monkeyp
             task = create_task_record_for_provision(db, user, workspace.id, name="snapshot-fail")
             job = _seed_provision_job(db, user=user, workspace=workspace, task=task)
             task_id = task.id
-        original = task_service._prepare_initial_workspace_checkpoint
+        original = task_provisioning_resources._prepare_initial_workspace_checkpoint
         roots = []
 
         def initialize(db, ws, task):
@@ -301,7 +302,7 @@ def test_snapshot_failure_or_cancel_never_publishes_ready_task(tmp_path, monkeyp
                 check.get(SddProvisionJob, job.id).cancel_requested = True
                 check.commit()
 
-        monkeypatch.setattr(task_service, "_prepare_initial_workspace_checkpoint", initialize)
+        monkeypatch.setattr(task_provisioning_resources, "_prepare_initial_workspace_checkpoint", initialize)
         asyncio.run(provision_job_service.run_create_task_job(job.id))
         with _session(SessionLocal) as db:
             assert db.get(SddTask, task_id) is None
@@ -313,7 +314,7 @@ def test_snapshot_failure_or_cancel_never_publishes_ready_task(tmp_path, monkeyp
 
 
 def test_provisioning_baseline_makes_first_message_capture_warm(tmp_path, monkeypatch):
-    from app.domains.task.services import task_service, task_git_snapshot_store as store
+    from app.domains.task.services import task_git_snapshot_store as store
     from app.domains.task.services import task_session_snapshot_service as snapshots
 
     engine, SessionLocal = _build_db()
@@ -321,7 +322,7 @@ def test_provisioning_baseline_makes_first_message_capture_warm(tmp_path, monkey
         with _session(SessionLocal) as db:
             user, workspace, _ = _seed_workspace(db, workspace_id="ws-warm", task_id="seed", project_path=str(tmp_path / "plain"))
             task = create_task_record_for_provision(db, user, workspace.id, name="warm")
-            task_service.prepare_task_resources_for_provision(db, workspace_id=workspace.id, task_id=task.id)
+            task_provisioning_resources.prepare_task_resources_for_provision(db, workspace_id=workspace.id, task_id=task.id)
             original = store.Shadow.initialize
 
             def require_warm(shadow):
@@ -346,7 +347,7 @@ def test_provisioning_baseline_makes_first_message_capture_warm(tmp_path, monkey
 def test_local_initial_snapshot_uses_bound_host_and_idempotent_operation(tmp_path, monkeypatch):
     from app.domains.local_resource import service as resource
     from app.domains.local_resource.snapshots import decode
-    from app.domains.task.services import task_service
+
 
     engine, SessionLocal = _build_db()
     try:
@@ -358,8 +359,8 @@ def test_local_initial_snapshot_uses_bound_host_and_idempotent_operation(tmp_pat
         monkeypatch.setattr(resource, "execute", execute)
         with _session(SessionLocal) as db:
             _, ws, task = _seed_workspace(db, workspace_id="ws-local", task_id="local")
-            task_service._prepare_initial_workspace_checkpoint(db, ws, task)
-            task_service._prepare_initial_workspace_checkpoint(db, ws, task)
+            task_provisioning_resources._prepare_initial_workspace_checkpoint(db, ws, task)
+            task_provisioning_resources._prepare_initial_workspace_checkpoint(db, ws, task)
             assert decode(task.task_meta_json["initial_workspace_checkpoint"]) == ("local", "/host/snapshots/turn-initial")
             assert len(calls) == 1
             assert calls[0][0] == "snapshot"

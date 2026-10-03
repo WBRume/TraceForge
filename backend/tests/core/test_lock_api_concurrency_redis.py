@@ -19,11 +19,16 @@ if BACKEND_ROOT not in sys.path:
 from app.config import settings  # noqa: E402
 from app.core import distributed_lock as dl  # noqa: E402
 from app.core import redis_client as redis_client_module  # noqa: E402
+from app.domains.task.services.conversation import messages as task_conversation_messages
+from app.domains.skill.services.packages import versions as skill_packages_versions
 from app.domains.task.models.task import TaskStatus  # noqa: E402
 from app.domains.skill.routers import skill as skill_router
 from app.domains.task.routers import task as task_router
-from app.domains.task.services import task_service  # noqa: E402
+  # noqa: E402
 from app.domains.workflow.services import provision_job_service  # noqa: E402
+
+from app.domains.task.services.provisioning import creation as task_provisioning_creation
+from app.domains.task.services.task_records import queries as task_task_records_queries
 
 # 直连真实 Redis 的并发/压力检查（live 集成检查，默认随 pytest.ini 的 addopts 排除）。
 # 运行方式（显式指定要访问的 Redis，避免无意触及任何环境）：
@@ -129,13 +134,13 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         "app.domains.task.routers.task.session_runs.verify_workspace_permission",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(task_service, "get_task", lambda db, task_id, ws_id: fake_task)
+    monkeypatch.setattr(task_task_records_queries, "get_task", lambda db, task_id, ws_id: fake_task)
     monkeypatch.setattr(
         "app.domains.task.services.task_session_control_service.get_engine",
         lambda task_id: None,
     )
     monkeypatch.setattr(
-        task_router.task_service,
+        task_conversation_messages,
         "save_chat_message",
         lambda *args, **kwargs: SimpleNamespace(id="message-start-1"),
     )
@@ -222,7 +227,7 @@ def test_commit_skill_endpoint_returns_409_when_lock_is_busy(monkeypatch: pytest
 
     monkeypatch.setattr(skill_router, "_verify_manage_skills_permission", lambda *args, **kwargs: None)
     monkeypatch.setattr(skill_router, "_get_visible_skill_or_404", lambda db, ws_id, skill_id: fake_skill)
-    monkeypatch.setattr(skill_router.skill_service, "commit_skill_package", _commit_skill_package)
+    monkeypatch.setattr(skill_packages_versions, "commit_skill_package", _commit_skill_package)
 
     original_blocking_timeout = settings.DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS
     settings.DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS = 0.05
@@ -352,7 +357,7 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
         "app.domains.task.routers.task.crud.verify_workspace_permission",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(task_service, "create_task_record_for_provision", _fake_create_task_record_for_provision)
+    monkeypatch.setattr(task_provisioning_creation, "create_task_record_for_provision", _fake_create_task_record_for_provision)
     monkeypatch.setattr(provision_job_service, "create_job", _fake_create_job)
     monkeypatch.setattr(provision_job_service, "run_create_task_job", _fake_run_create_task_job)
 

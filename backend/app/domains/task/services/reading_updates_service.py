@@ -24,7 +24,9 @@ from app.domains.task.services.reading_capture_service import (
     KIND_MESSAGE,
     KIND_RETRACTED,
 )
-from app.domains.task.services.task_service import serialize_history_messages
+
+from app.domains.task.services.conversation.history import serialize_history_messages
+
 
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 100

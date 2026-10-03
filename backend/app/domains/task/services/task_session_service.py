@@ -34,9 +34,11 @@ from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.skill.models.skill import SddSkillRuntimeEvent
 from app.domains.skill.services import skill_runtime_trace_service
 from app.domains.workspace_asset.models.workspace_asset import SddAiOutput, SddDecision, SddEvidence
-from app.domains.task.services import task_service, task_session_snapshot_service
+from app.domains.task.services import task_session_snapshot_service
 from app.domains.websocket.ws.manager import manager
 from app.engine.session import get_engine
+
+from app.domains.task.services.conversation import history as task_conversation_history
 
 logger = get_logger(__name__, category="task_session_undo")
 
@@ -630,7 +632,7 @@ def _suffix_message_ids(db: Session, task: SddTask, target_message: ChatMessage,
     # Assistant/tool messages may predate session_turn_id backfilling.  Use
     # the persisted order as a conservative fallback and remove everything at
     # or after the selected user message in the current task transcript.
-    all_messages = task_service.sort_chat_messages(
+    all_messages = task_conversation_history.sort_chat_messages(
         db.query(ChatMessage).filter(ChatMessage.task_id == task.id).all()
     )
     target_index = next((index for index, item in enumerate(all_messages) if item.id == target_message.id), None)

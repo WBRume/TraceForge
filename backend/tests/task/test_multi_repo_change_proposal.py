@@ -127,7 +127,7 @@ class MultiRepoPatchSnapshotTest(unittest.TestCase):
         binding_unchanged.state = TaskRepositoryState.READY
 
         with mock.patch(
-            "app.domains.task.services.task_service.get_task_repositories",
+            "app.domains.task.services.task_workspace.repositories.get_task_repositories",
             return_value=[binding_ready, binding_unchanged],
         ), mock.patch(
             "app.domains.task.services.git_patch_service.os.path.isdir",
@@ -161,7 +161,7 @@ class MultiRepoPatchSnapshotTest(unittest.TestCase):
         binding.state = TaskRepositoryState.READY
 
         with mock.patch(
-            "app.domains.task.services.task_service.get_task_repositories",
+            "app.domains.task.services.task_workspace.repositories.get_task_repositories",
             return_value=[binding],
         ), mock.patch(
             "app.domains.task.services.git_patch_service.os.path.isdir",
@@ -184,7 +184,7 @@ class MultiRepoPatchSnapshotTest(unittest.TestCase):
         db = mock.Mock()
 
         with mock.patch(
-            "app.domains.task.services.task_service.get_task_repositories",
+            "app.domains.task.services.task_workspace.repositories.get_task_repositories",
             return_value=[],
         ), mock.patch.object(
             git_patch_service,

@@ -32,7 +32,10 @@ from app.domains.task.schemas.task import (
     SuperpowersDocsListResponse,
     TaskCliBootstrapResponse,
 )
-from app.domains.task.services import task_cli_state_service, task_service
+from app.domains.task.services import task_cli_state_service
+
+from app.domains.task.services.task_workspace import documents as task_task_workspace_documents
+from app.domains.task.services.task_workspace import specification as task_task_workspace_specification
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 logger = get_logger(__name__, category="task_execution")
@@ -78,7 +81,7 @@ async def upload_task_spec(
                         status_code=415,
                         detail="Legacy .doc is not supported; please convert to .docx or upload a PDF",
                     )
-                bootstrap_enabled = task_service.spec_bootstrap_enabled_for_ext(ext)
+                bootstrap_enabled = task_task_workspace_specification.spec_bootstrap_enabled_for_ext(ext)
 
                 def persist_task_spec_upload(db: Session):
                     verify_workspace_permission(
@@ -91,7 +94,7 @@ async def upload_task_spec(
                     )
                     task = get_task_or_404(db, task_id, ws_id)
                     ensure_task_not_baselined(task)
-                    file_path, asset_id, version_id = task_service.upload_task_spec(
+                    file_path, asset_id, version_id = task_task_workspace_specification.upload_task_spec(
                         db, task_id, file.filename, content
                     )
                     if bootstrap_enabled:
@@ -219,7 +222,7 @@ def list_task_superpowers_docs(
     task = get_task_or_404(db, task_id, ws_id)
 
     try:
-        payload = task_service.list_superpowers_docs(task)
+        payload = task_task_workspace_documents.list_superpowers_docs(task)
     except ValueError as exc:
         raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
 
@@ -240,7 +243,7 @@ def get_task_superpowers_doc_content(
     task = get_task_or_404(db, task_id, ws_id)
 
     try:
-        payload = task_service.read_superpowers_doc(task, section=section, name=name, path=path)
+        payload = task_task_workspace_documents.read_superpowers_doc(task, section=section, name=name, path=path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except ValueError as exc:
@@ -270,7 +273,7 @@ def save_task_superpowers_doc_content(
     ensure_task_not_baselined(task)
 
     try:
-        payload = task_service.save_superpowers_doc(
+        payload = task_task_workspace_documents.save_superpowers_doc(
             task,
             section=body.section,
             content=body.content,

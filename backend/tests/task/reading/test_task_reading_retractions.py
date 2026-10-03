@@ -7,11 +7,14 @@ from app.domains.task.models.task import SddTask
 from app.domains.task.services import reading_capture_service as rcs
 from app.domains.task.services import reading_progress_service as rps
 from app.domains.task.services import reading_resume_service as rrs
-from app.domains.task.services import task_service
+
+from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.conversation import messages as task_conversation_messages
+
 
 
 def _save(env, *, role="assistant", content, creator="user-a", index=None, message_type="text"):
-    message = task_service.save_chat_message(
+    message = task_conversation_messages.save_chat_message(
         env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id=creator,
         role=role, content=content, message_type=message_type,
     )
@@ -149,7 +152,7 @@ def test_resume_resolution_empty_after_clearing_everything(seeded_db):
         resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.5, "expected_revision": "0"},
     )
     env["db"].commit()
-    task_service.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
+    task_conversation_history.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
     env["db"].commit()
     res = rrs.resolve_resume(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"])
     env["db"].commit()
@@ -165,7 +168,7 @@ def test_clear_history_deactivates_items_and_notices(seeded_db):
     _open(env, "user-b")
     rcs.record_message_retractions(env["db"], task_id=env["task_id"], message_ids=[m1.id], operation_id="op-pre")
     env["db"].commit()
-    task_service.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
+    task_conversation_history.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
     env["db"].commit()
     active = env["db"].query(TaskReadingItem).filter(
         TaskReadingItem.task_id == env["task_id"], TaskReadingItem.active.is_(True)).all()

@@ -26,12 +26,16 @@ from app.domains.workflow.models.provision_job import (
     SddProvisionJob,
 )
 from app.domains.auth.models.user import User, Workspace
-from app.domains.skill.services import skill_service
-from app.domains.task.services import task_service
+
+
 from app.domains.local_resource.client import ResourceError
-from app.domains.task.services.task_service import ProvisionJobCancelled
+
 from app.domains.workspace.services import workspace_service
 from app.domains.task.services import git_worktree_service
+
+from app.domains.skill.services.packages import github as skill_packages_github
+from app.domains.task.services.provisioning import resources as task_provisioning_resources
+from app.domains.task.services.provisioning.resources import ProvisionJobCancelled
 
 logger = get_logger(__name__, category="application")
 task_logger = get_logger(__name__, category="task_execution")
@@ -448,7 +452,7 @@ def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> 
     db = SessionLocal()
     try:
         cancel_check = (lambda: is_cancel_requested(job_id)) if job_id else None
-        task = task_service.prepare_task_resources_for_provision(
+        task = task_provisioning_resources.prepare_task_resources_for_provision(
             db,
             workspace_id=workspace_id,
             task_id=task_id,
@@ -474,7 +478,7 @@ def _import_skill_sync(*, creator_id: str, context: Dict[str, Any]) -> Dict[str,
         if not user:
             raise ValueError("Skill import user not found")
 
-        skill = skill_service.import_skill_from_github(
+        skill = skill_packages_github.import_skill_from_github(
             db,
             user,
             context_workspace_id=str(context.get("context_workspace_id") or "").strip(),
@@ -502,7 +506,7 @@ def _import_skill_sync(*, creator_id: str, context: Dict[str, Any]) -> Dict[str,
 def _rollback_provision_task_sync(*, workspace_id: str, task_id: str) -> None:
     db = SessionLocal()
     try:
-        task_service.rollback_provision_task(db, workspace_id=workspace_id, task_id=task_id)
+        task_provisioning_resources.rollback_provision_task(db, workspace_id=workspace_id, task_id=task_id)
     except Exception as exc:
         task_logger.exception(
             "Task provision rollback failed: workspace_id={}, task_id={}, error={}",

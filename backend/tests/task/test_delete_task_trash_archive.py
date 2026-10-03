@@ -24,11 +24,13 @@ if TEST_ROOT not in sys.path:
 from app.database import Base  # noqa: E402
 from app.domains.auth.models.user import User, Workspace, WorkspaceRole  # noqa: E402
 from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
-from app.domains.task.services import task_service  # noqa: E402
+  # noqa: E402
 from sqlalchemy import create_engine  # noqa: E402
 from sqlalchemy.orm import sessionmaker  # noqa: E402
 from sqlalchemy.pool import StaticPool  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _session  # noqa: E402
+
+from app.domains.task.services.task_records import commands as task_task_records_commands
 
 
 class DeleteTaskTrashArchiveTest(unittest.TestCase):
@@ -63,7 +65,7 @@ class DeleteTaskTrashArchiveTest(unittest.TestCase):
 
     def _delete(self, task_id: str):
         with _session(self.SessionLocal) as db:
-            return task_service.delete_task(db, task_id, "ws-1")
+            return task_task_records_commands.delete_task(db, task_id, "ws-1")
 
     def test_plain_task_dir_moved_into_delete_trash(self):
         task_dir = os.path.join(self.workspace_root, "task-1_My task")

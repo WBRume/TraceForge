@@ -93,4 +93,4 @@ const vm = proxyRefs(rawVm)
   </section>
 </template>
 
-<style scoped src="@/styles/settings/settings-view-shared.css"></style>
+<style scoped src="@/styles/settings/members/section.css"></style>

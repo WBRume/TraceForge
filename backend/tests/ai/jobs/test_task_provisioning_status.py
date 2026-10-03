@@ -49,6 +49,9 @@ from app.domains.task.models.chat import ChatMessage  # noqa: E402
 from app.domains.task.routers import task as task_router  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session, _seed_workspace  # noqa: E402
 
+from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+from app.domains.task.services.provisioning.resources import prepare_task_resources_for_provision
+
 
 @pytest.fixture(autouse=True)
 def local_task_locks(monkeypatch, tmp_path):
@@ -74,10 +77,7 @@ def _build_app(SessionLocal, user):
 
 
 def test_created_task_starts_in_provisioning_and_prepare_moves_to_pending(tmp_path):
-    from app.domains.task.services.task_service import (
-        create_task_record_for_provision,
-        prepare_task_resources_for_provision,
-    )
+
 
     engine, SessionLocal = _build_db()
     try:

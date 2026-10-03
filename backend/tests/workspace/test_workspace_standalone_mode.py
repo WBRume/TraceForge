@@ -22,9 +22,11 @@ from app.domains.auth.models.user import User, Workspace, WorkspaceMember, Works
 from app.domains.management.models.management import SddManagementRepository  # noqa: E402
 from app.domains.system_config.models.system_config import SystemConfig  # noqa: E402
 from app.domains.system_config.services import system_config_service  # noqa: E402
-from app.domains.task.services import git_worktree_service, task_service  # noqa: E402
+from app.domains.task.services import git_worktree_service  # noqa: E402
 from app.domains.workspace.routers import workspace as workspace_router  # noqa: E402
 from app.domains.workspace.services import workspace_service  # noqa: E402
+
+from app.domains.task.services.provisioning import creation as task_provisioning_creation
 
 
 def _seed_user(db) -> User:
@@ -407,7 +409,7 @@ def _seed_workspace_with_repos(db):
 def test_create_task_applies_repository_branch_overrides(db):
     user, workspace = _seed_workspace_with_repos(db)
 
-    task = task_service.create_task_record_for_provision(
+    task = task_provisioning_creation.create_task_record_for_provision(
         db,
         user,
         workspace.id,
@@ -425,7 +427,7 @@ def test_create_task_rejects_branch_override_for_foreign_repo(db):
     user, workspace = _seed_workspace_with_repos(db)
 
     with pytest.raises(ValueError):
-        task_service.create_task_record_for_provision(
+        task_provisioning_creation.create_task_record_for_provision(
             db,
             user,
             workspace.id,
@@ -440,7 +442,7 @@ def test_create_task_rejects_branch_override_for_foreign_repo(db):
 def test_create_task_with_selected_repository_subset(db):
     user, workspace = _seed_workspace_with_repos(db)
 
-    task = task_service.create_task_record_for_provision(
+    task = task_provisioning_creation.create_task_record_for_provision(
         db,
         user,
         workspace.id,
@@ -456,7 +458,7 @@ def test_create_task_with_selected_repository_subset(db):
 def test_create_task_subset_with_branch_override(db):
     user, workspace = _seed_workspace_with_repos(db)
 
-    task = task_service.create_task_record_for_provision(
+    task = task_provisioning_creation.create_task_record_for_provision(
         db,
         user,
         workspace.id,
@@ -475,7 +477,7 @@ def test_create_task_rejects_unknown_repository_selection(db):
     user, workspace = _seed_workspace_with_repos(db)
 
     with pytest.raises(ValueError):
-        task_service.create_task_record_for_provision(
+        task_provisioning_creation.create_task_record_for_provision(
             db,
             user,
             workspace.id,
@@ -488,7 +490,7 @@ def test_create_task_rejects_empty_repository_selection(db):
     user, workspace = _seed_workspace_with_repos(db)
 
     with pytest.raises(ValueError):
-        task_service.create_task_record_for_provision(
+        task_provisioning_creation.create_task_record_for_provision(
             db,
             user,
             workspace.id,

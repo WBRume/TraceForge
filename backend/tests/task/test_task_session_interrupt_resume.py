@@ -19,6 +19,7 @@ import app.domains.task.models.test_result  # noqa: F401,E402
 import app.domains.workflow.models.task_change  # noqa: F401,E402
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
 from app.database import Base  # noqa: E402
+from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.auth.models.user import User, Workspace
 from app.domains.task.models.task import SddTask
@@ -497,7 +498,7 @@ def test_initialize_turn_captures_incremental_boundary_and_is_undoable(monkeypat
         assert turn.checkpoint_path == "initial-incremental-checkpoint"
         assert turn.worktree_snapshot_path
 
-        history = task_session_service.task_service.get_task_history(
+        history = task_conversation_history.get_task_history(
             check_db,
             task.id,
             task.workspace_id,
