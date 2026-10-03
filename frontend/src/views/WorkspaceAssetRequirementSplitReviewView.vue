@@ -11,6 +11,7 @@ import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import { useProvisioningStore } from '@/stores/provisioning'
 import { useAuthStore } from '@/stores/auth'
 import api from '@/utils/api'
+import { backendFetch } from '@/utils/http'
 import type {
   RequirementDetail,
   RequirementImportBatch,
@@ -256,7 +257,7 @@ function keepaliveDraftSave() {
   if (!authStore.token) return
   const url = `${api.defaults.baseURL}/workspaces/${wsId.value}/workspace-assets/requirements/import-batches/${batchId.value}/draft`
   try {
-    void fetch(url, {
+    void backendFetch(url, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
