@@ -19,7 +19,8 @@ if (userDataPath === join(app.getPath('appData'), app.getName()) && !existsSync(
 let mainWindow: BrowserWindow | null = null
 
 const createWindow = async () => {
-  mainWindow = new BrowserWindow({
+  const window = new BrowserWindow({
+    show: false,
     width: 1440,
     height: 960,
     minWidth: 1120,
@@ -33,19 +34,48 @@ const createWindow = async () => {
       sandbox: false,
     },
   })
+  mainWindow = window
+  window.on('closed', () => {
+    if (mainWindow === window) mainWindow = null
+  })
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  let frameReady = false
+  let appReady = false
+  const showWindow = () => {
+    if (!frameReady || !appReady) return
+    window.show()
+    if (devServerUrl && process.env.TRACEFORGE_DEVTOOLS === '1') {
+      window.webContents.openDevTools({ mode: 'detach' })
+    }
+  }
+  window.once('ready-to-show', () => {
+    frameReady = true
+    showWindow()
+  })
+  window.webContents.ipc.once('traceforge:app-ready', () => {
+    appReady = true
+    showWindow()
+  })
+  if (devServerUrl) {
+    window.webContents.on('before-input-event', (event, input) => {
+      if (input.type === 'keyDown' && input.key === 'F12') {
+        event.preventDefault()
+        window.webContents.toggleDevTools()
+      }
+    })
+  }
+
+  window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
   })
 
   if (devServerUrl) {
-    await mainWindow.loadURL(devServerUrl)
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
+    await window.loadURL(devServerUrl)
     return
   }
 
-  await mainWindow.loadFile(join(__dirname, '../dist/index.html'))
+  await window.loadFile(join(__dirname, '../dist/index.html'))
 }
 
 app.whenReady().then(async () => {
