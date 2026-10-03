@@ -101,6 +101,7 @@ export function useChatViewModel() {
   const workbenchScroll = useChatWorkbenchScroll({
     activeMode: chatWorkbenchMode,
     getTaskId: taskState.getTaskId,
+    canFollow: () => !historyContext.anchored.value && !history.loadingMore.value,
   })
   const { chatContainer, terminalContainer, scrollToBottom, setTerminalContainer } = workbenchScroll
   const setChatWorkbenchMode = async (mode: ChatWorkbenchMode) => {
@@ -149,6 +150,7 @@ export function useChatViewModel() {
     || taskState.isTaskPreStart.value
     || taskState.isTaskProvisioning.value
     || isUndoing.value
+    || startActions.initializingTask.value
   ))
 
   // ─── 任务列表（selectRouteTask 由会话编排晚绑定，规避创建顺序环） ───
@@ -566,7 +568,7 @@ export function useChatViewModel() {
     onSessionGenerationBump: () => history.bumpGeneration(),
     contextWindowScheduleRefresh: contextPanel.scheduleRefresh,
     onModelObserved: agentModels.observe,
-    scrollTo: scrollToBottom,
+    scrollTo: workbenchScroll.followToBottom,
     isHistoryAnchored: () => historyContext.anchored.value,
     getRouteMessageId: () => String(route.query.messageId || ''),
   })
@@ -609,6 +611,7 @@ export function useChatViewModel() {
     resumeInterruptedTask: (taskId, resumeOptions) => taskSessionControls.resumeInterruptedTask(taskId, resumeOptions),
     applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     isUndoing: () => isUndoing.value,
+    isInitializing: () => startActions.initializingTask.value,
     isHistoryAnchored: () => historyContext.anchored.value,
     returnToLatest: () => history.returnToLatest(),
     getCreatorMeta: () => ({
@@ -665,6 +668,7 @@ export function useChatViewModel() {
     resultsSummary.reset()
   }
   const resetConversationView = () => {
+    history.bumpGeneration()
     clearConversationView()
     jobs.reset()
     engine.engineRunning.value = false
@@ -802,6 +806,8 @@ export function useChatViewModel() {
     sessionState.beginTaskSwitch()
     engine.persistForTask(taskState.getTaskId())
     workbenchScroll.rememberScrollPosition()
+    history.bumpGeneration()
+    history.resetPaging()
     specDrawer.resetForTask(task)
     contextPanel.resetForTask()
     taskState.setCurrent(task)
@@ -893,7 +899,7 @@ export function useChatViewModel() {
 
   // ─── 预输入的 WS 发送通道（undoing 守卫 + 连接可用性提示） ───
   function sendPreInputAction(action: string, payload: Record<string, any> = {}): boolean {
-    if (isUndoing.value) return false
+    if (isUndoing.value || startActions.initializingTask.value) return false
     if (!ws.isOpen()) {
       ElMessage.error(t('preInput.errors.ws_unavailable'))
       return false
@@ -1092,6 +1098,7 @@ export function useChatViewModel() {
     handleInitialize: startActions.handleInitialize,
     initializeTaskWithReason: startActions.initializeTaskWithReason,
     confirmInitialize: startActions.confirmInitialize,
+    initializingTask: startActions.initializingTask,
     showDeletedRuntimeSkillConfirm: startActions.showDeletedRuntimeSkillConfirm,
     cancelDeletedRuntimeSkillConfirm: startActions.cancelDeletedRuntimeSkillConfirm,
     confirmInitializeWithDeletedRuntimeSkillDecision: startActions.confirmInitializeWithDeletedRuntimeSkillDecision,

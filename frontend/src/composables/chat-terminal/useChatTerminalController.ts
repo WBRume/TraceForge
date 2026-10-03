@@ -44,6 +44,7 @@ export interface ChatTerminalBridge {
   loadingMore: boolean
   hasMore: boolean
   engineRunning: boolean
+  initializingTask?: boolean
   isTaskPreStart: boolean
   isTerminalStatus: boolean
   canManageTaskStatus: boolean

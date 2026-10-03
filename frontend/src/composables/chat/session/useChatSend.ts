@@ -52,6 +52,7 @@ export function useChatSend(options: {
   resumeInterruptedTask: (taskId: string, resumeOptions: { prompt?: string; clientMessageId?: string; agentModel?: AgentModelSelection }) => Promise<any>
   applyTaskSessionPayload: (payload: any) => void
   isUndoing: () => boolean
+  isInitializing?: () => boolean
   isHistoryAnchored: () => boolean
   returnToLatest: () => Promise<void>
   getCreatorMeta: () => Record<string, any>
@@ -83,6 +84,7 @@ export function useChatSend(options: {
     content: string,
     sendOptions: { displayContent?: string; metadata?: Record<string, any> } = {},
   ): Promise<boolean> => {
+    if (options.isInitializing?.()) return false
     if (!options.suggestionOnly?.() && options.resourceBlocked?.()) {
       ElMessage.warning('本地资源未连接，恢复在线后才能操作')
       return false
@@ -119,7 +121,9 @@ export function useChatSend(options: {
     if (!options.task.isTaskInterrupted.value && !sendOptions.metadata?.interaction_id && taskId) {
       try {
         // POST 回执直接应用；后续状态由 outbox 事件（chat_submission_update）驱动。
-        const accepted = await options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata)
+        const submission = options.submissions.send(taskId, clientMessageId, normalized, sendOptions.metadata)
+        options.scrollTo('chat')
+        const accepted = await submission
         if (accepted) options.onModelSubmitted?.(modelSelection)
         if (options.getTaskId() === taskId && accepted) options.scrollTo('chat')
         if (!accepted && options.submissions.current.value.some((row: any) =>

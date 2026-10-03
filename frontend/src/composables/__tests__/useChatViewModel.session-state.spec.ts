@@ -3,6 +3,7 @@ import { defineComponent } from 'vue'
 import { createPinia, setActivePinia } from 'pinia'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { useChatViewModel } from '@/composables/chat/useChatViewModel'
+import { clearWsCursorMemory } from '@/utils/wsCursor'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -186,6 +187,8 @@ describe('useChatViewModel session state single flight', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     localStorage.clear()
+    sessionStorage.clear()
+    clearWsCursorMemory()
     apiMock.get.mockReset()
     apiMock.post.mockReset()
     apiMock.put.mockReset()
@@ -328,6 +331,53 @@ describe('useChatViewModel session state single flight', () => {
     expect(countCalls('/session-state')).toBe(before)
     expect(countCalls('/history')).toBe(1)
     expect(countCalls('/ai-jobs')).toBe(0)
+  })
+
+  it('retains the agent state and replies received before the initialize response', async () => {
+    apiMock.get.mockImplementation((url: string) => String(url).includes('/permissions/me')
+      ? Promise.resolve({ data: { permissions: { manage_task_status: true } } })
+      : resolveByUrl(String(url)))
+    await mountViewModel()
+    await vm.selectTask({ ...task('t1'), session_generation: 1 })
+    const socket = await readySocket()
+    let resolveInitialize!: (response: any) => void
+    apiMock.post.mockImplementationOnce(() => new Promise(resolve => { resolveInitialize = resolve }))
+    const pending = vm.initializeTaskWithReason('重新开始', '请询问项目需求')
+    expect(vm.initializingTask.value).toBe(true)
+
+    const reply = { id: 'new-question', role: 'assistant', content: '需要使用什么构建工具？',
+      task_id: 't1', session_generation: 2, session_turn_id: 'new-turn', message_type: 'text' }
+    const job = { id: 'new-job', task_id: 't1', status: 'RUNNING', progress: 55,
+      session_generation: 2, message: 'AI is processing' }
+    const event = (sequence: number, type: string, payload: any) => socket.receive({
+      type: 'event', room: 'task:t1', epoch: 'e', sequence,
+      event_id: `initialize-${sequence}`, event_type: type, payload,
+    })
+    // Execution is queued before /initialize responds, so these events can win the race.
+    event(1, 'status', { status: 'INIT', message: 'Agent session started', model: 'private/a' })
+    event(2, 'thinking', { sequence: 1, content: '正在分析项目需求' })
+    event(3, 'chat_job_update', { job })
+    event(4, 'chat_message', reply)
+    await flushPromises()
+    expect(vm.statusCards.value[0]?.message).toBe('Agent session started')
+    expect(vm.messages.value.some(message => message.id === reply.id)).toBe(true)
+
+    apiMock.get.mockImplementation((url: string) => {
+      if (String(url).endsWith('/history')) return Promise.resolve({ data: { messages: [reply], logs: [], has_more: false } })
+      if (String(url).includes('/ai-jobs')) return Promise.resolve({ data: { items: [job] } })
+      return resolveByUrl(String(url))
+    })
+    resolveInitialize({ data: { job } })
+    expect(await pending).toBe(true)
+    expect(vm.initializingTask.value).toBe(false)
+    expect(vm.statusCards.value[0]).toMatchObject({ status: 'INIT', message: 'Agent session started', model: 'private/a' })
+    expect(vm.thinkingContent.value).toBe('正在分析项目需求')
+    expect(vm.messages.value.filter(message => message.id === reply.id)).toHaveLength(1)
+
+    event(5, 'chat_message', { ...reply, id: 'next-reply', content: '还需要确认 Python 版本' })
+    await flushPromises()
+    expect(vm.messages.value.some(message => message.id === 'next-reply')).toBe(true)
+    expect(socket.close).not.toHaveBeenCalled()
   })
 
   it('does not poll submissions on a timer while a receipt is executing', async () => {

@@ -46,6 +46,7 @@ export function useChatHistory(options: {
   const hasMore = ref(false)
   const loadingMore = ref(false)
   let historyGeneration = 0
+  let restoredTaskId = ''
 
   const bumpGeneration = () => {
     historyGeneration += 1
@@ -101,8 +102,9 @@ export function useChatHistory(options: {
         await nextTick()
         if (options.route.query.messageId) {
           await highlightMessageFromRouteQuery()
-        } else {
+        } else if (restoredTaskId !== taskId) {
           await options.restoreWorkbenchScroll(taskId)
+          if (requestGeneration === historyGeneration && isCurrentTaskId(taskId)) restoredTaskId = taskId
         }
       } else {
         // 向上加载更早消息：prepend 到列表前面
@@ -165,6 +167,7 @@ export function useChatHistory(options: {
     loadingMore.value = true
     const container = options.getChatContainer()
     const prevScrollHeight = container?.scrollHeight || 0
+    const prevScrollTop = container?.scrollTop || 0
 
     currentPage.value++
     try {
@@ -172,9 +175,9 @@ export function useChatHistory(options: {
 
       // 保持滚动位置不跳动
       await nextTick()
-      if (container) {
+      if (container && isCurrentTaskId(task.id) && container === options.getChatContainer()) {
         const newScrollHeight = container.scrollHeight
-        container.scrollTop = newScrollHeight - prevScrollHeight
+        container.scrollTop = prevScrollTop + newScrollHeight - prevScrollHeight
       }
     } finally {
       loadingMore.value = false
@@ -191,6 +194,7 @@ export function useChatHistory(options: {
   }
 
   const resetPaging = () => {
+    restoredTaskId = ''
     currentPage.value = 1
     hasMore.value = false
   }
