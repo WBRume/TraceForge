@@ -40,7 +40,7 @@ describe('ChatTaskListItem', () => {
     const wrapper = mountItem()
 
     expect(wrapper.find('.task-name').text()).toBe(task.name)
-    expect(wrapper.find('.task-state-row').text()).toContain('task_types.diagnosis')
+    expect(wrapper.find('.task-state-row').text()).toContain('task_types.diagnosis_short')
     expect(wrapper.find('.task-state-row').text()).toContain('INTERRUPTED')
     expect(wrapper.find('.task-meta').text()).toContain('xfc')
     expect(wrapper.find('.task-select').attributes('aria-current')).toBe('page')

@@ -57,7 +57,7 @@ const toggleFollow = () => emit('toggleFollow', props.task)
             class="task-type-tag"
             :class="isDiagnosis ? 'is-diagnosis' : 'is-development'"
           >
-            {{ isDiagnosis ? $t('task_types.diagnosis') : $t('task_types.development') }}
+            {{ isDiagnosis ? $t('task_types.diagnosis_short') : $t('task_types.development_short') }}
           </span>
           <span class="task-status" :title="task.status || ''">
             <span class="status-dot" :class="normalizedStatus"></span>
@@ -75,9 +75,8 @@ const toggleFollow = () => emit('toggleFollow', props.task)
       </span>
     </button>
 
-    <div class="task-requirement-row">
-      <TaskRequirementBadges v-if="task.requirements?.length" :workspace-id="task.workspace_id || ''" :task-id="task.id" :requirements="task.requirements" />
-      <span v-else class="independent-label">{{ $t('task_rail.independent') }}</span>
+    <div v-if="task.requirements?.length" class="task-requirement-row">
+      <TaskRequirementBadges :workspace-id="task.workspace_id || ''" :task-id="task.id" :requirements="task.requirements" />
     </div>
 
     <button
@@ -198,46 +197,42 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 
 .task-type-tag {
   flex-shrink: 0;
-  padding: 2px 5.5px;
-  border-radius: 999px;
-  font-size: 0.625rem;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  line-height: 1;
+  padding: 1.5px 5.5px;
+  border-radius: 4px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
 .task-type-tag.is-local {
-  border: 1px solid rgba(100, 116, 139, 0.22);
   color: #475569;
   background: #f1f5f9;
 }
 
 .task-type-tag.is-development {
-  border: 1px solid rgba(14, 165, 233, 0.25);
   color: #0369a1;
-  background: #e0f2fe;
+  background: #f0f9ff;
 }
 
 .task-type-tag.is-diagnosis {
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  color: #92400e;
+  color: #b45309;
   background: #fef3c7;
 }
 
 .task-item.active .task-type-tag.is-local {
-  border-color: rgba(100, 116, 139, 0.35);
-  background: #e2e8f0;
   color: #1e293b;
+  background: #e2e8f0;
 }
 
 .task-item.active .task-type-tag.is-development {
-  border-color: rgba(14, 165, 233, 0.35);
-  background: #dbeafe;
+  color: #0284c7;
+  background: #e0f2fe;
 }
 
 .task-item.active .task-type-tag.is-diagnosis {
-  border-color: rgba(245, 158, 11, 0.45);
+  color: #92400e;
   background: #fde68a;
 }
 

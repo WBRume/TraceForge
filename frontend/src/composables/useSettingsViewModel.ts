@@ -199,8 +199,8 @@ export function useSettingsViewModel() {
       description: 'settings.agent.subtitle',
     },
     { id: 'local_service', icon: MonitorCog, label: '本地服务地址', description: '个人本地 Agent 与同机资源服务' },
-    { id: 'webhook_personal', icon: Link, label: '个人 Webhook', description: '当前账号的任务事件广播' },
-    { id: 'webhook_workspace', icon: Link, label: '工作区 Webhook', description: '团队任务事件广播', disabled: myPermissionPayload.value?.role !== 'OWNER' },
+    { id: 'webhook_personal', icon: Link, label: 'settings.webhook.personal_title', description: 'settings.webhook.personal_desc' },
+    { id: 'webhook_workspace', icon: Link, label: 'settings.webhook.workspace_title', description: 'settings.webhook.workspace_desc', disabled: myPermissionPayload.value?.role !== 'OWNER' },
   ])
   
   const canManageMembers = computed(() => Boolean(myPermissionPayload.value?.permissions?.manage_members))
