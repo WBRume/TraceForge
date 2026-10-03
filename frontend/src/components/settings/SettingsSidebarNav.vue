@@ -23,7 +23,7 @@ const vm = proxyRefs(props.vm)
           <component :is="section.icon" class="w-5 h-5" />
         </div>
         <div class="nav-item-text">
-          <span class="nav-label">{{ ['local_service', 'webhook_personal', 'webhook_workspace'].includes(section.id) ? section.label : $t(section.label) }}</span>
+          <span class="nav-label">{{ ['local_service'].includes(section.id) ? section.label : $t(section.label) }}</span>
           <span v-if="('disabled' in section && section.disabled) && section.id === 'webhook_workspace'" class="coming-soon">仅所有者</span>
         </div>
         <ChevronRight v-if="vm.activeSection === section.id" class="w-4 h-4 ml-auto" />

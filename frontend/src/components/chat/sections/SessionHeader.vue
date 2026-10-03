@@ -14,7 +14,6 @@ import {
 } from '@/components/icons'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
-import TaskRequirementBadges from '@/components/chat/task-rail/TaskRequirementBadges.vue'
 import TaskPinButton from '@/components/floating/TaskPinButton.vue'
 import { useWorkspaceStore } from '@/stores/workspace'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
@@ -58,7 +57,7 @@ const workspaceStore = useWorkspaceStore()
         <PanelLeftOpen v-else class="w-4 h-4" />
       </button>
       <h2 :title="props.vm.currentTask.name">{{ props.vm.currentTask.name }}</h2>
-      <TaskRequirementBadges v-if="props.vm.currentTask.requirements?.length" :workspace-id="String(props.vm.route.params.wsId || '')" :task-id="props.vm.currentTask.id" :requirements="props.vm.currentTask.requirements" />
+      <TaskPinButton :task-id="props.vm.currentTask.id" :task-name="props.vm.currentTask.name" :workspace-id="String(props.vm.route.params.wsId || '')" :workspace-name="workspaceStore.currentWorkspace?.name || ''" />
       <span class="badge" :class="props.vm.currentTask.status.toLowerCase()">{{ props.vm.currentTask.status }}</span>
       <span
         v-if="props.vm.isLocalTask"
@@ -72,7 +71,6 @@ const workspaceStore = useWorkspaceStore()
       </span>
     </div>
     <div class="header-actions">
-      <TaskPinButton :task-id="props.vm.currentTask.id" :task-name="props.vm.currentTask.name" :workspace-id="String(props.vm.route.params.wsId || '')" :workspace-name="workspaceStore.currentWorkspace?.name || ''" />
       <button
         v-if="props.vm.isStartActionVisible"
         class="btn-primary start-btn"
@@ -197,7 +195,8 @@ const workspaceStore = useWorkspaceStore()
 }
 .header-left h2 {
   margin: 0;
-  flex: 1 1 160px;
+  flex: 0 1 auto;
+  max-width: min(100%, 480px);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -206,10 +205,6 @@ const workspaceStore = useWorkspaceStore()
 }
 .header-left > :not(h2) {
   flex: 0 0 auto;
-}
-.header-left > .task-requirement-badges {
-  flex: 0 1 auto;
-  max-width: min(35%, 220px);
 }
 
 .badge {
