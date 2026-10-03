@@ -1,4 +1,5 @@
 import api from '@/utils/api'
+import { noteTaskRunInitiated } from '@/utils/taskAwarenessIntent'
 import { formatApiError } from '@/utils/error'
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -149,6 +150,7 @@ export function useChatSend(options: {
           metadata: sendOptions.metadata || null,
         })
         options.applyTaskSessionPayload(payload)
+        noteTaskRunInitiated(taskId, clientMessageId, payload?.job?.id || payload?.task?.job?.id)
         options.onModelSubmitted?.(modelSelection)
         options.engine.engineRunning.value = true
         if (!options.isHistoryAnchored()) options.scrollTo('chat')

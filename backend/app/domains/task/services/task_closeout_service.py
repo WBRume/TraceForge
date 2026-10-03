@@ -243,6 +243,8 @@ def complete_task_closeout(
             change_reason="Task completion closeout.",
         ),
     )
+    from app.domains.notification.services.task_awareness import capture_business
+    capture_business(db, task, actor_id, "TASK_COMPLETED", payload.completion_summary)
     _finalize_task(db, task, status=TaskStatus.DONE, message=payload.completion_summary, metric_value=1.0)
     from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
 
@@ -252,6 +254,7 @@ def complete_task_closeout(
         task_id=task_id,
         workspace_id=workspace_id,
         status="DONE",
+        business_state="TASK_COMPLETED",
         evidence_ids=evidence_ids,
         final_summary_id=final_summary_id,
     )
@@ -288,11 +291,14 @@ def fail_task_closeout(
             change_reason="Task failure closeout.",
         ),
     )
+    from app.domains.notification.services.task_awareness import capture_business
+    capture_business(db, task, actor_id, "TASK_FAILED", payload.failure_summary)
     _finalize_task(db, task, status=TaskStatus.FAILED, message=payload.failure_summary, metric_value=0.0)
     return TaskCloseoutResponse(
         task_id=task_id,
         workspace_id=workspace_id,
         status="FAILED",
+        business_state="TASK_FAILED",
         evidence_ids=evidence_ids,
         final_summary_id=final_summary_id,
     )

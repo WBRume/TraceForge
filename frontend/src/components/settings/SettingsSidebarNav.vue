@@ -9,7 +9,7 @@ const vm = proxyRefs(props.vm)
 
 <template>
   <aside class="settings-sidebar glass-panel">
-    <nav v-for="group in [{ title: '个人设置', ids: ['general', 'connected_accounts', 'appearance', 'local_dev', 'local_service'] }, { title: '工作区设置', ids: ['members', 'agent'] }]" :key="group.title" class="sidebar-nav">
+    <nav v-for="group in [{ title: '个人设置', ids: ['general', 'connected_accounts', 'appearance', 'local_dev', 'local_service', 'webhook_personal'] }, { title: '工作区设置', ids: ['members', 'agent', 'webhook_workspace'] }]" :key="group.title" class="sidebar-nav">
       <h3 class="group-title">{{ group.title }}</h3>
       <button
         v-for="section in vm.settingsSections.filter(item => group.ids.includes(item.id))"
@@ -23,8 +23,8 @@ const vm = proxyRefs(props.vm)
           <component :is="section.icon" class="w-5 h-5" />
         </div>
         <div class="nav-item-text">
-          <span class="nav-label">{{ section.id === 'local_service' ? section.label : $t(section.label) }}</span>
-          <span v-if="('disabled' in section && section.disabled)" class="coming-soon">Soon</span>
+          <span class="nav-label">{{ ['local_service', 'webhook_personal', 'webhook_workspace'].includes(section.id) ? section.label : $t(section.label) }}</span>
+          <span v-if="('disabled' in section && section.disabled) && section.id === 'webhook_workspace'" class="coming-soon">仅所有者</span>
         </div>
         <ChevronRight v-if="vm.activeSection === section.id" class="w-4 h-4 ml-auto" />
       </button>

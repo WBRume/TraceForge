@@ -706,6 +706,7 @@ def start_task_session_sync(
     _ensure_task_not_baselined(task)
     task.status = TaskStatus.CODING
     task.error_message = None
+    task.business_state = "TASK_IN_PROGRESS"
     task.session_id = None
     task.session_generation = max(1, int(task.session_generation or 0))
     task.interrupt_reason = None
@@ -831,6 +832,8 @@ def apply_initialize_sync(
     skill_ids: Optional[list[str]],
     keep_deleted_runtime_skills: bool,
     requested_prompt: Optional[str] = None,
+    actor_user_id: Optional[str] = None,
+    reason: Optional[str] = None,
 ) -> Dict[str, Any]:
     """替换 Skills、推进 session_generation、重置状态并组装首条 prompt（单事务，锁内调用）。"""
     task = task_task_records_queries.get_task(db, task_id, ws_id)
@@ -854,13 +857,17 @@ def apply_initialize_sync(
     task.retry_count = int(task.retry_count or 0) + 1
     task.session_generation = int(getattr(task, "session_generation", 0) or 0) + 1
     task.status = TaskStatus.CODING
+    task.business_state = "TASK_IN_PROGRESS"
     task.error_message = None
     task.session_id = None
     task.interrupt_reason = None
     task.interrupted_by_id = None
     task.interrupted_at = None
-    db.commit()
     prompts = build_session_prompt(task, requested_prompt)
+    if actor_user_id:
+        from app.domains.notification.services.task_awareness import capture_business
+        capture_business(db, task, actor_user_id, "TASK_INITIALIZED", str(reason or "任务已人工初始化"))
+    db.commit()
     return {"task_id": task.id, **prompts}
 
 
@@ -915,6 +922,8 @@ async def initialize_task_session(
                 skill_ids=skill_ids,
                 keep_deleted_runtime_skills=keep_deleted_runtime_skills,
                 requested_prompt=requested_prompt,
+                actor_user_id=actor_user_id,
+                reason=reason,
             )
         )
     except ValueError as exc:

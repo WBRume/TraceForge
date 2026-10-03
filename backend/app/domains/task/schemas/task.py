@@ -76,6 +76,7 @@ class TaskRequirementSummary(BaseModel):
 
 
 class TaskResponse(BaseModel):
+    business_state: Literal["TASK_IN_PROGRESS", "TASK_COMPLETED", "TASK_FAILED"] = "TASK_IN_PROGRESS"
     id: str
     workspace_id: str
     creator_id: str

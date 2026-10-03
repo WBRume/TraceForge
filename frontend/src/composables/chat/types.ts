@@ -8,6 +8,7 @@ export type ChatAiJobStatus = 'PENDING' | 'RUNNING' | 'WAITING_HITL' | 'INTERRUP
 export type ChatAiJob = {
   id: string
   task_id?: string | null
+  creator_id?: string
   status: ChatAiJobStatus
   progress: number
   message?: string | null

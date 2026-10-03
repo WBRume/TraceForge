@@ -7,6 +7,8 @@ import { buildBackendWsUrl } from '@/utils/ws'
 import { wsBackoffDelay } from '@/utils/wsBackoff'
 import { buildWsCursorQuery, sendResyncComplete } from '@/utils/wsCursor'
 import { createSerializedWsConsumer } from '@/utils/serializedWsConsumer'
+import { useTaskAwarenessStore } from '@/stores/taskAwareness'
+import { flushDesktopWebhooks } from '@/utils/desktopWebhooks'
 
 export type AppNotificationItem = {
   id: string
@@ -117,6 +119,9 @@ export const useNotificationStore = defineStore('appNotification', () => {
   }
 
   const handleIncoming = (item: AppNotificationItem) => {
+    if (item?.type === 'task_runtime_event') { useTaskAwarenessStore().ingest((item as any).event); return }
+    if (item?.type === 'task_runtime_output') { useTaskAwarenessStore().receiveOutput(item); return }
+    if (item?.type === 'task_webhook_ready') { void flushDesktopWebhooks(); return }
     if (item?.type === 'playbook_promotion_updated') {
       void useProvisioningStore().refreshPromotionJobs(item.workspace_id || undefined)
       window.dispatchEvent(new CustomEvent('playbook-promotion-updated', { detail: item }))
@@ -170,6 +175,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
         }
         await fetchList()
         await refreshUnreadCount()
+        await useTaskAwarenessStore().refresh()
+        void flushDesktopWebhooks()
         window.dispatchEvent(new Event('playbook-promotion-resync'))
         void useProvisioningStore().refreshPromotionJobs()
         if (!signal.aborted && context.socket === ws && context.socket.readyState === WebSocket.OPEN) {
@@ -189,6 +196,8 @@ export const useNotificationStore = defineStore('appNotification', () => {
     const generation = consumer.resetForConnection(socket)
     ws.onopen = () => {
       connected.value = true
+      void useTaskAwarenessStore().refresh()
+      void flushDesktopWebhooks()
       window.dispatchEvent(new Event('playbook-promotion-resync'))
       void useProvisioningStore().refreshPromotionJobs()
       wsReconnectAttempt = 0

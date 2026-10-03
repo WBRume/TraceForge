@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerDesktopCommands } from '../desktop/register'
+import { registerAttentionWindow } from '../desktop/attention'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
@@ -35,6 +36,7 @@ const createWindow = async () => {
     },
   })
   mainWindow = window
+  registerAttentionWindow(window)
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
   })

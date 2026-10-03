@@ -29,6 +29,7 @@ function nativeRequest(method: string, payload: unknown = {}) {
 
 export const sender = { send: (channel: string, payload: unknown) => send({ kind: 'event', channel, payload }) }
 export const ipcMain = { handle: (channel: string, handler: Handler) => { handlers.set(channel, handler) } }
+export const setNativeAttention = (_sender: unknown, payload: { flash: boolean; hitlCount: number }) => nativeRequest('attention', payload)
 export const app = {
   getPath(name: string) {
     if (name === 'userData') return process.argv[2]!

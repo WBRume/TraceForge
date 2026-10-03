@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import type { SearchItem } from '@/types/search'
+import type { RuntimeState, TaskRuntimeEvent } from '@/types/taskAwareness'
 
 export interface PinnedSearchItem {
   id: string
@@ -20,6 +21,10 @@ export interface PinnedSearchItem {
   position: { x: number; y: number }
   size: { width: number; height: number }
   dockTop: number
+  source?: 'manual' | 'automatic'
+  runId?: string
+  runtimeState?: RuntimeState
+  runtimeSummary?: string
 }
 
 const STORAGE_KEY = 'tf_pinned_search_floats'
@@ -29,13 +34,13 @@ function extractText(item: SearchItem): string {
   return item.snippet.map((s) => s.text).join('')
 }
 
-function loadInitialItems(): PinnedSearchItem[] {
+function loadInitialItems(key = STORAGE_KEY): PinnedSearchItem[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     if (!raw) return []
     const parsed = JSON.parse(raw)
     if (Array.isArray(parsed)) {
-      return parsed.filter((item) => item && typeof item.id === 'string')
+      return parsed.filter((item) => item && typeof item.id === 'string' && item.source !== 'automatic')
     }
   } catch {
     // 忽略异常，降级为空列表
@@ -45,26 +50,44 @@ function loadInitialItems(): PinnedSearchItem[] {
 
 export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
   const items = ref<PinnedSearchItem[]>(loadInitialItems())
+  let storageKey = STORAGE_KEY
+
+  const scope = (userId: string, server: string) => {
+    const key = `${STORAGE_KEY}:${encodeURIComponent(server)}:${userId}`
+    if (key === storageKey) return
+    let restored = userId ? loadInitialItems(key) : []
+    // Adopt the existing account's pins once; later accounts have separate storage.
+    try {
+      if (userId && localStorage.getItem(key) === null) {
+        restored = loadInitialItems()
+        localStorage.removeItem(STORAGE_KEY)
+      }
+    } catch { /* Storage is optional. */ }
+    storageKey = key
+    items.value = restored.map(item => ({ ...item, runId: undefined, runtimeState: undefined, runtimeSummary: undefined }))
+  }
 
   // 持久化到 localStorage
   watch(
     items,
     (val) => {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(val))
+        localStorage.setItem(storageKey, JSON.stringify(val.filter(item => item.source !== 'automatic')))
       } catch {
         // storage quota exceeded or disabled
       }
     },
-    { deep: true }
+    { deep: true, flush: 'sync' }
   )
 
   const isPinned = (id: string) => items.value.some((item) => item.id === id)
 
   const pin = (searchItem: SearchItem) => {
-    const existing = items.value.find((i) => i.id === searchItem.entity_key)
+    const existing = items.value.find((i) => i.id === searchItem.entity_key
+      || (searchItem.kind === 'task' && i.kind === 'task' && i.taskId === searchItem.target.params.taskId))
     if (existing) {
       existing.minimized = false
+      existing.source = 'manual'
       return existing
     }
 
@@ -107,6 +130,7 @@ export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
       position: { x, y },
       size: { width: defaultWidth, height: defaultHeight },
       dockTop,
+      source: 'manual',
     }
 
     items.value.push(newItem)
@@ -121,7 +145,9 @@ export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
   }
 
   const togglePin = (searchItem: SearchItem) => {
-    if (isPinned(searchItem.entity_key)) {
+    if (items.value.find(item => item.id === searchItem.entity_key)?.source === 'automatic') {
+      pin(searchItem)
+    } else if (isPinned(searchItem.entity_key)) {
       unpin(searchItem.entity_key)
     } else {
       pin(searchItem)
@@ -167,6 +193,28 @@ export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
     items.value = []
   }
 
+  const pinTask = (task: { id: string; name: string; workspaceId: string; workspaceName: string }) => pin({
+    entity_key: `task:${task.id}`, kind: 'task', workspace_name: task.workspaceName, task_name: task.name,
+    created_at: '', snippet_basis: 'plain', snippet: [],
+    target: { route_name: 'taskChat', params: { wsId: task.workspaceId, taskId: task.id }, query: {} },
+  })
+
+  const dockRuntime = (event: TaskRuntimeEvent) => {
+    let item = items.value.find(item => item.kind === 'task' && item.taskId === event.task.id)
+    if (!item) {
+      item = pinTask({ id: event.task.id, name: event.task.title, workspaceId: event.workspace.id, workspaceName: event.workspace.name })
+      if (!item) return
+      item.source = 'automatic'
+      item.minimized = true
+    }
+    item.runId = event.run.id
+    item.runtimeState = event.event_type
+    item.runtimeSummary = event.summary
+    return item
+  }
+
+  const clearAutomatic = () => { items.value = items.value.filter(item => item.source !== 'automatic') }
+
   return {
     items,
     isPinned,
@@ -179,5 +227,9 @@ export const usePinnedFloatsStore = defineStore('pinnedFloats', () => {
     updateSize,
     updateDockTop,
     clearAll,
+    pinTask,
+    dockRuntime,
+    clearAutomatic,
+    scope,
   }
 })

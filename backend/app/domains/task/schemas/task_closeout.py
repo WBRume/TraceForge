@@ -65,6 +65,7 @@ class FailTaskCloseoutRequest(BaseModel):
 
 
 class TaskCloseoutResponse(BaseModel):
+    business_state: Literal["TASK_IN_PROGRESS", "TASK_COMPLETED", "TASK_FAILED"] = "TASK_IN_PROGRESS"
     task_id: str
     workspace_id: str
     status: str

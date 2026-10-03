@@ -881,6 +881,9 @@ def take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
         if int(affected_rows or 0) != 1:
             db.rollback()
             return None
+        db.expire_all()
+        from app.domains.notification.services.task_awareness import capture_job
+        capture_job(db, db.get(SddAiJob, job_id), allow_start=True)
         db.commit()
         return job_id
     finally:

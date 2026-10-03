@@ -51,6 +51,7 @@ class SddTask(Base):
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     task_type = Column(String(40), nullable=False, default=TaskType.DEVELOPMENT.value, index=True)
     task_meta_json = Column(JSON, nullable=True)  # 任务类型扩展元数据，如问题定位的 {phenomenon, priority}
+    business_state = Column(String(40), nullable=False, default="TASK_IN_PROGRESS", server_default="TASK_IN_PROGRESS")
     name = Column(String(300), nullable=False)
     description = Column(Text, nullable=True)
     spec_doc_path = Column(String(500), nullable=True)
