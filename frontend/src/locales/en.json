@@ -634,6 +634,7 @@
     "task_follow_failed": "Failed to update follow state",
     "session_scroll_load_more": "Scroll to the bottom to load more sessions",
     "empty_hint": "Select a task to view conversation",
+    "initializing_session": "Initializing session…",
     "start_before_chat": "Please start the engine before sending messages",
     "task_provisioning_hint": "Task workspace is being prepared (git worktree/clone); you can start the session once it is ready",
     "send_message": "Send message",

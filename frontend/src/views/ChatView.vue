@@ -175,8 +175,8 @@ watch(
     <!-- Center: Chat + Pinned Cards -->
     <section
       class="chat-main"
-      :class="{ 'is-session-busy': vm.isUndoing }"
-      :aria-busy="vm.isUndoing"
+      :class="{ 'is-session-busy': vm.isUndoing || vm.initializingTask }"
+      :aria-busy="vm.isUndoing || vm.initializingTask"
       v-if="vm.currentTask"
     >
       <SessionHeader
@@ -190,7 +190,7 @@ watch(
       />
 
       <div
-        v-if="vm.isUndoing"
+        v-if="vm.isUndoing || vm.initializingTask"
         class="session-operation-overlay"
         role="status"
         aria-live="polite"
@@ -201,7 +201,7 @@ watch(
             <circle class="session-operation-progress-track" cx="24" cy="24" r="18" pathLength="100" />
             <circle class="session-operation-progress-path" cx="24" cy="24" r="18" pathLength="100" />
           </svg>
-          <span class="session-operation-copy">{{ $t('chat.undo.in_progress') }}</span>
+          <span class="session-operation-copy">{{ vm.initializingTask ? $t('chat.initializing_session') : $t('chat.undo.in_progress') }}</span>
         </div>
       </div>
 
@@ -291,7 +291,7 @@ watch(
         :selected-model="vm.agentModel" :model-options="vm.agentModelOptions"
         :models-loading="vm.agentModelsLoading" :models-error="vm.agentModelsError"
         @update:selected-model="vm.selectAgentModel" @reload-models="vm.reloadAgentModels"
-        :disabled="vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
+        :disabled="vm.initializingTask || vm.sendingChat || (!vm.suggestionOnly && (vm.isChatLocked || Boolean(playbook.run && !['COMPLETED', 'CANCELLED'].includes(playbook.run.state))))"
         :running="!vm.suggestionOnly && vm.engineRunning"
         :can-interrupt="vm.canTemporarilyInterrupt"
         :interrupting="vm.interruptingTask"

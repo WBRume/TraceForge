@@ -75,18 +75,6 @@ watch(
   },
 )
 
-watch(
-  () => timelineEntries.value.length,
-  async () => {
-    if (props.vm.loadingMore || loadingOlderFromScroll.value) return
-    await nextTick()
-    if (timelineContainer.value) {
-      timelineContainer.value.scrollTop = timelineContainer.value.scrollHeight
-    }
-    void refocusInput()
-  },
-)
-
 onMounted(() => {
   props.vm.setTerminalContainer(timelineContainer.value)
   void refocusInput()
@@ -128,7 +116,7 @@ onBeforeUnmount(() => {
     <TerminalCommandInput
       ref="commandInput"
       :model-value="controller.inputValue.value"
-      :disabled="!vm.currentTask?.id"
+      :disabled="!vm.currentTask?.id || Boolean(vm.initializingTask)"
       :busy="controller.commandExecuting.value"
       :placeholder="inputPlaceholder"
       @update:model-value="(value) => { controller.inputValue.value = value }"

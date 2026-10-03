@@ -7,7 +7,7 @@ import type { RuntimeSkillItem } from '../types'
 
 /**
  * 引擎启动 / 会话初始化：启动确认弹窗、初始化弹窗（理由 + 初始提示词 + 技能选择）、
- * 已删除 runtime 技能的二次确认，以及初始化执行（清空会话视图 → POST → 重载快照）。
+ * 已删除 runtime 技能的二次确认，以及初始化执行（遮罩 → 复位旧会话 → POST → 重载快照）。
  */
 export function useTaskStartActions(options: {
   getCurrentTask: () => any
@@ -48,6 +48,8 @@ export function useTaskStartActions(options: {
 
   // ─── 会话初始化 ───
   const showInitReasonModal = ref(false)
+  const initializingTaskId = ref('')
+  const initializingTask = computed(() => Boolean(initializingTaskId.value) && options.getCurrentTask()?.id === initializingTaskId.value)
   const initPrompt = ref('')
   const initReason = ref('')
   const initSkillOptionsLoading = ref(false)
@@ -60,7 +62,7 @@ export function useTaskStartActions(options: {
     options.isTaskPreStart.value && options.canStartTask.value && !startingTask.value
   ))
   const canInitializeAction = computed(() => (
-    Boolean(options.getCurrentTask()) && !options.isTaskPreStart.value && options.canManageTaskStatus.value
+    Boolean(options.getCurrentTask()) && !options.isTaskPreStart.value && options.canManageTaskStatus.value && !initializingTask.value
   ))
 
   const defaultInitialPromptForTask = (task: any): string => {
@@ -205,6 +207,7 @@ export function useTaskStartActions(options: {
   ): Promise<boolean> => {
     const task = options.getCurrentTask()
     if (!task) return false
+    if (initializingTaskId.value) return false
     if (!options.canManageTaskStatus.value) {
       ElMessage.warning(t('chat.errors.no_permission_manage_task_status'))
       return false
@@ -223,8 +226,11 @@ export function useTaskStartActions(options: {
             && (optionIds.size === 0 || optionIds.has(skillId))
           ))))
       : []
+    const workspaceId = options.getWorkspaceId()
+    initializingTaskId.value = task.id
+    // Clear the old run before submitting: the queued run can publish WS events
+    // before this request resolves. Clearing after POST would erase those events.
     options.resetConversationView()
-
     options.engineRunning.value = true
     try {
       const payload: Record<string, unknown> = {
@@ -236,12 +242,12 @@ export function useTaskStartActions(options: {
         payload.keep_deleted_runtime_skills = initOptions?.keepDeletedRuntimeSkills !== false
       }
       const res = await api.post(
-        `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/initialize`,
+        `/workspaces/${workspaceId}/tasks/${task.id}/initialize`,
         payload,
       )
       const job = res.data?.job
       noteTaskRunInitiated(task.id, undefined, job?.id)
-      if (options.getCurrentTask()?.id !== task.id) return true
+      if (options.getCurrentTask()?.id !== task.id || options.getWorkspaceId() !== workspaceId) return true
       options.applyTaskSessionPayload({
         task_id: task.id, status: 'CODING', job,
         ...(job?.session_generation != null ? { session_generation: job.session_generation } : {}),
@@ -253,7 +259,10 @@ export function useTaskStartActions(options: {
       options.submissionsClear(String(task.id))
       // 加载初始化时保存的消息（用户初始消息 + 可能的 init_reason 分隔线）
       await options.loadHistory(task.id)
+      if (options.getCurrentTask()?.id !== task.id || options.getWorkspaceId() !== workspaceId) return true
+      options.scrollIfNotAnchored()
       await options.refreshActiveJobs(task.id)
+      if (options.getCurrentTask()?.id !== task.id || options.getWorkspaceId() !== workspaceId) return true
       await options.skills.loadTaskRuntimeSkills({ silent: true, hydrateEditor: options.skills.showTaskSkillsDrawer.value })
 
       options.patchTask(task.id, hasSkillSelectionArg
@@ -263,8 +272,16 @@ export function useTaskStartActions(options: {
     } catch (e) {
       console.error('Initialize failed', e)
       ElMessage.error(options.resolveActionError(e, 'chat.errors.initialize_failed', 'chat.errors.no_permission_manage_task_status'))
-      options.engineRunning.value = false
+      if (options.getCurrentTask()?.id === task.id && options.getWorkspaceId() === workspaceId) {
+        options.engineRunning.value = false
+        await options.loadHistory(task.id)
+        if (options.getCurrentTask()?.id === task.id && options.getWorkspaceId() === workspaceId) {
+          await options.refreshActiveJobs(task.id)
+        }
+      }
       return false
+    } finally {
+      initializingTaskId.value = ''
     }
   }
 
@@ -311,6 +328,7 @@ export function useTaskStartActions(options: {
     showStartConfirm,
     startingTask,
     showInitReasonModal,
+    initializingTask,
     initPrompt,
     initReason,
     initSkillOptions,

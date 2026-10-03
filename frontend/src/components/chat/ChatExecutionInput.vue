@@ -228,7 +228,7 @@ const resetPreInputForm = () => {
 
 const focusInput = async () => {
   await nextTick()
-  textareaRef.value?.focus()
+  textareaRef.value?.focus({ preventScroll: true })
 }
 
 defineExpose({ resetPreInputForm, focusInput })

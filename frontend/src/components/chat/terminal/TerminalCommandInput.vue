@@ -26,7 +26,7 @@ const onInput = (event: Event) => {
 const focusInput = async () => {
   await nextTick()
   if (props.disabled || props.busy) return
-  inputEl.value?.focus()
+  inputEl.value?.focus({ preventScroll: true })
 }
 
 defineExpose({

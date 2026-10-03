@@ -79,6 +79,31 @@ const createLifecycle = () => {
 }
 
 describe('confirmation lifecycle', () => {
+  it('keeps initialization busy while clearing the old run and restores history if the request fails', async () => {
+    const runtime = createLifecycle()
+    api.get.mockResolvedValue({ data: { items: [
+      { id: 'old-job', task_id: 'task', status: 'RUNNING', progress: 0, session_generation: 1 },
+    ] } })
+    let reject!: (reason: Error) => void
+    api.post.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const pending = runtime.start.initializeTaskWithReason('重新开始', '新的提示词')
+      expect(runtime.start.initializingTask.value).toBe(true)
+      expect(runtime.messages.value).toEqual([])
+      expect(runtime.cards.activeHitlCards.value).toHaveLength(0)
+      expect(await runtime.start.initializeTaskWithReason()).toBe(false)
+      reject(new Error('request failed'))
+      expect(await pending).toBe(false)
+      expect(runtime.start.initializingTask.value).toBe(false)
+      expect(runtime.messages.value[0].id).toBe('old')
+      expect(runtime.cards.activeHitlCards.value).toHaveLength(1)
+    } finally {
+      consoleError.mockRestore()
+      runtime.state.dispose()
+    }
+  })
+
   it('handles stop → initialize → new question → stop with the real action and state composables', async () => {
     const runtime = createLifecycle()
     expect(runtime.cards.activeHitlCards.value).toHaveLength(1)

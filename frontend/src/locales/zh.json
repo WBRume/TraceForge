@@ -634,6 +634,7 @@
     "task_follow_failed": "关注状态更新失败",
     "session_scroll_load_more": "下滑到底自动加载更多会话",
     "empty_hint": "选择一个任务查看会话",
+    "initializing_session": "正在初始化会话…",
     "start_before_chat": "请先启动引擎后再发送消息",
     "task_provisioning_hint": "任务工作区准备中（git worktree/clone），完成后即可启动会话",
     "send_message": "发送消息",
