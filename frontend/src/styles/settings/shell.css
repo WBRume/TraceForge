@@ -1,0 +1,78 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
+.settings-container {
+  min-height: 100vh;
+  padding: 2rem 2.5rem;
+  background-color: transparent;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.settings-header {
+  margin-bottom: 2rem;
+  max-width: 1440px;
+  margin-inline: auto;
+}
+.title-gradient {
+  font-size: 2.5rem;
+  font-weight: 800;
+  letter-spacing: -1px;
+  background: linear-gradient(135deg, #1e3a8a 0%, #0ea5e9 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 0.5rem;
+}
+.subtitle {
+  color: #64748b;
+  font-size: 1.1rem;
+}
+.settings-layout {
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  gap: 1.5rem;
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 1.5rem;
+  box-shadow:
+    0 10px 15px -3px rgba(0, 0, 0, 0.05),
+    0 4px 6px -2px rgba(0, 0, 0, 0.02),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.4);
+}
+.settings-main {
+  padding: 1.75rem 2rem;
+  min-width: 0;
+}
+.animate-slide-down {
+  animation: slideDown 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.animate-fade-in {
+  animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (max-width: 1024px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 640px) {
+  .settings-container {
+    padding: 1rem;
+  }
+  .settings-main {
+    padding: 1rem;
+  }
+  .title-gradient {
+    font-size: 1.9rem;
+  }
+}
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}

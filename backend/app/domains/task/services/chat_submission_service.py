@@ -29,6 +29,8 @@ from app.domains.task.models.task import SddTask
 from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.services.task_attempt_recovery_service import BLOCKING, recover_task_attempts
 
+from app.domains.task.services.conversation import history as task_conversation_history
+
 logger = get_logger(__name__, category="task_execution")
 _runners: dict[str, asyncio.Task] = {}
 
@@ -387,15 +389,15 @@ def build_session_state(db, task_id, *, actor_id, client_message_ids=None):
     from app.domains.ai.services.jobs.store import list_task_jobs, serialize_job
     for job in list_task_jobs(db, task_id=task_id, active_only=True):
         jobs.setdefault(job.id, job)
-    from app.domains.task.services import task_service
-    ordered = task_service.sort_chat_messages(list(messages.values()))
+
+    ordered = task_conversation_history.sort_chat_messages(list(messages.values()))
     return {
         "task_id": task_id,
         "session_generation": int(task.session_generation or 0),
         "session_revision": int(task.session_revision or 0),
         "receipts": [serialize(row) for row in receipts.values()],
         "jobs": [serialize_job(job) for job in jobs.values()],
-        "messages": task_service.serialize_history_messages(
+        "messages": task_conversation_history.serialize_history_messages(
             db, task, ordered, task.workspace_id, task_id),
     }
 

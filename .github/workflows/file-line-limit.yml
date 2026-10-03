@@ -1,0 +1,36 @@
+name: File line limit
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python files <= 1500 lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test Python line checker
+        run: python -m unittest discover -s backend/tests/quality -p test_check_file_lines.py
+      - name: Check Python file lines
+        run: python backend/check_file_lines.py
+
+  vue:
+    name: Vue project files <= 1500 lines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Test Vue project line checker
+        run: node --test frontend/scripts/tests/check-file-lines.cases.mjs
+      - name: Check Vue project file lines
+        run: node frontend/scripts/check-file-lines.mjs

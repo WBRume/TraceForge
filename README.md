@@ -537,6 +537,7 @@ alembic revision --autogenerate -m "migration message"
 ```bash
 cd frontend
 npm run dev          # 启动开发服务器
+npm run check:file-lines # 单文件行数门禁（超过 1500 行必须重构）
 npm run build        # 构建生产版本
 npm run preview      # 预览生产构建
 npm run test         # 运行测试（Vitest）
@@ -547,10 +548,23 @@ npm run test:run     # 单次运行测试
 
 ```bash
 cd backend
+python check_file_lines.py        # 单文件行数门禁（超过 1500 行必须重构）
+python -m pytest tests            # 后端测试，包含单文件行数门禁
 uvicorn app.main:app --host 0.0.0.0   # 启动开发服务器（不要加 --reload）
 alembic upgrade head              # 运行数据库迁移
 alembic revision --autogenerate -m "message"  # 创建迁移
 ```
+
+### 单文件行数门禁
+
+Python 项目的 `.py` 文件，以及 Vue 项目的 `.vue`、TypeScript、JavaScript、样式和 HTML
+源文件，单个文件最多 **1500 行**。按物理总行数计算，包含空行和注释；Vue 文件的
+`template`、`script`、`style` 合并计数。末尾换行不会多计一行。
+
+检查包含 Git 已跟踪文件和未忽略的新文件，排除被 Git 忽略的依赖、构建及临时产物。
+已有超限文件同样会失败，不设豁免；输出会列出文件路径、实际行数，并提示“需要重构”。
+前端 `npm run build`、`npm run test`、`npm run test:watch`、`npm run test:run` 会先执行门禁；
+后端完整 pytest 测试包含门禁测试，GitHub Actions 在 push 和 PR 时分别检查两个项目。
 
 ## 部署说明
 
@@ -606,7 +620,8 @@ alembic revision --autogenerate -m "message"  # 创建迁移
    # 前端测试
    cd frontend && npm run test:run
    
-   # 后端测试（待补充测试命令）
+   # 后端测试
+   cd ../backend && python -m pytest tests
    ```
 
 2. **不提交以下内容**：

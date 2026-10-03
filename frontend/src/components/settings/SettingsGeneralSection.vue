@@ -47,6 +47,6 @@ const vm = proxyRefs(props.vm)
   </section>
 </template>
 
-<style scoped src="@/styles/settings/settings-view-shared.css"></style>
+<style scoped src="@/styles/settings/general.css"></style>
 
 

@@ -6,12 +6,16 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
+from app.domains.skill.services.packages import storage as storage_service
+from app.domains.skill.services.packages import versions as skill_packages_versions
+from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
+
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-from app.domains.skill.services import skill_service
+
 
 
 def _run_git(args, cwd):
@@ -56,8 +60,8 @@ class SkillMaterializationSnapshotTest(unittest.TestCase):
             target_dir = os.path.join(tmpdir, "materialized")
             fake_skill = SimpleNamespace(package_path="unused", head_commit_sha=published_sha)
 
-            with mock.patch.object(skill_service, "_repo_path", return_value=repo_dir):
-                skill_service._copy_single_skill_package(fake_skill, target_dir)
+            with mock.patch.object(storage_service, "package_abs_path", return_value=repo_dir):
+                skill_runtime_materialization._copy_single_skill_package(fake_skill, target_dir)
 
             copied_file = os.path.join(target_dir, "SKILL.md")
             with open(copied_file, "r", encoding="utf-8") as file:

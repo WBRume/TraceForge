@@ -21,13 +21,15 @@ from app.core.distributed_lock import LockAcquireTimeout, make_resource_busy_err
 from app.core.offload import run_db_txn_with_bind
 from app.domains.auth.models.user import WorkspacePermission
 from app.domains.task.models.task import TaskStatus
-from app.domains.task.services import task_service
+
 from app.domains.task.services.task_session_control_service import (
     BASELINED_LOCKED_MSG,
     TASK_RUNNING_MSG,
 )
 from app.domains.workspace.services import workspace_service
 from app.engine.session import get_engine
+
+from app.domains.task.services.task_records import queries as task_task_records_queries
 
 T = TypeVar("T")
 
@@ -74,7 +76,7 @@ def verify_workspace_permission(
 
 
 def get_task_or_404(db: Session, task_id: str, ws_id: str):
-    task = task_service.get_task(db, task_id, ws_id)
+    task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task

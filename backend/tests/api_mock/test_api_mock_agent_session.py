@@ -33,7 +33,7 @@ def test_agent_session_adapts_remote_events_and_closes(monkeypatch, backend_name
     result = asyncio.run(cli_sync_service.run_agent_session(
         backend_name, "workspace", "generate cases", on_event=events.append, on_output=logs.append,
     ))
-    factory.assert_called_once_with(backend_name)
+    factory.assert_called_once_with(backend_name, task_id=None)
     assert result == (['[{"name":"ok"}]'], ['[{"name":"ok"}]'])
     assert captured[0].project_path == "workspace"
     assert captured[0].prompt == "generate cases"
@@ -55,7 +55,7 @@ def test_remote_cancellation_is_a_job_cancellation(monkeypatch):
         capabilities=SimpleNamespace(execution_kind="REMOTE_SESSION"),
         close=AsyncMock(), cancel=AsyncMock(),
     )
-    monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _: backend)
+    monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _, *, task_id=None: backend)
 
     async def run(*_args):
         await asyncio.Future()
@@ -74,7 +74,7 @@ def test_agent_failure_propagates_and_closes(monkeypatch):
         capabilities=SimpleNamespace(execution_kind="REMOTE_SESSION"),
         close=AsyncMock(),
     )
-    monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _: backend)
+    monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _, *, task_id=None: backend)
     monkeypatch.setattr(
         selection, "run_agent_backend_with_logging", AsyncMock(side_effect=RuntimeError("backend unavailable")),
     )

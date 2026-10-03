@@ -16,6 +16,8 @@ from app.domains.task.routers.task import crud
 from app.engine.session import turn_setup
 from tests.workspace_asset.test_workspace_asset_boundary import _seed_workspace
 
+from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+
 
 def seed_case(db):
     user, workspace, task = _seed_workspace(db)
@@ -83,7 +85,7 @@ def test_missing_or_cross_workspace_selection_cannot_create_task(db):
     with pytest.raises(PlaybookError, match="PLAYBOOK_NOT_FOUND"):
         analysis_guide.task_binding(db, "another-workspace", promoted["spec"]["id"])
     before = db.query(SddTask).count()
-    from app.domains.task.services.task_service import create_task_record_for_provision
+
     with pytest.raises(ValueError, match="requires a DIAGNOSIS task"):
         create_task_record_for_provision(db, user, workspace.id, "dev selection", diagnosis_playbook_spec_id=promoted["spec"]["id"])
     with pytest.raises(PlaybookError):

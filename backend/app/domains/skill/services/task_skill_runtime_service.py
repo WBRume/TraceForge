@@ -19,8 +19,13 @@ from app.config import settings
 from app.domains.task.models.chat import ChatMessage, MessageType
 from app.domains.skill.models.skill import SddSkill, SddSkillRuntimeEvent, SkillRuntimeEventType
 from app.domains.task.models.task import SddTask
-from app.domains.skill.services import skill_service
-from app.domains.skill.services.skill import storage_service
+
+from app.domains.skill.services.packages import storage as storage_service
+
+from app.domains.skill.services.packages import versions as skill_packages_versions
+from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
+from app.domains.skill.services.runtime import layout as skill_runtime_layout
+from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
 
 
 @dataclass(frozen=True)
@@ -39,14 +44,14 @@ def _task_skills_root(db: Optional[Session] = None, task: Optional[SddTask] = No
     if task is None:
         task = db
         db = None
-    return skill_service.resolve_task_skills_root(db, task)
+    return skill_runtime_layout.resolve_task_skills_root(db, task)
 
 
 def _runtime_manifest_path(db: Optional[Session] = None, task: Optional[SddTask] = None) -> str:
     if task is None:
         task = db
         db = None
-    return os.path.join(_task_skills_root(db, task), skill_service.TASK_SKILLS_MANIFEST)
+    return os.path.join(_task_skills_root(db, task), skill_runtime_materialization.TASK_SKILLS_MANIFEST)
 
 
 def _read_runtime_manifest(db: Optional[Session] = None, task: Optional[SddTask] = None) -> List[Dict[str, Any]]:
@@ -127,8 +132,8 @@ def _local_resource(task):
 
 def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSkillRecord]:
     root = _task_skills_root(db, task)
-    skills = skill_service.get_task_skills(db, task.id)
-    folder_map = skill_service.build_task_skill_folder_map(skills)
+    skills = skill_runtime_bindings.get_task_skills(db, task.id)
+    folder_map = skill_runtime_materialization.build_task_skill_folder_map(skills)
     records: List[RuntimeSkillRecord] = []
     seen_skill_ids: set[str] = set()
     seen_folders: set[str] = set()
@@ -290,7 +295,7 @@ def list_task_runtime_skills(db: Session, task: SddTask) -> Dict[str, object]:
         is_materialized = folder in remote_folders if remote_folders is not None else bool(folder) and os.path.isdir(skill_root)
         if record.skill is not None:
             try:
-                publish = skill_service.get_skill_package_publish_status(record.skill)
+                publish = skill_packages_versions.get_skill_package_publish_status(record.skill)
             except Exception:
                 publish = {
                     "publish_state": "PUBLISHED",

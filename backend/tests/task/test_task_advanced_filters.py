@@ -17,7 +17,11 @@ from app.domains.notification.models.notification import SddUserNotification  # 
 from app.domains.task.models.chat import ChatMessage  # noqa: E402
 from app.domains.task.models.pre_input import SddTaskPreInput  # noqa: E402
 from app.domains.task.models.task import SddTask, SddTaskFollower  # noqa: E402
-from app.domains.task.services import task_service  # noqa: E402
+
+from app.domains.task.services.conversation import messages as task_conversation_messages
+from app.domains.task.services.task_records import commands as task_task_records_commands
+from app.domains.task.services.task_records import queries as task_task_records_queries
+  # noqa: E402
 
 
 def test_task_advanced_relations_are_scoped_to_current_user_and_workspace():
@@ -60,7 +64,7 @@ def test_task_advanced_relations_are_scoped_to_current_user_and_workspace():
         db.commit()
 
         def ids(relation):
-            items, total = task_service.list_tasks(
+            items, total = task_task_records_queries.list_tasks(
                 db,
                 workspace.id,
                 relation=relation,
@@ -77,15 +81,15 @@ def test_task_advanced_relations_are_scoped_to_current_user_and_workspace():
         assert ids("created_by_me,followed_by_me") == {created.id, followed.id}
         assert cross_workspace.id not in ids("created_by_me")
 
-        assert task_service.set_task_following(db, task=created, user_id=user.id, following=True) is True
-        assert task_service.set_task_following(db, task=created, user_id=user.id, following=True) is True
+        assert task_task_records_commands.set_task_following(db, task=created, user_id=user.id, following=True) is True
+        assert task_task_records_commands.set_task_following(db, task=created, user_id=user.id, following=True) is True
         assert db.query(SddTaskFollower).filter(
             SddTaskFollower.task_id == created.id,
             SddTaskFollower.user_id == user.id,
         ).count() == 1
-        assert task_service.set_task_following(db, task=created, user_id=user.id, following=False) is False
+        assert task_task_records_commands.set_task_following(db, task=created, user_id=user.id, following=False) is False
 
-        task_service.save_chat_message(
+        task_conversation_messages.save_chat_message(
             db,
             task_id=followed.id,
             workspace_id=workspace.id,

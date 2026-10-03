@@ -14,9 +14,11 @@ from app.domains.local_resource.client import ResourceError
 from app.domains.task.schemas.task_closeout import CompleteTaskCloseoutRequest, FailTaskCloseoutRequest, TaskCloseoutResponse
 from app.domains.ai.services.jobs import attempts as ai_job_attempts
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
-from app.domains.task.services import task_cli_state_service, task_closeout_service, task_service
+from app.domains.task.services import task_cli_state_service, task_closeout_service
 from app.domains.workspace.services import workspace_service
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+
+from app.domains.task.services.task_records import queries as task_task_records_queries
 
 
 router = APIRouter(prefix="/workspaces/{ws_id}/tasks/{task_id}/closeout", tags=["Task Closeout"])
@@ -66,7 +68,7 @@ async def complete_task_closeout(
     await run_route_db_txn(db, db_bind, lambda session: _verify_manage_task_status(ws_id, current_user, session, task_id))
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
+            task = task_task_records_queries.get_task(db, task_id, ws_id)
             if not task:
                 raise HTTPException(status_code=404, detail="Task not found")
             try:
@@ -92,7 +94,7 @@ async def fail_task_closeout(
     await run_route_db_txn(db, db_bind, lambda session: _verify_manage_task_status(ws_id, current_user, session, task_id))
     try:
         async with lock_task(task_id):
-            task = task_service.get_task(db, task_id, ws_id)
+            task = task_task_records_queries.get_task(db, task_id, ws_id)
             if not task:
                 raise HTTPException(status_code=404, detail="Task not found")
             try:

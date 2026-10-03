@@ -12,7 +12,7 @@ from tests.task.test_task_chat_history_ordering import db_session, _seed_task
 from app.config import settings
 from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.task.models.chat import ChatMessage
-from app.domains.task.services import task_service
+
 from app.domains.search.models import SearchDocumentState, SearchOutbox, SearchEmbeddingJob
 from app.domains.search.projection import build_search_projection, build_embedding_chunks, es_version
 from app.domains.search.es import search_body, scope_filters, bulk_write
@@ -21,6 +21,8 @@ from app.domains.search.service import hydrate
 from app.domains.search.context import window
 from app.domains.search.worker import claim, finish, current_document
 from app.domains.search.sessions import sign, unsign
+
+from app.domains.task.services.conversation import messages as task_conversation_messages
 
 
 def message(kind="text", **kw):
@@ -106,7 +108,7 @@ def test_transaction_rollback_removes_source_state_and_outbox(db_session):
 def test_new_message_version_update_and_tombstone(db_session):
     db = db_session
     task = _seed_task(db)
-    msg = task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", "第一版")
+    msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", "第一版")
     state = db.get(SearchDocumentState, "message:" + msg.id)
     assert state.source_version == 1
     msg.content = "第二版"
@@ -137,7 +139,7 @@ def test_acl_version_recheck_and_context(db_session, monkeypatch):
     task = _seed_task(db)
     db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
     db.commit()
-    messages = [task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", f"连接池 {i}") for i in range(7)]
+    messages = [task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", f"连接池 {i}") for i in range(7)]
     # SQLite CURRENT_TIMESTAMP omits fractions; explicit values match its bound DateTime representation.
     for msg in messages:
         msg.created_at = datetime(2026, 1, 1)
@@ -260,7 +262,7 @@ def test_hydrate_returns_creator_identity_for_user_messages(db_session):
     task = _seed_task(db)
     db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
     db.commit()
-    msg = task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
+    msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
     db.commit()
     doc = current_document(db, "message:" + msg.id)
     rows, consumed = hydrate(db, task.creator_id, [doc], 0, 20, "连接池", [task.workspace_id])
@@ -282,7 +284,7 @@ def test_hydrate_oversized_avatar_svg_is_omitted(db_session):
     db.query(User).filter(User.id == task.creator_id).update({"avatar_svg": oversized})
     db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
     db.commit()
-    msg = task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
+    msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
     db.commit()
     doc = current_document(db, "message:" + msg.id)
     rows, _ = hydrate(db, task.creator_id, [doc], 0, 20, "连接池", [task.workspace_id])

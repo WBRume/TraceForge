@@ -17,8 +17,10 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 from app.dependencies import get_current_user, get_db  # noqa: E402
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion  # noqa: E402
-from app.domains.asset.routers import asset as asset_router_module  # noqa: E402
+  # noqa: E402
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
+
+from app.domains.asset.routers import assets as asset_assets
 
 
 def _seed_pdf_asset(db, tmp_path):
@@ -48,7 +50,7 @@ def _build_client(db):
     from app.domains.auth.models.user import User
 
     app = FastAPI()
-    app.include_router(asset_router_module.router, prefix="/api")
+    app.include_router(asset_assets.router, prefix="/api")
     app.dependency_overrides[get_db] = lambda: db
     user = db.query(User).filter_by(id="user-1").first()
     app.dependency_overrides[get_current_user] = lambda: user

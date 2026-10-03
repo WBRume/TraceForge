@@ -18,7 +18,10 @@ from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import reading_capture_service as rcs
 from app.domains.task.services import reading_progress_service as rps
-from app.domains.task.services import task_service
+
+from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.conversation import messages as task_conversation_messages
+
 
 pytestmark = pytest.mark.live_revert
 
@@ -104,7 +107,7 @@ def test_concurrent_message_writes_allocate_unique_change_seq(seed):
         db = seed.db_factory()
         try:
             for i in range(5):
-                task_service.save_chat_message(
+                task_conversation_messages.save_chat_message(
                     db, task_id="task-c1", workspace_id=seed.ws_id, creator_id="cu-a",
                     role="assistant", content=f"w{worker_id}-{i}", message_type="text",
                 )
@@ -139,7 +142,7 @@ def test_concurrent_receipts_merge_without_lost_updates(seed):
     db = seed.db_factory()
     try:
         for i in range(10):
-            task_service.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
+            task_conversation_messages.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
                                            creator_id="cu-a", role="assistant", content=f"m{i}")
         rps.open_reading_session(db, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2")
         db.commit()
@@ -196,9 +199,9 @@ def test_concurrent_resume_cas_single_winner(seed):
     db = seed.db_factory()
     m1_id = m2_id = None
     try:
-        m1 = task_service.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
+        m1 = task_conversation_messages.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
                                             creator_id="cu-a", role="assistant", content="anchor")
-        m2 = task_service.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
+        m2 = task_conversation_messages.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
                                             creator_id="cu-a", role="assistant", content="other")
         db.commit()
         m1_id, m2_id = str(m1.id), str(m2.id)
@@ -255,7 +258,7 @@ def test_epoch_conflict_blocks_stale_writer_mysql(seed):
     try:
         rps.open_reading_session(db, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2")
         db.commit()
-        task_service.clear_task_history(db, task_id="task-c2", workspace_id=seed.ws_id)
+        task_conversation_history.clear_task_history(db, task_id="task-c2", workspace_id=seed.ws_id)
         db.commit()
     finally:
         db.close()

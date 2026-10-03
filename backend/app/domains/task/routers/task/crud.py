@@ -30,7 +30,7 @@ from app.domains.task.schemas.task import (
     TaskListResponse,
     TaskResponse,
 )
-from app.domains.task.services import task_cli_state_service, task_service
+from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.chat_submission_service import SubmissionError
 from app.domains.task.services.task_session_control_service import TASK_RUNNING_MSG
 from app.domains.workflow.schemas.provision import (
@@ -40,6 +40,12 @@ from app.domains.workflow.schemas.provision import (
 from app.domains.workflow.services import provision_job_service
 from app.domains.workspace.services import workspace_service
 from app.engine.session import get_engine
+
+from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.provisioning import creation as task_provisioning_creation
+from app.domains.task.services.task_records import commands as task_task_records_commands
+from app.domains.task.services.task_records import queries as task_task_records_queries
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
@@ -63,7 +69,7 @@ def create_task(
     desc = data.description or ""
 
     try:
-        task = task_service.create_task_record_for_provision(
+        task = task_provisioning_creation.create_task_record_for_provision(
             db,
             current_user,
             ws_id,
@@ -175,7 +181,7 @@ def list_tasks(
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user.id, db)
-    items, total = task_service.list_tasks(
+    items, total = task_task_records_queries.list_tasks(
         db,
         ws_id,
         status,
@@ -188,7 +194,7 @@ def list_tasks(
         independent=independent,
         following=following,
     )
-    following_ids = task_service.list_following_task_ids(
+    following_ids = task_task_records_queries.list_following_task_ids(
         db,
         ws_id,
         current_user.id,
@@ -217,7 +223,7 @@ def get_task(
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
     payload = TaskResponse.model_validate(task).model_dump()
-    payload["is_following"] = task.id in task_service.list_following_task_ids(
+    payload["is_following"] = task.id in task_task_records_queries.list_following_task_ids(
         db, ws_id, current_user.id, [task.id]
     )
     return payload
@@ -232,7 +238,7 @@ def get_task_following(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    following = task.id in task_service.list_following_task_ids(
+    following = task.id in task_task_records_queries.list_following_task_ids(
         db, ws_id, current_user.id, [task.id]
     )
     return TaskFollowResponse(task_id=task.id, is_following=following)
@@ -247,7 +253,7 @@ def follow_task_messages(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    following = task_service.set_task_following(
+    following = task_task_records_commands.set_task_following(
         db, task=task, user_id=current_user.id, following=True
     )
     return TaskFollowResponse(task_id=task.id, is_following=following)
@@ -262,7 +268,7 @@ def unfollow_task_messages(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    following = task_service.set_task_following(
+    following = task_task_records_commands.set_task_following(
         db, task=task, user_id=current_user.id, following=False
     )
     return TaskFollowResponse(task_id=task.id, is_following=following)
@@ -277,11 +283,11 @@ def get_task_repositories(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    repos = task_service.get_task_repositories(db, task.id)
+    repos = task_task_workspace_repositories.get_task_repositories(db, task.id)
     return {
         "task_id": task.id,
-        "primary_cli_dir": task_service.resolve_task_cli_dir(db, task),
-        "items": [task_service.serialize_task_repository(repo) for repo in repos],
+        "primary_cli_dir": task_task_workspace_repositories.resolve_task_cli_dir(db, task),
+        "items": [task_task_workspace_repositories.serialize_task_repository(repo) for repo in repos],
         "total": len(repos),
     }
 
@@ -320,7 +326,7 @@ async def delete_task(
             if engine:
                 await engine.stop()
 
-            success = task_service.delete_task(db, task_id, ws_id)
+            success = task_task_records_commands.delete_task(db, task_id, ws_id)
     except ValueError as exc:
         audit_log(
             action="delete_task",
@@ -374,7 +380,7 @@ def export_task(
         "No permission to export tasks",
     )
 
-    session_data = task_service.export_task_session(db, task_id, ws_id)
+    session_data = task_conversation_history.export_task_session(db, task_id, ws_id)
     if not session_data:
         raise HTTPException(status_code=404, detail="Task not found")
     return session_data
@@ -390,7 +396,7 @@ def get_task_history(
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user.id, db)
-    return task_service.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
+    return task_conversation_history.get_task_history(db, task_id, ws_id, page=page, page_size=page_size)
 
 
 @router.delete("/{task_id}/history")
@@ -412,7 +418,7 @@ async def clear_task_history(
             if (engine and engine.running) or task.status == TaskStatus.CODING:
                 raise HTTPException(status_code=409, detail=TASK_RUNNING_MSG)
             try:
-                return task_service.clear_task_history(db, task_id, ws_id)
+                return task_conversation_history.clear_task_history(db, task_id, ws_id)
             except SubmissionError as exc:
                 raise HTTPException(exc.status_code, {"code": exc.code, "message": str(exc)}) from exc
     except LockAcquireTimeout as exc:

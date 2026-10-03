@@ -28,9 +28,14 @@ from app.domains.ai.services.jobs.store import (
     find_active_summary_job,
     serialize_job,
 )
-from app.domains.task.services import context_token_service, task_service, task_session_service
+from app.domains.task.services import context_token_service, task_session_service
 from app.core.offload import run_db_txn, run_db_txn_with_bind
 from app.domains.websocket.ws.manager import manager as task_ws_manager
+
+from app.domains.task.services.conversation import messages as task_conversation_messages
+from app.domains.task.services.task_records import queries as task_task_records_queries
+from app.domains.skill.services.runtime import configuration as skill_runtime_configuration
+from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -659,7 +664,7 @@ def load_start_task_context_sync(
     requested_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """启动前守卫 + 首条 prompt 组装（单事务，调用方已持有任务锁）。"""
-    task = task_service.get_task(db, task_id, ws_id)
+    task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
     _assert_no_preparing_submission(db, task_id)
@@ -695,7 +700,7 @@ def start_task_session_sync(
     sop_auto_run: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """任务状态重置为 CODING，并创建首条消息 + 聊天作业（单事务，锁内调用）。"""
-    task = task_service.get_task(db, task_id, ws_id)
+    task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
     _ensure_task_not_baselined(task)
@@ -710,7 +715,7 @@ def start_task_session_sync(
     if sop_auto_run is not None:
         task.task_meta_json = {**(task.task_meta_json or {}), "sop_auto_run": bool(sop_auto_run)}
 
-    initial_message = task_service.save_chat_message(
+    initial_message = task_conversation_messages.save_chat_message(
         db,
         task_id=task.id,
         workspace_id=ws_id,
@@ -797,7 +802,7 @@ def _initialize_has_active_jobs_sync(db: Session, *, task_id: str) -> bool:
 
 def prepare_initialize_sync(db: Session, *, ws_id: str, task_id: str) -> Dict[str, Any]:
     """重新初始化前置守卫 + 取消在途聊天作业（单事务，锁内调用）。"""
-    task = task_service.get_task(db, task_id, ws_id)
+    task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
     _assert_no_preparing_submission(db, task_id)
@@ -828,7 +833,7 @@ def apply_initialize_sync(
     requested_prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """替换 Skills、推进 session_generation、重置状态并组装首条 prompt（单事务，锁内调用）。"""
-    task = task_service.get_task(db, task_id, ws_id)
+    task = task_task_records_queries.get_task(db, task_id, ws_id)
     if not task:
         raise TaskSessionControlError("Task not found", status_code=404)
     _ensure_task_not_baselined(task)
@@ -839,7 +844,7 @@ def apply_initialize_sync(
             "旧任务执行尚未清理完成，请稍后重试初始化；无需删除任务。", status_code=409
         )
     if skill_ids is not None:
-        task_service.replace_task_skills_for_initialize(
+        skill_runtime_configuration.replace_task_skills_for_initialize(
             db,
             task,
             workspace_id=ws_id,
@@ -918,7 +923,7 @@ async def initialize_task_session(
     init_reason_text = str(reason or "").strip()
     # 同步落库 off-loop（线程内自建 session，含通知生成）
     await run_txn(
-        lambda session: task_service.save_chat_message(
+        lambda session: task_conversation_messages.save_chat_message(
             session,
             task_id,
             ws_id,

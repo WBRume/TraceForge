@@ -265,4 +265,4 @@ const copyLink = async (token: string) => {
   </Teleport>
 </template>
 
-<style scoped src="@/styles/settings/settings-view-shared.css"></style>
+<style scoped src="@/styles/settings/members/invitations.css"></style>

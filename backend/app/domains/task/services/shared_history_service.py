@@ -86,7 +86,7 @@ def _card_summary(metadata: Optional[dict], content: str) -> Optional[str]:
 
 
 def _order_index_expr():
-    # 与 task_service.get_task_history 的排序键一致
+    # 与 conversation.history.get_task_history 的排序键一致
     return sqlfunc.coalesce(
         ChatMessage.sort_seq,
         ChatMessage.metadata_json["order_index"].as_integer(),

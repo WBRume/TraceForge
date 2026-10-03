@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from sqlalchemy.orm import Session, joinedload
 
-from app.domains.task.services import task_service
+
 from app.config import settings
 from app.core.distributed_lock import (
     LockAcquireTimeout,
@@ -44,8 +44,11 @@ from app.domains.task.models.task_cli_bootstrap import (
     TaskCliBootstrapStatus,
 )
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.skill.services import skill_service
+
 from app.domains.websocket.ws.manager import manager as task_ws_manager
+
+from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -155,7 +158,7 @@ def _safe_rmtree(path: str) -> None:
 def _refresh_task_skill_context(task_id: str) -> None:
     db = SessionLocal()
     try:
-        skill_service.materialize_task_skills(db, task_id)
+        skill_runtime_materialization.materialize_task_skills(db, task_id)
     finally:
         db.close()
 
@@ -1197,7 +1200,7 @@ def _load_thread_session_inputs_sync(
                 baseline_session_id=str(record.baseline_session_id or "").strip() or None,
             ),
             "task_id": thread.task_id,
-            "task_dir": task_service.resolve_task_cli_dir(db, thread.task) if thread.task else "",
+            "task_dir": task_task_workspace_repositories.resolve_task_cli_dir(db, thread.task) if thread.task else "",
             "baseline_dir": str(record.baseline_dir or "").strip(),
         }
     finally:

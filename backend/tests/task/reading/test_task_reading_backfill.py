@@ -6,7 +6,10 @@ from app.domains.task.models.reading import TaskReadingItem
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import reading_backfill_service as rbs
 from app.domains.task.services import reading_capture_service as rcs
-from app.domains.task.services import task_service
+
+from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.conversation import messages as task_conversation_messages
+
 
 
 def _add_legacy_messages(env, count, *, with_sort_seq=True, task_id=None):
@@ -146,7 +149,7 @@ def test_live_capture_after_ready_does_not_conflict_with_backfill(seeded_db):
     env["db"].commit()
     assert verify["ok"]
     # ready 之后在线写入正常递增，不与回填序号冲突
-    m = task_service.save_chat_message(env["db"], task_id="task-legacy", workspace_id=env["ws_id"],
+    m = task_conversation_messages.save_chat_message(env["db"], task_id="task-legacy", workspace_id=env["ws_id"],
                                        creator_id="user-a", role="user", content="new live")
     env["db"].commit()
     item = env["db"].query(TaskReadingItem).filter(
@@ -160,7 +163,7 @@ def test_live_capture_after_ready_does_not_conflict_with_backfill(seeded_db):
 def test_cleanup_receipts_removes_stale_epoch_and_covered(seeded_db):
     env = seeded_db
     from app.domains.task.models.reading import TaskReadingReceipt, TaskReadingState
-    m1 = task_service.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
+    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
                                         creator_id="user-a", role="assistant", content="a")
     env["db"].commit()
     state = TaskReadingState(
@@ -174,7 +177,7 @@ def test_cleanup_receipts_removes_stale_epoch_and_covered(seeded_db):
     ))
     env["db"].commit()
     # 清空历史 → epoch=2，epoch 1 的回执全部过期（含被前缀覆盖的）
-    task_service.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
+    task_conversation_history.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
     env["db"].commit()
     result = rbs.cleanup_receipts(env["db"], batch_size=500)
     env["db"].commit()

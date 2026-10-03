@@ -65,6 +65,8 @@ from app.domains.task.services.ai_context_service import (
     build_resolution_rewrite_prompt,
 )
 
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
+
 logger = get_logger(__name__, category="ai_session")
 
 
@@ -151,10 +153,10 @@ def _build_asset_thread_run_sync(
             or resume_session_id
         )
     # 线程执行目录 = 任务目录（含 git worktree），评审答疑可直接读仓库内容
-    from app.domains.task.services import task_service as task_service_module
+
 
     project_path = (
-        task_service_module.resolve_task_cli_dir(db, task)
+        task_task_workspace_repositories.resolve_task_cli_dir(db, task)
         if task
         else "."
     )

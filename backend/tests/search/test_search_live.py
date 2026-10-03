@@ -25,8 +25,10 @@ from app.domains.search.worker import claim, process_body, process_embedding, cu
 from app.domains.search.projection import digest
 from app.domains.search import sessions
 from app.domains.search.rrf import hybrid_search
-from app.domains.task.services import task_service
+
 from app.core.redis_client import close_redis_client
+
+from app.domains.task.services.conversation import messages as task_conversation_messages
 
 pytestmark = pytest.mark.skipif(os.getenv("SEARCH_LIVE_TESTS") != "1", reason="opt-in real infrastructure")
 
@@ -87,7 +89,7 @@ def test_mysql_es_embedding_pipeline_and_tombstone(mysql_db, monkeypatch):
         from app.domains.auth.models.user import WorkspaceMember
         db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
         db.commit()
-        msg = task_service.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", "连接池耗尽：run_db_txn 未释放连接，导致请求排队。")
+        msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", "连接池耗尽：run_db_txn 未释放连接，导致请求排队。")
         message_id = msg.id
     def tx(fn):
         with factory() as db:

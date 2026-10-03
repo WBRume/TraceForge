@@ -40,7 +40,8 @@ from app.domains.workspace.routers import invite_join
 from app.domains.task.routers import task
 from app.domains.task.routers import public_session_shares
 from app.domains.dashboard.routers import dashboard
-from app.domains.asset.routers import asset
+
+from app.domains.asset.routers import assets as asset_assets
 from app.domains.asset.routers import upload
 from app.domains.skill.routers import skill
 from app.domains.api_mock.routers import api_mock
@@ -199,7 +200,7 @@ app.include_router(case_center_router.router, prefix="/api")
 app.include_router(case_center_router.global_router, prefix="/api")
 app.include_router(decision.router, prefix="/api")
 app.include_router(dashboard.router, prefix="/api")
-app.include_router(asset.router, prefix="/api")
+app.include_router(asset_assets.router, prefix="/api")
 app.include_router(upload.router, prefix="/api")
 app.include_router(skill.router, prefix="/api")
 app.include_router(api_mock.router, prefix="/api")
@@ -675,6 +676,7 @@ def readiness_check():
 
 from app.domains.local_resource.router import router as local_resource_router
 from app.domains.local_resource.client import ResourceError
+
 app.include_router(local_resource_router, prefix="/api")
 
 @app.exception_handler(ResourceError)

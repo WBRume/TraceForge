@@ -5,9 +5,12 @@ from app.domains.auth.models.user import Workspace
 from app.domains.task.models.task import SddTask, TaskStatus, SddTaskFollower
 from app.domains.task.routers.task import crud
 from app.domains.task.schemas.task import TaskResponse
-from app.domains.task.services import task_service
+
 from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement, SddRequirementAuditLog
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _build_app, _seed_workspace, _session
+
+from app.domains.task.services.provisioning import creation as task_provisioning_creation
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 
 @pytest.fixture
@@ -29,7 +32,7 @@ def seeded():
 def test_creation_binds_requirement_and_audit_in_one_transaction(seeded):
     sessions, user, workspace, _ = seeded
     with _session(sessions) as db:
-        task = task_service.create_task_record_for_provision(db, user, workspace.id, "Implement", requirement_id="req-101")
+        task = task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Implement", requirement_id="req-101")
         assert task.status == TaskStatus.PROVISIONING
         assert db.query(SddTaskRequirement).filter_by(task_id=task.id, requirement_id="req-101").count() == 1
         assert db.query(SddRequirementAuditLog).filter_by(task_id=task.id).one().after_json["task_id"] == task.id
@@ -40,7 +43,7 @@ def test_diagnosis_creation_cannot_link_requirement_before_closeout(seeded):
     sessions, user, workspace, _ = seeded
     with _session(sessions) as db:
         with pytest.raises(ValueError, match="when completed"):
-            task_service.create_task_record_for_provision(db, user, workspace.id, "Diagnose", task_type="DIAGNOSIS", requirement_id="req-101")
+            task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Diagnose", task_type="DIAGNOSIS", requirement_id="req-101")
         assert db.query(SddTaskRequirement).count() == 0
 
 
@@ -65,14 +68,14 @@ def test_wrong_workspace_rejected_and_later_failure_rolls_back_binding(seeded, m
     with _session(sessions) as db:
         for requirement_id in ["foreign-req", "missing"]:
             with pytest.raises(ValueError, match="Requirement not found"):
-                task_service.create_task_record_for_provision(db, user, workspace.id, "Invalid", requirement_id=requirement_id)
+                task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Invalid", requirement_id=requirement_id)
 
         def fail(*args, **kwargs):
             raise ValueError("repository snapshot failed")
 
-        monkeypatch.setattr(task_service, "snapshot_workspace_repositories_into_task", fail)
+        monkeypatch.setattr(task_task_workspace_repositories, "snapshot_workspace_repositories_into_task", fail)
         with pytest.raises(ValueError, match="snapshot failed"):
-            task_service.create_task_record_for_provision(db, user, workspace.id, "Rollback", requirement_id="req-101")
+            task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Rollback", requirement_id="req-101")
         assert db.query(SddTask).count() == 1
         assert db.query(SddTaskRequirement).count() == 0
         assert db.query(SddRequirementAuditLog).count() == 0

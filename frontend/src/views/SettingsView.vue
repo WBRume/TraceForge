@@ -68,4 +68,4 @@ const vm = proxyRefs(rawVm)
   </div>
 </template>
 
-<style scoped src="@/styles/settings/settings-view-shared.css"></style>
+<style scoped src="@/styles/settings/shell.css"></style>

@@ -25,8 +25,10 @@ from app.domains.ai.schemas.websocket import (
 )
 from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.task.models.task import SddTask
-from app.domains.task.services import context_token_service, task_service
+from app.domains.task.services import context_token_service
 from app.domains.websocket.ws.manager import manager as ws_manager
+
+from app.domains.task.services.conversation import messages as task_conversation_messages
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -240,7 +242,7 @@ class FrontendFeed:
                 row = db.query(SddTask.session_generation).filter(SddTask.id == owner.task_id).scalar()
                 generation = int(row) if row is not None else None
 
-            saved_message = task_service.save_chat_message(
+            saved_message = task_conversation_messages.save_chat_message(
                 db, owner.task_id, owner.ws_id, owner.user_id,
                 role=role,
                 content=content,

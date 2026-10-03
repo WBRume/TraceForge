@@ -17,7 +17,7 @@ from app.domains.asset.models.asset import AssetType, SddAsset
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.decision_service import decision_source_response
 from app.domains.task.models.task import SddTask
-from app.domains.task.services import task_service
+
 from app.domains.workflow.models.task_change import (
     SddTaskChangeProposal,
     SddTaskChangeProposalFile,
@@ -68,6 +68,8 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
 )
 
 from app.domains.workspace_asset.services.common.primitives import enum_value
+
+from app.domains.task.services.task_workspace import documents as task_task_workspace_documents
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +244,7 @@ def get_task_files(
 
     existing_paths = {item.source_path for item in items if item.source_path}
     try:
-        superpowers = task_service.list_superpowers_docs(task)
+        superpowers = task_task_workspace_documents.list_superpowers_docs(task)
         for section_key in ("specs", "plans"):
             file_type = section_key.upper().rstrip("S")
             for entry in superpowers.get(section_key, []):

@@ -130,7 +130,7 @@ const triggerFileUpload = () => {
   </section>
 </template>
 
-<style scoped src="@/styles/settings/settings-view-shared.css"></style>
+<style scoped src="@/styles/settings/appearance.css"></style>
 
 <style scoped>
 .appearance-upload {

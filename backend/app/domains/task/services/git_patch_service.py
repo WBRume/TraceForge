@@ -15,6 +15,8 @@ from app.domains.task.models.task import SddTask
 from app.domains.auth.models.user import Workspace
 from app.domains.task.services import git_worktree_service
 
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
+
 
 class GitPatchError(ValueError):
     def __init__(self, message: str, *, status_code: int = 409):
@@ -391,13 +393,13 @@ def generate_task_repo_patch_snapshots(
         return remote_patches(db, task)
 
     from app.domains.task.models.task_repository import TaskRepositoryState
-    from app.domains.task.services import task_service
+
 
     bindings = []
     if db is not None:
         bindings = [
             binding
-            for binding in task_service.get_task_repositories(db, task.id)
+            for binding in task_task_workspace_repositories.get_task_repositories(db, task.id)
             if binding.state == TaskRepositoryState.READY
         ]
 
