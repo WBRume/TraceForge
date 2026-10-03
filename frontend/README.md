@@ -10,6 +10,10 @@ npm run dev             # 浏览器
 npm run dev:electron    # 原有 Electron 开发，不需要 Rust
 ```
 
+Electron 开发沿用快速启动流程，预热入口和首页，在初始路由完成渲染后显示窗口。Vite 仅扫描 `index.html`，不把 Tauri 编译缓存或安装包内的 HTML 当作入口，文件监听也排除这些构建产物。Electron 使用已有 preload，仅 Tauri 等待异步桥接和原生 HTTP 初始化。桌面开发使用系统字体，避免外部字体网络请求。开发端口固定为 `127.0.0.1:5173`，端口占用会直接报错。
+
+开发工具按需打开，按 `F12` 切换。设置 `TRACEFORGE_DEVTOOLS=1` 可恢复启动时自动打开。
+
 Tauri 开发另外需要 Rust stable 和系统构建工具。Windows 安装 Visual Studio C++ Build Tools 和 WebView2，然后执行 `npm run dev:tauri`。Bun 由 npm 开发依赖提供，不要求全局安装。桌面用户无需安装 Node、Bun 或 Rust；本地 Agent 和 Git 的要求与原 Electron 相同。
 
 ## Windows x64 安装包
