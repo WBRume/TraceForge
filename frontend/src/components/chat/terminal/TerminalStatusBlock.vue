@@ -2,6 +2,8 @@
 import { computed, ref } from 'vue'
 
 import type { TerminalTimelineEntry } from '@/utils/chat-terminal/timeline-types'
+import ConfirmationForm from '../sections/ConfirmationForm.vue'
+import { confirmationPrompt } from '@/composables/chat/cards/presenters'
 
 type StatusBlockEntry = Extract<TerminalTimelineEntry, { kind: 'status' | 'hitl' | 'result' }>
 
@@ -16,6 +18,8 @@ const emit = defineEmits<{
 }>()
 
 const textAnswer = ref('')
+const prompt = computed(() => props.entry.kind === 'hitl'
+  ? confirmationPrompt(props.entry.prompt, props.entry.hitlType) : '')
 
 const isHitlBoolean = computed(() => {
   if (props.entry.kind !== 'hitl') return false
@@ -56,13 +60,16 @@ const submitTextAnswer = () => {
 
     <template v-else>
       <div class="status-head">
-        <span class="status-tag">HITL</span>
+        <span class="status-tag">{{ props.t(props.entry.hitlType === 'form' ? 'chat.questionnaire_title' : 'chat.confirmation_title') }}</span>
         <span class="status-time">{{ props.formatTime(props.entry.createdAt) }}</span>
       </div>
-      <p class="status-body">{{ props.entry.prompt }}</p>
+      <p v-if="prompt" class="status-body">{{ prompt }}</p>
       <p v-if="props.entry.context" class="status-meta">{{ props.entry.context }}</p>
       <div v-if="!props.entry.answered" class="hitl-actions">
-        <template v-if="isHitlBoolean">
+        <ConfirmationForm v-if="props.entry.hitlType === 'form' && props.entry.fields?.length"
+          :key="props.entry.cardId" :fields="props.entry.fields" :submit-label="props.t('chat.questionnaire_submit')"
+          @submit="emit('hitl-submit', props.entry.cardId, $event)" />
+        <template v-else-if="isHitlBoolean">
           <button class="hitl-btn yes" @click="emit('hitl-submit', props.entry.cardId, 'y')">Y</button>
           <button class="hitl-btn no" @click="emit('hitl-submit', props.entry.cardId, 'n')">N</button>
         </template>

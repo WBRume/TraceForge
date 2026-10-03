@@ -43,6 +43,7 @@ export function useChatJobs(options: {
   }
 
   const reset = () => {
+    requestSeq += 1
     activeChatJobs.value = {}
   }
 

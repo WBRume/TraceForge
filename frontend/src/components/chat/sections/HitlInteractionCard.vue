@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertCircle } from '@/components/icons'
-import { hitlOptionValue, hitlOptionLabel } from '@/composables/chat/cards/presenters'
+import { hitlOptionValue, hitlOptionLabel, confirmationPrompt } from '@/composables/chat/cards/presenters'
 import type { HitlCard } from '@/composables/chat/types'
+import ConfirmationForm from './ConfirmationForm.vue'
 
 /**
  * HITL（Human-in-the-loop）交互卡：boolean / select / 文本输入三种应答形态。
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const inputValue = ref(props.card.tempInput || '')
+const prompt = computed(() => confirmationPrompt(props.card.prompt, props.card.hitl_type))
 
 watch(() => props.card.id, () => {
   inputValue.value = props.card.tempInput || ''
@@ -33,16 +35,18 @@ const submit = (value: string) => {
   <div class="pinned-card hitl-card">
     <div class="card-header hitl-header">
       <AlertCircle class="w-5 h-5 text-amber" />
-      <h4>{{ t('chat.interrupt_confirm') }}</h4>
+      <h4>{{ t(props.card.hitl_type === 'form' ? 'chat.questionnaire_title' : 'chat.confirmation_title') }}</h4>
     </div>
     <div class="card-body">
-      <p class="hitl-prompt">{{ props.card.prompt }}</p>
+      <p v-if="prompt" class="hitl-prompt">{{ prompt }}</p>
       <div v-if="props.card.context" class="context-box">
         <code>{{ props.card.context }}</code>
       </div>
     </div>
     <div class="hitl-actions">
-      <template v-if="props.card.hitl_type === 'boolean'">
+      <ConfirmationForm v-if="props.card.hitl_type === 'form' && props.card.fields?.length"
+        :fields="props.card.fields" :submit-label="t('chat.questionnaire_submit')" @submit="submit" />
+      <template v-else-if="props.card.hitl_type === 'boolean'">
         <button class="btn-success" @click="submit('y')">{{ t('common.confirm') }} (Y)</button>
         <button class="btn-danger" @click="submit('n')">{{ t('common.cancel') }} (N)</button>
       </template>

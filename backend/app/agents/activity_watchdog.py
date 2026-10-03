@@ -46,6 +46,8 @@ class AgentActivityWatchdog:
         self._started_at = now
         self._last_activity_at = now
         self._has_activity = False
+        self._idle_paused = False
+        self._state_changed = asyncio.Event()
         self.startup_timeout_seconds = max(0.01, float(startup_timeout_seconds))
         self.idle_timeout_seconds = max(0.01, float(idle_timeout_seconds))
         self.hard_timeout_seconds = max(0.01, float(hard_timeout_seconds))
@@ -56,9 +58,22 @@ class AgentActivityWatchdog:
         self._has_activity = True
         self._last_activity_at = time.monotonic()
 
+    def pause_idle(self) -> None:
+        """A pending human response is not agent inactivity; retain the hard limit."""
+        self._idle_paused = True
+        self._state_changed.set()
+
+    def resume_idle(self) -> None:
+        self._idle_paused = False
+        self._has_activity = True
+        self._last_activity_at = time.monotonic()
+        self._state_changed.set()
+
     def _next_timeout(self) -> tuple[str, float, float]:
         now = time.monotonic()
         hard_remaining = self.hard_timeout_seconds - (now - self._started_at)
+        if self._idle_paused:
+            return "hard", self.hard_timeout_seconds, hard_remaining
         if self._has_activity:
             phase = "idle"
             phase_limit = self.idle_timeout_seconds
@@ -75,6 +90,7 @@ class AgentActivityWatchdog:
     async def wait(self, awaitable: Awaitable[T]) -> T:
         task = awaitable if isinstance(awaitable, asyncio.Task) else asyncio.create_task(awaitable)
         while True:
+            self._state_changed.clear()
             phase, limit, remaining = self._next_timeout()
             if remaining <= 0:
                 task.cancel()
@@ -84,7 +100,14 @@ class AgentActivityWatchdog:
                     phase=phase,
                     limit_seconds=limit,
                 )
-            done, _ = await asyncio.wait({task}, timeout=remaining)
+            changed = asyncio.create_task(self._state_changed.wait())
+            try:
+                done, _ = await asyncio.wait(
+                    {task, changed}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                changed.cancel()
+                await asyncio.gather(changed, return_exceptions=True)
             if task in done:
                 return await task
 

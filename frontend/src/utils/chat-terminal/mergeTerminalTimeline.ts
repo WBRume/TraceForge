@@ -115,6 +115,7 @@ export const mergeTerminalTimeline = (input: MergeTerminalTimelineInput): Termin
       cardId: String(card?.id || ''),
       jobId: String(card?.job_id || ''),
       hitlType: String(card?.hitl_type || 'text'),
+      fields: Array.isArray(card?.fields) ? card.fields : [],
       prompt: String(card?.prompt || ''),
       options: Array.isArray(card?.options) ? card.options.map((item: unknown) => String(item || '')) : [],
       context: String(card?.context || ''),

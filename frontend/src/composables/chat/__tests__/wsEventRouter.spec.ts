@@ -90,6 +90,15 @@ const createDeps = () => {
 }
 
 describe('createTaskWsEventRouter', () => {
+  it('retains historical messages without rolling the current generation backward', () => {
+    const { deps, calls } = createDeps()
+    const { handleWsMessage } = createTaskWsEventRouter(deps)
+    handleWsMessage({ type: 'chat_message', payload: {
+      id: 'old', task_id: 't1', role: 'assistant', content: '旧问题', session_generation: 1,
+    } })
+    expect(calls.upserts[0]).toMatchObject({ id: 'old', session_generation: 1 })
+    expect(calls.generationPatches).toEqual([])
+  })
   it('routes chat_message to message store + confirmation sync + chat scroll', () => {
     const { deps, calls } = createDeps()
     const { handleWsMessage } = createTaskWsEventRouter(deps)

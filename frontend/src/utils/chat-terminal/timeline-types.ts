@@ -1,3 +1,5 @@
+import type { ConfirmationField } from '@/composables/chat/types'
+
 export type TerminalLocalEchoKind = 'command' | 'info' | 'success' | 'warning' | 'error'
 export type TerminalCommandTone = 'query' | 'operate' | 'state' | 'danger' | 'local'
 
@@ -67,6 +69,7 @@ export interface TerminalHitlEntry extends TerminalTimelineBase {
   hitlType: string
   prompt: string
   options: string[]
+  fields?: ConfirmationField[]
   context: string
   answered: boolean
 }

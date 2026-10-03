@@ -21,7 +21,7 @@ export function createChatJobIngest(deps: {
   return (job: ChatAiJob) => {
     if (!job?.id) return
     deps.jobs.upsert(job)
-    if (job.status !== 'WAITING_HITL') {
+    if (['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED', 'INTERRUPTED'].includes(job.status)) {
       deps.cards.markAnsweredForJob(job.id, job.status)
     }
     deps.syncEngineFromJobs()

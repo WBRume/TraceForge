@@ -34,7 +34,7 @@ T = TypeVar("T")
 # 所有 task 子路由共用的挂载前缀（各子模块的 APIRouter 各自声明，聚合器不再叠加）
 TASKS_ROUTE_PREFIX = "/workspaces/{ws_id}/tasks"
 
-TASK_INITIALIZING_MSG = "Task is being initialized by another request. Please retry later."
+TASK_BUSY_MSG = "Task is being updated by another request. Please retry later."
 WORKSPACE_BUSY_MSG = "Workspace repository is busy. Please retry later."
 CHANGE_PROPOSAL_QUEUE_BUSY_MSG = "Change proposal generation queue is busy. Please retry later."
 
@@ -94,7 +94,7 @@ def ensure_task_session_idle(task_id: str) -> None:
 # ── 分布式锁冲突 → HTTP 映射 ──
 
 
-def raise_task_lock_conflict(exc: LockAcquireTimeout, *, message: str = TASK_INITIALIZING_MSG) -> None:
+def raise_task_lock_conflict(exc: LockAcquireTimeout, *, message: str = TASK_BUSY_MSG) -> None:
     busy = make_resource_busy_error(exc, message)
     raise HTTPException(status_code=busy.status_code, detail=str(busy))
 

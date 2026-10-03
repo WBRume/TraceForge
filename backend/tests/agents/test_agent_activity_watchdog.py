@@ -67,6 +67,21 @@ def test_watchdog_hard_limit_wins_even_when_events_keep_arriving():
     asyncio.run(_run())
 
 
+def test_watchdog_resumes_idle_deadline_while_wait_is_already_paused():
+    async def _run():
+        watchdog = AgentActivityWatchdog(startup_timeout_seconds=1,
+                                         idle_timeout_seconds=0.02, hard_timeout_seconds=1)
+        watchdog.pause_idle()
+        waiting = asyncio.create_task(watchdog.wait(asyncio.sleep(10)))
+        await asyncio.sleep(0.06)
+        assert not waiting.done()
+        watchdog.resume_idle()
+        with pytest.raises(AgentTimeoutError) as exc:
+            await asyncio.wait_for(waiting, timeout=0.2)
+        assert exc.value.phase == 'idle'
+    asyncio.run(_run())
+
+
 def test_claude_adapter_activity_timeout_cancels_process_bridge():
     from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
 

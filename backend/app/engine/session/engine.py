@@ -783,6 +783,7 @@ class TaskAgentEngine:
             options=options,
             context=str(context) if context is not None else None,
             provider_request_id=str(payload.get("ask_user_id") or "") or None,
+            fields=payload.get("fields") if isinstance(payload.get("fields"), list) else None,
         )
 
     async def _push_hitl(
@@ -792,14 +793,18 @@ class TaskAgentEngine:
         options: Optional[list] = None,
         context: Optional[str] = None,
         provider_request_id: Optional[str] = None,
+        fields: Optional[list] = None,
     ):
         """Persist a visible confirmation message and register its private provider locator."""
         if not self.is_current():
             return
         interaction_id = str(uuid.uuid4())
-        normalized_kind = "boolean" if hitl_type in {"boolean", "approval"} else (
-            "select" if options else "text"
-        )
+        if hitl_type == "form" and fields:
+            normalized_kind = "form"
+        elif hitl_type in {"boolean", "approval"}:
+            normalized_kind = "boolean"
+        else:
+            normalized_kind = "select" if options else "text"
         confirmation = {
             "interaction_id": interaction_id,
             "kind": normalized_kind,
@@ -807,6 +812,8 @@ class TaskAgentEngine:
             "allow_custom_input": normalized_kind != "select",
             "job_id": self.current_job_id,
         }
+        if normalized_kind == "form":
+            confirmation["fields"] = fields
         self._pending_confirmations[interaction_id] = str(
             provider_request_id or interaction_id
         )

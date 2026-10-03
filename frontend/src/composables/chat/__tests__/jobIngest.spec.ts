@@ -39,19 +39,18 @@ describe('createChatJobIngest', () => {
 
     ingest(job({ id: 'j1', status: 'RUNNING' }))
     expect(activeJobs.j1?.status).toBe('RUNNING')
-    // 非 WAITING_HITL 的推进都会收敛未答复的 HITL 卡（进行中给「已提交」文案）
-    expect(marked).toEqual([{ jobId: 'j1', status: 'RUNNING' }])
+    // 原生确认保持当前作业 RUNNING；进度快照不能视作用户已答复。
+    expect(marked).toEqual([])
     expect(engineSync).toHaveBeenCalledTimes(1)
     expect(terminalUpdates).toHaveLength(1)
 
     ingest(job({ id: 'j1', status: 'WAITING_HITL' }))
-    expect(marked).toHaveLength(1) // WAITING_HITL：等待用户输入，不收敛卡片
+    expect(marked).toHaveLength(0)
     expect(engineSync).toHaveBeenCalledTimes(2)
 
     ingest(job({ id: 'j1', status: 'FAILED' }))
     expect(activeJobs.j1).toBeUndefined() // 终态移出活跃表
     expect(marked).toEqual([
-      { jobId: 'j1', status: 'RUNNING' },
       { jobId: 'j1', status: 'FAILED' },
     ])
     expect(engineSync).toHaveBeenCalledTimes(3)

@@ -450,8 +450,9 @@ def record_segments_batch(
     """批量落库 context segments（单事务一次 commit），供引擎按窗口 flush。
 
     entries 为 (recorder, kwargs) 列表；recorder ∈ {"tool_input", "tool_result",
-    "thinking", "hitl"}，kwargs 与 record_tool_input / record_tool_result /
-    record_thinking / record_hitl 形参一致。snapshot_update 可选，与
+    "thinking", "hitl", "confirmation"}，kwargs 与 record_tool_input / record_tool_result /
+    record_thinking / record_hitl 形参一致；confirmation 另接受 interaction_id。
+    snapshot_update 可选，与
     update_snapshot_usage 同参（须含 workspace_id/task_id），在批内同事务更新。
 
     原子性：ensure_snapshot 的内部 commit 发生在任何 segment 行 pending 之前，
@@ -461,7 +462,7 @@ def record_segments_batch(
     if not entries and not snapshot_update:
         return 0
 
-    supported = {"tool_input", "tool_result", "thinking", "hitl"}
+    supported = {"tool_input", "tool_result", "thinking", "hitl", "confirmation"}
     for recorder, _kwargs in entries:
         if recorder not in supported:
             raise ValueError(f"Unsupported batch segment recorder: {recorder}")
@@ -568,19 +569,24 @@ def record_segments_batch(
                     dedupe=False,
                     commit=False,
                 )
-            else:  # hitl
+            else:  # legacy hitl or chat-message confirmation
                 prompt = str(kwargs.get("prompt") or "")
                 response = kwargs.get("response")
                 content = prompt if response is None else f"{prompt}\n{response}"
+                is_confirmation = recorder == "confirmation"
+                interaction_id = str(kwargs.get("interaction_id") or "")
+                metadata = {"has_response": response is not None}
+                if is_confirmation:
+                    metadata["interaction_id"] = interaction_id
                 record_segment(
                     db,
                     snapshot=snapshot,
                     category=ContextTokenCategory.HITL,
-                    source_kind=str(kwargs.get("source_kind") or "hitl_prompt"),
-                    source_ref_id=snapshot.ai_job_id,
+                    source_kind=str(kwargs.get("source_kind") or ("confirmation_prompt" if is_confirmation else "hitl_prompt")),
+                    source_ref_id=interaction_id if is_confirmation else snapshot.ai_job_id,
                     content=content,
-                    title="HITL",
-                    metadata_json={"has_response": response is not None},
+                    title="Confirmation" if is_confirmation else "HITL",
+                    metadata_json=metadata,
                     dedupe=False,
                     commit=False,
                 )
