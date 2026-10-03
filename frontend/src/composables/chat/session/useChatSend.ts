@@ -212,6 +212,7 @@ export function useChatSend(options: {
   const submitHitl = async (cardId: string, response: string) => {
     if (!response || options.isUndoing()) return
     const card = options.findHitlCard(cardId)
+    if (!card) return
     const sent = await sendChatContent(response, {
       displayContent: response,
       metadata: {

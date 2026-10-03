@@ -23,6 +23,7 @@ export function useSessionState(options: {
     clear: (taskId: string) => void
   }
   ingestJob: (job: ChatAiJob) => void
+  resetJobs: () => void
   syncEngineFromJobs: () => void
   convergeFromJobs: (taskId: string, items: ChatAiJob[]) => boolean
   syncConfirmationCards: () => void
@@ -105,12 +106,15 @@ export function useSessionState(options: {
     const taskId = String(snapshot?.task_id || '')
     if (currentTaskId() !== taskId) return false
     if (Number(snapshot?.session_generation || 0) < Number(options.getCurrentTask()?.session_generation || 0)) return false
+    applyTaskSessionPayload(snapshot)
     let changed = false
     for (const receipt of (snapshot?.receipts || []) as any[]) {
       options.submissions.put(receipt)
       changed = true
     }
     const jobs = (snapshot?.jobs || []) as ChatAiJob[]
+    // 快照是权威集合：缺席的旧作业不能继续保留为运行中。
+    options.resetJobs()
     for (const job of jobs) {
       options.ingestJob(job)
       changed = true
@@ -120,7 +124,7 @@ export function useSessionState(options: {
       options.upsertMessage(mapHistoryMessages([message])[0])
       changed = true
     }
-    if (jobs.length) options.syncConfirmationCards()
+    options.syncConfirmationCards()
     return changed
   }
 
@@ -243,6 +247,8 @@ export function useSessionState(options: {
     const task = options.getCurrentTask()
     if (!task?.id) return
     if (String(payload?.task_id || '') !== String(task.id)) return
+    if (payload?.session_generation != null
+      && Number(payload.session_generation) < Number(task.session_generation || 0)) return
     const status = String(payload?.status || '').trim()
     if (status) {
       options.syncTaskStatus(status)

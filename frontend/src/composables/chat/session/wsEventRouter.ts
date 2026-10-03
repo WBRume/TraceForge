@@ -94,6 +94,7 @@ export function createTaskWsEventRouter(deps: {
       taskId
       && String(payload?.task_id || taskId) === taskId
       && payload?.session_generation !== undefined
+      && Number(payload.session_generation || 0) >= deps.task.getCurrentSessionGeneration()
     ) {
       deps.task.patchSessionGeneration(Number(payload.session_generation || 0))
     }

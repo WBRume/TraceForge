@@ -32,3 +32,10 @@ export function hitlOptionLabel(option: unknown): string {
   }
   return String(option ?? '').trim()
 }
+
+/** 表单字段自行展示问题，标题只保留有意义的首行。 */
+export function confirmationPrompt(prompt: string, kind: string): string {
+  if (kind !== 'form') return prompt
+  const title = prompt.split('\n')[0]?.trim() || ''
+  return /^(questions?|form)$/i.test(title) ? '' : title
+}

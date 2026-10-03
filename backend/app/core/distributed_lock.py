@@ -319,6 +319,46 @@ class LocalLockProvider(DistributedLockProvider):
 class RedisLockProvider(DistributedLockProvider):
     backend_name = "redis"
 
+    async def _release(
+        self, lock: Any, context: LockContext, *, timeout: float = 3.0,
+    ) -> None:
+        from redis.exceptions import (
+            AuthenticationError,
+            ConnectionError as RedisConnectionError,
+            LockNotOwnedError,
+            TimeoutError as RedisTimeoutError,
+        )
+
+        # Keep the original token even if redis-py clears local state before a
+        # failed command. Lua release always compares it with the current owner.
+        token = lock.local.token
+
+        async def attempt() -> None:
+            for index in range(3):
+                lock.local.token = token
+                try:
+                    await asyncio.wait_for(lock.release(), timeout=min(1.0, timeout))
+                    return
+                except LockNotOwnedError:
+                    # The first release may have committed before its response
+                    # was lost; an expired lock or a successor needs no cleanup.
+                    lock.local.token = None
+                    return
+                except AuthenticationError:
+                    raise
+                except (RedisConnectionError, RedisTimeoutError, asyncio.TimeoutError) as exc:
+                    if index == 2:
+                        raise
+                    logger.warning(
+                        "redis lock release retry: lock_key={}, attempt={}, error={}",
+                        context.lock_key, index + 1, str(exc),
+                    )
+                    await asyncio.sleep(random.uniform(0.05, 0.15) * (2 ** index))
+
+        # Bound socket calls and backoff together so cleanup cannot hang a
+        # completed request. A permanent outage still falls back to the TTL.
+        await asyncio.wait_for(attempt(), timeout=timeout)
+
     async def _acquire(self, lock: Any, context: LockContext) -> bool:
         from redis.exceptions import (
             AuthenticationError,
@@ -370,7 +410,7 @@ class RedisLockProvider(DistributedLockProvider):
                 # compares tokens, so it cannot delete a different owner's lock.
                 lock.local.token = token
                 try:
-                    await asyncio.wait_for(lock.release(), timeout=1.0)
+                    await self._release(lock, context, timeout=1.0)
                 except Exception as exc:
                     logger.debug("redis uncertain lock cleanup failed: key={}, error={}",
                                  context.lock_key, str(exc))
@@ -463,7 +503,7 @@ class RedisLockProvider(DistributedLockProvider):
             renewal.cancel()
             await asyncio.gather(renewal, return_exceptions=True)
             try:
-                await lock.release()
+                await self._release(lock, context)
             except Exception as exc:
                 logger.warning(
                     "redis lock release failed: resource_type={}, resource_id={}, lock_key={}, error={}",

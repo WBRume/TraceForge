@@ -14,6 +14,7 @@ export type ChatAiJob = {
   error_message?: string | null
   context_json?: Record<string, any> | null
   session_id?: string | null
+  session_generation?: number | null
   started_at?: string | null
   created_at?: string | null
 }
@@ -71,6 +72,30 @@ export type RuntimeSkillFileNode = {
 }
 
 /** 置顶卡片：HITL 交互卡与引擎状态卡。 */
+export type ConfirmationValue = string | number | boolean | string[]
+
+export type ConfirmationField = {
+  key: string
+  title?: string
+  description?: string
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'multiselect' | 'external'
+  required?: boolean
+  hidden?: boolean
+  custom?: boolean
+  placeholder?: string
+  default?: ConfirmationValue
+  options?: { value: string; label: string; description?: string }[]
+  minLength?: number
+  maxLength?: number
+  minItems?: number
+  maxItems?: number
+  minimum?: number
+  maximum?: number
+  pattern?: string
+  url?: string
+  when?: { key: string; op: 'eq' | 'neq'; value: string | number | boolean }[]
+}
+
 export type HitlCard = {
   id: string
   type: 'hitl'
@@ -79,8 +104,10 @@ export type HitlCard = {
   hitl_type: string
   prompt: string
   options: any[]
+  fields?: ConfirmationField[]
   context: string
   job_id: string
+  session_generation: number | null
   answered: boolean
   answer: string
   tempInput: string

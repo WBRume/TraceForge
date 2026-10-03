@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import json
 
 import httpx
@@ -8,6 +9,144 @@ from app.agents.adapters.opencode.event_mapper import map_opencode_event
 from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.contract import AgentRunRequest
 from app.agents.errors import AgentError
+from app.agents.errors import AgentTimeoutError
+
+
+def form_event(session_id='ses_test', form_id='frm_test'):
+    return {
+        'type': 'form.created',
+        'data': {'form': {
+            'id': form_id, 'sessionID': session_id, 'title': 'Java 项目需求',
+            'fields': [
+                {'key': 'build', 'type': 'string', 'title': '构建工具', 'required': True,
+                 'options': [{'value': 'maven', 'label': 'Maven'}], 'custom': True},
+                {'key': 'components', 'type': 'multiselect', 'title': '组件',
+                 'options': [{'value': 'web', 'label': 'Spring Web'}]},
+            ],
+        }},
+    }
+
+
+@pytest.mark.parametrize('event_type', ['session.step.failed', 'session.error', 'session.step.ended'])
+def test_explicit_user_interruption_is_a_result_without_agent_error(event_type):
+    mapped = map_opencode_event({
+        'type': event_type,
+        'data': {'sessionID': 'ses_test', 'finish': 'error',
+                 'error': {'type': 'aborted', 'message': 'Step interrupted'}},
+    })
+    assert not any(event.type == 'error' for event in mapped)
+    result = next(event for event in mapped if event.type == 'result')
+    assert result.payload['success'] is False
+    assert result.payload['finish_reason'] == 'interrupted'
+
+
+def test_provider_failure_remains_error_even_when_message_mentions_interruption():
+    mapped = map_opencode_event({
+        'type': 'session.step.failed',
+        'data': {'sessionID': 'ses_test',
+                 'error': {'type': 'api', 'message': 'Provider connection interrupted'}},
+    })
+    assert mapped[0].type == 'error'
+    assert mapped[0].payload['finish_reason'] == 'error'
+
+
+@pytest.mark.parametrize('finish', ['aborted', 'cancelled', 'interrupted'])
+def test_interrupted_finish_without_error_is_unsuccessful(finish):
+    mapped = map_opencode_event({'type': 'session.step.ended',
+                                'data': {'sessionID': 'ses_test', 'finish': finish}})
+    assert mapped[0].type == 'result'
+    assert mapped[0].payload['success'] is False
+    assert mapped[0].payload['finish_reason'] == 'interrupted'
+
+
+def test_v2_form_maps_all_questions_and_options_to_unified_confirmation():
+    event = form_event()
+    mapped = map_opencode_event(event)
+    assert len(mapped) == 1
+    assert mapped[0].type == 'ask_user'
+    assert mapped[0].payload['kind'] == 'form'
+    assert mapped[0].payload['ask_user_id'] == 'frm_test'
+    assert mapped[0].payload['fields'] == event['data']['form']['fields']
+    assert '构建工具' in mapped[0].payload['question']
+    assert '组件' in mapped[0].payload['question']
+
+
+@pytest.mark.asyncio
+async def test_v2_form_filters_nested_session_owner_before_mapping():
+    events = [
+        {'type': 'server.connected', 'data': {}},
+        form_event('ses_other', 'frm_other'), form_event(),
+        {'type': 'session.execution.succeeded', 'data': {'sessionID': 'ses_test'}},
+    ]
+    def handler(request):
+        if request.url.path == '/api/event':
+            return httpx.Response(200, text=''.join('data: ' + json.dumps(e) + '\n\n' for e in events))
+        return httpx.Response(200, json={'data': {'id': 'msg_user'}})
+    adapter = OpenCodeAdapter('http://agent')
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    collected = []
+    async def collect(event):
+        collected.append(event)
+    try:
+        result, _ = await adapter._consume_sse('ses_test', AgentRunRequest(prompt='hi'), collect)
+        assert result['success']
+        assert [e.payload['ask_user_id'] for e in collected if e.type == 'ask_user'] == ['frm_test']
+    finally:
+        await adapter.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('after_reply', ['complete', 'idle_timeout', 'reply_error', 'hard_timeout', 'external_reply'])
+async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
+    from unittest.mock import AsyncMock
+    replies = []
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for event in [{'type': 'server.connected', 'data': {}}, form_event()]:
+                yield ('data: ' + json.dumps(event) + '\n\n').encode()
+            if after_reply == 'external_reply':
+                yield b'data: {"type":"form.replied","data":{"id":"frm_test","sessionID":"ses_test"}}\n\n'
+            if after_reply == 'complete':
+                yield b'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}\n\n'
+            else:
+                await asyncio.sleep(10)
+    def handler(request):
+        if request.url.path == '/api/event':
+            return httpx.Response(200, stream=Stream())
+        if request.url.path.endswith('/form/frm_test'):
+            return httpx.Response(200, json={'data': form_event()['data']['form']})
+        if request.url.path.endswith('/form/frm_test/reply'):
+            replies.append(json.loads(request.content))
+            return httpx.Response(400 if after_reply == 'reply_error' else 204, json={'message': 'invalid answer'})
+        return httpx.Response(200, json={'data': {'id': 'msg_user'}})
+    adapter = OpenCodeAdapter('http://agent')
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter._fetch_final_message = AsyncMock(return_value={})
+    adapter.interrupt = AsyncMock(return_value=None)
+    async def collect(event):
+        if event.type != 'ask_user': return
+        await asyncio.sleep(0.08)  # Four times the agent inactivity limit.
+        if after_reply in {'hard_timeout', 'external_reply'}: return
+        answer = json.dumps({'build': 'maven', 'components': ['web']})
+        if after_reply == 'reply_error':
+            with pytest.raises(AgentError):
+                await adapter.respond_to_ask_user('frm_test', answer)
+        else:
+            await adapter.respond_to_ask_user('frm_test', answer)
+    try:
+        request = AgentRunRequest(prompt='hi', session_id='ses_test', idle_timeout_seconds=0.02,
+                                  timeout_seconds=0.2)
+        if after_reply == 'complete':
+            assert (await adapter.run(request, collect)).success
+        else:
+            with pytest.raises(AgentTimeoutError) as exc:
+                await adapter.run(request, collect)
+            expected = 'idle' if after_reply in {'idle_timeout', 'external_reply'} else 'hard'
+            assert exc.value.phase == expected
+        if after_reply not in {'hard_timeout', 'external_reply'}:
+            assert replies == [{'answer': {'build': 'maven', 'components': ['web']}}]
+    finally:
+        await adapter.close()
 
 
 @pytest.mark.asyncio

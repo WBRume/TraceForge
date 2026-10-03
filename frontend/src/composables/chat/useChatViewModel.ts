@@ -126,7 +126,11 @@ export function useChatViewModel() {
     }),
   })
   const terminalLogs = useTerminalLogs()
-  const cards = usePinnedCards({ getMessages: () => messages.messages.value })
+  const cards = usePinnedCards({
+    getMessages: () => messages.messages.value,
+    getJobs: () => jobs.jobList(),
+    getCurrentTask: () => taskState.currentTask.value,
+  })
   const highlight = useReferenceHighlight()
 
   // 撤销状态被「发送」与「消息动作」两个模块共同依赖，归组合根持有
@@ -417,6 +421,7 @@ export function useChatViewModel() {
       clear: submissions.clear,
     },
     ingestJob,
+    resetJobs: jobs.reset,
     syncEngineFromJobs: engine.syncFromJobs,
     convergeFromJobs: engine.convergeFromJobs,
     syncConfirmationCards: cards.syncConfirmationCards,
@@ -684,6 +689,7 @@ export function useChatViewModel() {
     loadHistory: (taskId, reset) => history.loadHistory(taskId, reset),
     refreshActiveJobs: (taskId) => jobs.loadActive(taskId),
     resetConversationView,
+    applyTaskSessionPayload: sessionState.applyTaskSessionPayload,
     patchTask: taskList.patchTask,
     specDrawerClose: specDrawer.closeSpecDrawer,
     scrollIfNotAnchored: () => {

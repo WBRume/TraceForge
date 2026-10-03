@@ -26,7 +26,7 @@ from app.agents.contract import (
 from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
-from app.agents.adapters.opencode.event_mapper import map_opencode_event
+from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id
 
 
 class OpenCodeAdapter(AgentBackend):
@@ -58,6 +58,8 @@ class OpenCodeAdapter(AgentBackend):
         self._interrupted = False
         self._message_ids: set[str] = set()
         self._user_message_id: Optional[str] = None
+        self._watchdog: Optional[AgentActivityWatchdog] = None
+        self._pending_asks: set[str] = set()
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -521,9 +523,12 @@ class OpenCodeAdapter(AgentBackend):
                     sent = True
                     continue
                 data = event.get("data")
-                if not sent or not isinstance(data, dict) or data.get("sessionID") != session_id:
+                if not sent or not isinstance(data, dict) or opencode_event_session_id(event) != session_id:
                     continue
                 kind = event.get("type")
+                if kind in {"form.replied", "form.cancelled"}:
+                    form = data.get("form") if isinstance(data.get("form"), dict) else {}
+                    self._complete_ask(str(form.get("id") or data.get("id") or ""))
                 if kind in {"session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"}:
                     success = kind == "session.execution.succeeded"
                     if kind == "session.execution.failed":
@@ -554,15 +559,20 @@ class OpenCodeAdapter(AgentBackend):
         self._interrupted = False
         self._message_ids = set()
         self._user_message_id = None
+        self._pending_asks.clear()
         started_at = time.monotonic()
         watchdog = AgentActivityWatchdog(
             startup_timeout_seconds=request.startup_timeout_seconds,
             idle_timeout_seconds=request.idle_timeout_seconds,
             hard_timeout_seconds=request.timeout_seconds,
         )
+        self._watchdog = watchdog
 
         async def _tracked_event(event: AgentEvent) -> None:
             watchdog.mark(event.type)
+            if event.type == "ask_user" and event.payload.get("ask_user_id"):
+                self._pending_asks.add(str(event.payload["ask_user_id"]))
+                watchdog.pause_idle()
             await on_event(event)
         session_id = request.session_id or ""
         try:
@@ -649,6 +659,8 @@ class OpenCodeAdapter(AgentBackend):
         finally:
             self._running = False
             self._run_id = None
+            self._watchdog = None
+            self._pending_asks.clear()
 
     async def _abort_session(self, sid: str) -> "AgentStopResult":
         """Interrupt the v2 worker and verify quiescence before acknowledging stop."""
@@ -753,7 +765,7 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentError("OpenCode HITL reply requires active session and ask_user_id")
         client = await self._ensure_client()
         if ask_user_id.startswith("per") or ask_user_id.startswith("permission"):
-            reply = "once" if response.lower() != "reject" else "reject"
+            reply = "reject" if response.strip().lower() in {"reject", "n", "no", "false"} else "once"
             url = self._session_url(sid, f"/permission/{ask_user_id}/reply")
             body = {"decision": reply}
         elif ask_user_id.startswith("frm_"):
@@ -774,6 +786,14 @@ class OpenCodeAdapter(AgentBackend):
             raise AgentError("OpenCode v2 requires a permission or form request id")
         result = await client.post(url, json=body)
         self._check_response(result, "HITL reply")
+        self._complete_ask(ask_user_id)
+
+    def _complete_ask(self, ask_user_id: str) -> None:
+        if ask_user_id not in self._pending_asks:
+            return
+        self._pending_asks.discard(ask_user_id)
+        if not self._pending_asks and self._watchdog is not None:
+            self._watchdog.resume_idle()
 
     # ── 会话 fork（baseline → 评审线程）────────────────────────
     async def _fork_create(self, client: httpx.AsyncClient, session_id: str) -> str:

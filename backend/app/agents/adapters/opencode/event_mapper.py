@@ -38,6 +38,12 @@ def _event_data(event: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def opencode_event_session_id(event: dict[str, Any]) -> str:
+    data = _event_data(event)
+    form = data.get("form") if isinstance(data.get("form"), dict) else {}
+    return _text(data.get("sessionID") or form.get("sessionID"))
+
+
 def _json_text(value: Any, max_len: int = 5000) -> str:
     try:
         text = json.dumps(value, ensure_ascii=False, default=str)
@@ -77,10 +83,17 @@ def _normalize_finish_reason(finish: str) -> Optional[str]:
         "length": "max-tokens",
         "max_tokens": "max-tokens",
         "max-tokens": "max-tokens",
-        "cancelled": "aborted",
-        "aborted": "aborted",
+        "cancelled": "interrupted",
+        "aborted": "interrupted",
+        "interrupted": "interrupted",
         "error": "error",
     }.get(finish)
+
+
+def _is_interruption(error: Any) -> bool:
+    return isinstance(error, dict) and _text(error.get("type")).lower() in {
+        "aborted", "cancelled", "interrupted",
+    }
 
 
 def _tool_output_text(data: dict[str, Any]) -> str:
@@ -116,7 +129,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
     events: List[AgentEvent] = []
     event_type = _text(event.get("type"))
     data = _event_data(event)
-    session_id = _text(data.get("sessionID"))
+    session_id = opencode_event_session_id(event)
 
     if event_type == "session.text.ended":
         text = _text(data.get("text"))
@@ -212,12 +225,15 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             ))
         finish = _text(data.get("finish"))
         normalized_finish = _normalize_finish_reason(finish)
+        interrupted = normalized_finish == "interrupted" or _is_interruption(data.get("error"))
+        if interrupted:
+            normalized_finish = "interrupted"
         if normalized_finish:
             is_error = normalized_finish == "error"
             events.append(AgentEvent(
                 type="error" if is_error else "result",
                 payload={
-                    "success": not is_error,
+                    "success": not is_error and not interrupted,
                     "result": "",
                     "finish_reason": normalized_finish,
                     "session_id": session_id,
@@ -244,12 +260,13 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             error_message = _text(error.get("message") or error.get("name") or error)
         else:
             error_message = _text(error)
+        interrupted = _is_interruption(error)
         events.append(AgentEvent(
-            type="error",
+            type="result" if interrupted else "error",
             payload={
                 "success": False,
                 "result": error_message or "OpenCode step failed",
-                "finish_reason": "error",
+                "finish_reason": "interrupted" if interrupted else "error",
                 "session_id": session_id,
                 "usage": usage or {},
                 "cost_usd": data.get("cost"),
@@ -264,12 +281,13 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             error_message = _text(error.get("message") or error.get("name") or error)
         else:
             error_message = _text(error)
+        interrupted = _is_interruption(error)
         events.append(AgentEvent(
-            type="error",
+            type="result" if interrupted else "error",
             payload={
                 "success": False,
                 "result": error_message or "OpenCode session error",
-                "finish_reason": "error",
+                "finish_reason": "interrupted" if interrupted else "error",
                 "session_id": session_id,
             },
             provider=PROVIDER,
@@ -436,6 +454,26 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                     raw=event,
                     time=_iso_time(),
                 ))
+    elif event_type == "form.created":
+        form = data.get("form") if isinstance(data.get("form"), dict) else {}
+        fields = form.get("fields")
+        if form.get("id") and isinstance(fields, list) and fields:
+            title = _text(form.get("title"))
+            questions = [_text(field.get("title") or field.get("key"))
+                         for field in fields if isinstance(field, dict)]
+            prompt = "\n".join([title, *questions]).strip()
+            events.append(AgentEvent(
+                type="ask_user",
+                payload={
+                    "ask_user_id": _text(form["id"]),
+                    "question": prompt,
+                    "kind": "form",
+                    "fields": fields,
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            ))
     elif event_type in ("permission.v2.asked", "permission.asked"):
         events.append(AgentEvent(
             type="ask_user",
@@ -443,6 +481,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 "ask_user_id": _text(data.get("id") or data.get("requestID")),
                 "question": f"OpenCode permission: {_text(data.get('action'))}",
                 "permission_request": True,
+                "kind": "approval",
                 "resources": data.get("resources", []),
             },
             provider=PROVIDER,

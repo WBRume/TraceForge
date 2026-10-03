@@ -118,3 +118,27 @@ def test_unknown_recorder_rejected(db):
     with pytest.raises(ValueError):
         context_token_service.record_segments_batch(db, [("bogus", {})])
     db.rollback()
+
+
+def test_chat_confirmation_preserves_entire_batch_and_running_snapshot(db):
+    common = {
+        "workspace_id": "ws-batch", "task_id": "task-batch",
+        "ai_job_id": "job-batch", "session_id": "session-batch",
+    }
+    written = context_token_service.record_segments_batch(db, [
+        ("tool_input", _tool_input_kwargs("call-form")),
+        ("thinking", {**common, "content": "正在收集项目需求"}),
+        ("confirmation", {**common, "prompt": "使用哪个构建工具？",
+                          "source_kind": "confirmation_prompt",
+                          "interaction_id": "interaction-form"}),
+    ])
+
+    assert written == 3
+    assert _count(db, ContextTokenCategory.TOOL_INPUT) == 1
+    assert _count(db, ContextTokenCategory.THINKING) == 1
+    confirmation = db.query(SddContextTokenSegment).filter_by(
+        task_id="task-batch", source_kind="confirmation_prompt",
+    ).one()
+    assert confirmation.source_ref_id == "interaction-form"
+    assert confirmation.metadata_json == {"interaction_id": "interaction-form", "has_response": False}
+    assert db.query(SddContextTokenSnapshot).filter_by(task_id="task-batch").one().status == "RUNNING"

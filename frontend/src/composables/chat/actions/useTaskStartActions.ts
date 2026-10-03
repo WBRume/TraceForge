@@ -20,6 +20,7 @@ export function useTaskStartActions(options: {
   loadHistory: (taskId: string, reset?: boolean) => Promise<void>
   refreshActiveJobs: (taskId: string) => Promise<boolean>
   resetConversationView: () => void
+  applyTaskSessionPayload: (payload: any) => void
   patchTask: (taskId: string, patch: Record<string, any>) => void
   specDrawerClose: () => void
   scrollIfNotAnchored: () => void
@@ -232,11 +233,16 @@ export function useTaskStartActions(options: {
         payload.skill_ids = normalizedSkillIds
         payload.keep_deleted_runtime_skills = initOptions?.keepDeletedRuntimeSkills !== false
       }
-      await api.post(
+      const res = await api.post(
         `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/initialize`,
         payload,
       )
-      task.status = 'CODING'
+      if (options.getCurrentTask()?.id !== task.id) return true
+      const job = res.data?.job
+      options.applyTaskSessionPayload({
+        task_id: task.id, status: 'CODING', job,
+        ...(job?.session_generation != null ? { session_generation: job.session_generation } : {}),
+      })
       if (hasSkillSelectionArg) {
         task.skill_ids = normalizedSkillIds
       }
@@ -248,8 +254,8 @@ export function useTaskStartActions(options: {
       await options.skills.loadTaskRuntimeSkills({ silent: true, hydrateEditor: options.skills.showTaskSkillsDrawer.value })
 
       options.patchTask(task.id, hasSkillSelectionArg
-        ? { status: 'CODING', skill_ids: normalizedSkillIds }
-        : { status: 'CODING' })
+        ? { status: 'CODING', session_generation: task.session_generation, skill_ids: normalizedSkillIds }
+        : { status: 'CODING', session_generation: task.session_generation })
       return true
     } catch (e) {
       console.error('Initialize failed', e)
