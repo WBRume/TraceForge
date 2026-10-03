@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
+import { createPinia } from 'pinia'
 import SessionHeader from '@/components/chat/sections/SessionHeader.vue'
 import zh from '@/locales/zh.json'
 import en from '@/locales/en.json'
@@ -27,6 +28,7 @@ const i18n = createI18n({
 })
 
 const createMockVm = (overrides: Record<string, any> = {}): any => ({
+  route: { params: { wsId: 'w1', taskId: 't1' } },
   currentTask: { id: 't1', name: '你是什么大模型', status: 'CODING' },
   isLocalTask: false,
   localResourceStatus: 'online',
@@ -52,10 +54,22 @@ const createMockVm = (overrides: Record<string, any> = {}): any => ({
 })
 
 describe('SessionHeader local resource badge', () => {
+  it('offers manual pinning without a task cancellation action for static or interrupted tasks', async () => {
+    const wrapper = mount(SessionHeader, {
+      props: { vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'FAILED', business_state: 'TASK_IN_PROGRESS' } }) },
+      global: { plugins: [i18n, createPinia()] },
+    })
+    expect(wrapper.findAll('button').some(button => button.text().includes('钉在窗口中'))).toBe(true)
+    expect(wrapper.findAll('button').some(button => button.text() === '取消任务')).toBe(false)
+    await wrapper.setProps({ vm: createMockVm({ currentTask: { id: 't1', name: '静态任务', status: 'INTERRUPTED', business_state: 'TASK_IN_PROGRESS' } }) })
+    expect(wrapper.find('.badge.interrupted').text()).toBe('INTERRUPTED')
+    expect(wrapper.findAll('button').some(button => button.text() === '取消任务')).toBe(false)
+    wrapper.unmount()
+  })
   it('offers requirement linking only for completed diagnosis tasks with permission', async () => {
     const wrapper = mount(SessionHeader, {
       props: { vm: createMockVm({ currentTask: { id: 't1', name: '定位任务', status: 'DONE' }, isDiagnosisTask: true }) },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, createPinia()] },
     })
     const entry = wrapper.findAll('button').find(button => button.text() === '关联需求')!
     await entry.trigger('click')
@@ -72,7 +86,7 @@ describe('SessionHeader local resource badge', () => {
   it('does not render local resource badge for cloud/server tasks', () => {
     const wrapper = mount(SessionHeader, {
       props: { vm: createMockVm({ isLocalTask: false }) },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, createPinia()] },
     })
     expect(wrapper.find('.local-resource-badge').exists()).toBe(false)
   })
@@ -86,7 +100,7 @@ describe('SessionHeader local resource badge', () => {
           localResourceLabel: '本地资源在线',
         }),
       },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, createPinia()] },
     })
 
     const badge = wrapper.find('.local-resource-badge')
@@ -106,7 +120,7 @@ describe('SessionHeader local resource badge', () => {
           localResourceBlocked: true,
         }),
       },
-      global: { plugins: [i18n] },
+      global: { plugins: [i18n, createPinia()] },
     })
 
     const badge = wrapper.find('.local-resource-badge')

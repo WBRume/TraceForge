@@ -154,6 +154,18 @@ class FrontendFeed:
     async def push(self, msg_type: str, payload: dict) -> None:
         msg = WSMessage(type=msg_type, payload=payload)
         await ws_manager.send_message_to_room(self._owner.task_id, msg)
+        if msg_type in {"thinking", "tool_result", "chat_message"} and self._owner.current_job_id:
+            from app.domains.notification.ws.notification_manager import notification_ws_manager
+            try:
+                preview = ({key: str(payload.get(key) or "")[-12000:] for key in ("delta", "content")}
+                           if msg_type == "thinking" else {"output": str(payload.get("output") or "")[-12000:]}
+                           if msg_type == "tool_result" else {})
+                await notification_ws_manager.send_message_to_user(self._owner.user_id, {
+                    "type": "task_runtime_output", "task_id": self._owner.task_id,
+                    "job_id": self._owner.current_job_id, "kind": msg_type, "payload": preview,
+                }, sequenced=False)
+            except Exception:
+                logger.warning("Task floating context push failed")
 
     async def push_status(self, status: str, message: str, **kwargs: Any) -> None:
         """推送阶段状态卡片到前端"""

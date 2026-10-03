@@ -97,8 +97,10 @@ async def lifespan(app: FastAPI):
         from app.domains.diagnosis_playbook.worker import PlaybookWorker
         playbook_worker_task = asyncio.create_task(PlaybookWorker(settings.DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT).run())
     await search_router.start(app)
+    from app.domains.notification.services.task_awareness_worker import run_worker as run_task_awareness_worker
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
     recovered_queue_count = await ai_job_workers.start_runtime_workers()
+    task_awareness_worker = asyncio.create_task(run_task_awareness_worker())
     app.state.ai_runtime_ready = True
     if recovered_queue_count:
         logger.info("Recovered {} pending AI job queues", recovered_queue_count)
@@ -106,6 +108,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         app.state.ai_runtime_ready = False
+        task_awareness_worker.cancel()
+        await asyncio.gather(task_awareness_worker, return_exceptions=True)
         if playbook_worker_task is not None:
             playbook_worker_task.cancel()
             await asyncio.gather(playbook_worker_task, return_exceptions=True)
@@ -209,6 +213,8 @@ app.include_router(queue.router, prefix="/api")
 app.include_router(workspace_asset.router, prefix="/api")
 app.include_router(workspace_asset.global_router, prefix="/api")
 app.include_router(notification_router.router, prefix="/api")
+from app.domains.notification.routers.task_awareness import router as task_awareness_router
+app.include_router(task_awareness_router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")

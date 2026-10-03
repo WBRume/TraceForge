@@ -55,6 +55,7 @@ export type TaskCloseoutResponse = {
   task_id: string
   workspace_id: string
   status: string
+  business_state: 'TASK_IN_PROGRESS' | 'TASK_COMPLETED' | 'TASK_FAILED'
   evidence_ids: string[]
   final_summary_id?: string | null
 }

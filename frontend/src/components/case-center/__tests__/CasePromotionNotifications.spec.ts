@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia } from 'pinia'
 import { defineComponent, reactive } from 'vue'
+import { createRouter, createMemoryHistory } from 'vue-router'
 import App from '@/App.vue'
 import CasePromotionAction from '../CasePromotionAction.vue'
 import api from '@/utils/api'
@@ -44,7 +45,9 @@ it('receives running and completion frames on a route without a notification bel
   let state: any = { job_id: 'job', workspace_id: 'ws', status: 'PENDING', progress: 0 }
   vi.mocked(api.get).mockImplementation(async (url) => ({ data: String(url).includes('playbook-promotions')
     ? { items: [state] } : String(url).includes('unread-count') ? { count: 0 } : { items: [] } }))
-  const wrapper = mount(App, { global: { plugins: [createPinia()], stubs: {
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: route }] })
+  await router.push('/'); await router.isReady()
+  const wrapper = mount(App, { global: { plugins: [createPinia(), router], stubs: {
     RouterView: route, ConfirmActionModal: true, RequirementImportDialog: true,
   } } })
   await flushPromises()

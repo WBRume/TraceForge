@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import api from '@/utils/api'
+import { noteTaskRunInitiated } from '@/utils/taskAwarenessIntent'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import type { RuntimeSkillItem } from '../types'
@@ -105,10 +106,11 @@ export function useTaskStartActions(options: {
     const prompt = String(startPrompt.value || defaultInitialPromptForTask(task)).trim()
 
     try {
-      await api.post(
+      const started = await api.post(
         `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/start`,
         taskUsesSop(task) ? { prompt, sop_auto_run: startSopAutoRun.value } : { prompt }
       )
+      noteTaskRunInitiated(task.id, undefined, started.data?.job?.id)
 
       task.status = 'CODING'
       options.engineRunning.value = true
@@ -237,8 +239,9 @@ export function useTaskStartActions(options: {
         `/workspaces/${options.getWorkspaceId()}/tasks/${task.id}/initialize`,
         payload,
       )
-      if (options.getCurrentTask()?.id !== task.id) return true
       const job = res.data?.job
+      noteTaskRunInitiated(task.id, undefined, job?.id)
+      if (options.getCurrentTask()?.id !== task.id) return true
       options.applyTaskSessionPayload({
         task_id: task.id, status: 'CODING', job,
         ...(job?.session_generation != null ? { session_generation: job.session_generation } : {}),

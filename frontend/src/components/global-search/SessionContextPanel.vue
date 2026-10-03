@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { AlertCircle, Loader2 } from '@/components/icons'
 import api from '@/utils/api'
+import { useTaskAwarenessStore } from '@/stores/taskAwareness'
 
 interface HistoryMessageItem {
   id: string
@@ -19,26 +20,34 @@ const props = defineProps<{
 const loading = ref(false)
 const error = ref('')
 const messages = ref<HistoryMessageItem[]>([])
+const awareness = useTaskAwarenessStore()
+const liveOutput = computed(() => awareness.outputs[props.taskId]?.text || '')
+let requestVersion = 0
+let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
 const fetchHistory = async () => {
   if (!props.workspaceId || !props.taskId) return
   loading.value = true
   error.value = ''
+  const version = ++requestVersion
+  const workspaceId = props.workspaceId, taskId = props.taskId
   try {
-    const res = await api.get(`/workspaces/${props.workspaceId}/tasks/${props.taskId}/history`, {
+    const res = await api.get(`/workspaces/${workspaceId}/tasks/${taskId}/history`, {
       params: { page: 1, page_size: 60 }
     })
+    if (version !== requestVersion) return
     const rawMessages = res.data?.messages || []
     messages.value = rawMessages.map((m: any) => ({
-      id: m.id || String(Math.random()),
+      id: String(m.id),
       role: m.role || 'assistant',
       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
       created_at: m.created_at
     }))
   } catch (err: any) {
+    if (version !== requestVersion) return
     error.value = err.response?.data?.detail || '加载会话上下文失败，请检查网络或重试。'
   } finally {
-    loading.value = false
+    if (version === requestVersion) loading.value = false
   }
 }
 
@@ -55,6 +64,13 @@ const formatTime = (ts?: string) => {
 onMounted(() => {
   void fetchHistory()
 })
+const onContextChanged = (event: Event) => {
+  if ((event as CustomEvent).detail?.taskId !== props.taskId) return
+  clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => { void fetchHistory() }, 100)
+}
+window.addEventListener('task-context-changed', onContextChanged)
+onBeforeUnmount(() => { requestVersion++; clearTimeout(refreshTimer); window.removeEventListener('task-context-changed', onContextChanged) })
 
 watch(() => [props.workspaceId, props.taskId], () => {
   void fetchHistory()
@@ -67,6 +83,8 @@ watch(() => [props.workspaceId, props.taskId], () => {
     <div class="panel-readonly-notice">
       <span>会话只读面板 · 支持滚动查看上下文</span>
     </div>
+
+    <div v-if="liveOutput" class="live-output" aria-label="实时输出"><span>最新输出</span><pre>{{ liveOutput }}</pre></div>
 
     <!-- 加载中状态 -->
     <div v-if="loading" class="panel-status-area">
@@ -118,6 +136,8 @@ watch(() => [props.workspaceId, props.taskId], () => {
 </template>
 
 <style scoped>
+.live-output { max-height: 35%; overflow: auto; padding: 8px 12px; background: #f8fafc; font-size: 11px; color: #64748b; }
+.live-output pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; color: #334155; }
 .session-context-panel {
   display: flex;
   flex-direction: column;

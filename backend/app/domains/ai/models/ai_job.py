@@ -109,6 +109,9 @@ class SddAiJob(Base):
     creator_id = Column(String(36), ForeignKey("users.id"), nullable=False, index=True)
     started_at = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+    awareness_state = Column(String(40), nullable=True)
+    awareness_version = Column(Integer, nullable=False, default=0, server_default="0")
+    awareness_pending_json = Column(JSON, nullable=True)
     # Durable execution lease and fencing fields.  These deliberately live on
     # the job row so recovery does not depend on in-memory asyncio state.
     attempt_count = Column(Integer, nullable=False, default=0, server_default="0")

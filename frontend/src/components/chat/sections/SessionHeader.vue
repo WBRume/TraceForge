@@ -15,6 +15,8 @@ import {
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import ChatMoreActionsMenu from '@/components/chat/ChatMoreActionsMenu.vue'
 import TaskRequirementBadges from '@/components/chat/task-rail/TaskRequirementBadges.vue'
+import TaskPinButton from '@/components/floating/TaskPinButton.vue'
+import { useWorkspaceStore } from '@/stores/workspace'
 import type { ChatViewVm } from '@/composables/chat/useChatViewModel'
 
 /**
@@ -37,6 +39,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const workspaceStore = useWorkspaceStore()
 </script>
 
 <template>
@@ -69,6 +72,7 @@ const { t } = useI18n()
       </span>
     </div>
     <div class="header-actions">
+      <TaskPinButton :task-id="props.vm.currentTask.id" :task-name="props.vm.currentTask.name" :workspace-id="String(props.vm.route.params.wsId || '')" :workspace-name="workspaceStore.currentWorkspace?.name || ''" />
       <button
         v-if="props.vm.isStartActionVisible"
         class="btn-primary start-btn"

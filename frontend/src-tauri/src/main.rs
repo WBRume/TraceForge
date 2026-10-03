@@ -98,6 +98,13 @@ async fn desktop_invoke(
 
 fn native_request(app: &tauri::AppHandle, method: &str, payload: &Value) -> Reply {
     match method {
+        "attention" => {
+            let window = app
+                .get_webview_window("main")
+                .ok_or("Main window is unavailable")?;
+            set_attention(&window, payload)?;
+            Ok(json!({ "ok": true }))
+        }
         "select-directory" => {
             let path = app
                 .dialog()
@@ -243,6 +250,61 @@ fn start_bridge(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+fn set_attention(window: &tauri::WebviewWindow, payload: &Value) -> Result<(), String> {
+    let background = !window.is_focused().map_err(|e| e.to_string())?
+        || window.is_minimized().map_err(|e| e.to_string())?;
+    let flash = background && payload["flash"].as_bool().unwrap_or(false);
+    window
+        .request_user_attention(if flash {
+            Some(tauri::UserAttentionType::Critical)
+        } else {
+            None
+        })
+        .map_err(|e| e.to_string())?;
+    let count = if background {
+        payload["hitlCount"].as_i64().unwrap_or(0).clamp(0, 99)
+    } else {
+        0
+    };
+    #[cfg(target_os = "windows")]
+    window
+        .set_overlay_icon(if count > 0 {
+            Some(attention_dot())
+        } else {
+            None
+        })
+        .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    window
+        .set_badge_label(if count > 0 {
+            Some("●".to_owned())
+        } else {
+            None
+        })
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = count;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn attention_dot() -> tauri::image::Image<'static> {
+    let mut rgba = Vec::with_capacity(16 * 16 * 4);
+    for y in 0..16_i32 {
+        for x in 0..16_i32 {
+            let distance = (2 * x - 15).pow(2) + (2 * y - 15).pow(2);
+            rgba.extend_from_slice(if distance <= 121 {
+                &[245, 158, 11, 255]
+            } else if distance <= 185 {
+                &[255, 255, 255, 255]
+            } else {
+                &[0, 0, 0, 0]
+            });
+        }
+    }
+    tauri::image::Image::new_owned(rgba, 16, 16)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -251,6 +313,15 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .manage(Bridge::default())
         .invoke_handler(tauri::generate_handler![desktop_platform, desktop_invoke])
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                let _ = window.request_user_attention(None);
+                #[cfg(target_os = "windows")]
+                let _ = window.set_overlay_icon(None);
+                #[cfg(target_os = "macos")]
+                let _ = window.set_badge_label(None);
+            }
+        })
         .setup(|app| {
             start_bridge(app.handle())?;
             let opener = app.handle().clone();

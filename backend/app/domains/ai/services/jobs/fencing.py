@@ -179,6 +179,10 @@ def update_job_state_sync(
             )
             .update(values, synchronize_session=False)
         )
+        if int(affected or 0) == 1:
+            db.expire_all()
+            from app.domains.notification.services.task_awareness import capture_job
+            capture_job(db, db.get(SddAiJob, job_id))
         db.commit()
         # synchronize_session=False 不会同步 identity map；expire 后重读，
         # 保证返回的 payload 反映 CAS 后的真实行状态。

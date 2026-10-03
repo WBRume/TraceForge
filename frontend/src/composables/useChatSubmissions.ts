@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import api from '@/utils/api'
+import { noteTaskRunInitiated, forgetTaskRunIntent } from '@/utils/taskAwarenessIntent'
 
 export interface ChatSubmission {
   id?: string
@@ -72,6 +73,7 @@ export function useChatSubmissions(options: {
   }
   const send = async (taskId: string, clientId: string, content: string, metadata?: Record<string, any>) => {
     const workspace = options.workspaceId()
+    noteTaskRunInitiated(taskId, clientId)
     put({ task_id: taskId, client_message_id: clientId, content, metadata, status: 'SENDING',
       creator_id: options.userId(), created_at: new Date().toISOString() })
     try {
@@ -79,6 +81,7 @@ export function useChatSubmissions(options: {
         client_message_id: clientId, content, metadata,
       })
       if (options.workspaceId() === workspace) put(data)
+      if (data.ai_job_id) noteTaskRunInitiated(taskId, clientId, data.ai_job_id)
       return true
     } catch (error: any) {
       if (options.workspaceId() !== workspace) return false
@@ -86,6 +89,7 @@ export function useChatSubmissions(options: {
       if (row?.id) return true // A server receipt received over WS takes precedence.
       const status = error.response?.status
       const definitive = status >= 400 && status < 500 && ![408, 429].includes(status)
+      if (definitive) forgetTaskRunIntent(taskId, clientId)
       put({ ...row!, status: definitive ? 'FAILED' : 'UNKNOWN',
         error_message: definitive ? (error.response?.data?.detail?.message || '消息未被接收，请重试') : '正在确认发送结果，请勿重复发送' })
       // Keep an ambiguous send in its recoverable bubble, rather than leaving

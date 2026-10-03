@@ -6,10 +6,12 @@ import { useProvisioningStore } from '@/stores/provisioning'
 import { useNotificationStore } from '@/stores/notification'
 import GlobalSearchHost from '@/components/global-search/GlobalSearchHost.vue'
 import ProvisionFloatingWidget from '@/components/ProvisionFloatingWidget.vue'
+import { useTaskAwarenessHost } from '@/composables/useTaskAwarenessHost'
 
 const authStore = useAuthStore()
 const provisioningStore = useProvisioningStore()
 const notificationStore = useNotificationStore()
+useTaskAwarenessHost()
 
 // User notifications carry background-job updates across every application route.
 watch(() => [authStore.token, authStore.user?.id] as const, ([token, userId]) => {

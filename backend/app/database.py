@@ -39,3 +39,5 @@ from sqlalchemy.orm import Session as _Session
 def _install_search_capture(session, flush_context, instances):
     from app.domains.search.capture import install_capture
     install_capture()
+    from app.domains.notification.services.task_awareness import capture_flush
+    capture_flush(session)

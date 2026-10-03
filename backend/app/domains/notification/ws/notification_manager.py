@@ -74,14 +74,14 @@ class NotificationConnectionManager:
             barrier_sequence=barrier_sequence,
         )
 
-    async def send_message_to_user(self, user_id: str, payload: dict) -> bool:
+    async def send_message_to_user(self, user_id: str, payload: dict, *, sequenced: Optional[bool] = None) -> bool:
         """向指定用户的所有在线连接推送一条通知；返回是否至少送达一个连接。
 
         注意：仅入队（非阻塞）。若所有连接因背压被判定为慢客户端，
         返回 False，由调用方走轮询/REST 兜底。
         """
         text = json.dumps({"type": "notification", "payload": payload}, ensure_ascii=False)
-        return self.registry.broadcast_text(self._room_key(user_id), text) > 0
+        return self.registry.broadcast_text(self._room_key(user_id), text, sequenced=sequenced) > 0
 
     async def shutdown(self) -> None:
         await self.registry.shutdown()

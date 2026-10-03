@@ -9,6 +9,7 @@ import SettingsGeneralSection from '@/components/settings/SettingsGeneralSection
 import SettingsLocalDevSection from '@/components/settings/SettingsLocalDevSection.vue'
 import SettingsMembersSection from '@/components/settings/SettingsMembersSection.vue'
 import SettingsSidebarNav from '@/components/settings/SettingsSidebarNav.vue'
+import WebhookSettingsSection from '@/components/settings/WebhookSettingsSection.vue'
 import { useSettingsViewModel } from '@/composables/useSettingsViewModel'
 
 const rawVm = useSettingsViewModel()
@@ -37,6 +38,8 @@ const vm = proxyRefs(rawVm)
             <SettingsLocalDevSection v-else-if="vm.activeSection === 'local_dev'" key="local_dev" />
             <LocalServiceForm v-else-if="vm.activeSection === 'local_service'" key="local_service" :workspace-id="vm.workspaceId" />
             <SettingsAgentSection v-else-if="vm.activeSection === 'agent'" key="agent" />
+            <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_personal'" key="webhook_personal" scope="personal" />
+            <WebhookSettingsSection v-else-if="vm.activeSection === 'webhook_workspace'" key="webhook_workspace" scope="workspace" :workspace-id="vm.workspaceId" />
           </transition>
         </main>
       </div>

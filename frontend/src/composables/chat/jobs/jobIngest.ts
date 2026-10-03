@@ -1,4 +1,5 @@
 import type { ChatAiJob } from '../types'
+import { noteTaskJobObserved } from '@/utils/taskAwarenessIntent'
 
 type JobStore = {
   upsert: (job: ChatAiJob) => void
@@ -21,6 +22,7 @@ export function createChatJobIngest(deps: {
   return (job: ChatAiJob) => {
     if (!job?.id) return
     deps.jobs.upsert(job)
+    noteTaskJobObserved(job)
     if (['SUCCESS', 'FAILED', 'CANCELLED', 'REVERTED', 'INTERRUPTED'].includes(job.status)) {
       deps.cards.markAnsweredForJob(job.id, job.status)
     }
