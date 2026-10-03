@@ -18,6 +18,7 @@ import TaskSidebar from '@/components/chat/sections/TaskSidebar.vue'
 import SessionHeader from '@/components/chat/sections/SessionHeader.vue'
 import SpecBootstrapTip from '@/components/chat/sections/SpecBootstrapTip.vue'
 import PinnedCardsArea from '@/components/chat/sections/PinnedCardsArea.vue'
+import HitlInteractionCard from '@/components/chat/sections/HitlInteractionCard.vue'
 import ChatHistoryPanel from '@/components/chat/sections/ChatHistoryPanel.vue'
 import VerificationActions from '@/components/chat/sections/VerificationActions.vue'
 import InitializeTaskModal from '@/components/chat/sections/InitializeTaskModal.vue'
@@ -212,15 +213,14 @@ watch(
         :tail="playbook.tail" :can-continue="playbook.canContinue" :agent-text="playbook.agentText"
         @guide-command="guideSession.command" @command="playbook.command" @investigate="investigate"
         @retry="() => { guideSession.reload(); playbook.reload() }">
-      <!-- ─ 置顶富文本卡片区（独立，不随对话滚动） ─ -->
+      <!-- ─ 顶部置顶卡片区（仅专职 AI 思考面板，解耦 HITL） ─ -->
       <PinnedCardsArea
         :show-thinking="vm.showThinking"
         :thinking-content="vm.thinkingContent"
         :thinking-expanded="vm.thinkingExpanded"
         :engine-running="vm.engineRunning"
-        :hitl-cards="vm.activeHitlCards"
+        :hitl-cards="[]"
         @update:thinking-expanded="vm.thinkingExpanded = $event"
-        @submit-hitl="vm.submitHitl"
       />
 
       <!-- ─ 对话气泡区（仅自然语言） ─ -->
@@ -265,6 +265,20 @@ watch(
           @dismiss="handleDismissSuggestion"
         />
       </template>
+
+      <!-- ─ HITL 交互决策停靠架（方案 A：独立停靠在输入框上方，不与顶部思考卡挤压） ─ -->
+      <div
+        v-if="vm.activeHitlCards.length > 0"
+        class="docked-hitl-shelf"
+        data-testid="docked-hitl-shelf"
+      >
+        <HitlInteractionCard
+          v-for="card in vm.activeHitlCards"
+          :key="card.id"
+          :card="card"
+          @submit="vm.submitHitl"
+        />
+      </div>
 
       <!-- Input Area：统一输入卡（普通发送 / 协作预输入模式丝滑切换）
            收集窗口进行中只保留协作编辑框，普通输入框不再显示 -->
@@ -649,6 +663,16 @@ watch(
   height: 7px;
   border-radius: 50%;
   background: #f59e0b;
+  flex-shrink: 0;
+}
+
+/* ── HITL 决策卡独立悬浮停靠架（方案 A & 方案 1C） ── */
+.docked-hitl-shelf {
+  margin: 0 var(--space-6, 24px) var(--space-2, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  z-index: 25;
   flex-shrink: 0;
 }
 </style>

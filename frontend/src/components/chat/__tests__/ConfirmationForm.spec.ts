@@ -25,6 +25,85 @@ const mountForm = (formFields = fields) => mount(ConfirmationForm, {
 })
 
 describe('ConfirmationForm', () => {
+  it.each([true, undefined])('keeps one shared input visible and submits selection with details when custom is %s', async custom => {
+    const wrapper = mountForm([{ ...fields[0]!, custom }])
+    const input = wrapper.get('input[type="text"]')
+    expect(input.isVisible()).toBe(true)
+    expect(wrapper.findAll('input[type="text"]')).toHaveLength(1)
+    await wrapper.get('button[aria-pressed="false"]').trigger('click')
+    expect(input.isVisible()).toBe(true)
+    await input.setValue('  使用现有的多模块结构  ')
+    expect(wrapper.get('button[aria-pressed="true"]').text()).toBe('Maven')
+    await wrapper.get('form').trigger('submit')
+    expect(JSON.parse(String(wrapper.emitted('submit')![0]![0]))).toEqual({
+      build: 'maven\n使用现有的多模块结构',
+    })
+  })
+
+  it('supports a custom answer alone and lets users deselect a preset without losing their input', async () => {
+    const wrapper = mountForm([fields[0]!])
+    await wrapper.get('input[type="text"]').setValue('  ')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('input[type="text"]').setValue('Ant')
+    await wrapper.get('button.field-option').trigger('click')
+    await wrapper.get('button[aria-pressed="true"]').trigger('click')
+    expect(wrapper.find('button[aria-pressed="true"]').exists()).toBe(false)
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('Ant')
+    await wrapper.get('form').trigger('submit')
+    expect(JSON.parse(String(wrapper.emitted('submit')![0]![0]))).toEqual({ build: 'Ant' })
+  })
+
+  it('preserves both selected answers and details across pages and metadata refresh', async () => {
+    const wrapper = mountForm(fields.slice(0, 2))
+    await wrapper.get('button.field-option').trigger('click')
+    await wrapper.get('input[type="text"]').setValue('沿用现有结构')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.setProps({ fields: fields.slice(0, 2).map(field => ({ ...field })) })
+    await wrapper.get('button.form-previous').trigger('click')
+    expect(wrapper.get('button[aria-pressed="true"]').text()).toBe('Maven')
+    expect((wrapper.get('input[type="text"]').element as HTMLInputElement).value).toBe('沿用现有结构')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.get('form').trigger('submit')
+    expect(JSON.parse(String(wrapper.emitted('submit')![0]![0]))).toEqual({
+      build: 'maven\n沿用现有结构', components: ['web'],
+    })
+  })
+
+  it('submits pending custom multi-selection input without requiring the add button', async () => {
+    const wrapper = mountForm([{ ...fields[1]!, maxItems: 2 }])
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.get('input[type="text"]').setValue('Redis')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    await wrapper.findAll('input[type="checkbox"]')[1]!.setValue(true)
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await wrapper.findAll('input[type="checkbox"]')[1]!.setValue(false)
+    await wrapper.get('form').trigger('submit')
+    expect(JSON.parse(String(wrapper.emitted('submit')![0]![0]))).toEqual({ components: ['web', 'Redis'] })
+  })
+
+  it('preserves custom defaults and evaluates conditions against the selected or custom answer', async () => {
+    const wrapper = mountForm([
+      { ...fields[0]!, default: 'Ant' },
+      { key: 'version', type: 'string', title: 'Ant 版本', required: true,
+        when: [{ key: 'build', op: 'eq', value: 'Ant' }] },
+    ])
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('Ant')
+    expect(wrapper.get('[role="status"]').text()).toBe('第 1 题 / 共 2 题')
+    await wrapper.get('button.field-option').trigger('click')
+    expect(wrapper.get('[role="status"]').text()).toBe('第 1 题 / 共 1 题')
+    await wrapper.get('form').trigger('submit')
+    expect(JSON.parse(String(wrapper.emitted('submit')![0]![0]))).toEqual({ build: 'maven\nAnt' })
+  })
+
+  it('respects fields that explicitly disable custom answers', async () => {
+    const wrapper = mountForm([{ ...fields[0]!, custom: false }])
+    expect(wrapper.find('input[type="text"]').exists()).toBe(false)
+    await wrapper.get('button.field-option').trigger('click')
+    await wrapper.get('form').trigger('submit')
+    expect(JSON.parse(String(wrapper.emitted('submit')![0]![0]))).toEqual({ build: 'maven' })
+  })
+
   it('presents one question per page and submits all answers once with native value types', async () => {
     const wrapper = mountForm()
     expect(wrapper.findAll('fieldset')).toHaveLength(1)

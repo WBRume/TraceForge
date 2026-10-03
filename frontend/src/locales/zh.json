@@ -702,6 +702,8 @@
     "questionnaire_previous": "上一题",
     "questionnaire_next": "下一题",
     "questionnaire_submit": "提交答案",
+    "questionnaire_custom_label": "补充说明 / 自定义答案",
+    "questionnaire_custom_placeholder": "可补充所选答案，也可直接填写自己的答案",
     "interrupt_confirm": "确定要中断当前任务吗？中断后无法从此进度恢复运行。",
     "interrupt_desc": "用户手动中断任务",
     "interrupt_action": "确认中断",

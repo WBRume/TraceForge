@@ -702,6 +702,8 @@
     "questionnaire_previous": "Previous",
     "questionnaire_next": "Next",
     "questionnaire_submit": "Submit answers",
+    "questionnaire_custom_label": "Additional details / custom answer",
+    "questionnaire_custom_placeholder": "Add details to your selection or enter your own answer",
     "interrupt_confirm": "Are you sure you want to interrupt the current task? You cannot resume from this point after interrupting.",
     "interrupt_desc": "Task interrupted by user",
     "interrupt_action": "Confirm Interrupt",
