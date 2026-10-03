@@ -9,13 +9,15 @@ import type { HitlCard } from '@/composables/chat/types'
  * 会话置顶卡片区（不随对话滚动）：AI 思考卡与 HITL 交互卡的装配容器。
  * 展开状态与应答提交均上交视图模型，本组件只做编排与思考卡的展示。
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   showThinking: boolean
   thinkingContent: string
   thinkingExpanded: boolean
   engineRunning: boolean
-  hitlCards: HitlCard[]
-}>()
+  hitlCards?: HitlCard[]
+}>(), {
+  hitlCards: () => [],
+})
 
 const emit = defineEmits<{
   (event: 'update:thinkingExpanded', value: boolean): void
