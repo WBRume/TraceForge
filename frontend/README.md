@@ -21,7 +21,9 @@ npm run build:tauri -- --bundles nsis
 
 两种桌面应用均以 `TraceForge` 作为应用名称、窗口标题和主程序名（Windows 为 `TraceForge.exe`）。npm 包名为 `traceforge`。
 
-Electron 安装包为 `release/TraceForge Setup <版本>.exe`，Tauri 安装包为 `src-tauri/target/release/bundle/nsis/TraceForge_<版本>_x64-setup.exe`。
+两种安装包按桌面运行时分目录输出：Electron 为 `release/electron/TraceForge Setup <版本>.exe`，Tauri 为 `release/tauri/TraceForge_<版本>_x64-setup.exe`。CI 上传时保留 `electron/` 和 `tauri/` 目录。Electron 使用安装向导，支持选择安装目录。Tauri 的 `target/` 保留编译缓存和原始打包文件。
+
+Tauri 的业务 HTTP 请求使用原生 HTTP 通道，支持已配置的 HTTP/HTTPS 后端地址，避免 WebView 来源导致的 CORS 拒绝；Axios 的认证头、错误拦截器和超时行为继续生效。
 
 Tauri 包含独立编译的桌面服务和 Resource Host Worker，使用系统 WebView2；系统缺少 WebView2 时，安装器会联网下载，安装包体积不包含该下载大小。两轨共享版本号，安装标识和配置目录各自独立，允许并存。默认构建未签名。
 

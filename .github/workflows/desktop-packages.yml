@@ -41,5 +41,5 @@ jobs:
         with:
           name: TraceForge-desktop-windows-x64
           path: |
-            frontend/release/*Setup*.exe
-            frontend/src-tauri/target/release/bundle/nsis/*setup.exe
+            frontend/release/electron/*Setup*.exe
+            frontend/release/tauri/*setup.exe

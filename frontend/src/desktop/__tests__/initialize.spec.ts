@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initializeDesktopRuntime } from '../initialize'
 import { getSddDesktop, isDesktop, isElectron, isTauri } from '../../utils/runtime'
+import axios from 'axios'
 
-const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), unlisten: vi.fn() }))
+const mocks = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(), unlisten: vi.fn(), fetch: vi.fn() }))
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }))
+vi.mock('@tauri-apps/plugin-http', () => ({ fetch: mocks.fetch }))
+
+const originalAdapter = axios.defaults.adapter
+const originalEnv = axios.defaults.env
 
 describe('desktop runtime initialization', () => {
   beforeEach(() => {
@@ -13,6 +18,8 @@ describe('desktop runtime initialization', () => {
     delete window.sddDesktop
   })
   afterEach(() => {
+    axios.defaults.adapter = originalAdapter
+    axios.defaults.env = originalEnv
     window.dispatchEvent(new Event('beforeunload'))
     delete window.sddDesktop
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__
@@ -43,6 +50,9 @@ describe('desktop runtime initialization', () => {
     expect(isTauri()).toBe(true)
     expect(isElectron()).toBe(false)
     expect(window.sddDesktop?.platform).toBe('win32')
+    expect(axios.defaults.adapter).toBe('fetch')
+    await axios.defaults.env!.fetch!('https://server.example/api/status')
+    expect(mocks.fetch).toHaveBeenCalledWith('https://server.example/api/status', undefined)
   })
 
   it('preserves sliced binary data and command errors across JSON IPC', async () => {

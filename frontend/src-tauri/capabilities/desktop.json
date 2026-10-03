@@ -3,5 +3,13 @@
   "identifier": "desktop",
   "description": "Local main window desktop bridge and events",
   "windows": ["main"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-desktop-bridge"]
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-desktop-bridge",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "http://*:*" }, { "url": "https://*:*" }]
+    }
+  ]
 }

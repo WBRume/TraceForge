@@ -1,11 +1,13 @@
 import { createDesktopApi } from '../../desktop/api'
 import type { DesktopSaveRequest } from '../types/sddDesktop'
+import { configureNativeHttp } from '../utils/http'
 
 export async function initializeDesktopRuntime(): Promise<void> {
   if (window.sddDesktop || !('__TAURI_INTERNALS__' in window)) return
-  const [{ invoke }, { listen }] = await Promise.all([
+  const [{ invoke }, { listen }, { fetch }] = await Promise.all([
     import('@tauri-apps/api/core'),
     import('@tauri-apps/api/event'),
+    import('@tauri-apps/plugin-http'),
   ])
   const listeners = new Map<string, Set<(payload: any) => void>>()
   const unlisten = await listen<{ channel: string; payload: unknown }>('desktop-event', event => {
@@ -13,6 +15,7 @@ export async function initializeDesktopRuntime(): Promise<void> {
   })
   window.addEventListener('beforeunload', unlisten, { once: true })
   const platform = await invoke<string>('desktop_platform')
+  configureNativeHttp(fetch)
   window.sddDesktop = createDesktopApi({
     runtime: 'tauri',
     platform,

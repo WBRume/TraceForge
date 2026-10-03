@@ -15,7 +15,7 @@
     "build:desktop:frontend": "cross-env TRACEFORGE_DESKTOP=1 npm run build",
     "tauri": "tauri",
     "dev:tauri": "tauri dev",
-    "build:tauri": "tauri build",
+    "build:tauri": "node desktop/build-tauri.mjs",
     "build:tauri:frontend": "npm run build:desktop:frontend && npm run build:desktop:host",
     "build:desktop:host": "tsc -p tsconfig.desktop-host.json && bun desktop/build-sidecar.ts",
     "dev:electron": "concurrently -k \"vite --host 127.0.0.1\" \"vite build --config vite.electron.config.ts --watch\" \"wait-on http://127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
@@ -29,6 +29,7 @@
     "@guolao/vue-monaco-editor": "^1.6.0",
     "@heroicons/vue": "^2.2.0",
     "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/plugin-http": "2.8.0",
     "axios": "^1.13.6",
     "cross-spawn": "^7.0.6",
     "echarts": "^6.0.0",
@@ -66,7 +67,7 @@
     "appId": "com.sddnative.desktop",
     "productName": "TraceForge",
     "directories": {
-      "output": "release"
+      "output": "release/electron"
     },
     "files": [
       "dist/**/*",
@@ -78,6 +79,10 @@
       "signAndEditExecutable": true,
       "forceCodeSigning": false,
       "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
     },
     "mac": {
       "target": "dmg"
