@@ -52,6 +52,7 @@ const props = defineProps<{
   selectedThreadId: string;
   assistantJobMap: Record<string, ThreadAiJob>;
   proposalJobMap: Record<string, ThreadAiJob>;
+  readonly?: boolean;
   canComment: boolean;
   canAiReply: boolean;
   aiAvailable?: boolean;
@@ -563,7 +564,7 @@ const resetCloseHintPending = () => {
             >{{ t("doc_review.anchor_prefix") }}: {{ selectedThread.block_id }}</span
           >
         </div>
-        <div class="detail-actions">
+        <div v-if="!readonly" class="detail-actions">
           <button
             v-if="canApplyResolution"
             class="nav-action-btn"
@@ -611,7 +612,7 @@ const resetCloseHintPending = () => {
                 : t("doc_review.anchor_missing_action_hint")
             }}
           </p>
-          <div class="anchor-hint-actions">
+          <div v-if="!readonly" class="anchor-hint-actions">
             <button
               v-if="selectedThread.close_hint_state !== 'no_close_needed'"
               class="btn-secondary small-btn"
@@ -648,7 +649,7 @@ const resetCloseHintPending = () => {
           </header>
           <ThreadTimeline :messages="selectedThread.messages" />
 
-          <div class="composer">
+          <div v-if="!readonly" class="composer">
             <textarea
               v-model="messageDraft"
               class="composer-textarea"
@@ -665,7 +666,7 @@ const resetCloseHintPending = () => {
           </div>
         </section>
 
-        <section class="section-panel ai-panel">
+        <section v-if="!readonly" class="section-panel ai-panel">
           <header class="section-head">
             <h4 class="section-title">{{ t("doc_review.ai_assistant") }}</h4>
             <span class="section-meta">
@@ -713,7 +714,7 @@ const resetCloseHintPending = () => {
           </div>
         </section>
 
-        <section class="section-panel proposal-panel">
+        <section v-if="!readonly" class="section-panel proposal-panel">
           <header class="section-head">
             <h4 class="section-title">
               {{ t("doc_review.proposal_section_title") }}
@@ -774,7 +775,7 @@ const resetCloseHintPending = () => {
     </div>
 
     <div
-      v-if="resolveConfirmVisible"
+      v-if="!readonly && resolveConfirmVisible"
       class="confirm-overlay"
       :class="{ warning: !hasProposalOnSelectedThread }"
       @click.self="cancelResolveConfirm"
