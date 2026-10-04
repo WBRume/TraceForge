@@ -5,12 +5,12 @@
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    JSON,
     Column,
     DateTime,
     Enum,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -101,9 +101,7 @@ class SddAsset(Base):
 
 class SddAssetVersion(Base):
     __tablename__ = "sdd_asset_versions"
-    __table_args__ = (
-        UniqueConstraint("asset_id", "version_no", name="uq_sdd_asset_versions_asset_version"),
-    )
+    __table_args__ = (UniqueConstraint("asset_id", "version_no", name="uq_sdd_asset_versions_asset_version"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     asset_id = Column(

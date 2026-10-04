@@ -1,5 +1,7 @@
 """Compact aggregate storage; JSON is replaced on each fenced transition."""
-from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, String, UniqueConstraint, func
+
+from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 
@@ -50,6 +52,7 @@ class TaskPlaybookBinding(Base):
 
 class CasePlaybookLink(Base):
     """An immutable technical revision per run, including preserved manual cases."""
+
     __tablename__ = "case_playbook_links"
     id = Column(String(36), primary_key=True, default=generate_uuid)
     case_id = Column(String(36), ForeignKey("sdd_cases.id", ondelete="CASCADE"), nullable=False, index=True)

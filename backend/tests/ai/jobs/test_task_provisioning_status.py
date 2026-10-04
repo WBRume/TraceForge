@@ -1,23 +1,3 @@
-from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
-)
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
-)
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from app.agents.supervision import process_supervisor
 """
 任务创建准备态（PROVISIONING）测试
 
@@ -27,36 +7,35 @@ from app.agents.supervision import process_supervisor
 
 import asyncio
 import os
-import sys
 from types import SimpleNamespace
-import pytest
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
-from app.config import settings  # noqa: E402
-from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.task.models.chat import ChatMessage  # noqa: E402
-from app.domains.task.routers import task as task_router  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session, _seed_workspace  # noqa: E402
-
+from app.config import settings
+from app.core.background_tasks import retain_background_task
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs import (
+    reaper as ai_reaper,
+)
+from app.domains.ai.services.jobs import (
+    store as ai_store,
+)
+from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.routers import task as task_router
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
 from app.domains.task.services.provisioning.resources import prepare_task_resources_for_provision
+from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 @pytest.fixture(autouse=True)
 def local_task_locks(monkeypatch, tmp_path):
     # These route tests use SQLite and a single event loop, not live Redis.
     from app.core import distributed_lock
+
     monkeypatch.setattr(distributed_lock, "_PROVIDER", distributed_lock.LocalLockProvider())
     monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path.with_name(tmp_path.name + "-snapshots")))
 
@@ -77,7 +56,6 @@ def _build_app(SessionLocal, user):
 
 
 def test_created_task_starts_in_provisioning_and_prepare_moves_to_pending(tmp_path):
-
 
     engine, SessionLocal = _build_db()
     try:
@@ -224,7 +202,9 @@ def test_initialize_task_uses_requested_initial_prompt(tmp_path, monkeypatch):
         async def _enqueue(_job_id):
             return None
 
-        monkeypatch.setattr("app.domains.task.services.task_session_service.create_task_chat_turn", _create_task_chat_turn)
+        monkeypatch.setattr(
+            "app.domains.task.services.task_session_service.create_task_chat_turn", _create_task_chat_turn
+        )
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", _enqueue)
         monkeypatch.setattr(
             "app.domains.task.services.task_session_control_service.get_engine",
@@ -255,8 +235,11 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
             task.status = TaskStatus.INTERRUPTED
             task.session_id = "old-session"
             old = ai_store.create_task_chat_job(
-                db, workspace_id=workspace.id, task_id=task.id,
-                creator_id=user.id, prompt_text="old prompt",
+                db,
+                workspace_id=workspace.id,
+                task_id=task.id,
+                creator_id=user.id,
+                prompt_text="old prompt",
             )
             old.status = old_status
             if old_status == AiJobStatus.RUNNING:
@@ -271,10 +254,11 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
 
         async def stop_attempt(token, reason):
             assert token == "before-restart"
-            return None  # A new worker has no in-memory process registration.
+            return  # A new worker has no in-memory process registration.
 
         async def stop_persisted(pid, started_at, reason, **kwargs):
             from app.agents.supervision import TerminationResult
+
             assert pid == 4321
             assert kwargs["run_token"] == "before-restart"
             return TerminationResult(confirmed_dead=True, root_return_code=None)
@@ -285,9 +269,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
         monkeypatch.setattr("app.domains.ai.services.jobs.reaper.process_supervisor.stop_persisted", stop_persisted)
         monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_attempt", stop_attempt)
         monkeypatch.setattr("app.domains.ai.services.jobs.attempts.process_supervisor.stop_persisted", stop_persisted)
-        monkeypatch.setattr(
-            "app.domains.task.services.task_session_control_service.get_engine", lambda _: None
-        )
+        monkeypatch.setattr("app.domains.task.services.task_session_control_service.get_engine", lambda _: None)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.publish_job", noop)
         monkeypatch.setattr("app.domains.ai.services.jobs.publishing.enqueue_task_chat_job", noop)
         client = TestClient(_build_app(factory, user))
@@ -295,6 +277,7 @@ def test_initialize_after_failed_or_interrupted_attempt(tmp_path, monkeypatch, o
         assert response.status_code == 200, response.text
         with _session(factory) as db:
             from app.domains.task.models.task import SddTask
+
             task = db.get(SddTask, task_id)
             assert task.session_id is None
             assert task.session_generation == 1
@@ -318,8 +301,11 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
             task.session_generation = 7
             task.error_message = "original failure"
             job = ai_store.create_task_chat_job(
-                db, workspace_id=workspace.id, task_id=task.id,
-                creator_id=user.id, prompt_text="old prompt",
+                db,
+                workspace_id=workspace.id,
+                task_id=task.id,
+                creator_id=user.id,
+                prompt_text="old prompt",
             )
             job.status = AiJobStatus.ORPHANED
             job.run_token = "persisted-owner"
@@ -331,6 +317,7 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
 
         async def reap(*args, **kwargs):
             if recovery == "late_finalizer":
+
                 async def finish():
                     await asyncio.sleep(0.02)
                     with _session(factory) as db:
@@ -338,7 +325,8 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
                         old.status = AiJobStatus.CANCELLED
                         old.run_token = None
                         db.commit()
-                asyncio.create_task(finish())
+
+                retain_background_task(asyncio.create_task(finish()))
 
         async def stop():
             raise RuntimeError("provider stop failed")
@@ -356,12 +344,17 @@ def test_initialize_preserves_or_recovers_session_after_cleanup(monkeypatch, rec
         assert response.status_code == (200 if recovery == "late_finalizer" else 409), response.text
         with _session(factory) as db:
             from app.domains.task.models.task import SddTask
+
             task = db.get(SddTask, task_id)
             if recovery == "late_finalizer":
                 assert (task.session_id, task.session_generation, task.error_message) == (None, 8, None)
                 assert db.query(SddAiJob).filter_by(task_id=task_id, status=AiJobStatus.PENDING).count() == 1
             else:
-                assert (task.session_id, task.session_generation, task.error_message) == ("preserve-session", 7, "original failure")
+                assert (task.session_id, task.session_generation, task.error_message) == (
+                    "preserve-session",
+                    7,
+                    "original failure",
+                )
                 assert db.query(ChatMessage).filter_by(task_id=task_id).count() == 0
     finally:
         engine.dispose()

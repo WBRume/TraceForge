@@ -10,7 +10,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy.orm import sessionmaker
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -27,7 +26,6 @@ from app.domains.task.services import (  # noqa: E402
     task_session_control_service,
 )
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
-
 
 # ── build_session_prompt：用户可见文案与 agent prompt 的组装 ──
 
@@ -59,8 +57,11 @@ def test_build_session_prompt_appends_spec_doc_guidance_for_agent_only():
 
 def test_build_session_prompt_appends_diagnosis_contract_for_diagnosis_tasks():
     task = SimpleNamespace(
-        name="T", description="d", spec_doc_path=None,
-        task_type="DIAGNOSIS", task_meta_json={"phenomenon": "500 报错"},
+        name="T",
+        description="d",
+        spec_doc_path=None,
+        task_type="DIAGNOSIS",
+        task_meta_json={"phenomenon": "500 报错"},
     )
     prompts = task_session_control_service.build_session_prompt(task, "开始")
     assert "[问题定位任务]" in prompts["prompt"]
@@ -86,17 +87,13 @@ def test_load_start_context_rejects_running_or_interrupted_task(db_env):
         task.status = TaskStatus.CODING
         db.commit()
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
-            task_session_control_service.load_start_task_context_sync(
-                db, ws_id="ws-guard", task_id="task-guard"
-            )
+            task_session_control_service.load_start_task_context_sync(db, ws_id="ws-guard", task_id="task-guard")
         assert exc.value.status_code == 409
 
         task.status = TaskStatus.INTERRUPTED
         db.commit()
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
-            task_session_control_service.load_start_task_context_sync(
-                db, ws_id="ws-guard", task_id="task-guard"
-            )
+            task_session_control_service.load_start_task_context_sync(db, ws_id="ws-guard", task_id="task-guard")
         assert exc.value.status_code == 409
 
 
@@ -106,18 +103,14 @@ def test_load_start_context_rejects_baselined_task(db_env):
         task.status = TaskStatus.BASELINED
         db.commit()
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
-            task_session_control_service.load_start_task_context_sync(
-                db, ws_id="ws-base", task_id="task-base"
-            )
+            task_session_control_service.load_start_task_context_sync(db, ws_id="ws-base", task_id="task-base")
         assert exc.value.status_code == 403
 
 
 def test_load_start_context_rejects_unknown_task(db_env):
     with _session(db_env) as db:
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
-            task_session_control_service.load_start_task_context_sync(
-                db, ws_id="ws-missing", task_id="task-missing"
-            )
+            task_session_control_service.load_start_task_context_sync(db, ws_id="ws-missing", task_id="task-missing")
         assert exc.value.status_code == 404
 
 
@@ -127,9 +120,7 @@ def test_load_start_context_allows_pending_task(db_env):
         task.status = TaskStatus.PENDING
         task.description = "准备就绪"
         db.commit()
-        state = task_session_control_service.load_start_task_context_sync(
-            db, ws_id="ws-ok", task_id="task-ok"
-        )
+        state = task_session_control_service.load_start_task_context_sync(db, ws_id="ws-ok", task_id="task-ok")
         assert state["user_display"] == "准备就绪"
 
 
@@ -161,8 +152,11 @@ def test_apply_initialize_blocks_while_jobs_still_active(db_env):
 
         with pytest.raises(task_session_control_service.TaskSessionControlError) as exc:
             task_session_control_service.apply_initialize_sync(
-                db, ws_id="ws-init", task_id="task-init",
-                skill_ids=None, keep_deleted_runtime_skills=True,
+                db,
+                ws_id="ws-init",
+                task_id="task-init",
+                skill_ids=None,
+                keep_deleted_runtime_skills=True,
             )
         assert exc.value.status_code == 409
 
@@ -178,8 +172,11 @@ def test_apply_initialize_bumps_generation_and_builds_prompt(db_env):
         db.commit()
 
         state = task_session_control_service.apply_initialize_sync(
-            db, ws_id="ws-init2", task_id="task-init2",
-            skill_ids=None, keep_deleted_runtime_skills=True,
+            db,
+            ws_id="ws-init2",
+            task_id="task-init2",
+            skill_ids=None,
+            keep_deleted_runtime_skills=True,
             requested_prompt="重新开始",
         )
 
@@ -198,8 +195,12 @@ def _make_diagnosis_task(db, task, *, status="CONFIRMED"):
     task.task_type = TaskType.DIAGNOSIS
     db.commit()
     result = diagnosis_result_service.SddDiagnosisResult(
-        task_id=task.id, workspace_id=task.workspace_id, created_by_id="user-1",
-        status=status, summary="s", root_cause="r",
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        created_by_id="user-1",
+        status=status,
+        summary="s",
+        root_cause="r",
     )
     db.add(result)
     db.commit()
@@ -220,10 +221,16 @@ def test_prepare_summary_rejects_adopted_case(db_env):
     with _session(db_env) as db:
         _user, ws, task = _seed_workspace(db, workspace_id="ws-adopt", task_id="task-adopt")
         _make_diagnosis_task(db, task)
-        db.add(SddCase(
-            id="case-1", workspace_id=ws.id, source_task_id=task.id,
-            title="c", creator_id="user-1", status="DRAFT",
-        ))
+        db.add(
+            SddCase(
+                id="case-1",
+                workspace_id=ws.id,
+                source_task_id=task.id,
+                title="c",
+                creator_id="user-1",
+                status="DRAFT",
+            )
+        )
         db.commit()
 
         with pytest.raises(diagnosis_result_service.DiagnosisSummaryError) as exc:

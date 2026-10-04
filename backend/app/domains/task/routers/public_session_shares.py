@@ -8,25 +8,23 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.offload import run_db_txn
-from app.dependencies import get_current_user, get_db
+from app.dependencies import get_db
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.auth.models.user import User
 from app.domains.task.models.session_share import TaskSessionShare
 from app.domains.task.models.task import SddTask
 from app.domains.task.schemas.session_share import (
+    SharedHistoryResponse,
     ShareExchangeRequest,
     ShareExchangeResponse,
     ShareResolveResponse,
     ShareSuggestionReceipt,
     ShareSuggestionSubmit,
-    SharedHistoryResponse,
 )
 from app.domains.task.services import (
     session_share_service,
@@ -47,9 +45,9 @@ def _raise_share_error(exc: session_share_service.ShareError) -> None:
 
 
 def _optional_current_user(
-    authorization: Optional[str] = Header(default=None),
+    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
-) -> Optional[User]:
+) -> User | None:
     """resolve/exchange 可同时携带登录凭证；登录过期退回访客流程（不抛 401）。"""
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
@@ -69,7 +67,7 @@ def _optional_current_user(
 async def exchange_share_token(
     request: Request,
     data: ShareExchangeRequest,
-    current_user: Optional[User] = Depends(_optional_current_user),
+    current_user: User | None = Depends(_optional_current_user),
     db: Session = Depends(get_db),
 ):
     """用原始分享令牌换取短期访问凭证及页面模式。
@@ -90,7 +88,10 @@ async def exchange_share_token(
             raise session_share_service.ShareError("链接不存在或已失效", code="SHARE_NOT_FOUND", status_code=404)
         task = session.get(SddTask, share.task_id)
         view = session_share_service.resolve_share_view(
-            session, share=share, task=task, optional_user=current_user,
+            session,
+            share=share,
+            task=task,
+            optional_user=current_user,
         )
         access, access_token = session_share_service.issue_access(session, share)
         # commit 后 expire_on_commit 分离实例，DTO 组装必须在事务内完成
@@ -117,8 +118,8 @@ async def exchange_share_token(
 @router.post("/resolve", response_model=ShareResolveResponse)
 async def resolve_share_access(
     request: Request,
-    x_share_access: Optional[str] = Header(default=None, alias=_SHARE_ACCESS_HEADER),
-    current_user: Optional[User] = Depends(_optional_current_user),
+    x_share_access: str | None = Header(default=None, alias=_SHARE_ACCESS_HEADER),
+    current_user: User | None = Depends(_optional_current_user),
     db: Session = Depends(get_db),
 ):
     """持短期凭证重新验证分享；携带有效登录身份时判断正常跳转。"""
@@ -131,10 +132,15 @@ async def resolve_share_access(
     def _txn(session: Session):
         # 仅证明持有能力；每次请求仍查询分享状态、任务状态及发起人权限
         _, share, task = session_share_service.resolve_access_context(
-            session, x_share_access, capability=share_mode_capability(session, x_share_access),
+            session,
+            x_share_access,
+            capability=share_mode_capability(session, x_share_access),
         )
         view = session_share_service.resolve_share_view(
-            session, share=share, task=task, optional_user=current_user,
+            session,
+            share=share,
+            task=task,
+            optional_user=current_user,
         )
         # commit 后 expire_on_commit 分离实例，DTO 组装必须在事务内完成
         payload = ShareResolveResponse(
@@ -157,21 +163,17 @@ def share_mode_capability(db: Session, access_token: str) -> str:
     """从凭证反查分享模式以选择能力断言（服务端决定，不信任请求参数）。"""
     access = session_share_service.find_access_by_token(db, access_token)
     if access is None:
-        raise session_share_service.ShareError(
-            "访问凭证无效", code="SHARE_ACCESS_INVALID", status_code=404
-        )
+        raise session_share_service.ShareError("访问凭证无效", code="SHARE_ACCESS_INVALID", status_code=404)
     share = db.get(TaskSessionShare, access.share_id)
     if share is None:
-        raise session_share_service.ShareError(
-            "分享不存在", code="SHARE_NOT_FOUND", status_code=404
-        )
+        raise session_share_service.ShareError("分享不存在", code="SHARE_NOT_FOUND", status_code=404)
     return "READ" if share.mode.value == "READ" else "INPUT"
 
 
 @router.get("/history", response_model=SharedHistoryResponse)
 async def get_shared_history(
-    x_share_access: Optional[str] = Header(default=None, alias=_SHARE_ACCESS_HEADER),
-    cursor: Optional[str] = Query(default=None),
+    x_share_access: str | None = Header(default=None, alias=_SHARE_ACCESS_HEADER),
+    cursor: str | None = Query(default=None),
     page_size: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
@@ -184,10 +186,16 @@ async def get_shared_history(
 
     def _txn(session: Session):
         _, share, task = session_share_service.resolve_access_context(
-            session, x_share_access, capability="READ",
+            session,
+            x_share_access,
+            capability="READ",
         )
         return shared_history_service.load_shared_history(
-            session, share=share, task=task, cursor=cursor, page_size=page_size,
+            session,
+            share=share,
+            task=task,
+            cursor=cursor,
+            page_size=page_size,
         )
 
     try:
@@ -199,7 +207,7 @@ async def get_shared_history(
 @router.post("/suggestions", response_model=ShareSuggestionReceipt)
 async def submit_share_suggestion(
     data: ShareSuggestionSubmit,
-    x_share_access: Optional[str] = Header(default=None, alias=_SHARE_ACCESS_HEADER),
+    x_share_access: str | None = Header(default=None, alias=_SHARE_ACCESS_HEADER),
     db: Session = Depends(get_db),
 ):
     """INPUT 模式提交输入并返回本次回执。不触发任何模型 / Agent / 正式消息。"""
@@ -214,7 +222,9 @@ async def submit_share_suggestion(
         # run_db_txn 返回即 commit，expire_on_commit 分离实例——需要的字段
         # 必须在事务内拷出。
         access, share, _task = session_share_service.resolve_access_context(
-            session, x_share_access, capability="INPUT",
+            session,
+            x_share_access,
+            capability="INPUT",
         )
         share_suggestion_service.enforce_submit_rate_limit(share, access.visitor_id)
         return share.id, share.task_id, access.visitor_id
@@ -230,10 +240,7 @@ async def submit_share_suggestion(
         # 第二段（任务锁内）：重读分享行（FOR UPDATE）+ 任务代次，
         # 与撤销事务在同一行锁上串行化；先提交成功的输入保留。
         locked_share = (
-            session.query(TaskSessionShare)
-            .filter(TaskSessionShare.id == share_id)
-            .with_for_update()
-            .one_or_none()
+            session.query(TaskSessionShare).filter(TaskSessionShare.id == share_id).with_for_update().one_or_none()
         )
         if locked_share is None:
             raise session_share_service.ShareError("分享不存在", code="SHARE_NOT_FOUND", status_code=404)
@@ -269,6 +276,7 @@ async def submit_share_suggestion(
 
     # Nudge 发起人（接收人）：任务房间广播不含建议内容，接收人经 REST 权限过滤后拉取
     from app.domains.websocket.ws.manager import manager as task_ws_manager
+
     await task_ws_manager.send_message_to_room(
         task_id,
         WSMessage(
@@ -317,7 +325,9 @@ async def public_share_websocket_endpoint(websocket: WebSocket, share_id: str):
             try:
                 try:
                     _, share_row, _task = session_share_service.resolve_access_context(
-                        db, access_token, capability="READ",
+                        db,
+                        access_token,
+                        capability="READ",
                     )
                     return share_row
                 except session_share_service.ShareError:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -15,13 +15,9 @@ from app.domains.workspace_asset.models.workspace_asset import (
     ClarificationStatus,
     EvidenceStatus,
     HumanReviewStatus,
-    SddClarification,
-    SddDecision,
     SddEvidence,
-    SddHumanDelta,
     SddHumanReview,
     SddTaskBaseline,
-    SddTaskFinalSummary,
     TaskFinalStatus,
     TaskProcessAuditAction,
     TaskProcessRecordType,
@@ -38,7 +34,6 @@ from app.domains.workspace_asset.services.task_process.writes_support import (
     task_coverage_status,
 )
 
-
 TERMINAL_CLARIFICATION_STATUSES = {
     ClarificationStatus.ACCEPTED.value,
     ClarificationStatus.CLOSED.value,
@@ -50,7 +45,7 @@ def ensure_task_mutable(task: SddTask) -> None:
     ensure_task_not_baselined(task)
 
 
-def latest_baseline(db: Session, task_id: str) -> Optional[SddTaskBaseline]:
+def latest_baseline(db: Session, task_id: str) -> SddTaskBaseline | None:
     return (
         db.query(SddTaskBaseline)
         .filter(SddTaskBaseline.task_id == task_id)
@@ -59,7 +54,7 @@ def latest_baseline(db: Session, task_id: str) -> Optional[SddTaskBaseline]:
     )
 
 
-def baseline_response(baseline: Optional[SddTaskBaseline]) -> Optional[TaskBaselineResponse]:
+def baseline_response(baseline: SddTaskBaseline | None) -> TaskBaselineResponse | None:
     if not baseline:
         return None
     return TaskBaselineResponse(
@@ -113,11 +108,7 @@ def _active_job_count(db: Session, workspace_id: str, task_id: str) -> int:
 def _expert_reviews(task: SddTask) -> list[SddHumanReview]:
     from app.domains.workspace_asset.services.task_final_workflow import review_service
 
-    return [
-        item
-        for item in (task.human_reviews or [])
-        if item.review_type == review_service.EXPERT_REVIEW_TYPE
-    ]
+    return [item for item in (task.human_reviews or []) if item.review_type == review_service.EXPERT_REVIEW_TYPE]
 
 
 def _has_unresolved_blocking_clarification(task: SddTask) -> bool:
@@ -137,7 +128,7 @@ def _expert_reviews_clear(task: SddTask) -> bool:
     return bool(_expert_reviews(task)) and not _has_unresolved_blocking_clarification(task)
 
 
-def build_baseline_checklist(db: Session, task: SddTask) -> List[BaselineCheckItem]:
+def build_baseline_checklist(db: Session, task: SddTask) -> list[BaselineCheckItem]:
     confirmed_evidence_count = _confirmed_evidence_count(db, task.workspace_id, task.id)
     coverage_status = task_coverage_status(task)
     active_job_count = _active_job_count(db, task.workspace_id, task.id)
@@ -231,11 +222,11 @@ def close_resolved_reviews(task: SddTask) -> None:
             review.status = HumanReviewStatus.CLOSED
 
 
-def _snapshot_record(item: Any, fields: List[str]) -> Dict[str, Any]:
+def _snapshot_record(item: Any, fields: list[str]) -> dict[str, Any]:
     return {field: getattr(item, field, None) for field in fields}
 
 
-def build_baseline_snapshot(task: SddTask, *, version: int) -> Dict[str, Any]:
+def build_baseline_snapshot(task: SddTask, *, version: int) -> dict[str, Any]:
     summary = task.final_summary
     return {
         "version": version,
@@ -270,7 +261,7 @@ def build_baseline_snapshot(task: SddTask, *, version: int) -> Dict[str, Any]:
     }
 
 
-def baseline_task(db: Session, task: SddTask, actor_id: Optional[str]) -> SddTaskBaseline:
+def baseline_task(db: Session, task: SddTask, actor_id: str | None) -> SddTaskBaseline:
     if enum_value(task.status) == TaskStatus.BASELINED.value:
         existing = latest_baseline(db, task.id)
         if existing:

@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -118,9 +116,7 @@ def delete_notification(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    was_unread: Optional[bool] = notification_service.delete_notification(
-        db, current_user.id, notification_id
-    )
+    was_unread: bool | None = notification_service.delete_notification(db, current_user.id, notification_id)
     if was_unread is None:
         raise HTTPException(status_code=404, detail="Notification not found")
     return DeleteNotificationResponse(ok=True, was_unread=was_unread)

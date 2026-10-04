@@ -12,17 +12,12 @@ import asyncio
 import hashlib
 import json
 import os
-import subprocess
 import shutil
-import sys
+import subprocess
 import tempfile
 import uuid
 
 import pytest
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
 from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
@@ -31,7 +26,6 @@ from app.agents.contract import AgentRunRequest
 from app.config import settings
 from app.core import distributed_lock
 from app.domains.task.services import task_session_snapshot_service as snapshots
-
 
 pytestmark = pytest.mark.live_revert
 
@@ -194,9 +188,7 @@ def test_live_provider_revert_forgets_old_context_and_accepts_re_edit(provider_n
 
             if provider_name == "opencode":
                 target_user_id = str(
-                    first.metadata.get("provider_user_message_id")
-                    if isinstance(first.metadata, dict)
-                    else ""
+                    first.metadata.get("provider_user_message_id") if isinstance(first.metadata, dict) else ""
                 ).strip()
                 assert target_user_id
                 assert first_session_id
@@ -234,9 +226,7 @@ def test_live_provider_revert_forgets_old_context_and_accepts_re_edit(provider_n
                 f"This is the replacement test fixture marker: {new_secret}. Reply with only the marker.",
                 forked_provider_session_id if provider_name == "dsh" else None,
             )
-            reedited_session_id = str(
-                reedited.session_id or getattr(adapter, "_session_id", "")
-            ).strip()
+            reedited_session_id = str(reedited.session_id or getattr(adapter, "_session_id", "")).strip()
             if reedited_session_id and reedited_session_id not in provider_session_ids:
                 provider_session_ids.append(reedited_session_id)
             if provider_name == "opencode":

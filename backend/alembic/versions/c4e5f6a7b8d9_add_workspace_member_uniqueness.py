@@ -15,17 +15,17 @@ Create Date: 2026-09-10 12:00:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c4e5f6a7b8d9"
-down_revision: Union[str, None] = "b9d2e4f6a8c0"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "b9d2e4f6a8c0"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _CONSTRAINT_NAME = "uq_workspace_members_workspace_user"
 
@@ -47,30 +47,20 @@ def upgrade() -> None:
     duplicates = _existing_duplicates(bind)
     if duplicates:
         raise RuntimeError(
-            "workspace_members contains %d duplicate (workspace_id, user_id) "
+            f"workspace_members contains {duplicates} duplicate (workspace_id, user_id) "
             "group(s); resolve them explicitly before applying this migration "
-            "(automatic data deletion is forbidden)" % duplicates
+            "(automatic data deletion is forbidden)"
         )
 
-    existing = {
-        constraint["name"]
-        for constraint in inspector.get_unique_constraints("workspace_members")
-    }
+    existing = {constraint["name"] for constraint in inspector.get_unique_constraints("workspace_members")}
     if _CONSTRAINT_NAME not in existing:
-        op.create_unique_constraint(
-            _CONSTRAINT_NAME, "workspace_members", ["workspace_id", "user_id"]
-        )
+        op.create_unique_constraint(_CONSTRAINT_NAME, "workspace_members", ["workspace_id", "user_id"])
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
 
-    existing = {
-        constraint["name"]
-        for constraint in inspector.get_unique_constraints("workspace_members")
-    }
+    existing = {constraint["name"] for constraint in inspector.get_unique_constraints("workspace_members")}
     if _CONSTRAINT_NAME in existing:
-        op.drop_constraint(
-            _CONSTRAINT_NAME, "workspace_members", type_="unique"
-        )
+        op.drop_constraint(_CONSTRAINT_NAME, "workspace_members", type_="unique")

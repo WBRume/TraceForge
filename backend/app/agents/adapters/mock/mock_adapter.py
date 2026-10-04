@@ -6,13 +6,13 @@ import asyncio
 import uuid
 
 from app.agents.contract import (
+    EXECUTION_KIND_REMOTE_SESSION,
     AgentBackend,
     AgentCapabilities,
+    AgentEventSink,
     AgentRunRequest,
     AgentRunResult,
-    AgentEventSink,
     AgentStopResult,
-    EXECUTION_KIND_REMOTE_SESSION,
 )
 from app.agents.events import AgentEvent
 
@@ -39,51 +39,63 @@ class MockAdapter(AgentBackend):
         session_id = request.session_id or str(uuid.uuid4())
         self._session_id = session_id
         try:
-            await on_event(AgentEvent(
-                type="session_started",
-                payload={"provider_session_id": session_id, "model": request.model or "mock-model"},
-                provider=self.name,
-                raw={"type": "system", "subtype": "init", "session_id": session_id},
-            ))
+            await on_event(
+                AgentEvent(
+                    type="session_started",
+                    payload={"provider_session_id": session_id, "model": request.model or "mock-model"},
+                    provider=self.name,
+                    raw={"type": "system", "subtype": "init", "session_id": session_id},
+                )
+            )
 
             await asyncio.sleep(0.01)
-            await on_event(AgentEvent(
-                type="thinking",
-                payload={"text": f"[Mock] 正在思考: {request.prompt[:80]}"},
-                provider=self.name,
-            ))
+            await on_event(
+                AgentEvent(
+                    type="thinking",
+                    payload={"text": f"[Mock] 正在思考: {request.prompt[:80]}"},
+                    provider=self.name,
+                )
+            )
 
             await asyncio.sleep(0.01)
-            await on_event(AgentEvent(
-                type="text",
-                payload={"text": "[Mock] 已收到你的指令，正在处理…"},
-                provider=self.name,
-            ))
+            await on_event(
+                AgentEvent(
+                    type="text",
+                    payload={"text": "[Mock] 已收到你的指令，正在处理…"},
+                    provider=self.name,
+                )
+            )
 
             await asyncio.sleep(0.01)
-            await on_event(AgentEvent(
-                type="tool_use",
-                payload={"tool_use_id": "mock_tool_1", "tool_name": "echo", "tool_input": {"text": request.prompt}},
-                provider=self.name,
-            ))
-            await on_event(AgentEvent(
-                type="tool_result",
-                payload={"tool_use_id": "mock_tool_1", "output": "[mock output]", "is_error": False},
-                provider=self.name,
-            ))
+            await on_event(
+                AgentEvent(
+                    type="tool_use",
+                    payload={"tool_use_id": "mock_tool_1", "tool_name": "echo", "tool_input": {"text": request.prompt}},
+                    provider=self.name,
+                )
+            )
+            await on_event(
+                AgentEvent(
+                    type="tool_result",
+                    payload={"tool_use_id": "mock_tool_1", "output": "[mock output]", "is_error": False},
+                    provider=self.name,
+                )
+            )
 
-            await on_event(AgentEvent(
-                type="result",
-                payload={
-                    "success": True,
-                    "result": "[Mock] 处理完成",
-                    "finish_reason": "completed",
-                    "session_id": session_id,
-                    "duration_ms": 30,
-                    "cost_usd": 0.0,
-                },
-                provider=self.name,
-            ))
+            await on_event(
+                AgentEvent(
+                    type="result",
+                    payload={
+                        "success": True,
+                        "result": "[Mock] 处理完成",
+                        "finish_reason": "completed",
+                        "session_id": session_id,
+                        "duration_ms": 30,
+                        "cost_usd": 0.0,
+                    },
+                    provider=self.name,
+                )
+            )
 
             return AgentRunResult(
                 run_id=request.run_id,

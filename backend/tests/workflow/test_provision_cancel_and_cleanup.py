@@ -10,46 +10,34 @@
 """
 
 import asyncio
+import json
 import os
 import shutil
-import sys
-import json
 from pathlib import Path
 
 import pytest
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-import app.domains.task.models.task_repository  # noqa: F401,E402
-import app.domains.workflow.models.provision_job  # noqa: F401,E402
-from app.database import Base  # noqa: E402
-from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
-from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
-from app.domains.task.routers import task as task_router  # noqa: E402
-from app.domains.task.services import git_worktree_service  # noqa: E402
-
-from app.domains.workflow.models.provision_job import ProvisionJobType, SddProvisionJob  # noqa: E402
-from app.domains.workflow.routers import provision as provision_router  # noqa: E402
-from app.domains.workflow.services import provision_job_service  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session  # noqa: E402
-
+import app.domains.task.models.task_repository
+import app.domains.workflow.models.provision_job  # noqa: F401
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.routers import task as task_router
+from app.domains.task.services import git_worktree_service
 from app.domains.task.services.provisioning import resources as task_provisioning_resources
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
 from app.domains.task.services.task_records.queries import list_tasks
+from app.domains.workflow.models.provision_job import ProvisionJobType, SddProvisionJob
+from app.domains.workflow.routers import provision as provision_router
+from app.domains.workflow.services import provision_job_service
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session
 
 
 @pytest.fixture(autouse=True)
 def isolated_snapshot_root(tmp_path, monkeypatch):
     from app.config import settings
+
     monkeypatch.setattr(settings, "TASK_SESSION_SNAPSHOT_ROOT", str(tmp_path / "snapshots"))
 
 
@@ -215,7 +203,9 @@ def test_cancel_after_worktree_creation_cleans_worktree_and_task(tmp_path, monke
         )
         removed_paths = []
 
-        def _fake_remove(*, repo_path, task_id, task_project_path, expected_git_repo_url=None, missing_ok=True, **kwargs):
+        def _fake_remove(
+            *, repo_path, task_id, task_project_path, expected_git_repo_url=None, missing_ok=True, **kwargs
+        ):
             removed_paths.append(str(task_project_path))
             shutil.rmtree(task_project_path, ignore_errors=True)
 
@@ -278,12 +268,13 @@ def test_success_path_still_moves_task_to_pending(tmp_path, monkeypatch):
 @pytest.mark.parametrize("cancel_after_snapshot", [False, True])
 def test_snapshot_failure_or_cancel_never_publishes_ready_task(tmp_path, monkeypatch, cancel_after_snapshot):
 
-
     engine, SessionLocal = _build_db()
     try:
         monkeypatch.setattr(provision_job_service, "SessionLocal", SessionLocal)
         with _session(SessionLocal) as db:
-            user, workspace, _ = _seed_workspace(db, workspace_id="ws-snapshot-fail", task_id="seed", project_path=str(tmp_path / "plain"))
+            user, workspace, _ = _seed_workspace(
+                db, workspace_id="ws-snapshot-fail", task_id="seed", project_path=str(tmp_path / "plain")
+            )
             task = create_task_record_for_provision(db, user, workspace.id, name="snapshot-fail")
             job = _seed_provision_job(db, user=user, workspace=workspace, task=task)
             task_id = task.id
@@ -320,9 +311,13 @@ def test_provisioning_baseline_makes_first_message_capture_warm(tmp_path, monkey
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            user, workspace, _ = _seed_workspace(db, workspace_id="ws-warm", task_id="seed", project_path=str(tmp_path / "plain"))
+            user, workspace, _ = _seed_workspace(
+                db, workspace_id="ws-warm", task_id="seed", project_path=str(tmp_path / "plain")
+            )
             task = create_task_record_for_provision(db, user, workspace.id, name="warm")
-            task_provisioning_resources.prepare_task_resources_for_provision(db, workspace_id=workspace.id, task_id=task.id)
+            task_provisioning_resources.prepare_task_resources_for_provision(
+                db, workspace_id=workspace.id, task_id=task.id
+            )
             original = store.Shadow.initialize
 
             def require_warm(shadow):
@@ -331,15 +326,31 @@ def test_provisioning_baseline_makes_first_message_capture_warm(tmp_path, monkey
 
             monkeypatch.setattr(store.Shadow, "initialize", require_warm)
             Path(task.project_path, "manual.txt").write_text("edited after task creation")
-            result = snapshots._create_checkpoint_sync(task.project_path, [], "none", None,
-                workspace.id, "renamed workspace", task.id, "renamed task",
-                initial_checkpoint=task.task_meta_json["initial_workspace_checkpoint"])
+            result = snapshots._create_checkpoint_sync(
+                task.project_path,
+                [],
+                "none",
+                None,
+                workspace.id,
+                "renamed workspace",
+                task.id,
+                "renamed task",
+                initial_checkpoint=task.task_meta_json["initial_workspace_checkpoint"],
+            )
             assert "manual.txt" in result["worktree"]["modes"]
             Path(result["worktree"]["partitions"][0]["git_dir"], "index").unlink()
             with pytest.raises(snapshots.TaskSessionSnapshotError, match="index is missing"):
-                snapshots._create_checkpoint_sync(task.project_path, [], "none", None,
-                    workspace.id, workspace.name, task.id, task.name,
-                    initial_checkpoint=task.task_meta_json["initial_workspace_checkpoint"])
+                snapshots._create_checkpoint_sync(
+                    task.project_path,
+                    [],
+                    "none",
+                    None,
+                    workspace.id,
+                    workspace.name,
+                    task.id,
+                    task.name,
+                    initial_checkpoint=task.task_meta_json["initial_workspace_checkpoint"],
+                )
     finally:
         engine.dispose()
 
@@ -348,20 +359,24 @@ def test_local_initial_snapshot_uses_bound_host_and_idempotent_operation(tmp_pat
     from app.domains.local_resource import service as resource
     from app.domains.local_resource.snapshots import decode
 
-
     engine, SessionLocal = _build_db()
     try:
         calls = []
         monkeypatch.setattr(resource, "is_local", lambda task: True)
+
         def execute(db, task, kind, payload, operation_id):
             calls.append((kind, payload, operation_id))
             return {"root": "/host/snapshots/turn-initial"}
+
         monkeypatch.setattr(resource, "execute", execute)
         with _session(SessionLocal) as db:
             _, ws, task = _seed_workspace(db, workspace_id="ws-local", task_id="local")
             task_provisioning_resources._prepare_initial_workspace_checkpoint(db, ws, task)
             task_provisioning_resources._prepare_initial_workspace_checkpoint(db, ws, task)
-            assert decode(task.task_meta_json["initial_workspace_checkpoint"]) == ("local", "/host/snapshots/turn-initial")
+            assert decode(task.task_meta_json["initial_workspace_checkpoint"]) == (
+                "local",
+                "/host/snapshots/turn-initial",
+            )
             assert len(calls) == 1
             assert calls[0][0] == "snapshot"
             assert calls[0][1]["session_id"] is None
@@ -488,7 +503,6 @@ def test_provision_cancel_api_is_creator_only(tmp_path):
             other = User(id="other-1", email="other@example.com", hashed_password="x", display_name="Other")
             db.add(other)
             db.commit()
-            ws_id = workspace.id
 
         creator_client = TestClient(_build_task_app(SessionLocal, user1))
         other_client = TestClient(_build_task_app(SessionLocal, other))

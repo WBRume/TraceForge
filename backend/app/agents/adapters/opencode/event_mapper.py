@@ -9,7 +9,7 @@ OpenAPI schema 中同样事件可能把字段放在 `properties`，这里两种�
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+from typing import Any
 
 from app.agents.events import AgentEvent
 
@@ -54,7 +54,7 @@ def _json_text(value: Any, max_len: int = 5000) -> str:
     return text
 
 
-def _extract_usage(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+def _extract_usage(data: dict[str, Any]) -> dict[str, Any] | None:
     """从 step.ended 的 tokens 中提取统一 usage 字段。"""
     tokens = data.get("tokens") if isinstance(data.get("tokens"), dict) else {}
     cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
@@ -76,7 +76,7 @@ def _extract_usage(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     }
 
 
-def _normalize_finish_reason(finish: str) -> Optional[str]:
+def _normalize_finish_reason(finish: str) -> str | None:
     """把 OpenCode finish 值归一化到契约受控词表。"""
     return {
         "stop": "completed",
@@ -92,7 +92,9 @@ def _normalize_finish_reason(finish: str) -> Optional[str]:
 
 def _is_interruption(error: Any) -> bool:
     return isinstance(error, dict) and _text(error.get("type")).lower() in {
-        "aborted", "cancelled", "interrupted",
+        "aborted",
+        "cancelled",
+        "interrupted",
     }
 
 
@@ -121,110 +123,132 @@ def _tool_output_text(data: dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p) or _json_text(data.get("result") or {}, 4000)
 
 
-def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
-    """把一个 OpenCode SSE/JSON 事件转换为 0~N 个 AgentEvent。"""
-    if not isinstance(event, dict):
-        return []
-
-    events: List[AgentEvent] = []
-    event_type = _text(event.get("type"))
-    data = _event_data(event)
-    session_id = opencode_event_session_id(event)
-
+def _map_text_event(event: dict[str, Any], data: dict[str, Any], event_type: str) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
     if event_type == "session.text.ended":
         text = _text(data.get("text"))
         if text:
-            events.append(AgentEvent(
-                type="text",
-                payload={"text": text},
-                provider=PROVIDER,
-                raw=event,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="text",
+                    payload={"text": text},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
     elif event_type == "session.text.delta":
         delta = str(data.get("delta") or "")
         if delta:
-            events.append(AgentEvent(
-                type="text_delta",
-                payload={"delta": delta, "text": delta},
-                provider=PROVIDER,
-                raw=event,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="text_delta",
+                    payload={"delta": delta, "text": delta},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
     elif event_type == "session.reasoning.ended":
         text = _text(data.get("text"))
         if text:
-            events.append(AgentEvent(
-                type="thinking",
-                payload={"text": text},
-                provider=PROVIDER,
-                raw=event,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="thinking",
+                    payload={"text": text},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
     elif event_type == "session.reasoning.delta":
         delta = str(data.get("delta") or "")
         if delta:
             # 统一事件目前没有 thinking_delta；用 delta 标记让引擎累积上行。
-            events.append(AgentEvent(
-                type="thinking",
-                payload={"text": delta, "delta": delta},
+            events.append(
+                AgentEvent(
+                    type="thinking",
+                    payload={"text": delta, "delta": delta},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
+
+    return events
+
+
+def _map_tool_event(event: dict[str, Any], data: dict[str, Any], event_type: str) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    if event_type == "session.tool.called":
+        events.append(
+            AgentEvent(
+                type="tool_use",
+                payload={
+                    "tool_use_id": _text(data.get("callID")),
+                    "tool_name": _text(data.get("tool")),
+                    "tool_input": data.get("input", {}),
+                },
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
-            ))
-    elif event_type == "session.tool.called":
-        events.append(AgentEvent(
-            type="tool_use",
-            payload={
-                "tool_use_id": _text(data.get("callID")),
-                "tool_name": _text(data.get("tool")),
-                "tool_input": data.get("input", {}),
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+            )
+        )
     elif event_type == "session.tool.progress":
         events.append(AgentEvent(type="tool_progress", payload=data, provider=PROVIDER, raw=event))
     elif event_type == "session.tool.success":
-        events.append(AgentEvent(
-            type="tool_result",
-            payload={
-                "tool_use_id": _text(data.get("callID")),
-                "output": _tool_output_text(data),
-                "is_error": False,
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="tool_result",
+                payload={
+                    "tool_use_id": _text(data.get("callID")),
+                    "output": _tool_output_text(data),
+                    "is_error": False,
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
     elif event_type == "session.tool.failed":
         error = data.get("error")
         if isinstance(error, dict):
             error_message = _text(error.get("message") or error.get("name"))
         else:
             error_message = _text(error)
-        events.append(AgentEvent(
-            type="tool_result",
-            payload={
-                "tool_use_id": _text(data.get("callID")),
-                "output": error_message or _json_text(error or {}, 4000),
-                "is_error": True,
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
-    elif event_type == "session.step.ended":
-        usage = _extract_usage(data)
-        if usage:
-            events.append(AgentEvent(
-                type="usage",
-                payload=usage,
+        events.append(
+            AgentEvent(
+                type="tool_result",
+                payload={
+                    "tool_use_id": _text(data.get("callID")),
+                    "output": error_message or _json_text(error or {}, 4000),
+                    "is_error": True,
+                },
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
-            ))
+            )
+        )
+
+    return events
+
+
+def _map_completion_event(
+    event: dict[str, Any], data: dict[str, Any], event_type: str, session_id: str
+) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    if event_type == "session.step.ended":
+        usage = _extract_usage(data)
+        if usage:
+            events.append(
+                AgentEvent(
+                    type="usage",
+                    payload=usage,
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
         finish = _text(data.get("finish"))
         normalized_finish = _normalize_finish_reason(finish)
         interrupted = normalized_finish == "interrupted" or _is_interruption(data.get("error"))
@@ -232,12 +256,48 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             normalized_finish = "interrupted"
         if normalized_finish:
             is_error = normalized_finish == "error"
-            events.append(AgentEvent(
-                type="error" if is_error else "result",
+            events.append(
+                AgentEvent(
+                    type="error" if is_error else "result",
+                    payload={
+                        "success": not is_error and not interrupted,
+                        "result": "",
+                        "finish_reason": normalized_finish,
+                        "session_id": session_id,
+                        "usage": usage or {},
+                        "cost_usd": data.get("cost"),
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
+        # finish=tool-calls 只是步骤结束，等待后续文本/结果步骤
+    elif event_type == "session.step.failed":
+        usage = _extract_usage(data)
+        if usage:
+            events.append(
+                AgentEvent(
+                    type="usage",
+                    payload=usage,
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
+        error = data.get("error")
+        if isinstance(error, dict):
+            error_message = _text(error.get("message") or error.get("name") or error)
+        else:
+            error_message = _text(error)
+        interrupted = _is_interruption(error)
+        events.append(
+            AgentEvent(
+                type="result" if interrupted else "error",
                 payload={
-                    "success": not is_error and not interrupted,
-                    "result": "",
-                    "finish_reason": normalized_finish,
+                    "success": False,
+                    "result": error_message or "OpenCode step failed",
+                    "finish_reason": "interrupted" if interrupted else "error",
                     "session_id": session_id,
                     "usage": usage or {},
                     "cost_usd": data.get("cost"),
@@ -245,38 +305,8 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
-            ))
-        # finish=tool-calls 只是步骤结束，等待后续文本/结果步骤
-    elif event_type == "session.step.failed":
-        usage = _extract_usage(data)
-        if usage:
-            events.append(AgentEvent(
-                type="usage",
-                payload=usage,
-                provider=PROVIDER,
-                raw=event,
-                time=_iso_time(),
-            ))
-        error = data.get("error")
-        if isinstance(error, dict):
-            error_message = _text(error.get("message") or error.get("name") or error)
-        else:
-            error_message = _text(error)
-        interrupted = _is_interruption(error)
-        events.append(AgentEvent(
-            type="result" if interrupted else "error",
-            payload={
-                "success": False,
-                "result": error_message or "OpenCode step failed",
-                "finish_reason": "interrupted" if interrupted else "error",
-                "session_id": session_id,
-                "usage": usage or {},
-                "cost_usd": data.get("cost"),
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+            )
+        )
     elif event_type == "session.error":
         error = data.get("error")
         if isinstance(error, dict):
@@ -284,94 +314,118 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
         else:
             error_message = _text(error)
         interrupted = _is_interruption(error)
-        events.append(AgentEvent(
-            type="result" if interrupted else "error",
-            payload={
-                "success": False,
-                "result": error_message or "OpenCode session error",
-                "finish_reason": "interrupted" if interrupted else "error",
-                "session_id": session_id,
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
-    elif event_type == "message.part.updated":
-        part = data.get("part") if isinstance(data.get("part"), dict) else {}
-        part_type = _text(part.get("type"))
-        if part_type == "text":
-            text = _text(part.get("text"))
-            if text:
-                events.append(AgentEvent(
+        events.append(
+            AgentEvent(
+                type="result" if interrupted else "error",
+                payload={
+                    "success": False,
+                    "result": error_message or "OpenCode session error",
+                    "finish_reason": "interrupted" if interrupted else "error",
+                    "session_id": session_id,
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+
+    return events
+
+
+def _map_tool_part(event: dict[str, Any], part: dict[str, Any]) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    state = part.get("state") if isinstance(part.get("state"), dict) else {}
+    status = _text(state.get("status"))
+    tool_use_id = _text(part.get("callID") or part.get("id"))
+    tool_name = _text(part.get("tool") or part.get("name")) or "unknown"
+    tool_input = state.get("input", {}) if isinstance(state, dict) else {}
+    if status in ("pending", "running", ""):
+        events.append(
+            AgentEvent(
+                type="tool_use",
+                payload={
+                    "tool_use_id": tool_use_id,
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+    if status in ("completed", "error"):
+        output = _tool_output_text(state)
+        if status == "error":
+            error = state.get("error")
+            if isinstance(error, dict):
+                error_text = _text(error.get("message") or error.get("name") or error)
+            else:
+                error_text = _text(error)
+            output = f"{output}\n{error_text}".strip()
+        events.append(
+            AgentEvent(
+                type="tool_result",
+                payload={
+                    "tool_use_id": tool_use_id,
+                    "output": output,
+                    "is_error": status == "error",
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+    return events
+
+
+def _map_message_part(event: dict[str, Any], data: dict[str, Any], session_id: str) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    part = data.get("part") if isinstance(data.get("part"), dict) else {}
+    part_type = _text(part.get("type"))
+    if part_type == "text":
+        text = _text(part.get("text"))
+        if text:
+            events.append(
+                AgentEvent(
                     type="text",
                     payload={"text": text},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-        elif part_type == "reasoning":
-            text = _text(part.get("text"))
-            if text:
-                events.append(AgentEvent(
+                )
+            )
+    elif part_type == "reasoning":
+        text = _text(part.get("text"))
+        if text:
+            events.append(
+                AgentEvent(
                     type="thinking",
                     payload={"text": text},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-        elif part_type == "tool":
-            state = part.get("state") if isinstance(part.get("state"), dict) else {}
-            status = _text(state.get("status"))
-            tool_use_id = _text(part.get("callID") or part.get("id"))
-            tool_name = _text(part.get("tool") or part.get("name")) or "unknown"
-            tool_input = state.get("input", {}) if isinstance(state, dict) else {}
-            if status in ("pending", "running", ""):
-                events.append(AgentEvent(
-                    type="tool_use",
-                    payload={
-                        "tool_use_id": tool_use_id,
-                        "tool_name": tool_name,
-                        "tool_input": tool_input,
-                    },
-                    provider=PROVIDER,
-                    raw=event,
-                    time=_iso_time(),
-                ))
-            if status in ("completed", "error"):
-                output = _tool_output_text(state)
-                if status == "error":
-                    error = state.get("error")
-                    if isinstance(error, dict):
-                        error_text = _text(error.get("message") or error.get("name") or error)
-                    else:
-                        error_text = _text(error)
-                    output = f"{output}\n{error_text}".strip()
-                events.append(AgentEvent(
-                    type="tool_result",
-                    payload={
-                        "tool_use_id": tool_use_id,
-                        "output": output,
-                        "is_error": status == "error",
-                    },
-                    provider=PROVIDER,
-                    raw=event,
-                    time=_iso_time(),
-                ))
-        elif part_type == "step-finish":
-            usage = _extract_usage({"tokens": part.get("tokens")}) if isinstance(part.get("tokens"), dict) else None
-            if usage:
-                events.append(AgentEvent(
+                )
+            )
+    elif part_type == "tool":
+        events.extend(_map_tool_part(event, part))
+    elif part_type == "step-finish":
+        usage = _extract_usage({"tokens": part.get("tokens")}) if isinstance(part.get("tokens"), dict) else None
+        if usage:
+            events.append(
+                AgentEvent(
                     type="usage",
                     payload=usage,
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-            reason = _text(part.get("reason"))
-            normalized_finish = _normalize_finish_reason(reason)
-            if normalized_finish:
-                is_error = normalized_finish == "error"
-                events.append(AgentEvent(
+                )
+            )
+        reason = _text(part.get("reason"))
+        normalized_finish = _normalize_finish_reason(reason)
+        if normalized_finish:
+            is_error = normalized_finish == "error"
+            events.append(
+                AgentEvent(
                     type="error" if is_error else "result",
                     payload={
                         "success": not is_error,
@@ -384,39 +438,59 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-    elif event_type == "message.part.delta":
-        delta = str(data.get("delta") or "")
-        field = _text(data.get("field"))
-        if delta:
-            if field in ("reasoning", "thinking"):
-                events.append(AgentEvent(
+                )
+            )
+
+    return events
+
+
+def _map_part_delta(event: dict[str, Any], data: dict[str, Any]) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    delta = str(data.get("delta") or "")
+    field = _text(data.get("field"))
+    if delta:
+        if field in ("reasoning", "thinking"):
+            events.append(
+                AgentEvent(
                     type="thinking",
                     payload={"text": delta, "delta": delta},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-            else:
-                events.append(AgentEvent(
+                )
+            )
+        else:
+            events.append(
+                AgentEvent(
                     type="text_delta",
                     payload={"delta": delta, "text": delta},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-    elif event_type == "session.updated":
+                )
+            )
+
+    return events
+
+
+def _map_message_metadata(
+    event: dict[str, Any], data: dict[str, Any], event_type: str, session_id: str
+) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    if event_type == "session.updated":
         info = data.get("info") if isinstance(data.get("info"), dict) else {}
         tokens = info.get("tokens") if isinstance(info.get("tokens"), dict) else None
         usage = _extract_usage({"tokens": tokens}) if tokens else None
         if usage:
-            events.append(AgentEvent(
-                type="usage",
-                payload=usage,
-                provider=PROVIDER,
-                raw=event,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="usage",
+                    payload=usage,
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
     elif event_type == "message.updated":
         info = data.get("info") if isinstance(data.get("info"), dict) else {}
         role = _text(info.get("role"))
@@ -426,103 +500,162 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             if normalized_finish:
                 usage = _extract_usage({"tokens": info.get("tokens")}) if isinstance(info.get("tokens"), dict) else None
                 if usage:
-                    events.append(AgentEvent(
-                        type="usage",
-                        payload=usage,
+                    events.append(
+                        AgentEvent(
+                            type="usage",
+                            payload=usage,
+                            provider=PROVIDER,
+                            raw=event,
+                            time=_iso_time(),
+                        )
+                    )
+                is_error = normalized_finish == "error"
+                events.append(
+                    AgentEvent(
+                        type="error" if is_error else "result",
+                        payload={
+                            "success": not is_error,
+                            "result": "",
+                            "finish_reason": normalized_finish,
+                            "session_id": session_id,
+                            "usage": usage or {},
+                            "cost_usd": info.get("cost"),
+                        },
                         provider=PROVIDER,
                         raw=event,
                         time=_iso_time(),
-                    ))
-                is_error = normalized_finish == "error"
-                events.append(AgentEvent(
-                    type="error" if is_error else "result",
-                    payload={
-                        "success": not is_error,
-                        "result": "",
-                        "finish_reason": normalized_finish,
-                        "session_id": session_id,
-                        "usage": usage or {},
-                        "cost_usd": info.get("cost"),
-                    },
-                    provider=PROVIDER,
-                    raw=event,
-                    time=_iso_time(),
-                ))
+                    )
+                )
             else:
-                events.append(AgentEvent(
-                    type="log",
-                    payload={"level": "debug", "message": f"[opencode:message.updated] assistant message {info.get('id')}"},
-                    provider=PROVIDER,
-                    raw=event,
-                    time=_iso_time(),
-                ))
-    elif event_type == "form.created":
+                events.append(
+                    AgentEvent(
+                        type="log",
+                        payload={
+                            "level": "debug",
+                            "message": f"[opencode:message.updated] assistant message {info.get('id')}",
+                        },
+                        provider=PROVIDER,
+                        raw=event,
+                        time=_iso_time(),
+                    )
+                )
+
+    return events
+
+
+def _map_interaction_event(event: dict[str, Any], data: dict[str, Any], event_type: str) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    if event_type == "form.created":
         form = data.get("form") if isinstance(data.get("form"), dict) else {}
         fields = form.get("fields")
         if form.get("id") and isinstance(fields, list) and fields:
             title = _text(form.get("title"))
-            questions = [_text(field.get("title") or field.get("key"))
-                         for field in fields if isinstance(field, dict)]
+            questions = [_text(field.get("title") or field.get("key")) for field in fields if isinstance(field, dict)]
             prompt = "\n".join([title, *questions]).strip()
-            events.append(AgentEvent(
+            events.append(
+                AgentEvent(
+                    type="ask_user",
+                    payload={
+                        "ask_user_id": _text(form["id"]),
+                        "question": prompt,
+                        "kind": "form",
+                        "fields": fields,
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
+    elif event_type in ("permission.v2.asked", "permission.asked"):
+        events.append(
+            AgentEvent(
                 type="ask_user",
                 payload={
-                    "ask_user_id": _text(form["id"]),
-                    "question": prompt,
-                    "kind": "form",
-                    "fields": fields,
+                    "ask_user_id": _text(data.get("id") or data.get("requestID")),
+                    "question": f"OpenCode permission: {_text(data.get('action'))}",
+                    "permission_request": True,
+                    "kind": "approval",
+                    "resources": data.get("resources", []),
                 },
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
-            ))
-    elif event_type in ("permission.v2.asked", "permission.asked"):
-        events.append(AgentEvent(
-            type="ask_user",
-            payload={
-                "ask_user_id": _text(data.get("id") or data.get("requestID")),
-                "question": f"OpenCode permission: {_text(data.get('action'))}",
-                "permission_request": True,
-                "kind": "approval",
-                "resources": data.get("resources", []),
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+            )
+        )
     elif event_type in ("question.v2.asked", "question.asked"):
         questions = data.get("questions")
         if isinstance(questions, list) and questions:
             first = questions[0] if isinstance(questions[0], dict) else {}
-            events.append(AgentEvent(
-                type="ask_user",
-                payload={
-                    "ask_user_id": _text(data.get("id") or data.get("requestID")),
-                    "question": _text(first.get("prompt") or first.get("question") or first.get("text")),
-                    "resource": data,
-                },
+            events.append(
+                AgentEvent(
+                    type="ask_user",
+                    payload={
+                        "ask_user_id": _text(data.get("id") or data.get("requestID")),
+                        "question": _text(first.get("prompt") or first.get("question") or first.get("text")),
+                        "resource": data,
+                    },
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
+
+    return events
+
+
+def map_opencode_event(event: dict[str, Any]) -> list[AgentEvent]:
+    """把一个 OpenCode SSE/JSON 事件转换为 0~N 个 AgentEvent。"""
+    if not isinstance(event, dict):
+        return []
+
+    events: list[AgentEvent] = []
+    event_type = _text(event.get("type"))
+    data = _event_data(event)
+    session_id = opencode_event_session_id(event)
+
+    if event_type in ("session.text.ended", "session.text.delta", "session.reasoning.ended", "session.reasoning.delta"):
+        return _map_text_event(event, data, event_type)
+    if event_type in ("session.tool.called", "session.tool.progress", "session.tool.success", "session.tool.failed"):
+        return _map_tool_event(event, data, event_type)
+    if event_type in ("session.step.ended", "session.step.failed", "session.error"):
+        return _map_completion_event(event, data, event_type, session_id)
+    if event_type in ("message.part.updated",):
+        return _map_message_part(event, data, session_id)
+    if event_type in ("message.part.delta",):
+        return _map_part_delta(event, data)
+    if event_type in ("session.updated", "message.updated"):
+        return _map_message_metadata(event, data, event_type, session_id)
+    if event_type in ("form.created", "permission.v2.asked", "permission.asked", "question.v2.asked", "question.asked"):
+        return _map_interaction_event(event, data, event_type)
+    if event_type in (
+        "session.text.started",
+        "session.step.started",
+        "session.tool.input.started",
+        "session.tool.input.ended",
+        "session.prompted",
+        "session.prompt.admitted",
+        "session.idle",
+        "message.updated",
+    ):
+        # 这些事件对 TaskAgentEngine 不是必需事件；作为 log 保留审计信息。
+        events.append(
+            AgentEvent(
+                type="log",
+                payload={"level": "debug", "message": f"[opencode:{event_type}] {_json_text(data, 1200)}"},
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
-            ))
-    elif event_type in ("session.text.started", "session.step.started",
-                        "session.tool.input.started", "session.tool.input.ended",
-                        "session.prompted",
-                        "session.prompt.admitted", "session.idle", "message.updated"):
-        # 这些事件对 TaskAgentEngine 不是必需事件；作为 log 保留审计信息。
-        events.append(AgentEvent(
-            type="log",
-            payload={"level": "debug", "message": f"[opencode:{event_type}] {_json_text(data, 1200)}"},
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+            )
+        )
     else:
-        events.append(AgentEvent(
-            type="log",
-            payload={"level": "info", "message": f"[opencode:{event_type}] {_json_text(event, 2000)}"},
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="log",
+                payload={"level": "info", "message": f"[opencode:{event_type}] {_json_text(event, 2000)}"},
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+
     return events

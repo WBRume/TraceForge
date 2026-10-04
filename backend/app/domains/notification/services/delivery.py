@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.core.logging import get_logger
 from app.config import settings
+from app.core.logging import get_logger
 from app.domains.notification.providers.base import build_configured_providers
 from app.domains.notification.services import notification_service
 from app.domains.notification.types import is_registered
@@ -40,7 +40,9 @@ async def dispatch_notifications(
 ) -> list[dict]:
     # 新通知来源需在 notification/types.py 注册；未注册仍投递，但留下告警便于排查遗漏
     if not is_registered(type):
-        logger.warning(f"Dispatching unregistered notification type '{type}' — register it in app.domains.notification.types")
+        logger.warning(
+            f"Dispatching unregistered notification type '{type}' — register it in app.domains.notification.types"
+        )
 
     def _create_sync(session: Session):
         created = notification_service.create_notifications(

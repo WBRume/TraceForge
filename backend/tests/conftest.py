@@ -13,7 +13,6 @@ OAuth 三方登录测试基础设施（T03 / B-19）。
 import os
 import sys
 import urllib.parse
-from typing import Optional
 
 import httpx
 import pytest
@@ -67,6 +66,7 @@ def _hermetic_lock_provider(monkeypatch):
 
     monkeypatch.setattr(dl, "_PROVIDER", dl.LocalLockProvider())
 
+
 for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
     try:
         _models_pkg = importlib.import_module(f"app.domains.{_name}.models")
@@ -75,14 +75,12 @@ for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
     # models 可能是单文件模块（无 __path__），导入本身即完成注册
     if not hasattr(_models_pkg, "__path__"):
         continue
-    for _, _mod, _ in pkgutil.walk_packages(
-        _models_pkg.__path__, prefix=f"app.domains.{_name}.models."
-    ):
+    for _, _mod, _ in pkgutil.walk_packages(_models_pkg.__path__, prefix=f"app.domains.{_name}.models."):
         importlib.import_module(_mod)
 
 from app.config import settings  # noqa: E402
 from app.database import Base  # noqa: E402
-from app.dependencies import get_current_user, get_db  # noqa: E402
+from app.dependencies import get_db  # noqa: E402
 from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler  # noqa: E402
 from app.domains.auth.models.oauth import OAuthIdentity  # noqa: E402
 from app.domains.auth.models.user import User  # noqa: E402
@@ -90,8 +88,8 @@ from app.domains.auth.routers import auth as auth_router_module  # noqa: E402
 from app.domains.auth.routers import oauth as oauth_router_module  # noqa: E402
 from app.domains.auth.services import auth_service  # noqa: E402
 
-
 # ══════════════════ 数据库 fixtures ══════════════════
+
 
 @pytest.fixture()
 def db() -> Session:
@@ -105,9 +103,7 @@ def db() -> Session:
     # 与生产 SessionLocal 一致（app/database.py：默认 expire_on_commit=True）。
     # oauth_service 的 ticket 释放逻辑依赖 commit 后重查刷新属性，
     # 测试会话不可改用 expire_on_commit=False，否则语义失真。
-    testing_session_local = sessionmaker(
-        autocommit=False, autoflush=False, bind=engine
-    )
+    testing_session_local = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     session = testing_session_local()
     try:
         yield session
@@ -117,6 +113,7 @@ def db() -> Session:
 
 
 # ══════════════════ GitHub 上游 mock ══════════════════
+
 
 class GitHubUpstreamMock:
     """可编程 GitHub 上游模拟器：按 URL 分发预置 (status, json) 响应。
@@ -132,7 +129,7 @@ class GitHubUpstreamMock:
         self.token_response: tuple = (200, {"access_token": "gho_mock_token"})
         self.user_response: tuple = (200, {"id": 9001})
         self.emails_response: tuple = (200, [])
-        self.raw_user_content: Optional[bytes] = None
+        self.raw_user_content: bytes | None = None
         self.requests: list[tuple[str, str]] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -159,9 +156,7 @@ def github_mock(monkeypatch) -> GitHubUpstreamMock:
     def _fake_http_client() -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(mock.handler))
 
-    monkeypatch.setattr(
-        "app.domains.auth.providers.github._http_client", _fake_http_client
-    )
+    monkeypatch.setattr("app.domains.auth.providers.github._http_client", _fake_http_client)
     monkeypatch.setattr(settings, "OAUTH_GITHUB_CLIENT_ID", "test-client-id")
     monkeypatch.setattr(settings, "OAUTH_GITHUB_CLIENT_SECRET", "test-client-secret")
     monkeypatch.setattr(
@@ -191,6 +186,7 @@ def _workspace_root_dir_default_empty(monkeypatch):
 
 
 # ══════════════════ FastAPI app / TestClient ══════════════════
+
 
 @pytest.fixture()
 def app(db: Session) -> FastAPI:
@@ -238,6 +234,7 @@ def auth_headers(user: User) -> dict[str, str]:
 
 # ══════════════════ 通用构造助手 ══════════════════
 
+
 def make_user(
     db: Session,
     email: str = "legacy@example.com",
@@ -260,9 +257,7 @@ def make_user(
 
 def make_identity(db: Session, user: User, provider: str = "github", provider_uid: str = "9001") -> OAuthIdentity:
     """直接预置一条三方身份绑定（路径 A / 冲突场景用）。"""
-    identity = OAuthIdentity(
-        user_id=user.id, provider=provider, provider_uid=provider_uid
-    )
+    identity = OAuthIdentity(user_id=user.id, provider=provider, provider_uid=provider_uid)
     db.add(identity)
     db.commit()
     db.refresh(identity)
@@ -271,7 +266,7 @@ def make_identity(db: Session, user: User, provider: str = "github", provider_ui
 
 def github_profile(
     uid: int = 9001,
-    email: Optional[str] = "octo@example.com",
+    email: str | None = "octo@example.com",
     name: str = "Octo Cat",
 ) -> dict:
     """构造 GitHub ``/user`` 响应 JSON。"""
@@ -295,7 +290,7 @@ def run_login_flow(
     *,
     profile: dict,
     intent: str = "login",
-    user: Optional[User] = None,
+    user: User | None = None,
     code: str = "good-code",
 ) -> dict:
     """完整走 authorize → callback（三方上游用 mock），返回 302 query 参数字典。
@@ -312,7 +307,5 @@ def run_login_flow(
         client_type="web",
         user_id=user.id if user is not None else None,
     )
-    cb = oauth_service.handle_callback(
-        db, provider="github", code=code, state=authz.state, error=None
-    )
+    cb = oauth_service.handle_callback(db, provider="github", code=code, state=authz.state, error=None)
     return parse_redirect(cb.redirect_url)

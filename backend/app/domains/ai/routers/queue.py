@@ -4,17 +4,21 @@ Unified queue query/management routes.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user, get_db, require_admin
+from app.agents.supervision import process_supervisor
 from app.core.logging import audit_log
 from app.core.offload import run_db, run_db_txn
-from app.agents.supervision import process_supervisor
-from app.domains.auth.models.user import User
+from app.dependencies import get_current_user, get_db, require_admin
 from app.domains.ai.schemas.queue import (
+    OrphanedJobCleanupConfirmationRequest,
+    OrphanedJobItem,
+    OrphanedJobListResponse,
+    OrphanedJobProtectionRequest,
+    OrphanedJobProtectionResponse,
+    OrphanedJobRecoveryResponse,
+    OrphanedJobRetryTerminationRequest,
     QueueActionValue,
     QueueJobActionResponse,
     QueueJobItem,
@@ -22,15 +26,9 @@ from app.domains.ai.schemas.queue import (
     QueueSourceValue,
     QueueStatusValue,
     QueueViewValue,
-    OrphanedJobItem,
-    OrphanedJobListResponse,
-    OrphanedJobProtectionRequest,
-    OrphanedJobProtectionResponse,
-    OrphanedJobRetryTerminationRequest,
-    OrphanedJobCleanupConfirmationRequest,
-    OrphanedJobRecoveryResponse,
 )
 from app.domains.ai.services import queue_service
+from app.domains.auth.models.user import User
 
 router = APIRouter(prefix="/queue/jobs", tags=["Queue"])
 
@@ -101,9 +99,9 @@ def protect_orphaned_queue_job(
             evidence=request.evidence,
         )
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return OrphanedJobProtectionResponse(
         job_id=job_id,
         message="Orphaned job protected for manual recovery",
@@ -115,7 +113,7 @@ async def _recover_orphaned_job(
     job_id: str,
     operator_id: str,
     reason: str,
-    evidence: Optional[str],
+    evidence: str | None,
     confirm_cleanup: bool,
 ) -> OrphanedJobRecoveryResponse:
     from app.domains.ai.services.jobs import attempts as ai_job_attempts
@@ -169,9 +167,7 @@ async def _recover_orphaned_job(
             )
         if previous_token and (result is None or not result.confirmed_dead):
             managed_result = await process_supervisor.stop_attempt(previous_token, reason)
-            if managed_result is not None and (
-                result is None or managed_result.confirmed_dead
-            ):
+            if managed_result is not None and (result is None or managed_result.confirmed_dead):
                 result = managed_result
 
     confirmed_dead = bool(result is not None and result.confirmed_dead)
@@ -184,11 +180,7 @@ async def _recover_orphaned_job(
         failure_code=(
             result.error_code
             if result and result.error_code
-            else (
-                "MANUAL_CLEANUP_UNVERIFIED"
-                if confirm_cleanup
-                else "MANUAL_TERMINATION_UNCONFIRMED"
-            )
+            else ("MANUAL_CLEANUP_UNVERIFIED" if confirm_cleanup else "MANUAL_TERMINATION_UNCONFIRMED")
         ),
     )
     if payload:
@@ -196,11 +188,7 @@ async def _recover_orphaned_job(
         await broadcast_job_payload(payload)
         reschedule_if_pending(payload)
     audit_log(
-        action=(
-            "orphaned_job_cleanup_confirmed"
-            if confirm_cleanup
-            else "orphaned_job_retry_termination"
-        ),
+        action=("orphaned_job_cleanup_confirmed" if confirm_cleanup else "orphaned_job_retry_termination"),
         outcome="success" if confirmed_dead and payload else "failed",
         resource_type="ai_job",
         resource_id=adopted["job_id"],
@@ -273,9 +261,9 @@ async def confirm_orphaned_queue_job_cleanup(
 @router.get("", response_model=QueueJobListResponse)
 def list_queue_jobs(
     view: QueueViewValue = Query(default="mine"),
-    workspace_id: Optional[str] = Query(default=None),
-    source: Optional[QueueSourceValue] = Query(default=None),
-    status: Optional[QueueStatusValue] = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+    source: QueueSourceValue | None = Query(default=None),
+    status: QueueStatusValue | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1, le=200),
     current_user: User = Depends(get_current_user),
@@ -314,11 +302,11 @@ def get_queue_job(
             user_id=current_user.id,
         )
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{source}/{job_id}/{action}", response_model=QueueJobActionResponse)
@@ -348,11 +336,11 @@ async def act_queue_job(
                 )
             )
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if action == "retry" and source == "bootstrap" and payload.get("queue_key"):
         from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
 

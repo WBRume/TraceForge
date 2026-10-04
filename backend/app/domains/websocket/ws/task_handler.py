@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
 import asyncio
-from contextlib import suppress
+import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,10 +16,10 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
-from app.domains.ai.services.jobs.executors import task_chat as ai_job_task_chat
-from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.ai.services import chat_message_idempotency_service
 from app.domains.ai.services.chat_message_idempotency_service import ChatMessageClaim
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.executors import task_chat as ai_job_task_chat
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import (
     pre_input_service,
@@ -33,7 +33,6 @@ from app.domains.websocket.ws.connection import (
 )
 from app.domains.websocket.ws.manager import ConnectionManager, manager
 from app.engine.session import TaskAgentEngine, get_engine
-
 
 task_logger = get_logger(__name__, category="task_execution")
 
@@ -107,9 +106,7 @@ class TaskWebSocketHandler:
                 except WebSocketDisconnect:
                     raise
                 except Exception:
-                    task_logger.exception(
-                        f"Failed to process websocket message for task {self._task_id}"
-                    )
+                    task_logger.exception(f"Failed to process websocket message for task {self._task_id}")
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -123,6 +120,7 @@ class TaskWebSocketHandler:
     def _local_resource_status_sync(self):
         from app.domains.local_resource import service
         from app.domains.local_resource.client import ResourceError
+
         try:
             with self._session_factory() as db:
                 task = db.get(SddTask, self._task_id)
@@ -164,9 +162,7 @@ class TaskWebSocketHandler:
 
     async def _dispatch(self, message: Any) -> None:
         if not isinstance(message, dict):
-            task_logger.warning(
-                f"Ignored non-object websocket message for task {self._task_id}"
-            )
+            task_logger.warning(f"Ignored non-object websocket message for task {self._task_id}")
             return
 
         message_type = message.get("type")
@@ -200,9 +196,7 @@ class TaskWebSocketHandler:
         payload = self._payload(message)
         content = str(payload.get("content") or "")
         client_message_id = str(
-            payload.get("client_message_id")
-            or message.get("client_message_id")
-            or uuid.uuid4()
+            payload.get("client_message_id") or message.get("client_message_id") or uuid.uuid4()
         ).strip()
         metadata = payload.get("metadata")
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
@@ -220,6 +214,7 @@ class TaskWebSocketHandler:
             return
 
         from app.domains.local_resource.client import ResourceError
+
         try:
             await run_db(self._check_local_actor_sync)
         except ResourceError as exc:
@@ -227,9 +222,7 @@ class TaskWebSocketHandler:
             return
 
         # Do not persist prompt text in logs; undo must be able to forget it.
-        task_logger.info(
-            f"User chat for task {self._task_id}: message_length={len(request.content)}"
-        )
+        task_logger.info(f"User chat for task {self._task_id}: message_length={len(request.content)}")
         task_status = await run_db(self._load_task_status_sync, self._task_id)
         if task_status is None:
             await self._send_chat_ack(request, status="failed", message="Task not found")
@@ -239,10 +232,13 @@ class TaskWebSocketHandler:
         # interrupted-session recovery retain their existing specialised protocol.
         if task_status != TaskStatus.INTERRUPTED.value and not request.metadata.get("interaction_id"):
             from app.domains.task.services import chat_submission_service
+
             try:
                 receipt = await chat_submission_service.accept(
-                    task_id=self._task_id, actor_id=self._user.id,
-                    client_message_id=request.client_message_id, content=request.content,
+                    task_id=self._task_id,
+                    actor_id=self._user.id,
+                    client_message_id=request.client_message_id,
+                    content=request.content,
                     metadata=request.metadata,
                 )
                 self._send_to_self({"type": "chat_submission_update", "payload": receipt})
@@ -255,10 +251,15 @@ class TaskWebSocketHandler:
             return
         if task_status == str(getattr(TaskStatus.INTERRUPTED, "value", TaskStatus.INTERRUPTED)):
             from app.domains.task.services.chat_submission_service import SubmissionError
+
             try:
                 await self._resume_interrupted_task(request, claim)
-            except (task_session_control_service.TaskSessionControlError,
-                    task_session_service.TaskSessionUndoError, SubmissionError, LockAcquireTimeout) as exc:
+            except (
+                task_session_control_service.TaskSessionControlError,
+                task_session_service.TaskSessionUndoError,
+                SubmissionError,
+                LockAcquireTimeout,
+            ) as exc:
                 await self._mark_chat_claim_failed(claim)
                 await self._send_chat_ack(request, status="failed", message=str(exc))
             return
@@ -280,6 +281,7 @@ class TaskWebSocketHandler:
 
     def _check_local_actor_sync(self):
         from app.domains.local_resource.service import require_operation
+
         with self._session_factory() as db:
             task = db.get(SddTask, self._task_id)
             require_operation(db, task, self._user.id)
@@ -308,9 +310,7 @@ class TaskWebSocketHandler:
                 content=request.content,
             )
         except chat_message_idempotency_service.ChatMessageIdempotencyUnavailable as exc:
-            task_logger.warning(
-                f"Chat idempotency unavailable for task {self._task_id}: {exc}"
-            )
+            task_logger.warning(f"Chat idempotency unavailable for task {self._task_id}: {exc}")
             await self._send_chat_ack(
                 request,
                 status="failed",
@@ -328,11 +328,7 @@ class TaskWebSocketHandler:
             chat_message_id=existing.get("chat_message_id"),
             ai_job_id=existing.get("ai_job_id"),
             created_at=existing.get("finished_at"),
-            message=(
-                "client_message_id was reused with different content"
-                if claim.status == "conflict"
-                else None
-            ),
+            message=("client_message_id was reused with different content" if claim.status == "conflict" else None),
         )
         return None
 
@@ -368,11 +364,7 @@ class TaskWebSocketHandler:
             await self._send_chat_ack(
                 request,
                 status="failed",
-                message=(
-                    "Task is busy; please retry."
-                    if isinstance(exc, LockAcquireTimeout)
-                    else str(exc)
-                ),
+                message=("Task is busy; please retry." if isinstance(exc, LockAcquireTimeout) else str(exc)),
             )
             return None
         except Exception:
@@ -419,9 +411,7 @@ class TaskWebSocketHandler:
         try:
             await chat_message_idempotency_service.mark_message_failed(claim)
         except Exception:
-            task_logger.warning(
-                f"Failed to clear chat idempotency claim for task {self._task_id}"
-            )
+            task_logger.warning(f"Failed to clear chat idempotency claim for task {self._task_id}")
 
     async def _persist_confirmation_reply(
         self,
@@ -472,7 +462,9 @@ class TaskWebSocketHandler:
                         created_at=created_at,
                         session_generation=created.session_generation,
                         reading_item_key=created.reading_item_key,
-                        reading_change_seq=str(created.reading_change_seq) if created.reading_change_seq is not None else None,
+                        reading_change_seq=str(created.reading_change_seq)
+                        if created.reading_change_seq is not None
+                        else None,
                     ).model_dump(),
                 ),
             )
@@ -538,7 +530,9 @@ class TaskWebSocketHandler:
                         session_generation=created.session_generation,
                         can_undo=created.can_undo,
                         reading_item_key=created.reading_item_key,
-                        reading_change_seq=str(created.reading_change_seq) if created.reading_change_seq is not None else None,
+                        reading_change_seq=str(created.reading_change_seq)
+                        if created.reading_change_seq is not None
+                        else None,
                     ).model_dump(),
                 ),
             )
@@ -592,9 +586,7 @@ class TaskWebSocketHandler:
         except pre_input_service.PreInputError as exc:
             await self._send_pre_input_error(action, exc.message)
         except Exception:
-            task_logger.exception(
-                f"Failed to process {action} for task {self._task_id}"
-            )
+            task_logger.exception(f"Failed to process {action} for task {self._task_id}")
             await self._send_pre_input_error(action, "Failed to process pre input")
 
     async def _dispatch_pre_input_action(

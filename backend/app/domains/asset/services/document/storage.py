@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Optional
 
 from app.domains.asset.models.asset import SddAsset
 from app.domains.task.models.task import SddTask
 
 
-def normalize_filename(file_name: Optional[str], fallback_ext: str = ".md") -> str:
+def normalize_filename(file_name: str | None, fallback_ext: str = ".md") -> str:
     base = os.path.basename(file_name or "").strip()
     if not base:
         base = f"document{fallback_ext}"
@@ -20,8 +19,10 @@ def normalize_filename(file_name: Optional[str], fallback_ext: str = ".md") -> s
 
 def task_assets_root(task: SddTask) -> str:
     from app.domains.local_resource.service import is_local
+
     if is_local(task):
         from app.config import _resolve_backend_path
+
         root = _resolve_backend_path("storage/local-resource-assets", fallback="storage/local-resource-assets")
         root = os.path.join(root, task.workspace_id, task.id)
         os.makedirs(root, exist_ok=True)
@@ -62,6 +63,7 @@ def write_original_file(
 def write_cli_workspace_copy(task: SddTask, file_name: str, file_content: bytes) -> str:
     """将文件副本写入任务 CLI 工作区 .sdd/diagnosis/，供 AI 会话直接读取。"""
     from app.domains.local_resource.service import is_local, materialize_file
+
     if is_local(task):
         return materialize_file(task, ".sdd/diagnosis/" + normalize_filename(file_name), file_content)
     base_dir = str(getattr(task, "project_path", "") or "").strip() or os.getcwd()

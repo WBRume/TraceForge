@@ -1,4 +1,5 @@
 """Fault injection around real HTTP connections; never synthesize provider data."""
+
 from __future__ import annotations
 
 import asyncio

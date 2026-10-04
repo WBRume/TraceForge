@@ -8,13 +8,11 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
 from app.config import settings
-from app.domains.task.models.task import SddTask
 from app.domains.auth.models.user import Workspace
+from app.domains.task.models.task import SddTask
 from app.domains.task.services import git_worktree_service
-
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 
@@ -28,8 +26,8 @@ class GitPatchError(ValueError):
 class PatchFileChange:
     file_path: str
     change_type: str
-    old_path: Optional[str] = None
-    new_path: Optional[str] = None
+    old_path: str | None = None
+    new_path: str | None = None
     insertions: int = 0
     deletions: int = 0
     diff_excerpt: str = ""
@@ -38,35 +36,35 @@ class PatchFileChange:
 
 @dataclass
 class TaskPatchSnapshot:
-    base_repo_url: Optional[str]
+    base_repo_url: str | None
     base_branch: str
     base_commit_sha: str
     cloud_task_branch: str
-    cloud_head_sha: Optional[str]
+    cloud_head_sha: str | None
     patch_text: str
     changed_files_count: int
     insertions: int
     deletions: int
-    files: List[PatchFileChange] = field(default_factory=list)
+    files: list[PatchFileChange] = field(default_factory=list)
 
 
 @dataclass
 class RepoPatchSnapshot:
     """Patch snapshot of one repository inside a multi-repository task."""
 
-    repository_id: Optional[str]
-    repo_url: Optional[str]
+    repository_id: str | None
+    repo_url: str | None
     repo_name: str
     repo_slug: str
     base_branch: str
     base_commit_sha: str
     cloud_task_branch: str
-    cloud_head_sha: Optional[str]
+    cloud_head_sha: str | None
     patch_text: str
     changed_files_count: int
     insertions: int
     deletions: int
-    files: List[PatchFileChange] = field(default_factory=list)
+    files: list[PatchFileChange] = field(default_factory=list)
 
 
 _EXCLUDED_PATHS = [":(exclude).sdd/**"]
@@ -78,7 +76,7 @@ def _normalize_git_path(value: str) -> str:
     return str(value or "").replace("\\", "/").strip("/")
 
 
-def _is_excluded_path(path: Optional[str]) -> bool:
+def _is_excluded_path(path: str | None) -> bool:
     normalized = _normalize_git_path(path or "")
     return normalized == ".sdd" or normalized.startswith(".sdd/")
 
@@ -90,9 +88,9 @@ def _command_output(result: subprocess.CompletedProcess[str]) -> str:
 
 def _run_git(
     repo_path: str,
-    args: List[str],
+    args: list[str],
     *,
-    env: Optional[Dict[str, str]] = None,
+    env: dict[str, str] | None = None,
     check: bool = True,
 ) -> str:
     from app.core.subprocess_runner import ProcessTimeoutError, run_git
@@ -114,7 +112,7 @@ def _run_git(
     return (result.stdout or "").strip()
 
 
-def _try_git(repo_path: str, args: List[str]) -> Optional[str]:
+def _try_git(repo_path: str, args: list[str]) -> str | None:
     try:
         value = _run_git(repo_path, args, check=True).strip()
     except GitPatchError:
@@ -132,7 +130,7 @@ def _assert_task_repo(task: SddTask) -> str:
     return repo_path
 
 
-def _resolve_base_branch(task_repo_path: str, workspace: Optional[Workspace]) -> str:
+def _resolve_base_branch(task_repo_path: str, workspace: Workspace | None) -> str:
     workspace_repo = str((workspace.project_path if workspace else "") or "").strip()
     if workspace_repo and os.path.isdir(workspace_repo):
         try:
@@ -159,8 +157,8 @@ def _resolve_base_commit(task_repo_path: str, base_branch: str) -> str:
     raise GitPatchError("Unable to resolve base commit for task worktree", status_code=409)
 
 
-def _parse_name_status(output: str) -> List[Dict[str, str]]:
-    entries: List[Dict[str, str]] = []
+def _parse_name_status(output: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
     for raw in output.splitlines():
         line = raw.strip()
         if not line:
@@ -183,8 +181,8 @@ def _parse_name_status(output: str) -> List[Dict[str, str]]:
     return entries
 
 
-def _parse_numstat(output: str) -> List[Tuple[Optional[int], Optional[int], bool, str]]:
-    entries: List[Tuple[Optional[int], Optional[int], bool, str]] = []
+def _parse_numstat(output: str) -> list[tuple[int | None, int | None, bool, str]]:
+    entries: list[tuple[int | None, int | None, bool, str]] = []
     for raw in output.splitlines():
         line = raw.strip()
         if not line:
@@ -215,16 +213,15 @@ def _change_type(status: str) -> str:
 
 
 def _stats_by_path(
-    status_entries: List[Dict[str, str]],
-    numstat_entries: List[Tuple[Optional[int], Optional[int], bool, str]],
-) -> Dict[str, Tuple[int, int, bool]]:
-    mapping: Dict[str, Tuple[int, int, bool]] = {}
+    status_entries: list[dict[str, str]],
+    numstat_entries: list[tuple[int | None, int | None, bool, str]],
+) -> dict[str, tuple[int, int, bool]]:
+    mapping: dict[str, tuple[int, int, bool]] = {}
     for idx, item in enumerate(numstat_entries):
         additions, deletions, is_binary, path = item
         key = _normalize_git_path(path)
-        if " => " in key:
-            if idx < len(status_entries):
-                key = _normalize_git_path(status_entries[idx].get("path") or key)
+        if " => " in key and idx < len(status_entries):
+            key = _normalize_git_path(status_entries[idx].get("path") or key)
         mapping[key] = (int(additions or 0), int(deletions or 0), bool(is_binary))
     return mapping
 
@@ -237,7 +234,7 @@ def _truncate_excerpt(text: str) -> str:
     return value[:limit] + "\n...<diff excerpt truncated>..."
 
 
-def _diff_for_path(repo_path: str, env: Dict[str, str], entry: Dict[str, str]) -> str:
+def _diff_for_path(repo_path: str, env: dict[str, str], entry: dict[str, str]) -> str:
     status = str(entry.get("status") or "M").upper()
     path = _normalize_git_path(entry.get("path") or "")
     path_args = [path]
@@ -254,7 +251,7 @@ def _diff_for_path(repo_path: str, env: Dict[str, str], entry: Dict[str, str]) -
         return ""
 
 
-def _build_temp_index(repo_path: str, base_commit_sha: str) -> Dict[str, str]:
+def _build_temp_index(repo_path: str, base_commit_sha: str) -> dict[str, str]:
     temp_dir = tempfile.mkdtemp(prefix="sdd-task-patch-")
     index_path = os.path.join(temp_dir, "index")
     env = dict(os.environ)
@@ -265,7 +262,7 @@ def _build_temp_index(repo_path: str, base_commit_sha: str) -> Dict[str, str]:
     return env
 
 
-def _cleanup_temp_index(env: Dict[str, str]) -> None:
+def _cleanup_temp_index(env: dict[str, str]) -> None:
     temp_dir = str(env.get("_SDD_TEMP_INDEX_DIR") or "")
     if not temp_dir:
         return
@@ -280,10 +277,10 @@ def _cleanup_temp_index(env: Dict[str, str]) -> None:
 def _generate_patch_snapshot_for_repo(
     repo_path: str,
     *,
-    base_repo_url: Optional[str] = None,
-    base_branch_hint: Optional[str] = None,
-    workspace: Optional[Workspace] = None,
-    task_id: Optional[str] = None,
+    base_repo_url: str | None = None,
+    base_branch_hint: str | None = None,
+    workspace: Workspace | None = None,
+    task_id: str | None = None,
 ) -> TaskPatchSnapshot:
     abs_repo_path = os.path.abspath(repo_path)
     if not abs_repo_path or not os.path.isdir(abs_repo_path):
@@ -297,18 +294,17 @@ def _generate_patch_snapshot_for_repo(
     cloud_head_sha = _try_git(abs_repo_path, ["rev-parse", "HEAD"])
     branch = _try_git(abs_repo_path, ["rev-parse", "--abbrev-ref", "HEAD"])
     cloud_task_branch = (
-        branch
-        if branch and branch != "HEAD"
-        else git_worktree_service.task_branch_name(str(task_id or "").strip())
+        branch if branch and branch != "HEAD" else git_worktree_service.task_branch_name(str(task_id or "").strip())
     )
-    resolved_repo_url = (
-        str((base_repo_url or "")).strip()
-        or _try_git(abs_repo_path, ["config", "--get", "remote.origin.url"])
+    resolved_repo_url = str(base_repo_url or "").strip() or _try_git(
+        abs_repo_path, ["config", "--get", "remote.origin.url"]
     )
 
     env = _build_temp_index(abs_repo_path, base_commit_sha)
     try:
-        name_status = _run_git(abs_repo_path, ["diff", "--cached", "--name-status", "--find-renames", *_DIFF_PATHSPEC], env=env)
+        name_status = _run_git(
+            abs_repo_path, ["diff", "--cached", "--name-status", "--find-renames", *_DIFF_PATHSPEC], env=env
+        )
         status_entries = _parse_name_status(name_status)
         if not status_entries:
             raise GitPatchError("No changes in task worktree", status_code=409)
@@ -316,11 +312,13 @@ def _generate_patch_snapshot_for_repo(
         numstat = _run_git(abs_repo_path, ["diff", "--cached", "--numstat", "--find-renames", *_DIFF_PATHSPEC], env=env)
         numstat_entries = _parse_numstat(numstat)
         stat_mapping = _stats_by_path(status_entries, numstat_entries)
-        patch_text = _run_git(abs_repo_path, ["diff", "--cached", "--binary", "--find-renames", *_DIFF_PATHSPEC], env=env)
+        patch_text = _run_git(
+            abs_repo_path, ["diff", "--cached", "--binary", "--find-renames", *_DIFF_PATHSPEC], env=env
+        )
         if not patch_text.strip():
             raise GitPatchError("No changes in task worktree", status_code=409)
 
-        files: List[PatchFileChange] = []
+        files: list[PatchFileChange] = []
         total_insertions = 0
         total_deletions = 0
         for entry in status_entries:
@@ -359,12 +357,11 @@ def _generate_patch_snapshot_for_repo(
 
 def generate_task_patch_snapshot(
     task: SddTask,
-    workspace: Optional[Workspace] = None,
+    workspace: Workspace | None = None,
 ) -> TaskPatchSnapshot:
     repo_path = _assert_task_repo(task)
     base_repo_url = (
-        str((task.git_repo_url or "")).strip()
-        or str(((workspace.git_repo_url if workspace else "") or "")).strip()
+        str(task.git_repo_url or "").strip() or str((workspace.git_repo_url if workspace else "") or "").strip()
     )
     return _generate_patch_snapshot_for_repo(
         repo_path,
@@ -376,9 +373,9 @@ def generate_task_patch_snapshot(
 
 def generate_task_repo_patch_snapshots(
     task: SddTask,
-    workspace: Optional[Workspace] = None,
+    workspace: Workspace | None = None,
     db=None,
-) -> List[RepoPatchSnapshot]:
+) -> list[RepoPatchSnapshot]:
     """Generate one patch snapshot per changed repository of a task.
 
     Repository bindings come from sdd_task_repositories (READY state).
@@ -387,13 +384,13 @@ def generate_task_repo_patch_snapshots(
     repository bindings.
     """
     from app.domains.local_resource.service import is_local, remote_patches
+
     if is_local(task):
         if db is None:
             raise GitPatchError("Local patch generation requires a task binding")
         return remote_patches(db, task)
 
     from app.domains.task.models.task_repository import TaskRepositoryState
-
 
     bindings = []
     if db is not None:
@@ -424,7 +421,7 @@ def generate_task_repo_patch_snapshots(
         ]
 
     task_root = os.path.abspath(str(task.project_path or "").strip())
-    snapshots: List[RepoPatchSnapshot] = []
+    snapshots: list[RepoPatchSnapshot] = []
     for binding in bindings:
         repo_path = os.path.join(task_root, str(binding.rel_path or binding.repo_slug).strip())
         if not os.path.isdir(repo_path):

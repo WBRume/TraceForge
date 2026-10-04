@@ -1,6 +1,4 @@
 import asyncio
-import os
-import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -9,46 +7,44 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
-import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
-from app.database import Base  # noqa: E402
-from app.domains.task.services.conversation import history as task_conversation_history
-from app.domains.ai.models.ai_job import SddAiJob
-from app.domains.auth.models.user import User, Workspace
-from app.domains.task.models.task import SddTask
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus  # noqa: E402
-from app.domains.task.models.chat import ChatMessage  # noqa: E402
-from app.domains.task.models.task import TaskStatus  # noqa: E402
-from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus  # noqa: E402
+import app.domains.api_mock.models.api_mock
+import app.domains.task.models.test_result
+import app.domains.workflow.models.task_change
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.database import Base
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
     executors as ai_executors,
+)
+from app.domains.ai.services.jobs import (
     publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
+)
+from app.domains.ai.services.jobs import (
     registry as ai_registry,
+)
+from app.domains.ai.services.jobs import (
     state as ai_state,
+)
+from app.domains.ai.services.jobs import (
     store as ai_store,
+)
+from app.domains.ai.services.jobs import (
     workers as ai_workers,
 )
 from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
     task_chat as ai_task_chat,
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.auth.models.user import User, Workspace
+from app.domains.task.models.chat import ChatMessage
+from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
+from app.domains.task.models.task import (
+    SddTask,
+    TaskStatus,
+)
+from app.domains.task.services import task_session_control_service, task_session_service
+from app.domains.task.services.conversation import history as task_conversation_history
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.domains.task.services import task_session_control_service
-from app.domains.task.services import task_session_service
 
 
 def _build_session(*, expire_on_commit=False):
@@ -262,11 +258,27 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
     monkeypatch.setattr(task_session_service, "get_lock_provider", _fake_lock_provider)
     monkeypatch.setattr(task_session_service, "lock_task", _fake_task_lock)
     monkeypatch.setattr(task_session_service, "_stop_engine_and_wait", lambda _task_id: _noop_async())
-    monkeypatch.setattr(task_session_service.skill_runtime_trace_service, "wait_for_pending_writes", lambda *_args, **_kwargs: _noop_async())
-    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "backup_current_provider", lambda *_args, **_kwargs: _noop_async())
-    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "restore_provider", lambda *_args, **_kwargs: _noop_async())
-    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "restore_worktree", lambda *_args, **_kwargs: _noop_async())
-    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "cleanup_checkpoint", lambda *_args, **_kwargs: _noop_async())
+    monkeypatch.setattr(
+        task_session_service.skill_runtime_trace_service,
+        "wait_for_pending_writes",
+        lambda *_args, **_kwargs: _noop_async(),
+    )
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service,
+        "backup_current_provider",
+        lambda *_args, **_kwargs: _noop_async(),
+    )
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service, "restore_provider", lambda *_args, **_kwargs: _noop_async()
+    )
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service, "restore_worktree", lambda *_args, **_kwargs: _noop_async()
+    )
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service,
+        "cleanup_checkpoint",
+        lambda *_args, **_kwargs: _noop_async(),
+    )
     monkeypatch.setattr(task_session_service.manager, "send_message_to_room", _raise_broadcast)
 
     payload = asyncio.run(
@@ -287,7 +299,10 @@ def test_undo_commits_before_deleted_message_is_accessed_and_ignores_broadcast_f
         stored_job = check_db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
         assert stored_job.prompt_text is None
         assert stored_job.result_json == {"redacted": True, "reason": "session_undo"}
-        assert check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn_id).one().status == TaskSessionTurnStatus.REVERTED
+        assert (
+            check_db.query(TaskSessionTurn).filter(TaskSessionTurn.id == turn_id).one().status
+            == TaskSessionTurnStatus.REVERTED
+        )
         assert check_db.query(SddTask).filter(SddTask.id == task_id).one().status == TaskStatus.CODING
     finally:
         check_db.close()
@@ -399,7 +414,7 @@ def test_task_resume_creates_new_attempt_and_keeps_interrupted_attempt_terminal(
 
     async def _enqueue(job_id):
         enqueued.append(job_id)
-        return None
+        return
 
     async def _checkpoint(*_args, **_kwargs):
         return {"root": "G:/tmp/fake-session-checkpoint", "worktree": {}, "provider": {}}
@@ -613,8 +628,12 @@ def test_execute_job_dispatches_requirement_preview_jobs(monkeypatch):
 
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
-    monkeypatch.setattr(preview_runner, "run_requirement_import_preview_job", _FakePreviewService.run_requirement_import_preview_job)
-    monkeypatch.setattr(preview_runner, "run_requirement_split_preview_job", _FakePreviewService.run_requirement_split_preview_job)
+    monkeypatch.setattr(
+        preview_runner, "run_requirement_import_preview_job", _FakePreviewService.run_requirement_import_preview_job
+    )
+    monkeypatch.setattr(
+        preview_runner, "run_requirement_split_preview_job", _FakePreviewService.run_requirement_split_preview_job
+    )
 
     asyncio.run(ai_executors.execute_job("preview-job-1"))
     assert calls == [("import", "preview-job-1")]

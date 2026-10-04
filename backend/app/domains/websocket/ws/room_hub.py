@@ -10,7 +10,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -20,8 +20,8 @@ from app.domains.websocket.ws.connection import ConnectionState, OutboundConnect
 from app.domains.websocket.ws.protocol import (
     CONTROL_FRAME_TYPES,
     NON_SEQUENCED_EVENT_TYPES,
-    EventEnvelope,
     SERVER_EPOCH,
+    EventEnvelope,
     control_frame,
     json_size,
 )
@@ -59,8 +59,8 @@ class RoomJournal:
         *,
         event_type: str,
         payload: Any,
-        aggregate_id: Optional[str] = None,
-        aggregate_version: Optional[int] = None,
+        aggregate_id: str | None = None,
+        aggregate_version: int | None = None,
     ) -> EventEnvelope:
         envelope = EventEnvelope(
             room=self.room_key,
@@ -83,7 +83,7 @@ class RoomJournal:
             self.total_bytes = max(0, self.total_bytes - json_size(removed.to_dict()))
         return envelope
 
-    def can_replay(self, *, epoch: Optional[str], last_sequence: int) -> Tuple[bool, str]:
+    def can_replay(self, *, epoch: str | None, last_sequence: int) -> tuple[bool, str]:
         if epoch != self.epoch:
             return False, "epoch_changed"
         if last_sequence < 0:
@@ -95,18 +95,14 @@ class RoomJournal:
         return True, ""
 
     def snapshot_after(self, last_sequence: int, cutover_sequence: int) -> list[EventEnvelope]:
-        return [
-            event
-            for event in self.events
-            if last_sequence < event.sequence <= cutover_sequence
-        ]
+        return [event for event in self.events if last_sequence < event.sequence <= cutover_sequence]
 
 
 @dataclass
 class RoomHub:
     room_key: str
     journal: RoomJournal
-    connections: Dict[WebSocket, OutboundConnection] = field(default_factory=dict)
+    connections: dict[WebSocket, OutboundConnection] = field(default_factory=dict)
     last_activity_at: float = field(default_factory=time.monotonic)
     # publish() is intentionally synchronous because the fan-out path must
     # never await while holding the room critical section.  The same lock is
@@ -119,15 +115,15 @@ class RoomHubRegistry:
     """Own all room journals and coordinate replay/live hand-off."""
 
     def __init__(self) -> None:
-        self.rooms: Dict[str, Dict[WebSocket, OutboundConnection]] = {}
-        self.presence: Dict[str, Dict[WebSocket, str]] = {}
-        self._hubs: Dict[str, RoomHub] = {}
-        self._sweeper_task: Optional[asyncio.Task] = None
+        self.rooms: dict[str, dict[WebSocket, OutboundConnection]] = {}
+        self.presence: dict[str, dict[WebSocket, str]] = {}
+        self._hubs: dict[str, RoomHub] = {}
+        self._sweeper_task: asyncio.Task | None = None
         self._replay_events_total = 0
-        self._resync_required_total: Dict[str, int] = {}
+        self._resync_required_total: dict[str, int] = {}
         self._slow_client_evictions = 0
         self._next_generation = 1
-        self._metrics: Dict[str, int] = {}
+        self._metrics: dict[str, int] = {}
 
     def _inc_metric(self, name: str, amount: int = 1) -> None:
         self._metrics[name] = self._metrics.get(name, 0) + amount
@@ -161,7 +157,7 @@ class RoomHubRegistry:
         self,
         room_key: str,
         websocket: WebSocket,
-        connection: Optional[OutboundConnection] = None,
+        connection: OutboundConnection | None = None,
     ) -> None:
         hub = self._hubs.get(room_key)
         if hub is None:
@@ -198,10 +194,10 @@ class RoomHubRegistry:
         room_key: str,
         websocket: WebSocket,
         *,
-        user_id: Optional[str] = None,
-        client_id: Optional[str] = None,
-        epoch: Optional[str] = None,
-        last_sequence: Optional[int] = None,
+        user_id: str | None = None,
+        client_id: str | None = None,
+        epoch: str | None = None,
+        last_sequence: int | None = None,
         message_kind: str = "text",
     ) -> OutboundConnection:
         hub = self._hub(room_key)
@@ -271,7 +267,7 @@ class RoomHubRegistry:
         self._inc_metric(f"ws_resync_required_{reason}_total")
 
     @staticmethod
-    def _parse_sequence(value: Optional[int]) -> Optional[int]:
+    def _parse_sequence(value: int | None) -> int | None:
         if value is None or value == "":
             return None
         try:
@@ -279,7 +275,7 @@ class RoomHubRegistry:
         except (TypeError, ValueError):
             return -1
 
-    def disconnect(self, room_key: str, websocket: WebSocket) -> Optional[OutboundConnection]:
+    def disconnect(self, room_key: str, websocket: WebSocket) -> OutboundConnection | None:
         hub = self._hubs.get(room_key)
         if hub is None:
             return None
@@ -303,7 +299,7 @@ class RoomHubRegistry:
         value: object,
         *,
         kind: str,
-        sequence: Optional[int] = None,
+        sequence: int | None = None,
     ) -> bool:
         if connection.state == ConnectionState.LIVE:
             accepted = connection.submit_frame(value, kind=kind)
@@ -319,7 +315,7 @@ class RoomHubRegistry:
         return accepted
 
     @staticmethod
-    def _decode_text(text: str) -> tuple[str, Any, bool, Optional[str], Optional[int]]:
+    def _decode_text(text: str) -> tuple[str, Any, bool, str | None, int | None]:
         try:
             data = json.loads(text)
         except (TypeError, ValueError):
@@ -335,7 +331,7 @@ class RoomHubRegistry:
         return event_type, payload, True, str(aggregate_id) if aggregate_id else None, aggregate_version
 
     @staticmethod
-    def _decode_json(payload: dict) -> tuple[str, Any, bool, Optional[str], Optional[int]]:
+    def _decode_json(payload: dict) -> tuple[str, Any, bool, str | None, int | None]:
         event_type = str(payload.get("type") or "event")
         if event_type in CONTROL_FRAME_TYPES or event_type in NON_SEQUENCED_EVENT_TYPES:
             return event_type, payload, False, None, None
@@ -344,7 +340,7 @@ class RoomHubRegistry:
         version = aggregate.get("version") if isinstance(aggregate, dict) else None
         return event_type, payload, True, str(aggregate_id) if aggregate_id else None, version
 
-    def publish_text(self, room_key: str, text: str, *, sequenced: Optional[bool] = None) -> int:
+    def publish_text(self, room_key: str, text: str, *, sequenced: bool | None = None) -> int:
         event_type, payload, inferred, aggregate_id, aggregate_version = self._decode_text(text)
         return self._publish(
             room_key,
@@ -356,7 +352,7 @@ class RoomHubRegistry:
             aggregate_version=aggregate_version,
         )
 
-    def publish_json(self, room_key: str, payload: dict, *, sequenced: Optional[bool] = None) -> int:
+    def publish_json(self, room_key: str, payload: dict, *, sequenced: bool | None = None) -> int:
         event_type, event_payload, inferred, aggregate_id, aggregate_version = self._decode_json(payload)
         return self._publish(
             room_key,
@@ -376,8 +372,8 @@ class RoomHubRegistry:
         *,
         kind: str,
         sequenced: bool,
-        aggregate_id: Optional[str],
-        aggregate_version: Optional[int],
+        aggregate_id: str | None,
+        aggregate_version: int | None,
     ) -> int:
         hub = self._hub(room_key)
         with hub.lock:
@@ -408,7 +404,7 @@ class RoomHubRegistry:
 
     def _deferred_has_contiguous_sequences(
         self,
-        deferred: list[Tuple[str, object, int, Optional[int]]],
+        deferred: list[tuple[str, object, int, int | None]],
         *,
         after_sequence: int,
         high_watermark: int,
@@ -491,9 +487,7 @@ class RoomHubRegistry:
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception(
-                f"WebSocket replay failed: room={hub.room_key} client_id={connection.client_id or ''}"
-            )
+            logger.exception(f"WebSocket replay failed: room={hub.room_key} client_id={connection.client_id or ''}")
             connection.evict("replay_failed")
 
     async def complete_resync(

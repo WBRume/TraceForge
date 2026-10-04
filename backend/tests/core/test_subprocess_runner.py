@@ -1,7 +1,5 @@
 """app.core.subprocess_runner：硬超时、进程组回收、git 防挂环境。"""
 
-import os
-import subprocess
 import sys
 import unittest
 from unittest import mock

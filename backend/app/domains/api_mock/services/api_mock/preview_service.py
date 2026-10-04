@@ -9,12 +9,13 @@ import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
 from app.domains.api_mock.models.api_mock import ApiMockRuleMode, SddApiMockEndpoint, SddApiMockProject, SddApiMockRule
+
 from .endpoint_service import get_endpoint
 from .mock_case_service import get_mock_case, list_mock_cases_for_endpoint
 from .path_matcher import (
@@ -36,8 +37,8 @@ def _build_no_match_payload(
     method: str,
     path: str,
     endpoint_id: str,
-    checked_case_ids: List[str],
-) -> Dict[str, Any]:
+    checked_case_ids: list[str],
+) -> dict[str, Any]:
     return {
         "error": {
             "code": "mock_case_not_matched",
@@ -55,10 +56,10 @@ def _build_no_match_payload(
 def _case_matchers_satisfied(
     case: SddApiMockRule,
     *,
-    path_params: Dict[str, str],
-    query: Optional[Dict[str, Any]],
-    body: Optional[Any],
-) -> Tuple[bool, int]:
+    path_params: dict[str, str],
+    query: dict[str, Any] | None,
+    body: Any | None,
+) -> tuple[bool, int]:
     expected_path_params = case.request_path_params_json if isinstance(case.request_path_params_json, dict) else None
     expected_query = case.request_query_json if isinstance(case.request_query_json, dict) else None
     expected_body = case.request_body_json
@@ -106,17 +107,17 @@ def _resolve_automatic_mock_case(
     project: SddApiMockProject,
     endpoint_id: str,
     *,
-    path_params: Dict[str, str],
-    query: Optional[Dict[str, Any]],
-    body: Optional[Any],
-) -> Tuple[Optional[SddApiMockRule], List[str]]:
+    path_params: dict[str, str],
+    query: dict[str, Any] | None,
+    body: Any | None,
+) -> tuple[SddApiMockRule | None, list[str]]:
     cases = list_mock_cases_for_endpoint(db, project, endpoint_id)
     enabled_cases = [item for item in cases if item.enabled]
     checked_case_ids = [item.id for item in enabled_cases]
     if not enabled_cases:
         return None, checked_case_ids
 
-    matched_cases: List[Tuple[int, SddApiMockRule]] = []
+    matched_cases: list[tuple[int, SddApiMockRule]] = []
     for case in enabled_cases:
         matched, specificity = _case_matchers_satisfied(
             case,
@@ -150,7 +151,7 @@ def _try_json_parse_text(raw: str) -> Any:
         return text
 
 
-def _render_mockjs(template: Optional[str], fallback_body: Optional[Dict[str, Any]]) -> Any:
+def _render_mockjs(template: str | None, fallback_body: dict[str, Any] | None) -> Any:
     if template is None or template.strip() == "":
         return fallback_body or {}
 
@@ -218,10 +219,10 @@ def _proxy_http_request(
     base_url: str,
     method: str,
     path: str,
-    query: Optional[Dict[str, Any]],
-    headers: Optional[Dict[str, str]],
-    body: Optional[Any],
-) -> Tuple[int, Dict[str, Any], List[Dict[str, Any]], Any, int]:
+    query: dict[str, Any] | None,
+    headers: dict[str, str] | None,
+    body: Any | None,
+) -> tuple[int, dict[str, Any], list[dict[str, Any]], Any, int]:
     started = time.perf_counter()
     target_base = base_url.rstrip("/") + "/"
     target_path = path.lstrip("/")
@@ -229,7 +230,7 @@ def _proxy_http_request(
     if query:
         full_url = f"{full_url}?{urllib.parse.urlencode(query, doseq=True)}"
 
-    data_bytes: Optional[bytes] = None
+    data_bytes: bytes | None = None
     normalized_method = method.upper()
     if body is not None and normalized_method not in {"GET", "HEAD"}:
         if isinstance(body, (bytes, bytearray)):
@@ -279,13 +280,13 @@ def execute_preview(
     ws_id: str,
     task_id: str,
     endpoint_id: str,
-    mock_case_id: Optional[str],
+    mock_case_id: str | None,
     method: str,
     path: str,
-    query: Optional[Dict[str, Any]],
-    headers: Optional[Dict[str, str]],
-    body: Optional[Any],
-) -> Dict[str, Any]:
+    query: dict[str, Any] | None,
+    headers: dict[str, str] | None,
+    body: Any | None,
+) -> dict[str, Any]:
     endpoint = get_endpoint(db, project, endpoint_id)
     if not endpoint:
         raise ValueError("Endpoint not found")
@@ -299,8 +300,8 @@ def execute_preview(
     if path_params is None:
         raise ValueError("Path mismatch with selected endpoint")
 
-    rule: Optional[SddApiMockRule] = None
-    checked_case_ids: List[str] = []
+    rule: SddApiMockRule | None = None
+    checked_case_ids: list[str] = []
     if mock_case_id:
         rule = get_mock_case(db, project, mock_case_id)
         if not rule:
@@ -393,7 +394,7 @@ def _find_endpoint_by_method_path(
     *,
     method: str,
     path: str,
-) -> Optional[SddApiMockEndpoint]:
+) -> SddApiMockEndpoint | None:
     source_id = project.active_source_version_id
     if not source_id:
         return None
@@ -424,10 +425,10 @@ def execute_gateway(
     task_id: str,
     method: str,
     path: str,
-    query: Optional[Dict[str, Any]],
-    headers: Optional[Dict[str, str]],
-    body: Optional[Any],
-) -> Dict[str, Any]:
+    query: dict[str, Any] | None,
+    headers: dict[str, str] | None,
+    body: Any | None,
+) -> dict[str, Any]:
     endpoint = _find_endpoint_by_method_path(
         db,
         project,

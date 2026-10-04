@@ -54,18 +54,22 @@ def test_runtime_worker_health_rejects_stale_last_success(monkeypatch):
     now = time.monotonic()
     monkeypatch.setitem(ai_runtime.worker_tasks, "reaper", _LiveTask())
     monkeypatch.setitem(ai_runtime.worker_tasks, "dispatcher", _LiveTask())
-    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {
-        "reaper": {
-            "state": "healthy",
-            "failure_count": 0,
-            "last_success_monotonic": now - 10,
+    monkeypatch.setattr(
+        ai_workers,
+        "_RUNTIME_WORKER_HEALTH",
+        {
+            "reaper": {
+                "state": "healthy",
+                "failure_count": 0,
+                "last_success_monotonic": now - 10,
+            },
+            "dispatcher": {
+                "state": "healthy",
+                "failure_count": 0,
+                "last_success_monotonic": now,
+            },
         },
-        "dispatcher": {
-            "state": "healthy",
-            "failure_count": 0,
-            "last_success_monotonic": now,
-        },
-    })
+    )
     monkeypatch.setattr(settings, "AI_JOB_REAPER_STALE_SECONDS", 1)
 
     health = ai_workers.runtime_worker_health()
@@ -83,19 +87,23 @@ def test_runtime_worker_reports_stalled_live_task(monkeypatch):
     now = time.monotonic()
     monkeypatch.setitem(ai_runtime.worker_tasks, "reaper", _LiveTask())
     monkeypatch.setitem(ai_runtime.worker_tasks, "dispatcher", _LiveTask())
-    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {
-        "reaper": {
-            "state": "running",
-            "failure_count": 0,
-            "last_success_monotonic": now,
-            "iteration_started_monotonic": now - 10,
+    monkeypatch.setattr(
+        ai_workers,
+        "_RUNTIME_WORKER_HEALTH",
+        {
+            "reaper": {
+                "state": "running",
+                "failure_count": 0,
+                "last_success_monotonic": now,
+                "iteration_started_monotonic": now - 10,
+            },
+            "dispatcher": {
+                "state": "healthy",
+                "failure_count": 0,
+                "last_success_monotonic": now,
+            },
         },
-        "dispatcher": {
-            "state": "healthy",
-            "failure_count": 0,
-            "last_success_monotonic": now,
-        },
-    })
+    )
     monkeypatch.setattr(settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 1)
 
     health = ai_workers.runtime_worker_health()
@@ -141,13 +149,17 @@ def test_stalled_operation_does_not_spawn_overlapping_iterations(monkeypatch):
             pass
 
     monkeypatch.setattr(ai_runtime, "shutting_down", False)
-    monkeypatch.setattr(ai_workers, "_RUNTIME_WORKER_HEALTH", {
-        "dispatcher": {
-            "state": "healthy",
-            "failure_count": 0,
-            "last_success_monotonic": time.monotonic(),
+    monkeypatch.setattr(
+        ai_workers,
+        "_RUNTIME_WORKER_HEALTH",
+        {
+            "dispatcher": {
+                "state": "healthy",
+                "failure_count": 0,
+                "last_success_monotonic": time.monotonic(),
+            },
         },
-    })
+    )
     monkeypatch.setattr(settings, "AI_JOB_WORKER_OPERATION_TIMEOUT_SECONDS", 0.1)
     asyncio.run(run())
 

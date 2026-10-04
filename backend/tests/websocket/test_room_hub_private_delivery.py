@@ -1,14 +1,9 @@
 """RoomHub 私有定向投递测试：不进公共 journal、按用户过滤、LIVE 才投递。"""
+
 import asyncio
 import json
-import os
-import sys
 
 import pytest
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.domains.websocket.ws.room_hub import RoomHubRegistry
 
@@ -68,9 +63,7 @@ async def test_private_events_never_enter_public_journal():
     await _connect_live(registry, ws_a, "user-a")
     hub = registry._hubs["task:t1"]
 
-    registry.send_to_user(
-        "task:t1", "user-a", {"type": "reading_progress_changed", "payload": {"state_revision": "1"}}
-    )
+    registry.send_to_user("task:t1", "user-a", {"type": "reading_progress_changed", "payload": {"state_revision": "1"}})
     # 公共业务事件照常编号
     registry.publish_text("task:t1", json.dumps({"type": "chat_message", "payload": {}}))
 
@@ -82,10 +75,7 @@ async def test_private_events_never_enter_public_journal():
     ws_c = _FakeWebSocket()
     await _connect_live(registry, ws_c, "user-c")
     # 连接走屏障快照，不回放私有帧：其收到的帧中不得包含 reading_progress_changed
-    assert all(
-        not (isinstance(f, dict) and f.get("type") == "reading_progress_changed")
-        for f in ws_c.sent
-    )
+    assert all(not (isinstance(f, dict) and f.get("type") == "reading_progress_changed") for f in ws_c.sent)
 
 
 @pytest.mark.asyncio
@@ -95,9 +85,7 @@ async def test_private_events_are_deferred_until_live():
     ws_a = _FakeWebSocket()
     connection = await registry.connect("task:t1", ws_a, user_id="user-a")
 
-    delivered = registry.send_to_user(
-        "task:t1", "user-a", {"type": "reading_progress_changed", "payload": {}}
-    )
+    delivered = registry.send_to_user("task:t1", "user-a", {"type": "reading_progress_changed", "payload": {}})
     assert delivered == 1
     assert ws_a.sent == []  # 未 LIVE：延迟
     assert connection.deferred_count == 1

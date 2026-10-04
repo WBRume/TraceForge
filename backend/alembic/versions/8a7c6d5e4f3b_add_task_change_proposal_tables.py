@@ -5,17 +5,17 @@ Revises: 5b8e6f1a2c3d
 Create Date: 2026-04-26 01:20:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "8a7c6d5e4f3b"
-down_revision: Union[str, None] = "5b8e6f1a2c3d"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "5b8e6f1a2c3d"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _has_index(inspector: sa.Inspector, table_name: str, index_name: str) -> bool:
@@ -107,14 +107,15 @@ def upgrade() -> None:
         )
 
     inspector = sa.inspect(bind)
-    if inspector.has_table("sdd_task_change_proposal_files"):
-        if not _has_index(inspector, "sdd_task_change_proposal_files", op.f("ix_sdd_task_change_proposal_files_proposal_id")):
-            op.create_index(
-                op.f("ix_sdd_task_change_proposal_files_proposal_id"),
-                "sdd_task_change_proposal_files",
-                ["proposal_id"],
-                unique=False,
-            )
+    if inspector.has_table("sdd_task_change_proposal_files") and not _has_index(
+        inspector, "sdd_task_change_proposal_files", op.f("ix_sdd_task_change_proposal_files_proposal_id")
+    ):
+        op.create_index(
+            op.f("ix_sdd_task_change_proposal_files_proposal_id"),
+            "sdd_task_change_proposal_files",
+            ["proposal_id"],
+            unique=False,
+        )
 
     if not inspector.has_table("sdd_task_verification_runs"):
         op.create_table(
@@ -241,7 +242,9 @@ def downgrade() -> None:
 
     inspector = sa.inspect(bind)
     if inspector.has_table("sdd_task_change_proposal_files"):
-        if _has_index(inspector, "sdd_task_change_proposal_files", op.f("ix_sdd_task_change_proposal_files_proposal_id")):
+        if _has_index(
+            inspector, "sdd_task_change_proposal_files", op.f("ix_sdd_task_change_proposal_files_proposal_id")
+        ):
             op.drop_index(
                 op.f("ix_sdd_task_change_proposal_files_proposal_id"),
                 table_name="sdd_task_change_proposal_files",

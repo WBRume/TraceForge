@@ -1,30 +1,21 @@
 import os
-import sys
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
-import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
-from app.database import Base  # noqa: E402
-from app.domains.auth.models.user import User, Workspace  # noqa: E402
-from app.domains.task.models.task import SddTask  # noqa: E402
-from app.domains.task.models.task_repository import (  # noqa: E402
+import app.domains.api_mock.models.api_mock
+import app.domains.task.models.test_result
+import app.domains.workflow.models.task_change
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.database import Base
+from app.domains.auth.models.user import User, Workspace
+from app.domains.task.models.task import SddTask
+from app.domains.task.models.task_repository import (
     SddTaskRepository,
     TaskRepositoryState,
 )
-
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
-  # noqa: E402
 
 
 def _build_session():
@@ -47,9 +38,7 @@ def _seed_multi_repo_task(db):
     db.add_all([user, workspace, task])
     db.flush()
 
-    for index, (repo_id, slug) in enumerate(
-        [("repo-1", "repo-a"), ("repo-2", "repo-b"), ("repo-3", "repo-c")]
-    ):
+    for index, (repo_id, slug) in enumerate([("repo-1", "repo-a"), ("repo-2", "repo-b"), ("repo-3", "repo-c")]):
         db.add(
             SddTaskRepository(
                 id=f"binding-{index + 1}",

@@ -9,8 +9,10 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_skill, make_resou
 from app.core.logging import audit_log
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.auth.services import auth_service
 from app.domains.skill.schemas.skill import (
     SkillAnalysisCreateRequest,
+    SkillAnalysisRefKindValue,
     SkillAnalysisResponse,
     SkillCommitRequest,
     SkillCreate,
@@ -33,19 +35,13 @@ from app.domains.skill.schemas.skill import (
     SkillReviewCommentsResponse,
     SkillReviewOverviewResponse,
     SkillUpdate,
-    SkillAnalysisRefKindValue,
     SkillVersionCompareResponse,
     SkillVersionDetailResponse,
     SkillVersionFileDiffResponse,
     SkillVersionListResponse,
     SkillVersionResponse,
 )
-from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
-from app.domains.auth.services import auth_service
-from app.domains.workflow.services import provision_job_service
 from app.domains.skill.services import skill_analysis_service
-from app.domains.workspace.services import workspace_service
-
 from app.domains.skill.services.catalog import commands as skill_catalog_commands
 from app.domains.skill.services.catalog import creation as skill_catalog_creation
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
@@ -55,6 +51,9 @@ from app.domains.skill.services.packages import github as skill_packages_github
 from app.domains.skill.services.packages import versions as skill_packages_versions
 from app.domains.skill.services.reviews import comments as skill_reviews_comments
 from app.domains.skill.services.reviews import ratings as skill_reviews_ratings
+from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
+from app.domains.workflow.services import provision_job_service
+from app.domains.workspace.services import workspace_service
 
 router = APIRouter(prefix="/skills", tags=["Skills"])
 _SKILL_BUSY_MSG = "Skill is being modified by another request. Please retry later."
@@ -273,7 +272,7 @@ def list_skills(
             page_size=page_size,
         )
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     return SkillListResponse(
         items=[_to_skill_response(db, workspace_id, skill, current_user) for skill in skills],
@@ -330,7 +329,7 @@ def create_skill(
             workspace_id=context_workspace_id or None,
             reason=str(exc),
         )
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         audit_log(
             action="create_skill",
@@ -340,7 +339,7 @@ def create_skill(
             workspace_id=context_workspace_id or None,
             reason=str(exc),
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/import/github", response_model=ProvisionJobAcceptedResponse, status_code=202)
@@ -400,7 +399,7 @@ def import_skill_from_github(
             reason=str(exc),
             source="github",
         )
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         audit_log(
             action="import_skill",
@@ -413,7 +412,7 @@ def import_skill_from_github(
             reason=str(exc),
             source="github",
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{skill_id}", response_model=SkillDetailResponse)
@@ -456,9 +455,9 @@ def _update_skill_common(
         response_workspace_id = updated.workspace_id if _skill_dimension_value(updated) == "WORKSPACE" else workspace_id
         return _to_skill_response(db, response_workspace_id, updated, current_user)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/{skill_id}", response_model=SkillResponse)
@@ -513,9 +512,9 @@ async def sync_skill_official_source(
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{skill_id}", response_model=dict)
@@ -551,7 +550,7 @@ async def delete_skill(
             workspace_id=workspace_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         audit_log(
             action="delete_skill",
@@ -562,7 +561,7 @@ async def delete_skill(
             workspace_id=workspace_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     audit_log(
         action="delete_skill",
@@ -596,7 +595,7 @@ def get_latest_skill_analysis(
             version_id=version_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _to_analysis_response(analysis) if analysis else None
 
 
@@ -663,7 +662,8 @@ def create_skill_analysis(
             skill_id=skill.id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 @router.get("/{skill_id}/files/tree", response_model=SkillFileTreeResponse)
 def get_skill_file_tree(
@@ -679,7 +679,7 @@ def get_skill_file_tree(
         nodes = skill_packages_editing.build_skill_file_tree(db, skill, ref=ref)
         return SkillFileTreeResponse(ref=ref or "WORKTREE", nodes=nodes)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{skill_id}/files/content", response_model=SkillFileContentResponse)
@@ -702,10 +702,10 @@ def get_skill_file_content(
             is_binary=is_binary,
             size=size,
         )
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="File not found")
+    except FileNotFoundError as caught_error:
+        raise HTTPException(status_code=404, detail="File not found") from caught_error
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{skill_id}/files/content", response_model=SkillFileContentResponse)
@@ -731,9 +731,9 @@ async def write_skill_file_content(
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{skill_id}/files", response_model=dict)
@@ -748,14 +748,16 @@ async def create_skill_file_or_dir(
 
     try:
         async with lock_skill(skill_id):
-            skill_packages_editing.create_skill_file_or_dir(skill, path=data.path, node_type=data.node_type, content=data.content)
+            skill_packages_editing.create_skill_file_or_dir(
+                skill, path=data.path, node_type=data.node_type, content=data.content
+            )
         return {"msg": "Created"}
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{skill_id}/files", response_model=dict)
@@ -775,11 +777,11 @@ async def delete_skill_file_or_dir(
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Path not found")
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as caught_error_:
+        raise HTTPException(status_code=404, detail="Path not found") from caught_error_
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{skill_id}/files/move", response_model=dict)
@@ -799,11 +801,11 @@ async def move_skill_file_or_dir(
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Source path not found")
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except FileNotFoundError as caught_error__:
+        raise HTTPException(status_code=404, detail="Source path not found") from caught_error__
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{skill_id}/versions", response_model=SkillVersionListResponse)
@@ -839,7 +841,7 @@ def get_skill_publish_status(
             changed_files_count=int(status.get("changed_files_count") or 0),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{skill_id}/versions/commit", response_model=SkillVersionResponse)
@@ -884,7 +886,7 @@ async def commit_skill_version(
             workspace_id=workspace_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         audit_log(
             action="publish_skill",
@@ -895,7 +897,7 @@ async def commit_skill_version(
             workspace_id=workspace_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{skill_id}/versions/compare", response_model=SkillVersionCompareResponse)
@@ -962,7 +964,7 @@ def compare_skill_file(
             modified=payload.get("modified"),
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/{skill_id}/versions/{version_id}", response_model=SkillVersionDetailResponse)
@@ -1002,9 +1004,10 @@ async def restore_skill_version(
     except LockAcquireTimeout as exc:
         _raise_skill_lock_conflict(exc)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
 
 @router.get("/{skill_id}/reviews/overview", response_model=SkillReviewOverviewResponse)
 def get_skill_review_overview(
@@ -1066,7 +1069,7 @@ def upsert_skill_rating(
             updated_at=rating.updated_at,
         )
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.get("/{skill_id}/reviews/ratings", response_model=SkillRatingsResponse)
@@ -1107,7 +1110,7 @@ def list_skill_review_comments(
             file_path=file_path,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return SkillReviewCommentsResponse(
         items=[_to_comment_response(comment) for comment in comments],
@@ -1148,9 +1151,9 @@ def create_skill_review_comment(
         reloaded = skill_reviews_comments.get_skill_review_comment(db, skill_id, comment.id) or comment
         return _to_comment_response(reloaded)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.delete("/{skill_id}/reviews/comments/{comment_id}", response_model=dict)
@@ -1170,6 +1173,6 @@ def delete_skill_review_comment(
     try:
         skill_reviews_comments.delete_skill_review_comment(db, current_user, skill, comment)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     return {"msg": "Review comment deleted"}

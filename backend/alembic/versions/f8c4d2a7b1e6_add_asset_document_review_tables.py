@@ -6,17 +6,17 @@ Create Date: 2026-03-31 17:20:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "f8c4d2a7b1e6"
-down_revision: Union[str, None] = "eb996183c1d8"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "eb996183c1d8"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _has_index(inspector: sa.Inspector, table_name: str, index_name: str) -> bool:
@@ -188,7 +188,9 @@ def upgrade() -> None:
 
     inspector = sa.inspect(bind)
     if inspector.has_table("sdd_asset_resolution_proposals"):
-        if not _has_index(inspector, "sdd_asset_resolution_proposals", op.f("ix_sdd_asset_resolution_proposals_thread_id")):
+        if not _has_index(
+            inspector, "sdd_asset_resolution_proposals", op.f("ix_sdd_asset_resolution_proposals_thread_id")
+        ):
             op.create_index(
                 op.f("ix_sdd_asset_resolution_proposals_thread_id"),
                 "sdd_asset_resolution_proposals",
@@ -206,7 +208,9 @@ def upgrade() -> None:
                 ["base_version_id"],
                 unique=False,
             )
-        if not _has_index(inspector, "sdd_asset_resolution_proposals", op.f("ix_sdd_asset_resolution_proposals_creator_id")):
+        if not _has_index(
+            inspector, "sdd_asset_resolution_proposals", op.f("ix_sdd_asset_resolution_proposals_creator_id")
+        ):
             op.create_index(
                 op.f("ix_sdd_asset_resolution_proposals_creator_id"),
                 "sdd_asset_resolution_proposals",

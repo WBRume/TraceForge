@@ -3,6 +3,7 @@
 Preferences are stored in task metadata; each accepted turn takes its own copy.
 Runtime model observations remain separate from the requested model.
 """
+
 from __future__ import annotations
 
 from typing import Literal

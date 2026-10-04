@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Set
-
 from fastapi import WebSocket
 
 from app.core.logging import get_logger
@@ -22,7 +20,7 @@ class ConnectionManager:
         return f"task:{task_id}"
 
     @property
-    def active_connections(self) -> Dict[str, Set[WebSocket]]:
+    def active_connections(self) -> dict[str, set[WebSocket]]:
         return {task_id: set(sockets) for task_id, sockets in self.registry.rooms.items()}
 
     def has_subscribers(self, task_id: str) -> bool:
@@ -33,11 +31,11 @@ class ConnectionManager:
         websocket: WebSocket,
         task_id: str,
         *,
-        client_key: Optional[str] = None,
-        client_id: Optional[str] = None,
-        epoch: Optional[str] = None,
-        last_sequence: Optional[int] = None,
-        user_id: Optional[str] = None,
+        client_key: str | None = None,
+        client_id: str | None = None,
+        epoch: str | None = None,
+        last_sequence: int | None = None,
+        user_id: str | None = None,
     ) -> OutboundConnection:
         await websocket.accept()
         connection = await self.registry.connect(

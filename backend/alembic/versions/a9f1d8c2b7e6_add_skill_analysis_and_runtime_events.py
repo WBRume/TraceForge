@@ -6,16 +6,16 @@ Create Date: 2026-04-27 20:30:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "a9f1d8c2b7e6"
-down_revision: Union[str, None] = "b6c9d1e2f3a4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "b6c9d1e2f3a4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _has_table(inspector: sa.Inspector, table_name: str) -> bool:
@@ -41,8 +41,12 @@ def upgrade() -> None:
             sa.Column("skill_id", sa.String(length=36), nullable=False),
             sa.Column("version_id", sa.String(length=36), nullable=True),
             sa.Column("commit_sha", sa.String(length=64), nullable=True),
-            sa.Column("ref_kind", sa.Enum("WORKTREE", "LATEST", "VERSION", name="skillanalysisrefkind"), nullable=False),
-            sa.Column("status", sa.Enum("PENDING", "RUNNING", "SUCCESS", "FAILED", name="skillanalysisstatus"), nullable=False),
+            sa.Column(
+                "ref_kind", sa.Enum("WORKTREE", "LATEST", "VERSION", name="skillanalysisrefkind"), nullable=False
+            ),
+            sa.Column(
+                "status", sa.Enum("PENDING", "RUNNING", "SUCCESS", "FAILED", name="skillanalysisstatus"), nullable=False
+            ),
             sa.Column("progress", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("message", sa.Text(), nullable=True),
             sa.Column("error_message", sa.Text(), nullable=True),
@@ -65,12 +69,16 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
             sa.PrimaryKeyConstraint("id"),
         )
-        op.create_index(op.f("ix_sdd_skill_analyses_workspace_id"), "sdd_skill_analyses", ["workspace_id"], unique=False)
+        op.create_index(
+            op.f("ix_sdd_skill_analyses_workspace_id"), "sdd_skill_analyses", ["workspace_id"], unique=False
+        )
         op.create_index(op.f("ix_sdd_skill_analyses_skill_id"), "sdd_skill_analyses", ["skill_id"], unique=False)
         op.create_index(op.f("ix_sdd_skill_analyses_version_id"), "sdd_skill_analyses", ["version_id"], unique=False)
         op.create_index(op.f("ix_sdd_skill_analyses_commit_sha"), "sdd_skill_analyses", ["commit_sha"], unique=False)
         op.create_index(op.f("ix_sdd_skill_analyses_status"), "sdd_skill_analyses", ["status"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_analyses_created_by_id"), "sdd_skill_analyses", ["created_by_id"], unique=False)
+        op.create_index(
+            op.f("ix_sdd_skill_analyses_created_by_id"), "sdd_skill_analyses", ["created_by_id"], unique=False
+        )
 
     inspector = sa.inspect(bind)
     if not _has_table(inspector, "sdd_skill_runtime_events"):
@@ -121,15 +129,36 @@ def upgrade() -> None:
             sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
             sa.PrimaryKeyConstraint("id"),
         )
-        op.create_index(op.f("ix_sdd_skill_runtime_events_workspace_id"), "sdd_skill_runtime_events", ["workspace_id"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_task_id"), "sdd_skill_runtime_events", ["task_id"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_skill_id"), "sdd_skill_runtime_events", ["skill_id"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_ai_job_id"), "sdd_skill_runtime_events", ["ai_job_id"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_tool_use_id"), "sdd_skill_runtime_events", ["tool_use_id"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_event_type"), "sdd_skill_runtime_events", ["event_type"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_materialized_dir"), "sdd_skill_runtime_events", ["materialized_dir"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_status"), "sdd_skill_runtime_events", ["status"], unique=False)
-        op.create_index(op.f("ix_sdd_skill_runtime_events_created_at"), "sdd_skill_runtime_events", ["created_at"], unique=False)
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_workspace_id"), "sdd_skill_runtime_events", ["workspace_id"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_task_id"), "sdd_skill_runtime_events", ["task_id"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_skill_id"), "sdd_skill_runtime_events", ["skill_id"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_ai_job_id"), "sdd_skill_runtime_events", ["ai_job_id"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_tool_use_id"), "sdd_skill_runtime_events", ["tool_use_id"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_event_type"), "sdd_skill_runtime_events", ["event_type"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_materialized_dir"),
+            "sdd_skill_runtime_events",
+            ["materialized_dir"],
+            unique=False,
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_status"), "sdd_skill_runtime_events", ["status"], unique=False
+        )
+        op.create_index(
+            op.f("ix_sdd_skill_runtime_events_created_at"), "sdd_skill_runtime_events", ["created_at"], unique=False
+        )
 
 
 def downgrade() -> None:

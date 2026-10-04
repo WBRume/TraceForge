@@ -24,17 +24,18 @@ Create Date: 2026-08-27
 - 三张表均不含 access_token / refresh_token 字段（拍板 #9：三方 token 不持久化）；
 - ``users`` 表零改动（K-2）。
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = 'b7e4a1c9d3f6'
-down_revision: Union[str, None] = 'f3bc9223e419'
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+revision: str = "b7e4a1c9d3f6"
+down_revision: str | None = "f3bc9223e419"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -59,9 +60,7 @@ def upgrade() -> None:
         # 🔴 全局唯一：同一三方身份只能绑定一个邮箱账号（E-2 / AC-S6）
         sa.UniqueConstraint("provider", "provider_uid", name="uq_oauth_provider_uid"),
     )
-    op.create_index(
-        "ix_oauth_identities_user_id", "oauth_identities", ["user_id"], unique=False
-    )
+    op.create_index("ix_oauth_identities_user_id", "oauth_identities", ["user_id"], unique=False)
 
     # ── 2. oauth_states：一次性授权请求（防 CSRF，短生命周期）──
     op.create_table(

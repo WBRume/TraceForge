@@ -4,7 +4,8 @@
 本模块只提供线程内执行的同步闭包与纯构建函数。
 """
 
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from app.agents import AgentAttemptContext, AgentRunRequest
 from app.config import settings
@@ -12,17 +13,17 @@ from app.core.logging import get_logger
 from app.database import SessionLocal
 from app.domains.auth.services import auth_service
 from app.domains.skill.services import skill_runtime_trace_service
-from app.domains.task.models.task import SddTask
-
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
+from app.domains.task.models.task import SddTask
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 logger = get_logger(__name__, category="task_execution")
 
 
-def task_model_sync(task_id: str, job_id: Optional[str] = None) -> Optional[str]:
+def task_model_sync(task_id: str, job_id: str | None = None) -> str | None:
     from app.agents.model_selection import task_selection
     from app.domains.ai.models.ai_job import SddAiJob
+
     with SessionLocal() as db:
         task = db.get(SddTask, task_id)
         job = db.get(SddAiJob, job_id) if job_id else None
@@ -33,13 +34,15 @@ def task_model_sync(task_id: str, job_id: Optional[str] = None) -> Optional[str]
 
 def playbook_context_sync(task_id: str) -> str:
     from app.domains.diagnosis_playbook.analysis_guide import prompt_suffix
+
     with SessionLocal() as db:
         task = db.get(SddTask, task_id)
         return prompt_suffix(task) if task else ""
 
 
 def playbook_turn_sync(task_id: str) -> dict:
-    from app.domains.diagnosis_playbook.guide_session import turn_context, prompt
+    from app.domains.diagnosis_playbook.guide_session import prompt, turn_context
+
     with SessionLocal() as db:
         task = db.get(SddTask, task_id)
         fence = turn_context(task) if task else None
@@ -48,6 +51,7 @@ def playbook_turn_sync(task_id: str) -> dict:
 
 def record_playbook_result_sync(task_id, fence, text, job_id, streamed_text=""):
     from app.domains.diagnosis_playbook.guide_session import accept_result
+
     with SessionLocal() as db:
         result = accept_result(db, task_id, fence, text, job_id, streamed_text)
         db.commit()
@@ -56,7 +60,6 @@ def record_playbook_result_sync(task_id, fence, text, job_id, streamed_text=""):
 
 def resolve_project_path_sync(task_id: str) -> str:
     """线程内执行：解析任务的工作目录（CLI cwd）。"""
-
 
     db = SessionLocal()
     try:
@@ -77,7 +80,7 @@ def materialize_task_skills_sync(task_id: str) -> None:
         db.close()
 
 
-def build_runtime_skill_index_sync(task_id: str) -> List[Any]:
+def build_runtime_skill_index_sync(task_id: str) -> list[Any]:
     """线程内执行：构建技能运行时追踪索引（失败降级为空索引）。"""
     db = SessionLocal()
     try:
@@ -97,9 +100,9 @@ def build_env_overrides(
     ws_id: str,
     task_id: str,
     user_id: str,
-    job_id: Optional[str],
-    attempt: Optional[AgentAttemptContext],
-) -> Dict[str, str]:
+    job_id: str | None,
+    attempt: AgentAttemptContext | None,
+) -> dict[str, str]:
     """构建注入 agent 进程的环境变量（平台 API、mock 端点与 attempt 身份）。"""
     api_base_url = str(settings.PLATFORM_API_BASE_URL or "http://localhost:8000").strip().rstrip("/")
     if not api_base_url:
@@ -133,15 +136,15 @@ def build_agent_run_request(
     backend: Any,
     prompt: str,
     project_path: str,
-    session_id: Optional[str],
-    env_overrides: Dict[str, str],
+    session_id: str | None,
+    env_overrides: dict[str, str],
     task_id: str,
     ws_id: str,
     user_id: str,
-    job_id: Optional[str],
-    attempt: Optional[AgentAttemptContext],
-    on_process_started: Callable[[Any, Optional[AgentAttemptContext]], Any],
-    model: Optional[str] = None,
+    job_id: str | None,
+    attempt: AgentAttemptContext | None,
+    on_process_started: Callable[[Any, AgentAttemptContext | None], Any],
+    model: str | None = None,
 ) -> AgentRunRequest:
     """按全局超时配置与 backend capability 声明构建统一运行请求。"""
     return AgentRunRequest(
@@ -157,21 +160,15 @@ def build_agent_run_request(
             getattr(backend, "capabilities", None),
             "execution_kind",
             "LOCAL_PROCESS",
-        ) or "LOCAL_PROCESS",
-        timeout_seconds=float(
-            settings.agent_max_runtime_seconds
-        ),
-        startup_timeout_seconds=float(
-            getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
-        ),
-        idle_timeout_seconds=float(
-            settings.agent_idle_timeout_seconds
-        ),
+        )
+        or "LOCAL_PROCESS",
+        timeout_seconds=float(settings.agent_max_runtime_seconds),
+        startup_timeout_seconds=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
+        idle_timeout_seconds=float(settings.agent_idle_timeout_seconds),
         # Supervisor-side attach timeout (real DB attach); the
         # engine watchdog stays a secondary outer guard only.
-        process_attach_timeout_seconds=float(
-            getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
-        ) or None,
+        process_attach_timeout_seconds=float(getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0)
+        or None,
         metadata={
             "task_id": task_id,
             "workspace_id": ws_id,

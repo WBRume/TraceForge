@@ -2,8 +2,6 @@
 Repository management API routes: registration and repo-group placement.
 """
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -16,8 +14,7 @@ from app.domains.management.schemas.management import (
     ValidateAccessRequest,
     ValidateRefRequest,
 )
-from app.domains.management.services import repository_service
-from app.domains.management.services import git_ref_service
+from app.domains.management.services import git_ref_service, repository_service
 from app.domains.management.services.git_ref_service import GitRefAccessError
 
 router = APIRouter(prefix="/management/repositories", tags=["Management Repositories"])
@@ -26,9 +23,9 @@ router = APIRouter(prefix="/management/repositories", tags=["Management Reposito
 @router.get("")
 def list_repositories(
     keyword: str = Query(default="", max_length=100),
-    repo_type: Optional[str] = None,
-    group_id: Optional[str] = None,
-    repository_id: Optional[str] = None,
+    repo_type: str | None = None,
+    group_id: str | None = None,
+    repository_id: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -72,7 +69,7 @@ def create_repository(
         )
         return repository_service.serialize_repository(repository)
     except repository_service.RepositoryServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.post("/validate-access")
@@ -84,7 +81,7 @@ def validate_repository_access(
     try:
         return repository_service.validate_repository_access(db, data.git_url)
     except GitRefAccessError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.get("/{repository_id}")
@@ -112,7 +109,7 @@ def list_repository_refs(
     try:
         return git_ref_service.list_refs_for_picker(repository.git_url)
     except GitRefAccessError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.put("/{repository_id}")
@@ -138,7 +135,7 @@ def update_repository(
         )
         return repository_service.serialize_repository(updated)
     except repository_service.RepositoryServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{repository_id}")
@@ -153,7 +150,7 @@ def delete_repository(
     try:
         repository_service.delete_repository(db, repository)
     except repository_service.RepositoryServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     audit_log(
         action="delete_repository",
         outcome="success",
@@ -177,4 +174,4 @@ def validate_repository_ref(
     try:
         return repository_service.validate_repository_ref(db, repository, data.ref_type, data.ref_name)
     except GitRefAccessError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

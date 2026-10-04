@@ -1,14 +1,8 @@
 """DSH model observations are reflected in runtime state without model RPCs."""
 
-import os
-import sys
 import unittest
 from types import SimpleNamespace
 from unittest import mock
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.agents.events import AgentEvent
 from app.engine.session import TaskAgentEngine
@@ -37,25 +31,29 @@ class TaskAgentEngineModelEventTest(unittest.IsolatedAsyncioTestCase):
     async def test_dsh_model_event_updates_snapshot_and_runtime_status(self):
         engine = _make_engine()
 
-        await engine.handle_agent_event(AgentEvent(
-            type="session_started",
-            payload={"provider_session_id": "session-1", "provider": "dsh"},
-            provider="dsh",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="session_started",
+                payload={"provider_session_id": "session-1", "provider": "dsh"},
+                provider="dsh",
+            )
+        )
 
         initial_status = engine.frontend.push_status.await_args_list[-1]
         self.assertEqual(initial_status.args[:2], ("INIT", "Agent 会话已启动"))
         self.assertEqual(initial_status.kwargs["model"], None)
 
-        await engine.handle_agent_event(AgentEvent(
-            type="model",
-            payload={
-                "model": "deepseek-official/deepseek-v4-flash",
-                "provider": "dsh",
-                "source": "request/header",
-            },
-            provider="dsh",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="model",
+                payload={
+                    "model": "deepseek-official/deepseek-v4-flash",
+                    "provider": "dsh",
+                    "source": "request/header",
+                },
+                provider="dsh",
+            )
+        )
 
         self.assertEqual(engine._runtime_model, "deepseek-official/deepseek-v4-flash")
         engine.segments.update_snapshot.assert_any_call(
@@ -92,8 +90,8 @@ class RemoteStopAfterErrorTest(unittest.IsolatedAsyncioTestCase):
     async def test_existing_stop_ack_is_never_overwritten(self):
         from app.agents.contract import (
             EXECUTION_KIND_REMOTE_SESSION,
-            AgentStopResult,
             AgentAttemptRuntimeState,
+            AgentStopResult,
             bind_agent_attempt_runtime,
             reset_agent_attempt_runtime,
         )
@@ -124,9 +122,7 @@ class RemoteStopAfterErrorTest(unittest.IsolatedAsyncioTestCase):
         )
 
         engine = self._make_engine()
-        engine.cli.cancel_persisted_session = mock.AsyncMock(
-            side_effect=RuntimeError("rpc down")
-        )
+        engine.cli.cancel_persisted_session = mock.AsyncMock(side_effect=RuntimeError("rpc down"))
         runtime = AgentAttemptRuntimeState()
         token = bind_agent_attempt_runtime(runtime)
         try:
@@ -140,13 +136,9 @@ class RemoteStopAfterErrorTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_local_kind_and_missing_session_never_stop(self):
         engine = self._make_engine(execution_kind="LOCAL_PROCESS")
-        engine.cli.cancel = mock.AsyncMock(
-            side_effect=AssertionError("local backend must not be stopped here")
-        )
+        engine.cli.cancel = mock.AsyncMock(side_effect=AssertionError("local backend must not be stopped here"))
         await engine._stop_remote_session_after_error()
 
         engine = self._make_engine(session_id=None)
-        engine.cli.cancel_persisted_session = mock.AsyncMock(
-            side_effect=AssertionError("no session to stop")
-        )
+        engine.cli.cancel_persisted_session = mock.AsyncMock(side_effect=AssertionError("no session to stop"))
         await engine._stop_remote_session_after_error()

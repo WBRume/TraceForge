@@ -3,7 +3,7 @@ Shared API schemas (assets, dashboard, workspaces).
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 
@@ -14,17 +14,17 @@ class AssetResponse(BaseModel):
     workspace_id: str
     asset_type: str
     name: str
-    content_text: Optional[str] = None
-    content_json: Optional[Any] = None
-    source_ext: Optional[str] = None
-    source_mime: Optional[str] = None
+    content_text: str | None = None
+    content_json: Any | None = None
+    source_ext: str | None = None
+    source_mime: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 
 class AssetListResponse(BaseModel):
-    items: List[AssetResponse]
+    items: list[AssetResponse]
     total: int
 
 
@@ -32,13 +32,13 @@ class AssetVersionResponse(BaseModel):
     id: str
     asset_id: str
     version_no: int
-    base_version_id: Optional[str] = None
-    original_ext: Optional[str] = None
-    original_mime: Optional[str] = None
-    normalized_markdown: Optional[str] = None
-    blocks_json: Optional[Any] = None
-    render_json: Optional[Any] = None
-    change_note: Optional[str] = None
+    base_version_id: str | None = None
+    original_ext: str | None = None
+    original_mime: str | None = None
+    normalized_markdown: str | None = None
+    blocks_json: Any | None = None
+    render_json: Any | None = None
+    change_note: str | None = None
     created_by: str
     created_at: datetime
 
@@ -46,17 +46,17 @@ class AssetVersionResponse(BaseModel):
 
 
 class AssetVersionListResponse(BaseModel):
-    items: List[AssetVersionResponse]
+    items: list[AssetVersionResponse]
     total: int
-    current_version_id: Optional[str] = None
+    current_version_id: str | None = None
 
 
 class AssetThreadMarkerResponse(BaseModel):
     thread_id: str
     block_id: str
-    selected_text: Optional[str] = None
-    char_start: Optional[int] = None
-    char_end: Optional[int] = None
+    selected_text: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
     status: str
     creator_id: str
     created_at: datetime
@@ -71,14 +71,14 @@ class AssetDocumentCapabilities(BaseModel):
     can_manual_edit: bool
     inline_review_enabled: bool
     ai_available: bool = True
-    ai_unavailable_reason: Optional[str] = None
+    ai_unavailable_reason: str | None = None
 
 
 class AssetDocumentResponse(BaseModel):
     asset: AssetResponse
-    active_version: Optional[AssetVersionResponse] = None
-    blocks: List[Any] = Field(default_factory=list)
-    thread_markers: List[AssetThreadMarkerResponse] = Field(default_factory=list)
+    active_version: AssetVersionResponse | None = None
+    blocks: list[Any] = Field(default_factory=list)
+    thread_markers: list[AssetThreadMarkerResponse] = Field(default_factory=list)
     capabilities: AssetDocumentCapabilities
 
 
@@ -87,10 +87,10 @@ class AssetThreadMessageResponse(BaseModel):
     thread_id: str
     role: str
     content: str
-    creator_id: Optional[str] = None
-    creator_display_name: Optional[str] = None
-    creator_avatar_svg: Optional[str] = None
-    metadata_json: Optional[Any] = None
+    creator_id: str | None = None
+    creator_display_name: str | None = None
+    creator_avatar_svg: str | None = None
+    metadata_json: Any | None = None
     created_at: datetime
 
 
@@ -98,12 +98,12 @@ class AssetResolutionProposalResponse(BaseModel):
     id: str
     thread_id: str
     base_version_id: str
-    proposed_patch_json: Optional[Any] = None
-    diff_text: Optional[str] = None
+    proposed_patch_json: Any | None = None
+    diff_text: str | None = None
     status: str
     creator_id: str
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
 
 class AssetThreadResponse(BaseModel):
@@ -113,39 +113,39 @@ class AssetThreadResponse(BaseModel):
     task_id: str
     workspace_id: str
     block_id: str
-    selected_text: Optional[str] = None
-    char_start: Optional[int] = None
-    char_end: Optional[int] = None
+    selected_text: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
     status: str
     creator_id: str
-    creator_display_name: Optional[str] = None
-    creator_avatar_svg: Optional[str] = None
-    resolved_by: Optional[str] = None
-    resolved_at: Optional[datetime] = None
-    resolved_version_id: Optional[str] = None
+    creator_display_name: str | None = None
+    creator_avatar_svg: str | None = None
+    resolved_by: str | None = None
+    resolved_at: datetime | None = None
+    resolved_version_id: str | None = None
     close_hint_state: str = "none"
-    close_hint_reason: Optional[str] = None
-    close_hint_version_id: Optional[str] = None
+    close_hint_reason: str | None = None
+    close_hint_version_id: str | None = None
     anchor_status: str = "valid"
-    effective_anchor: Optional[Any] = None
+    effective_anchor: Any | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
-    messages: List[AssetThreadMessageResponse] = Field(default_factory=list)
-    proposals: List[AssetResolutionProposalResponse] = Field(default_factory=list)
+    updated_at: datetime | None = None
+    messages: list[AssetThreadMessageResponse] = Field(default_factory=list)
+    proposals: list[AssetResolutionProposalResponse] = Field(default_factory=list)
 
 
 class AssetThreadListResponse(BaseModel):
-    items: List[AssetThreadResponse]
+    items: list[AssetThreadResponse]
     total: int
 
 
 class AssetThreadCreateRequest(BaseModel):
-    version_id: Optional[str] = None
+    version_id: str | None = None
     block_id: str = Field(..., min_length=1, max_length=120)
     body: str = Field(..., min_length=1, max_length=5000)
-    selected_text: Optional[str] = None
-    char_start: Optional[int] = Field(default=None, ge=0)
-    char_end: Optional[int] = Field(default=None, ge=0)
+    selected_text: str | None = None
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=0)
 
     @field_validator("body")
     @classmethod
@@ -162,24 +162,24 @@ class AssetThreadMessageCreateRequest(BaseModel):
 
 class AssetResolutionDecisionRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
-    body: Optional[str] = None
-    impact_scope: Optional[str] = Field(default=None, max_length=300)
-    requirement_id: Optional[str] = None
+    body: str | None = None
+    impact_scope: str | None = Field(default=None, max_length=300)
+    requirement_id: str | None = None
     promote_candidate: bool = False
 
 
 class AssetResolutionApplyRequest(BaseModel):
     proposal_id: str = Field(..., min_length=1)
-    final_block_ast: Optional[Any] = None
-    final_blocks_ast: Optional[List[Any]] = None
-    change_note: Optional[str] = None
-    decision: Optional[AssetResolutionDecisionRequest] = None
+    final_block_ast: Any | None = None
+    final_blocks_ast: list[Any] | None = None
+    change_note: str | None = None
+    decision: AssetResolutionDecisionRequest | None = None
 
 
 class AssetManualEditBlockRequest(BaseModel):
     new_text: str = Field(..., min_length=1, max_length=50000)
-    context_version_id: Optional[str] = None
-    change_note: Optional[str] = Field(default=None, max_length=500)
+    context_version_id: str | None = None
+    change_note: str | None = Field(default=None, max_length=500)
 
     @field_validator("new_text")
     @classmethod
@@ -192,14 +192,14 @@ class AssetManualEditBlockRequest(BaseModel):
 
 class AssetResolutionProposalCreateRequest(BaseModel):
     overwrite_existing_draft: bool = False
-    context_version_id: Optional[str] = None
+    context_version_id: str | None = None
 
 
 class AssetResolutionProposalRewriteRequest(BaseModel):
     proposal_text: str = Field(..., min_length=1, max_length=50000)
     rewrite_scope: Literal["anchor", "document"] = "anchor"
-    context_version_id: Optional[str] = None
-    relocated_anchor: Optional[Dict[str, Any]] = None
+    context_version_id: str | None = None
+    relocated_anchor: dict[str, Any] | None = None
 
 
 class AssetThreadStateUpdateRequest(BaseModel):
@@ -212,15 +212,15 @@ class AssetThreadCloseHintActionRequest(BaseModel):
 
 class AssetResolutionAnchorPrecheckRequest(BaseModel):
     rewrite_scope: Literal["anchor", "document"] = "anchor"
-    context_version_id: Optional[str] = None
+    context_version_id: str | None = None
 
 
 class AssetResolutionAnchorPrecheckResponse(BaseModel):
     ok: bool
     requires_relocation: bool
-    reason: Optional[str] = None
+    reason: str | None = None
     anchor_status: str = "valid"
-    effective_anchor: Optional[Any] = None
+    effective_anchor: Any | None = None
 
 
 class DashboardOverview(BaseModel):
@@ -254,9 +254,9 @@ class TestResultResponse(BaseModel):
     test_type: str
     test_name: str
     status: str
-    duration_ms: Optional[int] = None
-    error_detail: Optional[str] = None
-    report_json: Optional[Any] = None
+    duration_ms: int | None = None
+    error_detail: str | None = None
+    report_json: Any | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -282,20 +282,20 @@ class WorkspacePermissionFlags(BaseModel):
 
 class WorkspaceRepositoryCreate(BaseModel):
     repository_id: str = Field(..., min_length=1)
-    branch_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    branch_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = None
-    project_path: Optional[str] = None
-    git_repo_url: Optional[str] = None
-    project_id: Optional[str] = None
-    product_ids: Optional[List[str]] = None
-    repositories: Optional[List[WorkspaceRepositoryCreate]] = None
+    description: str | None = None
+    project_path: str | None = None
+    git_repo_url: str | None = None
+    project_id: str | None = None
+    product_ids: list[str] | None = None
+    repositories: list[WorkspaceRepositoryCreate] | None = None
     # 独立模式（未关联管理项目）下手动填写的项目/产品名称，不与项目管理/产品管理数据绑定
-    project_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    product_name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    project_name: str | None = Field(default=None, min_length=1, max_length=200)
+    product_name: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def _validate_single_product_selection(self):
@@ -308,21 +308,21 @@ class WorkspacePreflight(BaseModel):
     """创建工作区前的冲突预检入参：重名 / 目录已被其他工作区引用。"""
 
     name: str = Field(..., min_length=1, max_length=200)
-    project_path: Optional[str] = None
+    project_path: str | None = None
 
 
 class WorkspaceRepositoryResponse(BaseModel):
     id: str
     workspace_id: str
-    repository_id: Optional[str] = None
+    repository_id: str | None = None
     repo_url: str
     repo_name: str
     repo_slug: str
     branch_name: str
-    base_dir: Optional[str] = None
+    base_dir: str | None = None
     state: str
-    base_commit_sha: Optional[str] = None
-    error_message: Optional[str] = None
+    base_commit_sha: str | None = None
+    error_message: str | None = None
     created_at: datetime
 
 
@@ -336,36 +336,36 @@ class WorkspaceProductSummary(BaseModel):
     id: str
     name: str
     code: str
-    version_no: Optional[str] = None
+    version_no: str | None = None
 
 
 class WorkspaceOwnerSummary(BaseModel):
     id: str
     display_name: str
     email: str
-    avatar_svg: Optional[str] = None
-    avatar_url: Optional[str] = None
+    avatar_svg: str | None = None
+    avatar_url: str | None = None
 
 
 class WorkspaceResponse(BaseModel):
     id: str
     name: str
-    description: Optional[str] = None
-    project_path: Optional[str] = None
-    git_repo_url: Optional[str] = None
-    project_id: Optional[str] = None
+    description: str | None = None
+    project_path: str | None = None
+    git_repo_url: str | None = None
+    project_id: str | None = None
     owner_id: str
-    agent_backend: Optional[str] = None
-    custom_project_name: Optional[str] = None
-    custom_product_name: Optional[str] = None
+    agent_backend: str | None = None
+    custom_project_name: str | None = None
+    custom_product_name: str | None = None
     created_at: datetime
-    my_role: Optional[str] = None
-    my_is_expert: Optional[bool] = None
-    can_delete_workspace: Optional[bool] = None
-    project: Optional[WorkspaceProjectSummary] = None
-    products: List[WorkspaceProductSummary] = Field(default_factory=list)
-    owner: Optional[WorkspaceOwnerSummary] = None
-    repositories: List[WorkspaceRepositoryResponse] = Field(default_factory=list)
+    my_role: str | None = None
+    my_is_expert: bool | None = None
+    can_delete_workspace: bool | None = None
+    project: WorkspaceProjectSummary | None = None
+    products: list[WorkspaceProductSummary] = Field(default_factory=list)
+    owner: WorkspaceOwnerSummary | None = None
+    repositories: list[WorkspaceRepositoryResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -379,15 +379,15 @@ class WorkspaceAgentBackendOption(BaseModel):
 
 
 class WorkspaceAgentBackendResponse(BaseModel):
-    agent_backend: Optional[str] = None
+    agent_backend: str | None = None
     effective_agent_backend: str
     default_agent_backend: str
-    options: List[WorkspaceAgentBackendOption] = Field(default_factory=list)
+    options: list[WorkspaceAgentBackendOption] = Field(default_factory=list)
 
 
 class WorkspaceAgentBackendUpdate(BaseModel):
     # None/空字符串表示清除工作区覆盖，回退全局 .env 默认
-    agent_backend: Optional[str] = None
+    agent_backend: str | None = None
 
 
 class WorkspaceAgentBackendTestRequest(BaseModel):
@@ -404,14 +404,14 @@ class WorkspaceAgentBackendTestResponse(BaseModel):
 class WorkspaceMemberAdd(BaseModel):
     user_email: EmailStr
     role: str = Field(default="DEVELOPER", pattern="^(DEVELOPER|VIEWER)$")
-    permissions: Optional[WorkspacePermissionFlags] = None
+    permissions: WorkspacePermissionFlags | None = None
     is_expert: bool = False
 
 
 class WorkspaceMemberUpdate(BaseModel):
-    role: Optional[str] = Field(default=None, pattern="^(DEVELOPER|VIEWER)$")
-    permissions: Optional[WorkspacePermissionFlags] = None
-    is_expert: Optional[bool] = None
+    role: str | None = Field(default=None, pattern="^(DEVELOPER|VIEWER)$")
+    permissions: WorkspacePermissionFlags | None = None
+    is_expert: bool | None = None
 
 
 class WorkspaceMemberResponse(BaseModel):
@@ -420,8 +420,8 @@ class WorkspaceMemberResponse(BaseModel):
     user_id: str
     email: str
     display_name: str
-    avatar_url: Optional[str] = None
-    avatar_svg: Optional[str] = None
+    avatar_url: str | None = None
+    avatar_svg: str | None = None
     role: str
     joined_at: datetime
     permissions: WorkspacePermissionFlags
@@ -430,8 +430,8 @@ class WorkspaceMemberResponse(BaseModel):
 
 
 class WorkspaceMemberListResponse(BaseModel):
-    owner: Optional[WorkspaceMemberResponse] = None
-    items: List[WorkspaceMemberResponse]
+    owner: WorkspaceMemberResponse | None = None
+    items: list[WorkspaceMemberResponse]
     total: int
     page: int
     page_size: int
@@ -447,10 +447,10 @@ class WorkspaceMyPermissionsResponse(BaseModel):
 
 class WorkspaceInviteLinkCreate(BaseModel):
     role: str = Field(default="DEVELOPER", pattern="^(DEVELOPER|VIEWER)$")
-    permissions: Optional[WorkspacePermissionFlags] = None
+    permissions: WorkspacePermissionFlags | None = None
     is_expert: bool = False
-    valid_days: Optional[int] = Field(default=None, ge=1, le=365)
-    max_uses: Optional[int] = Field(default=None, ge=1, le=1000)
+    valid_days: int | None = Field(default=None, ge=1, le=365)
+    max_uses: int | None = Field(default=None, ge=1, le=1000)
 
 
 class WorkspaceInviteLinkResponse(BaseModel):
@@ -460,17 +460,17 @@ class WorkspaceInviteLinkResponse(BaseModel):
     role: str
     permissions: WorkspacePermissionFlags
     is_expert: bool
-    max_uses: Optional[int] = None
+    max_uses: int | None = None
     used_count: int
-    remaining_uses: Optional[int] = None
-    expires_at: Optional[datetime] = None
+    remaining_uses: int | None = None
+    expires_at: datetime | None = None
     created_at: datetime
     status: str
     created_by_name: str = ""
 
 
 class WorkspaceInviteLinkListResponse(BaseModel):
-    items: List[WorkspaceInviteLinkResponse]
+    items: list[WorkspaceInviteLinkResponse]
     total: int
 
 
@@ -481,7 +481,7 @@ class WorkspaceInvitePreviewResponse(BaseModel):
     role: str
     permissions: WorkspacePermissionFlags
     is_expert: bool
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
     status: str
     created_by_name: str = ""
 

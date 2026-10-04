@@ -17,7 +17,6 @@ OAuth 三方登录路由（B-12 / T02，9 端点，对应设计文档 §2.3 契�
 
 import urllib.parse
 from dataclasses import asdict
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -49,9 +48,7 @@ from app.domains.auth.services import auth_service, oauth_service
 router = APIRouter(prefix="/auth/oauth", tags=["OAuth"])
 
 
-def get_optional_current_user(
-    request: Request, db: Session = Depends(get_db)
-) -> Optional[User]:
+def get_optional_current_user(request: Request, db: Session = Depends(get_db)) -> User | None:
     """可选认证：有合法 Bearer token 则返回用户，否则返回 None。
 
     供 authorize 端点区分 intent=login（匿名可用）与 intent=bind（需 JWT → 401 AUTH_REQUIRED）。
@@ -70,7 +67,7 @@ def get_optional_current_user(
     return db.query(User).filter(User.id == user_id).first()
 
 
-def _validate_redirect_after(raw: Optional[str]) -> Optional[str]:
+def _validate_redirect_after(raw: str | None) -> str | None:
     """防开放重定向（§2.3 接口 2）：仅接受站内相对路径。
 
     禁止 ``//`` 开头（协议相对 URL）、禁止含 ``://`` 的绝对 URL；
@@ -96,17 +93,17 @@ def list_providers():
 def authorize(
     provider: str,
     params: AuthorizeParams = Depends(),
-    loopback_port: Optional[int] = Query(
+    loopback_port: int | None = Query(
         default=None, ge=1, le=65535, description="Electron 本地回环端口（client_type=desktop）"
     ),
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: Session = Depends(get_db),
 ):
     """返回三方授权 URL。intent=bind 需有效 JWT（401 AUTH_REQUIRED）。"""
     user_id = None
     if params.intent == "bind":
         if current_user is None:
-            raise AuthRequiredError()
+            raise AuthRequiredError
         user_id = current_user.id
     result = oauth_service.build_authorize_url(
         db,
@@ -150,18 +147,16 @@ def stub_authorize_redirect(
 @router.get("/{provider}/callback", response_class=RedirectResponse)
 def callback(
     provider: str,
-    code: Optional[str] = Query(default=None),
-    state: Optional[str] = Query(default=None),
-    error: Optional[str] = Query(default=None),
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     """三方回调：所有失败统一 302 + 语义化 error 码（浏览器导航，不返回 JSON 4xx）。
 
     🔴 302 Location 中只有 ticket / status / error，绝无 JWT。
     """
-    result = oauth_service.handle_callback(
-        db, provider=provider, code=code, state=state, error=error
-    )
+    result = oauth_service.handle_callback(db, provider=provider, code=code, state=state, error=error)
     return RedirectResponse(result.redirect_url, status_code=302)
 
 
@@ -199,9 +194,7 @@ def bind_confirm(payload: OAuthBindConfirmRequest, db: Session = Depends(get_db)
 @router.post("/register", response_model=OAuthRegisterResponse)
 def oauth_register(payload: OAuthRegisterRequest, db: Session = Depends(get_db)):
     """路径 C 终态：🔴 手填优先（拍板 #6），以手填 email 建号；三方 email 仅快照。"""
-    tokens = oauth_service.complete_register(
-        db, payload.ticket, payload.email, payload.password, payload.display_name
-    )
+    tokens = oauth_service.complete_register(db, payload.ticket, payload.email, payload.password, payload.display_name)
     return OAuthRegisterResponse(status="REGISTERED", **tokens.model_dump())
 
 

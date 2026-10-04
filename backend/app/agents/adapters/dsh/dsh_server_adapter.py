@@ -22,28 +22,30 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Optional
+from functools import partial
+from typing import Any
 from urllib.parse import quote
 
 import httpx
-from app.agents.http_transport import agent_ssl_context
 import websockets
 
+from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.contract import (
     AgentBackend,
     AgentCapabilities,
     AgentEventSink,
     AgentRunRequest,
     AgentRunResult,
+    AgentStopResult,
     TokenUsage,
 )
-from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
+from app.agents.http_transport import agent_ssl_context
 from app.config import settings
 
 
-def _format_dsh_model(provider: Any, model: Any) -> Optional[str]:
+def _format_dsh_model(provider: Any, model: Any) -> str | None:
     """Build the canonical provider/model label from a DSH model selection."""
     provider_name = str(provider or "").strip()
     model_name = str(model or "").strip()
@@ -52,7 +54,55 @@ def _format_dsh_model(provider: Any, model: Any) -> Optional[str]:
     return f"{provider_name}/{model_name}" if provider_name else model_name
 
 
-def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
+def _map_assistant_message(raw_event: dict[str, Any], data: dict[str, Any]) -> AgentEvent | None:
+    # web host 事件形状：data.message.{role,content[,usage]}（部分流式事件平铺在 data 上）
+    msg = data.get("message") if isinstance(data.get("message"), dict) else data
+    source = msg.get("source") if isinstance(msg.get("source"), dict) else {}
+    model = _format_dsh_model(source.get("provider"), source.get("model")) if source.get("kind") == "model" else None
+    blocks = msg.get("content") if isinstance(msg.get("content"), list) else []
+    text = "\n".join(
+        str(block.get("text") or "") for block in blocks if isinstance(block, dict) and block.get("type") == "text"
+    ).strip()
+    usage_raw = (
+        msg.get("usage")
+        if isinstance(msg.get("usage"), dict)
+        else (data.get("usage") if isinstance(data.get("usage"), dict) else None)
+    )
+    usage: TokenUsage | None = None
+    if usage_raw:
+        usage = TokenUsage(
+            input_tokens=usage_raw.get("inputTokens"),
+            output_tokens=usage_raw.get("outputTokens"),
+            cache_read_tokens=usage_raw.get("cacheReadTokens"),
+            cache_creation_tokens=usage_raw.get("cacheWriteTokens"),
+            total_tokens=None,
+            raw=usage_raw,
+        )
+    if text or usage:
+        payload: dict[str, Any] = {
+            "text": text,
+            "usage": usage.__dict__ if usage else {},
+            "provider": "dsh",
+        }
+        if model:
+            payload["model"] = model
+        return AgentEvent(
+            type="text" if text else "usage",
+            payload=payload,
+            provider="dsh",
+            raw=raw_event,
+        )
+    if model:
+        return AgentEvent(
+            type="model",
+            payload={"model": model, "provider": "dsh", "source": "assistant/message"},
+            provider="dsh",
+            raw=raw_event,
+        )
+    return None
+
+
+def map_dsh_event(raw_event: dict[str, Any]) -> AgentEvent | None:
     """DSH SessionEvent（web host 原生事件）→ 统一 AgentEvent。"""
     etype = str(raw_event.get("type") or "")
     data = raw_event.get("data") if isinstance(raw_event.get("data"), dict) else {}
@@ -74,55 +124,7 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
         )
 
     if etype == "assistant/message":
-        # web host 事件形状：data.message.{role,content[,usage]}（部分流式事件平铺在 data 上）
-        msg = data.get("message") if isinstance(data.get("message"), dict) else data
-        source = msg.get("source") if isinstance(msg.get("source"), dict) else {}
-        model = (
-            _format_dsh_model(source.get("provider"), source.get("model"))
-            if source.get("kind") == "model"
-            else None
-        )
-        blocks = msg.get("content") if isinstance(msg.get("content"), list) else []
-        text = "\n".join(
-            str(block.get("text") or "")
-            for block in blocks
-            if isinstance(block, dict) and block.get("type") == "text"
-        ).strip()
-        usage_raw = msg.get("usage") if isinstance(msg.get("usage"), dict) else (
-            data.get("usage") if isinstance(data.get("usage"), dict) else None
-        )
-        usage: Optional[TokenUsage] = None
-        if usage_raw:
-            usage = TokenUsage(
-                input_tokens=usage_raw.get("inputTokens"),
-                output_tokens=usage_raw.get("outputTokens"),
-                cache_read_tokens=usage_raw.get("cacheReadTokens"),
-                cache_creation_tokens=usage_raw.get("cacheWriteTokens"),
-                total_tokens=None,
-                raw=usage_raw,
-            )
-        if text or usage:
-            payload: dict[str, Any] = {
-                "text": text,
-                "usage": usage.__dict__ if usage else {},
-                "provider": "dsh",
-            }
-            if model:
-                payload["model"] = model
-            return AgentEvent(
-                type="text" if text else "usage",
-                payload=payload,
-                provider="dsh",
-                raw=raw_event,
-            )
-        if model:
-            return AgentEvent(
-                type="model",
-                payload={"model": model, "provider": "dsh", "source": "assistant/message"},
-                provider="dsh",
-                raw=raw_event,
-            )
-        return None
+        return _map_assistant_message(raw_event, data)
     if etype in ("assistant/chunk",):
         raw_chunk = data.get("chunk")
         if isinstance(raw_chunk, dict):
@@ -206,9 +208,18 @@ def map_dsh_event(raw_event: dict[str, Any]) -> Optional[AgentEvent]:
     return None
 
 
+def _finalize_stream_text(*, text_parts, delta_parts, outcome) -> dict[str, Any]:
+    body = "\n".join(part for part in text_parts if part).strip()
+    if not body:
+        body = "".join(delta_parts).strip()
+    outcome["text"] = body
+    return outcome
+
+
 class DshServerAdapter(AgentBackend):
     def get_runtime_control(self):
         from app.agents.runtime_control import runtime_control_for
+
         return runtime_control_for(self)
 
     name = "dsh"
@@ -225,39 +236,50 @@ class DshServerAdapter(AgentBackend):
         execution_kind="REMOTE_SESSION",
     )
 
-    def __init__(self, server_url: str = "http://127.0.0.1:3080", *, browser_token: str | None = None, browser_cookie: str | None = None) -> None:
+    def __init__(
+        self,
+        server_url: str = "http://127.0.0.1:3080",
+        *,
+        browser_token: str | None = None,
+        browser_cookie: str | None = None,
+    ) -> None:
         self.server_url = server_url.rstrip("/")
         self._browser_token = browser_token
         self._browser_cookie = browser_cookie
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         self._running = False
-        self._session_id: Optional[str] = None
+        self._session_id: str | None = None
         self._pending_asks: dict[str, dict[str, Any]] = {}
-        self._gateway_protocol: Optional[bool] = None
+        self._gateway_protocol: bool | None = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             headers: dict[str, str] = {}
-            cookie = self._browser_cookie if self._browser_cookie is not None else str(os.environ.get("DSH_BROWSER_COOKIE") or settings.DSH_BROWSER_COOKIE or "").strip()
+            cookie = (
+                self._browser_cookie
+                if self._browser_cookie is not None
+                else str(os.environ.get("DSH_BROWSER_COOKIE") or settings.DSH_BROWSER_COOKIE or "").strip()
+            )
             if cookie:
                 headers["Cookie"] = cookie
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0, read=None),
                 headers=headers,
                 follow_redirects=self._browser_token is None,
-                trust_env=False, verify=agent_ssl_context(),
+                trust_env=False,
+                verify=agent_ssl_context(),
             )
-            token = self._browser_token if self._browser_token is not None else str(os.environ.get("DSH_BROWSER_TOKEN") or settings.DSH_BROWSER_TOKEN or "").strip()
+            token = (
+                self._browser_token
+                if self._browser_token is not None
+                else str(os.environ.get("DSH_BROWSER_TOKEN") or settings.DSH_BROWSER_TOKEN or "").strip()
+            )
             if token and not cookie:
-                response = await self._client.get(
-                    f"{self.server_url}/?token={quote(token, safe='')}"
-                )
+                response = await self._client.get(f"{self.server_url}/?token={quote(token, safe='')}")
                 if response.status_code >= 400:
                     await self._client.aclose()
                     self._client = None
-                    raise AgentError(
-                        f"DSH browser token exchange failed: HTTP {response.status_code}"
-                    )
+                    raise AgentError(f"DSH browser token exchange failed: HTTP {response.status_code}")
         return self._client
 
     async def _rpc(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -272,21 +294,25 @@ class DshServerAdapter(AgentBackend):
         if self._gateway_protocol is not False:
             gateway_method = method.replace(".", "/")
             parameter_name = "_request" if method == "session.list" else "request"
-            attempts.append((
-                f"{self.server_url}/api/{gateway_method}",
-                gateway_method,
-                {"args": {parameter_name: payload}},
-                True,
-            ))
+            attempts.append(
+                (
+                    f"{self.server_url}/api/{gateway_method}",
+                    gateway_method,
+                    {"args": {parameter_name: payload}},
+                    True,
+                )
+            )
         if self._gateway_protocol is not True:
-            attempts.append((
-                f"{self.server_url}/api/{method}",
-                method,
-                payload,
-                False,
-            ))
+            attempts.append(
+                (
+                    f"{self.server_url}/api/{method}",
+                    method,
+                    payload,
+                    False,
+                )
+            )
 
-        last_response: Optional[httpx.Response] = None
+        last_response: httpx.Response | None = None
         for url, wire_method, wire_payload, is_gateway in attempts:
             response = await client.post(
                 url,
@@ -301,9 +327,7 @@ class DshServerAdapter(AgentBackend):
             if response.status_code == 404 and len(attempts) > 1:
                 continue
             if response.status_code != 200:
-                raise AgentError(
-                    f"DSH server RPC {method} failed: HTTP {response.status_code}"
-                )
+                raise AgentError(f"DSH server RPC {method} failed: HTTP {response.status_code}")
             envelope = response.json()
             result = envelope.get("result") if isinstance(envelope, dict) else None
             if not isinstance(result, dict):
@@ -325,11 +349,16 @@ class DshServerAdapter(AgentBackend):
 
     async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
         from app.agents.model_selection import model_option
+
         data = await self._rpc("session.modelCatalog", {})
         default = data.get("default") or {}
         options = [
-            model_option(f"{group['id']}/{model['id']}", f"{model.get('name') or model['id']} · {group.get('name') or group['id']}")
-            for group in data.get("groups", []) for model in group.get("models", [])
+            model_option(
+                f"{group['id']}/{model['id']}",
+                f"{model.get('name') or model['id']} · {group.get('name') or group['id']}",
+            )
+            for group in data.get("groups", [])
+            for model in group.get("models", [])
         ]
         return {"options": options, "default_model": _format_dsh_model(default.get("provider"), default.get("model"))}
 
@@ -365,6 +394,104 @@ class DshServerAdapter(AgentBackend):
         values = [f"{key}={value}" for key, value in cookies.items()]
         return {"Cookie": "; ".join(values)} if values else {}
 
+    async def _handle_interaction_request(self, method, payload, rpc_id, session_id, read_only, on_event):
+        if method == "approval/requested":
+            approval_id = str(payload.get("approvalId") or "")
+            if read_only:
+                await self._respond(
+                    rpc_id,
+                    {
+                        "sessionId": session_id,
+                        "approvalId": approval_id,
+                        "outcome": "rejected",
+                    },
+                )
+                return
+            self._pending_asks[rpc_id] = {
+                "kind": method,
+                "session_id": session_id,
+                "approval_id": approval_id,
+            }
+            prompt = str(payload.get("reason") or f"Allow DSH tool {payload.get('toolName') or 'unknown'}?")
+            options = ["allowed-once", "rejected"]
+        else:
+            questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
+            self._pending_asks[rpc_id] = {
+                "kind": method,
+                "session_id": session_id,
+                "questions": questions,
+            }
+            first = questions[0] if questions and isinstance(questions[0], dict) else {}
+            prompt = str(first.get("question") or first.get("prompt") or "DSH question")
+            options = [
+                str(item.get("label") or "")
+                for item in (first.get("options") or [])
+                if isinstance(item, dict) and str(item.get("label") or "")
+            ]
+        await on_event(
+            AgentEvent(
+                type="ask_user",
+                payload={
+                    "ask_user_id": rpc_id,
+                    "prompt": prompt,
+                    "question": prompt,
+                    "kind": "approval" if method.startswith("approval") else "question",
+                    "options": options,
+                },
+                provider="dsh",
+            )
+        )
+
+    async def _emit_message_reasoning(self, event, on_event):
+        # 若 DSH 只在完整 assistant/message 中给出 reasoning（未逐字
+        # 推 reasoning-delta），这里补发一次完整 thinking。
+        raw_data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        raw_msg = raw_data.get("message") if isinstance(raw_data.get("message"), dict) else raw_data
+        blocks = raw_msg.get("content") if isinstance(raw_msg.get("content"), list) else []
+        for block in blocks:
+            if not isinstance(block, dict) or block.get("type") != "reasoning":
+                continue
+            reasoning = str(block.get("text") or block.get("content") or "").strip()
+            if reasoning:
+                await on_event(
+                    AgentEvent(
+                        type="thinking",
+                        payload={"text": reasoning, "provider": "dsh"},
+                        provider="dsh",
+                    )
+                )
+
+    async def _finalize_legacy_turn(self, event, outcome, text_parts, _finalize, on_event):
+        reason = event.get("data", {}).get("reason", {})
+        kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
+        outcome["finish_reason"] = {
+            "completed": "completed",
+            "aborted": "aborted",
+            "error": "error",
+            "max-tokens": "max-tokens",
+        }.get(kind, kind)
+        finalize_result = _finalize()
+        # 若流式过程中只收到 text-delta 而缺失完整 assistant/message，
+        # 把累积文本作为完整 text 事件补发，确保前端收到落库的 assistant 消息。
+        body = str(finalize_result.get("text") or "")
+        if body and not text_parts:
+            await on_event(
+                AgentEvent(
+                    type="text",
+                    payload={"text": body, "provider": "dsh"},
+                    provider="dsh",
+                )
+            )
+        # DSH 模型/provider 出错时没有正文，把具体错误写到 result，
+        # 避免前端只看到空白的“Agent execution failed”。
+        if kind == "error" and not body:
+            error_info = reason.get("error") if isinstance(reason, dict) else None
+            if isinstance(error_info, dict):
+                finalize_result["text"] = str(error_info.get("message") or "DSH stream error")
+            else:
+                finalize_result["text"] = "DSH stream error"
+        return finalize_result
+
     async def _consume_events(
         self,
         session_id: str,
@@ -384,13 +511,8 @@ class DshServerAdapter(AgentBackend):
         text_parts: list[str] = []
         delta_parts: list[str] = []
 
-        def _finalize() -> dict[str, Any]:
-            # 最终文本优先取完整 assistant/message；缺失时回退拼接流式 delta
-            body = "\n".join(part for part in text_parts if part).strip()
-            if not body:
-                body = "".join(delta_parts).strip()
-            outcome["text"] = body
-            return outcome
+        _finalize = partial(_finalize_stream_text, text_parts=text_parts, delta_parts=delta_parts, outcome=outcome)
+
         async with websockets.connect(
             self._ws_url(),
             additional_headers=self._ws_headers(),
@@ -420,102 +542,44 @@ class DshServerAdapter(AgentBackend):
                         await on_event(unified)
                     etype = str(event.get("type") or "")
                     if etype == "assistant/message":
-                        # 若 DSH 只在完整 assistant/message 中给出 reasoning（未逐字
-                        # 推 reasoning-delta），这里补发一次完整 thinking。
-                        raw_data = event.get("data") if isinstance(event.get("data"), dict) else {}
-                        raw_msg = raw_data.get("message") if isinstance(raw_data.get("message"), dict) else raw_data
-                        blocks = raw_msg.get("content") if isinstance(raw_msg.get("content"), list) else []
-                        for block in blocks:
-                            if not isinstance(block, dict) or block.get("type") != "reasoning":
-                                continue
-                            reasoning = str(block.get("text") or block.get("content") or "").strip()
-                            if reasoning:
-                                await on_event(AgentEvent(
-                                    type="thinking",
-                                    payload={"text": reasoning, "provider": "dsh"},
-                                    provider="dsh",
-                                ))
+                        await self._emit_message_reasoning(event, on_event)
                     if etype == "turn/end":
-                        reason = event.get("data", {}).get("reason", {})
-                        kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
-                        outcome["finish_reason"] = {
-                            "completed": "completed",
-                            "aborted": "aborted",
-                            "error": "error",
-                            "max-tokens": "max-tokens",
-                        }.get(kind, kind)
-                        finalize_result = _finalize()
-                        # 若流式过程中只收到 text-delta 而缺失完整 assistant/message，
-                        # 把累积文本作为完整 text 事件补发，确保前端收到落库的 assistant 消息。
-                        body = str(finalize_result.get("text") or "")
-                        if body and not text_parts:
-                            await on_event(AgentEvent(
-                                type="text",
-                                payload={"text": body, "provider": "dsh"},
-                                provider="dsh",
-                            ))
-                        # DSH 模型/provider 出错时没有正文，把具体错误写到 result，
-                        # 避免前端只看到空白的“Agent execution failed”。
-                        if kind == "error" and not body:
-                            error_info = reason.get("error") if isinstance(reason, dict) else None
-                            if isinstance(error_info, dict):
-                                finalize_result["text"] = str(error_info.get("message") or "DSH stream error")
-                            else:
-                                finalize_result["text"] = "DSH stream error"
-                        return finalize_result
+                        return await self._finalize_legacy_turn(event, outcome, text_parts, _finalize, on_event)
                 elif method in ("approval/requested", "question/requested"):
-                    if method == "approval/requested":
-                        approval_id = str(payload.get("approvalId") or "")
-                        if read_only:
-                            await self._respond(
-                                rpc_id,
-                                {
-                                    "sessionId": session_id,
-                                    "approvalId": approval_id,
-                                    "outcome": "rejected",
-                                },
-                            )
-                            continue
-                        self._pending_asks[rpc_id] = {
-                            "kind": method,
-                            "session_id": session_id,
-                            "approval_id": approval_id,
-                        }
-                        prompt = str(
-                            payload.get("reason")
-                            or f"Allow DSH tool {payload.get('toolName') or 'unknown'}?"
-                        )
-                        options = ["allowed-once", "rejected"]
-                    else:
-                        questions = payload.get("questions") if isinstance(payload.get("questions"), list) else []
-                        self._pending_asks[rpc_id] = {
-                            "kind": method,
-                            "session_id": session_id,
-                            "questions": questions,
-                        }
-                        first = questions[0] if questions and isinstance(questions[0], dict) else {}
-                        prompt = str(first.get("question") or first.get("prompt") or "DSH question")
-                        options = [
-                            str(item.get("label") or "")
-                            for item in (first.get("options") or [])
-                            if isinstance(item, dict) and str(item.get("label") or "")
-                        ]
-                    await on_event(AgentEvent(
-                        type="ask_user",
-                        payload={
-                            "ask_user_id": rpc_id,
-                            "prompt": prompt,
-                            "question": prompt,
-                            "kind": "approval" if method.startswith("approval") else "question",
-                            "options": options,
-                        },
-                        provider="dsh",
-                    ))
+                    await self._handle_interaction_request(method, payload, rpc_id, session_id, read_only, on_event)
                 elif method == "stream/error":
                     outcome["finish_reason"] = "error"
                     outcome["text"] = str(payload.get("message") or "stream error")
                     return _finalize()
         return _finalize()
+
+    async def _finalize_gateway_turn(self, event, outcome, text_parts, _finalize, on_event):
+        reason = event.get("data", {}).get("reason", {})
+        kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
+        outcome["finish_reason"] = {
+            "completed": "completed",
+            "aborted": "aborted",
+            "error": "error",
+            "max-tokens": "max-tokens",
+        }.get(kind, kind)
+        result = _finalize()
+        body = str(result.get("text") or "")
+        if body and not text_parts:
+            await on_event(
+                AgentEvent(
+                    type="text",
+                    payload={"text": body, "provider": "dsh"},
+                    provider="dsh",
+                )
+            )
+        if kind == "error" and not body:
+            error_info = reason.get("error") if isinstance(reason, dict) else None
+            result["text"] = (
+                str(error_info.get("message") or "DSH stream error")
+                if isinstance(error_info, dict)
+                else "DSH stream error"
+            )
+        return result
 
     async def _consume_gateway_events(
         self,
@@ -548,19 +612,23 @@ class DshServerAdapter(AgentBackend):
             additional_headers=self._ws_headers(),
             max_size=64 * 1024 * 1024,
         ) as ws:
-            await ws.send(json.dumps({
-                "type": "open",
-                "streamId": stream_id,
-                "endpoint": "session/follow",
-                "payload": {
-                    "args": {
-                        "request": {
-                            "address": {"kind": "session", "sessionId": session_id},
-                            "maxMessages": 50,
+            await ws.send(
+                json.dumps(
+                    {
+                        "type": "open",
+                        "streamId": stream_id,
+                        "endpoint": "session/follow",
+                        "payload": {
+                            "args": {
+                                "request": {
+                                    "address": {"kind": "session", "sessionId": session_id},
+                                    "maxMessages": 50,
+                                },
+                            },
                         },
-                    },
-                },
-            }))
+                    }
+                )
+            )
             async for raw in ws:
                 try:
                     frame = json.loads(raw)
@@ -593,27 +661,35 @@ class DshServerAdapter(AgentBackend):
                     await on_event(unified)
                 etype = str(event.get("type") or "")
                 if etype == "turn/end":
-                    reason = event.get("data", {}).get("reason", {})
-                    kind = str(reason.get("kind") or "completed") if isinstance(reason, dict) else "completed"
-                    outcome["finish_reason"] = {
-                        "completed": "completed",
-                        "aborted": "aborted",
-                        "error": "error",
-                        "max-tokens": "max-tokens",
-                    }.get(kind, kind)
-                    result = _finalize()
-                    body = str(result.get("text") or "")
-                    if body and not text_parts:
-                        await on_event(AgentEvent(
-                            type="text",
-                            payload={"text": body, "provider": "dsh"},
-                            provider="dsh",
-                        ))
-                    if kind == "error" and not body:
-                        error_info = reason.get("error") if isinstance(reason, dict) else None
-                        result["text"] = str(error_info.get("message") or "DSH stream error") if isinstance(error_info, dict) else "DSH stream error"
-                    return result
+                    return await self._finalize_gateway_turn(event, outcome, text_parts, _finalize, on_event)
         return _finalize()
+
+    async def _emit_run_result(self, consumed, session_id, request, started_at, _tracked_event):
+        finish_reason = consumed.get("finish_reason") or "completed"
+        final_text = str(consumed.get("text") or "")
+        success = finish_reason not in ("error", "aborted")
+        await _tracked_event(
+            AgentEvent(
+                type="result",
+                payload={
+                    "success": success,
+                    "result": final_text,
+                    "finish_reason": finish_reason,
+                    "session_id": session_id,
+                },
+                provider="dsh",
+            )
+        )
+        return AgentRunResult(
+            run_id=request.run_id,
+            session_id=session_id,
+            success=success,
+            finish_reason=finish_reason,
+            result_text=final_text,
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+            return_code=0 if success else 1,
+            raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
+        )
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
@@ -629,6 +705,7 @@ class DshServerAdapter(AgentBackend):
         async def _tracked_event(event: AgentEvent) -> None:
             watchdog.mark(event.type)
             await on_event(event)
+
         session_id = str(request.session_id or "").strip()
         try:
             if not session_id:
@@ -645,38 +722,45 @@ class DshServerAdapter(AgentBackend):
             policy = request.provider_options.get("execution_policy")
             if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
                 from app.agents.playbook_guard import apply_dsh_policy
+
                 await apply_dsh_policy(request, session_id)
 
-            await _tracked_event(AgentEvent(
-                type="session_started",
-                payload={
-                    "provider_session_id": session_id,
-                    "provider": "dsh",
-                    "directory": request.project_path,
-                },
-                provider="dsh",
-            ))
+            await _tracked_event(
+                AgentEvent(
+                    type="session_started",
+                    payload={
+                        "provider_session_id": session_id,
+                        "provider": "dsh",
+                        "directory": request.project_path,
+                    },
+                    provider="dsh",
+                )
+            )
 
             # 先开事件流再发 prompt，避免错过早期事件；prompt 失败时立刻终止等待
             is_read_only = str(request.permission_mode or "").strip().lower() in {
-                "read-only", "readonly", "plan",
+                "read-only",
+                "readonly",
+                "plan",
             }
-            consume_task = asyncio.create_task(
-                self._consume_events(session_id, _tracked_event, read_only=is_read_only)
-            )
+            consume_task = asyncio.create_task(self._consume_events(session_id, _tracked_event, read_only=is_read_only))
             prompt_text = request.prompt
             if is_read_only:
                 prompt_text = (
                     "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
-                    "禁止执行会改变项目或外部系统状态的命令。\n\n"
-                    + prompt_text
+                    "禁止执行会改变项目或外部系统状态的命令。\n\n" + prompt_text
                 )
-            prompt_task = asyncio.create_task(self._rpc("session.prompt", {
-                "requestId": f"tf-{uuid.uuid4().hex}",
-                "sessionId": session_id,
-                "mode": "queue",
-                "content": [{"type": "text", "text": prompt_text}],
-            }))
+            prompt_task = asyncio.create_task(
+                self._rpc(
+                    "session.prompt",
+                    {
+                        "requestId": f"tf-{uuid.uuid4().hex}",
+                        "sessionId": session_id,
+                        "mode": "queue",
+                        "content": [{"type": "text", "text": prompt_text}],
+                    },
+                )
+            )
 
             def _abort_on_prompt_failure(task: asyncio.Task) -> None:
                 if not task.cancelled() and task.exception() is not None:
@@ -703,29 +787,8 @@ class DshServerAdapter(AgentBackend):
                 raise
             await prompt_task
 
-            finish_reason = consumed.get("finish_reason") or "completed"
-            final_text = str(consumed.get("text") or "")
-            success = finish_reason not in ("error", "aborted")
-            await _tracked_event(AgentEvent(
-                type="result",
-                payload={
-                    "success": success,
-                    "result": final_text,
-                    "finish_reason": finish_reason,
-                    "session_id": session_id,
-                },
-                provider="dsh",
-            ))
-            return AgentRunResult(
-                run_id=request.run_id,
-                session_id=session_id,
-                success=success,
-                finish_reason=finish_reason,
-                result_text=final_text,
-                duration_ms=int((time.monotonic() - started_at) * 1000),
-                return_code=0 if success else 1,
-                raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
-            )
+            return await self._emit_run_result(consumed, session_id, request, started_at, _tracked_event)
+
         except AgentError:
             raise
         except Exception as exc:
@@ -733,7 +796,7 @@ class DshServerAdapter(AgentBackend):
         finally:
             self._running = False
 
-    async def interrupt(self, run_id: str | None = None) -> "AgentStopResult":
+    async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         """Remote interrupt: only a successful ``session.cancel`` RPC response
         counts as acknowledged (doc §5.2); errors/timeouts/disconnects are
         returned as structured failures, never swallowed."""
@@ -762,9 +825,7 @@ class DshServerAdapter(AgentBackend):
             stop_acknowledged=True,
         )
 
-    async def cancel(
-        self, run_id: str | None = None, *, session_id: str | None = None
-    ) -> "AgentStopResult":
+    async def cancel(self, run_id: str | None = None, *, session_id: str | None = None) -> AgentStopResult:
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
         sid = session_id or self._session_id
@@ -792,7 +853,7 @@ class DshServerAdapter(AgentBackend):
             stop_acknowledged=True,
         )
 
-    async def cancel_persisted_session(self, session_id: str) -> "AgentStopResult":
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
         """Reaper durable stop：目标必须是显式传入的持久化 session id。
 
         禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
@@ -859,9 +920,7 @@ class DshServerAdapter(AgentBackend):
         kind = str(pending.get("kind") or "")
         if kind.startswith("approval"):
             outcome = (
-                "rejected"
-                if str(response).lower() in ("deny", "reject", "rejected", "no", "拒绝")
-                else "allowed-once"
+                "rejected" if str(response).lower() in ("deny", "reject", "rejected", "no", "拒绝") else "allowed-once"
             )
             value = {
                 "sessionId": pending.get("session_id") or self._session_id,
@@ -875,15 +934,15 @@ class DshServerAdapter(AgentBackend):
                 if not isinstance(question, dict):
                     continue
                 labels = {
-                    str(item.get("label") or "")
-                    for item in (question.get("options") or [])
-                    if isinstance(item, dict)
+                    str(item.get("label") or "") for item in (question.get("options") or []) if isinstance(item, dict)
                 }
-                answers.append({
-                    "id": str(question.get("id") or ""),
-                    "selected": [answer_text] if answer_text in labels else [],
-                    **({} if answer_text in labels else {"custom": answer_text}),
-                })
+                answers.append(
+                    {
+                        "id": str(question.get("id") or ""),
+                        "selected": [answer_text] if answer_text in labels else [],
+                        **({} if answer_text in labels else {"custom": answer_text}),
+                    }
+                )
             value = {
                 "sessionId": pending.get("session_id") or self._session_id,
                 "answer": {"answers": answers},
@@ -901,9 +960,7 @@ class DshServerAdapter(AgentBackend):
             },
         )
         if reply.status_code != 200:
-            raise AgentError(
-                f"DSH HITL reply failed: HTTP {reply.status_code} {reply.text[:300]}"
-            )
+            raise AgentError(f"DSH HITL reply failed: HTTP {reply.status_code} {reply.text[:300]}")
 
     async def fork_session(
         self,

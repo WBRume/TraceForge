@@ -1,23 +1,17 @@
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.domains.skill.services.packages.github_source import (  # noqa: E402
+from app.domains.skill.services.packages import github_source as github_import_service
+from app.domains.skill.services.packages.github_source import (
     GithubImportError,
-    _run_git_checked,
     _resolve_sparse_skill_subdir,
+    _run_git_checked,
     locate_skill_directory,
     parse_public_repo_url,
     read_skill_description,
 )
-from app.domains.skill.services.packages import github_source as github_import_service
 
 
 def _write_text(path: str, content: str) -> None:

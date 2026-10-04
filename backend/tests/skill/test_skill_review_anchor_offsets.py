@@ -1,6 +1,4 @@
-
 from app.domains.skill.services.reviews.anchors import _resolve_comment_char_range
-
 
 
 def test_resolve_comment_char_range_uses_client_offsets_when_valid():

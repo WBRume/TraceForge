@@ -5,7 +5,7 @@ API MOCK Source Version Service.
 import os
 import tempfile
 import uuid
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from app.domains.api_mock.models.api_mock import (
     SddApiMockProject,
     SddApiMockSourceVersion,
 )
+
 from .mock_case_service import clone_mock_cases_from_source
 from .openapi_normalizer import extract_endpoints_and_entities, normalize_oas_from_text, serialize_document_content
 from .path_matcher import _normalize_path
@@ -24,30 +25,15 @@ from .path_matcher import _normalize_path
 logger = get_logger(__name__, category="api_mock")
 
 
-def _endpoint_key(method: str, path: str) -> Tuple[str, str]:
+def _endpoint_key(method: str, path: str) -> tuple[str, str]:
     return method.upper(), _normalize_path(path)
 
 
-def build_endpoint_lookup(endpoints: list[SddApiMockEndpoint]) -> Dict[Tuple[str, str], SddApiMockEndpoint]:
+def build_endpoint_lookup(endpoints: list[SddApiMockEndpoint]) -> dict[tuple[str, str], SddApiMockEndpoint]:
     return {_endpoint_key(endpoint.method, endpoint.path): endpoint for endpoint in endpoints}
 
 
-def persist_source_version(
-    db: Session,
-    project: SddApiMockProject,
-    *,
-    source_type: ApiMockSourceType,
-    source_name: Optional[str],
-    raw_content: str,
-    normalized_oas: Dict[str, Any],
-    creator_id: str,
-    activate: bool,
-    clone_from_source_id: Optional[str] = None,
-    case_endpoint_overrides: Optional[Dict[str, Tuple[str, str]]] = None,
-) -> SddApiMockSourceVersion:
-    endpoints_payload, entities_payload = extract_endpoints_and_entities(normalized_oas)
-    logger.info(f"Persisting source version for project {project.id}. Found {len(endpoints_payload)} endpoints and {len(entities_payload)} entities.")
-
+def _write_source_document(project, raw_content, normalized_oas):
     primary_target_dir = os.path.join(project.task.project_path, ".sdd", "api_mock", "versions")
 
     try:
@@ -77,7 +63,31 @@ def persist_source_version(
             f.write(final_content)
         logger.info(f"Source version saved to: {file_path}")
     except PermissionError as e:
-        raise PermissionError(f"Cannot write to {file_path}. Please check directory permissions. Original error: {e}") from e
+        raise PermissionError(
+            f"Cannot write to {file_path}. Please check directory permissions. Original error: {e}"
+        ) from e
+    return version_id, file_path
+
+
+def persist_source_version(
+    db: Session,
+    project: SddApiMockProject,
+    *,
+    source_type: ApiMockSourceType,
+    source_name: str | None,
+    raw_content: str,
+    normalized_oas: dict[str, Any],
+    creator_id: str,
+    activate: bool,
+    clone_from_source_id: str | None = None,
+    case_endpoint_overrides: dict[str, tuple[str, str]] | None = None,
+) -> SddApiMockSourceVersion:
+    endpoints_payload, entities_payload = extract_endpoints_and_entities(normalized_oas)
+    logger.info(
+        f"Persisting source version for project {project.id}. Found {len(endpoints_payload)} endpoints and {len(entities_payload)} entities."
+    )
+
+    version_id, file_path = _write_source_document(project, raw_content, normalized_oas)
 
     source_version = SddApiMockSourceVersion(
         id=version_id,
@@ -115,7 +125,7 @@ def persist_source_version(
     db.flush()
     logger.info(f"Created {len(new_db_endpoints)} endpoint records.")
 
-    entity_endpoint_map: Dict[str, str] = {}
+    entity_endpoint_map: dict[str, str] = {}
     if clone_from_source_id:
         previous_endpoints = (
             db.query(SddApiMockEndpoint)
@@ -126,7 +136,7 @@ def persist_source_version(
             .all()
         )
         new_lookup = build_endpoint_lookup(new_db_endpoints)
-        endpoint_id_map: Dict[str, str] = {}
+        endpoint_id_map: dict[str, str] = {}
 
         for parent_ep in previous_endpoints:
             override = (case_endpoint_overrides or {}).get(parent_ep.id)
@@ -190,7 +200,9 @@ def persist_source_version(
     return source_version
 
 
-def get_source_version(db: Session, project: SddApiMockProject, source_version_id: str) -> Optional[SddApiMockSourceVersion]:
+def get_source_version(
+    db: Session, project: SddApiMockProject, source_version_id: str
+) -> SddApiMockSourceVersion | None:
     return (
         db.query(SddApiMockSourceVersion)
         .filter(
@@ -201,7 +213,7 @@ def get_source_version(db: Session, project: SddApiMockProject, source_version_i
     )
 
 
-def get_active_source_version(db: Session, project: SddApiMockProject) -> Optional[SddApiMockSourceVersion]:
+def get_active_source_version(db: Session, project: SddApiMockProject) -> SddApiMockSourceVersion | None:
     active_source_id = project.active_source_version_id
     if not active_source_id:
         return None
@@ -272,20 +284,19 @@ def activate_source_version(db: Session, project: SddApiMockProject, source_vers
     return source
 
 
-def resolve_active_source_id(project: SddApiMockProject, source_version_id: Optional[str] = None) -> Optional[str]:
+def resolve_active_source_id(project: SddApiMockProject, source_version_id: str | None = None) -> str | None:
     return source_version_id or project.active_source_version_id
 
 
-def load_oas_from_source(source: Optional[SddApiMockSourceVersion]) -> Dict[str, Any]:
+def load_oas_from_source(source: SddApiMockSourceVersion | None) -> dict[str, Any]:
     if not source:
         return {"openapi": "3.0.3", "paths": {}}
     if getattr(source, "normalized_oas_json", None):
         return source.normalized_oas_json
     if source.storage_path and os.path.exists(source.storage_path):
         try:
-            with open(source.storage_path, "r", encoding="utf-8") as f:
+            with open(source.storage_path, encoding="utf-8") as f:
                 return normalize_oas_from_text(f.read())
         except Exception as e:
             logger.exception(f"Failed to read source from {source.storage_path}: {e}")
-            pass
     return {"openapi": "3.0.3", "paths": {}}

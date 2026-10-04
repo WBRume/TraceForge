@@ -6,9 +6,8 @@ WebSocket manager for asset discussion collaboration rooms.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set
-
 from fastapi import WebSocket
+
 from app.core.logging import get_logger
 from app.domains.websocket.ws.connection import ConnectionRegistry, OutboundConnection
 
@@ -25,11 +24,11 @@ class AssetDiscussionConnectionManager:
 
     # 兼容视图：asset_id -> 活跃 WebSocket 集合（只读用途）
     @property
-    def active_connections(self) -> Dict[str, Set[WebSocket]]:
+    def active_connections(self) -> dict[str, set[WebSocket]]:
         return {key: set(sockets) for key, sockets in self.registry.rooms.items()}
 
     @property
-    def user_presence(self) -> Dict[str, Dict[WebSocket, str]]:
+    def user_presence(self) -> dict[str, dict[WebSocket, str]]:
         return {key: dict(users) for key, users in self.registry.presence.items()}
 
     async def connect(
@@ -38,9 +37,9 @@ class AssetDiscussionConnectionManager:
         asset_id: str,
         user_id: str,
         *,
-        client_id: Optional[str] = None,
-        epoch: Optional[str] = None,
-        last_sequence: Optional[int] = None,
+        client_id: str | None = None,
+        epoch: str | None = None,
+        last_sequence: int | None = None,
     ) -> OutboundConnection:
         await websocket.accept()
         room_key = self._room_key(asset_id)
@@ -60,7 +59,7 @@ class AssetDiscussionConnectionManager:
         self.registry.disconnect(self._room_key(asset_id), websocket)
         logger.info(f"Asset discussion WS disconnected: asset={asset_id}")
 
-    def online_users(self, asset_id: str) -> List[str]:
+    def online_users(self, asset_id: str) -> list[str]:
         return self.registry.online_users(self._room_key(asset_id))
 
     async def broadcast(self, asset_id: str, payload: dict) -> None:

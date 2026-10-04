@@ -45,7 +45,7 @@ def update_system_config(
             updated_by=current_user.id,
         )
     except system_config_service.SystemConfigError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     audit_log(
         action="update_system_config",
         outcome="success",

@@ -7,14 +7,12 @@ T03 Provider 可插拔性与 GitHub 适配用例（B-22）。
   code 失效（E-4c）/ 上游 5xx（E-9）/ 非法 JSON
 """
 
-import httpx
 import pytest
 
 from app.config import settings
 from app.domains.auth.errors import (
     ERR_OAUTH_PROVIDER_DISABLED,
     ERR_OAUTH_PROVIDER_NOT_FOUND,
-    OAuthAPIError,
     OAuthProviderDisabledError,
     OAuthProviderNotFoundError,
     OAuthUpstreamError,
@@ -31,11 +29,10 @@ from app.domains.auth.providers.base import (
     OAuthProvider,
 )
 from app.domains.auth.services import oauth_service
-
-from tests.conftest import github_profile, make_user, run_login_flow
-
+from tests.conftest import make_user
 
 # ══════════════════ 可插拔性（NFR-M1） ══════════════════
+
 
 class MockCorpProvider(OAuthProvider):
     """测试专用 mock provider：不触网、免配置（is_configured 恒真）、固定 profile。
@@ -97,18 +94,12 @@ def test_enabled_provider_list_includes_mockcorp(mockcorp_configured):
 
 def test_new_provider_full_flow_with_zero_router_changes(db, mockcorp_configured):
     """新 provider 全链路：authorize → callback → 三路判定，路由/判定/模型零改动。"""
-    params = oauth_service.build_authorize_url(
-        db, provider="mockcorp", intent="login", client_type="web", user_id=None
-    )
+    params = oauth_service.build_authorize_url(db, provider="mockcorp", intent="login", client_type="web", user_id=None)
     assert params.authorize_url.startswith("https://mockcorp.example/authorize")
 
-    cb = oauth_service.handle_callback(
-        db, provider="mockcorp", code="mc-code", state=params.state, error=None
-    )
+    cb = oauth_service.handle_callback(db, provider="mockcorp", code="mc-code", state=params.state, error=None)
     # 无本地用户 → 路径 C（注册判定逻辑对新 provider 完全复用）
-    parsed = dict(
-        fragment.split("=", 1) for fragment in cb.redirect_url.split("?", 1)[1].split("&")
-    )
+    parsed = dict(fragment.split("=", 1) for fragment in cb.redirect_url.split("?", 1)[1].split("&"))
     assert parsed["status"] == "REGISTER_REQUIRED"
     assert parsed["ticket"]
 
@@ -131,6 +122,7 @@ def test_provider_registered_but_not_configured_returns_404(monkeypatch):
 
 
 # ══════════════════ GitHub 适配（mock httpx 上游） ══════════════════
+
 
 def test_github_fetch_profile_with_email(github_mock):
     github_mock.user_response = (
@@ -228,15 +220,9 @@ def test_github_callback_maps_code_invalid_to_302(db, github_mock):
     make_user(db, email="seed@example.com", password="Seed-Pass-1")
     github_mock.token_response = (200, {"error": "bad_verification_code"})
 
-    params = oauth_service.build_authorize_url(
-        db, provider="github", intent="login", client_type="web", user_id=None
-    )
-    cb = oauth_service.handle_callback(
-        db, provider="github", code="bad-code", state=params.state, error=None
-    )
-    query = dict(
-        fragment.split("=", 1) for fragment in cb.redirect_url.split("?", 1)[1].split("&")
-    )
+    params = oauth_service.build_authorize_url(db, provider="github", intent="login", client_type="web", user_id=None)
+    cb = oauth_service.handle_callback(db, provider="github", code="bad-code", state=params.state, error=None)
+    query = dict(fragment.split("=", 1) for fragment in cb.redirect_url.split("?", 1)[1].split("&"))
     assert query["error"] == "code_invalid"
     assert "ticket" not in query
 
@@ -251,7 +237,5 @@ def test_github_authorize_url_contains_state_and_scope(github_mock):
 
 def test_github_callback_access_denied_maps_to_semantic_error(db, github_mock):
     """E-4a：用户取消授权（error=access_denied）→ 归并为语义化错误，不透传原文。"""
-    cb = oauth_service.handle_callback(
-        db, provider="github", code=None, state=None, error="access_denied"
-    )
+    cb = oauth_service.handle_callback(db, provider="github", code=None, state=None, error="access_denied")
     assert "error=access_denied" in cb.redirect_url

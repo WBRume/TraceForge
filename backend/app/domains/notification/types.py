@@ -12,13 +12,12 @@ dispatch_notifications 会对未注册的类型告警（仍会投递，不阻断
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass(frozen=True)
 class NotificationTypeInfo:
     code: str
-    category: str          # 展示分组：collab / task / system ...
+    category: str  # 展示分组：collab / task / system ...
     description: str
     payload_keys: tuple[str, ...] = field(default=())  # payload_json 约定字段，用于文档与排障
 
@@ -31,7 +30,7 @@ def register(info: NotificationTypeInfo) -> NotificationTypeInfo:
     return info
 
 
-def get_notification_type(code: str) -> Optional[NotificationTypeInfo]:
+def get_notification_type(code: str) -> NotificationTypeInfo | None:
     return _REGISTRY.get(str(code or ""))
 
 
@@ -45,23 +44,29 @@ def is_registered(code: str) -> bool:
 
 # ── 内置类型：协作预输入 ──
 
-register(NotificationTypeInfo(
-    code="pre_input_mention",
-    category="collab",
-    description="协作预输入 @提醒：邀请被 @ 成员参与会话预输入",
-    payload_keys=("task_id", "task_name", "workspace_id", "pre_input_id", "deadline_at"),
-))
+register(
+    NotificationTypeInfo(
+        code="pre_input_mention",
+        category="collab",
+        description="协作预输入 @提醒：邀请被 @ 成员参与会话预输入",
+        payload_keys=("task_id", "task_name", "workspace_id", "pre_input_id", "deadline_at"),
+    )
+)
 
-register(NotificationTypeInfo(
-    code="pre_input_submitted",
-    category="collab",
-    description="协作预输入已提交执行：通知发起人与参与成员",
-    payload_keys=("task_id", "task_name", "workspace_id", "pre_input_id", "submit_reason"),
-))
+register(
+    NotificationTypeInfo(
+        code="pre_input_submitted",
+        category="collab",
+        description="协作预输入已提交执行：通知发起人与参与成员",
+        payload_keys=("task_id", "task_name", "workspace_id", "pre_input_id", "submit_reason"),
+    )
+)
 
-register(NotificationTypeInfo(
-    code="task_message",
-    category="task",
-    description="任务消息关注：关注者收到任务新消息提醒",
-    payload_keys=("task_id", "task_name", "workspace_id", "message_id", "message_type"),
-))
+register(
+    NotificationTypeInfo(
+        code="task_message",
+        category="task",
+        description="任务消息关注：关注者收到任务新消息提醒",
+        payload_keys=("task_id", "task_name", "workspace_id", "message_id", "message_type"),
+    )
+)

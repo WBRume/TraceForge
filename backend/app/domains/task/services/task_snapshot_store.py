@@ -8,17 +8,16 @@ as a content cache.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import stat
 import tempfile
 import time
-
+from contextlib import contextmanager
+from pathlib import Path
 
 DEFAULT_EXCLUDED_SUFFIXES = (".pyc", ".pyo", ".class")
 
@@ -27,7 +26,9 @@ def is_junction(path: str) -> bool:
     if os.name != "nt" or not os.path.lexists(path):
         return False
     info = os.lstat(path)
-    return bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT) and not stat.S_ISLNK(info.st_mode)
+    return bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT) and not stat.S_ISLNK(
+        info.st_mode
+    )
 
 
 @contextmanager
@@ -48,20 +49,21 @@ def store_lock(root: str):
                 try:
                     msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     break
-                except OSError:
+                except OSError as caught_error:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError("Task snapshot store is busy")
+                        raise TimeoutError("Task snapshot store is busy") from caught_error
                     time.sleep(0.05)
         else:
             import fcntl
+
             deadline = time.monotonic() + 180
             while True:
                 try:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
-                except BlockingIOError:
+                except BlockingIOError as caught_error_:
                     if time.monotonic() >= deadline:
-                        raise TimeoutError("Task snapshot store is busy")
+                        raise TimeoutError("Task snapshot store is busy") from caught_error_
                     time.sleep(0.05)
         try:
             yield
@@ -88,7 +90,12 @@ def write_json(path: str, payload: dict) -> None:
 
 
 def safe_path(root: str, relative: str) -> str:
-    if not relative or "\\" in relative or ":" in relative or any(p.lower() in {"", ".", "..", ".git"} for p in relative.split("/")):
+    if (
+        not relative
+        or "\\" in relative
+        or ":" in relative
+        or any(p.lower() in {"", ".", "..", ".git"} for p in relative.split("/"))
+    ):
         raise ValueError(f"Invalid snapshot path: {relative!r}")
     target = os.path.abspath(os.path.join(root, relative))
     if os.path.commonpath([os.path.abspath(root), target]) != os.path.abspath(root):
@@ -115,8 +122,11 @@ class ReadPhasePaths:
         self.checked = {self.root}
 
     def __call__(self, relative: str) -> str:
-        if not relative or "\\" in relative or ":" in relative or any(
-            p.lower() in {"", ".", "..", ".git"} for p in relative.split("/")
+        if (
+            not relative
+            or "\\" in relative
+            or ":" in relative
+            or any(p.lower() in {"", ".", "..", ".git"} for p in relative.split("/"))
         ):
             raise ValueError(f"Invalid snapshot path: {relative!r}")
         target = os.path.abspath(os.path.join(self.root, relative))

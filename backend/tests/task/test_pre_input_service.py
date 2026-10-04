@@ -1,47 +1,25 @@
 import asyncio
-import os
-import sys
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.ai.models.ai_job  # noqa: F401,E402
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.provision_job  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
-import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
+import app.domains.ai.models.ai_job
+import app.domains.api_mock.models.api_mock
+import app.domains.task.models.test_result
+import app.domains.workflow.models.provision_job
+import app.domains.workflow.models.task_change
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.database import Base
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
     publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
 )
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
-)
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from app.database import Base  # noqa: E402
-from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
-from app.domains.notification.models.notification import SddUserNotification  # noqa: E402
-from app.domains.task.models.pre_input import PreInputStatus  # noqa: E402
-from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
-from app.domains.task.services import pre_input_service  # noqa: E402
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.notification.models.notification import SddUserNotification
+from app.domains.task.models.pre_input import PreInputStatus
+from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.services import pre_input_service
 
 
 @pytest.fixture()
@@ -85,12 +63,14 @@ def _seed(db, *, task_status=TaskStatus.CODING):
     )
     rows = [owner, member, expert, outsider, workspace, task]
     for user in (owner, member, expert):
-        rows.append(WorkspaceMember(
-            workspace_id=workspace.id,
-            user_id=user.id,
-            role=WorkspaceRole.DEVELOPER,
-            is_expert=user.id == "u-expert",
-        ))
+        rows.append(
+            WorkspaceMember(
+                workspace_id=workspace.id,
+                user_id=user.id,
+                role=WorkspaceRole.DEVELOPER,
+                is_expert=user.id == "u-expert",
+            )
+        )
     db.add_all(rows)
     db.commit()
     return {"task": task, "workspace": workspace}
@@ -114,18 +94,30 @@ def _get(db, pre_input_id):
 
 
 def _edit(pre_input_id, user_id, is_expert, text):
-    return asyncio.run(pre_input_service.edit_pre_input_document(
-        pre_input_id=pre_input_id, task_id="task-1",
-        user_id=user_id, is_expert=is_expert, new_text=text,
-    ))
+    return asyncio.run(
+        pre_input_service.edit_pre_input_document(
+            pre_input_id=pre_input_id,
+            task_id="task-1",
+            user_id=user_id,
+            is_expert=is_expert,
+            new_text=text,
+        )
+    )
 
 
 def _replace_span(pre_input_id, user_id, is_expert, start, end, anchor, replacement):
-    return asyncio.run(pre_input_service.replace_pre_input_span(
-        pre_input_id=pre_input_id, task_id="task-1",
-        user_id=user_id, is_expert=is_expert,
-        start=start, end=end, anchor_text=anchor, replacement=replacement,
-    ))
+    return asyncio.run(
+        pre_input_service.replace_pre_input_span(
+            pre_input_id=pre_input_id,
+            task_id="task-1",
+            user_id=user_id,
+            is_expert=is_expert,
+            start=start,
+            end=end,
+            anchor_text=anchor,
+            replacement=replacement,
+        )
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -186,9 +178,13 @@ def test_create_rejects_duplicate_and_non_member_mention(db_session):
 
     task.status = TaskStatus.INTERRUPTED
     db.commit()
-    asyncio.run(pre_input_service.cancel_pre_input(
-        pre_input_id=created["pre_input_id"], task_id="task-1", actor_user_id="u-owner",
-    ))
+    asyncio.run(
+        pre_input_service.cancel_pre_input(
+            pre_input_id=created["pre_input_id"],
+            task_id="task-1",
+            actor_user_id="u-owner",
+        )
+    )
     with pytest.raises(pre_input_service.PreInputError):
         _create(mentioned_user_ids=["u-out"])
 
@@ -233,7 +229,7 @@ def test_insert_text_allowed_for_any_member_char_level(db_session):
 
 def test_modify_text_requires_permission_char_level(db_session):
     db = db_session
-    seeded = _seed(db)
+    _seed(db)
     created = _create(mentioned_user_ids=[], edit_permission="NONE")
     pre_input_id = created["pre_input_id"]
     # world → trace：替换已有字符，需要权限
@@ -241,9 +237,13 @@ def test_modify_text_requires_permission_char_level(db_session):
         _edit(pre_input_id, "u-member", False, "hello trace")
     assert exc.value.status_code == 403
 
-    asyncio.run(pre_input_service.cancel_pre_input(
-        pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-owner",
-    ))
+    asyncio.run(
+        pre_input_service.cancel_pre_input(
+            pre_input_id=pre_input_id,
+            task_id="task-1",
+            actor_user_id="u-owner",
+        )
+    )
     created = _create(mentioned_user_ids=[], edit_permission="EXPERTS")
     pre_input_id = created["pre_input_id"]
     _edit(pre_input_id, "u-expert", True, "hello trace")
@@ -288,9 +288,7 @@ def test_replace_span_insert_anyone_replace_needs_permission(db_session):
     # 纯插入（start==end）：无权限成员也可
     _replace_span(pre_input_id, "u-member", False, 5, 5, "", " brave")
     pre_input = _get(db, pre_input_id)
-    assert pre_input_service._document_text(
-        pre_input_service._document_segments(pre_input)
-    ) == "hello brave world"
+    assert pre_input_service._document_text(pre_input_service._document_segments(pre_input)) == "hello brave world"
 
     # 替换所选：无权限 → 403
     with pytest.raises(pre_input_service.PreInputError) as exc:
@@ -315,25 +313,31 @@ def test_delete_text_requires_permission(db_session):
     with pytest.raises(pre_input_service.PreInputError):
         _edit(pre_input_id, "u-member", False, "hello")
 
-    asyncio.run(pre_input_service.cancel_pre_input(
-        pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-owner",
-    ))
+    asyncio.run(
+        pre_input_service.cancel_pre_input(
+            pre_input_id=pre_input_id,
+            task_id="task-1",
+            actor_user_id="u-owner",
+        )
+    )
     created = _create(mentioned_user_ids=[], edit_permission="ALL")
     pre_input_id = created["pre_input_id"]
     _edit(pre_input_id, "u-member", False, "hello")
     pre_input = _get(db, pre_input_id)
-    assert pre_input_service._document_text(
-        pre_input_service._document_segments(pre_input)
-    ) == "hello"
+    assert pre_input_service._document_text(pre_input_service._document_segments(pre_input)) == "hello"
 
 
 def test_mark_done_participates_without_edit(db_session):
     db = db_session
     _seed(db)
     created = _create()
-    asyncio.run(pre_input_service.mark_pre_input_done(
-        pre_input_id=created["pre_input_id"], task_id="task-1", user_id="u-member",
-    ))
+    asyncio.run(
+        pre_input_service.mark_pre_input_done(
+            pre_input_id=created["pre_input_id"],
+            task_id="task-1",
+            user_id="u-member",
+        )
+    )
     pre_input = _get(db, created["pre_input_id"])
     participants = [c.user_id for c in pre_input.contributions]
     assert "u-member" in participants
@@ -350,9 +354,13 @@ def test_auto_submit_when_all_mentioned_participated(db_session):
     assert result["auto_submitted"] is False
     assert pre_input_service.get_active_pre_input(db, task.id) is not None
 
-    result = asyncio.run(pre_input_service.mark_pre_input_done(
-        pre_input_id=pre_input_id, task_id="task-1", user_id="u-expert",
-    ))
+    result = asyncio.run(
+        pre_input_service.mark_pre_input_done(
+            pre_input_id=pre_input_id,
+            task_id="task-1",
+            user_id="u-expert",
+        )
+    )
     assert result["auto_submitted"] is True
     assert result["submission"]["chat_message_id"]
     assert pre_input_service.get_active_pre_input(db, task.id) is None
@@ -365,18 +373,26 @@ def test_auto_submit_when_all_mentioned_participated(db_session):
 def test_submit_cas_prevents_double_submission(db_session):
     db = db_session
     _seed(db)
-    task = db.query(SddTask).filter(SddTask.id == "task-1").one()
+    db.query(SddTask).filter(SddTask.id == "task-1").one()
 
     created = _create(mentioned_user_ids=[])
     pre_input_id = created["pre_input_id"]
-    first = asyncio.run(pre_input_service.submit_pre_input(
-        pre_input_id=pre_input_id, actor_user_id="u-owner", reason="manual",
-    ))
+    first = asyncio.run(
+        pre_input_service.submit_pre_input(
+            pre_input_id=pre_input_id,
+            actor_user_id="u-owner",
+            reason="manual",
+        )
+    )
     assert first is not None
 
-    second = asyncio.run(pre_input_service.submit_pre_input(
-        pre_input_id=pre_input_id, actor_user_id="u-owner", reason="timeout",
-    ))
+    second = asyncio.run(
+        pre_input_service.submit_pre_input(
+            pre_input_id=pre_input_id,
+            actor_user_id="u-owner",
+            reason="timeout",
+        )
+    )
     assert second is None
 
 
@@ -388,9 +404,13 @@ def test_submit_content_and_segment_metadata(db_session):
     created = _create(mentioned_user_ids=[], edit_permission="ALL")
     pre_input_id = created["pre_input_id"]
     _replace_span(pre_input_id, "u-member", False, 6, 11, "world", "traceforge")
-    asyncio.run(pre_input_service.submit_pre_input(
-        pre_input_id=pre_input_id, actor_user_id="u-owner", reason="manual",
-    ))
+    asyncio.run(
+        pre_input_service.submit_pre_input(
+            pre_input_id=pre_input_id,
+            actor_user_id="u-owner",
+            reason="manual",
+        )
+    )
 
     from app.domains.task.models.chat import ChatMessage
 
@@ -421,13 +441,21 @@ def test_cancel_only_by_creator(db_session):
     pre_input_id = created["pre_input_id"]
 
     with pytest.raises(pre_input_service.PreInputError):
-        asyncio.run(pre_input_service.cancel_pre_input(
-            pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-member",
-        ))
+        asyncio.run(
+            pre_input_service.cancel_pre_input(
+                pre_input_id=pre_input_id,
+                task_id="task-1",
+                actor_user_id="u-member",
+            )
+        )
 
-    asyncio.run(pre_input_service.cancel_pre_input(
-        pre_input_id=pre_input_id, task_id="task-1", actor_user_id="u-owner",
-    ))
+    asyncio.run(
+        pre_input_service.cancel_pre_input(
+            pre_input_id=pre_input_id,
+            task_id="task-1",
+            actor_user_id="u-owner",
+        )
+    )
     pre_input = _get(db, pre_input_id)
     assert pre_input.status == PreInputStatus.CANCELLED
 

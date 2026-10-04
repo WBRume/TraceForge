@@ -1,6 +1,5 @@
 import os
 import subprocess
-import sys
 import tempfile
 
 import pytest
@@ -8,40 +7,37 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.database import Base  # noqa: E402
+import app.models.ai_job
+import app.models.api_mock
+import app.models.asset
+import app.models.chat
+import app.models.log
+import app.models.management
+import app.models.metric
+import app.models.provision_job
+import app.models.skill
+import app.models.task_change
+import app.models.task_cli_bootstrap
+import app.models.task_repository
+import app.models.test_result
+import app.models.workspace_asset
+import app.models.workspace_repository  # noqa: F401
+from app.database import Base
 from app.domains.auth.models.user import (
     User,
     Workspace,
     WorkspaceMember,
     WorkspaceRole,
 )
-from app.domains.task.models.task import SddTask
-from app.domains.task.models.task import TaskStatus  # noqa: E402
+from app.domains.task.models.task import (
+    SddTask,
+    TaskStatus,
+)
 from app.domains.workflow.services import change_proposal_service
 
 # Register every mapped model so Base.metadata.create_all and mapper
 # configuration see the complete schema (User/SddTask reference models from
 # many domains via string relationships).
-import app.models.asset  # noqa: E402,F401
-import app.models.chat  # noqa: E402,F401
-import app.models.log  # noqa: E402,F401
-import app.models.test_result  # noqa: E402,F401
-import app.models.metric  # noqa: E402,F401
-import app.models.skill  # noqa: E402,F401
-import app.models.api_mock  # noqa: E402,F401
-import app.models.ai_job  # noqa: E402,F401
-import app.models.workspace_asset  # noqa: E402,F401
-import app.models.task_change  # noqa: E402,F401
-import app.models.task_cli_bootstrap  # noqa: E402,F401
-import app.models.provision_job  # noqa: E402,F401
-import app.models.management  # noqa: E402,F401
-import app.models.workspace_repository  # noqa: E402,F401
-import app.models.task_repository  # noqa: E402,F401
 
 
 def _run_git(args, cwd):

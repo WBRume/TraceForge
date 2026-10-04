@@ -14,79 +14,133 @@ Implements task-scoped API Mock capabilities:
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
+
 import anyio
-from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, queue_api_mock_jobs
 from app.core.logging import get_logger
 from app.database import SessionLocal
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus, SddApiMockJob
 
+from .api_mock.collab_service import (
+    create_collab_event as create_collab_event,
+)
+from .api_mock.collab_service import (
+    list_collab_events as list_collab_events,
+)
+
 # Re-exporting constants
-from .api_mock.constants import AUTO_MOCK_JOB_TYPE
+from .api_mock.constants import AUTO_MOCK_JOB_TYPE as AUTO_MOCK_JOB_TYPE
+from .api_mock.endpoint_service import (
+    get_endpoint as get_endpoint,
+)
+from .api_mock.endpoint_service import (
+    list_endpoints as list_endpoints,
+)
+from .api_mock.endpoint_service import (
+    update_endpoint as update_endpoint,
+)
+from .api_mock.entity_service import (
+    create_entity as create_entity,
+)
+from .api_mock.entity_service import (
+    delete_entity as delete_entity,
+)
+from .api_mock.entity_service import (
+    get_entity as get_entity,
+)
+from .api_mock.entity_service import (
+    list_entities as list_entities,
+)
+from .api_mock.entity_service import (
+    update_entity as update_entity,
+)
 
 # Re-exporting background job exceptions/helpers
 from .api_mock.job_service import (
-    JobCancelledError,
-    _append_job_log,
-    _set_job_failed,
-    create_job,
-    get_job,
-    list_jobs,
-    get_active_auto_mock_job,
-    build_auto_mock_locked_detail,
-    request_job_cancel,
-    set_auto_mock_job_target,
-    _clear_cancel_event,
+    JobCancelledError as JobCancelledError,
 )
-
-from .api_mock.project_service import (
-    ensure_project,
-    get_project_by_id,
-    get_project_by_task,
-    update_project_settings,
+from .api_mock.job_service import (
+    _append_job_log as _append_job_log,
 )
-
-from .api_mock.source_version_service import (
-    get_source_version,
-    get_active_source_version,
-    list_source_versions,
-    get_active_document,
-    save_active_document,
-    activate_source_version,
+from .api_mock.job_service import (
+    _clear_cancel_event as _clear_cancel_event,
 )
-
-from .api_mock.endpoint_service import (
-    list_endpoints,
-    get_endpoint,
-    update_endpoint,
+from .api_mock.job_service import (
+    _set_job_failed as _set_job_failed,
 )
-
-from .api_mock.entity_service import (
-    list_entities,
-    get_entity,
-    create_entity,
-    update_entity,
-    delete_entity,
+from .api_mock.job_service import (
+    build_auto_mock_locked_detail as build_auto_mock_locked_detail,
 )
-
+from .api_mock.job_service import (
+    create_job as create_job,
+)
+from .api_mock.job_service import (
+    get_active_auto_mock_job as get_active_auto_mock_job,
+)
+from .api_mock.job_service import (
+    get_job as get_job,
+)
+from .api_mock.job_service import (
+    list_jobs as list_jobs,
+)
+from .api_mock.job_service import (
+    request_job_cancel as request_job_cancel,
+)
+from .api_mock.job_service import (
+    set_auto_mock_job_target as set_auto_mock_job_target,
+)
 from .api_mock.mock_case_service import (
-    list_mock_cases_for_endpoint,
-    get_mock_case,
-    create_mock_case,
-    update_mock_case,
-    delete_mock_case,
+    create_mock_case as create_mock_case,
 )
-
-from .api_mock.collab_service import (
-    list_collab_events,
-    create_collab_event,
+from .api_mock.mock_case_service import (
+    delete_mock_case as delete_mock_case,
 )
-
+from .api_mock.mock_case_service import (
+    get_mock_case as get_mock_case,
+)
+from .api_mock.mock_case_service import (
+    list_mock_cases_for_endpoint as list_mock_cases_for_endpoint,
+)
+from .api_mock.mock_case_service import (
+    update_mock_case as update_mock_case,
+)
 from .api_mock.preview_service import (
-    execute_preview,
-    execute_gateway,
+    execute_gateway as execute_gateway,
+)
+from .api_mock.preview_service import (
+    execute_preview as execute_preview,
+)
+from .api_mock.project_service import (
+    ensure_project as ensure_project,
+)
+from .api_mock.project_service import (
+    get_project_by_id as get_project_by_id,
+)
+from .api_mock.project_service import (
+    get_project_by_task as get_project_by_task,
+)
+from .api_mock.project_service import (
+    update_project_settings as update_project_settings,
+)
+from .api_mock.source_version_service import (
+    activate_source_version as activate_source_version,
+)
+from .api_mock.source_version_service import (
+    get_active_document as get_active_document,
+)
+from .api_mock.source_version_service import (
+    get_active_source_version as get_active_source_version,
+)
+from .api_mock.source_version_service import (
+    get_source_version as get_source_version,
+)
+from .api_mock.source_version_service import (
+    list_source_versions as list_source_versions,
+)
+from .api_mock.source_version_service import (
+    save_active_document as save_active_document,
 )
 
 logger = get_logger(__name__, category="api_mock")
@@ -140,6 +194,7 @@ def _run_with_api_mock_queue(job_id: str, fn) -> None:
         )
         _mark_job_queue_failed(job_id, message)
 
+
 def run_auto_mock_job_background(
     job_id: str,
     workspace_id: str,
@@ -149,6 +204,7 @@ def run_auto_mock_job_background(
     endpoint_id: str,
 ) -> None:
     from .api_mock.auto_mock_service import auto_generate_mock_cases_for_endpoint
+
     def _run() -> None:
         db = SessionLocal()
         try:
@@ -156,9 +212,12 @@ def run_auto_mock_job_background(
             if not job or _is_terminal_status(job.status):
                 return
             project = ensure_project(db, workspace_id, task_id, user_id)
-            auto_generate_mock_cases_for_endpoint(db, project, job_id=job_id, endpoint_id=endpoint_id, creator_id=user_id)
+            auto_generate_mock_cases_for_endpoint(
+                db, project, job_id=job_id, endpoint_id=endpoint_id, creator_id=user_id
+            )
         finally:
             db.close()
+
     try:
         _run_with_api_mock_queue(job_id, _run)
     finally:
@@ -167,6 +226,7 @@ def run_auto_mock_job_background(
 
 def run_sync_job_background(job_id: str, workspace_id: str, task_id: str, user_id: str) -> None:
     from .api_mock.cli_sync_service import analyze_workspace_and_sync
+
     def _run() -> None:
         db = SessionLocal()
         try:
@@ -177,6 +237,7 @@ def run_sync_job_background(job_id: str, workspace_id: str, task_id: str, user_i
             analyze_workspace_and_sync(db, project, job_id=job_id, creator_id=user_id)
         finally:
             db.close()
+
     try:
         _run_with_api_mock_queue(job_id, _run)
     finally:
@@ -189,11 +250,12 @@ def run_import_job_background(
     task_id: str,
     user_id: str,
     *,
-    source_name: Optional[str],
-    source_url: Optional[str],
-    raw_content: Optional[str],
+    source_name: str | None,
+    source_url: str | None,
+    raw_content: str | None,
 ) -> None:
     from .api_mock.cli_sync_service import run_import_job_internal
+
     def _run() -> None:
         db = SessionLocal()
         try:
@@ -212,6 +274,7 @@ def run_import_job_background(
             )
         finally:
             db.close()
+
     try:
         _run_with_api_mock_queue(job_id, _run)
     finally:

@@ -24,8 +24,8 @@ import asyncio
 import os
 import signal
 import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable, Dict, Optional, Tuple
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -53,7 +53,7 @@ from app.agents.supervision.persisted import (
 async def run_token_containment(
     run_token: str,
     *,
-    not_before: Optional[datetime],
+    not_before: datetime | None,
     signals: list,
 ) -> discovery.TokenContainmentOutcome:
     """One token scan + kill/verify convergence (shared persistence fallback)."""
@@ -69,7 +69,7 @@ async def run_token_containment(
 
 
 def _token_conflict_result(
-    conflicts: Tuple[discovery.DiscoveredTokenProcess, ...],
+    conflicts: tuple[discovery.DiscoveredTokenProcess, ...],
 ) -> TerminationResult:
     """Identity-conflict termination result (token matches never blindly killed)."""
     return TerminationResult(
@@ -77,19 +77,16 @@ def _token_conflict_result(
         None,
         elapsed_ms=0,
         error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
-        error_message=(
-            f"{len(conflicts)} run-token process(es) failed identity "
-            "validation; manual handling required"
-        ),
+        error_message=(f"{len(conflicts)} run-token process(es) failed identity validation; manual handling required"),
         remaining_pids=tuple(sorted(int(m.pid) for m in conflicts)),
     )
 
 
 async def stop_reused_group_members(
-    member_pids: Tuple[int, ...],
+    member_pids: tuple[int, ...],
     *,
-    old_root_started_at: Optional[datetime],
-    reused_create_time: Optional[float],
+    old_root_started_at: datetime | None,
+    reused_create_time: float | None,
     signals: list,
 ) -> persisted.PersistedProcessSnapshot:
     """P0-1: reused/unverifiable-root case — never signal the numeric PGID.
@@ -106,7 +103,7 @@ async def stop_reused_group_members(
       对任何成员发信号。
     """
     expected_root_start = expected_started_timestamp(old_root_started_at)
-    verified: Dict[int, Optional[float]] = {}
+    verified: dict[int, float | None] = {}
     ambiguous: set = set()
     for member in member_pids:
         member_identity = await identity.probe_member_identity(int(member))
@@ -137,13 +134,123 @@ async def stop_reused_group_members(
     return persisted.PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
 
 
+async def _signal_persisted_group(pid, group_id, pid_reused, may_signal_root, signals):
+    sent_group = False
+    if group_id is not None:
+        try:
+            os.killpg(group_id, signal.SIGTERM)
+            sent_group = True
+        except (ProcessLookupError, PermissionError, OSError):
+            sent_group = False
+    if sent_group:
+        signals.append("SIGTERM")
+    elif may_signal_root:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            signals.append("SIGTERM")
+        except (ProcessLookupError, OSError):
+            pass
+    group = await wait_group_gone(
+        group_id,
+        3.0,
+        ignored_pids={pid} if pid_reused else None,
+    )
+    if group.state != ProcessProbeState.CONFIRMED_DEAD or may_signal_root:
+        # may_signal_root 时即使组已空也必须升级到 SIGKILL：
+        # root 的 pgid 可能与持久化 PGID 不一致（陈旧行），组空不代表
+        # root 已退出（doc 修复方案 §5.4 的等待/升级语义）。
+        if group_id is not None:
+            try:
+                os.killpg(group_id, signal.SIGKILL)
+                signals.append("SIGKILL")
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if may_signal_root:
+            try:
+                os.kill(pid, signal.SIGKILL)
+                if "SIGKILL" not in signals:
+                    signals.append("SIGKILL")
+            except (ProcessLookupError, OSError):
+                pass
+        group = await wait_group_gone(
+            group_id,
+            5.0,
+            ignored_pids={pid} if pid_reused else None,
+        )
+    return group
+
+
+def _persisted_termination_result(pid, pid_reused, final_root, group, token_unknown, token_live_pids, signals, _result):
+    state, failure_code, error_message, live_pids = aggregate_persisted_snapshots(final_root, group)
+    if token_unknown is not None:
+        # 扫描不完整：UNKNOWN 是独立状态，不依赖未知 PID 是否可填写
+        # （doc 审计 P0-3B）；remaining 保留全部未确认身份。
+        unconfirmed = set(live_pids) | set(token_unknown.unknown_pids)
+        return _result(
+            None,
+            error_code=token_unknown.failure_code or TOKEN_DISCOVERY_UNKNOWN,
+            error_message=token_unknown.error_message,
+            signals=tuple(signals),
+            tree_kill_used=bool(signals),
+            remaining_pids=tuple(sorted(unconfirmed)),
+            root_identity_matches=final_root.root_identity_matches,
+        )
+    # P0-3B：token 的返回值参与最终 state，而不只是诊断字段。任一来源
+    # 存活 -> LIVE；没有 LIVE 但存在 UNKNOWN -> UNKNOWN。
+    remaining = tuple(sorted(set(live_pids) | set(token_live_pids)))
+    if token_live_pids:
+        state = ProcessProbeState.LIVE
+        failure_code = failure_code or "TOKEN_PROCESS_STILL_ALIVE"
+        error_message = error_message or (f"Run-token process(es) still alive: {sorted(token_live_pids)}")
+    if state == ProcessProbeState.LIVE:
+        return _result(
+            False,
+            error_code=failure_code or "PROCESS_TREE_STILL_ALIVE",
+            error_message=error_message or f"Persisted process tree {pid} is still alive",
+            signals=tuple(signals),
+            tree_kill_used=bool(signals),
+            remaining_pids=remaining,
+            root_identity_matches=final_root.root_identity_matches,
+        )
+    if state == ProcessProbeState.UNKNOWN:
+        return _result(
+            None,
+            error_code=failure_code or PROCESS_TREE_UNKNOWN,
+            error_message=error_message,
+            signals=tuple(signals),
+            tree_kill_used=bool(signals),
+            remaining_pids=remaining,
+            root_identity_matches=final_root.root_identity_matches,
+        )
+    # 确认死亡的返回点：不变量检查——不得携带未决来源或非空 remaining
+    # （doc 审计 P0-3B）。防御性分支：任何未决证据都必须保持 UNKNOWN。
+    if remaining:
+        return _result(
+            None,
+            error_code=PROCESS_TREE_UNKNOWN,
+            error_message=("confirmed-dead aggregation attempted with unconfirmed targets"),
+            signals=tuple(signals),
+            tree_kill_used=bool(signals),
+            remaining_pids=remaining,
+            root_identity_matches=final_root.root_identity_matches,
+        )
+    return _result(
+        True,
+        error_code="PID_REUSED" if pid_reused else None,
+        error_message=(f"PID {pid} create time does not match persisted owner" if pid_reused else None),
+        signals=tuple(signals),
+        tree_kill_used=bool(signals),
+        root_identity_matches=final_root.root_identity_matches,
+    )
+
+
 async def stop_persisted(
-    pid: Optional[int],
-    process_started_at: Optional[datetime],
+    pid: int | None,
+    process_started_at: datetime | None,
     reason: str,
-    process_group_id: Optional[int] = None,
-    run_token: Optional[str] = None,
-    not_before: Optional[datetime] = None,
+    process_group_id: int | None = None,
+    run_token: str | None = None,
+    not_before: datetime | None = None,
 ) -> TerminationResult:
     """Stop a process from a previous boot only after ownership checks.
 
@@ -168,21 +275,23 @@ async def stop_persisted(
         return TerminationResult(True, None, elapsed_ms=0)
     if psutil is None:
         return TerminationResult(
-            False, None, elapsed_ms=0,
+            False,
+            None,
+            elapsed_ms=0,
             error_code="PROCESS_INSPECTION_UNAVAILABLE",
             error_message="psutil is required to reclaim persisted process ownership",
         )
     pid = int(pid)
 
     def _result(
-        confirmed_dead: Optional[bool],
+        confirmed_dead: bool | None,
         *,
-        error_code: Optional[str] = None,
-        error_message: Optional[str] = None,
-        signals: Tuple[str, ...] = (),
+        error_code: str | None = None,
+        error_message: str | None = None,
+        signals: tuple[str, ...] = (),
         tree_kill_used: bool = False,
-        remaining_pids: Tuple[int, ...] = (),
-        root_identity_matches: Optional[bool] = None,
+        remaining_pids: tuple[int, ...] = (),
+        root_identity_matches: bool | None = None,
     ) -> TerminationResult:
         return TerminationResult(
             confirmed_dead,
@@ -204,9 +313,7 @@ async def stop_persisted(
     pid_reused = root.failure_code == "PID_REUSED"
     # 身份无法核实的存活 root（无关命令行/命令行不可读/创建时间不可读）
     # 绝不发信号（与旧行为一致，只是不再把探测错误折叠成 False）。
-    may_signal_root = (
-        root.state == ProcessProbeState.LIVE and root.failure_code is None
-    )
+    may_signal_root = root.state == ProcessProbeState.LIVE and root.failure_code is None
     signals: list = []
     if root.state == ProcessProbeState.CONFIRMED_DEAD and pid_reused:
         # root 身份已被另一个进程占用：禁止把复用 PID 当作 PGID。
@@ -224,9 +331,7 @@ async def stop_persisted(
     # P0-1：root 探测 UNKNOWN（探测异常/身份完全不可读）与 LIVE-unverified
     # 同属"身份无法核实"——root 是否被复用无法证明，数字 PGID 不能凭
     # "组非空"获得整组发送资格，必须走逐成员归属验证分支。
-    root_unverifiable = root_unverified_live or (
-        root.state == ProcessProbeState.UNKNOWN
-    )
+    root_unverifiable = root_unverified_live or (root.state == ProcessProbeState.UNKNOWN)
     if (pid_reused or root_unverifiable) and group.state == ProcessProbeState.LIVE:
         # P0-1：root 身份已被复用（或存活但身份无法核实/探测 UNKNOWN）——
         # 数字 PGID 不能单凭"组非空"获得整组发送资格：复用后的组可能混入
@@ -238,54 +343,11 @@ async def stop_persisted(
         group = await stop_reused_group_members(
             tuple(group.live_pids),
             old_root_started_at=process_started_at,
-            reused_create_time=(
-                getattr(root, "pid_create_time", None) if pid_reused else None
-            ),
+            reused_create_time=(getattr(root, "pid_create_time", None) if pid_reused else None),
             signals=signals,
         )
     elif need_signal:
-        sent_group = False
-        if group_id is not None:
-            try:
-                os.killpg(group_id, signal.SIGTERM)
-                sent_group = True
-            except (ProcessLookupError, PermissionError, OSError):
-                sent_group = False
-        if sent_group:
-            signals.append("SIGTERM")
-        elif may_signal_root:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                signals.append("SIGTERM")
-            except (ProcessLookupError, OSError):
-                pass
-        group = await wait_group_gone(
-            group_id,
-            3.0,
-            ignored_pids={pid} if pid_reused else None,
-        )
-        if group.state != ProcessProbeState.CONFIRMED_DEAD or may_signal_root:
-            # may_signal_root 时即使组已空也必须升级到 SIGKILL：
-            # root 的 pgid 可能与持久化 PGID 不一致（陈旧行），组空不代表
-            # root 已退出（doc 修复方案 §5.4 的等待/升级语义）。
-            if group_id is not None:
-                try:
-                    os.killpg(group_id, signal.SIGKILL)
-                    signals.append("SIGKILL")
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-            if may_signal_root:
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                    if "SIGKILL" not in signals:
-                        signals.append("SIGKILL")
-                except (ProcessLookupError, OSError):
-                    pass
-            group = await wait_group_gone(
-                group_id,
-                5.0,
-                ignored_pids={pid} if pid_reused else None,
-            )
+        group = await _signal_persisted_group(pid, group_id, pid_reused, may_signal_root, signals)
     else:
         # 没有任何可证实的存活目标：取一次最终快照作为聚合证据。
         group = await group_snapshot(
@@ -300,8 +362,8 @@ async def stop_persisted(
         final_root = root
 
     # ── 4/5. 持久化 run token 的完整 discovery 兜底 ──
-    token_unknown: Optional[discovery.TokenDiscoverySnapshot] = None
-    token_live_pids: Tuple[int, ...] = ()
+    token_unknown: discovery.TokenDiscoverySnapshot | None = None
+    token_live_pids: tuple[int, ...] = ()
     if run_token:
         outcome = await run_token_containment(
             run_token,
@@ -316,83 +378,14 @@ async def stop_persisted(
         else:
             token_live_pids = outcome.live_pids
 
-    state, failure_code, error_message, live_pids = aggregate_persisted_snapshots(
-        final_root, group
-    )
-    if token_unknown is not None:
-        # 扫描不完整：UNKNOWN 是独立状态，不依赖未知 PID 是否可填写
-        # （doc 审计 P0-3B）；remaining 保留全部未确认身份。
-        unconfirmed = set(live_pids) | set(token_unknown.unknown_pids)
-        return _result(
-            None,
-            error_code=token_unknown.failure_code or TOKEN_DISCOVERY_UNKNOWN,
-            error_message=token_unknown.error_message,
-            signals=tuple(signals),
-            tree_kill_used=bool(signals),
-            remaining_pids=tuple(sorted(unconfirmed)),
-            root_identity_matches=final_root.root_identity_matches,
-        )
-    # P0-3B：token 的返回值参与最终 state，而不只是诊断字段。任一来源
-    # 存活 -> LIVE；没有 LIVE 但存在 UNKNOWN -> UNKNOWN。
-    remaining = tuple(sorted(set(live_pids) | set(token_live_pids)))
-    if token_live_pids:
-        state = ProcessProbeState.LIVE
-        failure_code = failure_code or "TOKEN_PROCESS_STILL_ALIVE"
-        error_message = error_message or (
-            f"Run-token process(es) still alive: {sorted(token_live_pids)}"
-        )
-    if state == ProcessProbeState.LIVE:
-        return _result(
-            False,
-            error_code=failure_code or "PROCESS_TREE_STILL_ALIVE",
-            error_message=error_message
-            or f"Persisted process tree {pid} is still alive",
-            signals=tuple(signals),
-            tree_kill_used=bool(signals),
-            remaining_pids=remaining,
-            root_identity_matches=final_root.root_identity_matches,
-        )
-    if state == ProcessProbeState.UNKNOWN:
-        return _result(
-            None,
-            error_code=failure_code or PROCESS_TREE_UNKNOWN,
-            error_message=error_message,
-            signals=tuple(signals),
-            tree_kill_used=bool(signals),
-            remaining_pids=remaining,
-            root_identity_matches=final_root.root_identity_matches,
-        )
-    # 确认死亡的返回点：不变量检查——不得携带未决来源或非空 remaining
-    # （doc 审计 P0-3B）。防御性分支：任何未决证据都必须保持 UNKNOWN。
-    if remaining:
-        return _result(
-            None,
-            error_code=PROCESS_TREE_UNKNOWN,
-            error_message=(
-                "confirmed-dead aggregation attempted with unconfirmed targets"
-            ),
-            signals=tuple(signals),
-            tree_kill_used=bool(signals),
-            remaining_pids=remaining,
-            root_identity_matches=final_root.root_identity_matches,
-        )
-    return _result(
-        True,
-        error_code="PID_REUSED" if pid_reused else None,
-        error_message=(
-            f"PID {pid} create time does not match persisted owner"
-            if pid_reused
-            else None
-        ),
-        signals=tuple(signals),
-        tree_kill_used=bool(signals),
-        root_identity_matches=final_root.root_identity_matches,
+    return _persisted_termination_result(
+        pid, pid_reused, final_root, group, token_unknown, token_live_pids, signals, _result
     )
 
 
 async def stop_persisted_windows(
     pid: int,
-    process_started_at: Optional[datetime],
+    process_started_at: datetime | None,
     _result: Callable[..., TerminationResult],
 ) -> TerminationResult:
     """Windows persisted stop: taskkill tree + tri-state root verification."""
@@ -454,9 +447,9 @@ async def stop_persisted_windows(
 
 
 async def verify_persisted_cleanup(
-    pid: Optional[int],
-    process_started_at: Optional[datetime],
-    process_group_id: Optional[int] = None,
+    pid: int | None,
+    process_started_at: datetime | None,
+    process_group_id: int | None = None,
 ) -> TerminationResult:
     """Verify external cleanup without sending a signal.
 
@@ -485,8 +478,7 @@ async def verify_persisted_cleanup(
         )
     root = await root_snapshot(int(pid), process_started_at)
     if root.failure_code == "PID_REUSED" or (
-        root.state == ProcessProbeState.CONFIRMED_DEAD
-        and root.root_identity_matches is False
+        root.state == ProcessProbeState.CONFIRMED_DEAD and root.root_identity_matches is False
     ):
         group = await group_snapshot(process_group_id, ignored_pids={int(pid)})
         if group.state == ProcessProbeState.LIVE:
@@ -563,9 +555,9 @@ async def stop_by_run_token_discovery(
     run_token: str,
     reason: str,
     *,
-    not_before: Optional[datetime] = None,
-    not_after: Optional[datetime] = None,
-) -> Optional[TerminationResult]:
+    not_before: datetime | None = None,
+    not_after: datetime | None = None,
+) -> TerminationResult | None:
     """Reclaim a previous boot's tree via run-token discovery (doc 8.5).
 
     Returns ``None`` only when discovery is unavailable on this platform
@@ -632,8 +624,7 @@ async def stop_by_run_token_discovery(
             elapsed_ms=_elapsed(),
             error_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
             error_message=(
-                f"{len(outcome.conflicts)} run-token process(es) failed identity "
-                "validation; manual handling required"
+                f"{len(outcome.conflicts)} run-token process(es) failed identity validation; manual handling required"
             ),
             signals_sent=tuple(signals) if outcome.kill_attempted else (),
             tree_kill_used=outcome.kill_attempted,

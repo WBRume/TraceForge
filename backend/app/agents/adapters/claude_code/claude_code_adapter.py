@@ -10,20 +10,21 @@ import asyncio
 import os
 import re
 import shutil
-from typing import Any, Dict, Optional
+from functools import partial
+from typing import Any
 
+from app.agents.activity_watchdog import AgentActivityWatchdog
+from app.agents.adapters.claude_code.event_mapper import map_claude_event
 from app.agents.contract import (
+    EXECUTION_KIND_LOCAL_PROCESS,
     AgentBackend,
     AgentCapabilities,
     AgentEventSink,
     AgentRunRequest,
     AgentRunResult,
     AgentStopResult,
-    EXECUTION_KIND_LOCAL_PROCESS,
     TokenUsage,
 )
-from app.agents.adapters.claude_code.event_mapper import map_claude_event
-from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import (
     AgentCancelledError,
     AgentError,
@@ -38,8 +39,7 @@ from app.engine.claude_bridge import SubprocessCliBridge
 def _claude_project_store_dir(project_path: str) -> str:
     """Claude Code 以 cwd 派生 project key 存放会话 jsonl。"""
     override = (
-        str(os.environ.get("CLAUDE_HOME") or "").strip()
-        or str(os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+        str(os.environ.get("CLAUDE_HOME") or "").strip() or str(os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
     )
     home = os.path.abspath(override) if override else os.path.join(os.path.expanduser("~"), ".claude")
     project_abs = os.path.abspath(project_path or "")
@@ -47,7 +47,7 @@ def _claude_project_store_dir(project_path: str) -> str:
     return os.path.join(home, "projects", project_key)
 
 
-def _locate_session_file(store_dir: str, session_id: str) -> Optional[str]:
+def _locate_session_file(store_dir: str, session_id: str) -> str | None:
     sid = str(session_id or "").strip()
     if not sid or not os.path.isdir(store_dir):
         return None
@@ -60,9 +60,21 @@ def _locate_session_file(store_dir: str, session_id: str) -> Optional[str]:
     return None
 
 
+async def _forward_legacy_event(agent_event, *, event_callback) -> None:
+    from app.agents.selection import agent_event_to_legacy_payload
+
+    legacy = agent_event_to_legacy_payload(agent_event)
+    if legacy is None:
+        return
+    result = event_callback(legacy)
+    if asyncio.iscoroutine(result):
+        await result
+
+
 class ClaudeCodeAdapter(AgentBackend):
     def get_runtime_control(self):
         from app.agents.runtime_control import runtime_control_for
+
         return runtime_control_for(self)
 
     name = "claude-code"
@@ -77,12 +89,12 @@ class ClaudeCodeAdapter(AgentBackend):
         preferred_mode="subprocess",
     )
 
-    def __init__(self, cli_path: Optional[str] = None) -> None:
+    def __init__(self, cli_path: str | None = None) -> None:
         self._bridge = SubprocessCliBridge(cli_path=cli_path)
-        self._last_result_payload: Dict[str, Any] = {}
+        self._last_result_payload: dict[str, Any] = {}
         self._cancelled = False
-        self._legacy_run_task: Optional[asyncio.Task] = None
-        self._legacy_session_id: Optional[str] = None
+        self._legacy_run_task: asyncio.Task | None = None
+        self._legacy_session_id: str | None = None
         self.last_termination = None
 
     async def _handle_raw_event(self, event: dict[str, Any], on_event: AgentEventSink) -> None:
@@ -108,6 +120,7 @@ class ClaudeCodeAdapter(AgentBackend):
 
     async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
         from .models import model_catalog
+
         return await asyncio.to_thread(model_catalog, project_path)
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
@@ -159,10 +172,7 @@ class ClaudeCodeAdapter(AgentBackend):
                         "Claude Code process tree could not be confirmed dead",
                         termination_confirmed_dead=False,
                         process_started=True,
-                        failure_code=(
-                            getattr(termination, "error_code", None)
-                            or "PROCESS_TREE_STILL_ALIVE"
-                        ),
+                        failure_code=(getattr(termination, "error_code", None) or "PROCESS_TREE_STILL_ALIVE"),
                     )
             except AgentTimeoutError as timeout_error:
                 termination = await program.cancel()
@@ -173,9 +183,7 @@ class ClaudeCodeAdapter(AgentBackend):
                     str(timeout_error),
                     phase=timeout_error.phase,
                     limit_seconds=timeout_error.limit_seconds,
-                    termination_confirmed_dead=(
-                        bool(termination.confirmed_dead) if termination is not None else None
-                    ),
+                    termination_confirmed_dead=(bool(termination.confirmed_dead) if termination is not None else None),
                     process_started=True,
                 ) from timeout_error
         except AgentTimeoutError:
@@ -202,14 +210,18 @@ class ClaudeCodeAdapter(AgentBackend):
         success = bool(payload.get("success", True))
         finish_reason = payload.get("finish_reason") or ("error" if not success else "completed")
         usage_raw = payload.get("usage") or {}
-        usage = TokenUsage(
-            input_tokens=usage_raw.get("input_tokens"),
-            output_tokens=usage_raw.get("output_tokens"),
-            cache_read_tokens=usage_raw.get("cache_read_tokens"),
-            cache_creation_tokens=usage_raw.get("cache_creation_tokens"),
-            total_tokens=usage_raw.get("total_tokens"),
-            raw=usage_raw,
-        ) if usage_raw else None
+        usage = (
+            TokenUsage(
+                input_tokens=usage_raw.get("input_tokens"),
+                output_tokens=usage_raw.get("output_tokens"),
+                cache_read_tokens=usage_raw.get("cache_read_tokens"),
+                cache_creation_tokens=usage_raw.get("cache_creation_tokens"),
+                total_tokens=usage_raw.get("total_tokens"),
+                raw=usage_raw,
+            )
+            if usage_raw
+            else None
+        )
 
         return AgentRunResult(
             run_id=request.run_id,
@@ -222,9 +234,7 @@ class ClaudeCodeAdapter(AgentBackend):
             duration_ms=payload.get("duration_ms"),
             return_code=getattr(program.process, "returncode", None),
             termination_confirmed_dead=(
-                program.last_termination.confirmed_dead
-                if program.last_termination is not None
-                else None
+                program.last_termination.confirmed_dead if program.last_termination is not None else None
             ),
             raw_trace=None,
         )
@@ -252,10 +262,7 @@ class ClaudeCodeAdapter(AgentBackend):
             execution_kind=EXECUTION_KIND_LOCAL_PROCESS,
             stop_acknowledged=False,
             failure_code="CAPABILITY_UNSUPPORTED",
-            error_message=(
-                "claude-code is a local-process backend; persisted remote "
-                "session stop does not apply"
-            ),
+            error_message=("claude-code is a local-process backend; persisted remote session stop does not apply"),
         )
 
     async def _await_legacy_task_exit(self) -> None:
@@ -265,9 +272,7 @@ class ClaudeCodeAdapter(AgentBackend):
         try:
             await asyncio.wait_for(
                 asyncio.shield(task),
-                timeout=float(
-                    getattr(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 30) or 30
-                ),
+                timeout=float(getattr(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 30) or 30),
             )
         except asyncio.TimeoutError:
             task.cancel()
@@ -343,7 +348,6 @@ class ClaudeCodeAdapter(AgentBackend):
     ) -> str:
         """旧 CliBridgeBase 入口：统一走 AgentBackend.run() + 底层日志/trace。"""
         from app.agents.run_logging import run_agent_backend_with_logging
-        from app.agents.selection import agent_event_to_legacy_payload
 
         if fork_session and not session_id:
             raise AgentError("Claude fork-on-resume requires an existing session id")
@@ -365,20 +369,13 @@ class ClaudeCodeAdapter(AgentBackend):
                 "run_token": str((env_overrides or {}).get("TRACEFORGE_RUN_TOKEN") or "").strip() or None,
                 "worker_boot_id": str((env_overrides or {}).get("WORKER_BOOT_ID") or "").strip() or None,
             },
-            timeout_seconds=float(
-                settings.agent_max_runtime_seconds
-            ),
-            startup_timeout_seconds=float(
-                getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
-            ),
-            idle_timeout_seconds=float(
-                settings.agent_idle_timeout_seconds
-            ),
+            timeout_seconds=float(settings.agent_max_runtime_seconds),
+            startup_timeout_seconds=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
+            idle_timeout_seconds=float(settings.agent_idle_timeout_seconds),
             # The supervisor enforces the real attach timeout (DB attach), so
             # the outer startup watchdog is only a secondary safety net.
-            process_attach_timeout_seconds=float(
-                getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
-            ) or None,
+            process_attach_timeout_seconds=float(getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0)
+            or None,
             permission_mode=permission_mode,
         )
         if fork_session:
@@ -391,13 +388,10 @@ class ClaudeCodeAdapter(AgentBackend):
             )
             request.provider_options["fork_session"] = True
 
-        async def _on_event(agent_event) -> None:
-            legacy = agent_event_to_legacy_payload(agent_event)
-            if legacy is None:
-                return
-            result = event_callback(legacy)
-            if asyncio.iscoroutine(result):
-                await result
+        _on_event = partial(
+            _forward_legacy_event,
+            event_callback=event_callback,
+        )
 
         started_future = asyncio.get_running_loop().create_future() if on_process_started else None
 
@@ -428,7 +422,7 @@ class ClaudeCodeAdapter(AgentBackend):
                     asyncio.shield(started_future),
                     timeout=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
                 )
-            except BaseException as startup_error:
+            except BaseException:
                 if not started_future.done():
                     started_future.cancel()
                 # Supervisor cleanup must happen before the Python run task is

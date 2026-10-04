@@ -1,15 +1,13 @@
-﻿"""
+"""
 Dashboard API routes.
 """
-
-from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
-from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.asset.schemas.asset import DashboardOverview, PhaseDurationData, RetryHeatmapData, SuccessRateData
+from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.dashboard.services import dashboard_service
 from app.domains.workspace.services import workspace_service
 
@@ -34,7 +32,7 @@ def get_dashboard_overview(
     return dashboard_service.get_overview(db, ws_id)
 
 
-@router.get("/success-rate", response_model=List[SuccessRateData])
+@router.get("/success-rate", response_model=list[SuccessRateData])
 def get_dashboard_success_rate(
     ws_id: str,
     db: Session = Depends(get_db),
@@ -44,7 +42,7 @@ def get_dashboard_success_rate(
     return dashboard_service.get_success_rate(db, ws_id)
 
 
-@router.get("/phase-duration", response_model=List[PhaseDurationData])
+@router.get("/phase-duration", response_model=list[PhaseDurationData])
 def get_dashboard_phase_duration(
     ws_id: str,
     db: Session = Depends(get_db),
@@ -54,7 +52,7 @@ def get_dashboard_phase_duration(
     return dashboard_service.get_phase_duration(db, ws_id)
 
 
-@router.get("/retry-heatmap", response_model=List[RetryHeatmapData])
+@router.get("/retry-heatmap", response_model=list[RetryHeatmapData])
 def get_dashboard_retry_heatmap(
     ws_id: str,
     db: Session = Depends(get_db),

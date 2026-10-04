@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List
-
 from sqlalchemy.orm import Session
 
 from app.domains.ai.models.ai_job import SddAiJob
@@ -32,13 +30,15 @@ def _overview_connection_status(
     task_count: int,
     ai_run_count: int,
     evidence_count: int,
-) -> List:
+) -> list:
     return [
         make_connection(
             "requirement_source",
             "Requirement source",
             "AVAILABLE" if requirement_count else "NOT_CONNECTED",
-            "Requirement Repository has real records." if requirement_count else "Waiting for requirement source connection.",
+            "Requirement Repository has real records."
+            if requirement_count
+            else "Waiting for requirement source connection.",
         ),
         make_connection(
             "task_records",
@@ -56,7 +56,9 @@ def _overview_connection_status(
             "evidence_source",
             "Evidence source",
             "AVAILABLE" if evidence_count else "NOT_CONNECTED",
-            "Evidence references are available." if evidence_count else "Waiting for real external evidence or human confirmation.",
+            "Evidence references are available."
+            if evidence_count
+            else "Waiting for real external evidence or human confirmation.",
         ),
         make_connection(
             "coverage_verification",

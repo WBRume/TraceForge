@@ -1,10 +1,9 @@
 """Resolve review anchors against immutable text and character offsets."""
 
 from __future__ import annotations
-from typing import List, Optional, Tuple
 
 
-def _build_line_start_offsets(text: str) -> List[int]:
+def _build_line_start_offsets(text: str) -> list[int]:
     starts = [0]
     index = 0
     length = len(text)
@@ -30,7 +29,7 @@ def _line_content_end_offset(text: str, line_start_offset: int) -> int:
 
 def _offset_from_line_column(
     text: str,
-    line_starts: List[int],
+    line_starts: list[int],
     line_no: int,
     column_no: int,
 ) -> int:
@@ -51,9 +50,9 @@ def _resolve_comment_char_range(
     line_end: int,
     column_start: int,
     column_end: int,
-    char_start: Optional[int],
-    char_end: Optional[int],
-) -> Tuple[int, int]:
+    char_start: int | None,
+    char_end: int | None,
+) -> tuple[int, int]:
     content_len = len(file_text)
 
     if char_start is not None and char_end is not None:

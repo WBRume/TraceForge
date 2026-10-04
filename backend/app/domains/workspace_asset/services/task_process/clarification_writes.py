@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -32,12 +31,22 @@ from app.domains.workspace_asset.services.task_process.writes_support import (
 )
 
 
+def _apply_clarification_answer(clarification, payload, actor_id):
+    clarification.answer = clean_optional(payload.answer)
+    clarification.responder_id = actor_id if clarification.answer else None
+    clarification.answered_at = None
+    if clarification.answer:
+        clarification.answered_at = datetime.utcnow()
+        if clarification.status == ClarificationStatus.OPEN:
+            clarification.status = ClarificationStatus.ANSWERED
+
+
 def update_clarification(
     db: Session,
     workspace_id: str,
     task_id: str,
     clarification_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: ClarificationUpdateRequest,
 ) -> None:
     clarification = (
@@ -82,13 +91,7 @@ def update_clarification(
     if payload_has_field(payload, "question"):
         clarification.question = clean_optional(payload.question) or clarification.question
     if payload_has_field(payload, "answer"):
-        clarification.answer = clean_optional(payload.answer)
-        clarification.responder_id = actor_id if clarification.answer else None
-        clarification.answered_at = None
-        if clarification.answer:
-            clarification.answered_at = datetime.utcnow()
-            if clarification.status == ClarificationStatus.OPEN:
-                clarification.status = ClarificationStatus.ANSWERED
+        _apply_clarification_answer(clarification, payload, actor_id)
     if payload_has_field(payload, "clarification_type"):
         clarification.clarification_type = clean_optional(payload.clarification_type, limit=80)
     if payload_has_field(payload, "target_ref"):

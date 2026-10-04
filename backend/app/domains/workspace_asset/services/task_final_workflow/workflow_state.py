@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
-
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.asset.models.asset import AssetType
@@ -22,8 +20,6 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     TaskFinalWorkflowResponse,
     TaskFinalWorkflowStep,
 )
-from app.domains.workspace_asset.services.task_final_workflow import baseline_service, review_service
-from app.domains.workspace_asset.services.tasks.summary_query import task_summary_from_counts
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import enum_value
 from app.domains.workspace_asset.services.common.process_presenters import (
@@ -31,6 +27,8 @@ from app.domains.workspace_asset.services.common.process_presenters import (
     final_summary_response,
     human_review_response,
 )
+from app.domains.workspace_asset.services.task_final_workflow import baseline_service, review_service
+from app.domains.workspace_asset.services.tasks.summary_query import task_summary_from_counts
 
 
 def _load_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
@@ -71,12 +69,8 @@ def _thread_response(thread: SddClarificationThread) -> ClarificationThreadRespo
     )
 
 
-def _workflow_reviews(task: SddTask) -> List[SddHumanReview]:
-    return [
-        item
-        for item in (task.human_reviews or [])
-        if item.review_type == review_service.EXPERT_REVIEW_TYPE
-    ]
+def _workflow_reviews(task: SddTask) -> list[SddHumanReview]:
+    return [item for item in (task.human_reviews or []) if item.review_type == review_service.EXPERT_REVIEW_TYPE]
 
 
 def _target(
@@ -84,9 +78,9 @@ def _target(
     target_type: str,
     target_id: str,
     label: str,
-    status: Optional[str] = None,
-    subtitle: Optional[str] = None,
-    source_ref: Optional[dict] = None,
+    status: str | None = None,
+    subtitle: str | None = None,
+    source_ref: dict | None = None,
 ) -> FinalWorkflowReviewTarget:
     return FinalWorkflowReviewTarget(
         target_type=target_type,
@@ -98,8 +92,8 @@ def _target(
     )
 
 
-def _review_targets(task: SddTask) -> Dict[str, List[FinalWorkflowReviewTarget]]:
-    targets: Dict[str, List[FinalWorkflowReviewTarget]] = {
+def _review_targets(task: SddTask) -> dict[str, list[FinalWorkflowReviewTarget]]:
+    targets: dict[str, list[FinalWorkflowReviewTarget]] = {
         "SPEC": [],
         "PLAN": [],
         "AI_CHANGE": [],
@@ -197,7 +191,7 @@ def _review_targets(task: SddTask) -> Dict[str, List[FinalWorkflowReviewTarget]]
     return targets
 
 
-def _workflow_step_status(task: SddTask) -> List[TaskFinalWorkflowStep]:
+def _workflow_step_status(task: SddTask) -> list[TaskFinalWorkflowStep]:
     reviews = _workflow_reviews(task)
     clarifications = list(task.clarifications or [])
     unresolved_blocking_count = sum(
@@ -237,20 +231,24 @@ def _workflow_step_status(task: SddTask) -> List[TaskFinalWorkflowStep]:
             key="final_summary",
             title="Final Summary",
             status="complete" if summary_verified else ("ready" if review_ready else "blocked"),
-            detail="Final summary is verified." if summary_verified else "Verify after review and clarification are complete.",
+            detail="Final summary is verified."
+            if summary_verified
+            else "Verify after review and clarification are complete.",
             blocking_count=0 if review_ready else 1,
         ),
         TaskFinalWorkflowStep(
             key="baseline",
             title="Baseline",
             status="complete" if baselined else ("ready" if summary_verified else "blocked"),
-            detail=f"Baseline version {task.baseline_version}." if baselined else "Freeze after final summary verification.",
+            detail=f"Baseline version {task.baseline_version}."
+            if baselined
+            else "Freeze after final summary verification.",
             blocking_count=0 if baselined or summary_verified else 1,
         ),
     ]
 
 
-def _actions(task: SddTask, checklist_blocked: bool) -> List[FinalWorkflowAction]:
+def _actions(task: SddTask, checklist_blocked: bool) -> list[FinalWorkflowAction]:
     readonly = enum_value(task.status) == TaskStatus.BASELINED.value
     if readonly:
         return []
@@ -298,15 +296,14 @@ def get_workflow_state(
     task = _load_task(db, workspace_id, task_id)
     checklist = baseline_service.build_baseline_checklist(db, task)
     latest = baseline_service.latest_baseline(db, task.id)
-    threads: Dict[str, List[ClarificationThreadResponse]] = {
-        item.id: [_thread_response(thread) for thread in (item.threads or [])]
-        for item in (task.clarifications or [])
+    threads: dict[str, list[ClarificationThreadResponse]] = {
+        item.id: [_thread_response(thread) for thread in (item.threads or [])] for item in (task.clarifications or [])
     }
     checklist_blocked = any(item.blocking for item in checklist)
     readonly = enum_value(task.status) == TaskStatus.BASELINED.value
     reviews = _workflow_reviews(task)
     for review in reviews:
-        setattr(review, "_derived_status", review_service.derive_review_status(review, task_is_baselined=readonly))
+        review._derived_status = review_service.derive_review_status(review, task_is_baselined=readonly)
 
     return TaskFinalWorkflowResponse(
         task=task_summary_from_counts(db, task),

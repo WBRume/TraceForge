@@ -59,9 +59,7 @@ class ApiMockJobStatus(str, PyEnum):
 
 class SddApiMockProject(Base):
     __tablename__ = "sdd_api_mock_projects"
-    __table_args__ = (
-        UniqueConstraint("workspace_id", "task_id", name="uq_api_mock_project_workspace_task"),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id", "task_id", name="uq_api_mock_project_workspace_task"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)

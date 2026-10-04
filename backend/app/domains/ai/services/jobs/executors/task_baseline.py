@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.agents import current_agent_attempt
 from app.core.offload import run_db
@@ -18,12 +18,12 @@ from app.domains.task.services import task_cli_state_service
 async def execute_task_baseline_job(
     job_id: str,
     task_id: str,
-    dispatch: Optional[Dict[str, Any]] = None,
-) -> Optional[bool]:
+    dispatch: dict[str, Any] | None = None,
+) -> bool | None:
     if not task_id:
         raise ValueError("Baseline job has no task")
     attempt = current_agent_attempt()
-    env_overrides: Dict[str, str] = {}
+    env_overrides: dict[str, str] = {}
     if attempt is not None:
         env_overrides = {
             "TRACEFORGE_RUN_TOKEN": attempt.run_token,

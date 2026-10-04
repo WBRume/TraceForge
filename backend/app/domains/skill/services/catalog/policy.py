@@ -1,12 +1,13 @@
 """Define skill scope, visibility, source ownership and review permissions."""
 
 from __future__ import annotations
-from typing import Optional, Tuple
+
 from sqlalchemy.orm import Session
-from app.domains.skill.models.skill import SddSkill, SkillDimension
+
 from app.domains.auth.models.user import User, WorkspaceMember
-from app.domains.workspace.services import workspace_service
+from app.domains.skill.models.skill import SddSkill, SkillDimension
 from app.domains.skill.services.packages import storage as storage_service
+from app.domains.workspace.services import workspace_service
 
 
 def _is_workspace_member(db: Session, workspace_id: str, user_id: str) -> bool:
@@ -22,22 +23,22 @@ def _is_workspace_member(db: Session, workspace_id: str, user_id: str) -> bool:
 
 
 def _resolve_target_dimension(
-    value: Optional[str],
-    fallback: Optional[SkillDimension] = None,
+    value: str | None,
+    fallback: SkillDimension | None = None,
 ) -> SkillDimension:
     if value is None:
         return fallback or SkillDimension.WORKSPACE
     return SkillDimension(value)
 
 
-def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+def _normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = str(value).strip()
     return normalized or None
 
 
-def _normalize_manifest_path(value: Optional[str]) -> str:
+def _normalize_manifest_path(value: str | None) -> str:
     # An empty manifest path represents a package without a manifest.
     normalized = str(value or "").strip()
     if not normalized:
@@ -75,8 +76,8 @@ def _resolve_creation_target_scope(
     user_id: str,
     context_workspace_id: str,
     dimension_value: str,
-    workspace_id: Optional[str],
-) -> Tuple[SkillDimension, Optional[str]]:
+    workspace_id: str | None,
+) -> tuple[SkillDimension, str | None]:
     dimension = _resolve_target_dimension(dimension_value)
     if dimension == SkillDimension.GLOBAL:
         return dimension, None

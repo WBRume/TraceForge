@@ -9,9 +9,10 @@ job / identity / attempt 构造器（保持原名与语义不变）。
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterator
+from typing import Any
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -121,18 +122,22 @@ def _job(
         process_pid=pid,
         process_group_id=pid,
         cancel_requested_at=datetime.utcnow() if cancel_requested else None,
-        lease_expires_at=(
-            datetime.utcnow() + timedelta(seconds=30)
-            if status == AiJobStatus.RUNNING
-            else None
-        ),
+        lease_expires_at=(datetime.utcnow() + timedelta(seconds=30) if status == AiJobStatus.RUNNING else None),
     )
     db.add(job)
     db.commit()
     return job
 
 
-def _owned_job(db, *, status=AiJobStatus.RUNNING, token="run-1", kind=EXECUTION_KIND_LOCAL_PROCESS, pid=5151, cancel_requested=False):
+def _owned_job(
+    db,
+    *,
+    status=AiJobStatus.RUNNING,
+    token="run-1",
+    kind=EXECUTION_KIND_LOCAL_PROCESS,
+    pid=5151,
+    cancel_requested=False,
+):
     return _job(
         db,
         status=status,

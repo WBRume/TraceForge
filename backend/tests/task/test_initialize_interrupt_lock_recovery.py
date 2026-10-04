@@ -58,7 +58,9 @@ def task_api(monkeypatch):
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr(lifecycle, "get_engine", lambda _task_id: remote)
     monkeypatch.setattr(selection, "resolve_task_backend", lambda *_args: "opencode")
-    monkeypatch.setattr(task_session_snapshot_service, "create_checkpoint", mock.AsyncMock(return_value={"root": "isolated-checkpoint"}))
+    monkeypatch.setattr(
+        task_session_snapshot_service, "create_checkpoint", mock.AsyncMock(return_value={"root": "isolated-checkpoint"})
+    )
     monkeypatch.setattr(settings, "DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS", 0.05)
     broadcast = mock.AsyncMock()
     monkeypatch.setattr(lifecycle.task_ws_manager, "send_message_to_room", broadcast)
@@ -77,14 +79,26 @@ def task_api(monkeypatch):
             remote.session_id = job.session_id
             remote.current_job_id = job.id
             remote.running = True
-            db.add(ChatMessage(
-                task_id=job.task_id, workspace_id=job.workspace_id, creator_id="user-1",
-                role="assistant", content="Questions", message_type="text",
-                session_generation=job.session_generation,
-                metadata_json={"confirmation": {"job_id": job.id, "kind": "form", "fields": [
-                    {"name": "project", "label": "项目类型", "type": "text"},
-                ]}},
-            ))
+            db.add(
+                ChatMessage(
+                    task_id=job.task_id,
+                    workspace_id=job.workspace_id,
+                    creator_id="user-1",
+                    role="assistant",
+                    content="Questions",
+                    message_type="text",
+                    session_generation=job.session_generation,
+                    metadata_json={
+                        "confirmation": {
+                            "job_id": job.id,
+                            "kind": "form",
+                            "fields": [
+                                {"name": "project", "label": "项目类型", "type": "text"},
+                            ],
+                        }
+                    },
+                )
+            )
 
         await run_db_txn_with_bind(db_engine, start)
 
@@ -115,7 +129,9 @@ def test_initialize_then_stop_native_question_twice_after_release_disconnect(tas
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             for generation in (2, 3):
                 transport.failures.append(RedisConnectionError("Connection lost"))
-                initialized = await client.post("/api/workspaces/ws-1/tasks/task-1/initialize", json={"prompt": "创建 Python 项目，请提问"})
+                initialized = await client.post(
+                    "/api/workspaces/ws-1/tasks/task-1/initialize", json={"prompt": "创建 Python 项目，请提问"}
+                )
                 assert initialized.status_code == 200, initialized.text
                 job = initialized.json()["job"]
                 assert job["session_generation"] == generation

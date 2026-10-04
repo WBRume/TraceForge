@@ -1,17 +1,10 @@
-import os
-import sys
-import unittest
 import asyncio
+import unittest
 from contextlib import asynccontextmanager
 from unittest import mock
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
 from app.domains.api_mock.services import api_mock_service
-import app.domains.api_mock.services.api_mock.auto_mock_service
-import app.domains.api_mock.services.api_mock.cli_sync_service
+
 
 class ApiMockFacadeTest(unittest.TestCase):
     def test_facade_exports(self):
@@ -26,7 +19,7 @@ class ApiMockFacadeTest(unittest.TestCase):
         self.assertTrue(hasattr(api_mock_service, "execute_gateway"))
         self.assertTrue(hasattr(api_mock_service, "save_active_document"))
         self.assertTrue(hasattr(api_mock_service, "list_collab_events"))
-        
+
     @mock.patch("app.domains.api_mock.services.api_mock_service.SessionLocal")
     @mock.patch("app.domains.api_mock.services.api_mock_service._clear_cancel_event")
     @mock.patch("app.domains.api_mock.services.api_mock_service.ensure_project")
@@ -35,27 +28,21 @@ class ApiMockFacadeTest(unittest.TestCase):
         mock_session_local.return_value = mock_db
         mock_project = mock.MagicMock()
         mock_ensure_project.return_value = mock_project
-        
-        with mock.patch("app.domains.api_mock.services.api_mock.auto_mock_service.auto_generate_mock_cases_for_endpoint") as mock_auto:
+
+        with mock.patch(
+            "app.domains.api_mock.services.api_mock.auto_mock_service.auto_generate_mock_cases_for_endpoint"
+        ) as mock_auto:
             api_mock_service.run_auto_mock_job_background(
-                job_id="job123",
-                workspace_id="ws456",
-                task_id="task789",
-                user_id="user001",
-                endpoint_id="ep0"
+                job_id="job123", workspace_id="ws456", task_id="task789", user_id="user001", endpoint_id="ep0"
             )
-            
+
             mock_auto.assert_called_once_with(
-                mock_db,
-                mock_project,
-                job_id="job123",
-                endpoint_id="ep0",
-                creator_id="user001"
+                mock_db, mock_project, job_id="job123", endpoint_id="ep0", creator_id="user001"
             )
-        
+
         mock_clear_cancel.assert_called_once_with("job123")
         mock_db.close.assert_called_once()
-        
+
     @mock.patch("app.domains.api_mock.services.api_mock_service.SessionLocal")
     @mock.patch("app.domains.api_mock.services.api_mock_service._clear_cancel_event")
     @mock.patch("app.domains.api_mock.services.api_mock_service.ensure_project")
@@ -64,8 +51,10 @@ class ApiMockFacadeTest(unittest.TestCase):
         mock_session_local.return_value = mock_db
         mock_project = mock.MagicMock()
         mock_ensure_project.return_value = mock_project
-        
-        with mock.patch("app.domains.api_mock.services.api_mock.cli_sync_service.run_import_job_internal") as mock_import:
+
+        with mock.patch(
+            "app.domains.api_mock.services.api_mock.cli_sync_service.run_import_job_internal"
+        ) as mock_import:
             api_mock_service.run_import_job_background(
                 job_id="job123",
                 workspace_id="ws456",
@@ -73,9 +62,9 @@ class ApiMockFacadeTest(unittest.TestCase):
                 user_id="user001",
                 source_name="My Import",
                 source_url="http://test",
-                raw_content="swagger: '2.0'"
+                raw_content="swagger: '2.0'",
             )
-            
+
             mock_import.assert_called_once_with(
                 mock_db,
                 mock_project,
@@ -83,9 +72,9 @@ class ApiMockFacadeTest(unittest.TestCase):
                 source_name="My Import",
                 source_url="http://test",
                 raw_content="swagger: '2.0'",
-                creator_id="user001"
+                creator_id="user001",
             )
-            
+
         mock_clear_cancel.assert_called_once_with("job123")
         mock_db.close.assert_called_once()
 
@@ -95,7 +84,9 @@ class ApiMockFacadeTest(unittest.TestCase):
         async def _fake_queue_api_mock_jobs(*_args, **_kwargs):
             yield
 
-        with mock.patch("app.domains.api_mock.services.api_mock_service.queue_api_mock_jobs", _fake_queue_api_mock_jobs):
+        with mock.patch(
+            "app.domains.api_mock.services.api_mock_service.queue_api_mock_jobs", _fake_queue_api_mock_jobs
+        ):
             called = {"ok": False}
 
             def _job_with_asyncio_run() -> None:

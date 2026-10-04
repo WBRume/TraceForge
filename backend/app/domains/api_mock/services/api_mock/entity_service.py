@@ -2,28 +2,35 @@
 API MOCK Entity Service.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.domains.api_mock.models.api_mock import SddApiMockEndpoint, SddApiMockEntity, SddApiMockProject
-from .source_version_service import get_source_version, load_oas_from_source, persist_source_version, resolve_active_source_id
+from app.domains.api_mock.models.api_mock import SddApiMockEntity, SddApiMockProject
+
+from .source_version_service import (
+    get_source_version,
+    load_oas_from_source,
+    persist_source_version,
+    resolve_active_source_id,
+)
 
 
 def _hydrate_entity(db: Session, project: SddApiMockProject, entity: SddApiMockEntity) -> SddApiMockEntity:
     source = get_source_version(db, project, entity.source_version_id)
     if not source:
-        setattr(entity, "schema_json", {})
+        entity.schema_json = {}
         return entity
-    
+
     oas_payload = load_oas_from_source(source)
     from .openapi_normalizer import extract_endpoints_and_entities
+
     _, entities_payload = extract_endpoints_and_entities(oas_payload)
     lookup = {ent["name"]: ent for ent in entities_payload}
-    
+
     matched = lookup.get(entity.name) or {}
-    setattr(entity, "schema_json", matched.get("schema_json") or {})
+    entity.schema_json = matched.get("schema_json") or {}
     return entity
 
 
@@ -31,10 +38,10 @@ def list_entities(
     db: Session,
     project: SddApiMockProject,
     *,
-    source_version_id: Optional[str] = None,
-    endpoint_id: Optional[str] = None,
-    scope: Optional[str] = None,
-) -> List[SddApiMockEntity]:
+    source_version_id: str | None = None,
+    endpoint_id: str | None = None,
+    scope: str | None = None,
+) -> list[SddApiMockEntity]:
     target_source_id = resolve_active_source_id(project, source_version_id)
     if not target_source_id:
         return []
@@ -59,14 +66,14 @@ def list_entities(
     entities = query.order_by(SddApiMockEntity.name.asc()).all()
     if not target_source_id and entities:
         target_source_id = entities[0].source_version_id
-        
+
     for entity in entities:
         _hydrate_entity(db, project, entity)
-            
+
     return entities
 
 
-def get_entity(db: Session, project: SddApiMockProject, entity_id: str) -> Optional[SddApiMockEntity]:
+def get_entity(db: Session, project: SddApiMockProject, entity_id: str) -> SddApiMockEntity | None:
     entity = (
         db.query(SddApiMockEntity)
         .filter(
@@ -77,16 +84,16 @@ def get_entity(db: Session, project: SddApiMockProject, entity_id: str) -> Optio
     )
     if not entity:
         return None
-        
+
     return _hydrate_entity(db, project, entity)
 
 
 def _apply_entity_to_source(
-    oas_payload: Dict[str, Any],
-    old_name: Optional[str],
-    new_name: Optional[str],
-    description: Optional[str],
-    schema_json: Optional[Dict[str, Any]],
+    oas_payload: dict[str, Any],
+    old_name: str | None,
+    new_name: str | None,
+    description: str | None,
+    schema_json: dict[str, Any] | None,
 ) -> None:
     components = oas_payload.get("components") if isinstance(oas_payload.get("components"), dict) else {}
     oas_payload["components"] = components
@@ -109,9 +116,9 @@ def create_entity(
     *,
     updater_id: str,
     name: str,
-    description: Optional[str],
-    schema_json: Dict[str, Any],
-    endpoint_id: Optional[str] = None,
+    description: str | None,
+    schema_json: dict[str, Any],
+    endpoint_id: str | None = None,
 ) -> SddApiMockEntity:
     if endpoint_id:
         from .endpoint_service import get_endpoint
@@ -195,8 +202,8 @@ def update_entity(
     entity_id: str,
     updater_id: str,
     name: str,
-    description: Optional[str],
-    schema_json: Dict[str, Any],
+    description: str | None,
+    schema_json: dict[str, Any],
 ) -> SddApiMockEntity:
     entity = get_entity(db, project, entity_id)
     if not entity:

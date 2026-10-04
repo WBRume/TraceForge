@@ -7,8 +7,6 @@ All counts use database COUNT queries instead of len() on loaded collections.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
@@ -134,7 +132,7 @@ def get_task_detail_summary(
     db: Session,
     workspace_id: str,
     task_id: str,
-) -> Optional[TaskDetailSummaryResponse]:
+) -> TaskDetailSummaryResponse | None:
     """
     Lightweight task detail summary for initial page load.
 

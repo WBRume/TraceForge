@@ -15,17 +15,17 @@ Create Date: 2026-08-26 18:00:00.000000
 """
 
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
-
 revision: str = "c8f4d9e7f0b2"
-down_revision: Union[str, None] = "9f4c2a7d5e6b"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "9f4c2a7d5e6b"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _workspace_tag(workspace_id: str) -> str:
@@ -45,10 +45,7 @@ def upgrade() -> None:
 
     conn = op.get_bind()
     queues = conn.execute(
-        sa.text(
-            "SELECT id, status, consumed_at FROM sdd_rag_sync_queue "
-            "ORDER BY created_at ASC"
-        )
+        sa.text("SELECT id, status, consumed_at FROM sdd_rag_sync_queue ORDER BY created_at ASC")
     ).fetchall()
     if not queues:
         return
@@ -88,19 +85,17 @@ def upgrade() -> None:
                 },
             )
             conn.execute(
-                sa.text(
-                    "UPDATE sdd_rag_outbox SET queue_id = :nid "
-                    "WHERE queue_id = :qid AND workspace_id = :ws"
-                ),
+                sa.text("UPDATE sdd_rag_outbox SET queue_id = :nid WHERE queue_id = :qid AND workspace_id = :ws"),
                 {"nid": new_id, "qid": queue_id, "ws": ws_id},
             )
 
-        remaining = conn.execute(
-            sa.text(
-                "SELECT COUNT(*) FROM sdd_rag_outbox WHERE queue_id = :qid"
-            ),
-            {"qid": queue_id},
-        ).scalar() or 0
+        remaining = (
+            conn.execute(
+                sa.text("SELECT COUNT(*) FROM sdd_rag_outbox WHERE queue_id = :qid"),
+                {"qid": queue_id},
+            ).scalar()
+            or 0
+        )
         if remaining == 0:
             conn.execute(
                 sa.text("DELETE FROM sdd_rag_sync_queue WHERE id = :qid"),

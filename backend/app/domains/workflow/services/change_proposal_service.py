@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.domains.asset.models.asset import SddAssetVersion
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.task.models.task import SddTask
+from app.domains.task.services import git_patch_service
 from app.domains.workflow.models.task_change import (
     ChangeProposalFileType,
     ChangeProposalStatus,
@@ -23,8 +25,6 @@ from app.domains.workflow.models.task_change import (
     SddTaskVerificationRun,
     VerificationRunStatus,
 )
-from app.domains.auth.models.user import User, Workspace, WorkspaceMember
-from app.domains.task.services import git_patch_service
 from app.domains.workflow.services import change_artifact_service
 
 
@@ -51,7 +51,7 @@ def _normalize_file_type(value: str) -> ChangeProposalFileType:
         return ChangeProposalFileType.MODIFIED
 
 
-def _normalize_datetime(value: Optional[datetime]) -> Optional[datetime]:
+def _normalize_datetime(value: datetime | None) -> datetime | None:
     return value if isinstance(value, datetime) else None
 
 
@@ -67,7 +67,7 @@ def _ensure_base_matches(proposal: SddTaskChangeProposal, base_commit_sha: str) 
         )
 
 
-def get_visible_task(db: Session, *, task_id: str, user_id: str) -> Optional[SddTask]:
+def get_visible_task(db: Session, *, task_id: str, user_id: str) -> SddTask | None:
     return (
         db.query(SddTask)
         .join(WorkspaceMember, WorkspaceMember.workspace_id == SddTask.workspace_id)
@@ -82,23 +82,18 @@ def list_agent_tasks(
     user_id: str,
     page: int = 1,
     page_size: int = 20,
-) -> Tuple[List[Dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int]:
     query = (
         db.query(SddTask)
         .join(WorkspaceMember, WorkspaceMember.workspace_id == SddTask.workspace_id)
         .filter(WorkspaceMember.user_id == user_id)
     )
     total = query.count()
-    tasks = (
-        query.order_by(SddTask.created_at.desc())
-        .offset((max(1, page) - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+    tasks = query.order_by(SddTask.created_at.desc()).offset((max(1, page) - 1) * page_size).limit(page_size).all()
     return [serialize_agent_task(db, task) for task in tasks], total
 
 
-def serialize_agent_task(db: Session, task: SddTask) -> Dict[str, Any]:
+def serialize_agent_task(db: Session, task: SddTask) -> dict[str, Any]:
     latest = get_latest_task_proposal(db, task_id=task.id)
     return {
         "id": task.id,
@@ -121,7 +116,7 @@ def get_visible_proposal(
     *,
     proposal_id: str,
     user_id: str,
-) -> Optional[SddTaskChangeProposal]:
+) -> SddTaskChangeProposal | None:
     return (
         db.query(SddTaskChangeProposal)
         .options(joinedload(SddTaskChangeProposal.files))
@@ -131,7 +126,7 @@ def get_visible_proposal(
     )
 
 
-def get_latest_task_proposal(db: Session, *, task_id: str) -> Optional[SddTaskChangeProposal]:
+def get_latest_task_proposal(db: Session, *, task_id: str) -> SddTaskChangeProposal | None:
     return (
         db.query(SddTaskChangeProposal)
         .filter(SddTaskChangeProposal.task_id == task_id)
@@ -140,7 +135,7 @@ def get_latest_task_proposal(db: Session, *, task_id: str) -> Optional[SddTaskCh
     )
 
 
-def list_proposal_files(db: Session, *, proposal_id: str) -> List[SddTaskChangeProposalFile]:
+def list_proposal_files(db: Session, *, proposal_id: str) -> list[SddTaskChangeProposalFile]:
     return (
         db.query(SddTaskChangeProposalFile)
         .filter(SddTaskChangeProposalFile.proposal_id == proposal_id)
@@ -153,12 +148,13 @@ def create_change_proposal(
     db: Session,
     *,
     task: SddTask,
-    workspace: Optional[Workspace],
+    workspace: Workspace | None,
     creator_id: str,
-    summary: Optional[str] = None,
-    risk_notes: Optional[str] = None,
+    summary: str | None = None,
+    risk_notes: str | None = None,
 ) -> SddTaskChangeProposal:
     from app.domains.local_resource.service import require_operation
+
     require_operation(db, task, creator_id, "generate_patch")
     try:
         snapshots = git_patch_service.generate_task_repo_patch_snapshots(task, workspace, db=db)
@@ -261,7 +257,7 @@ def list_proposal_repo_patches(
     db: Session,
     *,
     proposal_id: str,
-) -> List[SddTaskChangeProposalRepo]:
+) -> list[SddTaskChangeProposalRepo]:
     return (
         db.query(SddTaskChangeProposalRepo)
         .filter(SddTaskChangeProposalRepo.proposal_id == proposal_id)
@@ -273,7 +269,7 @@ def list_proposal_repo_patches(
 def read_repo_patch_file(
     db: Session,
     repo_patch: SddTaskChangeProposalRepo,
-) -> Tuple[bytes, str]:
+) -> tuple[bytes, str]:
     version_id = str(repo_patch.patch_asset_version_id or "").strip()
     if not version_id:
         raise ChangeProposalError("Patch artifact is missing", status_code=404)
@@ -294,8 +290,8 @@ def serialize_repo_patch(
     repo_patch: SddTaskChangeProposalRepo,
     *,
     include_patch_text: bool = False,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "id": repo_patch.id,
         "proposal_id": repo_patch.proposal_id,
         "repository_id": repo_patch.repository_id,
@@ -327,7 +323,7 @@ def mark_patch_downloaded(db: Session, proposal: SddTaskChangeProposal) -> SddTa
     return proposal
 
 
-def read_patch_file(db: Session, proposal: SddTaskChangeProposal) -> Tuple[bytes, str]:
+def read_patch_file(db: Session, proposal: SddTaskChangeProposal) -> tuple[bytes, str]:
     version_id = str(proposal.patch_asset_version_id or "").strip()
     if not version_id:
         raise ChangeProposalError("Patch artifact is missing", status_code=404)
@@ -351,8 +347,8 @@ def record_apply_result(
     proposal_id: str,
     status: str,
     base_commit_sha: str,
-    local_head_sha: Optional[str] = None,
-    message: Optional[str] = None,
+    local_head_sha: str | None = None,
+    message: str | None = None,
 ) -> SddTaskChangeProposal:
     proposal = db.query(SddTaskChangeProposal).filter(SddTaskChangeProposal.id == proposal_id).first()
     if not proposal or proposal.task_id != task.id:
@@ -382,17 +378,17 @@ def create_verification_run(
     task: SddTask,
     user: User,
     proposal_id: str,
-    agent_id: Optional[str],
-    machine_name: Optional[str],
-    os_name: Optional[str],
-    command: Optional[str],
+    agent_id: str | None,
+    machine_name: str | None,
+    os_name: str | None,
+    command: str | None,
     status: str,
-    duration_ms: Optional[int],
+    duration_ms: int | None,
     base_commit_sha: str,
-    local_head_sha: Optional[str],
-    log_excerpt: Optional[str],
-    started_at: Optional[datetime],
-    finished_at: Optional[datetime],
+    local_head_sha: str | None,
+    log_excerpt: str | None,
+    started_at: datetime | None,
+    finished_at: datetime | None,
 ) -> SddTaskVerificationRun:
     proposal = db.query(SddTaskChangeProposal).filter(SddTaskChangeProposal.id == proposal_id).first()
     if not proposal or proposal.task_id != task.id:
@@ -438,7 +434,7 @@ def attach_verification_log(
     user: User,
     file_name: str,
     file_content: bytes,
-    log_excerpt: Optional[str] = None,
+    log_excerpt: str | None = None,
 ) -> SddTaskVerificationRun:
     run = db.query(SddTaskVerificationRun).filter(SddTaskVerificationRun.id == run_id).first()
     if not run or run.task_id != task.id:
@@ -466,15 +462,15 @@ def create_conflict_report(
     task: SddTask,
     user: User,
     proposal_id: str,
-    agent_id: Optional[str],
-    machine_name: Optional[str],
+    agent_id: str | None,
+    machine_name: str | None,
     base_commit_sha: str,
-    local_head_sha: Optional[str],
+    local_head_sha: str | None,
     conflicted_files: Any,
-    git_apply_stderr: Optional[str],
-    conflict_excerpt: Optional[str],
-    report_file_name: Optional[str] = None,
-    report_file_content: Optional[bytes] = None,
+    git_apply_stderr: str | None,
+    conflict_excerpt: str | None,
+    report_file_name: str | None = None,
+    report_file_content: bytes | None = None,
 ) -> SddTaskConflictReport:
     proposal = db.query(SddTaskChangeProposal).filter(SddTaskChangeProposal.id == proposal_id).first()
     if not proposal or proposal.task_id != task.id:

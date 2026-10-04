@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime
-from typing import Optional
+
 
 class GitWorktreeError(ValueError):
     def __init__(self, message: str, *, status_code: int = 409):
@@ -17,7 +17,7 @@ class GitWorktreeError(ValueError):
         self.status_code = status_code
 
 
-def should_use_git_worktree(project_path: Optional[str], git_repo_url: Optional[str]) -> bool:
+def should_use_git_worktree(project_path: str | None, git_repo_url: str | None) -> bool:
     return bool(str(project_path or "").strip() and str(git_repo_url or "").strip())
 
 
@@ -62,7 +62,7 @@ def _normalize_remote_url(url: str) -> str:
     return value.rstrip("/").lower()
 
 
-def _run_git_raw(args: list[str], *, cwd: Optional[str] = None) -> subprocess.CompletedProcess[str]:
+def _run_git_raw(args: list[str], *, cwd: str | None = None) -> subprocess.CompletedProcess[str]:
     from app.core.subprocess_runner import ProcessTimeoutError, run_git
 
     try:
@@ -78,7 +78,7 @@ def _command_output(result: subprocess.CompletedProcess[str]) -> str:
     return message or f"exit code {result.returncode}"
 
 
-def _run_git_checked(args: list[str], *, cwd: Optional[str] = None, status_code: int = 409) -> str:
+def _run_git_checked(args: list[str], *, cwd: str | None = None, status_code: int = 409) -> str:
     result = _run_git_raw(args, cwd=cwd)
     if result.returncode != 0:
         raise GitWorktreeError(
@@ -193,7 +193,7 @@ def create_task_worktree(
     repo_path: str,
     task_id: str,
     task_project_path: str,
-    expected_git_repo_url: Optional[str] = None,
+    expected_git_repo_url: str | None = None,
 ) -> str:
     abs_repo_path = _to_abs_path(repo_path, label="repo_path")
     abs_task_path = _to_abs_path(task_project_path, label="task_project_path")
@@ -222,7 +222,9 @@ def create_task_worktree(
             status_code=409,
         )
 
-    branch_source = f"origin/{base_branch}" if _remote_branch_exists(abs_repo_path, f"origin/{base_branch}") else base_branch
+    branch_source = (
+        f"origin/{base_branch}" if _remote_branch_exists(abs_repo_path, f"origin/{base_branch}") else base_branch
+    )
     _run_git_checked(
         ["worktree", "add", "-b", task_branch, abs_task_path, branch_source],
         cwd=abs_repo_path,
@@ -246,7 +248,7 @@ def remove_task_worktree(
     repo_path: str,
     task_id: str,
     task_project_path: str,
-    expected_git_repo_url: Optional[str] = None,
+    expected_git_repo_url: str | None = None,
     missing_ok: bool = True,
 ) -> None:
     abs_repo_path = _to_abs_path(repo_path, label="repo_path")
@@ -285,8 +287,8 @@ def archive_workspace_repository(
     *,
     workspace_id: str,
     project_path: str,
-    expected_git_repo_url: Optional[str] = None,
-    archive_root: Optional[str] = None,
+    expected_git_repo_url: str | None = None,
+    archive_root: str | None = None,
 ) -> str:
     workspace_key = str(workspace_id or "").strip()
     if not workspace_key:
@@ -351,8 +353,7 @@ def archive_workspace_repository(
                 shutil.move(target_path, abs_project_path)
             except Exception as rollback_exc:
                 raise GitWorktreeError(
-                    "Failed to archive workspace repository and rollback failed. "
-                    f"archive_path={target_path}",
+                    f"Failed to archive workspace repository and rollback failed. archive_path={target_path}",
                     status_code=500,
                 ) from rollback_exc
         raise GitWorktreeError(f"Failed to archive workspace repository: {exc}", status_code=409) from exc
@@ -381,6 +382,7 @@ def restore_archived_workspace(*, archive_path: str, original_project_path: str)
 # ──────────────────────────────────────────────────────────────────────────────
 # Multi-repository workspace orchestration
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class RepoWorktreeBinding:
     """A single repository binding used to orchestrate task worktrees."""
@@ -591,9 +593,8 @@ def remove_task_worktrees(
         )
 
 
-def read_repo_head_sha(repo_path: str) -> Optional[str]:
+def read_repo_head_sha(repo_path: str) -> str | None:
     result = _run_git_raw(["rev-parse", "HEAD"], cwd=repo_path)
     if result.returncode != 0:
         return None
     return (result.stdout or "").strip() or None
-

@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, TypeVar
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -37,16 +38,16 @@ logger = get_logger(__name__, category="offload")
 
 T = TypeVar("T")
 
-_db_executor: Optional[ThreadPoolExecutor] = None
-_git_executor: Optional[ThreadPoolExecutor] = None
-_file_executor: Optional[ThreadPoolExecutor] = None
+_db_executor: ThreadPoolExecutor | None = None
+_git_executor: ThreadPoolExecutor | None = None
+_file_executor: ThreadPoolExecutor | None = None
 
-_db_gate: Optional["InflightGate"] = None
-_git_gate: Optional["InflightGate"] = None
-_file_gate: Optional["InflightGate"] = None
+_db_gate: InflightGate | None = None
+_git_gate: InflightGate | None = None
+_file_gate: InflightGate | None = None
 
 _executors: list[ThreadPoolExecutor] = []
-_gates: list["InflightGate"] = []
+_gates: list[InflightGate] = []
 
 
 class InflightGate:
@@ -133,7 +134,7 @@ async def run_in_executor(
     executor: ThreadPoolExecutor,
     fn: Callable[..., T],
     *args: Any,
-    gate: Optional["InflightGate"] = None,
+    gate: InflightGate | None = None,
     **kwargs: Any,
 ) -> T:
     """在指定线程池中执行 fn，事件循环不被阻塞；gate 提供在飞背压。"""

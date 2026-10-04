@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Optional, Tuple
 
 from app.agents.errors import SessionForkError, SessionLogNotFoundError
 
@@ -35,7 +34,7 @@ def encode_segment(raw: str) -> str:
         if ch != "~" and _SAFE_UNIT.match(ch):
             out.append(ch)
         else:
-            out.append("~%04X" % ord(ch))
+            out.append(f"~{ord(ch):04X}")
     return "".join(out)
 
 
@@ -54,23 +53,23 @@ def project_key(cwd: str) -> str:
             readable.append(ch)
             separator_run = False
         else:
-            readable.append("~%04X" % ord(ch))
+            readable.append(f"~{ord(ch):04X}")
             separator_run = False
     slug = "".join(readable).lstrip("-") or "root"
     return f"--{slug[:251]}--"
 
 
-def project_dir(root: str, cwd: Optional[str]) -> str:
+def project_dir(root: str, cwd: str | None) -> str:
     if cwd is None:
         return os.path.join(root, "_no-cwd")
     return os.path.join(root, project_key(cwd))
 
 
-def session_log_path(root: str, cwd: Optional[str], session_id: str, suffix: str) -> str:
+def session_log_path(root: str, cwd: str | None, session_id: str, suffix: str) -> str:
     return os.path.join(project_dir(root, cwd), encode_segment(session_id), f"session{suffix}")
 
 
-def locate_session_log(root: str, session_id: str) -> Tuple[str, str]:
+def locate_session_log(root: str, session_id: str) -> tuple[str, str]:
     """在 root 下扫描会话日志（id 在不同 project 目录下只应出现一次）。
 
     返回 (log_path, suffix)，suffix 为 '.jsonl' / '.jsonl.zstd'。
@@ -78,7 +77,7 @@ def locate_session_log(root: str, session_id: str) -> Tuple[str, str]:
     segment = encode_segment(session_id)
     if not os.path.isdir(root):
         raise SessionLogNotFoundError(f"DSH sessions root not found: {root}")
-    matches: list[Tuple[str, str]] = []
+    matches: list[tuple[str, str]] = []
     for entry in os.listdir(root):
         proj_path = os.path.join(root, entry)
         if not os.path.isdir(proj_path):
@@ -88,17 +87,13 @@ def locate_session_log(root: str, session_id: str) -> Tuple[str, str]:
             if os.path.isfile(candidate):
                 matches.append((candidate, suffix))
     if not matches:
-        raise SessionLogNotFoundError(
-            f"DSH session log not found for fork: id={session_id}, root={root}"
-        )
+        raise SessionLogNotFoundError(f"DSH session log not found for fork: id={session_id}, root={root}")
     if len(matches) > 1:
-        raise SessionForkError(
-            f"DSH session id {session_id} appears in multiple project dirs under {root}"
-        )
+        raise SessionForkError(f"DSH session id {session_id} appears in multiple project dirs under {root}")
     return matches[0]
 
 
-def discover_latest_session(root: str, cwd: str) -> Optional[Tuple[str, str]]:
+def discover_latest_session(root: str, cwd: str) -> tuple[str, str] | None:
     """找 project 目录下最新写入的会话（CLI 不打印 session id，用此兜底发现）。
 
     返回 (session_id, log_path)；无会话返回 None。
@@ -106,7 +101,7 @@ def discover_latest_session(root: str, cwd: str) -> Optional[Tuple[str, str]]:
     proj_path = project_dir(root, cwd)
     if not os.path.isdir(proj_path):
         return None
-    best: Optional[Tuple[float, str, str]] = None
+    best: tuple[float, str, str] | None = None
     for entry in os.listdir(proj_path):
         sess_dir = os.path.join(proj_path, entry)
         if not os.path.isdir(sess_dir):
@@ -126,14 +121,12 @@ def discover_latest_session(root: str, cwd: str) -> Optional[Tuple[str, str]]:
 
 def _read_log_text(log_path: str, suffix: str) -> str:
     if suffix == ".jsonl":
-        with open(log_path, "r", encoding="utf-8") as f:
+        with open(log_path, encoding="utf-8") as f:
             return f.read()
     try:
         import zstandard  # type: ignore
     except ImportError as exc:  # pragma: no cover - 环境缺依赖时给出明确指引
-        raise SessionForkError(
-            "DSH session logs use zstd; install 'zstandard' to enable session fork"
-        ) from exc
+        raise SessionForkError("DSH session logs use zstd; install 'zstandard' to enable session fork") from exc
     decompressor = zstandard.ZstdDecompressor()
     with open(log_path, "rb") as f:
         return decompressor.stream_reader(f).read().decode("utf-8")
@@ -182,13 +175,9 @@ def _contiguous_log_prefix(text: str) -> str:
         try:
             record = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise SessionForkError(
-                f"DSH session log row is not valid JSON at line {line_number}"
-            ) from exc
+            raise SessionForkError(f"DSH session log row is not valid JSON at line {line_number}") from exc
         if not isinstance(record, dict):
-            raise SessionForkError(
-                f"DSH session log row is not an object at line {line_number}"
-            )
+            raise SessionForkError(f"DSH session log row is not an object at line {line_number}")
 
         seq = record.get("seq")
         span = 1
@@ -199,9 +188,7 @@ def _contiguous_log_prefix(text: str) -> str:
             data = record.get("data")
             deltas = data.get("dt") if isinstance(data, dict) else None
             if type(seq0) is not int or seq0 < 0 or not isinstance(deltas, list):
-                raise SessionForkError(
-                    f"DSH session log row has no usable sequence at line {line_number}"
-                )
+                raise SessionForkError(f"DSH session log row has no usable sequence at line {line_number}")
             first_seq = seq0
             span = len(deltas) + 1
 

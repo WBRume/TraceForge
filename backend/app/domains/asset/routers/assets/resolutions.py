@@ -1,28 +1,35 @@
 """asset.routers.assets.resolutions domain operations."""
 
 from __future__ import annotations
-from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.domains.asset.services.review import resolutions as resolution_commands
+
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
-from app.domains.asset.models.asset import AssetResolutionProposalStatus, SddAssetResolutionProposal
-from app.domains.auth.models.user import User
 from app.domains.ai.schemas.ai_job import AiJobResponse
-from app.domains.asset.schemas.asset import AssetResolutionAnchorPrecheckRequest, AssetResolutionAnchorPrecheckResponse, AssetResolutionApplyRequest, AssetResolutionProposalCreateRequest, AssetResolutionProposalRewriteRequest, AssetVersionResponse
 from app.domains.ai.services.jobs import constants as ai_job_constants
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.asset.models.asset import AssetResolutionProposalStatus, SddAssetResolutionProposal
+from app.domains.asset.routers.assets import transport as asset_assets_transport
+from app.domains.asset.routers.assets.transport import ReviewRoute
+from app.domains.asset.schemas.asset import (
+    AssetResolutionAnchorPrecheckRequest,
+    AssetResolutionAnchorPrecheckResponse,
+    AssetResolutionApplyRequest,
+    AssetResolutionProposalCreateRequest,
+    AssetResolutionProposalRewriteRequest,
+    AssetVersionResponse,
+)
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
 from app.domains.asset.services.document import repository as document_repository
-from app.domains.task.services import task_cli_state_service
-from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
-from app.domains.asset.routers.assets.transport import ReviewRoute
-from app.domains.asset.routers.assets import transport as asset_assets_transport
 from app.domains.asset.services.review import documents as asset_review_documents
 from app.domains.asset.services.review import jobs as asset_review_jobs
 from app.domains.asset.services.review import policy as asset_review_policy
-
+from app.domains.asset.services.review import resolutions as resolution_commands
+from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
+from app.domains.auth.models.user import User
+from app.domains.task.services import task_cli_state_service
 
 router = APIRouter(route_class=ReviewRoute)
 
@@ -32,7 +39,7 @@ async def create_thread_resolution_proposal(
     ws_id: str,
     asset_id: str,
     thread_id: str,
-    data: Optional[AssetResolutionProposalCreateRequest] = None,
+    data: AssetResolutionProposalCreateRequest | None = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -61,11 +68,12 @@ async def create_thread_resolution_proposal(
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     try:
         created = await asset_assets_transport._run_asset_route_db_txn(
-            db, db_bind,
+            db,
+            db_bind,
             lambda session: asset_review_jobs._create_asset_resolution_job_sync(
                 session,
                 ws_id=ws_id,
@@ -82,7 +90,7 @@ async def create_thread_resolution_proposal(
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     payload = created["payload"]
     await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
@@ -203,11 +211,12 @@ async def rewrite_thread_resolution_proposal(
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     try:
         created = await asset_assets_transport._run_asset_route_db_txn(
-            db, db_bind,
+            db,
+            db_bind,
             lambda session: asset_review_jobs._create_asset_resolution_job_sync(
                 session,
                 ws_id=ws_id,
@@ -226,7 +235,7 @@ async def rewrite_thread_resolution_proposal(
         )
     except task_cli_state_service.BootstrapNotReadyError as exc:
         await task_cli_state_service.publish_bootstrap_snapshot(resolved_task_id)
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     payload = created["payload"]
     await ai_job_publishing.enqueue_asset_thread_job(payload["id"])
     return AiJobResponse(**payload)
@@ -241,10 +250,13 @@ async def apply_thread_resolution(
     current_user: User = Depends(get_current_user),
 ):
     try:
-
-        result = await run_db_txn(lambda session: resolution_commands.apply_resolution(session, ws_id=ws_id, asset_id=asset_id, thread_id=thread_id, data=data, user_id=current_user.id))
+        result = await run_db_txn(
+            lambda session: resolution_commands.apply_resolution(
+                session, ws_id=ws_id, asset_id=asset_id, thread_id=thread_id, data=data, user_id=current_user.id
+            )
+        )
     except asset_resolution_service.ResolutionServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     version_response = AssetVersionResponse(**result["version"])
     if result["task_id"]:
         await task_cli_state_service.mark_bootstrap_stale_async(

@@ -7,16 +7,16 @@ Create Date: 2026-08-26 00:00:00.000000
 RAG 案例队列界面需要按工作区/案例/标题/版本展示和筛选，补充冗余列。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "f2a1b3c4d5e6"
-down_revision: Union[str, None] = "e4b7c2d9a1f6"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "e4b7c2d9a1f6"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

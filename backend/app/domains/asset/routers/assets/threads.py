@@ -1,23 +1,31 @@
 """asset.routers.assets.threads domain operations."""
 
 from __future__ import annotations
-from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+
 from app.dependencies import get_current_user, get_db
-from app.domains.auth.models.user import User
-from app.domains.asset.schemas.asset import AssetThreadCloseHintActionRequest, AssetThreadCreateRequest, AssetThreadListResponse, AssetThreadMessageCreateRequest, AssetThreadMessageResponse, AssetThreadResponse, AssetThreadStateUpdateRequest
+from app.domains.asset.routers.assets import transport as asset_assets_transport
+from app.domains.asset.routers.assets.transport import ReviewRoute
+from app.domains.asset.schemas.asset import (
+    AssetThreadCloseHintActionRequest,
+    AssetThreadCreateRequest,
+    AssetThreadListResponse,
+    AssetThreadMessageCreateRequest,
+    AssetThreadMessageResponse,
+    AssetThreadResponse,
+    AssetThreadStateUpdateRequest,
+)
 from app.domains.asset.services import asset_discussion_service, asset_service
 from app.domains.asset.services.document import repository as document_repository
-from app.domains.task.services import task_cli_state_service
-from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
-from app.domains.asset.routers.assets.transport import ReviewRoute
-from app.domains.asset.routers.assets import transport as asset_assets_transport
 from app.domains.asset.services.review import documents as asset_review_documents
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
 from app.domains.asset.services.review import threads as asset_review_threads
-
+from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
+from app.domains.auth.models.user import User
+from app.domains.task.services import task_cli_state_service
 
 router = APIRouter(route_class=ReviewRoute)
 
@@ -26,8 +34,8 @@ router = APIRouter(route_class=ReviewRoute)
 def list_asset_threads(
     ws_id: str,
     asset_id: str,
-    context_version_id: Optional[str] = Query(default=None),
-    version_id: Optional[str] = Query(default=None),
+    context_version_id: str | None = Query(default=None),
+    version_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -60,7 +68,7 @@ def get_asset_thread(
     ws_id: str,
     asset_id: str,
     thread_id: str,
-    context_version_id: Optional[str] = Query(default=None),
+    context_version_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -202,7 +210,7 @@ async def update_thread_close_hint(
     asset_id: str,
     thread_id: str,
     data: AssetThreadCloseHintActionRequest,
-    context_version_id: Optional[str] = Query(default=None),
+    context_version_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):

@@ -18,9 +18,9 @@ if TEST_ROOT not in sys.path:
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType  # noqa: E402
 from app.domains.task.models.diagnosis import SddDiagnosisResult  # noqa: E402
 from app.domains.task.models.task import TaskType  # noqa: E402
-from app.domains.task.services import diagnosis_result_service  # noqa: E402
 from app.domains.task.schemas.diagnosis import DiagnosisResultPayload  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session, _seed_workspace  # noqa: E402
+from app.domains.task.services import diagnosis_result_service  # noqa: E402
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
 
 def _seed_diagnosis_task(db, workspace_id="ws-diag-x", task_id="task-diag-x"):
@@ -58,7 +58,7 @@ def test_prompt_suffix_declares_diagnosis_contract():
             assert "多轮交互（HITL）" in suffix
             assert "索取新的问题线索" in suffix
             # 初始化提示词不再内嵌「每轮输出 JSON 定位结果」的约定（已收敛为「一键总结」生成）
-            assert '```json' not in suffix
+            assert "```json" not in suffix
             assert '"confidence"' not in suffix
             assert '"call_chain"' not in suffix
             assert "每轮回复结束时" not in suffix
@@ -323,11 +323,7 @@ def test_upsert_from_user_persists_edits_to_result_and_card():
             assert result.similar_cases_json[0]["title"] == "用户补充案例"
             assert result.call_chain_json[0]["module"] == "Gateway"
 
-            message = (
-                db.query(ChatMessage)
-                .filter(ChatMessage.id == result.source_chat_message_id)
-                .first()
-            )
+            message = db.query(ChatMessage).filter(ChatMessage.id == result.source_chat_message_id).first()
             assert message is not None
             assert message.metadata_json["summary"] == "用户修正后的总结"
             assert message.metadata_json["root_cause"] == "用户修正根因"
@@ -376,8 +372,6 @@ def test_upsert_from_ai_skips_development_task():
                 db, task=task, payload=payload, actor_user_id=user.id
             )
             assert result is None
-            assert (
-                db.query(SddDiagnosisResult).filter(SddDiagnosisResult.task_id == task.id).count() == 0
-            )
+            assert db.query(SddDiagnosisResult).filter(SddDiagnosisResult.task_id == task.id).count() == 0
     finally:
         engine.dispose()

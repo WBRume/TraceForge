@@ -153,9 +153,7 @@ class SddManagementProductRepo(Base):
     """
 
     __tablename__ = "mgmt_product_repos"
-    __table_args__ = (
-        UniqueConstraint("product_id", "repository_id", name="uq_mgmt_product_repos_product_repo"),
-    )
+    __table_args__ = (UniqueConstraint("product_id", "repository_id", name="uq_mgmt_product_repos_product_repo"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     product_id = Column(
@@ -183,9 +181,7 @@ class SddManagementProductVersion(Base):
     its own set of repositories (tag/branch) and carries its own release date."""
 
     __tablename__ = "mgmt_product_versions"
-    __table_args__ = (
-        UniqueConstraint("product_id", "version_no", name="uq_mgmt_product_versions_product_version"),
-    )
+    __table_args__ = (UniqueConstraint("product_id", "version_no", name="uq_mgmt_product_versions_product_version"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     product_id = Column(
@@ -413,9 +409,7 @@ class SddManagementProjectProduct(Base):
     """A product inside a project, tracking its own delivery progress."""
 
     __tablename__ = "mgmt_project_products"
-    __table_args__ = (
-        UniqueConstraint("project_id", "product_id", name="uq_mgmt_project_products_project_product"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "product_id", name="uq_mgmt_project_products_project_product"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     project_id = Column(
@@ -454,9 +448,7 @@ class SddManagementProjectProduct(Base):
 
 class SddManagementProjectRelease(Base):
     __tablename__ = "mgmt_project_releases"
-    __table_args__ = (
-        UniqueConstraint("project_id", "release_no", name="uq_mgmt_project_releases_project_no"),
-    )
+    __table_args__ = (UniqueConstraint("project_id", "release_no", name="uq_mgmt_project_releases_project_no"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     project_id = Column(
@@ -526,7 +518,6 @@ class SddManagementProjectReleaseRepo(Base):
 
     release = relationship("SddManagementProjectRelease", back_populates="repos")
     repository = relationship("SddManagementRepository")
-
 
 
 __all__ = [

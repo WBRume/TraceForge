@@ -1,13 +1,16 @@
 """Validate and query task skill selections, without filesystem effects."""
 
 from __future__ import annotations
-from typing import Iterable, List
+
+from collections.abc import Iterable
+
 from sqlalchemy.orm import Session
-from app.domains.skill.models.skill import SddSkill, SkillDimension, SddTaskSkill
+
+from app.domains.skill.models.skill import SddSkill, SddTaskSkill, SkillDimension
 from app.domains.task.models.task import SddTask
 
 
-def get_task_skills(db: Session, task_id: str) -> List[SddSkill]:
+def get_task_skills(db: Session, task_id: str) -> list[SddSkill]:
     return (
         db.query(SddSkill)
         .join(SddTaskSkill, SddTaskSkill.skill_id == SddSkill.id)
@@ -21,7 +24,7 @@ def validate_task_skill_ids(
     db: Session,
     workspace_id: str,
     skill_ids: Iterable[str],
-) -> List[SddSkill]:
+) -> list[SddSkill]:
     unique_ids = list(dict.fromkeys([sid for sid in skill_ids if sid]))
     if not unique_ids:
         return []
@@ -33,7 +36,7 @@ def validate_task_skill_ids(
     if missing_ids:
         raise ValueError(f"Skills not found: {', '.join(missing_ids)}")
 
-    validated: List[SddSkill] = []
+    validated: list[SddSkill] = []
     for sid in unique_ids:
         skill = skills_by_id[sid]
         if skill.dimension == SkillDimension.WORKSPACE and skill.workspace_id != workspace_id:
@@ -42,7 +45,7 @@ def validate_task_skill_ids(
     return validated
 
 
-def bind_task_skills(db: Session, task: SddTask, skills: List[SddSkill]) -> None:
+def bind_task_skills(db: Session, task: SddTask, skills: list[SddSkill]) -> None:
     _ = db
     for skill in skills:
         task.skill_links.append(SddTaskSkill(skill_id=skill.id))

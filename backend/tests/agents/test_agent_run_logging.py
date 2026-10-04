@@ -2,14 +2,10 @@
 
 import asyncio
 import os
-import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.agents import AgentEvent, AgentRunRequest, AgentRunResult
 from app.agents.run_logging import run_agent_backend_with_logging
@@ -36,26 +32,32 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
             name = "fake"
 
             async def run(self, request: AgentRunRequest, on_event):
-                await on_event(AgentEvent(
-                    type="session_started",
-                    payload={"provider_session_id": "s1", "provider": "fake"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="text",
-                    payload={"text": "hello", "provider": "fake"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="result",
-                    payload={
-                        "success": True,
-                        "result": "ok",
-                        "finish_reason": "completed",
-                        "provider": "fake",
-                    },
-                    provider="fake",
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="session_started",
+                        payload={"provider_session_id": "s1", "provider": "fake"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="text",
+                        payload={"text": "hello", "provider": "fake"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="result",
+                        payload={
+                            "success": True,
+                            "result": "ok",
+                            "finish_reason": "completed",
+                            "provider": "fake",
+                        },
+                        provider="fake",
+                    )
+                )
                 return AgentRunResult(
                     run_id=request.run_id,
                     session_id="s1",
@@ -116,21 +118,25 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
             name = "fake"
 
             async def run(self, request: AgentRunRequest, on_event):
-                await on_event(AgentEvent(
-                    type="session_started",
-                    payload={"provider_session_id": "trace-session-1", "provider": "fake"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="result",
-                    payload={
-                        "success": True,
-                        "result": "ok",
-                        "finish_reason": "completed",
-                        "provider": "fake",
-                    },
-                    provider="fake",
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="session_started",
+                        payload={"provider_session_id": "trace-session-1", "provider": "fake"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="result",
+                        payload={
+                            "success": True,
+                            "result": "ok",
+                            "finish_reason": "completed",
+                            "provider": "fake",
+                        },
+                        provider="fake",
+                    )
+                )
                 return AgentRunResult(
                     run_id=request.run_id,
                     session_id="trace-session-1",
@@ -151,10 +157,7 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertTrue(files, "session trace file was not created")
         self.assertTrue(any("fake_trace-session-1" in name for name in files))
-        content = open(
-            os.path.join(settings.AI_SESSION_LOG_DIR, files[0]),
-            encoding="utf-8",
-        ).read()
+        content = Path(os.path.join(settings.AI_SESSION_LOG_DIR, files[0])).read_text(encoding="utf-8")
         self.assertIn("=== AGENT SESSION TRACE ===", content)
         self.assertIn("trace-session-1", content)
         self.assertIn("=== END SESSION TRACE ===", content)
@@ -164,26 +167,34 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
             name = "fake"
 
             async def run(self, request: AgentRunRequest, on_event):
-                await on_event(AgentEvent(
-                    type="log",
-                    payload={"level": "debug", "message": "noisy progress tick"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="log",
-                    payload={"level": "info", "message": "auditable provider event"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="session_started",
-                    payload={"provider_session_id": "prompt-session-1", "provider": "fake"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="log",
-                    payload={"level": "debug", "message": "post-session progress tick"},
-                    provider="fake",
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="log",
+                        payload={"level": "debug", "message": "noisy progress tick"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="log",
+                        payload={"level": "info", "message": "auditable provider event"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="session_started",
+                        payload={"provider_session_id": "prompt-session-1", "provider": "fake"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="log",
+                        payload={"level": "debug", "message": "post-session progress tick"},
+                        provider="fake",
+                    )
+                )
                 return AgentRunResult(
                     run_id=request.run_id,
                     session_id="prompt-session-1",
@@ -203,10 +214,7 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
             if name.endswith(".log") and "prompt-session-1" in name
         ]
         self.assertTrue(files, "session trace file was not created")
-        content = open(
-            os.path.join(settings.AI_SESSION_LOG_DIR, files[0]),
-            encoding="utf-8",
-        ).read()
+        content = Path(os.path.join(settings.AI_SESSION_LOG_DIR, files[0])).read_text(encoding="utf-8")
         self.assertIn("请解释这个 bug", content)
         self.assertIn("prompt_length: 9", content)
         self.assertIn("auditable provider event", content)
@@ -223,16 +231,20 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
             name = "fake"
 
             async def run(self, request: AgentRunRequest, on_event):
-                await on_event(AgentEvent(
-                    type="log",
-                    payload={"message": "pre-session event"},
-                    provider="fake",
-                ))
-                await on_event(AgentEvent(
-                    type="session_started",
-                    payload={"provider_session_id": "real-session-9", "provider": "fake"},
-                    provider="fake",
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="log",
+                        payload={"message": "pre-session event"},
+                        provider="fake",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="session_started",
+                        payload={"provider_session_id": "real-session-9", "provider": "fake"},
+                        provider="fake",
+                    )
+                )
                 return AgentRunResult(
                     run_id=request.run_id,
                     session_id="real-session-9",
@@ -270,42 +282,56 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
             name = "opencode"
 
             async def run(self, request: AgentRunRequest, on_event):
-                await on_event(AgentEvent(
-                    type="session_started",
-                    payload={"provider_session_id": "ses-filter-test", "model": "test-model"},
-                    provider="opencode",
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="session_started",
+                        payload={"provider_session_id": "ses-filter-test", "model": "test-model"},
+                        provider="opencode",
+                    )
+                )
                 # 模拟高频思考与流式增量事件
-                await on_event(AgentEvent(
-                    type="thinking",
-                    payload={"text": "正在分析问题..."},
-                    provider="opencode",
-                ))
-                await on_event(AgentEvent(
-                    type="text_delta",
-                    payload={"delta": "你好", "text": "你好"},
-                    provider="opencode",
-                ))
-                await on_event(AgentEvent(
-                    type="text_delta",
-                    payload={"delta": "，世界", "text": "，世界"},
-                    provider="opencode",
-                ))
-                await on_event(AgentEvent(
-                    type="thinking",
-                    payload={"text": "组织最终回答"},
-                    provider="opencode",
-                ))
-                await on_event(AgentEvent(
-                    type="text",
-                    payload={"text": "你好，世界"},
-                    provider="opencode",
-                ))
-                await on_event(AgentEvent(
-                    type="result",
-                    payload={"success": True, "result": "你好，世界", "finish_reason": "completed"},
-                    provider="opencode",
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="thinking",
+                        payload={"text": "正在分析问题..."},
+                        provider="opencode",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="text_delta",
+                        payload={"delta": "你好", "text": "你好"},
+                        provider="opencode",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="text_delta",
+                        payload={"delta": "，世界", "text": "，世界"},
+                        provider="opencode",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="thinking",
+                        payload={"text": "组织最终回答"},
+                        provider="opencode",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="text",
+                        payload={"text": "你好，世界"},
+                        provider="opencode",
+                    )
+                )
+                await on_event(
+                    AgentEvent(
+                        type="result",
+                        payload={"success": True, "result": "你好，世界", "finish_reason": "completed"},
+                        provider="opencode",
+                    )
+                )
                 return AgentRunResult(
                     run_id=request.run_id,
                     session_id="ses-filter-test",
@@ -321,9 +347,10 @@ class AgentRunLoggingTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.result_text, "你好，世界")
         # 验证前端/外部 sink 仍能正常接收流式打字与思考事件
-        self.assertEqual([e.type for e in sink_events], [
-            "session_started", "thinking", "text_delta", "text_delta", "thinking", "text", "result"
-        ])
+        self.assertEqual(
+            [e.type for e in sink_events],
+            ["session_started", "thinking", "text_delta", "text_delta", "thinking", "text", "result"],
+        )
 
         # 验证 logger debug 中不应记录 agent text / agent thinking
         debug_messages = [str(call.args[0]) for call in mock_logger.debug.call_args_list if call.args]

@@ -6,11 +6,8 @@ OAuth 三方登录 Pydantic Schemas（对应设计文档 §2.3 接口契约）�
 """
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
-
-from app.domains.auth.schemas.auth import TokenResponse
 
 # ── ticket status 常量（与 models/oauth.py 保持同一组值；schema 层引用避免循环导入）──
 from app.domains.auth.models.oauth import (  # noqa: F401
@@ -21,9 +18,10 @@ from app.domains.auth.models.oauth import (  # noqa: F401
     TICKET_STATUS_LOGIN_OK,
     TICKET_STATUS_REGISTER_REQUIRED,
 )
-
+from app.domains.auth.schemas.auth import TokenResponse
 
 # ══════════════════ 接口 1：GET /auth/oauth/providers ══════════════════
+
 
 class ProviderInfo(BaseModel):
     """已启用 provider 的展示信息（登录页动态渲染用）。"""
@@ -42,13 +40,14 @@ class ProviderListResponse(BaseModel):
 
 # ══════════════════ 接口 2：GET /auth/oauth/{provider}/authorize ══════════════════
 
+
 class AuthorizeParams(BaseModel):
     """authorize 端点的 query 参数（FastAPI 以 Depends 形式消费）。"""
 
     intent: str = Field(default="login", pattern="^(login|bind)$")
     client_type: str = Field(default="web", pattern="^(web|desktop)$")
     # 授权完成后前端应落地的站内相对路径；禁止 // 与绝对 URL（防开放重定向，router 层校验）
-    redirect_after: Optional[str] = None
+    redirect_after: str | None = None
 
 
 class AuthorizeResponse(BaseModel):
@@ -60,6 +59,7 @@ class AuthorizeResponse(BaseModel):
 
 
 # ══════════════════ 接口 4：POST /auth/oauth/resolve（幂等读） ══════════════════
+
 
 class TicketResolveRequest(BaseModel):
     ticket: str = Field(..., min_length=1, max_length=64)
@@ -77,28 +77,29 @@ class ResolveResponse(BaseModel):
     """
 
     status: str
-    provider: Optional[str] = None
-    email_masked: Optional[str] = None
-    suggested_email: Optional[str] = None
-    suggested_display_name: Optional[str] = None
-    suggested_avatar_url: Optional[str] = None
-    email_verified: Optional[bool] = None
+    provider: str | None = None
+    email_masked: str | None = None
+    suggested_email: str | None = None
+    suggested_display_name: str | None = None
+    suggested_avatar_url: str | None = None
+    email_verified: bool | None = None
     # CONFIRM_REQUIRED（管理员加绑）：reason="admin_bind" + provider 展示名（§2.3 接口 4 契约）
-    provider_display_name: Optional[str] = None
-    reason: Optional[str] = None
-    bound_at: Optional[datetime] = None
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    token_type: Optional[str] = None
+    provider_display_name: str | None = None
+    reason: str | None = None
+    bound_at: datetime | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = None
 
 
 # ══════════════════ 接口 5/6/7：终态请求体 ══════════════════
+
 
 class OAuthBindRequest(BaseModel):
     """加绑终态（已登录态，设置页）。管理员账号加绑必须传 password（拍板 #8）。"""
 
     ticket: str = Field(..., min_length=1, max_length=64)
-    password: Optional[str] = Field(default=None, max_length=128)
+    password: str | None = Field(default=None, max_length=128)
 
 
 class OAuthBindConfirmRequest(BaseModel):
@@ -123,6 +124,7 @@ class OAuthRegisterRequest(BaseModel):
 
 # ══════════════════ 接口 5/6/7：终态响应体 ══════════════════
 
+
 class BindResultResponse(BaseModel):
     """加绑成功响应。"""
 
@@ -144,17 +146,18 @@ class OAuthRegisterResponse(TokenResponse):
 
 # ══════════════════ 接口 8/9：身份列表与解绑 ══════════════════
 
+
 class OAuthIdentityResponse(BaseModel):
     """已绑定身份（设置页展示）。不暴露 provider_uid 明文之外的敏感字段。"""
 
     id: str
     provider: str
-    provider_display_name: Optional[str] = None
-    provider_email: Optional[str] = None
-    provider_avatar_url: Optional[str] = None
-    email_verified: Optional[bool] = None
+    provider_display_name: str | None = None
+    provider_email: str | None = None
+    provider_avatar_url: str | None = None
+    email_verified: bool | None = None
     created_at: datetime
-    last_login_at: Optional[datetime] = None
+    last_login_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 

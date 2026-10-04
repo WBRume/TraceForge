@@ -26,18 +26,17 @@ import os
 import signal
 import time
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
 except ImportError:  # pragma: no cover - packaging/runtime guard
     psutil = None  # type: ignore[assignment]
 
-from app.core.logging import get_logger
 from app.agents.supervision.inspection import (
     InspectionQueueSaturated,
     submit_process_probe,
 )
+from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="agent_process")
 
@@ -50,10 +49,10 @@ class MemberBindingState(str, enum.Enum):
     一律禁止发送。
     """
 
-    BOUND = "BOUND"                # 身份已验证且持有绑定句柄
-    GONE = "GONE"                  # 已验证原目标消失
-    UNVERIFIED = "UNVERIFIED"      # 身份读取/绑定失败，归属不明
-    UNSUPPORTED = "UNSUPPORTED"    # 平台不支持安全句柄操作
+    BOUND = "BOUND"  # 身份已验证且持有绑定句柄
+    GONE = "GONE"  # 已验证原目标消失
+    UNVERIFIED = "UNVERIFIED"  # 身份读取/绑定失败，归属不明
+    UNSUPPORTED = "UNSUPPORTED"  # 平台不支持安全句柄操作
 
 
 @dataclass(frozen=True)
@@ -66,9 +65,9 @@ class MemberIdentity:
     """
 
     state: MemberBindingState = MemberBindingState.UNVERIFIED
-    create_time: Optional[float] = None
-    pidfd: Optional[int] = None
-    error_code: Optional[str] = None
+    create_time: float | None = None
+    pidfd: int | None = None
+    error_code: str | None = None
 
     @property
     def gone(self) -> bool:
@@ -76,9 +75,7 @@ class MemberIdentity:
 
     @property
     def bound(self) -> bool:
-        return (
-            self.state == MemberBindingState.BOUND and self.pidfd is not None
-        )
+        return self.state == MemberBindingState.BOUND and self.pidfd is not None
 
 
 # 迟到身份探测结果的回收任务强引用集（doc 审计 P1-2）：取消的等待方离开
@@ -96,7 +93,7 @@ def pidfd_send_supported() -> bool:
     return hasattr(os, "pidfd_open") and hasattr(signal, "pidfd_send_signal")
 
 
-def close_pidfd(pidfd: Optional[int]) -> None:
+def close_pidfd(pidfd: int | None) -> None:
     """Close one pidfd exactly once; tolerate already-closed descriptors."""
     if pidfd is None:
         return
@@ -130,7 +127,7 @@ def probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> MemberI
         return MemberIdentity(state=MemberBindingState.GONE)
     except (psutil.Error, OSError, ValueError):
         return MemberIdentity(error_code="IDENTITY_PROBE_FAILED")
-    create_time: Optional[float] = None
+    create_time: float | None = None
     try:
         create_time = float(proc.create_time())
     except (psutil.Error, OSError, ValueError):
@@ -149,7 +146,7 @@ def probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> MemberI
             state=MemberBindingState.UNSUPPORTED,
             error_code="PIDFD_UNAVAILABLE",
         )
-    pidfd: Optional[int] = None
+    pidfd: int | None = None
     try:
         pidfd = os.pidfd_open(pid)
     except ProcessLookupError:
@@ -169,12 +166,10 @@ def probe_member_identity_sync(pid: int, *, want_pidfd: bool = False) -> MemberI
         # 让发送路径误判为"身份已确认"。
         close_pidfd(pidfd)
         return MemberIdentity(error_code="IDENTITY_CHANGED")
-    return MemberIdentity(
-        state=MemberBindingState.BOUND, create_time=create_time, pidfd=pidfd
-    )
+    return MemberIdentity(state=MemberBindingState.BOUND, create_time=create_time, pidfd=pidfd)
 
 
-async def _reap_late_identity_result(wrapped: "asyncio.Future") -> None:
+async def _reap_late_identity_result(wrapped: asyncio.Future) -> None:
     """Await a late identity-probe result and close its pidfd exactly once."""
     try:
         identity = await wrapped
@@ -186,7 +181,7 @@ async def _reap_late_identity_result(wrapped: "asyncio.Future") -> None:
     close_pidfd(getattr(identity, "pidfd", None))
 
 
-def _schedule_late_identity_reaper(wrapped: "asyncio.Future") -> None:
+def _schedule_late_identity_reaper(wrapped: asyncio.Future) -> None:
     """Keep a strong reference to the recovery task; never GC mid-recovery."""
     try:
         task = asyncio.create_task(_reap_late_identity_result(wrapped))
@@ -211,9 +206,7 @@ async def probe_member_identity(
     loop = asyncio.get_running_loop()
     try:
         raw_future = submit_process_probe(
-            functools.partial(
-                probe_member_identity_sync, int(pid), want_pidfd=want_pidfd
-            )
+            functools.partial(probe_member_identity_sync, int(pid), want_pidfd=want_pidfd)
         )
     except InspectionQueueSaturated:
         # 队列饱和：身份无法核实，按"归属不明"处理，绝不发信号。
@@ -228,7 +221,7 @@ async def probe_member_identity(
         raise
 
 
-def signal_verified_member(pidfd: Optional[int], sig: int) -> bool:
+def signal_verified_member(pidfd: int | None, sig: int) -> bool:
     """Send one signal through the verified pidfd binding only (P0-1).
 
     P0（07e04775）：只有已绑定的 pidfd 允许发送。句柄缺失、平台缺
@@ -255,7 +248,7 @@ def signal_verified_member(pidfd: Optional[int], sig: int) -> bool:
 
 async def signal_after_identity_recheck(
     pid: int,
-    expected_create_time: Optional[float],
+    expected_create_time: float | None,
     sig: int,
     signals: list,
     signal_name: str,
@@ -302,7 +295,7 @@ async def signal_after_identity_recheck(
 
 
 async def terminate_verified_members(
-    member_identities: Dict[int, Optional[float]],
+    member_identities: dict[int, float | None],
     signals: list,
     *,
     term_wait: float = 3.0,

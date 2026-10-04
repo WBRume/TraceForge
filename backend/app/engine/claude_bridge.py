@@ -4,21 +4,19 @@ Claude CLI 桥接引擎
 Real 模式通过 asyncio subprocess 启动 claudecode CLI，以 NDJSON 流式解析输出
 """
 
-import json
 import asyncio
-import uuid
+import codecs
+import json
 import os
 import re
 import shutil
-import signal
 import subprocess
-import codecs
 import tempfile
+import uuid
 from abc import ABC, abstractmethod
-from typing import Optional, Callable, Any, Dict
+from collections.abc import Callable
+from typing import Any
 
-from app.config import settings
-from app.core.logging import get_logger
 from app.agents.contract import record_attempt_termination
 from app.agents.supervision import (
     ManagedAgentProcess,
@@ -26,6 +24,9 @@ from app.agents.supervision import (
     TerminationResult,
     process_supervisor,
 )
+from app.config import settings
+from app.core.background_tasks import retain_background_task
+from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -61,8 +62,10 @@ def resolve_claude_permission_args(permission_mode: str) -> list[str]:
     normalized = str(permission_mode or "").strip().lower()
     if normalized in {"read-only", "readonly"}:
         return [
-            "--permission-mode", "default",
-            "--disallowedTools", ",".join(_READONLY_DENIED_TOOLS),
+            "--permission-mode",
+            "default",
+            "--disallowedTools",
+            ",".join(_READONLY_DENIED_TOOLS),
         ]
     if normalized == "plan":
         return ["--permission-mode", "plan"]
@@ -78,11 +81,11 @@ class CliBridgeBase(ABC):
         prompt: str,
         project_path: str,
         event_callback: Callable[[dict], Any],
-        session_id: Optional[str] = None,
-        env_overrides: Optional[Dict[str, str]] = None,
+        session_id: str | None = None,
+        env_overrides: dict[str, str] | None = None,
         fork_session: bool = False,
         permission_mode: str = "default",
-        on_process_started: Optional[Callable[[Any], Any]] = None,
+        on_process_started: Callable[[Any], Any] | None = None,
     ) -> str:
         """
         启动 CLI 会话。
@@ -92,17 +95,14 @@ class CliBridgeBase(ABC):
         - session_id: 可选，传入已有 session_id 则恢复会话 (--resume)
         返回: session_id
         """
-        pass
 
     @abstractmethod
-    async def cancel(self) -> Optional[TerminationResult]:
+    async def cancel(self) -> TerminationResult | None:
         """取消正在运行的 CLI 进程"""
-        pass
 
     @abstractmethod
-    async def interrupt(self) -> Optional[TerminationResult]:
+    async def interrupt(self) -> TerminationResult | None:
         """临时中断正在运行的 CLI 进程，保留会话用于后续恢复"""
-        pass
 
     @abstractmethod
     def is_running(self) -> bool:
@@ -116,18 +116,18 @@ class SubprocessCliBridge(CliBridgeBase):
     逐行解析 NDJSON 事件流 (system / assistant / result)
     """
 
-    def __init__(self, cli_path: Optional[str] = None):
-        self.process: Optional[asyncio.subprocess.Process] = None
-        self._managed_process: Optional[ManagedAgentProcess] = None
-        self._reader_task: Optional[asyncio.Task] = None
-        self._stderr_task: Optional[asyncio.Task] = None
-        self._event_cb: Optional[Callable] = None
-        self._session_id: Optional[str] = None
+    def __init__(self, cli_path: str | None = None):
+        self.process: asyncio.subprocess.Process | None = None
+        self._managed_process: ManagedAgentProcess | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._event_cb: Callable | None = None
+        self._session_id: str | None = None
         self._running = False
-        self.last_termination: Optional[TerminationResult] = None
+        self.last_termination: TerminationResult | None = None
         self._cli_path = (cli_path or settings.CLAUDE_CLI_PATH).strip() or settings.CLAUDE_CLI_PATH
 
-    def _subprocess_kwargs(self) -> Dict[str, Any]:
+    def _subprocess_kwargs(self) -> dict[str, Any]:
         if os.name == "nt":
             return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
         return {"start_new_session": True}
@@ -148,17 +148,17 @@ class SubprocessCliBridge(CliBridgeBase):
             "%dp0%": dp0_with_sep,
         }
         for needle, replacement in replacements.items():
-            value = re.sub(re.escape(needle), lambda _match: replacement, value, flags=re.I)
+            value = re.sub(re.escape(needle), lambda _match, *, replacement=replacement: replacement, value, flags=re.I)
         return os.path.normpath(value)
 
-    def _resolve_windows_cmd_shim_target(self, cmd_path: str) -> Optional[str]:
+    def _resolve_windows_cmd_shim_target(self, cmd_path: str) -> str | None:
         dp0 = os.path.dirname(os.path.abspath(cmd_path))
         candidates = [
             os.path.join(dp0, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
             os.path.join(dp0, "node_modules", "@anthropic-ai", "claude-code", "cli.js"),
         ]
         try:
-            with open(cmd_path, "r", encoding="utf-8", errors="replace") as fp:
+            with open(cmd_path, encoding="utf-8", errors="replace") as fp:
                 content = fp.read(8192)
         except Exception:
             content = ""
@@ -194,14 +194,14 @@ class SubprocessCliBridge(CliBridgeBase):
         prompt: str,
         project_path: str,
         event_callback: Callable[[dict], Any],
-        session_id: Optional[str] = None,
-        env_overrides: Optional[Dict[str, str]] = None,
+        session_id: str | None = None,
+        env_overrides: dict[str, str] | None = None,
         fork_session: bool = False,
         permission_mode: str = "default",
-        on_process_started: Optional[Callable[[Any], Any]] = None,
-        process_attach_timeout_seconds: Optional[float] = None,
-        runtime_policy: Optional[dict] = None,
-        model: Optional[str] = None,
+        on_process_started: Callable[[Any], Any] | None = None,
+        process_attach_timeout_seconds: float | None = None,
+        runtime_policy: dict | None = None,
+        model: str | None = None,
     ) -> str:
         self._event_cb = event_callback
         self._running = True
@@ -214,12 +214,15 @@ class SubprocessCliBridge(CliBridgeBase):
         cli_permission_args = resolve_claude_permission_args(permission_mode)
         if model:
             args.extend(["--model", model])
-        args.extend([
-            "-p",
-            "--output-format", "stream-json",
-            *cli_permission_args,
-            "--verbose",
-        ])
+        args.extend(
+            [
+                "-p",
+                "--output-format",
+                "stream-json",
+                *cli_permission_args,
+                "--verbose",
+            ]
+        )
         if runtime_policy is not None and runtime_policy.get("enforcement") != "ADVISORY_GUARD":
             tier = runtime_policy.get("tier")
             if tier not in {"READONLY", "WORKSPACE_WRITE"} or not runtime_policy.get("dispatch_ticket"):
@@ -229,10 +232,19 @@ class SubprocessCliBridge(CliBridgeBase):
                 raise ValueError("Conflicting legacy permission mode and SOP policy")
             # All mutations are proposals materialized by the platform broker.
             tools = ""
-            args.extend(["--tools", tools, "--strict-mcp-config", "--mcp-config",
-                         json.dumps({"mcpServers": {"traceforge_playbook": runtime_policy["mcp_config"]}}),
-                         "--allowedTools", "mcp__traceforge_playbook__propose_hypotheses,mcp__traceforge_playbook__propose_experiment,mcp__traceforge_playbook__propose_patch,mcp__traceforge_playbook__read_source",
-                         "--setting-sources", ""])
+            args.extend(
+                [
+                    "--tools",
+                    tools,
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    json.dumps({"mcpServers": {"traceforge_playbook": runtime_policy["mcp_config"]}}),
+                    "--allowedTools",
+                    "mcp__traceforge_playbook__propose_hypotheses,mcp__traceforge_playbook__propose_experiment,mcp__traceforge_playbook__propose_patch,mcp__traceforge_playbook__read_source",
+                    "--setting-sources",
+                    "",
+                ]
+            )
 
         # 恢复已有会话
         if session_id:
@@ -301,14 +313,14 @@ class SubprocessCliBridge(CliBridgeBase):
 
                 text = utf8_decoder.decode(chunk)
                 buffer += text
-                
+
                 # 处理缓冲区内完整的所有行
                 while "\n" in buffer:
                     line, buffer = buffer.split("\n", 1)
                     line = line.strip()
                     if not line:
                         continue
-                        
+
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
@@ -328,7 +340,7 @@ class SubprocessCliBridge(CliBridgeBase):
                                 await result
                         except Exception as e:
                             logger.exception(f"Event callback error: {e}")
-                            
+
         except Exception as e:
             if self._running:
                 logger.exception(f"CLI stdout read error: {e}")
@@ -345,7 +357,7 @@ class SubprocessCliBridge(CliBridgeBase):
         except Exception as e:
             logger.exception(f"Stderr read error: {e}")
 
-    def _record_termination(self, termination: Optional[TerminationResult]) -> None:
+    def _record_termination(self, termination: TerminationResult | None) -> None:
         """Record a termination result under its exact process identity.
 
         The evidence key comes from the supervisor-owned managed process;
@@ -354,14 +366,10 @@ class SubprocessCliBridge(CliBridgeBase):
         """
         if termination is None:
             return
-        identity = (
-            self._managed_process.process_identity
-            if self._managed_process is not None
-            else None
-        )
+        identity = self._managed_process.process_identity if self._managed_process is not None else None
         record_attempt_termination(termination, identity)
 
-    async def wait(self) -> Optional[ProcessWaitResult]:
+    async def wait(self) -> ProcessWaitResult | None:
         """等待 CLI 进程结束"""
         if self._managed_process:
             wait_result = await self._managed_process.wait()
@@ -379,7 +387,8 @@ class SubprocessCliBridge(CliBridgeBase):
         if self._managed_process:
             return ProcessWaitResult(
                 root_return_code=self._managed_process.process.returncode,
-                termination=self.last_termination or TerminationResult(
+                termination=self.last_termination
+                or TerminationResult(
                     confirmed_dead=False,
                     root_return_code=self._managed_process.process.returncode,
                 ),
@@ -408,9 +417,7 @@ class SubprocessCliBridge(CliBridgeBase):
     async def _force_stop_process(self, reason: str = "cancel") -> None:
         """保留旧的强制停止契约，并确保先处理进程树再等待根进程。"""
         if self._managed_process:
-            self.last_termination = await asyncio.shield(
-                self._managed_process.close(reason=reason)
-            )
+            self.last_termination = await asyncio.shield(self._managed_process.close(reason=reason))
             self._record_termination(self.last_termination)
             process_supervisor.forget(self._managed_process)
             return
@@ -427,24 +434,20 @@ class SubprocessCliBridge(CliBridgeBase):
                 self.process.kill()
                 await self._wait_for_exit(timeout=2.0)
 
-    async def cancel(self) -> Optional[TerminationResult]:
+    async def cancel(self) -> TerminationResult | None:
         self._running = False
         if self._managed_process:
-            self.last_termination = await asyncio.shield(
-                self._managed_process.close(reason="cancel")
-            )
+            self.last_termination = await asyncio.shield(self._managed_process.close(reason="cancel"))
             process_supervisor.forget(self._managed_process)
         elif self.process and self.process.returncode is None:
             await self.process.wait()
         self._record_termination(self.last_termination)
         return self.last_termination
 
-    async def interrupt(self) -> Optional[TerminationResult]:
+    async def interrupt(self) -> TerminationResult | None:
         self._running = False
         if self._managed_process:
-            self.last_termination = await asyncio.shield(
-                self._managed_process.close(reason="interrupt")
-            )
+            self.last_termination = await asyncio.shield(self._managed_process.close(reason="interrupt"))
             process_supervisor.forget(self._managed_process)
         elif self.process and self.process.returncode is None:
             await self.process.wait()
@@ -455,7 +458,7 @@ class SubprocessCliBridge(CliBridgeBase):
         return self._running
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         return self._session_id
 
 
@@ -474,11 +477,11 @@ class MockCliBridge(CliBridgeBase):
         prompt: str,
         project_path: str,
         event_callback: Callable[[dict], Any],
-        session_id: Optional[str] = None,
-        env_overrides: Optional[Dict[str, str]] = None,
+        session_id: str | None = None,
+        env_overrides: dict[str, str] | None = None,
         fork_session: bool = False,
         permission_mode: str = "default",
-        on_process_started: Optional[Callable[[Any], Any]] = None,
+        on_process_started: Callable[[Any], Any] | None = None,
     ) -> str:
         self._running = True
         self._event_cb = event_callback
@@ -494,52 +497,62 @@ class MockCliBridge(CliBridgeBase):
         logger.info(f"[Mock CLI] Session {self._session_id} | prompt_length: {len(prompt)}")
 
         # 模拟事件序列
-        asyncio.create_task(self._simulate(prompt))
+        retain_background_task(asyncio.create_task(self._simulate(prompt)))
         return self._session_id
 
     async def _simulate(self, prompt: str):
         """模拟 CLI 输出事件"""
         try:
             # 1. system init
-            await self._emit({
-                "type": "system", "subtype": "init",
-                "session_id": self._session_id,
-                "model": "mock-model",
-                "tools": ["Bash", "Edit", "Read", "Write"],
-            })
+            await self._emit(
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "session_id": self._session_id,
+                    "model": "mock-model",
+                    "tools": ["Bash", "Edit", "Read", "Write"],
+                }
+            )
             await asyncio.sleep(0.5)
 
             # 2. assistant thinking
-            await self._emit({
-                "type": "assistant",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "thinking", "thinking": f"思考如何回答: {prompt[:60]}..."}],
-                },
-                "session_id": self._session_id,
-            })
+            await self._emit(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "thinking", "thinking": f"思考如何回答: {prompt[:60]}..."}],
+                    },
+                    "session_id": self._session_id,
+                }
+            )
             await asyncio.sleep(1)
 
             # 3. assistant text
-            await self._emit({
-                "type": "assistant",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": f"[Mock] 已收到你的指令，正在处理…"}],
-                },
-                "session_id": self._session_id,
-            })
+            await self._emit(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "[Mock] 已收到你的指令，正在处理…"}],
+                    },
+                    "session_id": self._session_id,
+                }
+            )
             await asyncio.sleep(1)
 
             # 4. result
-            await self._emit({
-                "type": "result", "subtype": "success",
-                "is_error": False,
-                "result": "[Mock] 处理完成",
-                "session_id": self._session_id,
-                "duration_ms": 2500,
-                "total_cost_usd": 0.0,
-            })
+            await self._emit(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "result": "[Mock] 处理完成",
+                    "session_id": self._session_id,
+                    "duration_ms": 2500,
+                    "total_cost_usd": 0.0,
+                }
+            )
         finally:
             self._running = False
 
@@ -549,12 +562,12 @@ class MockCliBridge(CliBridgeBase):
             if asyncio.iscoroutine(result):
                 await result
 
-    async def cancel(self) -> Optional[TerminationResult]:
+    async def cancel(self) -> TerminationResult | None:
         self._running = False
         logger.info("[Mock CLI] Cancelled")
         return None
 
-    async def interrupt(self) -> Optional[TerminationResult]:
+    async def interrupt(self) -> TerminationResult | None:
         self._running = False
         logger.info("[Mock CLI] Interrupted")
         return None
@@ -563,7 +576,7 @@ class MockCliBridge(CliBridgeBase):
         return self._running
 
 
-def create_cli_bridge(cli_path: Optional[str] = None) -> CliBridgeBase:
+def create_cli_bridge(cli_path: str | None = None) -> CliBridgeBase:
     """根据配置创建 CLI 桥接实例。
 
     兼容策略：real 模式返回 ClaudeCodeAdapter（同时实现 CliBridgeBase 与 AgentBackend）；

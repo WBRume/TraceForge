@@ -2,7 +2,8 @@
 FastAPI 依赖注入
 """
 
-from typing import Generator
+from collections.abc import Generator
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
@@ -39,8 +40,8 @@ def get_current_user(
         user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+    except JWTError as caught_error:
+        raise credentials_exception from caught_error
 
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:

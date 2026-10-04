@@ -29,7 +29,6 @@ import signal
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, Tuple
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -58,16 +57,16 @@ class SpawnLineageCleanup:
     """
 
     state: ProcessProbeState = ProcessProbeState.CONFIRMED_DEAD
-    remaining_pids: Tuple[int, ...] = ()
-    unknown_pids: Tuple[int, ...] = ()
-    signals_sent: Tuple[str, ...] = ()
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    remaining_pids: tuple[int, ...] = ()
+    unknown_pids: tuple[int, ...] = ()
+    signals_sent: tuple[str, ...] = ()
+    failure_code: str | None = None
+    error_message: str | None = None
 
 
 async def cleanup_spawn_lineage(
     *,
-    spawn_token: Optional[str],
+    spawn_token: str | None,
     created_at: float,
     signals: list,
     max_wait: float = 6.0,
@@ -75,9 +74,7 @@ async def cleanup_spawn_lineage(
     """P0-3/P1：本 spawn 谱系后代的结构化清理（07e04775 §3.3）。"""
     if os.name == "nt" or psutil is None or not spawn_token:
         return SpawnLineageCleanup()
-    not_before = datetime.fromtimestamp(
-        max(0.0, float(created_at) - 2.0), tz=timezone.utc
-    )
+    not_before = datetime.fromtimestamp(max(0.0, float(created_at) - 2.0), tz=timezone.utc)
     deadline = time.monotonic() + max(0.1, max_wait)
     kill_at = min(deadline, time.monotonic() + _SPAWN_LINEAGE_TERM_GRACE_SECONDS)
     phase = signal.SIGTERM
@@ -88,58 +85,43 @@ async def cleanup_spawn_lineage(
     # 记录曾经验证过 token 归属的身份，它们随后不可读时仍保留 owned
     # 归属，绝不能降级为"从未证明"的候选。
     proven_pids: set = set()
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    failure_code: str | None = None
+    error_message: str | None = None
 
-    def _conflict_result(conflicts: Tuple[discovery.DiscoveredTokenProcess, ...]) -> SpawnLineageCleanup:
+    def _conflict_result(conflicts: tuple[discovery.DiscoveredTokenProcess, ...]) -> SpawnLineageCleanup:
         # 携带者身份无法核实（不可读/早于 spawn）：不盲杀，保持未确认。
         return SpawnLineageCleanup(
             state=ProcessProbeState.UNKNOWN,
             unknown_pids=tuple(sorted(int(m.pid) for m in conflicts)),
             signals_sent=tuple(signals_sent),
             failure_code="TOKEN_PROCESS_IDENTITY_CONFLICT",
-            error_message=(
-                "Spawn-token process(es) failed identity validation; "
-                "manual handling required"
-            ),
+            error_message=("Spawn-token process(es) failed identity validation; manual handling required"),
         )
 
     while True:
-        scan = await discovery.token_snapshot(
-            spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
-        )
+        scan = await discovery.token_snapshot(spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR)
         if scan.state == ProcessProbeState.UNKNOWN:
             # 扫描不完整：UNKNOWN 保留 ownership（doc 审计 P0-3）。
             # 候选 PID 不跨轮累加（0c381413 §3.3），只保留失败诊断。
             failure_code = failure_code or scan.failure_code
             error_message = error_message or scan.error_message
-        good, conflicts = discovery.partition_token_matches(
-            scan.matches, not_before=not_before, not_after=None
-        )
+        good, conflicts = discovery.partition_token_matches(scan.matches, not_before=not_before, not_after=None)
         if conflicts:
             return _conflict_result(conflicts)
         proven_pids.update(int(m.pid) for m in good)
         # 混合 LIVE + UNKNOWN 也可以清理已验证的 LIVE 身份；但不完整
         # 扫描最终绝不产生死亡证明。
         if good:
-            await discovery.kill_token_matches(
-                good, signals_sent, sig=phase, signal_name=phase_name
-            )
+            await discovery.kill_token_matches(good, signals_sent, sig=phase, signal_name=phase_name)
         # 不能根据"信号发完"返回死亡证明，必须重扫。
-        final = await discovery.token_snapshot(
-            spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
-        )
+        final = await discovery.token_snapshot(spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR)
         if final.state == ProcessProbeState.CONFIRMED_DEAD:
-            signals.extend(
-                name for name in signals_sent if name not in signals
-            )
+            signals.extend(name for name in signals_sent if name not in signals)
             return SpawnLineageCleanup(
                 state=ProcessProbeState.CONFIRMED_DEAD,
                 signals_sent=tuple(signals_sent),
             )
-        good, conflicts = discovery.partition_token_matches(
-            final.matches, not_before=not_before, not_after=None
-        )
+        good, conflicts = discovery.partition_token_matches(final.matches, not_before=not_before, not_after=None)
         if conflicts:
             return _conflict_result(conflicts)
         proven_pids.update(int(m.pid) for m in good)
@@ -151,28 +133,24 @@ async def cleanup_spawn_lineage(
             # 绝不折叠成死亡证明。归属（owned）= 本轮已验证存活 + 曾
             # 证明归属、随后不可读的身份；``unknown_pids`` 只保留最终
             # 扫描中"从未证明属于本 spawn"的候选，过期候选不累加。
-            signals.extend(
-                name for name in signals_sent if name not in signals
-            )
+            signals.extend(name for name in signals_sent if name not in signals)
             final_alive = {int(m.pid) for m in good}
             final_unknown = {int(pid) for pid in final.unknown_pids}
             owned = final_alive | (proven_pids & final_unknown)
             return SpawnLineageCleanup(
                 state=(
-                    ProcessProbeState.UNKNOWN
-                    if final.state == ProcessProbeState.UNKNOWN
-                    else ProcessProbeState.LIVE
+                    ProcessProbeState.UNKNOWN if final.state == ProcessProbeState.UNKNOWN else ProcessProbeState.LIVE
                 ),
                 remaining_pids=tuple(sorted(owned)),
                 unknown_pids=tuple(sorted(final_unknown - proven_pids)),
                 signals_sent=tuple(signals_sent),
-                failure_code=failure_code or (
+                failure_code=failure_code
+                or (
                     DETACHED_DESCENDANTS_UNRESOLVED
                     if final.state == ProcessProbeState.UNKNOWN
                     else "TOKEN_PROCESS_STILL_ALIVE"
                 ),
-                error_message=error_message
-                or "Spawn-token lineage did not converge before deadline",
+                error_message=error_message or "Spawn-token lineage did not converge before deadline",
             )
         if time.monotonic() >= kill_at:
             # 拒绝 TERM 的后代升级 KILL（按已验证身份逐个发送）。

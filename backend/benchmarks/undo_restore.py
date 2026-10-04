@@ -4,23 +4,24 @@ Run from backend: python benchmarks/undo_restore.py <source-worktree>
 Never restores into the source. The copied workspace intentionally has no .git;
 real source tree parsing/object validation is a separate read-only measurement.
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.domains.task.services import task_git_snapshot_store as snapshots
-from app.domains.task.services.task_session_snapshot_service import _snapshot_policy, _cleanup_checkpoint_sync
+from app.domains.task.services.task_session_snapshot_service import _cleanup_checkpoint_sync, _snapshot_policy
 
 
 def main():
@@ -60,9 +61,15 @@ def main():
     started = time.perf_counter()
     _cleanup_checkpoint_sync(str(checkpoint))
     cleanup_seconds = time.perf_counter() - started
-    report = {"source": str(source), "isolated_worktree": str(root), "files": len(leaves),
-              "changed_files": 2, "restore_seconds": round(restore_seconds, 3),
-              "cleanup_seconds": round(cleanup_seconds, 3), "verified": True}
+    report = {
+        "source": str(source),
+        "isolated_worktree": str(root),
+        "files": len(leaves),
+        "changed_files": 2,
+        "restore_seconds": round(restore_seconds, 3),
+        "cleanup_seconds": round(cleanup_seconds, 3),
+        "verified": True,
+    }
     (store / "benchmark.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False), flush=True)
     print(store / "benchmark.json")

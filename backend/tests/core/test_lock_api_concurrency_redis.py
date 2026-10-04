@@ -1,34 +1,25 @@
 import asyncio
 import itertools
-import os
-import sys
 import time
+from collections.abc import Iterator
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Iterator
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.config import settings  # noqa: E402
-from app.core import distributed_lock as dl  # noqa: E402
-from app.core import redis_client as redis_client_module  # noqa: E402
-from app.domains.task.services.conversation import messages as task_conversation_messages
-from app.domains.skill.services.packages import versions as skill_packages_versions
-from app.domains.task.models.task import TaskStatus  # noqa: E402
+from app.config import settings
+from app.core import distributed_lock as dl
+from app.core import redis_client as redis_client_module
 from app.domains.skill.routers import skill as skill_router
+from app.domains.skill.services.packages import versions as skill_packages_versions
+from app.domains.task.models.task import TaskStatus
 from app.domains.task.routers import task as task_router
-  # noqa: E402
-from app.domains.workflow.services import provision_job_service  # noqa: E402
-
+from app.domains.task.services.conversation import messages as task_conversation_messages
 from app.domains.task.services.provisioning import creation as task_provisioning_creation
 from app.domains.task.services.task_records import queries as task_task_records_queries
+from app.domains.workflow.services import provision_job_service
 
 # 直连真实 Redis 的并发/压力检查（live 集成检查，默认随 pytest.ini 的 addopts 排除）。
 # 运行方式（显式指定要访问的 Redis，避免无意触及任何环境）：
@@ -178,10 +169,7 @@ def test_start_task_endpoint_double_click_only_one_success(monkeypatch: pytest.M
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
                 responses = await asyncio.gather(
-                    *[
-                        client.post("/api/workspaces/ws-1/tasks/task-stress-1/start")
-                        for _ in range(16)
-                    ]
+                    *[client.post("/api/workspaces/ws-1/tasks/task-stress-1/start") for _ in range(16)]
                 )
 
             status_codes = [resp.status_code for resp in responses]
@@ -357,7 +345,9 @@ def test_create_task_endpoint_concurrent_20_all_success(monkeypatch: pytest.Monk
         "app.domains.task.routers.task.crud.verify_workspace_permission",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(task_provisioning_creation, "create_task_record_for_provision", _fake_create_task_record_for_provision)
+    monkeypatch.setattr(
+        task_provisioning_creation, "create_task_record_for_provision", _fake_create_task_record_for_provision
+    )
     monkeypatch.setattr(provision_job_service, "create_job", _fake_create_job)
     monkeypatch.setattr(provision_job_service, "run_create_task_job", _fake_run_create_task_job)
 

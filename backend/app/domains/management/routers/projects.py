@@ -2,8 +2,6 @@
 Project management API routes (top-level entity with products and releases).
 """
 
-from typing import List, Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -29,7 +27,7 @@ router = APIRouter(prefix="/management/projects", tags=["Management Projects"])
 @router.get("")
 def list_projects(
     keyword: str = Query(default="", max_length=100),
-    lifecycle_status: Optional[str] = None,
+    lifecycle_status: str | None = None,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -70,7 +68,7 @@ def create_project(
         )
         return project_service.serialize_project(project)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.get("/{project_id}")
@@ -107,7 +105,7 @@ def update_project(
         )
         return project_service.serialize_project(updated)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{project_id}")
@@ -122,7 +120,7 @@ def delete_project(
     try:
         project_service.delete_project(db, project)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     audit_log(
         action="delete_project",
         outcome="success",
@@ -136,7 +134,7 @@ def delete_project(
 @router.get("/{project_id}/repo-set")
 def get_project_repo_set(
     project_id: str,
-    product_ids: Optional[List[str]] = Query(default=None),
+    product_ids: list[str] | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -166,10 +164,11 @@ def transition_project_lifecycle(
         )
         return project_service.serialize_project(updated)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 # ── Project products ───────────────────────────────────────────────────────
+
 
 @router.post("/{project_id}/products", status_code=201)
 def add_project_product(
@@ -191,7 +190,7 @@ def add_project_product(
         )
         return project_service.serialize_project_product(link)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.post("/{project_id}/products/{product_id}/transition")
@@ -214,7 +213,7 @@ def transition_project_product_delivery(
         )
         return project_service.serialize_project_product(updated)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{project_id}/products/{product_id}")
@@ -251,10 +250,11 @@ def update_project_product_version(
         )
         return project_service.serialize_project_product(updated)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 # ── Releases ───────────────────────────────────────────────────────────────
+
 
 @router.post("/{project_id}/releases", status_code=201)
 def create_project_release(
@@ -289,7 +289,7 @@ def create_project_release(
         )
         return project_service.serialize_release(release)
     except (project_service.ProjectServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
 
 @router.put("/{project_id}/releases/{release_id}")
@@ -315,7 +315,7 @@ def update_project_release(
         )
         return project_service.serialize_release(updated)
     except project_service.ProjectServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{project_id}/releases/{release_id}")
@@ -330,6 +330,3 @@ def delete_project_release(
         raise HTTPException(status_code=404, detail="Release not found")
     project_service.delete_release(db, release)
     return {"msg": "Release deleted"}
-
-
-

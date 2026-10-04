@@ -3,10 +3,8 @@ import os
 import sys
 import uuid
 from unittest import mock
-from typing import List
 
 import pytest
-
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -63,7 +61,9 @@ def test_redis_lock_recovers_committed_set_with_lost_response():
         try:
             with mock.patch.object(client, "set", side_effect=lose_response):
                 async with dl.RedisLockProvider().lock(
-                    resource_type="task", resource_id=resource_id, ttl=5,
+                    resource_type="task",
+                    resource_id=resource_id,
+                    ttl=5,
                 ):
                     assert len(committed_tokens) == 1
                     assert await client.get(key) == committed_tokens[0]
@@ -84,7 +84,7 @@ def test_redis_lock_same_key_exclusive_under_concurrency():
             await _ensure_redis_provider()
             active = 0
             max_active = 0
-            violations: List[int] = []
+            violations: list[int] = []
             guard = asyncio.Lock()
 
             async def _worker(worker_id: int) -> None:
@@ -191,7 +191,7 @@ def test_workspace_task_create_queue_serializes_in_fifo_order():
     async def _run() -> None:
         try:
             await _ensure_redis_provider()
-            events: List[str] = []
+            events: list[str] = []
 
             async def _worker(name: str, delay_inside: float) -> None:
                 async with dl.queue_workspace_task_creation("ws-queue-stress", wait_timeout=5.0, poll_interval=0.02):

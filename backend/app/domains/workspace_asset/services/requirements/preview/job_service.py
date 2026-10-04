@@ -7,13 +7,13 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.auth.models.user import Workspace
 from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
+from app.domains.auth.models.user import Workspace
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
     RequirementImportBatchStatus,
@@ -51,7 +51,7 @@ def workspace_project_path_or_error(db: Session, workspace_id: str) -> str:
     return os.path.abspath(project_path)
 
 
-def get_import_batch(db: Session, workspace_id: str, batch_id: str) -> Optional[SddRequirementImportBatch]:
+def get_import_batch(db: Session, workspace_id: str, batch_id: str) -> SddRequirementImportBatch | None:
     return (
         db.query(SddRequirementImportBatch)
         .options(selectinload(SddRequirementImportBatch.items))
@@ -64,17 +64,17 @@ def create_requirement_preview_batch(
     db: Session,
     *,
     workspace_id: str,
-    actor_id: Optional[str],
-    file_name: Optional[str],
+    actor_id: str | None,
+    file_name: str | None,
     markdown: str,
-    source_kind: Optional[str],
-    source_uri: Optional[str],
-    source_ref: Optional[str],
-    source_metadata: Dict[str, Any],
-    items: List[Dict[str, Any]],
+    source_kind: str | None,
+    source_uri: str | None,
+    source_ref: str | None,
+    source_metadata: dict[str, Any],
+    items: list[dict[str, Any]],
     audit_action: RequirementAuditAction,
-    requirement_id: Optional[str] = None,
-    reason: Optional[str] = None,
+    requirement_id: str | None = None,
+    reason: str | None = None,
 ) -> SddRequirementImportBatch:
     """落一条 PREVIEW 批次与全部预览条目，并写 preview 创建审计。"""
     batch = SddRequirementImportBatch(
@@ -132,9 +132,7 @@ def preview_job_response(db: Session, job: SddAiJob) -> RequirementPreviewJobRes
     requirement_id = str(context.get("requirement_id") or "").strip() or None
     # 导入预览没有 requirement_id，用来源文件名给浮窗当标题
     requirement_title = (
-        str(context.get("requirement_title") or "").strip()
-        or str(context.get("source_filename") or "").strip()
-        or None
+        str(context.get("requirement_title") or "").strip() or str(context.get("source_filename") or "").strip() or None
     )
     return RequirementPreviewJobResponse(
         job_id=job.id,
@@ -157,7 +155,7 @@ def list_active_requirement_preview_jobs(
     creator_id: str,
     *,
     limit: int = 20,
-) -> List[RequirementPreviewJobResponse]:
+) -> list[RequirementPreviewJobResponse]:
     """浮窗刷新恢复：当前用户名下未终态的 requirement preview 作业。"""
     jobs = (
         db.query(SddAiJob)
@@ -173,7 +171,7 @@ def list_active_requirement_preview_jobs(
     return [preview_job_response(db, job) for job in jobs]
 
 
-def get_requirement_preview_job(db: Session, workspace_id: str, job_id: str) -> Optional[RequirementPreviewJobResponse]:
+def get_requirement_preview_job(db: Session, workspace_id: str, job_id: str) -> RequirementPreviewJobResponse | None:
     job = (
         db.query(SddAiJob)
         .filter(
@@ -195,9 +193,9 @@ def create_requirement_import_preview_job(
     *,
     file_name: str,
     raw: bytes,
-    source_kind: Optional[str] = None,
-    source_uri: Optional[str] = None,
-    source_ref: Optional[str] = None,
+    source_kind: str | None = None,
+    source_uri: str | None = None,
+    source_ref: str | None = None,
 ) -> RequirementPreviewJobResponse:
     """创建 import preview 作业：请求时同步解析文档并把内容持久化进 context_json。"""
     from app.domains.workspace_asset.services.requirements.segmentation import parse_requirement_document
@@ -246,8 +244,8 @@ def create_requirement_split_preview_job(
     workspace_id: str,
     requirement_id: str,
     actor_id: str,
-    change_reason: Optional[str] = None,
-) -> Optional[RequirementPreviewJobResponse]:
+    change_reason: str | None = None,
+) -> RequirementPreviewJobResponse | None:
     from app.domains.ai.services.jobs.constants import FINAL_STATUSES
     from app.domains.workspace_asset.services.requirements.queries import get_requirement
 

@@ -11,35 +11,33 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.domains.task.models.chat import ChatMessage, MessageType
 from app.domains.skill.models.skill import SddSkill, SddSkillRuntimeEvent, SkillRuntimeEventType
-from app.domains.task.models.task import SddTask
-
 from app.domains.skill.services.packages import storage as storage_service
-
 from app.domains.skill.services.packages import versions as skill_packages_versions
 from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 from app.domains.skill.services.runtime import layout as skill_runtime_layout
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
+from app.domains.task.models.chat import ChatMessage, MessageType
+from app.domains.task.models.task import SddTask
 
 
 @dataclass(frozen=True)
 class RuntimeSkillRecord:
     skill_id: str
     name: str
-    description: Optional[str]
+    description: str | None
     dimension: str
     materialized_dir: str
-    skill: Optional[SddSkill] = None
+    skill: SddSkill | None = None
     config_deleted: bool = False
 
 
-def _task_skills_root(db: Optional[Session] = None, task: Optional[SddTask] = None) -> str:
+def _task_skills_root(db: Session | None = None, task: SddTask | None = None) -> str:
     # Backward-compatible with the old one-argument signature `_task_skills_root(task)`.
     if task is None:
         task = db
@@ -47,14 +45,14 @@ def _task_skills_root(db: Optional[Session] = None, task: Optional[SddTask] = No
     return skill_runtime_layout.resolve_task_skills_root(db, task)
 
 
-def _runtime_manifest_path(db: Optional[Session] = None, task: Optional[SddTask] = None) -> str:
+def _runtime_manifest_path(db: Session | None = None, task: SddTask | None = None) -> str:
     if task is None:
         task = db
         db = None
     return os.path.join(_task_skills_root(db, task), skill_runtime_materialization.TASK_SKILLS_MANIFEST)
 
 
-def _read_runtime_manifest(db: Optional[Session] = None, task: Optional[SddTask] = None) -> List[Dict[str, Any]]:
+def _read_runtime_manifest(db: Session | None = None, task: SddTask | None = None) -> list[dict[str, Any]]:
     if task is None:
         task = db
         db = None
@@ -62,7 +60,7 @@ def _read_runtime_manifest(db: Optional[Session] = None, task: Optional[SddTask]
     if not os.path.isfile(manifest_path):
         return []
     try:
-        with open(manifest_path, "r", encoding="utf-8") as file:
+        with open(manifest_path, encoding="utf-8") as file:
             payload = json.load(file)
     except Exception:
         return []
@@ -72,7 +70,7 @@ def _read_runtime_manifest(db: Optional[Session] = None, task: Optional[SddTask]
     return [item for item in items if isinstance(item, dict)]
 
 
-def _record_from_manifest_item(item: Dict[str, Any], *, root: str) -> Optional[RuntimeSkillRecord]:
+def _record_from_manifest_item(item: dict[str, Any], *, root: str) -> RuntimeSkillRecord | None:
     skill_id = str(item.get("skill_id") or "").strip()
     folder = str(item.get("materialized_dir") or "").strip()
     if not skill_id or not folder:
@@ -97,10 +95,10 @@ def _record_from_manifest_item(item: Dict[str, Any], *, root: str) -> Optional[R
     )
 
 
-def _fallback_runtime_dir_records(root: str, existing_folders: set[str]) -> List[RuntimeSkillRecord]:
+def _fallback_runtime_dir_records(root: str, existing_folders: set[str]) -> list[RuntimeSkillRecord]:
     if not os.path.isdir(root):
         return []
-    records: List[RuntimeSkillRecord] = []
+    records: list[RuntimeSkillRecord] = []
     for entry_name in sorted(os.listdir(root), key=str.lower):
         if entry_name.startswith(".") or entry_name in existing_folders:
             continue
@@ -123,6 +121,7 @@ def _fallback_runtime_dir_records(root: str, existing_folders: set[str]) -> List
 
 def _remote_skill(db, task, action, **payload):
     from app.domains.local_resource.service import execute
+
     return execute(db, task, "skills", {"action": action, **payload})
 
 
@@ -130,11 +129,11 @@ def _local_resource(task):
     return getattr(task, "execution_location", "SERVER") == "LOCAL"
 
 
-def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSkillRecord]:
+def get_task_runtime_skill_records(db: Session, task: SddTask) -> list[RuntimeSkillRecord]:
     root = _task_skills_root(db, task)
     skills = skill_runtime_bindings.get_task_skills(db, task.id)
     folder_map = skill_runtime_materialization.build_task_skill_folder_map(skills)
-    records: List[RuntimeSkillRecord] = []
+    records: list[RuntimeSkillRecord] = []
     seen_skill_ids: set[str] = set()
     seen_folders: set[str] = set()
 
@@ -162,11 +161,29 @@ def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSk
             folder = item.get("materialized_dir")
             if not folder or folder in seen_folders or folder not in manifest["folders"]:
                 continue
-            records.append(RuntimeSkillRecord(skill_id=item["skill_id"], name=item.get("name", folder), description=item.get("description"), dimension=item.get("dimension", "TASK_RUNTIME"), materialized_dir=folder, config_deleted=True))
+            records.append(
+                RuntimeSkillRecord(
+                    skill_id=item["skill_id"],
+                    name=item.get("name", folder),
+                    description=item.get("description"),
+                    dimension=item.get("dimension", "TASK_RUNTIME"),
+                    materialized_dir=folder,
+                    config_deleted=True,
+                )
+            )
             seen_folders.add(folder)
         for folder in manifest["folders"]:
             if folder not in seen_folders:
-                records.append(RuntimeSkillRecord(skill_id="runtime:" + folder, name=folder, description=None, dimension="TASK_RUNTIME", materialized_dir=folder, config_deleted=True))
+                records.append(
+                    RuntimeSkillRecord(
+                        skill_id="runtime:" + folder,
+                        name=folder,
+                        description=None,
+                        dimension="TASK_RUNTIME",
+                        materialized_dir=folder,
+                        config_deleted=True,
+                    )
+                )
         return records
 
     for item in _read_runtime_manifest(db, task):
@@ -181,7 +198,7 @@ def get_task_runtime_skill_records(db: Session, task: SddTask) -> List[RuntimeSk
     return records
 
 
-def _resolve_runtime_skill_root(db: Session, task: SddTask, skill_id: str) -> Tuple[RuntimeSkillRecord, str, str]:
+def _resolve_runtime_skill_root(db: Session, task: SddTask, skill_id: str) -> tuple[RuntimeSkillRecord, str, str]:
     records = get_task_runtime_skill_records(db, task)
     target = next((record for record in records if record.skill_id == skill_id), None)
     if not target:
@@ -195,7 +212,7 @@ def _resolve_runtime_skill_root(db: Session, task: SddTask, skill_id: str) -> Tu
     return target, folder_name, skill_root
 
 
-def _safe_join_runtime_skill_root(skill_root: str, relative_path: str) -> Tuple[str, str]:
+def _safe_join_runtime_skill_root(skill_root: str, relative_path: str) -> tuple[str, str]:
     normalized = storage_service.normalize_relative_path(relative_path)
     target = os.path.abspath(os.path.join(skill_root, normalized))
     root_abs = os.path.abspath(skill_root)
@@ -204,7 +221,7 @@ def _safe_join_runtime_skill_root(skill_root: str, relative_path: str) -> Tuple[
     return normalized, target
 
 
-def _latest_usage_scope_start(db: Session, task: SddTask) -> Optional[datetime]:
+def _latest_usage_scope_start(db: Session, task: SddTask) -> datetime | None:
     latest_init = (
         db.query(ChatMessage)
         .filter(
@@ -224,10 +241,10 @@ def _build_usage_stats(
     db: Session,
     task: SddTask,
     *,
-    records: List[RuntimeSkillRecord],
-    scope_start_at: Optional[datetime],
-) -> Dict[str, Dict[str, object]]:
-    usage: Dict[str, Dict[str, object]] = {
+    records: list[RuntimeSkillRecord],
+    scope_start_at: datetime | None,
+) -> dict[str, dict[str, object]]:
+    usage: dict[str, dict[str, object]] = {
         record.skill_id: {
             "is_used": False,
             "used_count": 0,
@@ -238,11 +255,7 @@ def _build_usage_stats(
     }
     if not records:
         return usage
-    folder_to_skill_id = {
-        record.materialized_dir: record.skill_id
-        for record in records
-        if record.materialized_dir
-    }
+    folder_to_skill_id = {record.materialized_dir: record.skill_id for record in records if record.materialized_dir}
 
     event_scope_query = db.query(SddSkillRuntimeEvent).filter(
         SddSkillRuntimeEvent.task_id == task.id,
@@ -276,7 +289,7 @@ def _build_usage_stats(
     return usage
 
 
-def list_task_runtime_skills(db: Session, task: SddTask) -> Dict[str, object]:
+def list_task_runtime_skills(db: Session, task: SddTask) -> dict[str, object]:
     records = get_task_runtime_skill_records(db, task)
     scope_start_at = _latest_usage_scope_start(db, task)
     usage_by_skill = _build_usage_stats(
@@ -288,11 +301,13 @@ def list_task_runtime_skills(db: Session, task: SddTask) -> Dict[str, object]:
     root = _task_skills_root(db, task)
 
     remote_folders = set(_remote_skill(db, task, "manifest")["folders"]) if _local_resource(task) else None
-    items: List[Dict[str, object]] = []
+    items: list[dict[str, object]] = []
     for record in records:
         folder = record.materialized_dir
         skill_root = os.path.join(root, folder) if folder else ""
-        is_materialized = folder in remote_folders if remote_folders is not None else bool(folder) and os.path.isdir(skill_root)
+        is_materialized = (
+            folder in remote_folders if remote_folders is not None else bool(folder) and os.path.isdir(skill_root)
+        )
         if record.skill is not None:
             try:
                 publish = skill_packages_versions.get_skill_package_publish_status(record.skill)
@@ -321,12 +336,15 @@ def list_task_runtime_skills(db: Session, task: SddTask) -> Dict[str, object]:
                 "materialized_dir": folder,
                 "is_materialized": is_materialized,
                 "config_deleted": bool(record.config_deleted),
-                "usage": usage_by_skill.get(record.skill_id, {
-                    "is_used": False,
-                    "used_count": 0,
-                    "last_used_at": None,
-                    "usage_scope_start_at": scope_start_at,
-                }),
+                "usage": usage_by_skill.get(
+                    record.skill_id,
+                    {
+                        "is_used": False,
+                        "used_count": 0,
+                        "last_used_at": None,
+                        "usage_scope_start_at": scope_start_at,
+                    },
+                ),
             }
         )
 
@@ -343,7 +361,7 @@ def build_task_runtime_skill_file_tree(
     task: SddTask,
     *,
     skill_id: str,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     if _local_resource(task):
         record = next((r for r in get_task_runtime_skill_records(db, task) if r.skill_id == skill_id), None)
         if not record:
@@ -354,12 +372,12 @@ def build_task_runtime_skill_file_tree(
     if not os.path.isdir(skill_root):
         return []
 
-    entries: List[Dict[str, str]] = []
+    entries: list[dict[str, str]] = []
     for walk_root, dir_names, file_names in os.walk(skill_root):
         dir_names.sort(key=str.lower)
         file_names.sort(key=str.lower)
 
-        visible_dirs: List[str] = []
+        visible_dirs: list[str] = []
         for dir_name in dir_names:
             abs_dir = os.path.join(walk_root, dir_name)
             if os.path.islink(abs_dir):
@@ -385,7 +403,7 @@ def read_task_runtime_skill_file(
     *,
     skill_id: str,
     path: str,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     if _local_resource(task):
         record = next((r for r in get_task_runtime_skill_records(db, task) if r.skill_id == skill_id), None)
         if not record:
@@ -421,7 +439,7 @@ def write_task_runtime_skill_file(
     skill_id: str,
     path: str,
     content: str,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     if _local_resource(task):
         record = next((r for r in get_task_runtime_skill_records(db, task) if r.skill_id == skill_id), None)
         if not record:

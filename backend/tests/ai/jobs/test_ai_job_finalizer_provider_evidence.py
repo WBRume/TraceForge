@@ -13,17 +13,16 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.domains.task.models.task  # noqa: F401
+from app.agents import current_agent_attempt_runtime
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
     EXECUTION_KIND_REMOTE_SESSION,
@@ -39,30 +38,19 @@ from app.agents.contract import (
 from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services import ai_job_convergence_service as convergence
-from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
-)
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
-)
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from app.agents import current_agent_attempt_runtime
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
     ConvergenceIntent,
     resolve_attempt_evidence,
+)
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+)
+from app.domains.ai.services.jobs import (
+    registry as ai_registry,
+)
+from app.domains.ai.services.jobs.executors import (
+    task_chat as ai_task_chat,
 )
 
 REMOTE = EXECUTION_KIND_REMOTE_SESSION
@@ -113,8 +101,10 @@ def _capture_finalizer_call(engine):
 
     owner, binding = _bind_remote_runtime()
     try:
-        with patch.object(ai_task_chat, "_finalize_task_chat_job_sync", side_effect=capture), \
-             patch.object(ai_task_chat, "run_db_txn", side_effect=txn):
+        with (
+            patch.object(ai_task_chat, "_finalize_task_chat_job_sync", side_effect=capture),
+            patch.object(ai_task_chat, "run_db_txn", side_effect=txn),
+        ):
             import asyncio
 
             asyncio.run(ai_task_chat.finalize_task_chat_job_from_engine("job-1", engine))
@@ -127,9 +117,7 @@ def _capture_finalizer_call(engine):
 def test_remote_success_finalizer_must_receive_provider_evidence():
     """审计复现：远程正常成功（引擎只暴露 success 标记）→ 证据门槛放行
     SUCCESS，绝不误判 ORPHANED。"""
-    engine = SimpleNamespace(
-        last_result_success=True, last_result_text="done", session_id="remote-1"
-    )
+    engine = SimpleNamespace(last_result_success=True, last_result_text="done", session_id="remote-1")
     evidence = _capture_finalizer_call(engine)
     assert evidence.provider_outcome_seen is True
     status, _ = _decide(evidence, requested=AiJobStatus.SUCCESS)
@@ -140,9 +128,7 @@ def test_real_result_object_with_persist_failure_is_provider_outcome():
     """结果后持久化失败：last_result（真实 result 对象）在引擎内已登记，
     finalizer 必须仍拿到 provider outcome（业务失败 -> 干净 INTERRUPTED）。"""
     engine = SimpleNamespace(
-        last_result=AgentRunResult(
-            session_id="remote-1", success=False, result_text="persist failed later"
-        ),
+        last_result=AgentRunResult(session_id="remote-1", success=False, result_text="persist failed later"),
         # 持久化失败的异常路径会把 success 覆盖为 False。
         last_result_success=False,
         last_result_text="persist failed later",
@@ -170,9 +156,7 @@ def test_engine_crash_without_result_stays_orphaned():
 
 def test_engine_timeout_is_not_provider_outcome():
     """超时中断（last_result_success=None）：证据不足仍 ORPHANED。"""
-    engine = SimpleNamespace(
-        last_result_success=None, last_result_text="timeout", session_id="remote-1"
-    )
+    engine = SimpleNamespace(last_result_success=None, last_result_text="timeout", session_id="remote-1")
     evidence = _capture_finalizer_call(engine)
     assert evidence.provider_outcome_seen is False
     status, _ = _decide(evidence)
@@ -223,9 +207,7 @@ def test_runner_provider_seen_requires_real_result_not_run_return():
 
 def test_engine_provider_result_prefers_real_result_object():
     real = AgentRunResult(session_id="s", success=True, result_text="ok")
-    engine = SimpleNamespace(
-        last_result=real, last_result_success=False, session_id="s"
-    )
+    engine = SimpleNamespace(last_result=real, last_result_success=False, session_id="s")
     assert ai_task_chat.engine_provider_result(engine) is real
 
 
@@ -240,9 +222,7 @@ def test_engine_provider_result_synthesizes_only_for_true_success():
     assert synthesized.success is True
 
     for success in (False, None):
-        engine = SimpleNamespace(
-            last_result_success=success, last_result_text="x", session_id="s"
-        )
+        engine = SimpleNamespace(last_result_success=success, last_result_text="x", session_id="s")
         assert ai_task_chat.engine_provider_result(engine) is None
 
 
@@ -383,7 +363,7 @@ def test_finalizer_db_segment_is_fenced_by_run_token():
         remote_session_started=True,
         provider_outcome_seen=True,
     )
-    payload = ai_task_chat._finalize_task_chat_job_sync(
+    ai_task_chat._finalize_task_chat_job_sync(
         db,
         job_id="job-1",
         last_result_success=True,
@@ -451,16 +431,12 @@ def test_per_call_result_recorded_and_resolved_from_runtime():
         call = runtime.begin_provider_call(current_agent_attempt_key())
         record_provider_call_session_started(call, "remote-1")
         assert current_agent_attempt_runtime() is runtime
-        evidence = resolve_attempt_evidence(
-            execution_kind=REMOTE, runtime=runtime
-        )
+        evidence = resolve_attempt_evidence(execution_kind=REMOTE, runtime=runtime)
         # 只有 STARTED、没有 result：绝不伪造结束。
         assert evidence.provider_outcome_seen is False
         assert evidence.remote_session_started is True
         record_provider_call_result(call, is_error=True)
-        evidence = resolve_attempt_evidence(
-            execution_kind=REMOTE, runtime=runtime
-        )
+        evidence = resolve_attempt_evidence(execution_kind=REMOTE, runtime=runtime)
         # 明确失败 result 也是终局 outcome：FAILED 可收敛，不是 ORPHANED。
         assert evidence.provider_outcome_seen is True
         status, _ = _decide(evidence, requested=AiJobStatus.FAILED)
@@ -483,15 +459,11 @@ def test_unresolved_retry_call_blocks_previous_ended_outcome():
         first.result_success = True
         retry = runtime.begin_provider_call(key)
         retry.state = ProviderCallState.STARTED
-        evidence = resolve_attempt_evidence(
-            execution_kind=REMOTE, runtime=runtime, attempt_key=key
-        )
+        evidence = resolve_attempt_evidence(execution_kind=REMOTE, runtime=runtime, attempt_key=key)
         assert evidence.provider_outcome_seen is False
         retry.state = ProviderCallState.ENDED
         retry.result_success = True
-        evidence = resolve_attempt_evidence(
-            execution_kind=REMOTE, runtime=runtime, attempt_key=key
-        )
+        evidence = resolve_attempt_evidence(execution_kind=REMOTE, runtime=runtime, attempt_key=key)
         assert evidence.provider_outcome_seen is True
     finally:
         reset_agent_attempt_runtime(binding)
@@ -517,7 +489,7 @@ def test_attempt_key_isolation_between_attempts():
 def test_stop_ack_closes_unresolved_call_without_fabricating_outcome():
     """明确 stop ACK 终止未决调用：不阻塞后续 outcome，也不伪造 result 成败。"""
     from app.agents.contract import ProviderCallState
-    
+
     owner, binding = _bind_remote_runtime()
     try:
         runtime = current_agent_attempt_runtime()
@@ -531,9 +503,7 @@ def test_stop_ack_closes_unresolved_call_without_fabricating_outcome():
         # ACK 终止的调用不阻塞重试。
         retry.state = ProviderCallState.ENDED
         retry.result_success = True
-        evidence = resolve_attempt_evidence(
-            execution_kind=REMOTE, runtime=runtime, attempt_key=key
-        )
+        evidence = resolve_attempt_evidence(execution_kind=REMOTE, runtime=runtime, attempt_key=key)
         assert evidence.provider_outcome_seen is True
     finally:
         reset_agent_attempt_runtime(binding)

@@ -12,14 +12,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta
 
-import pytest
-
-from tests.ai.jobs.ai_job_test_utils import (
-    _job,
-    _no_broadcast,
-    _session_factory,
-    patch_ai_job_db,
-)
 from app.agents.contract import (
     EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptContext,
@@ -33,9 +25,9 @@ from app.agents.contract import (
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.ai_job_convergence_service import (
+    REMOTE_STOP_UNCONFIRMED,
     AttemptConvergenceRequest,
     ConvergenceIntent,
-    REMOTE_STOP_UNCONFIRMED,
     evidence_from_stop_result,
 )
 from app.domains.ai.services.jobs import executors as ai_executors
@@ -43,7 +35,12 @@ from app.domains.ai.services.jobs import publishing as ai_publishing
 from app.domains.ai.services.jobs import queue_runner as ai_queue_runner
 from app.domains.ai.services.jobs import reaper as ai_reaper
 from app.domains.ai.services.jobs import registry as ai_registry
-
+from tests.ai.jobs.ai_job_test_utils import (
+    _job,
+    _no_broadcast,
+    _session_factory,
+    patch_ai_job_db,
+)
 
 # ────────────────────── 14.3 远程 Agent ──────────────────────
 
@@ -102,9 +99,7 @@ def test_remote_cancel_unacknowledged_becomes_orphaned_with_remote_code():
     db = factory()
     _remote_job(db, cancel_requested=True)
 
-    result = convergence.converge_job_attempt_sync(
-        db, _remote_termination_request(ack=False, remote_started=True)
-    )
+    result = convergence.converge_job_attempt_sync(db, _remote_termination_request(ack=False, remote_started=True))
 
     assert result.status == AiJobStatus.ORPHANED.value
     saved = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
@@ -624,14 +619,22 @@ def test_remote_stop_ack_allows_interrupted():
 
 
 def test_first_task_revision_preserves_session_and_finalizes_remote_result(monkeypatch):
-    from app.domains.task.models.task import SddTask, TaskStatus
-    from app.engine.session.gate import SessionGate
     from app.domains.ai.services.jobs import fencing
     from app.domains.ai.services.jobs.executors.task_chat import _sync_engine_session_sync
+    from app.domains.task.models.task import SddTask, TaskStatus
+    from app.engine.session.gate import SessionGate
+
     factory = _session_factory()
     monkeypatch.setattr(fencing, "SessionLocal", factory)
     with factory() as db:
-        task = SddTask(id="task-1", workspace_id="ws-1", creator_id="user-1", name="First turn", status=TaskStatus.CODING, session_revision=0)
+        task = SddTask(
+            id="task-1",
+            workspace_id="ws-1",
+            creator_id="user-1",
+            name="First turn",
+            status=TaskStatus.CODING,
+            session_revision=0,
+        )
         db.add(task)
         job = _remote_job(db, status=AiJobStatus.RUNNING)
         job.session_revision = 0
@@ -640,21 +643,35 @@ def test_first_task_revision_preserves_session_and_finalizes_remote_result(monke
         assert gate.fence_sync(db)
         assert _sync_engine_session_sync(db, job.id, "remote-session", "run-1")
         db.commit()
-        update = fencing.update_job_state_sync(job.id, session_id="remote-session", agent_backend="opencode", run_token="run-1")
+        update = fencing.update_job_state_sync(
+            job.id, session_id="remote-session", agent_backend="opencode", run_token="run-1"
+        )
         assert update["broadcast"]
         db.expire_all()
         assert task.session_id == "remote-session"
         assert job.session_id == "remote-session"
-        result = convergence.converge_job_attempt_sync(db, AttemptConvergenceRequest(
-            job_id=job.id, run_token="run-1", worker_boot_id=ai_registry.WORKER_BOOT_ID,
-            requested_status=AiJobStatus.SUCCESS, reason="",
-            evidence=convergence.AttemptFinalizerEvidence(
-                execution_kind=EXECUTION_KIND_REMOTE_SESSION, process_started=False,
-                termination_confirmed_dead=None, remote_stop_acknowledged=None,
-                failure_code=None, error_message=None, remaining_pids=(),
-                source="remote", provider_outcome_seen=True,
-            ), intent=ConvergenceIntent.NORMAL_FINALIZE,
-        ))
+        result = convergence.converge_job_attempt_sync(
+            db,
+            AttemptConvergenceRequest(
+                job_id=job.id,
+                run_token="run-1",
+                worker_boot_id=ai_registry.WORKER_BOOT_ID,
+                requested_status=AiJobStatus.SUCCESS,
+                reason="",
+                evidence=convergence.AttemptFinalizerEvidence(
+                    execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                    process_started=False,
+                    termination_confirmed_dead=None,
+                    remote_stop_acknowledged=None,
+                    failure_code=None,
+                    error_message=None,
+                    remaining_pids=(),
+                    source="remote",
+                    provider_outcome_seen=True,
+                ),
+                intent=ConvergenceIntent.NORMAL_FINALIZE,
+            ),
+        )
         assert result.changed
         assert result.status == AiJobStatus.SUCCESS.value
         assert job.run_token is None

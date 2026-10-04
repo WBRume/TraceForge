@@ -7,17 +7,17 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.domains.workspace_asset.models.workspace_asset import (
+    RequirementAuditAction,
     SddRequirement,
     SddRequirementAuditLog,
     SddRequirementImportBatch,
     SddRequirementImportItem,
     SddTaskRequirement,
-    RequirementAuditAction,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import (
     RequirementAuditLogResponse,
@@ -39,7 +39,7 @@ from app.domains.workspace_asset.services.common.primitives import (
 )
 
 
-def requirement_snapshot(requirement: SddRequirement) -> Dict[str, Any]:
+def requirement_snapshot(requirement: SddRequirement) -> dict[str, Any]:
     return {
         "id": requirement.id,
         "title": requirement.title,
@@ -61,14 +61,14 @@ def add_requirement_audit(
     *,
     workspace_id: str,
     action: RequirementAuditAction,
-    actor_id: Optional[str] = None,
-    requirement_id: Optional[str] = None,
-    import_batch_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    before: Optional[Dict[str, Any]] = None,
-    after: Optional[Dict[str, Any]] = None,
-    reason: Optional[str] = None,
-    source_metadata: Optional[Dict[str, Any]] = None,
+    actor_id: str | None = None,
+    requirement_id: str | None = None,
+    import_batch_id: str | None = None,
+    task_id: str | None = None,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    reason: str | None = None,
+    source_metadata: dict[str, Any] | None = None,
 ) -> SddRequirementAuditLog:
     log = SddRequirementAuditLog(
         workspace_id=workspace_id,
@@ -108,24 +108,26 @@ def requirement_audit_response(log: SddRequirementAuditLog) -> RequirementAuditL
 # ---------------------------------------------------------------------------
 
 
-def requirement_family(requirement: SddRequirement) -> List[SddRequirement]:
+def requirement_family(requirement: SddRequirement) -> list[SddRequirement]:
     members = [requirement]
     if not requirement.parent_requirement_id:
         members.extend(list(requirement.child_requirements or []))
     return members
 
 
-def requirement_task_links(requirement: SddRequirement) -> List[SddTaskRequirement]:
+def requirement_task_links(requirement: SddRequirement) -> list[SddTaskRequirement]:
     return [link for member in requirement_family(requirement) for link in (member.task_links or [])]
 
 
 def requirement_coverage_summary(requirement: SddRequirement) -> RequirementCoverageSummary:
     task_links = requirement_task_links(requirement)
     tasks = [link.task for link in task_links if link.task]
-    evidence_items = dedupe_by_id([
-        *[evidence for member in requirement_family(requirement) for evidence in (member.evidence_items or [])],
-        *[evidence for task in tasks for evidence in (task.evidence_items or [])],
-    ])
+    evidence_items = dedupe_by_id(
+        [
+            *[evidence for member in requirement_family(requirement) for evidence in (member.evidence_items or [])],
+            *[evidence for task in tasks for evidence in (task.evidence_items or [])],
+        ]
+    )
     human_review_count = sum(len(task.human_reviews or []) for task in tasks)
     human_delta_count = sum(len(task.human_deltas or []) for task in tasks)
     status = coverage_status(len(task_links), evidence_items)
@@ -183,10 +185,14 @@ def requirement_summary(
     include_children: bool = False,
 ) -> RequirementSummary:
     task_links = requirement_task_links(requirement)
-    children = sorted(list(requirement.child_requirements or []), key=lambda item: item.created_at or datetime.min, reverse=True)
+    children = sorted(
+        requirement.child_requirements or [], key=lambda item: item.created_at or datetime.min, reverse=True
+    )
     child_count = len(children)
     return RequirementSummary(
-        task_prompt=clean_optional((requirement.source_metadata_json or {}).get("task_prompt")) if isinstance(requirement.source_metadata_json, dict) else None,
+        task_prompt=clean_optional((requirement.source_metadata_json or {}).get("task_prompt"))
+        if isinstance(requirement.source_metadata_json, dict)
+        else None,
         id=requirement.id,
         workspace_id=requirement.workspace_id,
         title=requirement.title,
@@ -197,16 +203,17 @@ def requirement_summary(
         parent_requirement_id=requirement.parent_requirement_id,
         parent_title=requirement.parent_requirement.title if requirement.parent_requirement else None,
         child_count=child_count,
-        children=[
-            requirement_summary(child, include_linked_tasks=True, include_children=False)
-            for child in children
-        ] if include_children else [],
+        children=[requirement_summary(child, include_linked_tasks=True, include_children=False) for child in children]
+        if include_children
+        else [],
         can_link_task=child_count == 0,
         import_batch_id=requirement.import_batch_id,
         source_kind=requirement.source_kind,
         source_uri=requirement.source_uri,
         source_ref=requirement.source_ref,
-        source_metadata=requirement.source_metadata_json if isinstance(requirement.source_metadata_json, dict) else None,
+        source_metadata=requirement.source_metadata_json
+        if isinstance(requirement.source_metadata_json, dict)
+        else None,
         coverage_summary=requirement_coverage_summary(requirement),
         change_history_count=len(requirement.audit_logs or []),
         related_task_count=len(task_links),
@@ -238,7 +245,7 @@ def import_item_response(item: SddRequirementImportItem) -> RequirementImportPre
     )
 
 
-def _split_draft_payload(batch: SddRequirementImportBatch) -> Optional[RequirementSplitDraftPayload]:
+def _split_draft_payload(batch: SddRequirementImportBatch) -> RequirementSplitDraftPayload | None:
     """批次行上的未提交草稿 → 响应结构；历史脏数据解析失败时静默降级为无草稿。"""
     if not isinstance(batch.draft_json, dict):
         return None

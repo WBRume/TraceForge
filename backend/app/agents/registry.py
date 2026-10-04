@@ -5,15 +5,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Type
+from typing import Any
 
 from app.agents.contract import AgentBackend
 from app.agents.errors import AgentConfigurationError
 
-AGENT_BACKENDS: dict[str, Type[AgentBackend]] = {}
+AGENT_BACKENDS: dict[str, type[AgentBackend]] = {}
 
 
-def register_backend(name: str, backend_cls: Type[AgentBackend]) -> None:
+def register_backend(name: str, backend_cls: type[AgentBackend]) -> None:
     """注册一个 Agent backend 实现。"""
     AGENT_BACKENDS[name] = backend_cls
 

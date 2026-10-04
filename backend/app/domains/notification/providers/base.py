@@ -19,8 +19,7 @@ class NotificationProvider(ABC):
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...
 
     @abstractmethod
     async def send(self, notifications: list[dict]) -> bool:
@@ -36,8 +35,7 @@ class LoggingNotificationProvider(NotificationProvider):
     async def send(self, notifications: list[dict]) -> bool:
         for item in notifications:
             logger.info(
-                f"[external-notification:{self.name}] -> user {item.get('recipient_user_id')}: "
-                f"{item.get('title')}"
+                f"[external-notification:{self.name}] -> user {item.get('recipient_user_id')}: {item.get('title')}"
             )
         return True
 

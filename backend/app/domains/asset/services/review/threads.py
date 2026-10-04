@@ -1,15 +1,19 @@
 """Apply human discussion messages, status transitions and close hints."""
 
 from __future__ import annotations
-from typing import Any, Optional
+
+from typing import Any
+
 from sqlalchemy.orm import Session
+
 from app.domains.asset.models.asset import AssetThreadMessageRole, AssetThreadStatus
 from app.domains.asset.schemas.asset import AssetThreadCreateRequest, AssetThreadMessageCreateRequest
 from app.domains.asset.services import asset_discussion_service, asset_service
-from app.domains.asset.services.document import repository as document_repository, versioning as document_versioning
-from app.domains.asset.services.review.errors import ReviewError
+from app.domains.asset.services.document import repository as document_repository
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
+from app.domains.asset.services.review.errors import ReviewError
 
 
 def _create_asset_thread_sync(
@@ -125,7 +129,9 @@ def _update_asset_thread_state_sync(
         if asset.active_version_id
         else None
     )
-    response = asset_review_serialization._serialize_thread_with_context(db, thread=thread, context_version=context_version)
+    response = asset_review_serialization._serialize_thread_with_context(
+        db, thread=thread, context_version=context_version
+    )
     return {"asset_id": str(asset.id), "payload": response.model_dump(mode="json")}
 
 
@@ -136,7 +142,7 @@ def _update_asset_thread_close_hint_sync(
     asset_id: str,
     thread_id: str,
     action: str,
-    context_version_id: Optional[str],
+    context_version_id: str | None,
     actor_user_id: str,
     user_id: str,
 ) -> dict[str, Any]:
@@ -155,9 +161,7 @@ def _update_asset_thread_close_hint_sync(
     thread = asset_discussion_service.get_thread(db, asset_id=asset_id, thread_id=thread_id)
     resolved_context_id = str(context_version_id or "").strip() or asset.active_version_id
     context_version = (
-        document_repository.get_asset_version(db, asset.id, resolved_context_id)
-        if resolved_context_id
-        else None
+        document_repository.get_asset_version(db, asset.id, resolved_context_id) if resolved_context_id else None
     )
     if action == "mark_no_close_needed":
         asset_discussion_service.set_thread_close_hint(
@@ -199,5 +203,7 @@ def _update_asset_thread_close_hint_sync(
             )
     db.flush()
     thread = asset_discussion_service.get_thread(db, asset_id=asset.id, thread_id=thread.id)
-    response = asset_review_serialization._serialize_thread_with_context(db, thread=thread, context_version=context_version)
+    response = asset_review_serialization._serialize_thread_with_context(
+        db, thread=thread, context_version=context_version
+    )
     return {"asset_id": context["asset_id"], "payload": response.model_dump(mode="json")}

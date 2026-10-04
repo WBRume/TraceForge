@@ -7,16 +7,16 @@ Create Date: 2026-08-25 00:00:00.000000
 为批量落库的有效终端事件增加稳定顺序，并为按任务读取最近事件增加索引。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "e4b7c2d9a1f6"
-down_revision: Union[str, None] = "d7e8f9a0b1c2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "d7e8f9a0b1c2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
-
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from app.domains.asset.services.document.docx.xml_utils import DOCX_NS_MAP, safe_int, xml_attr
 
@@ -78,31 +77,35 @@ def format_counter(value: int, num_fmt: str) -> str:
     return str(value)
 
 
-def parse_numbering(numbering_root: Optional[ET.Element]) -> Dict[str, Any]:
+def parse_numbering(numbering_root: ET.Element | None) -> dict[str, Any]:
     """解析 numbering.xml → {num_to_abs, levels}。"""
-    result: Dict[str, Any] = {"num_to_abs": {}, "levels": {}}
+    result: dict[str, Any] = {"num_to_abs": {}, "levels": {}}
     if numbering_root is None:
         return result
 
-    levels_map: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    levels_map: dict[str, dict[int, dict[str, Any]]] = {}
     for abstract in numbering_root.findall(".//w:abstractNum", DOCX_NS_MAP):
         abstract_id = str(abstract.attrib.get(xml_attr("abstractNumId"), "") or "").strip()
         if not abstract_id:
             continue
-        level_info: Dict[int, Dict[str, Any]] = {}
+        level_info: dict[int, dict[str, Any]] = {}
         for level_node in abstract.findall("./w:lvl", DOCX_NS_MAP):
             level = safe_int(level_node.attrib.get(xml_attr("ilvl")), 0)
             num_fmt_node = level_node.find("./w:numFmt", DOCX_NS_MAP)
             lvl_text_node = level_node.find("./w:lvlText", DOCX_NS_MAP)
             start_node = level_node.find("./w:start", DOCX_NS_MAP)
             level_info[level] = {
-                "num_fmt": str(num_fmt_node.attrib.get(xml_attr("val"), "") if num_fmt_node is not None else "").strip().lower(),
-                "lvl_text": str(lvl_text_node.attrib.get(xml_attr("val"), "") if lvl_text_node is not None else "").strip(),
+                "num_fmt": str(num_fmt_node.attrib.get(xml_attr("val"), "") if num_fmt_node is not None else "")
+                .strip()
+                .lower(),
+                "lvl_text": str(
+                    lvl_text_node.attrib.get(xml_attr("val"), "") if lvl_text_node is not None else ""
+                ).strip(),
                 "start": max(1, safe_int(start_node.attrib.get(xml_attr("val")) if start_node is not None else 1, 1)),
             }
         levels_map[abstract_id] = level_info
 
-    num_to_abs: Dict[str, str] = {}
+    num_to_abs: dict[str, str] = {}
     for num_node in numbering_root.findall(".//w:num", DOCX_NS_MAP):
         num_id = str(num_node.attrib.get(xml_attr("numId"), "") or "").strip()
         abs_node = num_node.find("./w:abstractNumId", DOCX_NS_MAP)
@@ -117,10 +120,10 @@ def parse_numbering(numbering_root: Optional[ET.Element]) -> Dict[str, Any]:
 
 def resolve_list_marker(
     *,
-    num_id: Optional[str],
+    num_id: str | None,
     level: int,
-    numbering: Dict[str, Any],
-    numbering_state: Dict[str, list],
+    numbering: dict[str, Any],
+    numbering_state: dict[str, list],
 ) -> str:
     """按 numbering 定义与计数状态渲染当前列表项 marker。"""
     if not num_id:
@@ -164,4 +167,3 @@ def resolve_list_marker(
     if marker:
         return normalize_list_marker(marker)
     return f"{format_counter(counters[level], num_fmt)}."
-

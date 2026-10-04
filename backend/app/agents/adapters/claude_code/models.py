@@ -1,4 +1,5 @@
 """Read Claude Code model settings without making an inference request."""
+
 from __future__ import annotations
 
 import json
@@ -14,9 +15,13 @@ def model_catalog(project_path: str = "") -> dict:
     paths = [home / "settings.json"]
     if project_path:
         paths.extend(Path(project_path) / ".claude" / name for name in ("settings.json", "settings.local.json"))
-    managed = (Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "ClaudeCode" / "managed-settings.json"
-               if os.name == "nt" else Path("/Library/Application Support/ClaudeCode/managed-settings.json")
-               if sys.platform == "darwin" else Path("/etc/claude-code/managed-settings.json"))
+    managed = (
+        Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "ClaudeCode" / "managed-settings.json"
+        if os.name == "nt"
+        else Path("/Library/Application Support/ClaudeCode/managed-settings.json")
+        if sys.platform == "darwin"
+        else Path("/etc/claude-code/managed-settings.json")
+    )
     paths.append(managed)
     settings = {}
     env = dict(os.environ)

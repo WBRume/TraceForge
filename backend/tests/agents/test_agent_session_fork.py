@@ -1,17 +1,10 @@
 """会话 fork（baseline → 评审线程上下文复用）单元测试。"""
 
-import asyncio
 import json
 import os
-import sys
 import tempfile
 import unittest
 from unittest import mock
-from pathlib import Path
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.agents.adapters.claude_code import claude_code_adapter
 from app.agents.adapters.dsh import session_files
@@ -30,7 +23,7 @@ def _guaranteed_absent_pid() -> int:
     见 doc 修复方案 §12.1 的“测试异常退出后无残留”要求）。
     """
     try:
-        with open("/proc/sys/kernel/pid_max", "r", encoding="utf-8") as f:
+        with open("/proc/sys/kernel/pid_max", encoding="utf-8") as f:
             pid_max = int(f.read().strip())
     except (OSError, ValueError):
         pid_max = 4194304
@@ -111,9 +104,7 @@ class ClaudeSessionForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
 
 class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
     def _write_baseline_log(self, baseline_dir: str, session_id: str) -> str:
-        log_path = session_files.session_log_path(
-            dsh_sessions_root(), baseline_dir, session_id, ".jsonl"
-        )
+        log_path = session_files.session_log_path(dsh_sessions_root(), baseline_dir, session_id, ".jsonl")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         header = {
             "type": "session",
@@ -154,7 +145,7 @@ class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
 
         forked = session_files.session_log_path(dsh_sessions_root(), thread_dir, new_id, ".jsonl")
         self.assertTrue(os.path.isfile(forked))
-        with open(forked, "r", encoding="utf-8") as f:
+        with open(forked, encoding="utf-8") as f:
             lines = f.read().splitlines()
         header = json.loads(lines[0])
         # 头部 id/cwd 已指向新会话与新目录（加载端一致性校验的前提）
@@ -179,10 +170,8 @@ class DshSessionFilesTest(_EnvHomeMixin, unittest.TestCase):
             contiguous_prefix=True,
         )
 
-        forked = session_files.session_log_path(
-            dsh_sessions_root(), thread_dir, "session-clean-prefix", ".jsonl"
-        )
-        with open(forked, "r", encoding="utf-8") as f:
+        forked = session_files.session_log_path(dsh_sessions_root(), thread_dir, "session-clean-prefix", ".jsonl")
+        with open(forked, encoding="utf-8") as f:
             lines = [json.loads(line) for line in f.read().splitlines()]
         self.assertEqual([line.get("seq") for line in lines[1:]], [0, 1])
 
@@ -210,21 +199,25 @@ class DshServerForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
         baseline_dir = os.path.join(self._home.name, "baseline")
         thread_dir = os.path.join(self._home.name, "thread")
         os.makedirs(baseline_dir, exist_ok=True)
-        log_path = session_files.session_log_path(
-            dsh_sessions_root(), baseline_dir, "session-base", ".jsonl"
-        )
+        log_path = session_files.session_log_path(dsh_sessions_root(), baseline_dir, "session-base", ".jsonl")
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
         with open(log_path, "w", encoding="utf-8", newline="") as f:
-            f.write(json.dumps({
-                "type": "session", "version": 0, "id": "session-base",
-                "createdAt": "2026-08-22T00:00:00.000Z",
-                "cwd": os.path.abspath(baseline_dir), "delegationDepth": 0,
-            }) + "\n")
+            f.write(
+                json.dumps(
+                    {
+                        "type": "session",
+                        "version": 0,
+                        "id": "session-base",
+                        "createdAt": "2026-08-22T00:00:00.000Z",
+                        "cwd": os.path.abspath(baseline_dir),
+                        "delegationDepth": 0,
+                    }
+                )
+                + "\n"
+            )
 
         adapter = DshServerAdapter("http://mock:3080")
-        new_id = await adapter.fork_session(
-            "session-base", source_dir=baseline_dir, target_dir=thread_dir
-        )
+        new_id = await adapter.fork_session("session-base", source_dir=baseline_dir, target_dir=thread_dir)
         self.assertNotEqual(new_id, "session-base")
         forked = session_files.locate_session_log(dsh_sessions_root(), new_id)
         self.assertTrue(os.path.isfile(forked[0]))
@@ -234,17 +227,25 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
     """bridge 层 --fork-session 参数构造与新 session id 捕获。"""
 
     async def test_start_session_appends_fork_flag_and_captures_new_sid(self):
-        import asyncio as aio
 
         from app.engine.claude_bridge import SubprocessCliBridge
 
-        ndjson = "\n".join([
-            json.dumps({"type": "system", "subtype": "init", "session_id": "forked-new-1"}),
-            json.dumps({
-                "type": "result", "subtype": "success",
-                "result": "ok", "session_id": "forked-new-1",
-            }),
-        ]).encode("utf-8") + b"\n"
+        ndjson = (
+            "\n".join(
+                [
+                    json.dumps({"type": "system", "subtype": "init", "session_id": "forked-new-1"}),
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "subtype": "success",
+                            "result": "ok",
+                            "session_id": "forked-new-1",
+                        }
+                    ),
+                ]
+            ).encode("utf-8")
+            + b"\n"
+        )
 
         class FakeStdout:
             def __init__(self, data: bytes):
@@ -274,8 +275,10 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
             return FakeProcess()
 
         bridge = SubprocessCliBridge(cli_path="claude")
-        with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
-             mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
+        with (
+            mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]),
+            mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec),
+        ):
             events: list[dict] = []
 
             async def on_event(event: dict) -> None:
@@ -322,8 +325,11 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
             return FakeProcess()
 
         bridge = SubprocessCliBridge(cli_path="claude")
-        with mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]), \
-             mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec):
+        with (
+            mock.patch.object(bridge, "_resolve_cli_base_args", return_value=["claude"]),
+            mock.patch("app.engine.claude_bridge.asyncio.create_subprocess_exec", fake_exec),
+        ):
+
             async def on_event(event: dict) -> None:
                 return None
 
@@ -342,6 +348,7 @@ class ClaudeBridgeForkFlagTest(unittest.IsolatedAsyncioTestCase):
 class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
     async def test_fork_uses_v2_route_then_moves_session(self):
         from httpx import AsyncClient, MockTransport, Response
+
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
         adapter = OpenCodeAdapter(server_url="http://mock:4097")
@@ -359,9 +366,7 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
 
-        new_id = await adapter.fork_session(
-            "base-1", source_dir="C:/b", target_dir="C:/t"
-        )
+        new_id = await adapter.fork_session("base-1", source_dir="C:/b", target_dir="C:/t")
         self.assertEqual(new_id, "fork-9")
         paths = [c[0] for c in calls]
         self.assertIn("POST /api/session/base-1/fork", paths)
@@ -372,6 +377,7 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fork_same_source_and_target_skips_move(self):
         from httpx import AsyncClient, MockTransport, Response
+
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
         adapter = OpenCodeAdapter(server_url="http://mock:4097")
@@ -385,15 +391,14 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
         same_dir = os.path.abspath("C:/task")
-        new_id = await adapter.fork_session(
-            "base-1", source_dir=same_dir, target_dir=same_dir
-        )
+        new_id = await adapter.fork_session("base-1", source_dir=same_dir, target_dir=same_dir)
         self.assertEqual(new_id, "fork-same")
         self.assertEqual(calls, ["POST /api/session/base-1/fork"])
         await adapter._client.aclose()
 
     async def test_fork_uses_only_v2_routes(self):
         from httpx import AsyncClient, MockTransport, Response
+
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
         adapter = OpenCodeAdapter(server_url="http://mock:4097")
@@ -413,6 +418,7 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_fork_cleans_up_when_move_fails(self):
         from httpx import AsyncClient, MockTransport, Response
+
         from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 
         adapter = OpenCodeAdapter(server_url="http://mock:4097")
@@ -437,6 +443,7 @@ class OpenCodeForkTest(unittest.IsolatedAsyncioTestCase):
 class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
     async def test_rpc_envelope_and_business_error(self):
         from httpx import AsyncClient, MockTransport, Response
+
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
         from app.agents.errors import AgentError
 
@@ -449,14 +456,22 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
             if body.get("method") == "session/list":
                 return Response(404, text="not found")
             if body.get("method") == "session.list":
-                return Response(200, json={
-                    "type": "server-response", "rpcId": body.get("rpcId"),
-                    "result": {"ok": True, "value": {"items": []}},
-                })
-            return Response(200, json={
-                "type": "server-response", "rpcId": body.get("rpcId"),
-                "result": {"ok": False, "error": {"code": "boom", "message": "nope"}},
-            })
+                return Response(
+                    200,
+                    json={
+                        "type": "server-response",
+                        "rpcId": body.get("rpcId"),
+                        "result": {"ok": True, "value": {"items": []}},
+                    },
+                )
+            return Response(
+                200,
+                json={
+                    "type": "server-response",
+                    "rpcId": body.get("rpcId"),
+                    "result": {"ok": False, "error": {"code": "boom", "message": "nope"}},
+                },
+            )
 
         adapter._client = AsyncClient(transport=MockTransport(handler))
         value = await adapter._rpc("session.list", {})
@@ -491,40 +506,44 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
     def test_event_mapper_extracts_text_and_usage(self):
         from app.agents.adapters.dsh.dsh_server_adapter import map_dsh_event
 
-        event = map_dsh_event({
-            "type": "assistant/message",
-            "seq": 7,
-            "data": {
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "BASELINE_READY"},
-                    {"type": "reasoning", "text": "thinking..."},
-                ],
-                "source": {
-                    "kind": "model",
-                    "provider": "deepseek-official",
-                    "model": "deepseek-v4-flash",
+        event = map_dsh_event(
+            {
+                "type": "assistant/message",
+                "seq": 7,
+                "data": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "BASELINE_READY"},
+                        {"type": "reasoning", "text": "thinking..."},
+                    ],
+                    "source": {
+                        "kind": "model",
+                        "provider": "deepseek-official",
+                        "model": "deepseek-v4-flash",
+                    },
+                    "usage": {"inputTokens": 10, "outputTokens": 5, "cacheReadTokens": 2},
                 },
-                "usage": {"inputTokens": 10, "outputTokens": 5, "cacheReadTokens": 2},
-            },
-        })
+            }
+        )
         self.assertIsNotNone(event)
         self.assertEqual(event.type, "text")
         self.assertEqual(event.payload["text"], "BASELINE_READY")
         self.assertEqual(event.payload["usage"]["input_tokens"], 10)
         self.assertEqual(event.payload["model"], "deepseek-official/deepseek-v4-flash")
 
-        request_model = map_dsh_event({
-            "type": "request/header",
-            "data": {
-                "header": {
-                    "config": {
-                        "provider": "deepseek-official",
-                        "model": "deepseek-v4-flash",
+        request_model = map_dsh_event(
+            {
+                "type": "request/header",
+                "data": {
+                    "header": {
+                        "config": {
+                            "provider": "deepseek-official",
+                            "model": "deepseek-v4-flash",
+                        },
                     },
                 },
-            },
-        })
+            }
+        )
         self.assertIsNotNone(request_model)
         self.assertEqual(request_model.type, "model")
         self.assertEqual(request_model.payload["model"], "deepseek-official/deepseek-v4-flash")
@@ -533,24 +552,30 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.type, "tool_use")
         self.assertEqual(tool.payload["tool"], "read_file")
 
-        text_delta = map_dsh_event({
-            "type": "assistant/chunk",
-            "data": {"chunk": {"type": "text-delta", "index": 1, "text": "hello"}},
-        })
+        text_delta = map_dsh_event(
+            {
+                "type": "assistant/chunk",
+                "data": {"chunk": {"type": "text-delta", "index": 1, "text": "hello"}},
+            }
+        )
         self.assertEqual(text_delta.type, "text_delta")
         self.assertEqual(text_delta.payload["text"], "hello")
 
-        thinking = map_dsh_event({
-            "type": "assistant/chunk",
-            "data": {"chunk": {"type": "reasoning-delta", "index": 0, "text": "checking"}},
-        })
+        thinking = map_dsh_event(
+            {
+                "type": "assistant/chunk",
+                "data": {"chunk": {"type": "reasoning-delta", "index": 0, "text": "checking"}},
+            }
+        )
         self.assertEqual(thinking.type, "thinking")
         self.assertEqual(thinking.payload["text"], "checking")
 
-        control = map_dsh_event({
-            "type": "assistant/chunk",
-            "data": {"chunk": {"type": "block-start", "index": 1, "blockType": "text"}},
-        })
+        control = map_dsh_event(
+            {
+                "type": "assistant/chunk",
+                "data": {"chunk": {"type": "block-start", "index": 1, "blockType": "text"}},
+            }
+        )
         self.assertIsNone(control)
 
     def test_server_mode_capabilities(self):
@@ -568,26 +593,30 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
         frames = [
-            json.dumps({
-                "type": "server-request",
-                "rpcId": "rpc-approval",
-                "method": "approval/requested",
-                "payload": {
-                    "sessionId": "session-1",
-                    "approvalId": "approval-1",
-                    "toolName": "write_file",
-                    "reason": "writes a file",
-                },
-            }),
-            json.dumps({
-                "type": "server-request",
-                "rpcId": "rpc-turn",
-                "method": "session/event",
-                "payload": {
-                    "sessionId": "session-1",
-                    "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}},
-                },
-            }),
+            json.dumps(
+                {
+                    "type": "server-request",
+                    "rpcId": "rpc-approval",
+                    "method": "approval/requested",
+                    "payload": {
+                        "sessionId": "session-1",
+                        "approvalId": "approval-1",
+                        "toolName": "write_file",
+                        "reason": "writes a file",
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "server-request",
+                    "rpcId": "rpc-turn",
+                    "method": "session/event",
+                    "payload": {
+                        "sessionId": "session-1",
+                        "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}},
+                    },
+                }
+            ),
         ]
 
         class _FakeWs:
@@ -601,6 +630,7 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
                 async def _items():
                     for frame in frames:
                         yield frame
+
                 return _items()
 
         adapter = DshServerAdapter(server_url="http://mock:3080")
@@ -627,39 +657,45 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
         frames = [
-            json.dumps({
-                "type": "server-request",
-                "rpcId": "rpc-delta-1",
-                "method": "session/event",
-                "payload": {
-                    "sessionId": "session-1",
-                    "event": {
-                        "type": "assistant/chunk",
-                        "data": {"chunk": {"type": "text-delta", "text": "Hel"}},
+            json.dumps(
+                {
+                    "type": "server-request",
+                    "rpcId": "rpc-delta-1",
+                    "method": "session/event",
+                    "payload": {
+                        "sessionId": "session-1",
+                        "event": {
+                            "type": "assistant/chunk",
+                            "data": {"chunk": {"type": "text-delta", "text": "Hel"}},
+                        },
                     },
-                },
-            }),
-            json.dumps({
-                "type": "server-request",
-                "rpcId": "rpc-delta-2",
-                "method": "session/event",
-                "payload": {
-                    "sessionId": "session-1",
-                    "event": {
-                        "type": "assistant/chunk",
-                        "data": {"chunk": {"type": "text-delta", "text": "lo"}},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "server-request",
+                    "rpcId": "rpc-delta-2",
+                    "method": "session/event",
+                    "payload": {
+                        "sessionId": "session-1",
+                        "event": {
+                            "type": "assistant/chunk",
+                            "data": {"chunk": {"type": "text-delta", "text": "lo"}},
+                        },
                     },
-                },
-            }),
-            json.dumps({
-                "type": "server-request",
-                "rpcId": "rpc-turn",
-                "method": "session/event",
-                "payload": {
-                    "sessionId": "session-1",
-                    "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}},
-                },
-            }),
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "server-request",
+                    "rpcId": "rpc-turn",
+                    "method": "session/event",
+                    "payload": {
+                        "sessionId": "session-1",
+                        "event": {"type": "turn/end", "data": {"reason": {"kind": "completed"}}},
+                    },
+                }
+            ),
         ]
 
         class _FakeWs:
@@ -673,6 +709,7 @@ class DshServerAdapterTest(unittest.IsolatedAsyncioTestCase):
                 async def _items():
                     for frame in frames:
                         yield frame
+
                 return _items()
 
         adapter = DshServerAdapter(server_url="http://mock:3080")
@@ -728,9 +765,7 @@ class SelectionForkTest(_EnvHomeMixin, unittest.IsolatedAsyncioTestCase):
         with open(os.path.join(store, "sess-9.jsonl"), "w", encoding="utf-8") as f:
             f.write("{}\n")
 
-        new_id = await fork_session_for_backend(
-            "claude-code", "sess-9", source_dir=baseline_dir, target_dir=thread_dir
-        )
+        new_id = await fork_session_for_backend("claude-code", "sess-9", source_dir=baseline_dir, target_dir=thread_dir)
         self.assertEqual(new_id, "sess-9")
 
     async def test_probe_reports_unsupported_backend(self):

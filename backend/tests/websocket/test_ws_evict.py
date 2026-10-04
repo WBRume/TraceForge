@@ -11,12 +11,12 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
+from starlette.websockets import WebSocketState  # noqa: E402
+
 from app.config import settings  # noqa: E402
 from app.domains.websocket.ws.connection import (  # noqa: E402
     ConnectionRegistry,
-    OutboundConnection,
 )
-from starlette.websockets import WebSocketState  # noqa: E402
 
 
 class _FakeSocket:
@@ -66,8 +66,7 @@ class _BrokenCloseSocket(_FakeSocket):
     async def close(self, code: int = 1000):
         self.close_attempts.append(code)
         raise RuntimeError(
-            "Unexpected ASGI message 'websocket.close', after sending "
-            "'websocket.close' or response already completed."
+            "Unexpected ASGI message 'websocket.close', after sending 'websocket.close' or response already completed."
         )
 
 
@@ -109,7 +108,7 @@ class EvictClosureTest(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(delivered, 1)
         self.assertTrue(slow_conn.dropped)
         self.assertEqual(slow.closed_codes, [1001])
-        self.assertNotIn("u-slow", [u for u in registry.online_users("room-2")])
+        self.assertNotIn("u-slow", list(registry.online_users("room-2")))
         self.assertFalse(fast_conn.dropped)
         if slow._block_event is not None:
             slow._block_event.set()

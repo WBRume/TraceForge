@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -35,7 +35,7 @@ class SuggestionError(ShareError):
 
 # ── 进程内滑动窗口限流（多实例部署换 Redis 计数时保持接口不变） ──
 
-_rate_windows: Dict[Tuple[str, str], List[float]] = {}
+_rate_windows: dict[tuple[str, str], list[float]] = {}
 
 
 def _enforce_rate_limit(scope: str, key: str, *, limit: int, window_seconds: int) -> None:
@@ -46,11 +46,9 @@ def _enforce_rate_limit(scope: str, key: str, *, limit: int, window_seconds: int
     window = _rate_windows.setdefault(bucket_key, [])
     cutoff = now - float(window_seconds)
     # 清理过期 + 溢出保护（避免 key 无限增长）
-    window[:] = [ts for ts in window if ts > cutoff][-max(limit * 10, 100):]
+    window[:] = [ts for ts in window if ts > cutoff][-max(limit * 10, 100) :]
     if len(window) >= limit:
-        raise SuggestionError(
-            "提交过于频繁，请稍后再试", code="SHARE_RATE_LIMITED", status_code=429
-        )
+        raise SuggestionError("提交过于频繁，请稍后再试", code="SHARE_RATE_LIMITED", status_code=429)
     window.append(now)
     if len(_rate_windows) > 10000:  # pragma: no cover - 粗粒度防泄漏
         for k in [k for k, v in _rate_windows.items() if not v]:
@@ -90,9 +88,9 @@ def submit_suggestion_in_txn(
     task: SddTask,
     visitor_id: str,
     content: str,
-    display_name: Optional[str],
+    display_name: str | None,
     client_submission_id: str,
-    sender_user_id: Optional[str] = None,
+    sender_user_id: str | None = None,
 ) -> TaskShareSuggestion:
     """锁内插入建议（调用方已持有任务锁 + 本事务持有分享行锁后调用）。
 
@@ -106,9 +104,7 @@ def submit_suggestion_in_txn(
     if not text:
         raise SuggestionError("输入内容不能为空", code="SUGGESTION_INVALID", status_code=422)
     if len(text) > max_chars:
-        raise SuggestionError(
-            f"输入内容超过 {max_chars} 字符上限", code="SUGGESTION_INVALID", status_code=422
-        )
+        raise SuggestionError(f"输入内容超过 {max_chars} 字符上限", code="SUGGESTION_INVALID", status_code=422)
     key = str(client_submission_id or "").strip()
     if not key or len(key) > 128:
         raise SuggestionError("提交标识无效", code="SUGGESTION_INVALID", status_code=422)
@@ -124,9 +120,7 @@ def submit_suggestion_in_txn(
     )
     if previous is not None:
         if (previous.original_content or "") != text:
-            raise SuggestionError(
-                "相同提交标识不能用于不同内容", code="SUGGESTION_CONFLICT", status_code=409
-            )
+            raise SuggestionError("相同提交标识不能用于不同内容", code="SUGGESTION_CONFLICT", status_code=409)
         return previous
 
     row = TaskShareSuggestion(
@@ -147,7 +141,7 @@ def submit_suggestion_in_txn(
     return row
 
 
-def serialize_receipt(row: TaskShareSuggestion) -> Dict[str, Any]:
+def serialize_receipt(row: TaskShareSuggestion) -> dict[str, Any]:
     return {
         "submission_id": row.id,
         "client_submission_id": row.client_submission_id,
@@ -164,7 +158,7 @@ def effective_content(row: TaskShareSuggestion) -> str:
     return edited or (row.original_content or "")
 
 
-def serialize_suggestion(row: TaskShareSuggestion) -> Dict[str, Any]:
+def serialize_suggestion(row: TaskShareSuggestion) -> dict[str, Any]:
     return {
         "id": row.id,
         "task_id": row.task_id,
@@ -189,10 +183,10 @@ def list_suggestions_for_recipient(
     *,
     recipient_user_id: str,
     task_id: str,
-    status: Optional[str],
-    cursor: Optional[str],
+    status: str | None,
+    cursor: str | None,
     page_size: int,
-) -> Tuple[List[TaskShareSuggestion], Optional[str]]:
+) -> tuple[list[TaskShareSuggestion], str | None]:
     """发起人收到的建议（按创建时间倒序），游标为 offset 简单编码。"""
     import base64
 
@@ -212,12 +206,7 @@ def list_suggestions_for_recipient(
     if status:
         query = query.filter(TaskShareSuggestion.status == TaskShareSuggestionStatus(status))
 
-    rows = (
-        query.order_by(TaskShareSuggestion.created_at.desc())
-        .offset(offset)
-        .limit(page_size + 1)
-        .all()
-    )
+    rows = query.order_by(TaskShareSuggestion.created_at.desc()).offset(offset).limit(page_size + 1).all()
     has_more = len(rows) > page_size
     page_rows = rows[:page_size]
     next_cursor = None
@@ -233,7 +222,7 @@ def patch_suggestion_in_txn(
     row: TaskShareSuggestion,
     action: str,
     expected_version: int,
-    edited_content: Optional[str],
+    edited_content: str | None,
     task: SddTask,
 ) -> TaskShareSuggestion:
     """edit / adopt / dismiss：version 条件更新，冲突返回 409。"""

@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 import uuid
-from typing import Any, Awaitable, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -38,7 +38,7 @@ SELECTABLE_AGENT_BACKENDS = ("claude-code", "opencode", "dsh")
 DEFAULT_AGENT_BACKEND = "claude-code"
 
 #: backend 展示元信息（用于 API 输出）
-AGENT_BACKEND_META: Dict[str, Dict[str, Any]] = {
+AGENT_BACKEND_META: dict[str, dict[str, Any]] = {
     "claude-code": {
         "value": "claude-code",
         "label": "Claude Code CLI",
@@ -65,18 +65,18 @@ def default_backend_name() -> str:
     return _normalize(name) or DEFAULT_AGENT_BACKEND
 
 
-def _normalize(name: Optional[str]) -> Optional[str]:
+def _normalize(name: str | None) -> str | None:
     normalized = str(name or "").strip()
     return normalized or None
 
 
-def normalize_backend_name(name: Optional[str]) -> Optional[str]:
+def normalize_backend_name(name: str | None) -> str | None:
     """校验 backend 名称；非法或未知值返回 None。"""
     normalized = _normalize(name)
     if normalized is None:
         return None
-    from app.agents.registry import AGENT_BACKENDS
     from app.agents.adapters import register_all
+    from app.agents.registry import AGENT_BACKENDS
 
     if not AGENT_BACKENDS:
         register_all()
@@ -85,8 +85,8 @@ def normalize_backend_name(name: Optional[str]) -> Optional[str]:
     return normalized
 
 
-def list_agent_backends() -> list[Dict[str, Any]]:
-    options: list[Dict[str, Any]] = []
+def list_agent_backends() -> list[dict[str, Any]]:
+    options: list[dict[str, Any]] = []
     for meta in AGENT_BACKEND_META.values():
         item = dict(meta)
         item["supports_fork"] = backend_supports_fork(meta["value"])
@@ -94,7 +94,7 @@ def list_agent_backends() -> list[Dict[str, Any]]:
     return options
 
 
-def resolve_workspace_backend(db: Session, workspace_id: Optional[str]) -> str:
+def resolve_workspace_backend(db: Session, workspace_id: str | None) -> str:
     """工作区生效的 agent backend：workspace 配置优先，回退全局 .env。"""
     if workspace_id:
         from app.domains.auth.models.user import Workspace
@@ -123,7 +123,7 @@ def resolve_task_backend(db: Session, task_id: str) -> str:
     return resolved
 
 
-def opencode_server_kwargs() -> Dict[str, str]:
+def opencode_server_kwargs() -> dict[str, str]:
     """服务端 OpenCode 适配器参数：URL + 可选 HTTP Basic 认证。
 
     ``opencode serve`` 设置 ``OPENCODE_SERVER_PASSWORD`` 后会要求 Basic 认证；
@@ -136,7 +136,7 @@ def opencode_server_kwargs() -> Dict[str, str]:
     }
 
 
-def create_agent_backend_by_name(backend_name: Optional[str] = None, *, task_id: str | None = None):
+def create_agent_backend_by_name(backend_name: str | None = None, *, task_id: str | None = None):
     """按名称创建统一 AgentBackend 实例（engine 路径使用）。
 
     claude-code 返回双接口 ClaudeCodeAdapter；dsh 固定走 Web Host server 模式
@@ -146,6 +146,7 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None, *, task_id:
 
     if task_id:
         from app.domains.local_resource.service import provider_for_task
+
         local = provider_for_task(task_id)
         if local is not None:
             return local
@@ -159,7 +160,7 @@ def create_agent_backend_by_name(backend_name: Optional[str] = None, *, task_id:
     return get_agent_backend(name)
 
 
-def create_legacy_bridge(backend_name: Optional[str] = None, *, task_id: str | None = None):
+def create_legacy_bridge(backend_name: str | None = None, *, task_id: str | None = None):
     """创建满足旧 CliBridgeBase 鸠尾接口的 bridge。
 
     - claude-code/mock：沿用 create_cli_bridge()（含 SDD_CLI_MODE mock 兼容）
@@ -172,7 +173,7 @@ def create_legacy_bridge(backend_name: Optional[str] = None, *, task_id: str | N
     return LegacyBridgeShim(backend, backend_name=name)
 
 
-def agent_event_to_legacy_payload(event) -> Optional[Dict[str, Any]]:
+def agent_event_to_legacy_payload(event) -> dict[str, Any] | None:
     """统一 AgentEvent → Claude 风格事件 dict（旧解析代码可继续工作）。"""
     etype = getattr(event, "type", "")
     payload = getattr(event, "payload", None) or {}
@@ -216,21 +217,20 @@ class LegacyBridgeShim:
     def __init__(self, backend, *, backend_name: str = "") -> None:
         self.backend = backend
         self.backend_name = backend_name or getattr(backend, "name", "agent")
-        self._run_task: Optional[asyncio.Task] = None
-        self._session_id: Optional[str] = None
+        self._run_task: asyncio.Task | None = None
+        self._session_id: str | None = None
 
     async def start_session(
         self,
         prompt: str,
         project_path: str,
-        event_callback: Callable[[Dict[str, Any]], Any],
-        session_id: Optional[str] = None,
-        env_overrides: Optional[Dict[str, str]] = None,
+        event_callback: Callable[[dict[str, Any]], Any],
+        session_id: str | None = None,
+        env_overrides: dict[str, str] | None = None,
         fork_session: bool = False,
         permission_mode: str = "default",
         on_process_started=None,
     ) -> str:
-        from app.agents.contract import AgentRunRequest
         from app.agents.errors import AgentError
 
         resume_id = session_id
@@ -238,9 +238,7 @@ class LegacyBridgeShim:
             if not resume_id:
                 raise AgentError("fork-on-resume requires an existing session id")
             if not getattr(self.backend.capabilities, "supports_fork", False):
-                raise AgentError(
-                    f"agent backend {self.backend_name!r} does not support session fork"
-                )
+                raise AgentError(f"agent backend {self.backend_name!r} does not support session fork")
             # Server backends fork eagerly and then resume the child.  Claude's
             # native --fork-session path is handled by ClaudeCodeAdapter itself
             # and therefore never reaches this shim.
@@ -265,9 +263,7 @@ class LegacyBridgeShim:
             session_id=resume_id,
             env=dict(env_overrides or {}),
             # 显式执行类别（doc §7 数据流）：与 backend capability 声明一致。
-            execution_kind=getattr(
-                self.backend.capabilities, "execution_kind", "LOCAL_PROCESS"
-            ) or "LOCAL_PROCESS",
+            execution_kind=getattr(self.backend.capabilities, "execution_kind", "LOCAL_PROCESS") or "LOCAL_PROCESS",
             metadata={
                 "task_id": str((env_overrides or {}).get("TASK_ID") or "").strip() or None,
                 "workspace_id": str((env_overrides or {}).get("WORKSPACE_ID") or "").strip() or None,
@@ -275,17 +271,12 @@ class LegacyBridgeShim:
                 "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
             },
             timeout_seconds=float(settings.agent_max_runtime_seconds),
-            startup_timeout_seconds=float(
-                getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
-            ),
-            idle_timeout_seconds=float(
-                settings.agent_idle_timeout_seconds
-            ),
+            startup_timeout_seconds=float(getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60),
+            idle_timeout_seconds=float(settings.agent_idle_timeout_seconds),
             # Supervisor-side attach timeout (real DB attach) so the outer
             # startup watchdog is not the only ownership guarantee.
-            process_attach_timeout_seconds=float(
-                getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0
-            ) or None,
+            process_attach_timeout_seconds=float(getattr(settings, "AGENT_PROCESS_ATTACH_TIMEOUT_SECONDS", 45) or 0)
+            or None,
             permission_mode=permission_mode,
             on_process_started=on_process_started,
         )
@@ -318,7 +309,7 @@ class LegacyBridgeShim:
                 await self.backend.close()
 
     @property
-    def session_id(self) -> Optional[str]:
+    def session_id(self) -> str | None:
         return self._session_id
 
     @property
@@ -328,9 +319,7 @@ class LegacyBridgeShim:
         return None
 
     def _execution_kind(self) -> str:
-        declared = str(
-            getattr(self.backend.capabilities, "execution_kind", "") or ""
-        ).strip()
+        declared = str(getattr(self.backend.capabilities, "execution_kind", "") or "").strip()
         return declared if declared in ("LOCAL_PROCESS", "REMOTE_SESSION") else EXECUTION_KIND_REMOTE_SESSION
 
     @staticmethod
@@ -406,7 +395,7 @@ class LegacyBridgeShim:
         return await self.backend.fork_session(session_id, source_dir=source_dir, target_dir=target_dir)
 
 
-def backend_supports_fork(backend_name: Optional[str] = None) -> bool:
+def backend_supports_fork(backend_name: str | None = None) -> bool:
     """backend 是否声明支持会话 fork（用于前端提示与 baseline 演练）。"""
     try:
         bridge = create_legacy_bridge(backend_name)
@@ -414,13 +403,13 @@ def backend_supports_fork(backend_name: Optional[str] = None) -> bool:
         return False
     if isinstance(bridge, LegacyBridgeShim):
         return bool(getattr(bridge.backend.capabilities, "supports_fork", False))
-    return bool(getattr(bridge, "capabilities", None) is not None and getattr(
-        getattr(bridge, "capabilities"), "supports_fork", False
-    ))
+    return bool(
+        getattr(bridge, "capabilities", None) is not None and getattr(bridge.capabilities, "supports_fork", False)
+    )
 
 
 async def fork_session_for_backend(
-    backend_name: Optional[str],
+    backend_name: str | None,
     session_id: str,
     *,
     source_dir: str,
@@ -433,7 +422,8 @@ async def fork_session_for_backend(
     name = normalize_backend_name(backend_name) or default_backend_name()
     if task_id:
         from app.core.offload import run_db, run_file_job
-        from app.domains.local_resource.service import task_profile, task_operation
+        from app.domains.local_resource.service import task_operation, task_profile
+
         config = await run_db(task_profile, task_id)
         if config and name == "dsh":
             result = await run_file_job(task_operation, task_id, "provider_fork", {"session_id": session_id})
@@ -453,7 +443,7 @@ async def fork_session_for_backend(
 
 
 async def probe_session_fork(
-    backend_name: Optional[str],
+    backend_name: str | None,
     session_id: str,
     *,
     source_dir: str,
@@ -465,7 +455,8 @@ async def probe_session_fork(
     name = normalize_backend_name(backend_name) or default_backend_name()
     if task_id:
         from app.core.offload import run_db, run_file_job
-        from app.domains.local_resource.service import task_profile, task_operation
+        from app.domains.local_resource.service import task_operation, task_profile
+
         config = await run_db(task_profile, task_id)
         if config:
             if name == "dsh":
@@ -488,9 +479,7 @@ async def probe_session_fork(
             from app.agents.adapters.claude_code.claude_code_adapter import _claude_project_store_dir
 
             with tempfile.TemporaryDirectory(prefix="tf-fork-drill-") as drill_dir:
-                await fork_session_for_backend(
-                    name, session_id, source_dir=source_dir, target_dir=drill_dir
-                )
+                await fork_session_for_backend(name, session_id, source_dir=source_dir, target_dir=drill_dir)
                 drill_store = _claude_project_store_dir(drill_dir)
                 import shutil
 

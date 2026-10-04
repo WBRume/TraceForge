@@ -20,7 +20,6 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, Tuple
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -51,18 +50,18 @@ class PersistedProcessSnapshot:
     """
 
     state: ProcessProbeState = ProcessProbeState.UNKNOWN
-    live_pids: Tuple[int, ...] = ()
-    root_identity_matches: Optional[bool] = None
+    live_pids: tuple[int, ...] = ()
+    root_identity_matches: bool | None = None
     # 当前占用该 PID 的进程 create time（PID_REUSED 时是新占用者的身份
     # 边界，供复用组逐成员验证使用；doc 审计 P0-1）。
-    pid_create_time: Optional[float] = None
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    pid_create_time: float | None = None
+    failure_code: str | None = None
+    error_message: str | None = None
 
 
 def expected_started_timestamp(
-    process_started_at: Optional[datetime],
-) -> Optional[float]:
+    process_started_at: datetime | None,
+) -> float | None:
     if process_started_at is None:
         return None
     expected = process_started_at
@@ -73,7 +72,7 @@ def expected_started_timestamp(
 
 def probe_persisted_root_sync(
     pid: int,
-    process_started_at: Optional[datetime],
+    process_started_at: datetime | None,
     *,
     check_command_marker: bool = False,
 ) -> PersistedProcessSnapshot:
@@ -111,9 +110,9 @@ def probe_persisted_root_sync(
             failure_code=PROCESS_TREE_UNKNOWN,
             error_message=str(exc) or type(exc).__name__,
         )
-    identity_matches: Optional[bool] = None
+    identity_matches: bool | None = None
     identity_required = expected_started_timestamp(process_started_at) is not None
-    occupant_create_time: Optional[float] = None
+    occupant_create_time: float | None = None
     try:
         create_time = float(proc.create_time())
         occupant_create_time = create_time
@@ -128,9 +127,7 @@ def probe_persisted_root_sync(
                     root_identity_matches=False,
                     pid_create_time=create_time,
                     failure_code="PID_REUSED",
-                    error_message=(
-                        f"PID {pid} create time does not match persisted owner"
-                    ),
+                    error_message=(f"PID {pid} create time does not match persisted owner"),
                 )
     except (psutil.Error, OSError, ValueError):
         identity_matches = None
@@ -155,9 +152,7 @@ def probe_persisted_root_sync(
                 live_pids=(pid,),
                 root_identity_matches=None,
                 failure_code=PROCESS_TREE_UNKNOWN,
-                error_message=(
-                    f"PID {pid} is alive but its create time could not be verified"
-                ),
+                error_message=(f"PID {pid} is alive but its create time could not be verified"),
             )
         if check_command_marker:
             try:
@@ -177,9 +172,7 @@ def probe_persisted_root_sync(
                     live_pids=(pid,),
                     root_identity_matches=identity_matches,
                     failure_code="PID_OWNERSHIP_UNVERIFIED",
-                    error_message=(
-                        f"PID {pid} is not an identifiable TraceForge Agent process"
-                    ),
+                    error_message=(f"PID {pid} is not an identifiable TraceForge Agent process"),
                 )
         return PersistedProcessSnapshot(
             state=ProcessProbeState.LIVE,
@@ -194,42 +187,10 @@ def probe_persisted_root_sync(
     )
 
 
-def probe_persisted_group_sync(
-    process_group_id: Optional[int],
-    *,
-    ignored_pids: Optional[set] = None,
-) -> PersistedProcessSnapshot:
-    """Single executor-side tri-state probe of one POSIX process group.
-
-    - ``os.killpg`` ProcessLookupError -> 组明确不存在的直接证据；
-    - PermissionError / 其他 OSError -> UNKNOWN（组可能仍然存在）；
-    - 成员枚举中单个 PID 不可检查 -> 记入 unknown 并降级 UNKNOWN；
-    - 有存活成员 -> LIVE（剩余 PID 包含 live 与 unknown，供保留追踪）。
-    """
-    if os.name == "nt" or not process_group_id:
-        # Windows 没有进程组 containment；无 PGID 时组来源无事可证。
-        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
-    if psutil is None:
-        return PersistedProcessSnapshot(
-            state=ProcessProbeState.UNKNOWN,
-            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
-            error_message="psutil is required for process-group inspection",
-        )
-    group_id = int(process_group_id)
-    ignored = set(ignored_pids or ())
-    try:
-        os.killpg(group_id, 0)
-    except ProcessLookupError:
-        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
-    except (PermissionError, OSError, ValueError) as exc:
-        return PersistedProcessSnapshot(
-            state=ProcessProbeState.UNKNOWN,
-            failure_code=PROCESS_GROUP_UNKNOWN,
-            error_message=str(exc) or type(exc).__name__,
-        )
+def _inspect_group_members(group_id: int, ignored: set) -> PersistedProcessSnapshot:
     live: set = set()
     unknown: set = set()
-    error_message: Optional[str] = None
+    error_message: str | None = None
     try:
         for proc in psutil.process_iter(["pid", "status"]):
             try:
@@ -278,15 +239,50 @@ def probe_persisted_group_sync(
             state=ProcessProbeState.UNKNOWN,
             live_pids=tuple(sorted(unknown)),
             failure_code=PROCESS_GROUP_UNKNOWN,
-            error_message=error_message
-            or f"{len(unknown)} group member(s) could not be inspected",
+            error_message=error_message or f"{len(unknown)} group member(s) could not be inspected",
         )
     return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
 
 
+def probe_persisted_group_sync(
+    process_group_id: int | None,
+    *,
+    ignored_pids: set | None = None,
+) -> PersistedProcessSnapshot:
+    """Single executor-side tri-state probe of one POSIX process group.
+
+    - ``os.killpg`` ProcessLookupError -> 组明确不存在的直接证据；
+    - PermissionError / 其他 OSError -> UNKNOWN（组可能仍然存在）；
+    - 成员枚举中单个 PID 不可检查 -> 记入 unknown 并降级 UNKNOWN；
+    - 有存活成员 -> LIVE（剩余 PID 包含 live 与 unknown，供保留追踪）。
+    """
+    if os.name == "nt" or not process_group_id:
+        # Windows 没有进程组 containment；无 PGID 时组来源无事可证。
+        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    if psutil is None:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
+            error_message="psutil is required for process-group inspection",
+        )
+    group_id = int(process_group_id)
+    ignored = set(ignored_pids or ())
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    except (PermissionError, OSError, ValueError) as exc:
+        return PersistedProcessSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            failure_code=PROCESS_GROUP_UNKNOWN,
+            error_message=str(exc) or type(exc).__name__,
+        )
+    return _inspect_group_members(group_id, ignored)
+
+
 async def root_snapshot(
     pid: int,
-    process_started_at: Optional[datetime],
+    process_started_at: datetime | None,
     *,
     check_command_marker: bool = False,
 ) -> PersistedProcessSnapshot:
@@ -309,9 +305,9 @@ async def root_snapshot(
 
 
 async def group_snapshot(
-    process_group_id: Optional[int],
+    process_group_id: int | None,
     *,
-    ignored_pids: Optional[set] = None,
+    ignored_pids: set | None = None,
 ) -> PersistedProcessSnapshot:
     """One process-group probe off the loop (UNKNOWN on queue saturation)."""
     try:
@@ -332,7 +328,7 @@ async def group_snapshot(
 
 def aggregate_persisted_snapshots(
     *snapshots: PersistedProcessSnapshot,
-) -> Tuple[ProcessProbeState, Optional[str], Optional[str], Tuple[int, ...]]:
+) -> tuple[ProcessProbeState, str | None, str | None, tuple[int, ...]]:
     """Fixed tri-state aggregation across probe sources (doc 修复方案 §5.4).
 
     任一来源 LIVE -> LIVE；没有 LIVE 但存在 UNKNOWN -> UNKNOWN（UNKNOWN
@@ -341,8 +337,8 @@ def aggregate_persisted_snapshots(
     """
     live: list = []
     unconfirmed: list = []
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    failure_code: str | None = None
+    error_message: str | None = None
     unknown = False
     for snapshot in snapshots:
         if snapshot.state == ProcessProbeState.LIVE:
@@ -374,7 +370,7 @@ def combine_persisted_snapshots(
     *snapshots: PersistedProcessSnapshot,
 ) -> PersistedProcessSnapshot:
     state, code, message, live_pids = aggregate_persisted_snapshots(*snapshots)
-    root_identity_matches: Optional[bool] = None
+    root_identity_matches: bool | None = None
     for snapshot in snapshots:
         if snapshot.root_identity_matches is not None:
             root_identity_matches = snapshot.root_identity_matches
@@ -401,10 +397,7 @@ async def wait_snapshot_gone(
     """
     deadline = time.monotonic() + max(0.05, timeout)
     last = await probe()
-    while (
-        last.state != ProcessProbeState.CONFIRMED_DEAD
-        and time.monotonic() < deadline
-    ):
+    while last.state != ProcessProbeState.CONFIRMED_DEAD and time.monotonic() < deadline:
         await asyncio.sleep(poll_interval)
         last = await probe()
     return last
@@ -412,7 +405,7 @@ async def wait_snapshot_gone(
 
 async def wait_root_gone(
     pid: int,
-    process_started_at: Optional[datetime],
+    process_started_at: datetime | None,
     timeout: float,
 ) -> PersistedProcessSnapshot:
     async def probe() -> PersistedProcessSnapshot:
@@ -422,10 +415,10 @@ async def wait_root_gone(
 
 
 async def wait_group_gone(
-    process_group_id: Optional[int],
+    process_group_id: int | None,
     timeout: float,
     *,
-    ignored_pids: Optional[set] = None,
+    ignored_pids: set | None = None,
 ) -> PersistedProcessSnapshot:
     async def probe() -> PersistedProcessSnapshot:
         return await group_snapshot(process_group_id, ignored_pids=ignored_pids)

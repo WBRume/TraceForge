@@ -5,12 +5,12 @@ Unified AI async job model.
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Boolean,
     JSON,
+    BigInteger,
+    Boolean,
     Column,
     DateTime,
     Enum,
-    BigInteger,
     ForeignKey,
     Index,
     Integer,

@@ -62,7 +62,7 @@ def test_unchanged_blocks_keep_bold_run_and_changed_text_applies():
     out = apply_blocks_to_docx_inplace(_write_tmp(original), blocks, final)
     assert out is not None
     reparsed = _base_blocks(out)
-    assert any("Session expires in 60 minutes." == str(b.get("text") or "") for b in reparsed)
+    assert any(str(b.get("text") or "") == "Session expires in 60 minutes." for b in reparsed)
     # 未变段落:粗体 run 原样保留
     login = next(b for b in reparsed if "Login must work." in str(b.get("text") or ""))
     assert any(run.get("bold") for run in (login.get("runs") or []))
@@ -99,9 +99,7 @@ def test_inserted_new_block_lands_in_order():
     reparsed = _base_blocks(out)
     texts = [str(b.get("text") or "") for b in reparsed]
     assert "Inserted requirement." in texts
-    assert texts.index("Inserted requirement.") == texts.index(
-        next(t for t in texts if "Login must work." in t)
-    ) + 1
+    assert texts.index("Inserted requirement.") == texts.index(next(t for t in texts if "Login must work." in t)) + 1
 
 
 def test_structure_drift_returns_none():
@@ -127,9 +125,13 @@ def test_apply_resolution_document_scope_uses_inplace_and_preserves_bold(tmp_pat
             db.commit()
 
             asset = SddAsset(
-                task_id=task.id, workspace_id=task.workspace_id, creator_id=task.creator_id,
-                asset_type=AssetType.SPEC, name="spec.docx",
-                source_file_name="spec.docx", source_ext=".docx",
+                task_id=task.id,
+                workspace_id=task.workspace_id,
+                creator_id=task.creator_id,
+                asset_type=AssetType.SPEC,
+                name="spec.docx",
+                source_file_name="spec.docx",
+                source_ext=".docx",
                 source_mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
             db.add(asset)
@@ -138,9 +140,13 @@ def test_apply_resolution_document_scope_uses_inplace_and_preserves_bold(tmp_pat
             with open(path, "wb") as f:
                 f.write(original)
             version = SddAssetVersion(
-                asset_id=asset.id, version_no=1, original_path=path,
-                original_ext=".docx", original_mime=asset.source_mime,
-                normalized_markdown="", blocks_json=_base_blocks(original),
+                asset_id=asset.id,
+                version_no=1,
+                original_path=path,
+                original_ext=".docx",
+                original_mime=asset.source_mime,
+                normalized_markdown="",
+                blocks_json=_base_blocks(original),
                 render_json={"format": "rich_doc", "block_count": 3},
                 created_by=task.creator_id,
             )
@@ -152,12 +158,19 @@ def test_apply_resolution_document_scope_uses_inplace_and_preserves_bold(tmp_pat
             blocks = _base_blocks(original)
             target = _find_block(blocks, "Session expires")
             thread = create_thread(
-                db, asset=asset, version=version, creator_id=task.creator_id,
-                block_id=str(target["id"]), body="请更新会话时长",
+                db,
+                asset=asset,
+                version=version,
+                creator_id=task.creator_id,
+                block_id=str(target["id"]),
+                body="请更新会话时长",
             )
             proposal = asset_resolution_service.create_resolution_proposal(
-                db, thread=thread, creator_id=task.creator_id,
-                proposed_text="改为 60 分钟", version=version,
+                db,
+                thread=thread,
+                creator_id=task.creator_id,
+                proposed_text="改为 60 分钟",
+                version=version,
             )
             final_blocks = copy.deepcopy(blocks)
             tgt = _find_block(final_blocks, "Session expires")
@@ -165,15 +178,19 @@ def test_apply_resolution_document_scope_uses_inplace_and_preserves_bold(tmp_pat
             tgt["runs"] = [{"text": "Session expires in 60 minutes."}]
 
             new_version = asset_resolution_service.apply_resolution_proposal(
-                db, asset=asset, thread=thread, proposal=proposal,
+                db,
+                asset=asset,
+                thread=thread,
+                proposal=proposal,
                 actor_user_id=task.creator_id,
-                final_block_ast=None, final_blocks_ast=final_blocks,
+                final_block_ast=None,
+                final_blocks_ast=final_blocks,
                 change_note="test",
             )
             with open(new_version.original_path, "rb") as f:
                 out_bytes = f.read()
             reparsed = _base_blocks(out_bytes)
-            assert any("Session expires in 60 minutes." == str(b.get("text") or "") for b in reparsed)
+            assert any(str(b.get("text") or "") == "Session expires in 60 minutes." for b in reparsed)
             login = next(b for b in reparsed if "Login must work." in str(b.get("text") or ""))
             assert any(run.get("bold") for run in (login.get("runs") or []))
     finally:

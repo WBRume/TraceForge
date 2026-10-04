@@ -10,6 +10,7 @@ task_process / task_final_workflow / traceability / overview。本文件做两�
 import ast
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -36,7 +37,6 @@ from app.domains.workspace_asset.services.requirements.segmentation import (  # 
     segment_requirements,
 )
 
-
 SERVICES_FS_ROOT = os.path.join(BACKEND_ROOT, "app", "domains", "workspace_asset", "services")
 SERVICES_PKG = "app.domains.workspace_asset.services"
 SUBDOMAINS = ("common", "requirements", "tasks", "task_process", "task_final_workflow")
@@ -58,7 +58,7 @@ ALLOWED_EDGES = {
 
 
 def _subdomain_of(module: str):
-    rel = module[len(SERVICES_PKG) + 1:]
+    rel = module[len(SERVICES_PKG) + 1 :]
     head = rel.split(".")[0]
     return head if head in SUBDOMAINS else None
 
@@ -69,11 +69,7 @@ def _iter_service_modules():
             if not name.endswith(".py"):
                 continue
             path = os.path.join(root, name)
-            module = (
-                path[len(BACKEND_ROOT) + 1:-3]
-                .replace("\\", ".")
-                .replace("/", ".")
-            )
+            module = path[len(BACKEND_ROOT) + 1 : -3].replace("\\", ".").replace("/", ".")
             yield path, module
 
 
@@ -93,7 +89,7 @@ def test_subdomain_dependency_directions_are_acyclic_and_whitelisted():
         src_pkg = _subdomain_of(module)
         if src_pkg is None:
             continue
-        tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
         for imported in _imported_modules(tree):
             if not imported.startswith(SERVICES_PKG + "."):
                 continue
@@ -112,10 +108,10 @@ def test_common_subpackage_has_no_inward_imports():
     for path, module in _iter_service_modules():
         if _subdomain_of(module) != "common":
             continue
-        tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"), filename=path)
         for imported in _imported_modules(tree):
             if imported.startswith(SERVICES_PKG + "."):
-                head = imported[len(SERVICES_PKG) + 1:].split(".")[0]
+                head = imported[len(SERVICES_PKG) + 1 :].split(".")[0]
                 # 允许 common 依赖自身与顶层叶子模块（human_delta_compare_service
                 # 只依赖 models/schemas，是过程资产展示的既有底层依赖）。
                 assert head in {"common", "human_delta_compare_service"}, (
@@ -222,9 +218,7 @@ def test_normalize_ai_preview_items_maps_camelcase_and_marks_ai_split():
 
 def test_coalesce_keeps_single_simple_requirement_unsplit():
     markdown = "Short single requirement"
-    multi = [
-        {"title": f"part {i}", "source_metadata": {}, "source_ref": f"ai:{i}"} for i in range(3)
-    ]
+    multi = [{"title": f"part {i}", "source_metadata": {}, "source_ref": f"ai:{i}"} for i in range(3)]
     coalesced = coalesce_simple_import_preview_items(markdown=markdown, file_name="a.md", items=multi)
     assert len(coalesced) == 1
     assert coalesced[0]["source_metadata"]["split_decision"] == "kept_single_simple_requirement"
@@ -254,9 +248,9 @@ def _evidence(status, source_type, confirmed_by=None, confirmed_at=None):
 
 
 def test_is_human_confirmation_requires_confirmed_human_evidence():
-    from app.domains.workspace_asset.models.workspace_asset import EvidenceSourceType, EvidenceStatus
-
     from datetime import datetime
+
+    from app.domains.workspace_asset.models.workspace_asset import EvidenceSourceType, EvidenceStatus
 
     ok = _evidence(
         EvidenceStatus.CONFIRMED,
@@ -277,9 +271,9 @@ def test_is_human_confirmation_requires_confirmed_human_evidence():
 
 
 def test_coverage_status_state_machine():
-    from app.domains.workspace_asset.models.workspace_asset import EvidenceSourceType, EvidenceStatus
-
     from datetime import datetime
+
+    from app.domains.workspace_asset.models.workspace_asset import EvidenceSourceType, EvidenceStatus
 
     assert coverage_status(0, []) == "not_available"
     assert coverage_status(1, []) == "waiting_evidence"

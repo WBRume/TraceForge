@@ -3,7 +3,7 @@ Schemas for unified AI async jobs.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -11,35 +11,35 @@ from pydantic import BaseModel
 class AiJobResponse(BaseModel):
     id: str
     workspace_id: str
-    task_id: Optional[str] = None
-    asset_id: Optional[str] = None
-    thread_id: Optional[str] = None
+    task_id: str | None = None
+    asset_id: str | None = None
+    thread_id: str | None = None
     channel: str
     queue_key: str
     status: str
     progress: int
-    message: Optional[str] = None
-    prompt_text: Optional[str] = None
-    context_json: Optional[Dict[str, Any]] = None
-    result_json: Optional[Dict[str, Any]] = None
-    error_message: Optional[str] = None
-    session_id: Optional[str] = None
-    interrupt_reason: Optional[str] = None
-    interrupted_by_id: Optional[str] = None
-    interrupted_at: Optional[datetime] = None
+    message: str | None = None
+    prompt_text: str | None = None
+    context_json: dict[str, Any] | None = None
+    result_json: dict[str, Any] | None = None
+    error_message: str | None = None
+    session_id: str | None = None
+    interrupt_reason: str | None = None
+    interrupted_by_id: str | None = None
+    interrupted_at: datetime | None = None
     creator_id: str
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
 
 class AiJobListResponse(BaseModel):
-    items: List[AiJobResponse]
+    items: list[AiJobResponse]
     total: int
 
 
 class AssetThreadAiJobCreateRequest(BaseModel):
-    prompt: Optional[str] = None
+    prompt: str | None = None

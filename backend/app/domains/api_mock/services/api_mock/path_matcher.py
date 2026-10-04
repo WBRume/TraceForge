@@ -2,10 +2,9 @@
 API MOCK Path Matcher.
 """
 
-import json
 import re
 import urllib.parse
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .utils import _safe_json_dumps
 
@@ -26,21 +25,21 @@ def _normalize_path_for_compare(path_value: str) -> str:
     return normalized
 
 
-def _split_path_segments(path_value: str) -> List[str]:
+def _split_path_segments(path_value: str) -> list[str]:
     normalized = _normalize_path_for_compare(path_value)
     if normalized == "/":
         return []
     return [segment for segment in normalized.strip("/").split("/") if segment != ""]
 
 
-def _match_path_template(template_path: str, request_path: str) -> Optional[Dict[str, str]]:
+def _match_path_template(template_path: str, request_path: str) -> dict[str, str] | None:
     template_segments = _split_path_segments(template_path)
     request_segments = _split_path_segments(request_path)
     if len(template_segments) != len(request_segments):
         return None
 
-    params: Dict[str, str] = {}
-    for template_segment, request_segment in zip(template_segments, request_segments):
+    params: dict[str, str] = {}
+    for template_segment, request_segment in zip(template_segments, request_segments, strict=False):
         if re.fullmatch(r"\{[^{}]+\}", template_segment):
             param_name = template_segment[1:-1].strip()
             if not param_name:
@@ -104,6 +103,9 @@ def _body_subset_match(expected: Any, actual: Any) -> bool:
             return False
         if len(expected) != len(actual):
             return False
-        return all(_body_subset_match(expected_item, actual_item) for expected_item, actual_item in zip(expected, actual))
+        return all(
+            _body_subset_match(expected_item, actual_item)
+            for expected_item, actual_item in zip(expected, actual, strict=False)
+        )
 
     return expected == actual

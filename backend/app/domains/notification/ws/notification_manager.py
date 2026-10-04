@@ -7,7 +7,6 @@ user_id → 活跃连接 的映射，用于站内信实时推送。
 """
 
 import json
-from typing import Dict, Optional, Set
 
 from fastapi import WebSocket
 
@@ -27,7 +26,7 @@ class NotificationConnectionManager:
 
     # 兼容视图：user_id -> 活跃 WebSocket 集合（只读用途）
     @property
-    def active_connections(self) -> Dict[str, Set[WebSocket]]:
+    def active_connections(self) -> dict[str, set[WebSocket]]:
         return {user_id: set(sockets) for user_id, sockets in self.registry.rooms.items()}
 
     async def connect(
@@ -35,9 +34,9 @@ class NotificationConnectionManager:
         websocket: WebSocket,
         user_id: str,
         *,
-        client_id: Optional[str] = None,
-        epoch: Optional[str] = None,
-        last_sequence: Optional[int] = None,
+        client_id: str | None = None,
+        epoch: str | None = None,
+        last_sequence: int | None = None,
     ) -> OutboundConnection:
         await websocket.accept()
         room_key = self._room_key(user_id)
@@ -51,8 +50,7 @@ class NotificationConnectionManager:
             message_kind="text",
         )
         logger.info(
-            f"Notification websocket connected for user {user_id} "
-            f"(active={len(self.registry.rooms.get(room_key, {}))})"
+            f"Notification websocket connected for user {user_id} (active={len(self.registry.rooms.get(room_key, {}))})"
         )
         return connection
 
@@ -74,7 +72,7 @@ class NotificationConnectionManager:
             barrier_sequence=barrier_sequence,
         )
 
-    async def send_message_to_user(self, user_id: str, payload: dict, *, sequenced: Optional[bool] = None) -> bool:
+    async def send_message_to_user(self, user_id: str, payload: dict, *, sequenced: bool | None = None) -> bool:
         """向指定用户的所有在线连接推送一条通知；返回是否至少送达一个连接。
 
         注意：仅入队（非阻塞）。若所有连接因背压被判定为慢客户端，

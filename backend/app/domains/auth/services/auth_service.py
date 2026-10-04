@@ -3,41 +3,37 @@
 """
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
-import uuid
 
-from jose import JWTError, jwt
 import bcrypt
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domains.auth.errors import RegisterEmailNotAllowedError
-from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.auth.models.user import User
 from app.domains.auth.schemas.auth import TokenResponse
 from app.domains.task.services import avatar_service
 
 # SERVER_BOOT_ID = str(uuid.uuid4())
-SERVER_BOOT_ID = "DEBUG_BOOT_ID" # 调试模式固定 ID，避免重启后强制重新登录
+SERVER_BOOT_ID = "DEBUG_BOOT_ID"  # 调试模式固定 ID，避免重启后强制重新登录
 
 
 def hash_password(password: str) -> str:
     # bcrypt 限制最大 72 字节，为避免前端传递过长密码引发崩溃，手动截断
-    pwd_bytes = password.encode('utf-8')[:72]
-    return bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode('utf-8')
+    pwd_bytes = password.encode("utf-8")[:72]
+    return bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        pwd_bytes = plain.encode('utf-8')[:72]
-        return bcrypt.checkpw(pwd_bytes, hashed.encode('utf-8'))
+        pwd_bytes = plain.encode("utf-8")[:72]
+        return bcrypt.checkpw(pwd_bytes, hashed.encode("utf-8"))
     except Exception:
         return False
 
 
-def create_access_token(user_id: str, expires_delta: Optional[timedelta] = None) -> str:
-    expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
+def create_access_token(user_id: str, expires_delta: timedelta | None = None) -> str:
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES))
     return jwt.encode(
         {"sub": user_id, "exp": expire, "type": "access", "boot_id": SERVER_BOOT_ID},
         settings.JWT_SECRET_KEY,
@@ -55,9 +51,7 @@ def create_refresh_token(user_id: str) -> str:
 
 
 def decode_token(token: str, expected_type: str = "access") -> dict:
-    payload = jwt.decode(
-        token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
-    )
+    payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     if payload.get("type") != expected_type:
         raise JWTError("invalid token type")
     # if payload.get("boot_id") != SERVER_BOOT_ID:
@@ -67,7 +61,7 @@ def decode_token(token: str, expected_type: str = "access") -> dict:
     return payload
 
 
-def normalize_email(email: Optional[str]) -> str:
+def normalize_email(email: str | None) -> str:
     """E-12 邮箱归一化：trim + 转小写；不做 ``+tag`` 剥离（E-12：语义因邮箱系统而异）。
 
     所有 email 判定前必须先归一化（K-13），MySQL 默认 collation 大小写不敏感，
@@ -93,7 +87,7 @@ def assert_email_allowed(email: str) -> None:
     for entry in whitelist:
         if domain == entry or domain.endswith("." + entry):
             return
-    raise RegisterEmailNotAllowedError()
+    raise RegisterEmailNotAllowedError
 
 
 def issue_token_pair(user: "User | str") -> TokenResponse:
@@ -130,7 +124,7 @@ def register_user(db: Session, email: str, password: str, display_name: str) -> 
     return user
 
 
-def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
+def authenticate_user(db: Session, email: str, password: str) -> User | None:
     """Verify user credentials for login."""
     # K-13：登录 email 归一化（trim + 转小写），与注册路径保持一致，
     # 避免输入携带前后空格/大小写差异导致误报"邮箱或密码错误"

@@ -17,37 +17,37 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
+import app.models.ai_job  # noqa: E402
+import app.models.api_mock  # noqa: E402
+import app.models.asset  # noqa: E402
+import app.models.chat  # noqa: E402
+import app.models.log  # noqa: E402
+import app.models.management  # noqa: E402
+import app.models.metric  # noqa: E402
+import app.models.provision_job  # noqa: E402
+import app.models.skill  # noqa: E402
+import app.models.task  # noqa: E402
+import app.models.task_change  # noqa: E402
+import app.models.task_cli_bootstrap  # noqa: E402
+import app.models.task_repository  # noqa: E402
+import app.models.test_result  # noqa: E402
+
+# Register every mapped model for create_all completeness.
+import app.models.user  # noqa: E402
+import app.models.workspace_asset  # noqa: E402
+import app.models.workspace_repository  # noqa: E402,F401
 from app.database import Base  # noqa: E402
 from app.domains.auth.models.user import User  # noqa: E402
+from app.domains.management.models.management import (  # noqa: E402
+    ProjectLifecycleStatus,
+    SddManagementRepository,
+)
 from app.domains.management.services import (  # noqa: E402
     product_service,
     project_service,
     repo_group_service,
     repository_service,
 )
-from app.domains.management.models.management import (  # noqa: E402
-    ProjectLifecycleStatus,
-    SddManagementRepository,
-)
-
-# Register every mapped model for create_all completeness.
-import app.models.user  # noqa: E402,F401
-import app.models.task  # noqa: E402,F401
-import app.models.asset  # noqa: E402,F401
-import app.models.chat  # noqa: E402,F401
-import app.models.log  # noqa: E402,F401
-import app.models.test_result  # noqa: E402,F401
-import app.models.metric  # noqa: E402,F401
-import app.models.skill  # noqa: E402,F401
-import app.models.api_mock  # noqa: E402,F401
-import app.models.ai_job  # noqa: E402,F401
-import app.models.workspace_asset  # noqa: E402,F401
-import app.models.task_change  # noqa: E402,F401
-import app.models.task_cli_bootstrap  # noqa: E402,F401
-import app.models.provision_job  # noqa: E402,F401
-import app.models.management  # noqa: E402,F401
-import app.models.workspace_repository  # noqa: E402,F401
-import app.models.task_repository  # noqa: E402,F401
 
 
 @pytest.fixture()
@@ -120,9 +120,7 @@ class TestProductService:
         product = product_service.create_product(db, name="P", code="P", creator_id="user-1")
         version = _seed_product_version(db, product, version_no="V1")
         repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
             )
@@ -180,14 +178,20 @@ class TestProductService:
         )
         ootb_version = _seed_product_version(db, ootb, version_no="V1")
         custom = product_service.create_product(
-            db, name="Customer Custom", code="CUSTOM", creator_id="user-1",
-            product_type="CUSTOM", baseline_product_id=ootb.id,
+            db,
+            name="Customer Custom",
+            code="CUSTOM",
+            creator_id="user-1",
+            product_type="CUSTOM",
+            baseline_product_id=ootb.id,
         )
         custom_version = product_service.create_version(
             db, custom, version_no="C1", baseline_product_version_id=ootb_version.id, creator_id="user-1"
         )
         ootb_repo = _seed_repository(db, name="ootb-repo", git_url="https://git.example.com/ootb.git", repo_type="OOTB")
-        custom_repo = _seed_repository(db, name="custom-repo", git_url="https://git.example.com/custom.git", repo_type="CUSTOM")
+        custom_repo = _seed_repository(
+            db, name="custom-repo", git_url="https://git.example.com/custom.git", repo_type="CUSTOM"
+        )
 
         with pytest.raises(product_service.ProductServiceError) as exc_info:
             product_service.add_base_repo(db, ootb, repository_id=custom_repo.id, creator_id="user-1")
@@ -217,9 +221,7 @@ class TestProductService:
         custom_repo = _seed_repository(
             db, name="custom-repo", git_url="https://git.example.com/custom.git", repo_type="CUSTOM"
         )
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, baseline_version, repository_id=repo_a.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
             )
@@ -228,8 +230,12 @@ class TestProductService:
             )
 
         custom = product_service.create_product(
-            db, name="Customer Custom", code="CUSTOM", creator_id="user-1",
-            product_type="CUSTOM", baseline_product_id=baseline.id,
+            db,
+            name="Customer Custom",
+            code="CUSTOM",
+            creator_id="user-1",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
         )
         custom_version = product_service.create_version(
             db,
@@ -243,9 +249,7 @@ class TestProductService:
         assert all(item["source"] == "baseline" for item in effective)
 
         # Custom product can override a baseline OOTB repository ref.
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, custom_version, repository_id=repo_a.id, ref_type="TAG", ref_name="v1.0", creator_id="user-1"
             )
@@ -255,9 +259,7 @@ class TestProductService:
         assert repo_a_item["ref_name"] == "v1.0"
 
         # Custom product can add its own CUSTOM repository alongside baseline repos.
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, custom_version, repository_id=custom_repo.id, ref_type="BRANCH", ref_name="dev", creator_id="user-1"
             )
@@ -270,7 +272,6 @@ class TestProductService:
         effective = product_service.resolve_effective_version_bindings(custom_version)
         assert {item["repository_id"] for item in effective} == {repo_a.id, custom_repo.id}
 
-
     def test_serialize_custom_product_and_version_reverse_links(self, db_session):
         db = db_session
         baseline = product_service.create_product(
@@ -278,20 +279,20 @@ class TestProductService:
         )
         baseline_version = _seed_product_version(db, baseline, version_no="V1")
         custom = product_service.create_product(
-            db, name="Customer Custom", code="CUSTOM-1", creator_id="user-1",
-            product_type="CUSTOM", baseline_product_id=baseline.id,
+            db,
+            name="Customer Custom",
+            code="CUSTOM-1",
+            creator_id="user-1",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
         )
         custom_version = product_service.create_version(
             db, custom, version_no="C1", baseline_product_version_id=baseline_version.id, creator_id="user-1"
         )
 
-        baseline_detail = product_service.serialize_product_detail(
-            product_service.get_product(db, baseline.id)
-        )
+        baseline_detail = product_service.serialize_product_detail(product_service.get_product(db, baseline.id))
         assert [cp["id"] for cp in baseline_detail["custom_products"]] == [custom.id]
-        baseline_version_payload = next(
-            v for v in baseline_detail["versions"] if v["id"] == baseline_version.id
-        )
+        baseline_version_payload = next(v for v in baseline_detail["versions"] if v["id"] == baseline_version.id)
         assert baseline_version_payload["custom_versions"][0]["id"] == custom_version.id
         assert baseline_version_payload["custom_versions"][0]["product_name"] == custom.name
 
@@ -310,22 +311,22 @@ class TestProductService:
         )
         ootb_version = _seed_product_version(db, ootb, version_no="V1")
         repo = _seed_repository(db, name="ootb-repo", git_url="https://git.example.com/ootb.git")
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, ootb_version, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
             )
         custom = product_service.create_product(
-            db, name="Customer Custom", code="CUSTOM", creator_id="user-1",
-            product_type="CUSTOM", baseline_product_id=ootb.id,
+            db,
+            name="Customer Custom",
+            code="CUSTOM",
+            creator_id="user-1",
+            product_type="CUSTOM",
+            baseline_product_id=ootb.id,
         )
         custom_version = product_service.create_version(
             db, custom, version_no="C1", baseline_product_version_id=ootb_version.id, creator_id="user-1"
         )
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.update_version_repo_refs_batch(
                 db,
                 custom_version,
@@ -343,8 +344,12 @@ class TestProductService:
             db, name="OOTB Base", code="OOTB", creator_id="user-1", product_type="OOTB"
         )
         product_service.create_product(
-            db, name="Customer Custom", code="CUSTOM", creator_id="user-1",
-            product_type="CUSTOM", baseline_product_id=baseline.id,
+            db,
+            name="Customer Custom",
+            code="CUSTOM",
+            creator_id="user-1",
+            product_type="CUSTOM",
+            baseline_product_id=baseline.id,
         )
         with pytest.raises(product_service.ProductServiceError) as exc_info:
             product_service.delete_product(db, baseline)
@@ -356,13 +361,17 @@ class TestProductService:
         product = product_service.create_product(db, name="P", code="P", creator_id="user-1")
         version_a = _seed_product_version(db, product, version_no="A")
         repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
-            product_service.bind_version_repo(db, version_a, repository_id=repo.id, ref_type="TAG", ref_name="v1.0", creator_id="user-1")
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
+            product_service.bind_version_repo(
+                db, version_a, repository_id=repo.id, ref_type="TAG", ref_name="v1.0", creator_id="user-1"
+            )
         # A1 evolves from A and inherits its repository bindings.
         version_a1 = product_service.create_version(
-            db, product, version_no="A1", from_version_id=version_a.id, creator_id="user-1",
+            db,
+            product,
+            version_no="A1",
+            from_version_id=version_a.id,
+            creator_id="user-1",
         )
         assert len(version_a1.repo_bindings) == 1
         assert version_a1.repo_bindings[0].repository_id == repo.id
@@ -373,9 +382,7 @@ class TestProductService:
         product = product_service.create_product(db, name="P", code="P", creator_id="user-1")
         initial = _seed_product_version(db, product, version_no="V1")
         repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, initial, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
             )
@@ -401,7 +408,11 @@ class TestProductService:
         other_version = _seed_product_version(db, other, version_no="B")
         with pytest.raises(product_service.ProductServiceError) as exc_info:
             product_service.create_version(
-                db, product, version_no="A1", from_version_id=other_version.id, creator_id="user-1",
+                db,
+                product,
+                version_no="A1",
+                from_version_id=other_version.id,
+                creator_id="user-1",
             )
         assert exc_info.value.status_code == 404
 
@@ -420,8 +431,12 @@ class TestProductService:
             "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
         ) as validate_ref:
             binding = product_service.bind_version_repo(
-                db, version, repository_id=repo.id, ref_type="BRANCH",
-                ref_name="release/v8r21", creator_id="user-1",
+                db,
+                version,
+                repository_id=repo.id,
+                ref_type="BRANCH",
+                ref_name="release/v8r21",
+                creator_id="user-1",
             )
             validate_ref.assert_called_once_with(repo.git_url, "BRANCH", "release/v8r21")
         assert binding.ref_name == "release/v8r21"
@@ -436,8 +451,12 @@ class TestProductService:
             "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
         ) as validate_ref:
             binding = product_service.bind_version_repo(
-                db, version, repository_id=repo.id, ref_type="TAG",
-                ref_name="v8r21.0", creator_id="user-1",
+                db,
+                version,
+                repository_id=repo.id,
+                ref_type="TAG",
+                ref_name="v8r21.0",
+                creator_id="user-1",
             )
             validate_ref.assert_called_once_with(repo.git_url, "TAG", "v8r21.0")
         assert binding.ref_type.value == "TAG"
@@ -470,9 +489,7 @@ class TestProductService:
         version = _seed_product_version(db, product, version_no="v1")
         repo_a = _seed_repository(db, name="repo-a", git_url="https://git.example.com/repo-a.git")
         repo_b = _seed_repository(db, name="repo-b", git_url="https://git.example.com/repo-b.git")
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, version, repository_id=repo_a.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
             )
@@ -494,9 +511,10 @@ class TestProductService:
         product = product_service.create_product(db, name="P", code="P", creator_id="user-1")
         version = self._first_version(db, product)
         repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ), pytest.raises(product_service.ProductServiceError) as exc_info:
+        with (
+            mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"),
+            pytest.raises(product_service.ProductServiceError) as exc_info,
+        ):
             product_service.bind_version_repo(
                 db, version, repository_id=repo.id, ref_type="COMMIT", ref_name="x", creator_id="user-1"
             )
@@ -507,12 +525,14 @@ class TestProductService:
         product = product_service.create_product(db, name="P", code="P", creator_id="user-1")
         version = self._first_version(db, product)
         repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
-            product_service.bind_version_repo(db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1")
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
+            product_service.bind_version_repo(
+                db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
+            )
             with pytest.raises(product_service.ProductServiceError) as exc_info:
-                product_service.bind_version_repo(db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="dev", creator_id="user-1")
+                product_service.bind_version_repo(
+                    db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="dev", creator_id="user-1"
+                )
         assert exc_info.value.status_code == 409
 
     def test_unbind_version_repo(self, db_session):
@@ -520,10 +540,10 @@ class TestProductService:
         product = product_service.create_product(db, name="P", code="P", creator_id="user-1")
         version = self._first_version(db, product)
         repo = _seed_repository(db)
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
-            product_service.bind_version_repo(db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1")
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
+            product_service.bind_version_repo(
+                db, version, repository_id=repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
+            )
         product_service.unbind_version_repo(db, version, repo.id)
         assert len(product_service.get_product(db, product.id).versions[0].repo_bindings) == 0
 
@@ -547,9 +567,7 @@ class TestProductService:
         project = project_service.create_project(
             db, name="Customer A", code="CUST-A", customer="Site A", creator_id="user-1"
         )
-        with mock.patch(
-            "app.domains.management.services.project_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.project_service.git_ref_service.validate_ref_exists"):
             project_service.create_release(
                 db,
                 project,
@@ -571,7 +589,9 @@ class TestProductService:
         project = project_service.create_project(
             db, name="Customer A", code="CUST-A", customer="Site A", creator_id="user-1"
         )
-        project_service.add_project_product(db, project, product_id=product.id, product_version_id=version.id, creator_id="user-1")
+        project_service.add_project_product(
+            db, project, product_id=product.id, product_version_id=version.id, creator_id="user-1"
+        )
 
         with pytest.raises(product_service.ProductServiceError) as exc_info:
             product_service.delete_version(db, version)
@@ -702,7 +722,9 @@ class TestProjectService:
         assert link.product_version_id is not None
 
         version_a2 = product_service.create_version(db, product, version_no="A2", creator_id="user-1")
-        link = project_service.update_project_product_version(db, link, product_version_id=version_a2.id, actor_user_id="user-1")
+        link = project_service.update_project_product_version(
+            db, link, product_version_id=version_a2.id, actor_user_id="user-1"
+        )
         assert link.product_version_id == version_a2.id
         detail = project_service.serialize_project_detail(project_service.get_project(db, project.id))
         assert detail["products"][0]["product_version_no"] == "A2"
@@ -711,7 +733,9 @@ class TestProjectService:
         other = product_service.create_product(db, name="Other", code="OTHER", creator_id="user-1")
         other_version = _seed_product_version(db, other, version_no="B1")
         with pytest.raises(project_service.ProjectServiceError) as exc_info:
-            project_service.update_project_product_version(db, link, product_version_id=other_version.id, actor_user_id="user-1")
+            project_service.update_project_product_version(
+                db, link, product_version_id=other_version.id, actor_user_id="user-1"
+            )
         assert exc_info.value.status_code == 404
 
     def test_duplicate_project_product_conflicts(self, db_session):
@@ -811,9 +835,7 @@ class TestProjectService:
         db = db_session
         project = self._seed_project(db)
         product = product_service.create_product(db, name="Billing", code="BILLING", creator_id="user-1")
-        with mock.patch(
-            "app.domains.management.services.project_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.project_service.git_ref_service.validate_ref_exists"):
             project_service.create_release(
                 db,
                 project,
@@ -834,12 +856,13 @@ class TestProjectService:
         product = product_service.create_product(db, name="Billing", code="BILLING", creator_id="user-1")
         version = _seed_product_version(db, product, version_no="V8R21")
         ootb_repo = _seed_repository(db, name="billing-core")
-        custom_repo = _seed_repository(db, name="customer-extension", repo_type="CUSTOM",
-                                       git_url="https://git.example.com/customer-extension.git")
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
-            product_service.bind_version_repo(db, version, repository_id=ootb_repo.id, ref_type="TAG", ref_name="v8r21.0", creator_id="user-1")
+        custom_repo = _seed_repository(
+            db, name="customer-extension", repo_type="CUSTOM", git_url="https://git.example.com/customer-extension.git"
+        )
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
+            product_service.bind_version_repo(
+                db, version, repository_id=ootb_repo.id, ref_type="TAG", ref_name="v8r21.0", creator_id="user-1"
+            )
 
         with mock.patch(
             "app.domains.management.services.project_service.git_ref_service.validate_ref_exists"
@@ -871,11 +894,13 @@ class TestProjectService:
         repo_a = _seed_repository(db, name="repo-a", git_url="https://git.example.com/repo-a.git")
         repo_b = _seed_repository(db, name="repo-b", git_url="https://git.example.com/repo-b.git")
 
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
-            product_service.bind_version_repo(db, version_a, repository_id=repo_a.id, ref_type="BRANCH", ref_name="main", creator_id="user-1")
-            product_service.bind_version_repo(db, version_b, repository_id=repo_b.id, ref_type="TAG", ref_name="v2.0", creator_id="user-1")
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
+            product_service.bind_version_repo(
+                db, version_a, repository_id=repo_a.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
+            )
+            product_service.bind_version_repo(
+                db, version_b, repository_id=repo_b.id, ref_type="TAG", ref_name="v2.0", creator_id="user-1"
+            )
         project_service.add_project_product(db, project, product_id=product_a.id, creator_id="user-1")
         project_service.add_project_product(db, project, product_id=product_b.id, creator_id="user-1")
 
@@ -900,8 +925,12 @@ class TestProjectService:
         ootb_version = _seed_product_version(db, ootb, version_no="V1")
         ootb_repo = _seed_repository(db, name="base-repo", git_url="https://git.example.com/base.git")
         custom = product_service.create_product(
-            db, name="Customer Custom", code="CUSTOM-1", creator_id="user-1",
-            product_type="CUSTOM", baseline_product_id=ootb.id,
+            db,
+            name="Customer Custom",
+            code="CUSTOM-1",
+            creator_id="user-1",
+            product_type="CUSTOM",
+            baseline_product_id=ootb.id,
         )
         custom_version = product_service.create_version(
             db, custom, version_no="C1", baseline_product_version_id=ootb_version.id, creator_id="user-1"
@@ -909,9 +938,7 @@ class TestProjectService:
         custom_repo = _seed_repository(
             db, name="custom-repo", git_url="https://git.example.com/custom.git", repo_type="CUSTOM"
         )
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, ootb_version, repository_id=ootb_repo.id, ref_type="BRANCH", ref_name="main", creator_id="user-1"
             )
@@ -927,7 +954,6 @@ class TestProjectService:
         assert kinds == {"OOTB", "CUSTOM"}
         assert any(item["repository_name"] == "base-repo" for item in repo_set)
         assert any(item["repository_name"] == "custom-repo" for item in repo_set)
-
 
 
 class TestRepositoryService:
@@ -970,9 +996,7 @@ class TestRepositoryService:
         assert total == 2
         assert {item["name"] for item in items} == {"child-repo", "grand-repo"}
 
-        items, total = repository_service.list_repositories(
-            db, group_id=root.id, keyword="grand", page_size=100
-        )
+        items, total = repository_service.list_repositories(db, group_id=root.id, keyword="grand", page_size=100)
         assert total == 1
         assert items[0]["name"] == "grand-repo"
 
@@ -981,9 +1005,7 @@ class TestRepositoryService:
         repo = _seed_repository(db)
         product = product_service.create_product(db, name="Billing", code="BILLING", creator_id="user-1")
         version = _seed_product_version(db, product, version_no="V8R21")
-        with mock.patch(
-            "app.domains.management.services.product_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.product_service.git_ref_service.validate_ref_exists"):
             product_service.bind_version_repo(
                 db, version, repository_id=repo.id, ref_type="TAG", ref_name="v8r21.0", creator_id="user-1"
             )
@@ -1006,14 +1028,13 @@ class TestRepositoryService:
 
     def test_delete_repository_referenced_by_project_release_conflicts(self, db_session):
         db = db_session
-        repo = _seed_repository(db, name="customer-extension", repo_type="CUSTOM",
-                                git_url="https://git.example.com/customer-extension.git")
+        repo = _seed_repository(
+            db, name="customer-extension", repo_type="CUSTOM", git_url="https://git.example.com/customer-extension.git"
+        )
         project = project_service.create_project(
             db, name="Customer A", code="CUST-A", customer="Site A", creator_id="user-1"
         )
-        with mock.patch(
-            "app.domains.management.services.project_service.git_ref_service.validate_ref_exists"
-        ):
+        with mock.patch("app.domains.management.services.project_service.git_ref_service.validate_ref_exists"):
             project_service.create_release(
                 db,
                 project,

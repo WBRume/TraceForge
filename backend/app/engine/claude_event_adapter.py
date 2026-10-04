@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any
 
 from app.agents.events import AgentEvent
 
@@ -63,8 +63,8 @@ def _safe_int(value: Any) -> int | None:
     return parsed if parsed >= 0 else None
 
 
-def _flatten_usage(value: Any, prefix: str = "") -> Dict[str, Any]:
-    flat: Dict[str, Any] = {}
+def _flatten_usage(value: Any, prefix: str = "") -> dict[str, Any]:
+    flat: dict[str, Any] = {}
     if not isinstance(value, dict):
         return flat
     for key, child in value.items():
@@ -82,7 +82,7 @@ def _flatten_usage(value: Any, prefix: str = "") -> Dict[str, Any]:
     return flat
 
 
-def _first_usage_int(flat: Dict[str, Any], aliases: List[str]) -> int | None:
+def _first_usage_int(flat: dict[str, Any], aliases: list[str]) -> int | None:
     for alias in aliases:
         value = _safe_int(flat.get(_normalize_usage_key(alias)))
         if value is not None:
@@ -90,16 +90,16 @@ def _first_usage_int(flat: Dict[str, Any], aliases: List[str]) -> int | None:
     return None
 
 
-def _event_metadata_has_compaction_signal(event: Dict[str, Any]) -> bool:
-    metadata: List[str] = []
+def _event_metadata_has_compaction_signal(event: dict[str, Any]) -> bool:
+    metadata: list[str] = []
     for key in COMPACTION_EVENT_METADATA_KEYS:
         metadata.append(str(key))
         metadata.append(_to_text(event.get(key), max_len=200))
-    metadata.extend(str(key) for key in event.keys())
+    metadata.extend(str(key) for key in event)
     return bool(COMPACTION_SIGNAL_RE.search(" ".join(item for item in metadata if item)))
 
 
-def _usage_candidate_from_event(event: Dict[str, Any]) -> Any:
+def _usage_candidate_from_event(event: dict[str, Any]) -> Any:
     event_type = _to_text(event.get("type"), max_len=64).lower()
     if event_type == "assistant":
         message = event.get("message")
@@ -123,7 +123,7 @@ def _usage_candidate_from_event(event: Dict[str, Any]) -> Any:
     return None
 
 
-def normalize_claude_usage(raw_usage: Any) -> Dict[str, Any] | None:
+def normalize_claude_usage(raw_usage: Any) -> dict[str, Any] | None:
     """
     Normalize Claude stream-json usage into provider token fields.
 
@@ -133,7 +133,7 @@ def normalize_claude_usage(raw_usage: Any) -> Dict[str, Any] | None:
     if not isinstance(raw_usage, dict):
         return None
     flat = _flatten_usage(raw_usage)
-    normalized: Dict[str, Any] = {
+    normalized: dict[str, Any] = {
         "input_tokens": _first_usage_int(flat, ["input_tokens", "input"]),
         "output_tokens": _first_usage_int(flat, ["output_tokens", "output"]),
         "cache_read_tokens": _first_usage_int(flat, ["cache_read_input_tokens", "cache_read_tokens", "cache_read"]),
@@ -143,7 +143,12 @@ def normalize_claude_usage(raw_usage: Any) -> Dict[str, Any] | None:
         ),
         "thinking_tokens": _first_usage_int(
             flat,
-            ["thinking_tokens", "reasoning_tokens", "output_tokens_details.thinking_tokens", "output_tokens_details.reasoning_tokens"],
+            [
+                "thinking_tokens",
+                "reasoning_tokens",
+                "output_tokens_details.thinking_tokens",
+                "output_tokens_details.reasoning_tokens",
+            ],
         ),
         "tool_io_tokens": _first_usage_int(flat, ["tool_io_tokens", "server_tool_use_tokens"]),
         "total_tokens": _first_usage_int(flat, ["total_tokens", "tokens_total"]),
@@ -174,11 +179,11 @@ def normalize_claude_usage(raw_usage: Any) -> Dict[str, Any] | None:
     return normalized
 
 
-def extract_claude_usage(event: Dict[str, Any]) -> Dict[str, Any] | None:
+def extract_claude_usage(event: dict[str, Any]) -> dict[str, Any] | None:
     return normalize_claude_usage(_usage_candidate_from_event(event))
 
 
-def extract_claude_compaction_event(event: Dict[str, Any]) -> Dict[str, Any] | None:
+def extract_claude_compaction_event(event: dict[str, Any]) -> dict[str, Any] | None:
     """
     Detect Claude stream-json context compaction events.
 
@@ -242,8 +247,8 @@ def _normalized_entry(
     session_id: str = "",
     is_error: bool = False,
     raw: Any = None,
-) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "ts": _utc_now_iso(),
         "type": _to_text(entry_type, max_len=64) or "unknown",
     }
@@ -271,7 +276,7 @@ def _normalized_entry(
 
 def _tool_result_output_to_text(output: Any) -> str:
     if isinstance(output, list):
-        lines: List[str] = []
+        lines: list[str] = []
         for item in output:
             if isinstance(item, dict):
                 line = _to_text(item.get("text") or item.get("output"))
@@ -283,11 +288,92 @@ def _tool_result_output_to_text(output: Any) -> str:
     return _to_text(output)
 
 
-def flatten_claude_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _flatten_assistant_event(event):
+    entries = []
+    message = event.get("message")
+    content_blocks = message.get("content", []) if isinstance(message, dict) else []
+    if not isinstance(content_blocks, list):
+        content_blocks = []
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = _to_text(block.get("type"), max_len=64).lower()
+        if block_type == "thinking":
+            text = _to_text(block.get("thinking"))
+            if text:
+                entries.append(
+                    _normalized_entry(
+                        entry_type="thinking",
+                        text=text,
+                        raw={"type": "thinking", "thinking": text},
+                    )
+                )
+            continue
+        if block_type == "text":
+            text = _to_text(block.get("text"))
+            if text:
+                entries.append(
+                    _normalized_entry(
+                        entry_type="text",
+                        text=text,
+                        raw={"type": "text", "text": text},
+                    )
+                )
+            continue
+        if block_type == "tool_use":
+            tool_name = _to_text(block.get("name"), max_len=200)
+            tool_use_id = _to_text(block.get("id"), max_len=200)
+            input_text = _safe_json_text(block.get("input"))
+            summary = f"{tool_name} {input_text}".strip()
+            entries.append(
+                _normalized_entry(
+                    entry_type="tool_use",
+                    text=summary,
+                    tool_name=tool_name,
+                    tool_use_id=tool_use_id,
+                    raw={
+                        "type": "tool_use",
+                        "name": tool_name,
+                        "id": tool_use_id,
+                        "input": block.get("input"),
+                    },
+                )
+            )
+            continue
+        if block_type == "tool_result":
+            tool_use_id = _to_text(block.get("tool_use_id"), max_len=200)
+            output_text = _tool_result_output_to_text(block.get("output", block.get("content")))
+            entries.append(
+                _normalized_entry(
+                    entry_type="tool_result",
+                    text=output_text,
+                    tool_use_id=tool_use_id,
+                    is_error=bool(block.get("is_error")),
+                    raw={
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "is_error": bool(block.get("is_error")),
+                        "output": block.get("output", block.get("content")),
+                    },
+                )
+            )
+            continue
+        entries.append(
+            _normalized_entry(
+                entry_type="assistant_event",
+                subtype=block_type or "unknown",
+                text=_safe_json_text(block),
+                raw={"type": block_type, "block": block},
+            )
+        )
+    return entries
+
+
+def flatten_claude_event(event: dict[str, Any]) -> list[dict[str, Any]]:
     """
     Convert one Claude stream-json event into normalized timeline entries.
     """
-    entries: List[Dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     event_type = _to_text(event.get("type"), max_len=64).lower()
     compaction = extract_claude_compaction_event(event)
     if compaction:
@@ -318,7 +404,7 @@ def flatten_claude_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
         model = _to_text(event.get("model"), max_len=120)
         text = f"system {subtype or 'event'}"
         if subtype == "init":
-            suffix: List[str] = []
+            suffix: list[str] = []
             if model:
                 suffix.append(f"model={model}")
             if session_id:
@@ -344,83 +430,7 @@ def flatten_claude_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
         return entries
 
     if event_type == "assistant":
-        message = event.get("message")
-        content_blocks = message.get("content", []) if isinstance(message, dict) else []
-        if not isinstance(content_blocks, list):
-            content_blocks = []
-        for block in content_blocks:
-            if not isinstance(block, dict):
-                continue
-            block_type = _to_text(block.get("type"), max_len=64).lower()
-            if block_type == "thinking":
-                text = _to_text(block.get("thinking"))
-                if text:
-                    entries.append(
-                        _normalized_entry(
-                            entry_type="thinking",
-                            text=text,
-                            raw={"type": "thinking", "thinking": text},
-                        )
-                    )
-                continue
-            if block_type == "text":
-                text = _to_text(block.get("text"))
-                if text:
-                    entries.append(
-                        _normalized_entry(
-                            entry_type="text",
-                            text=text,
-                            raw={"type": "text", "text": text},
-                        )
-                    )
-                continue
-            if block_type == "tool_use":
-                tool_name = _to_text(block.get("name"), max_len=200)
-                tool_use_id = _to_text(block.get("id"), max_len=200)
-                input_text = _safe_json_text(block.get("input"))
-                summary = f"{tool_name} {input_text}".strip()
-                entries.append(
-                    _normalized_entry(
-                        entry_type="tool_use",
-                        text=summary,
-                        tool_name=tool_name,
-                        tool_use_id=tool_use_id,
-                        raw={
-                            "type": "tool_use",
-                            "name": tool_name,
-                            "id": tool_use_id,
-                            "input": block.get("input"),
-                        },
-                    )
-                )
-                continue
-            if block_type == "tool_result":
-                tool_use_id = _to_text(block.get("tool_use_id"), max_len=200)
-                output_text = _tool_result_output_to_text(block.get("output", block.get("content")))
-                entries.append(
-                    _normalized_entry(
-                        entry_type="tool_result",
-                        text=output_text,
-                        tool_use_id=tool_use_id,
-                        is_error=bool(block.get("is_error")),
-                        raw={
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "is_error": bool(block.get("is_error")),
-                            "output": block.get("output", block.get("content")),
-                        },
-                    )
-                )
-                continue
-            entries.append(
-                _normalized_entry(
-                    entry_type="assistant_event",
-                    subtype=block_type or "unknown",
-                    text=_safe_json_text(block),
-                    raw={"type": block_type, "block": block},
-                )
-            )
-        return entries
+        return _flatten_assistant_event(event)
 
     if event_type == "result":
         subtype = _to_text(event.get("subtype"), max_len=64)
@@ -431,7 +441,9 @@ def flatten_claude_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
                 {
                     "duration_ms": event.get("duration_ms"),
                     "total_cost_usd": event.get("total_cost_usd"),
-                    "usage": {key: value for key, value in (usage or {}).items() if key != "raw_usage"} if usage else None,
+                    "usage": {key: value for key, value in (usage or {}).items() if key != "raw_usage"}
+                    if usage
+                    else None,
                 }
             )
         entries.append(
@@ -447,7 +459,9 @@ def flatten_claude_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "is_error": bool(event.get("is_error")),
                     "duration_ms": event.get("duration_ms"),
                     "total_cost_usd": event.get("total_cost_usd"),
-                    "usage": {key: value for key, value in (usage or {}).items() if key != "raw_usage"} if usage else None,
+                    "usage": {key: value for key, value in (usage or {}).items() if key != "raw_usage"}
+                    if usage
+                    else None,
                     "result": event.get("result"),
                 },
             )
@@ -464,7 +478,7 @@ def flatten_claude_event(event: Dict[str, Any]) -> List[Dict[str, Any]]:
     return entries
 
 
-def format_claude_event_log_line(entry: Dict[str, Any]) -> str:
+def format_claude_event_log_line(entry: dict[str, Any]) -> str:
     """
     Render one normalized timeline entry into a concise human-readable line.
     """
@@ -515,7 +529,7 @@ def format_claude_event_log_line(entry: Dict[str, Any]) -> str:
 # ─────────────── 旧版 dict 事件 → 统一 AgentEvent 归一 ───────────────
 
 
-def claude_stream_to_agent_events(event: Dict[str, Any]) -> List[AgentEvent]:
+def claude_stream_to_agent_events(event: dict[str, Any]) -> list[AgentEvent]:
     """把旧版 Claude stream-json dict 事件归一为 AgentEvent 序列。
 
     供 legacy CliBridgeBase 路径（mock bridge 等）复用引擎的统一事件处理：
@@ -528,33 +542,37 @@ def claude_stream_to_agent_events(event: Dict[str, Any]) -> List[AgentEvent]:
     event_type = event.get("type")
 
     if event_type == "system" and event.get("subtype") == "init":
-        return [AgentEvent(
-            type="session_started",
-            payload={
-                "provider_session_id": str(event.get("session_id") or ""),
-                "model": event.get("model"),
-            },
-            provider="claude-cli",
-        )]
+        return [
+            AgentEvent(
+                type="session_started",
+                payload={
+                    "provider_session_id": str(event.get("session_id") or ""),
+                    "model": event.get("model"),
+                },
+                provider="claude-cli",
+            )
+        ]
 
     if event_type == "result":
         is_error = bool(event.get("is_error")) or str(event.get("subtype") or "") == "error"
         usage = extract_claude_usage(event)
-        return [AgentEvent(
-            type="result",
-            payload={
-                "result": event.get("result", ""),
-                "duration_ms": event.get("duration_ms"),
-                "cost_usd": event.get("total_cost_usd"),
-                "usage": usage,
-                "finish_reason": "error" if is_error else "completed",
-            },
-            provider="claude-cli",
-        )]
+        return [
+            AgentEvent(
+                type="result",
+                payload={
+                    "result": event.get("result", ""),
+                    "duration_ms": event.get("duration_ms"),
+                    "cost_usd": event.get("total_cost_usd"),
+                    "usage": usage,
+                    "finish_reason": "error" if is_error else "completed",
+                },
+                provider="claude-cli",
+            )
+        ]
 
     if event_type == "assistant":
         message = event.get("message", {})
-        events: List[AgentEvent] = []
+        events: list[AgentEvent] = []
         usage = extract_claude_usage(event)
         if usage:
             events.append(AgentEvent(type="usage", payload=usage, provider="claude-cli"))
@@ -568,7 +586,7 @@ def claude_stream_to_agent_events(event: Dict[str, Any]) -> List[AgentEvent]:
     return []
 
 
-def _claude_block_to_agent_events(block: Dict[str, Any]) -> List[AgentEvent]:
+def _claude_block_to_agent_events(block: dict[str, Any]) -> list[AgentEvent]:
     block_type = block.get("type")
 
     if block_type == "thinking":
@@ -584,34 +602,36 @@ def _claude_block_to_agent_events(block: Dict[str, Any]) -> List[AgentEvent]:
         return []
 
     if block_type == "tool_use":
-        return [AgentEvent(
-            type="tool_use",
-            payload={
-                "tool_name": block.get("name", "unknown"),
-                "tool_input": block.get("input", {}),
-                "tool_use_id": block.get("id", ""),
-            },
-            provider="claude-cli",
-        )]
+        return [
+            AgentEvent(
+                type="tool_use",
+                payload={
+                    "tool_name": block.get("name", "unknown"),
+                    "tool_input": block.get("input", {}),
+                    "tool_use_id": block.get("id", ""),
+                },
+                provider="claude-cli",
+            )
+        ]
 
     if block_type == "tool_result":
         # 有时 tool_result 的 content 是 list
         output = block.get("output", block.get("content", ""))
         if isinstance(output, list):
-            output = "\n".join(
-                item.get("text", str(item))
-                for item in output
-                if isinstance(item, dict)
-            ) if output else ""
-        return [AgentEvent(
-            type="tool_result",
-            payload={
-                "tool_use_id": block.get("tool_use_id", ""),
-                "output": str(output),
-                "is_error": bool(block.get("is_error", False)),
-            },
-            provider="claude-cli",
-        )]
+            output = (
+                "\n".join(item.get("text", str(item)) for item in output if isinstance(item, dict)) if output else ""
+            )
+        return [
+            AgentEvent(
+                type="tool_result",
+                payload={
+                    "tool_use_id": block.get("tool_use_id", ""),
+                    "output": str(output),
+                    "is_error": bool(block.get("is_error", False)),
+                },
+                provider="claude-cli",
+            )
+        ]
 
     if extract_claude_compaction_event(block):
         return [_compaction_agent_event(block)]
@@ -619,7 +639,7 @@ def _claude_block_to_agent_events(block: Dict[str, Any]) -> List[AgentEvent]:
     return []
 
 
-def _compaction_agent_event(source: Dict[str, Any]) -> AgentEvent:
+def _compaction_agent_event(source: dict[str, Any]) -> AgentEvent:
     lines = []
     for entry in flatten_claude_event(source):
         line = format_claude_event_log_line(entry)

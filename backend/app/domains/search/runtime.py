@@ -1,4 +1,5 @@
 """Backend-owned search consumers; durable jobs remain in MySQL across restarts."""
+
 import asyncio
 import logging
 
@@ -18,13 +19,15 @@ class SearchRuntime:
             return
         self.stop_event.clear()
         from .sqlite_index import local_only
-        kinds = ('search',) if local_only() else ('search', 'embedding')
+
+        kinds = ("search",) if local_only() else ("search", "embedding")
         self.tasks = [asyncio.create_task(self._supervise(kind), name=f"search-{kind}-worker") for kind in kinds]
         self.tasks.append(asyncio.create_task(self._bootstrap(), name="search-sqlite-backfill"))
         logger.info("Search and embedding workers started inside backend")
 
     async def _bootstrap(self):
         from .sqlite_index import bootstrap
+
         while not self.stop_event.is_set():
             try:
                 await bootstrap(self.stop_event)

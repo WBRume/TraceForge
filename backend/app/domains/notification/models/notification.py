@@ -5,8 +5,9 @@
 payload_json 携带跳转所需的 task_id / pre_input_id 等上下文。
 """
 
-from sqlalchemy import Column, String, DateTime, ForeignKey, Text, JSON, func
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 

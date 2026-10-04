@@ -4,19 +4,20 @@ Run from backend: python -m tests.live_opencode.verify_recovery --run-live
 Only this script's isolated sessions, worker processes, and SQLite files are used.
 No production database writes, global threshold edits, or webhook deliveries.
 """
+
 from __future__ import annotations
 
 import argparse
 import asyncio
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime
+from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[2]
 CASES = {
@@ -55,7 +56,9 @@ def read_job(root):
             if not row:
                 return None
             data = dict(row)
-            data["checkpoint"] = json.loads(data["provider_execution_json"]) if data["provider_execution_json"] else None
+            data["checkpoint"] = (
+                json.loads(data["provider_execution_json"]) if data["provider_execution_json"] else None
+            )
             return data
     except sqlite3.OperationalError:
         return None
@@ -77,7 +80,9 @@ def start_worker(root, number):
     output = (root / f"console-{number}.log").open("w", encoding="utf-8")
     process = subprocess.Popen(
         [sys.executable, "-m", "tests.live_opencode.worker", str(root)],
-        cwd=BACKEND, stdout=output, stderr=subprocess.STDOUT,
+        cwd=BACKEND,
+        stdout=output,
+        stderr=subprocess.STDOUT,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     output.close()
@@ -127,30 +132,54 @@ async def provider_state(adapter, sid):
 
 async def run_case(root, case, model, adapter):
     from app.agents.adapters.opencode.execution import turn_messages
+
     config = prepare(root, case, model)
     process = start_worker(root, 1)
     processes = [process]
-    evidence = {"case": case, "thresholds": {"idle_seconds": 6, "reconcile_seconds": 1,
-                "hard_seconds": config["hard_seconds"]}, "tool_seconds": config["tool_seconds"]}
+    evidence = {
+        "case": case,
+        "thresholds": {"idle_seconds": 6, "reconcile_seconds": 1, "hard_seconds": config["hard_seconds"]},
+        "tool_seconds": config["tool_seconds"],
+    }
     sid = None
     try:
-        await wait_for(lambda: any(row["kind"] == "started" for row in read_jsonl(root / "work/tool-trace.jsonl")),
-                       seconds=150, label="real tool start", process=process)
-        original = await wait_for(lambda: (row if (row := read_job(root)) and row["checkpoint"] else None),
-                                  seconds=15, label="durable checkpoint", process=process)
+        await wait_for(
+            lambda: any(row["kind"] == "started" for row in read_jsonl(root / "work/tool-trace.jsonl")),
+            seconds=150,
+            label="real tool start",
+            process=process,
+        )
+        original = await wait_for(
+            lambda: row if (row := read_job(root)) and row["checkpoint"] else None,
+            seconds=15,
+            label="durable checkpoint",
+            process=process,
+        )
         checkpoint = original["checkpoint"]
         sid = checkpoint["session_id"]
-        evidence.update(session_id=sid, job_id=config["job_id"], checkpoint=checkpoint,
-                        first_worker_pid=process.pid, original_run_token=original["run_token"],
-                        original_worker_boot_id=original["worker_boot_id"])
+        evidence.update(
+            session_id=sid,
+            job_id=config["job_id"],
+            checkpoint=checkpoint,
+            first_worker_pid=process.pid,
+            original_run_token=original["run_token"],
+            original_worker_boot_id=original["worker_boot_id"],
+        )
         emit("tool_started", case=case, session_id=sid, pid=process.pid)
         if case == "sse_disconnect":
             for token in ("1", "2"):
                 await asyncio.sleep(2)
                 (root / "cut-sse").write_text(token, encoding="utf-8")
-                await wait_for(lambda: any(row.get("kind") == "sse_cut" and row.get("token") == token
-                                          for path in root.glob("worker-*.jsonl") for row in read_jsonl(path)),
-                               seconds=10, label=f"SSE cut {token}", process=process)
+                await wait_for(
+                    lambda *, token=token: any(
+                        row.get("kind") == "sse_cut" and row.get("token") == token
+                        for path in root.glob("worker-*.jsonl")
+                        for row in read_jsonl(path)
+                    ),
+                    seconds=10,
+                    label=f"SSE cut {token}",
+                    process=process,
+                )
                 await asyncio.sleep(2)
             assert read_job(root)["status"] == "RUNNING"
             evidence["running_after_multiple_idle_windows"] = True
@@ -182,30 +211,46 @@ async def run_case(root, case, model, adapter):
             process = start_worker(root, 2)
             processes.append(process)
             emit("backend_restarted", case=case, old_pid=processes[0].pid, new_pid=process.pid)
-            state = await wait_for(lambda: (row if (row := read_job(root)) and row["attempt_count"] >= 2 else None),
-                                   seconds=30, label="new owner claim", process=process)
-            evidence.update(second_worker_pid=process.pid, recovered_checkpoint=state["checkpoint"],
-                            recovered_attempt_count=state["attempt_count"])
+            state = await wait_for(
+                lambda: row if (row := read_job(root)) and row["attempt_count"] >= 2 else None,
+                seconds=30,
+                label="new owner claim",
+                process=process,
+            )
+            evidence.update(
+                second_worker_pid=process.pid,
+                recovered_checkpoint=state["checkpoint"],
+                recovered_attempt_count=state["attempt_count"],
+            )
             assert state["checkpoint"] == checkpoint, "Recovery must retain session, prompt and deadline"
             if state["status"] == "RUNNING":
                 assert state["run_token"] != original["run_token"]
                 assert state["worker_boot_id"] != original["worker_boot_id"]
                 evidence["owner_changed"] = True
-        await wait_for(lambda: process.poll() is not None, seconds=config["hard_seconds"] + 60,
-                       label="worker completion")
+        await wait_for(
+            lambda: process.poll() is not None, seconds=config["hard_seconds"] + 60, label="worker completion"
+        )
         assert process.returncode == 0, f"Worker failed: {process.returncode}; inspect console log"
         results = sorted(root.glob("result-*.json"))
         assert results
         final = json.loads(results[-1].read_text(encoding="utf-8"))
         evidence["final_status"] = final["status"]
         traces = [row for path in root.glob("worker-*.jsonl") for row in read_jsonl(path)]
-        posts = [row for row in traces if row.get("kind") == "http" and row.get("method") == "POST" and row["path"].endswith("/prompt")]
+        posts = [
+            row
+            for row in traces
+            if row.get("kind") == "http" and row.get("method") == "POST" and row["path"].endswith("/prompt")
+        ]
         stops = [row for row in traces if row.get("kind") == "http" and row["path"].endswith("/interrupt")]
         tool_trace = read_jsonl(root / "work/tool-trace.jsonl")
-        evidence.update(prompt_posts=len(posts), interrupt_requests=len(stops),
-                        sse_opens=sum(row["kind"] == "sse_open" for row in traces),
-                        sse_cuts=sum(row["kind"] == "sse_cut" for row in traces),
-                        dropped_sse_frames=sum(row["kind"] == "sse_drop" for row in traces), tool_trace=tool_trace)
+        evidence.update(
+            prompt_posts=len(posts),
+            interrupt_requests=len(stops),
+            sse_opens=sum(row["kind"] == "sse_open" for row in traces),
+            sse_cuts=sum(row["kind"] == "sse_cut" for row in traces),
+            dropped_sse_frames=sum(row["kind"] == "sse_drop" for row in traces),
+            tool_trace=tool_trace,
+        )
         assert len(posts) == 1 and posts[0]["prompt_id"] == checkpoint["prompt_id"]
         assert sum(row["kind"] == "started" for row in tool_trace) == 1
         state = await provider_state(adapter, sid)
@@ -221,7 +266,11 @@ async def run_case(root, case, model, adapter):
             assert final["status"] == "SUCCESS" and not stops
             assert evidence["provider_outcome"] == "succeeded"
             assert sum(row["kind"] == "finished" for row in tool_trace) == 1
-            replies = [row for row in final["messages"] if row["role"] == "assistant" and row["content"].strip() == config["marker"]]
+            replies = [
+                row
+                for row in final["messages"]
+                if row["role"] == "assistant" and row["content"].strip() == config["marker"]
+            ]
             assert len(replies) == 1, "Final reply must persist once through the real engine"
             evidence["final_reply_count"] = len(replies)
         if case == "sse_disconnect":
@@ -250,6 +299,7 @@ async def run_case(root, case, model, adapter):
 async def main(args):
     from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
     from app.agents.selection import opencode_server_kwargs
+
     adapter = OpenCodeAdapter(**opencode_server_kwargs())
     root = BACKEND / "tmp/opencode-live" / (datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6])
     root.mkdir(parents=True)

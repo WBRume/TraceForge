@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.domains.asset.services.document.payload import parse_document_payload
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
@@ -27,8 +27,8 @@ def strip_marker(text: str) -> str:
     return re.sub(r"^\s*(?:[-*]|\d+[.)])\s+", "", stripped).strip()
 
 
-def extract_acceptance_criteria(lines: List[str]) -> List[str]:
-    criteria: List[str] = []
+def extract_acceptance_criteria(lines: list[str]) -> list[str]:
+    criteria: list[str] = []
     in_acceptance = False
     for line in lines:
         stripped = line.strip()
@@ -48,22 +48,26 @@ def extract_acceptance_criteria(lines: List[str]) -> List[str]:
     return normalize_list(criteria)
 
 
-def segment_requirements(markdown: str) -> List[Dict[str, Any]]:
+def segment_requirements(markdown: str) -> list[dict[str, Any]]:
     """把 Markdown 需求文档切成 Requirement 候选项（heading > 列表项 > 整文档）。"""
     lines = [line.rstrip() for line in str(markdown or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     non_empty = [line.strip() for line in lines if line.strip()]
     if not non_empty:
         return []
 
-    heading_positions = [(idx, match.group(2).strip()) for idx, line in enumerate(lines) if (match := _HEADING_RE.match(line))]
-    segments: List[tuple[str, List[str], str]] = []
+    heading_positions = [
+        (idx, match.group(2).strip()) for idx, line in enumerate(lines) if (match := _HEADING_RE.match(line))
+    ]
+    segments: list[tuple[str, list[str], str]] = []
     if heading_positions:
         for offset, (start, title) in enumerate(heading_positions):
             end = heading_positions[offset + 1][0] if offset + 1 < len(heading_positions) else len(lines)
-            body_lines = lines[start + 1:end]
+            body_lines = lines[start + 1 : end]
             segments.append((title, body_lines, f"heading:{offset + 1}"))
     else:
-        item_positions = [(idx, match.group(1).strip()) for idx, line in enumerate(lines) if (match := _SPLIT_LIST_RE.match(line))]
+        item_positions = [
+            (idx, match.group(1).strip()) for idx, line in enumerate(lines) if (match := _SPLIT_LIST_RE.match(line))
+        ]
         if len(item_positions) > 1:
             for offset, (start, title) in enumerate(item_positions):
                 end = item_positions[offset + 1][0] if offset + 1 < len(item_positions) else len(lines)
@@ -74,7 +78,7 @@ def segment_requirements(markdown: str) -> List[Dict[str, Any]]:
             title = strip_marker(first)
             segments.append((title, lines, "document:1"))
 
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for index, (title, body_lines, source_ref) in enumerate(segments):
         normalized_title = clean_optional(strip_marker(title), limit=300) or f"Requirement {index + 1}"
         body = "\n".join(line for line in body_lines).strip() or None
@@ -96,10 +100,7 @@ def looks_like_single_requirement(markdown: str) -> bool:
     text = re.sub(r"\s+", " ", str(markdown or "")).strip()
     if not text or len(text) > 900:
         return False
-    headings = [
-        line for line in str(markdown or "").splitlines()
-        if _HEADING_RE.match(line.strip())
-    ]
+    headings = [line for line in str(markdown or "").splitlines() if _HEADING_RE.match(line.strip())]
     if len(headings) > 1:
         return False
     explicit_requirement_markers = re.findall(
@@ -117,8 +118,8 @@ def direct_import_title(file_name: str, markdown: str) -> str:
             continue
         heading = _HEADING_RE.match(stripped)
         if heading:
-            return (clean_optional(heading.group(2), limit=300) or "Imported Requirement")
-        return (clean_optional(strip_marker(stripped), limit=300) or "Imported Requirement")
+            return clean_optional(heading.group(2), limit=300) or "Imported Requirement"
+        return clean_optional(strip_marker(stripped), limit=300) or "Imported Requirement"
     base = os.path.splitext(os.path.basename(file_name or ""))[0]
     return clean_optional(base, limit=300) or "Imported Requirement"
 
@@ -128,7 +129,7 @@ def direct_import_title(file_name: str, markdown: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def parse_requirement_document(file_name: str, raw: bytes) -> Dict[str, Any]:
+def parse_requirement_document(file_name: str, raw: bytes) -> dict[str, Any]:
     if not file_name.lower().endswith((".docx", ".md", ".markdown", ".txt")):
         raise WorkspaceAssetError("Requirement import supports DOCX, Markdown and Text files only.", status_code=415)
     parsed = parse_document_payload(file_name, raw)
@@ -138,7 +139,7 @@ def parse_requirement_document(file_name: str, raw: bytes) -> Dict[str, Any]:
     return parsed
 
 
-def document_metadata(parsed: Dict[str, Any], *, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def document_metadata(parsed: dict[str, Any], *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "source_ext": parsed.get("source_ext"),
         "source_mime": parsed.get("source_mime"),

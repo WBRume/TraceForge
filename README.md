@@ -548,12 +548,58 @@ npm run test:run     # 单次运行测试
 
 ```bash
 cd backend
+python -m pip install -r requirements-dev.txt  # 安装固定版本的 Ruff
+python -m ruff check .            # 代码质量检查（不修改文件）
+python -m ruff format --check .   # 格式检查（不修改文件）
 python check_file_lines.py        # 单文件行数门禁（超过 1500 行必须重构）
 python -m pytest tests            # 后端测试，包含单文件行数门禁
 uvicorn app.main:app --host 0.0.0.0   # 启动开发服务器（不要加 --reload）
 alembic upgrade head              # 运行数据库迁移
 alembic revision --autogenerate -m "message"  # 创建迁移
 ```
+
+### Python 代码规范（Ruff）
+
+后端统一使用 [`backend/ruff.toml`](backend/ruff.toml)，目标版本为 Python 3.10，
+格式采用 120 列、4 空格缩进和双引号。运行时依赖和开发检查工具分别由
+`backend/requirements.txt`、`backend/requirements-dev.txt` 管理；Ruff 版本固定，
+升级时需同步调整配置中的 `required-version`。从仓库根目录执行
+`python -m ruff check backend` 或进入 `backend` 执行 `python -m ruff check .`
+均会自动读取同一份配置。
+
+规则覆盖未定义名称、未使用导入/变量、导入排序、现代类型写法、可变默认值、
+闭包捕获、异常链、后台任务引用、冗余逻辑及返回行为。生产函数的圈复杂度上限为
+**15**、分支数上限为 **15**、语句数上限为 **60**；超限时应按职责重构，
+避免仅为了通过检查而拆出无意义的包装函数。测试和 Alembic 版本迁移仅豁免这三项
+结构指标，仍接受其他检查；1500 行的文件门禁独立保留。
+
+为兼顾可读性，允许有解释意义的返回中间变量、显式异常忽略、普通 if/else 和
+嵌套资源上下文。不强制所有函数添加文档字符串或类型注解，不设置统一的参数数量限制，
+也不启用与 formatter 冲突的排版规则或对中文注释产生噪声的 Unicode 外观检查。
+FastAPI 的 `Depends`、`Query` 等声明通过精确白名单处理，普通默认参数调用仍受检查。
+格式器尽力按 120 列折行，长 URL、字符串和注释不通过 `E501` 强制截断。
+配置选项及兼容性依据 [Ruff 官方文档](https://docs.astral.sh/ruff/configuration/) 和
+[格式器规则说明](https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules)。
+
+日常修改时先检查具体文件，确认修复 diff 后再运行相关测试和行数门禁：
+
+```bash
+cd backend
+python -m ruff check app/path/to/file.py
+python -m ruff check --fix app/path/to/file.py  # 应用安全修复；F401 保留人工确认
+python -m ruff format app/path/to/file.py
+python -m ruff check app/path/to/file.py
+python check_file_lines.py
+```
+
+默认检查不会修改源码，未启用不安全自动修复。`F401` 仍会报告，但不会自动删除导入，
+以便人工确认 ORM 注册或插件加载所需的副作用；有意的公开导出使用 `__all__` 或显式重导出。
+确有必要的局部例外使用带具体规则编号及原因的 `# noqa: CODE`，不使用整文件统一忽略。
+
+存量代码已按当前配置完成全量 lint/format 整理。GitHub Actions 的
+`Source quality` 工作流在 push 和 PR 时执行 Ruff lint、格式检查和单文件行数门禁。
+提交前请运行以上全量命令；后端测试使用 `python -m pytest tests`，限定项目测试目录，
+避免收集 `tmp/` 等运行时工作区中的外部项目测试。
 
 ### 单文件行数门禁
 

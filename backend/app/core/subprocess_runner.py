@@ -19,7 +19,8 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
-from typing import BinaryIO, List, Mapping, Optional
+from collections.abc import Mapping
+from typing import BinaryIO
 
 from app.config import settings
 
@@ -40,7 +41,7 @@ class ProcessTimeoutError(RuntimeError):
     破坏 str(exc)），此处命名为 ``command``。
     """
 
-    def __init__(self, message: str, *, timeout_seconds: float, command: List[str]) -> None:
+    def __init__(self, message: str, *, timeout_seconds: float, command: list[str]) -> None:
         super().__init__(message)
         self.timeout_seconds = timeout_seconds
         self.command = command
@@ -73,7 +74,7 @@ def terminate_process_tree(process: subprocess.Popen) -> None:
             pass
 
 
-def _git_safe_env(extra: Optional[Mapping[str, str]] = None) -> dict:
+def _git_safe_env(extra: Mapping[str, str] | None = None) -> dict:
     env = os.environ.copy()
     env.update(
         {
@@ -101,11 +102,11 @@ def _reap_after_kill(process: subprocess.Popen) -> None:
 
 
 def run_process(
-    args: List[str],
+    args: list[str],
     *,
-    cwd: Optional[str] = None,
-    timeout_seconds: Optional[float] = None,
-    env: Optional[Mapping[str, str]] = None,
+    cwd: str | None = None,
+    timeout_seconds: float | None = None,
+    env: Mapping[str, str] | None = None,
     decode_text: bool = True,
     input_data: str | bytes | None = None,
     stdin_file: BinaryIO | None = None,
@@ -120,11 +121,11 @@ def run_process(
         timeout = float(getattr(settings, "GIT_COMMAND_TIMEOUT_SECONDS", 180) or 180)
     timeout = max(1.0, float(timeout))
 
-    popen_kwargs: dict = dict(
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    popen_kwargs: dict = {
+        "cwd": cwd,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+    }
     if input_data is not None:
         popen_kwargs["stdin"] = subprocess.PIPE
     if stdin_file is not None:
@@ -158,11 +159,11 @@ def run_process(
 
 
 def run_git(
-    args: List[str],
+    args: list[str],
     *,
-    cwd: Optional[str] = None,
-    timeout_seconds: Optional[float] = None,
-    env_extra: Optional[Mapping[str, str]] = None,
+    cwd: str | None = None,
+    timeout_seconds: float | None = None,
+    env_extra: Mapping[str, str] | None = None,
     decode_text: bool = True,
     input_data: str | bytes | None = None,
     stdin_file: BinaryIO | None = None,
@@ -185,7 +186,7 @@ def check_completed(
     *,
     error: type[Exception],
     message_prefix: str,
-    code: Optional[str] = None,
+    code: str | None = None,
 ) -> subprocess.CompletedProcess:
     """check=True 语义的统一收口：非零退出时抛调用方领域异常。"""
     if result.returncode == 0:

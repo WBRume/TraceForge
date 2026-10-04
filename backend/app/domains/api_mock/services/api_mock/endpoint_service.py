@@ -2,33 +2,36 @@
 API MOCK Endpoint Service.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.domains.api_mock.models.api_mock import SddApiMockEndpoint, SddApiMockProject
+
 from .openapi_normalizer import build_operation_payload
 from .path_matcher import _normalize_path
-from .source_version_service import get_source_version, load_oas_from_source, persist_source_version, resolve_active_source_id
+from .source_version_service import (
+    get_source_version,
+    load_oas_from_source,
+    persist_source_version,
+    resolve_active_source_id,
+)
 
 
 def list_endpoints(
     db: Session,
     project: SddApiMockProject,
     *,
-    source_version_id: Optional[str] = None,
-    keyword: Optional[str] = None,
-) -> List[SddApiMockEndpoint]:
+    source_version_id: str | None = None,
+    keyword: str | None = None,
+) -> list[SddApiMockEndpoint]:
     target_source_id = resolve_active_source_id(project, source_version_id)
     if not target_source_id:
         return []
-    query = (
-        db.query(SddApiMockEndpoint)
-        .filter(
-            SddApiMockEndpoint.project_id == project.id,
-            SddApiMockEndpoint.source_version_id == target_source_id,
-        )
+    query = db.query(SddApiMockEndpoint).filter(
+        SddApiMockEndpoint.project_id == project.id,
+        SddApiMockEndpoint.source_version_id == target_source_id,
     )
 
     if keyword:
@@ -43,26 +46,29 @@ def list_endpoints(
             )
         )
 
-    endpoints = query.order_by(SddApiMockEndpoint.tag.asc(), SddApiMockEndpoint.path.asc(), SddApiMockEndpoint.method.asc()).all()
+    endpoints = query.order_by(
+        SddApiMockEndpoint.tag.asc(), SddApiMockEndpoint.path.asc(), SddApiMockEndpoint.method.asc()
+    ).all()
 
     source = get_source_version(db, project, target_source_id)
     oas_payload = load_oas_from_source(source)
     from .openapi_normalizer import extract_endpoints_and_entities
+
     endpoints_payload, _ = extract_endpoints_and_entities(oas_payload)
     lookup = {(ep["method"].upper(), ep["path"]): ep for ep in endpoints_payload}
-    
+
     for ep in endpoints:
         matched = lookup.get((ep.method.upper(), _normalize_path(ep.path))) or {}
-        setattr(ep, "parameters_json", matched.get("parameters_json"))
-        setattr(ep, "request_schema_json", matched.get("request_schema_json"))
-        setattr(ep, "responses_json", matched.get("responses_json"))
-        setattr(ep, "response_schema_json", matched.get("response_schema_json"))
-        setattr(ep, "entity_refs_json", matched.get("entity_refs_json"))
-        
+        ep.parameters_json = matched.get("parameters_json")
+        ep.request_schema_json = matched.get("request_schema_json")
+        ep.responses_json = matched.get("responses_json")
+        ep.response_schema_json = matched.get("response_schema_json")
+        ep.entity_refs_json = matched.get("entity_refs_json")
+
     return endpoints
 
 
-def get_endpoint(db: Session, project: SddApiMockProject, endpoint_id: str) -> Optional[SddApiMockEndpoint]:
+def get_endpoint(db: Session, project: SddApiMockProject, endpoint_id: str) -> SddApiMockEndpoint | None:
     endpoint = (
         db.query(SddApiMockEndpoint)
         .filter(
@@ -73,20 +79,21 @@ def get_endpoint(db: Session, project: SddApiMockProject, endpoint_id: str) -> O
     )
     if not endpoint:
         return None
-        
+
     source = get_source_version(db, project, endpoint.source_version_id)
     oas_payload = load_oas_from_source(source)
     from .openapi_normalizer import extract_endpoints_and_entities
+
     endpoints_payload, _ = extract_endpoints_and_entities(oas_payload)
     lookup = {(ep["method"].upper(), ep["path"]): ep for ep in endpoints_payload}
     matched = lookup.get((endpoint.method.upper(), _normalize_path(endpoint.path))) or {}
-    
-    setattr(endpoint, "parameters_json", matched.get("parameters_json"))
-    setattr(endpoint, "request_schema_json", matched.get("request_schema_json"))
-    setattr(endpoint, "responses_json", matched.get("responses_json"))
-    setattr(endpoint, "response_schema_json", matched.get("response_schema_json"))
-    setattr(endpoint, "entity_refs_json", matched.get("entity_refs_json"))
-    
+
+    endpoint.parameters_json = matched.get("parameters_json")
+    endpoint.request_schema_json = matched.get("request_schema_json")
+    endpoint.responses_json = matched.get("responses_json")
+    endpoint.response_schema_json = matched.get("response_schema_json")
+    endpoint.entity_refs_json = matched.get("entity_refs_json")
+
     return endpoint
 
 
@@ -96,7 +103,7 @@ def find_endpoint_by_method_path(
     source_version_id: str,
     method: str,
     path: str,
-) -> Optional[SddApiMockEndpoint]:
+) -> SddApiMockEndpoint | None:
     normalized = _normalize_path(path)
     return (
         db.query(SddApiMockEndpoint)
@@ -112,7 +119,7 @@ def find_endpoint_by_method_path(
     )
 
 
-def _find_operation_from_source(oas_payload: Dict[str, Any], method: str, path: str) -> Optional[Dict[str, Any]]:
+def _find_operation_from_source(oas_payload: dict[str, Any], method: str, path: str) -> dict[str, Any] | None:
     paths = oas_payload.get("paths") if isinstance(oas_payload.get("paths"), dict) else {}
     target_path_item = paths.get(_normalize_path(path))
     if not isinstance(target_path_item, dict):
@@ -124,17 +131,17 @@ def _find_operation_from_source(oas_payload: Dict[str, Any], method: str, path: 
 
 
 def _apply_endpoint_update_to_source(
-    oas_payload: Dict[str, Any],
+    oas_payload: dict[str, Any],
     *,
     method: str,
     path: str,
-    operation_id: Optional[str],
-    tag: Optional[str],
-    summary: Optional[str],
-    parameters_json: Optional[List[Dict[str, Any]]],
-    request_schema_json: Optional[Dict[str, Any]],
-    responses_json: Optional[Dict[str, Any]],
-    response_schema_json: Optional[Dict[str, Any]],
+    operation_id: str | None,
+    tag: str | None,
+    summary: str | None,
+    parameters_json: list[dict[str, Any]] | None,
+    request_schema_json: dict[str, Any] | None,
+    responses_json: dict[str, Any] | None,
+    response_schema_json: dict[str, Any] | None,
 ) -> None:
     paths = oas_payload.get("paths") if isinstance(oas_payload.get("paths"), dict) else {}
     oas_payload["paths"] = paths
@@ -165,13 +172,13 @@ def update_endpoint(
     *,
     endpoint_id: str,
     updater_id: str,
-    operation_id: Optional[str],
-    tag: Optional[str],
-    summary: Optional[str],
-    parameters_json: Optional[List[Dict[str, Any]]],
-    request_schema_json: Optional[Dict[str, Any]],
-    responses_json: Optional[Dict[str, Any]],
-    response_schema_json: Optional[Dict[str, Any]],
+    operation_id: str | None,
+    tag: str | None,
+    summary: str | None,
+    parameters_json: list[dict[str, Any]] | None,
+    request_schema_json: dict[str, Any] | None,
+    responses_json: dict[str, Any] | None,
+    response_schema_json: dict[str, Any] | None,
 ) -> SddApiMockEndpoint:
     endpoint = get_endpoint(db, project, endpoint_id)
     if not endpoint:

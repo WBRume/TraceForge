@@ -7,42 +7,21 @@
 """
 
 import asyncio
-import os
-import sys
 import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.config import settings  # noqa: E402
-from app.agents import AgentBackend, AgentRunRequest, AgentRunResult, AgentTimeoutError  # noqa: E402
-from app.core import distributed_lock as dl  # noqa: E402
+from app.agents import AgentBackend, AgentRunRequest, AgentRunResult, AgentTimeoutError
+from app.config import settings
+from app.core import distributed_lock as dl
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
     queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
-)
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.engine.session import engine as session_engine  # noqa: E402
-from app.engine.session import persistence as session_persistence  # noqa: E402
-from app.engine.session import registry as engine_registry  # noqa: E402
-from app.engine.session.engine import TaskAgentEngine  # noqa: E402
+from app.engine.session import engine as session_engine
+from app.engine.session import persistence as session_persistence
+from app.engine.session import registry as engine_registry
+from app.engine.session.engine import TaskAgentEngine
 
 
 def _make_engine(task_id: str = "task-reclaim-1") -> TaskAgentEngine:
@@ -111,11 +90,13 @@ class EngineRegistryReclaimTest(unittest.IsolatedAsyncioTestCase):
 
     async def _run_engine(self, engine, outcome: str) -> None:
         engine.cli = _OutcomeBackend(outcome)
-        with patch.object(session_engine, "run_db", new=AsyncMock()), \
-                patch.object(session_engine, "run_git_job", new=AsyncMock()), \
-                patch.object(session_engine, "run_agent_backend_with_logging", new=_run_with_logging_stub), \
-                patch.object(session_persistence, "run_db", new=AsyncMock()), \
-                patch("app.domains.auth.services.auth_service.create_access_token", return_value="tok"):
+        with (
+            patch.object(session_engine, "run_db", new=AsyncMock()),
+            patch.object(session_engine, "run_git_job", new=AsyncMock()),
+            patch.object(session_engine, "run_agent_backend_with_logging", new=_run_with_logging_stub),
+            patch.object(session_persistence, "run_db", new=AsyncMock()),
+            patch("app.domains.auth.services.auth_service.create_access_token", return_value="tok"),
+        ):
             await engine.run("hello")
 
     async def test_successful_run_unregisters_engine(self):

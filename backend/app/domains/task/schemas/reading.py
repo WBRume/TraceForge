@@ -2,9 +2,10 @@
 
 所有 BIGINT 序号 / epoch / revision 对外使用十进制字符串（第 8 节合同）。
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,7 +22,7 @@ class ReadingResumePosition(BaseModel):
 
     message_id: str = Field(min_length=1, max_length=36)
     content_seq: str = Field(pattern="^[0-9]+$")
-    offset_ratio: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    offset_ratio: float | None = Field(default=None, ge=0.0, le=1.0)
     expected_revision: str = Field(pattern="^[0-9]+$")
 
 
@@ -29,8 +30,8 @@ class ReadingReceiptsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reading_epoch: str = Field(pattern="^[0-9]+$")
-    items: List[ReadingReceiptEntry] = Field(default_factory=list, max_length=50)
-    resume: Optional[ReadingResumePosition] = None
+    items: list[ReadingReceiptEntry] = Field(default_factory=list, max_length=50)
+    resume: ReadingResumePosition | None = None
 
 
 class ReadingSessionOpenRequest(BaseModel):
@@ -58,26 +59,26 @@ class ReadingUnreadCount(BaseModel):
 
 class ReadingResumeSnapshot(BaseModel):
     message_id: str
-    order_key: Optional[str] = None
-    content_seq: Optional[str] = None
-    offset_ratio: Optional[float] = None
+    order_key: str | None = None
+    content_seq: str | None = None
+    offset_ratio: float | None = None
     revision: str
-    updated_at: Optional[str] = None
+    updated_at: str | None = None
 
 
 class ReadingProgressState(BaseModel):
     initialized: bool
     task_id: str
     reading_epoch: str
-    baseline_seq: Optional[str] = None
-    read_frontier_seq: Optional[str] = None
+    baseline_seq: str | None = None
+    read_frontier_seq: str | None = None
     latest_change_seq: str
-    state_revision: Optional[str] = None
-    has_unread: Optional[bool] = None
-    unread_count: Optional[ReadingUnreadCount] = None
-    compact_pending: Optional[bool] = None
-    resume: Optional[ReadingResumeSnapshot] = None
-    reading_ready: Optional[bool] = None
+    state_revision: str | None = None
+    has_unread: bool | None = None
+    unread_count: ReadingUnreadCount | None = None
+    compact_pending: bool | None = None
+    resume: ReadingResumeSnapshot | None = None
+    reading_ready: bool | None = None
 
 
 class ReadingSessionOpened(BaseModel):
@@ -87,8 +88,8 @@ class ReadingSessionOpened(BaseModel):
 
 class ReadingReceiptResponse(BaseModel):
     state: ReadingProgressState
-    accepted_items: List[Dict[str, str]]
-    skipped_items: List[Dict[str, str]]
+    accepted_items: list[dict[str, str]]
+    skipped_items: list[dict[str, str]]
     resume_applied: bool
     compact_pending: bool
 
@@ -113,4 +114,4 @@ class ReadingItemIdentity(BaseModel):
 
 
 class ReadingItemsResponse(BaseModel):
-    items: List[ReadingItemIdentity]
+    items: list[ReadingItemIdentity]

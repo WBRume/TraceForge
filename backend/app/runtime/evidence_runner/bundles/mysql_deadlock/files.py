@@ -1,10 +1,12 @@
 """Immutable tree copies and explicit source-only patch materialization."""
+
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
+from pathlib import Path
+
 from app.domains.diagnosis_playbook.compiler import require, safe_relative
 from app.domains.diagnosis_playbook.contracts import digest
 
@@ -15,11 +17,19 @@ def tree_manifest(root):
     for path in sorted(root.rglob("*")):
         if "__pycache__" in path.relative_to(root).parts:
             continue
-        reparse = bool(getattr(path.lstat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+        reparse = bool(
+            getattr(path.lstat(), "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
         require(not path.is_symlink() and not reparse, "SOURCE_LINK_NOT_SUPPORTED")
         if path.is_file():
             relative = path.relative_to(root).as_posix()
-            require(not any(p.startswith(".env") or p in {".git", ".ssh", ".aws", "credentials"} for p in path.relative_to(root).parts), "SOURCE_CONTAINS_PRIVATE_FILES")
+            require(
+                not any(
+                    p.startswith(".env") or p in {".git", ".ssh", ".aws", "credentials"}
+                    for p in path.relative_to(root).parts
+                ),
+                "SOURCE_CONTAINS_PRIVATE_FILES",
+            )
             require(path.stat().st_size <= 10_000_000, "SOURCE_FILE_TOO_LARGE")
             with path.open("rb") as stream:
                 result[relative] = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
@@ -35,9 +45,16 @@ def freeze_tree(source, target, expected_digest, changes=None):
     for name, content in changes.items():
         require(safe_relative(name) and isinstance(content, str), "INVALID_PATCH_FILE")
         # Dependencies, tests, configuration and the trusted harness are frozen.
-        require(name in original and name.endswith(".py") and not any(
-            p.startswith("test") or p in {"tests", "oracle", "fixture", "conftest.py", "sitecustomize.py", "usercustomize.py"}
-            for p in Path(name).parts), "PROTECTED_ARTIFACT_CHANGED")
+        require(
+            name in original
+            and name.endswith(".py")
+            and not any(
+                p.startswith("test")
+                or p in {"tests", "oracle", "fixture", "conftest.py", "sitecustomize.py", "usercustomize.py"}
+                for p in Path(name).parts
+            ),
+            "PROTECTED_ARTIFACT_CHANGED",
+        )
     expected = {**original, **{k: "sha256:" + hashlib.sha256(v.encode()).hexdigest() for k, v in changes.items()}}
     if target.exists():
         require(tree_manifest(target) == expected, "FROZEN_TREE_CHANGED")

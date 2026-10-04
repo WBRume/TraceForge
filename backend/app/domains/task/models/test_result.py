@@ -4,10 +4,9 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, Integer, JSON, func
-)
+from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 

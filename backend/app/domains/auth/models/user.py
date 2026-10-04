@@ -6,13 +6,13 @@ import uuid
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Enum,
     ForeignKey,
     String,
     Text,
-    Boolean,
     UniqueConstraint,
     func,
 )
@@ -129,11 +129,7 @@ class WorkspaceMember(Base):
     # doc 审计 0c381413 §4.2：同一用户在同一工作区最多一条成员记录（幂等
     # 依赖的数据库兜底）。增量迁移先做只读重复审计；发现重复时必须先给出
     # 明确数据处理方案，禁止自动删除开发数据。
-    __table_args__ = (
-        UniqueConstraint(
-            "workspace_id", "user_id", name="uq_workspace_members_workspace_user"
-        ),
-    )
+    __table_args__ = (UniqueConstraint("workspace_id", "user_id", name="uq_workspace_members_workspace_user"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -150,5 +146,5 @@ class WorkspaceMember(Base):
 # Late imports register cross-domain FK target tables into Base.metadata so
 # that create_all / autogenerate always see the complete schema.
 from app.domains.management.models import management as _management_models  # noqa: E402,F401
-from app.domains.workspace.models import workspace_repository as _workspace_repo_models  # noqa: E402,F401
 from app.domains.workspace.models import invite_link as _workspace_invite_link_models  # noqa: E402,F401
+from app.domains.workspace.models import workspace_repository as _workspace_repo_models  # noqa: E402,F401

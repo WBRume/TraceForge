@@ -41,7 +41,9 @@ class SnapshotGitRunnerTest(unittest.TestCase):
         self.assertIn("timed out", result.stderr)
 
     def test_nonzero_exit_raises_worktree_git_error(self):
-        failed = subprocess.CompletedProcess(args=["git", "status"], returncode=128, stdout="", stderr="fatal: not a git repository")
+        failed = subprocess.CompletedProcess(
+            args=["git", "status"], returncode=128, stdout="", stderr="fatal: not a git repository"
+        )
         with mock.patch("app.core.subprocess_runner.run_git", return_value=failed):
             with self.assertRaises(TaskSessionSnapshotError) as ctx:
                 _run_git("G:/tmp/repo", ["status"])

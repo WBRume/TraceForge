@@ -15,7 +15,6 @@ import pytest
 from app.config import settings
 from app.domains.auth.errors import ERR_OAUTH_PROVIDER_DISABLED
 from app.domains.auth.providers import get_provider, list_enabled_providers
-
 from tests.conftest import parse_redirect
 
 DEMO_EMAIL = "demo@example.com"

@@ -13,8 +13,9 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -22,21 +23,19 @@ from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
+from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.skill.models.skill import (
     SddSkillRuntimeEvent,
     SkillRuntimeEventStatus,
     SkillRuntimeEventType,
     SkillRuntimeEvidenceLevel,
 )
-from app.domains.task.models.task import SddTask
-from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.skill.services import task_skill_runtime_service
-from app.domains.task.services import context_token_service
 from app.domains.skill.services.packages import storage as storage_service
-from app.domains.websocket.ws.manager import manager as ws_manager
-
 from app.domains.skill.services.runtime import layout as skill_runtime_layout
-
+from app.domains.task.models.task import SddTask
+from app.domains.task.services import context_token_service
+from app.domains.websocket.ws.manager import manager as ws_manager
 
 RESULT_PREVIEW_LIMIT = 2000
 TRACE_EVENT_LIMIT = 500
@@ -45,15 +44,15 @@ logger = get_logger(__name__, category="task_execution")
 
 @dataclass(frozen=True)
 class RuntimeSkillIndexItem:
-    skill_id: Optional[str]
+    skill_id: str | None
     skill_name: str
     materialized_dir: str
     runtime_root_abs: str
     runtime_root_rel: str
 
 
-_writer_queue: Optional[asyncio.Queue[Dict[str, Any]]] = None
-_writer_task: Optional[asyncio.Task[None]] = None
+_writer_queue: asyncio.Queue[dict[str, Any]] | None = None
+_writer_task: asyncio.Task[None] | None = None
 
 
 async def wait_for_pending_writes(timeout: float = 30.0) -> None:
@@ -68,7 +67,7 @@ def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value or "")
 
 
-def serialize_runtime_event(event: SddSkillRuntimeEvent) -> Dict[str, Any]:
+def serialize_runtime_event(event: SddSkillRuntimeEvent) -> dict[str, Any]:
     return {
         "id": event.id,
         "workspace_id": event.workspace_id,
@@ -90,12 +89,15 @@ def serialize_runtime_event(event: SddSkillRuntimeEvent) -> Dict[str, Any]:
     }
 
 
-def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIndexItem]:
+def build_runtime_skill_index(db: Session, task: SddTask) -> list[RuntimeSkillIndexItem]:
     records = task_skill_runtime_service.get_task_runtime_skill_records(db, task)
     from app.domains.local_resource.service import is_local, local_path
-    project_path = local_path(db, task).replace("\\", "/") if is_local(task) else os.path.abspath(str(task.project_path or "."))
+
+    project_path = (
+        local_path(db, task).replace("\\", "/") if is_local(task) else os.path.abspath(str(task.project_path or "."))
+    )
     rel_root = skill_runtime_layout.resolve_task_skills_rel_root(db, task)
-    items: List[RuntimeSkillIndexItem] = []
+    items: list[RuntimeSkillIndexItem] = []
     for record in records:
         folder = str(record.materialized_dir or "").strip()
         if not folder:
@@ -105,7 +107,9 @@ def build_runtime_skill_index(db: Session, task: SddTask) -> List[RuntimeSkillIn
                 skill_id=record.skill_id if record.skill is not None and not record.config_deleted else None,
                 skill_name=record.name,
                 materialized_dir=folder,
-                runtime_root_abs=(project_path.rstrip("/") + "/" + rel_root + "/" + folder) if is_local(task) else os.path.abspath(os.path.join(project_path, rel_root, folder)),
+                runtime_root_abs=(project_path.rstrip("/") + "/" + rel_root + "/" + folder)
+                if is_local(task)
+                else os.path.abspath(os.path.join(project_path, rel_root, folder)),
                 runtime_root_rel=storage_service.normalize_path(os.path.join(rel_root, folder)),
             )
         )
@@ -136,7 +140,7 @@ def _is_abs_path(value: str) -> bool:
     return bool(os.path.isabs(text) or re.match(r"^[A-Za-z]:[\\/]", text) or text.startswith("\\\\"))
 
 
-def _path_under_root(candidate: str, item: RuntimeSkillIndexItem) -> Optional[Tuple[str, str]]:
+def _path_under_root(candidate: str, item: RuntimeSkillIndexItem) -> tuple[str, str] | None:
     raw = _slash(candidate)
     if not raw:
         return None
@@ -167,7 +171,7 @@ def _path_under_root(candidate: str, item: RuntimeSkillIndexItem) -> Optional[Tu
     return None
 
 
-def _command_match(command: str, item: RuntimeSkillIndexItem) -> Optional[Tuple[str, str]]:
+def _command_match(command: str, item: RuntimeSkillIndexItem) -> tuple[str, str] | None:
     raw = _slash(command)
     if not raw:
         return None
@@ -181,7 +185,7 @@ def _command_match(command: str, item: RuntimeSkillIndexItem) -> Optional[Tuple[
         if idx < 0:
             continue
         end = idx + len(root)
-        if end < len(lowered) and lowered[end] not in {"/", " ", "\t", "\r", "\n", "\"", "'", "`", ")", "(", ";"}:
+        if end < len(lowered) and lowered[end] not in {"/", " ", "\t", "\r", "\n", '"', "'", "`", ")", "(", ";"}:
             continue
         rel = ""
         if end < len(raw) and raw[end] == "/":
@@ -221,7 +225,7 @@ def _json_safe(value: Any) -> Any:
     return str(value)
 
 
-def _event_type_for_tool(tool_name: str, relative_path: str) -> Optional[SkillRuntimeEventType]:
+def _event_type_for_tool(tool_name: str, relative_path: str) -> SkillRuntimeEventType | None:
     normalized = str(tool_name or "").strip().lower()
     rel = _norm_rel(relative_path)
     if normalized == "skill":
@@ -257,63 +261,70 @@ def _matches_skill_tool_ref(skill_ref: str, item: RuntimeSkillIndexItem, *, allo
     return allow_skill_name and normalized_ref == _norm_rel(item.skill_name).lower()
 
 
+def _detect_explicit_skill_use(
+    workspace_id, task_id, ai_job_id, runtime_index, normalized_tool, tool_input, tool_use_id
+):
+    matches = {}
+    skill_ref = _skill_tool_ref(tool_input)
+    normalized_ref = _norm_rel(skill_ref).lower()
+    materialized_matches = [
+        item for item in runtime_index if normalized_ref and normalized_ref == _norm_rel(item.materialized_dir).lower()
+    ]
+    name_matches = []
+    if not materialized_matches:
+        name_matches = [
+            item for item in runtime_index if normalized_ref and normalized_ref == _norm_rel(item.skill_name).lower()
+        ]
+    matched_items = materialized_matches or (name_matches if len(name_matches) == 1 else [])
+    for item in runtime_index:
+        if item not in matched_items or not _matches_skill_tool_ref(
+            skill_ref,
+            item,
+            allow_skill_name=not materialized_matches and len(name_matches) == 1,
+        ):
+            continue
+        event_type = SkillRuntimeEventType.USAGE_CONFIRMED
+        matched_path = _norm_rel(item.runtime_root_rel)
+        key = (item.skill_id, event_type.value, matched_path)
+        matches[key] = _build_event_payload(
+            workspace_id=workspace_id,
+            task_id=task_id,
+            ai_job_id=ai_job_id,
+            item=item,
+            tool_use_id=tool_use_id,
+            event_type=event_type,
+            evidence_level=SkillRuntimeEvidenceLevel.EXACT_PATH,
+            matched_path=matched_path,
+            relative_path="",
+            tool_name=normalized_tool,
+            tool_input=tool_input,
+            confidence=1.0,
+        )
+    return list(matches.values())
+
+
 def detect_tool_use_events(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
-    runtime_index: List[RuntimeSkillIndexItem],
+    ai_job_id: str | None,
+    runtime_index: list[RuntimeSkillIndexItem],
     tool_name: str,
     tool_input: Any,
     tool_use_id: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     event_type_probe = _event_type_for_tool(tool_name, "")
     if not event_type_probe or not runtime_index:
         return []
 
     normalized_tool = str(tool_name or "").strip()
     include_pattern = normalized_tool.lower() in {"grep", "glob"}
-    matches: Dict[Tuple[Optional[str], str, str], Dict[str, Any]] = {}
+    matches: dict[tuple[str | None, str, str], dict[str, Any]] = {}
 
     if normalized_tool.lower() == "skill":
-        skill_ref = _skill_tool_ref(tool_input)
-        normalized_ref = _norm_rel(skill_ref).lower()
-        materialized_matches = [
-            item for item in runtime_index
-            if normalized_ref and normalized_ref == _norm_rel(item.materialized_dir).lower()
-        ]
-        name_matches = []
-        if not materialized_matches:
-            name_matches = [
-                item for item in runtime_index
-                if normalized_ref and normalized_ref == _norm_rel(item.skill_name).lower()
-            ]
-        matched_items = materialized_matches or (name_matches if len(name_matches) == 1 else [])
-        for item in runtime_index:
-            if item not in matched_items or not _matches_skill_tool_ref(
-                skill_ref,
-                item,
-                allow_skill_name=not materialized_matches and len(name_matches) == 1,
-            ):
-                continue
-            event_type = SkillRuntimeEventType.USAGE_CONFIRMED
-            matched_path = _norm_rel(item.runtime_root_rel)
-            key = (item.skill_id, event_type.value, matched_path)
-            matches[key] = _build_event_payload(
-                workspace_id=workspace_id,
-                task_id=task_id,
-                ai_job_id=ai_job_id,
-                item=item,
-                tool_use_id=tool_use_id,
-                event_type=event_type,
-                evidence_level=SkillRuntimeEvidenceLevel.EXACT_PATH,
-                matched_path=matched_path,
-                relative_path="",
-                tool_name=normalized_tool,
-                tool_input=tool_input,
-                confidence=1.0,
-            )
-        return list(matches.values())
+        return _detect_explicit_skill_use(
+            workspace_id, task_id, ai_job_id, runtime_index, normalized_tool, tool_input, tool_use_id
+        )
 
     if normalized_tool.lower() == "bash":
         command = ""
@@ -379,7 +390,7 @@ def _build_event_payload(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
+    ai_job_id: str | None,
     item: RuntimeSkillIndexItem,
     tool_use_id: str,
     event_type: SkillRuntimeEventType,
@@ -389,7 +400,7 @@ def _build_event_payload(
     tool_name: str,
     tool_input: Any,
     confidence: float,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return {
         "id": str(uuid.uuid4()),
         "workspace_id": workspace_id,
@@ -413,8 +424,8 @@ def enqueue_tool_use_trace(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
-    runtime_index: List[RuntimeSkillIndexItem],
+    ai_job_id: str | None,
+    runtime_index: list[RuntimeSkillIndexItem],
     tool_name: str,
     tool_input: Any,
     tool_use_id: str,
@@ -441,7 +452,7 @@ def enqueue_tool_result_trace(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
+    ai_job_id: str | None,
     tool_use_id: str,
     output: Any,
     is_error: bool = False,
@@ -467,7 +478,7 @@ def enqueue_tool_result_trace(
         return
 
 
-def _enqueue_or_thread(payload: Dict[str, Any]) -> None:
+def _enqueue_or_thread(payload: dict[str, Any]) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -522,7 +533,7 @@ async def _writer_loop() -> None:
             _writer_queue.task_done()
 
 
-def _write_payload_thread(payload: Dict[str, Any]) -> None:
+def _write_payload_thread(payload: dict[str, Any]) -> None:
     try:
         _write_payload_sync(payload)
     except Exception as exc:
@@ -530,7 +541,7 @@ def _write_payload_thread(payload: Dict[str, Any]) -> None:
         return
 
 
-def _write_payload_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _write_payload_sync(payload: dict[str, Any]) -> list[dict[str, Any]]:
     kind = str(payload.get("kind") or "")
     if kind == "tool_use":
         return _write_tool_use_events_sync(payload)
@@ -539,13 +550,13 @@ def _write_payload_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return []
 
 
-def _write_tool_use_events_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _write_tool_use_events_sync(payload: dict[str, Any]) -> list[dict[str, Any]]:
     events = [event for event in payload.get("events") or [] if isinstance(event, dict)]
     if not events:
         return []
     db = SessionLocal()
     try:
-        rows: List[SddSkillRuntimeEvent] = []
+        rows: list[SddSkillRuntimeEvent] = []
         for event in events:
             row = SddSkillRuntimeEvent(
                 id=event.get("id") or str(uuid.uuid4()),
@@ -582,7 +593,7 @@ def _write_tool_use_events_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]
         db.close()
 
 
-def _write_tool_result_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _write_tool_result_sync(payload: dict[str, Any]) -> list[dict[str, Any]]:
     task_id = str(payload.get("task_id") or "").strip()
     tool_use_id = str(payload.get("tool_use_id") or "").strip()
     if not task_id or not tool_use_id:
@@ -603,14 +614,16 @@ def _write_tool_result_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
             return []
 
         preview = str(payload.get("tool_result_preview") or "")[:RESULT_PREVIEW_LIMIT]
-        changed: List[SddSkillRuntimeEvent] = []
+        changed: list[SddSkillRuntimeEvent] = []
         for row in existing:
             row.tool_result_preview = preview
-            row.status = SkillRuntimeEventStatus.FAILED if payload.get("is_error") else SkillRuntimeEventStatus.RESULT_RETURNED
+            row.status = (
+                SkillRuntimeEventStatus.FAILED if payload.get("is_error") else SkillRuntimeEventStatus.RESULT_RETURNED
+            )
             changed.append(row)
 
-        result_rows: List[SddSkillRuntimeEvent] = []
-        seen: set[Tuple[Optional[str], Optional[str]]] = set()
+        result_rows: list[SddSkillRuntimeEvent] = []
+        seen: set[tuple[str | None, str | None]] = set()
         for row in existing:
             key = (row.skill_id, row.materialized_dir)
             if key in seen:
@@ -631,7 +644,9 @@ def _write_tool_result_sync(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 tool_name=row.tool_name,
                 tool_input_json=None,
                 tool_result_preview=preview,
-                status=SkillRuntimeEventStatus.FAILED if payload.get("is_error") else SkillRuntimeEventStatus.RESULT_RETURNED,
+                status=SkillRuntimeEventStatus.FAILED
+                if payload.get("is_error")
+                else SkillRuntimeEventStatus.RESULT_RETURNED,
                 confidence=0.8,
             )
             db.add(result_row)
@@ -665,11 +680,11 @@ def list_task_runtime_events(
     db: Session,
     task: SddTask,
     *,
-    skill_id: Optional[str] = None,
-    event_type: Optional[str] = None,
+    skill_id: str | None = None,
+    event_type: str | None = None,
     limit: int = 100,
     group_by_skill: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     query = db.query(SddSkillRuntimeEvent).filter(
         SddSkillRuntimeEvent.task_id == task.id,
         SddSkillRuntimeEvent.workspace_id == task.workspace_id,
@@ -683,9 +698,7 @@ def list_task_runtime_events(
 
     safe_limit = max(1, min(int(limit or 100), TRACE_EVENT_LIMIT))
     rows = (
-        query.order_by(SddSkillRuntimeEvent.created_at.desc(), SddSkillRuntimeEvent.id.desc())
-        .limit(safe_limit)
-        .all()
+        query.order_by(SddSkillRuntimeEvent.created_at.desc(), SddSkillRuntimeEvent.id.desc()).limit(safe_limit).all()
     )
     rows = list(reversed(rows))
     items = [serialize_runtime_event(row) for row in rows]

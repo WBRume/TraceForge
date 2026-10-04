@@ -9,18 +9,19 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.agents import (
+    EXECUTION_KIND_LOCAL_PROCESS,
     AgentAttemptContext,
     AgentAttemptRuntimeState,
     AgentStopResult,
-    EXECUTION_KIND_LOCAL_PROCESS,
     bind_agent_attempt,
     bind_agent_attempt_runtime,
     reset_agent_attempt,
     reset_agent_attempt_runtime,
 )
+from app.agents.errors import AgentExecutionDetached
 from app.agents.supervision import agent_stop_result_from_termination, process_supervisor
 from app.config import settings
 from app.core.distributed_lock import LockAcquireTimeout, lock_ai_queue
@@ -31,12 +32,13 @@ from app.domains.ai.models.ai_job import AiJobStatus
 from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
-    AttemptFinalizerEvidence as _FinalizerEvidence,
     ConvergenceIntent,
 )
+from app.domains.ai.services.ai_job_convergence_service import (
+    AttemptFinalizerEvidence as _FinalizerEvidence,
+)
 from app.domains.ai.services.jobs import attempts as attempt_ops
-from app.domains.ai.services.jobs import store
-from app.agents.errors import AgentExecutionDetached
+from app.domains.ai.services.jobs import executors, publishing, store
 from app.domains.ai.services.jobs.constants import (
     FINAL_STATUSES,
     JOB_KIND_DIAGNOSIS_SUMMARY,
@@ -44,9 +46,7 @@ from app.domains.ai.services.jobs.constants import (
     QUEUE_KEY_TASK_BASELINE,
     QUEUE_KEY_TASK_CHAT,
 )
-from app.domains.ai.services.jobs import executors
 from app.domains.ai.services.jobs.executors import JobExecutionOutcome
-from app.domains.ai.services.jobs import publishing
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 
 logger = get_logger(__name__, category="ai_session")
@@ -55,7 +55,7 @@ logger = get_logger(__name__, category="ai_session")
 # ────────────────────────── 认领 ──────────────────────────
 
 
-async def claim_next_pending_job_id(queue_key: str) -> Optional[str]:
+async def claim_next_pending_job_id(queue_key: str) -> str | None:
     try:
         async with lock_ai_queue(queue_key):
             # 取队 4 stmts + commit 在 Redis 锁内完成，全部 off-loop
@@ -82,6 +82,7 @@ async def job_heartbeat_loop(attempt: AgentAttemptContext) -> None:
             await asyncio.sleep(interval)
             if not await run_db(store.heartbeat_job_sync, attempt.job_id, attempt.run_token):
                 from .remote_recovery import detach_local_observer
+
                 if detach_local_observer(attempt):
                     return
                 await attempt_ops.terminate_attempt(attempt, "LEASE_LOST")
@@ -91,6 +92,7 @@ async def job_heartbeat_loop(attempt: AgentAttemptContext) -> None:
     except Exception:
         logger.exception("AI job heartbeat failed: job_id={}", attempt.job_id)
         from .remote_recovery import detach_local_observer
+
         if detach_local_observer(attempt):
             return
         await attempt_ops.terminate_attempt(attempt, "HEARTBEAT_FAILURE")
@@ -106,16 +108,16 @@ def _converge_normal_sync(
     evidence: _FinalizerEvidence,
     requested_status: AiJobStatus,
     reason: str,
-    message: Optional[str] = None,
-    error_message: Optional[str] = None,
-    result_patch: Optional[Dict[str, Any]] = None,
-    context_patch: Optional[Dict[str, Any]] = None,
-    session_id: Optional[str] = None,
-    agent_backend: Optional[str] = None,
+    message: str | None = None,
+    error_message: str | None = None,
+    result_patch: dict[str, Any] | None = None,
+    context_patch: dict[str, Any] | None = None,
+    session_id: str | None = None,
+    agent_backend: str | None = None,
     mark_task_interrupted: bool = False,
-    interrupt_session_id: Optional[str] = None,
-    progress: Optional[int] = None,
-) -> Optional[Dict[str, Any]]:
+    interrupt_session_id: str | None = None,
+    progress: int | None = None,
+) -> dict[str, Any] | None:
     """NORMAL_FINALIZE 收敛 DB 段（线程内执行，由 run_db 包装）。"""
     db = SessionLocal()
     try:
@@ -171,13 +173,11 @@ async def _converge_runner_exit(
         return
 
     if status == AiJobStatus.TERMINATING:
-        stop_result: Optional[AgentStopResult] = None
+        stop_result: AgentStopResult | None = None
         if attempt.execution_kind == EXECUTION_KIND_LOCAL_PROCESS:
             # 取得或补做 backend stop：stop_attempt 会把每个身份的死亡
             # 证据写入仍处于绑定状态的 attempt runtime。
-            termination = await process_supervisor.stop_attempt(
-                attempt.run_token, "CANCEL_CONFIRM"
-            )
+            termination = await process_supervisor.stop_attempt(attempt.run_token, "CANCEL_CONFIRM")
             stop_result = agent_stop_result_from_termination(termination)
         evidence = attempt_ops.resolve_current_attempt_evidence(
             execution_kind=attempt.execution_kind,
@@ -235,9 +235,7 @@ async def _converge_runner_exit(
         if outcome.requested_status is not None
         else (AiJobStatus.INTERRUPTED if is_task_chat else AiJobStatus.FAILED)
     )
-    reason = str(outcome.error) if outcome.error is not None else (
-        "Runner exited without a business finalizer"
-    )
+    reason = str(outcome.error) if outcome.error is not None else ("Runner exited without a business finalizer")
     payload = await run_db(
         _converge_normal_sync,
         job_id,
@@ -301,6 +299,7 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                 if detached and not runtime.shutdown_in_progress():
                     try:
                         from .remote_recovery import defer_observation_sync
+
                         payload = await run_db(defer_observation_sync, attempt)
                         if payload:
                             await publishing.broadcast_job_payload(payload)
@@ -312,9 +311,7 @@ async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> N
                     except asyncio.CancelledError:
                         raise
                     except Exception:
-                        logger.exception(
-                            "Runner exit convergence failed: job_id={}", job_id
-                        )
+                        logger.exception("Runner exit convergence failed: job_id={}", job_id)
                 reset_agent_attempt_runtime(runtime_token)
                 reset_agent_attempt(context_token)
                 runtime.detached_jobs.discard(job_id)

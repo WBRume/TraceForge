@@ -10,7 +10,7 @@ import shutil
 import stat
 import time
 import unicodedata
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 from app.config import settings
 from app.domains.skill.models.skill import SddSkill, SkillDimension
@@ -22,9 +22,28 @@ class SkillStorageError(ValueError):
 
 _WINDOWS_INVALID_CHARS = set('<>:"/\\|?*')
 _WINDOWS_RESERVED_NAMES = {
-    "CON", "PRN", "AUX", "NUL",
-    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
-    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    "COM1",
+    "COM2",
+    "COM3",
+    "COM4",
+    "COM5",
+    "COM6",
+    "COM7",
+    "COM8",
+    "COM9",
+    "LPT1",
+    "LPT2",
+    "LPT3",
+    "LPT4",
+    "LPT5",
+    "LPT6",
+    "LPT7",
+    "LPT8",
+    "LPT9",
 }
 _WINDOWS_SAFE_MAX_PATH = 240
 _POSIX_SAFE_MAX_PATH = 4096
@@ -37,11 +56,7 @@ def _skills_root() -> str:
     # Prefer the backend-root-absolute form so skill packages stay at the same
     # location regardless of the process CWD. Fall back to the raw value for
     # tests/mocks that only set SKILLS_STORAGE_ROOT.
-    root_value = str(
-        getattr(settings, "SKILLS_STORAGE_ROOT_ABS", None)
-        or settings.SKILLS_STORAGE_ROOT
-        or ""
-    ).strip()
+    root_value = str(getattr(settings, "SKILLS_STORAGE_ROOT_ABS", None) or settings.SKILLS_STORAGE_ROOT or "").strip()
     if not root_value:
         raise SkillStorageError("SKILLS_STORAGE_ROOT is not configured")
     root = os.path.abspath(root_value)
@@ -79,7 +94,7 @@ def _truncate_component_by_limit(value: str, limit: int) -> str:
         return text[:limit]
 
     current = 0
-    kept: List[str] = []
+    kept: list[str] = []
     for ch in text:
         cost = len(ch.encode("utf-8", errors="ignore"))
         if current + cost > limit:
@@ -92,7 +107,7 @@ def _truncate_component_by_limit(value: str, limit: int) -> str:
 def _sanitize_folder_component(value: str) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
     text = text.replace("/", "_").replace("\\", "_")
-    sanitized_chars: List[str] = []
+    sanitized_chars: list[str] = []
     for ch in text:
         code = ord(ch)
         if code == 0 or code < 32:
@@ -123,11 +138,11 @@ def _sanitize_folder_component(value: str) -> str:
 
 def build_id_named_folder(
     entity_id: str,
-    display_name: Optional[str],
+    display_name: str | None,
     *,
-    parent_abs_path: Optional[str] = None,
-    rel_parent_path: Optional[str] = None,
-    max_rel_path_chars: Optional[int] = None,
+    parent_abs_path: str | None = None,
+    rel_parent_path: str | None = None,
+    max_rel_path_chars: int | None = None,
 ) -> str:
     base_id = str(entity_id or "").strip()
     if not base_id:
@@ -206,8 +221,8 @@ def ensure_root_relative(path: str) -> str:
 def package_relative_path(
     skill_id: str,
     dimension: SkillDimension,
-    workspace_id: Optional[str],
-    skill_name: Optional[str] = None,
+    workspace_id: str | None,
+    skill_name: str | None = None,
 ) -> str:
     if dimension == SkillDimension.GLOBAL:
         parent_rel = "global"
@@ -258,7 +273,7 @@ def remove_package_dir(package_abs_path: str) -> None:
         except Exception:
             pass
 
-    last_error: Optional[Exception] = None
+    last_error: Exception | None = None
     for attempt in range(5):
         try:
             shutil.rmtree(target, onerror=_onerror)
@@ -288,10 +303,10 @@ def init_package_layout(
     *,
     skill: SddSkill,
     entry_file_path: str,
-    manifest_path: Optional[str],
+    manifest_path: str | None,
     entry_content: str,
-    manifest_content: Optional[str] = None,
-    initial_entries: Optional[List[Dict[str, object]]] = None,
+    manifest_content: str | None = None,
+    initial_entries: list[dict[str, object]] | None = None,
 ) -> None:
     root = package_abs_path(skill)
     if os.path.exists(root):
@@ -362,7 +377,7 @@ def import_package_from_directory(*, skill: SddSkill, source_dir: str) -> None:
         rel_walk = os.path.relpath(walk_root, source_root)
         rel_prefix = "" if rel_walk in {".", ""} else normalize_path(rel_walk)
 
-        filtered_dirs: List[str] = []
+        filtered_dirs: list[str] = []
         for dir_name in dir_names:
             src_dir = os.path.join(walk_root, dir_name)
             if os.path.islink(src_dir):
@@ -392,13 +407,7 @@ def import_package_from_directory(*, skill: SddSkill, source_dir: str) -> None:
                 dst_handle.write(payload)
 
 
-def replace_package_contents_from_directory(*, skill: SddSkill, source_dir: str) -> None:
-    source_root = os.path.abspath(str(source_dir or "").strip())
-    if not source_root or not os.path.isdir(source_root):
-        raise SkillStorageError("Source skill directory does not exist")
-    if os.path.islink(source_root):
-        raise SkillStorageError("Symlink is not allowed in skill package")
-
+def _validate_replacement_source(source_root: str) -> None:
     # Validate before deleting the existing package so a hostile or malformed
     # upstream repo cannot leave the local package half-replaced.
     for walk_root, dir_names, file_names in os.walk(source_root, topdown=True, followlinks=False):
@@ -409,6 +418,16 @@ def replace_package_contents_from_directory(*, skill: SddSkill, source_dir: str)
         for file_name in file_names:
             if os.path.islink(os.path.join(walk_root, file_name)):
                 raise SkillStorageError("Symlink is not allowed in skill package")
+
+
+def replace_package_contents_from_directory(*, skill: SddSkill, source_dir: str) -> None:
+    source_root = os.path.abspath(str(source_dir or "").strip())
+    if not source_root or not os.path.isdir(source_root):
+        raise SkillStorageError("Source skill directory does not exist")
+    if os.path.islink(source_root):
+        raise SkillStorageError("Symlink is not allowed in skill package")
+
+    _validate_replacement_source(source_root)
 
     target_root = package_abs_path(skill)
     os.makedirs(target_root, exist_ok=True)
@@ -426,7 +445,7 @@ def replace_package_contents_from_directory(*, skill: SddSkill, source_dir: str)
         rel_walk = os.path.relpath(walk_root, source_root)
         rel_prefix = "" if rel_walk in {".", ""} else normalize_path(rel_walk)
 
-        filtered_dirs: List[str] = []
+        filtered_dirs: list[str] = []
         for dir_name in dir_names:
             src_dir = os.path.join(walk_root, dir_name)
             if os.path.islink(src_dir):
@@ -455,11 +474,11 @@ def replace_package_contents_from_directory(*, skill: SddSkill, source_dir: str)
                 dst_handle.write(payload)
 
 
-def list_worktree_files(skill: SddSkill) -> List[str]:
+def list_worktree_files(skill: SddSkill) -> list[str]:
     root = package_abs_path(skill)
     if not os.path.isdir(root):
         return []
-    result: List[str] = []
+    result: list[str] = []
     for walk_root, dir_names, file_names in os.walk(root):
         dir_names[:] = [name for name in dir_names if name not in {".git", ".sdd-internal"}]
         for file_name in file_names:
@@ -472,11 +491,11 @@ def list_worktree_files(skill: SddSkill) -> List[str]:
     return result
 
 
-def list_worktree_entries(skill: SddSkill) -> List[Dict[str, str]]:
+def list_worktree_entries(skill: SddSkill) -> list[dict[str, str]]:
     root = package_abs_path(skill)
     if not os.path.isdir(root):
         return []
-    result: List[Dict[str, str]] = []
+    result: list[dict[str, str]] = []
     for walk_root, dir_names, file_names in os.walk(root):
         dir_names[:] = [name for name in dir_names if name not in {".git", ".sdd-internal"}]
 
@@ -498,8 +517,8 @@ def list_worktree_entries(skill: SddSkill) -> List[Dict[str, str]]:
     return result
 
 
-def build_tree(paths: Iterable[object]) -> List[Dict[str, object]]:
-    root: Dict[str, Dict[str, object]] = {}
+def build_tree(paths: Iterable[object]) -> list[dict[str, object]]:
+    root: dict[str, dict[str, object]] = {}
 
     for raw_item in paths:
         node_type = "file"
@@ -528,12 +547,12 @@ def build_tree(paths: Iterable[object]) -> List[Dict[str, object]]:
             elif inferred_type == "directory":
                 node["node_type"] = "directory"
 
-    def _to_nodes(children_map: Dict[str, Dict[str, object]], prefix: str = "") -> List[Dict[str, object]]:
-        nodes: List[Dict[str, object]] = []
+    def _to_nodes(children_map: dict[str, dict[str, object]], prefix: str = "") -> list[dict[str, object]]:
+        nodes: list[dict[str, object]] = []
         for name in sorted(children_map.keys(), key=str.lower):
             node = children_map[name]
             path = f"{prefix}/{name}" if prefix else name
-            payload: Dict[str, object] = {
+            payload: dict[str, object] = {
                 "name": name,
                 "path": path,
                 "node_type": str(node.get("node_type") or "file"),
@@ -584,7 +603,7 @@ def write_worktree_text_file(skill: SddSkill, path: str, content: str) -> int:
     return len(encoded)
 
 
-def create_worktree_node(skill: SddSkill, path: str, node_type: str, content: Optional[str] = None) -> None:
+def create_worktree_node(skill: SddSkill, path: str, node_type: str, content: str | None = None) -> None:
     normalized = normalize_relative_path(path)
     target = safe_join_package_file(skill, normalized)
     if os.path.exists(target):

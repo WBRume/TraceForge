@@ -1,13 +1,15 @@
 """Publish immutable Git versions and update the catalog publication pointer."""
 
 from __future__ import annotations
-from typing import Dict, List, Optional
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
-from app.domains.skill.models.skill import SddSkill, SddSkillVersion
+
 from app.domains.auth.models.user import User
-from app.domains.skill.services.packages import git as git_service, storage as storage_service
+from app.domains.skill.models.skill import SddSkill, SddSkillVersion
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import git as git_service
+from app.domains.skill.services.packages import storage as storage_service
 
 
 def _next_version_no(db: Session, skill_id: str) -> int:
@@ -21,7 +23,7 @@ def record_published_version(
     skill: SddSkill,
     creator_id: str,
     commit_meta: git_service.CommitMeta,
-    change_note: Optional[str],
+    change_note: str | None,
 ) -> SddSkillVersion:
     version = SddSkillVersion(
         skill_id=skill.id,
@@ -41,7 +43,7 @@ def record_published_version(
     return version
 
 
-def get_latest_skill_version(db: Session, skill_id: str) -> Optional[SddSkillVersion]:
+def get_latest_skill_version(db: Session, skill_id: str) -> SddSkillVersion | None:
     return (
         db.query(SddSkillVersion)
         .options(joinedload(SddSkillVersion.creator))
@@ -51,7 +53,7 @@ def get_latest_skill_version(db: Session, skill_id: str) -> Optional[SddSkillVer
     )
 
 
-def list_skill_versions(db: Session, skill_id: str) -> List[SddSkillVersion]:
+def list_skill_versions(db: Session, skill_id: str) -> list[SddSkillVersion]:
     return (
         db.query(SddSkillVersion)
         .options(joinedload(SddSkillVersion.creator))
@@ -61,7 +63,7 @@ def list_skill_versions(db: Session, skill_id: str) -> List[SddSkillVersion]:
     )
 
 
-def get_skill_version(db: Session, skill_id: str, version_id: str) -> Optional[SddSkillVersion]:
+def get_skill_version(db: Session, skill_id: str, version_id: str) -> SddSkillVersion | None:
     return (
         db.query(SddSkillVersion)
         .options(joinedload(SddSkillVersion.creator))
@@ -73,7 +75,7 @@ def get_skill_version(db: Session, skill_id: str, version_id: str) -> Optional[S
     )
 
 
-def _resolve_ref_to_commit_sha(db: Session, skill: SddSkill, ref: Optional[str]) -> Optional[str]:
+def _resolve_ref_to_commit_sha(db: Session, skill: SddSkill, ref: str | None) -> str | None:
     normalized = str(ref or "WORKTREE").strip()
     if not normalized:
         return None
@@ -104,7 +106,7 @@ def commit_skill_package(
     user: User,
     skill: SddSkill,
     *,
-    change_note: Optional[str],
+    change_note: str | None,
 ) -> SddSkillVersion:
     if not skill_catalog_policy.can_manage_skill(db, skill, user):
         raise PermissionError("No permission to commit this skill")
@@ -125,14 +127,13 @@ def commit_skill_package(
         change_note=change_note,
     )
 
-
     db.commit()
     db.refresh(version)
     db.refresh(skill)
     return version
 
 
-def get_skill_package_publish_status(skill: SddSkill) -> Dict[str, int | bool | str]:
+def get_skill_package_publish_status(skill: SddSkill) -> dict[str, int | bool | str]:
     repo_path = storage_service.package_abs_path(skill)
     git_service.ensure_repo_initialized(repo_path)
     changed_count = int(git_service.changed_files_count(repo_path) or 0)
@@ -149,13 +150,13 @@ def compare_skill_versions(
     *,
     from_version: SddSkillVersion,
     to_version: SddSkillVersion,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     _ = db
     repo_path = storage_service.package_abs_path(skill)
     status_entries = git_service.diff_name_status(repo_path, from_version.commit_sha, to_version.commit_sha)
     numstat = git_service.diff_numstat(repo_path, from_version.commit_sha, to_version.commit_sha)
 
-    result: List[Dict[str, object]] = []
+    result: list[dict[str, object]] = []
     for item in status_entries:
         path = str(item.get("path") or "")
         old_path = item.get("old_path")
@@ -178,7 +179,7 @@ def compare_skill_versions(
     return result
 
 
-def _read_text_at_commit(repo_path: str, commit_sha: str, path: str) -> Optional[str]:
+def _read_text_at_commit(repo_path: str, commit_sha: str, path: str) -> str | None:
     try:
         payload = git_service.read_file_at_ref(repo_path, commit_sha, path)
     except FileNotFoundError:
@@ -195,14 +196,14 @@ def compare_skill_file_between_versions(
     from_version: SddSkillVersion,
     to_version: SddSkillVersion,
     path: str,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     repo_path = storage_service.package_abs_path(skill)
     normalized_path = storage_service.normalize_relative_path(path)
 
     numstat = git_service.diff_numstat(repo_path, from_version.commit_sha, to_version.commit_sha)
     adds, dels, is_binary = numstat.get(normalized_path, (None, None, False))
 
-    diff_text: Optional[str] = None
+    diff_text: str | None = None
     if not is_binary:
         diff_text = git_service.diff_text(repo_path, from_version.commit_sha, to_version.commit_sha, normalized_path)
 
@@ -242,7 +243,6 @@ def restore_skill_version(
         commit_meta=commit_meta,
         change_note=f"Restored from v{version.version_no}",
     )
-
 
     db.commit()
     db.refresh(restored)

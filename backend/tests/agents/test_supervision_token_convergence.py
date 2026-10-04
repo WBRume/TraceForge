@@ -29,7 +29,6 @@ from app.agents.supervision.discovery import (
 )
 from app.agents.supervision.model import ProcessProbeState
 
-
 _UNSET = object()
 
 
@@ -75,11 +74,17 @@ async def test_initial_unknown_fails_fast_without_sending():
     initial = _snap(unknown_pids=(999901,))
     snapshot_mock = _queue(_snap())
     kill_mock = AsyncMock()
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", kill_mock):
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", kill_mock),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=initial, max_wait=5.0,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=initial,
+            max_wait=5.0,
         )
     assert outcome.unknown is initial
     assert outcome.kill_attempted is False
@@ -93,11 +98,17 @@ async def test_no_initial_match_verifies_once_without_killing_late_matches():
     """初始无匹配：取一次最终快照；迟到匹配不补杀（由调用方重试覆盖）。"""
     snapshot_mock = _queue(_snap(matches=(_match(987654),)))
     kill_mock = AsyncMock()
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", kill_mock):
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", kill_mock),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=_snap(), max_wait=5.0,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=_snap(),
+            max_wait=5.0,
         )
     assert outcome.state == ProcessProbeState.LIVE
     assert outcome.live_pids == (987654,)
@@ -110,11 +121,17 @@ async def test_no_initial_match_verifies_once_without_killing_late_matches():
 async def test_no_initial_match_confirmed_dead():
     """初始无匹配 + 最终扫描为空：合法的空扫描死亡证明。"""
     snapshot_mock = _queue(_snap())
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", AsyncMock()):
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", AsyncMock()),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=_snap(), max_wait=5.0,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=_snap(),
+            max_wait=5.0,
         )
     assert outcome.state == ProcessProbeState.CONFIRMED_DEAD
     assert outcome.live_pids == ()
@@ -126,11 +143,17 @@ async def test_initial_conflicts_never_send():
     """create time 不可读的匹配是身份冲突：零发送，保持未确认。"""
     initial = _snap(matches=(_match(999902, create_time=None),))
     kill_mock = AsyncMock()
-    with patch.object(discovery_mod, "token_snapshot", _queue()), \
-         patch.object(discovery_mod, "kill_token_matches", kill_mock):
+    with (
+        patch.object(discovery_mod, "token_snapshot", _queue()),
+        patch.object(discovery_mod, "kill_token_matches", kill_mock),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=initial, max_wait=5.0,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=initial,
+            max_wait=5.0,
         )
     assert outcome.conflicts == initial.matches
     assert outcome.kill_attempted is False
@@ -143,11 +166,17 @@ async def test_kill_then_rescan_dead_reports_attempted():
     initial = _snap(matches=(_match(999903),))
     snapshot_mock = _queue(_snap())  # 重扫即 DEAD
     kill_mock = AsyncMock()
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", kill_mock):
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", kill_mock),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=initial, max_wait=5.0,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=initial,
+            max_wait=5.0,
         )
     assert outcome.state == ProcessProbeState.CONFIRMED_DEAD
     assert outcome.kill_attempted is True
@@ -160,11 +189,17 @@ async def test_unknown_after_kill_keeps_kill_attempted_diagnostic():
     """发送之后扫描不完整：UNKNOWN 携带 kill_attempted=True（诊断契约）。"""
     initial = _snap(matches=(_match(999904),))
     snapshot_mock = _queue(_snap(unknown_pids=(999904,)))
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", AsyncMock()):
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", AsyncMock()),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=initial, max_wait=5.0,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=initial,
+            max_wait=5.0,
         )
     assert outcome.state == ProcessProbeState.UNKNOWN
     assert outcome.unknown is not None
@@ -179,17 +214,18 @@ async def test_deadline_exits_with_final_live_evidence():
     # 引擎以 0.1s 间隔轮询重扫直至截止（与原实现一致），随后做最终扫描；
     # mock 持续返回同一存活匹配，用足够长的 side_effect 序列兜住整个窗口
     # （Windows 上 asyncio 计时器可能提前唤醒，截止判断多跑一轮属正常）。
-    snapshot_mock = AsyncMock(
-        side_effect=[
-            _snap(matches=(_match(999905),))
-            for _ in range(12)
-        ]
-    )
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", AsyncMock()):
+    snapshot_mock = AsyncMock(side_effect=[_snap(matches=(_match(999905),)) for _ in range(12)])
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", AsyncMock()),
+    ):
         outcome = await converge_token_kill(
-            "tok", not_before=NOT_BEFORE, not_after=None,
-            signals=[], initial=initial, max_wait=0.05,
+            "tok",
+            not_before=NOT_BEFORE,
+            not_after=None,
+            signals=[],
+            initial=initial,
+            max_wait=0.05,
         )
     assert outcome.state == ProcessProbeState.LIVE
     assert outcome.live_pids == (999905,)

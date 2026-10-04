@@ -8,16 +8,16 @@ Create Date: 2026-08-22 00:00:00.000000
 opencode=fork API、dsh=会话日志重写），各讨论线程上下文互相独立。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "b8c9d0e1f2a3"
-down_revision: Union[str, None] = "b7e8f9a0c1d2"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "b7e8f9a0c1d2"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

@@ -1,6 +1,5 @@
 """segment/log 批量落库失败回填与有界重试。"""
 
-import asyncio
 import os
 import sys
 import unittest
@@ -15,7 +14,6 @@ from app.engine.session import TaskAgentEngine  # noqa: E402
 
 
 def _engine():
-    from unittest.mock import AsyncMock
 
     with patch.object(TaskAgentEngine, "_create_engine_backend", return_value=MagicMock()):
         engine = TaskAgentEngine("task-1", "ws-1", "user-1")
@@ -77,8 +75,13 @@ class SegmentRetryTest(unittest.IsolatedAsyncioTestCase):
         engine = _engine()
         engine.segments.record(
             "tool_input",
-            workspace_id="ws-1", task_id="task-1", ai_job_id="job-1",
-            session_id="s-1", tool_name="read_file", tool_input={}, tool_use_id="c1",
+            workspace_id="ws-1",
+            task_id="task-1",
+            ai_job_id="job-1",
+            session_id="s-1",
+            tool_name="read_file",
+            tool_input={},
+            tool_use_id="c1",
         )
         engine.segments.update_snapshot(status="RUNNING")
         with patch(
@@ -97,8 +100,13 @@ class SegmentRetryTest(unittest.IsolatedAsyncioTestCase):
         engine = _engine()
         engine.segments.record(
             "tool_result",
-            workspace_id="ws-1", task_id="task-1", ai_job_id="job-1",
-            session_id="s-1", tool_use_id="c1", output="x", is_error=False,
+            workspace_id="ws-1",
+            task_id="task-1",
+            ai_job_id="job-1",
+            session_id="s-1",
+            tool_use_id="c1",
+            output="x",
+            is_error=False,
         )
         with patch(
             "app.engine.session.persistence.run_db",

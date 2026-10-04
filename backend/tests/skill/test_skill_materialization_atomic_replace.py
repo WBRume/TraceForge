@@ -1,5 +1,5 @@
-import os
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -7,12 +7,9 @@ from unittest import mock
 
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
-
-  # noqa: E402
 
 
 class SkillMaterializationAtomicReplaceTest(unittest.TestCase):
@@ -24,12 +21,14 @@ class SkillMaterializationAtomicReplaceTest(unittest.TestCase):
             with open(marker_path, "w", encoding="utf-8") as file:
                 file.write("old-content")
 
-            with mock.patch.object(skill_runtime_materialization, "_copy_skills_to_target", side_effect=RuntimeError("copy failed")):
+            with mock.patch.object(
+                skill_runtime_materialization, "_copy_skills_to_target", side_effect=RuntimeError("copy failed")
+            ):
                 with self.assertRaises(RuntimeError):
                     skill_runtime_materialization._replace_skills_atomically([], live_dir)
 
             self.assertTrue(os.path.isfile(marker_path))
-            with open(marker_path, "r", encoding="utf-8") as file:
+            with open(marker_path, encoding="utf-8") as file:
                 self.assertEqual(file.read(), "old-content")
 
     def test_replace_skills_atomically_can_discard_deleted_runtime_dirs(self):
@@ -39,7 +38,9 @@ class SkillMaterializationAtomicReplaceTest(unittest.TestCase):
             os.makedirs(deleted_dir, exist_ok=True)
             with open(os.path.join(deleted_dir, "SKILL.md"), "w", encoding="utf-8") as file:
                 file.write("# Session Marker\n")
-            with open(os.path.join(live_dir, skill_runtime_materialization.TASK_SKILLS_MANIFEST), "w", encoding="utf-8") as file:
+            with open(
+                os.path.join(live_dir, skill_runtime_materialization.TASK_SKILLS_MANIFEST), "w", encoding="utf-8"
+            ) as file:
                 json.dump(
                     {
                         "version": 1,
@@ -61,7 +62,9 @@ class SkillMaterializationAtomicReplaceTest(unittest.TestCase):
             )
 
             self.assertFalse(os.path.exists(deleted_dir))
-            with open(os.path.join(live_dir, skill_runtime_materialization.TASK_SKILLS_MANIFEST), "r", encoding="utf-8") as file:
+            with open(
+                os.path.join(live_dir, skill_runtime_materialization.TASK_SKILLS_MANIFEST), encoding="utf-8"
+            ) as file:
                 payload = json.load(file)
             self.assertEqual(payload.get("items"), [])
 

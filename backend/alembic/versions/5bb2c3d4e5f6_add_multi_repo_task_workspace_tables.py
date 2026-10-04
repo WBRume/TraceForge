@@ -5,16 +5,16 @@ Revises: 5aa1b2c3d4e5
 Create Date: 2026-08-14 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "5bb2c3d4e5f6"
-down_revision: Union[str, None] = "5aa1b2c3d4e5"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "5aa1b2c3d4e5"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _enum(name: str, *values: str) -> sa.Enum:
@@ -141,7 +141,9 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), onupdate=sa.func.now()),
     )
     op.create_index("ix_sdd_task_change_proposal_repos_proposal_id", "sdd_task_change_proposal_repos", ["proposal_id"])
-    op.create_index("ix_sdd_task_change_proposal_repos_repository_id", "sdd_task_change_proposal_repos", ["repository_id"])
+    op.create_index(
+        "ix_sdd_task_change_proposal_repos_repository_id", "sdd_task_change_proposal_repos", ["repository_id"]
+    )
     op.create_index(
         "ix_sdd_task_change_proposal_repos_patch_asset_id",
         "sdd_task_change_proposal_repos",

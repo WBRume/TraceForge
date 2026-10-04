@@ -23,14 +23,13 @@ import asyncio
 import os
 import subprocess
 import uuid
-from typing import Any, BinaryIO, Optional
+from typing import Any, BinaryIO
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
 except ImportError:  # pragma: no cover - packaging/runtime guard
     psutil = None  # type: ignore[assignment]
 
-from app.core.logging import get_logger
 from app.agents.contract import record_attempt_process_started
 from app.agents.supervision import windows
 from app.agents.supervision.managed import ManagedAgentProcess, monitor_tree
@@ -40,6 +39,7 @@ from app.agents.supervision.model import (
     TerminationResult,
     containment_id_for_run_token,
 )
+from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="agent_process")
 
@@ -87,15 +87,14 @@ def require_containment_ready() -> None:
     capability = containment_capability()
     if not capability.get("available"):
         raise RuntimeError(
-            "Process containment is required but unavailable on this platform: "
-            f"{capability.get('reason')}"
+            f"Process containment is required but unavailable on this platform: {capability.get('reason')}"
         )
 
 
 async def invoke_attach_callback(
     managed: ManagedAgentProcess,
     callback: Any,
-    timeout_seconds: Optional[float],
+    timeout_seconds: float | None,
 ) -> bool:
     """Invoke the attach callback, bounded by the supervisor-side timeout.
 
@@ -127,6 +126,7 @@ async def cleanup_before_reraise(
     caller; repeated caller cancellations keep it running.  The original
     CancelledError still propagates from the spawn caller afterwards.
     """
+
     async def _safe_close() -> TerminationResult:
         try:
             return await managed.close(reason=reason)
@@ -183,17 +183,85 @@ async def cleanup_before_reraise(
     return result
 
 
+async def _attach_windows_job(managed: ManagedAgentProcess) -> None:
+    process = managed.process
+    try:
+        if not managed.job_handle:
+            raise RuntimeError("CreateJobObjectW failed")
+        process_handle, _thread_handle = windows.windows_process_handles(process)
+        if not process_handle:
+            # A test double or an extremely short-lived process may
+            # already be dead before asyncio exposes its Popen
+            # handle.  There is no live process left to escape, so
+            # release the unused job object.  A live process still
+            # fails closed below instead of running unsupervised.
+            if process.returncode is not None:
+                windows.close_handle(managed.job_handle)
+                managed.job_handle = None
+            else:
+                raise RuntimeError("Suspended subprocess process handle is unavailable")
+        if process_handle:
+            windows.assign_process_to_job(managed.job_handle, process_handle)
+            windows.resume_process(process_handle)
+    except Exception as exc:
+        logger.error("Windows supervised spawn failed for pid {}: {}", process.pid, exc)
+        managed.stop_monitor = True
+        try:
+            process.kill()
+            await asyncio.wait_for(asyncio.shield(process.wait()), timeout=5.0)
+        except Exception:
+            logger.exception("Failed to terminate unsupervised Windows process: pid={}", process.pid)
+        windows.close_handle(managed.job_handle)
+        managed.job_handle = None
+        raise RuntimeError(f"Could not establish Windows process supervision: {exc}") from exc
+
+
+async def _attach_started_process(supervisor, managed, on_process_started, process_attach_timeout_seconds):
+    attach_error: BaseException | None = None
+    accepted = False
+    try:
+        accepted = await invoke_attach_callback(
+            managed,
+            on_process_started,
+            process_attach_timeout_seconds,
+        )
+    except BaseException as exc:  # cancellation must also clean up (I1)
+        attach_error = exc
+    if attach_error is not None or not accepted:
+        if attach_error is None:
+            reason = "attempt_fence_rejected"
+        elif isinstance(attach_error, asyncio.CancelledError):
+            reason = "process_attach_cancelled"
+        elif isinstance(attach_error, asyncio.TimeoutError):
+            reason = "process_attach_timeout"
+        else:
+            reason = "attempt_fence_callback_failed"
+        # Cleanup is executed inside an uncancellable task; only after
+        # it finished (or was reliably handed to the background task)
+        # does the original exception propagate.
+        result = await cleanup_before_reraise(supervisor, managed, reason=reason)
+        if attach_error is None:
+            raise RuntimeError("Agent process could not be attached to the current job attempt") from None
+        if isinstance(attach_error, asyncio.TimeoutError):
+            raise TimeoutError(
+                f"Agent process attach did not finish within "
+                f"{float(process_attach_timeout_seconds or 0):.1f}s; "
+                f"process tree cleanup confirmed_dead={result.confirmed_dead}"
+            ) from attach_error
+        raise attach_error
+
+
 async def spawn_supervised(
     supervisor,
     args: list,
     *,
     cwd: str,
     env: dict,
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-    on_process_started: Optional[Any] = None,
-    containment_id: Optional[str] = None,
-    process_attach_timeout_seconds: Optional[float] = None,
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+    on_process_started: Any | None = None,
+    containment_id: str | None = None,
+    process_attach_timeout_seconds: float | None = None,
     stdin: int | BinaryIO = asyncio.subprocess.DEVNULL,
 ) -> ManagedAgentProcess:
     """Create one supervised local Agent process and attach it to the attempt."""
@@ -207,7 +275,7 @@ async def spawn_supervised(
         "stderr": asyncio.subprocess.PIPE,
     }
     child_env = dict(env)
-    spawn_token: Optional[str] = None
+    spawn_token: str | None = None
     if os.name != "nt":
         # P0-3：per-spawn 谱系 token —— uuid4 仅注入本次子进程 env，后代
         # 继承，使 wait/close 能把脱组后代精确归属到本 spawn。attempt 级
@@ -221,9 +289,8 @@ async def spawn_supervised(
     if os.name == "nt":
         # Keep the process suspended until it is assigned to the
         # kill-on-close Job Object.  This closes the spawn escape window.
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP
-            | int(getattr(subprocess, "CREATE_SUSPENDED", 0x00000004))
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | int(
+            getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
         )
     else:
         kwargs["start_new_session"] = True
@@ -236,10 +303,7 @@ async def spawn_supervised(
         run_token=run_token,
         worker_boot_id=worker_boot_id,
         job_handle=windows.create_kill_on_close_job() if os.name == "nt" else None,
-        containment_id=(
-            containment_id
-            or (containment_id_for_run_token(run_token) if os.name != "nt" else None)
-        ),
+        containment_id=(containment_id or (containment_id_for_run_token(run_token) if os.name != "nt" else None)),
         spawn_token=spawn_token,
     )
     managed.process_start_time = managed.process_started_at
@@ -249,35 +313,8 @@ async def spawn_supervised(
         except (ProcessLookupError, OSError):
             managed.process_group_id = process.pid
     if os.name == "nt":
-        try:
-            if not managed.job_handle:
-                raise RuntimeError("CreateJobObjectW failed")
-            process_handle, _thread_handle = windows.windows_process_handles(process)
-            if not process_handle:
-                # A test double or an extremely short-lived process may
-                # already be dead before asyncio exposes its Popen
-                # handle.  There is no live process left to escape, so
-                # release the unused job object.  A live process still
-                # fails closed below instead of running unsupervised.
-                if process.returncode is not None:
-                    windows.close_handle(managed.job_handle)
-                    managed.job_handle = None
-                else:
-                    raise RuntimeError("Suspended subprocess process handle is unavailable")
-            if process_handle:
-                windows.assign_process_to_job(managed.job_handle, process_handle)
-                windows.resume_process(process_handle)
-        except Exception as exc:
-            logger.error("Windows supervised spawn failed for pid {}: {}", process.pid, exc)
-            managed.stop_monitor = True
-            try:
-                process.kill()
-                await asyncio.wait_for(asyncio.shield(process.wait()), timeout=5.0)
-            except Exception:
-                logger.exception("Failed to terminate unsupervised Windows process: pid={}", process.pid)
-            windows.close_handle(managed.job_handle)
-            managed.job_handle = None
-            raise RuntimeError(f"Could not establish Windows process supervision: {exc}") from exc
+        await _attach_windows_job(managed)
+
     supervisor.register(managed)
     # The identity is frozen once here: every evidence record for this
     # process uses the same immutable key.
@@ -286,38 +323,5 @@ async def spawn_supervised(
     if psutil is not None:
         managed.monitor_task = asyncio.create_task(monitor_tree(managed))
     if on_process_started is not None:
-        attach_error: Optional[BaseException] = None
-        accepted = False
-        try:
-            accepted = await invoke_attach_callback(
-                managed,
-                on_process_started,
-                process_attach_timeout_seconds,
-            )
-        except BaseException as exc:  # cancellation must also clean up (I1)
-            attach_error = exc
-        if attach_error is not None or not accepted:
-            if attach_error is None:
-                reason = "attempt_fence_rejected"
-            elif isinstance(attach_error, asyncio.CancelledError):
-                reason = "process_attach_cancelled"
-            elif isinstance(attach_error, asyncio.TimeoutError):
-                reason = "process_attach_timeout"
-            else:
-                reason = "attempt_fence_callback_failed"
-            # Cleanup is executed inside an uncancellable task; only after
-            # it finished (or was reliably handed to the background task)
-            # does the original exception propagate.
-            result = await cleanup_before_reraise(supervisor, managed, reason=reason)
-            if attach_error is None:
-                raise RuntimeError(
-                    "Agent process could not be attached to the current job attempt"
-                ) from None
-            if isinstance(attach_error, asyncio.TimeoutError):
-                raise TimeoutError(
-                    f"Agent process attach did not finish within "
-                    f"{float(process_attach_timeout_seconds or 0):.1f}s; "
-                    f"process tree cleanup confirmed_dead={result.confirmed_dead}"
-                ) from attach_error
-            raise attach_error
+        await _attach_started_process(supervisor, managed, on_process_started, process_attach_timeout_seconds)
     return managed

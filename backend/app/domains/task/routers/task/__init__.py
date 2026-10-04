@@ -21,12 +21,13 @@ get_db / get_current_user 在此 re-export：路由声明与测试 DI override �
 from fastapi import APIRouter
 
 from app.dependencies import get_current_user, get_db  # noqa: F401
+
 from . import (
     change_proposals,
     crud,
     diagnosis,
-    reading,
     models,
+    reading,
     session_control,
     session_runs,
     session_shares,

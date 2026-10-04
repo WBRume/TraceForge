@@ -53,7 +53,7 @@ def create_repo_group(
             "order_index": group.order_index,
         }
     except repo_group_service.RepoGroupServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.put("/{group_id}")
@@ -81,7 +81,7 @@ def update_repo_group(
             "order_index": updated.order_index,
         }
     except repo_group_service.RepoGroupServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{group_id}")
@@ -97,7 +97,7 @@ def delete_repo_group(
         repo_group_service.delete_group(db, group)
         return {"msg": "Repository group deleted"}
     except repo_group_service.RepoGroupServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.post("/repositories/{repository_id}/move")
@@ -114,4 +114,4 @@ def move_repository_to_group(
         updated = repository_service.move_repository_to_group(db, repository, data.group_id)
         return repository_service.serialize_repository(updated)
     except repository_service.RepositoryServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

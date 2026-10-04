@@ -5,46 +5,30 @@
 """
 
 import asyncio
-import os
-import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.task.models.task import TaskStatus, TaskType  # noqa: E402
-from app.domains.task.routers import task as task_router  # noqa: E402
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
     provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
+)
+from app.domains.ai.services.jobs import (
+    publishing as ai_publishing,
+)
+from app.domains.ai.services.jobs import (
     store as ai_store,
-    workers as ai_workers,
 )
 from app.domains.ai.services.jobs.executors import (
     diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
 )
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+from app.domains.task.models.task import TaskStatus, TaskType
+from app.domains.task.routers import task as task_router
 from app.domains.task.services import diagnosis_result_service
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
+from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 def _build_app(SessionLocal, user, monkeypatch=None):
@@ -68,9 +52,7 @@ def _build_app(SessionLocal, user, monkeypatch=None):
 
         # lock_task 由各子路由模块各自绑定，需逐模块替换
         for _module_name in ("crud", "session_runs", "session_control", "spec_docs", "change_proposals", "diagnosis"):
-            monkeypatch.setattr(
-                f"app.domains.task.routers.task.{_module_name}.lock_task", _fake_lock_task
-            )
+            monkeypatch.setattr(f"app.domains.task.routers.task.{_module_name}.lock_task", _fake_lock_task)
     return app
 
 
@@ -112,9 +94,7 @@ def test_trigger_diagnosis_summary_creates_job_and_polls_status(monkeypatch):
         assert resp2.json()["job_id"] == job_id
 
         # 状态查询（前端轮询收敛）
-        status_resp = client.get(
-            f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-summary/{job_id}"
-        )
+        status_resp = client.get(f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-summary/{job_id}")
         assert status_resp.status_code == 200, status_resp.text
         assert status_resp.json()["job_id"] == job_id
         assert status_resp.json()["status"] == AiJobStatus.PENDING.value
@@ -142,9 +122,7 @@ def test_diagnosis_summary_rejected_after_case_adopted():
         assert adopt_resp.status_code == 201, adopt_resp.text
 
         # 案例已被采纳后禁止再次一键总结
-        resp = client.post(
-            f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-summary"
-        )
+        resp = client.post(f"/api/workspaces/{ws_id}/tasks/{task_id}/diagnosis-summary")
         assert resp.status_code == 409, resp.text
         assert "already adopted" in resp.json()["detail"]
     finally:
@@ -279,9 +257,7 @@ def test_diagnosis_summary_rejected_for_development_task():
             task.task_type = TaskType.DEVELOPMENT.value
             db.commit()
         client = TestClient(_build_app(SessionLocal, user))
-        resp = client.post(
-            f"/api/workspaces/{workspace.id}/tasks/{task.id}/diagnosis-summary"
-        )
+        resp = client.post(f"/api/workspaces/{workspace.id}/tasks/{task.id}/diagnosis-summary")
         assert resp.status_code == 403
     finally:
         engine.dispose()

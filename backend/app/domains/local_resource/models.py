@@ -1,5 +1,7 @@
 """Personal resource profiles and immutable task execution bindings."""
-from sqlalchemy import Column, String, Integer, Text, JSON, DateTime, ForeignKey, func
+
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text, func
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 

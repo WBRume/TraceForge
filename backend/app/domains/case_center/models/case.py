@@ -7,16 +7,17 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, JSON, func
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import relationship
+
 from app.database import Base
-from app.domains.auth.models.user import Workspace, generate_uuid
+from app.domains.auth.models.user import generate_uuid
 
 
 class CaseCategory(str, PyEnum):
-    PUBLIC = "PUBLIC"        # 公共
-    PRODUCT = "PRODUCT"      # 产品
-    SITE = "SITE"            # 局点
+    PUBLIC = "PUBLIC"  # 公共
+    PRODUCT = "PRODUCT"  # 产品
+    SITE = "SITE"  # 局点
     TEMPORARY = "TEMPORARY"  # 临时
 
 
@@ -29,17 +30,17 @@ class CasePriority(str, PyEnum):
 
 class CaseStatus(str, PyEnum):
     TECHNICALLY_VERIFIED = "TECHNICALLY_VERIFIED"
-    DRAFT = "DRAFT"                    # 草稿
+    DRAFT = "DRAFT"  # 草稿
     PENDING_REVIEW = "PENDING_REVIEW"  # 待评审
-    IN_REVIEW = "IN_REVIEW"            # 评审中
-    APPROVED = "APPROVED"              # 已入库
-    REJECTED = "REJECTED"              # 已驳回（附评审意见，可重新提交）
+    IN_REVIEW = "IN_REVIEW"  # 评审中
+    APPROVED = "APPROVED"  # 已入库
+    REJECTED = "REJECTED"  # 已驳回（附评审意见，可重新提交）
 
 
 class CaseReviewAction(str, PyEnum):
-    START = "START"      # 专家接单
+    START = "START"  # 专家接单
     APPROVE = "APPROVE"  # 通过入库
-    REJECT = "REJECT"    # 驳回打回
+    REJECT = "REJECT"  # 驳回打回
 
 
 class SddCase(Base):
@@ -75,7 +76,9 @@ class SddCase(Base):
     status = Column(String(20), nullable=False, default=CaseStatus.DRAFT.value, index=True)
     archive_origin = Column(String(16), nullable=False, default="MANUAL", server_default="MANUAL")
     review_round = Column(Integer, nullable=False, default=1)  # 评审轮次，驳回重提后 +1
-    diagnosis_detail_json = Column(JSON, nullable=True)  # 问题定位结构化明细 {similar_cases, call_chain, code_context, fix_code}
+    diagnosis_detail_json = Column(
+        JSON, nullable=True
+    )  # 问题定位结构化明细 {similar_cases, call_chain, code_context, fix_code}
     submitted_at = Column(DateTime, nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     rejected_comment = Column(Text, nullable=True)  # 最近一次驳回意见

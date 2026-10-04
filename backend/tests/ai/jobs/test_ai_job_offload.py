@@ -1,47 +1,34 @@
 """AI Job 链路 offload：_update_job_state 拆分与事件循环外执行。"""
 
-import asyncio
-import os
-import sys
 import unittest
 from unittest import mock
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.ai.models.ai_job  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-from app.agents import (  # noqa: E402
-    AgentAttemptContext,
+import app.domains.ai.models.ai_job
+import app.domains.task.models.test_result  # noqa: F401
+from app.agents import (
     EXECUTION_KIND_LOCAL_PROCESS,
+    AgentAttemptContext,
     bind_agent_attempt,
     reset_agent_attempt,
 )
-from app.database import Base  # noqa: E402
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.auth.models.user import User, Workspace  # noqa: E402
-from app.domains.task.models.task import SddTask  # noqa: E402
+from app.database import Base
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
     publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
 )
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
+from app.domains.ai.services.jobs import (
+    queue_runner as ai_queue_runner,
+)
+from app.domains.ai.services.jobs import (
+    registry as ai_registry,
+)
+from app.domains.ai.services.jobs import (
+    state as ai_state,
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.auth.models.user import User, Workspace
+from app.domains.task.models.task import SddTask
 from tests.ai.jobs.ai_job_test_utils import patched_ai_job_db
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
 
 
 def _build_session_factory():
@@ -60,15 +47,23 @@ def _seed(SessionLocal):
         user = User(id="user-1", email="u@example.com", hashed_password="x", display_name="U")
         workspace = Workspace(id="ws-1", name="W", owner_id=user.id)
         task = SddTask(
-            id="task-1", workspace_id="ws-1", creator_id="user-1",
-            name="T", project_path="G:/tmp/t", status="CODING",
+            id="task-1",
+            workspace_id="ws-1",
+            creator_id="user-1",
+            name="T",
+            project_path="G:/tmp/t",
+            status="CODING",
             session_revision=3,
         )
         job = SddAiJob(
-            id="job-1", workspace_id="ws-1", task_id="task-1",
+            id="job-1",
+            workspace_id="ws-1",
+            task_id="task-1",
             channel=AiJobChannel.TASK_CHAT,
             queue_key=f"{AiJobChannel.TASK_CHAT.value}:task-1",
-            status=AiJobStatus.PENDING, prompt_text="hi", creator_id="user-1",
+            status=AiJobStatus.PENDING,
+            prompt_text="hi",
+            creator_id="user-1",
             session_revision=3,
             # 生产 claim 事务会写入 durable run token（CAS fence 前提）。
             run_token="run-1",
@@ -118,7 +113,9 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             attempt_token = _bound_attempt()
             try:
                 payload = await ai_state.update_job_state(
-                    "job-1", status=AiJobStatus.RUNNING, progress=30,
+                    "job-1",
+                    status=AiJobStatus.RUNNING,
+                    progress=30,
                 )
             finally:
                 reset_agent_attempt(attempt_token)
@@ -153,10 +150,15 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             attempt_token = _bound_attempt()
             try:
                 await ai_state.update_job_state(
-                    "job-1", status=AiJobStatus.RUNNING, progress=30,
+                    "job-1",
+                    status=AiJobStatus.RUNNING,
+                    progress=30,
                 )
                 payload = await ai_state.update_job_state(
-                    "job-1", status=AiJobStatus.SUCCESS, progress=100, finalize=True,
+                    "job-1",
+                    status=AiJobStatus.SUCCESS,
+                    progress=100,
+                    finalize=True,
                 )
             finally:
                 reset_agent_attempt(attempt_token)
@@ -187,7 +189,8 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(ai_publishing, "broadcast_job_payload", _broadcast),
         ):
             payload = await ai_state.update_job_state(
-                "job-1", status=AiJobStatus.RUNNING,
+                "job-1",
+                status=AiJobStatus.RUNNING,
             )
 
         # fence 命中：状态不被更新、不广播，但回读 payload
@@ -204,9 +207,7 @@ class UpdateJobStateOffloadTest(unittest.IsolatedAsyncioTestCase):
         engine, SessionLocal = _build_session_factory()
         _seed(SessionLocal)
         with patched_ai_job_db(SessionLocal):
-            job_id = await ai_queue_runner.claim_next_pending_job_id(
-                f"{AiJobChannel.TASK_CHAT.value}:task-1"
-            )
+            job_id = await ai_queue_runner.claim_next_pending_job_id(f"{AiJobChannel.TASK_CHAT.value}:task-1")
         self.assertEqual(job_id, "job-1")
         check = SessionLocal()
         try:

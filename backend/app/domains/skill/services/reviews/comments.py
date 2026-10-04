@@ -1,12 +1,14 @@
 """Create anchored review comments on published skill versions."""
 
 from __future__ import annotations
-from typing import List, Optional, Tuple
+
 from sqlalchemy.orm import Session, joinedload
-from app.domains.skill.models.skill import SddSkill, SkillDimension, SddSkillReviewComment
+
 from app.domains.auth.models.user import User
-from app.domains.skill.services.packages import git as git_service, storage as storage_service
+from app.domains.skill.models.skill import SddSkill, SddSkillReviewComment, SkillDimension
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import git as git_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
 from app.domains.skill.services.reviews import anchors as skill_reviews_anchors
 
@@ -16,9 +18,9 @@ def list_skill_review_comments(
     workspace_id: str,
     skill: SddSkill,
     *,
-    version_id: Optional[str] = None,
-    file_path: Optional[str] = None,
-) -> Tuple[List[SddSkillReviewComment], Optional[str]]:
+    version_id: str | None = None,
+    file_path: str | None = None,
+) -> tuple[list[SddSkillReviewComment], str | None]:
     query = db.query(SddSkillReviewComment).options(joinedload(SddSkillReviewComment.expert))
     if skill.dimension == SkillDimension.GLOBAL:
         query = query.filter(SddSkillReviewComment.skill_id == skill.id)
@@ -28,7 +30,7 @@ def list_skill_review_comments(
             SddSkillReviewComment.skill_id == skill.id,
         )
 
-    target_version_id: Optional[str] = version_id
+    target_version_id: str | None = version_id
     if target_version_id:
         version = skill_packages_versions.get_skill_version(db, skill.id, target_version_id)
         if not version:
@@ -55,16 +57,16 @@ def create_skill_review_comment(
     workspace_id: str,
     skill: SddSkill,
     *,
-    version_id: Optional[str],
+    version_id: str | None,
     file_path: str,
     body: str,
     line_start: int,
     line_end: int,
     column_start: int,
     column_end: int,
-    char_start: Optional[int] = None,
-    char_end: Optional[int] = None,
-    selected_text: Optional[str] = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
+    selected_text: str | None = None,
 ) -> SddSkillReviewComment:
     if not skill_catalog_policy.can_review_skill(db, user, workspace_id, skill):
         raise PermissionError("Only workspace experts can comment on this skill")
@@ -85,7 +87,9 @@ def create_skill_review_comment(
     target_version = latest_version
 
     try:
-        file_payload = git_service.read_file_at_ref(storage_service.package_abs_path(skill), target_version.commit_sha, normalized_file_path)
+        file_payload = git_service.read_file_at_ref(
+            storage_service.package_abs_path(skill), target_version.commit_sha, normalized_file_path
+        )
     except FileNotFoundError as exc:
         raise ValueError("Target file does not exist in selected version") from exc
 
@@ -128,7 +132,7 @@ def get_skill_review_comment(
     db: Session,
     skill_id: str,
     comment_id: str,
-) -> Optional[SddSkillReviewComment]:
+) -> SddSkillReviewComment | None:
     return (
         db.query(SddSkillReviewComment)
         .options(joinedload(SddSkillReviewComment.expert))

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
@@ -66,27 +65,27 @@ class TerminationResult:
       ``PROCESS_TREE_UNKNOWN`` 或具体探测错误码。禁止把 None 当成死亡证明。
     """
 
-    confirmed_dead: Optional[bool]
-    root_return_code: Optional[int]
-    signals_sent: Tuple[str, ...] = ()
+    confirmed_dead: bool | None
+    root_return_code: int | None
+    signals_sent: tuple[str, ...] = ()
     tree_kill_used: bool = False
     elapsed_ms: int = 0
-    error_code: Optional[str] = None
-    error_message: Optional[str] = None
-    remaining_pids: Tuple[int, ...] = ()
-    root_identity_matches: Optional[bool] = None
+    error_code: str | None = None
+    error_message: str | None = None
+    remaining_pids: tuple[int, ...] = ()
+    root_identity_matches: bool | None = None
     # P1（doc 审计 0c381413 §3.2）：最近一轮 per-spawn 谱系扫描"无法检查"
     # 的候选 PID。它们只表明扫描不完整（environ 暂时不可读），从未证明
     # 携带本 spawn token；仅作诊断展示（必须标注"无法检查"，不得显示为
     # "确认仍有子进程"），绝不进入 kill/known descendant 路径。
-    inspection_unknown_pids: Tuple[int, ...] = ()
+    inspection_unknown_pids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
 class ProcessWaitResult:
     """Result of waiting for a root process and its complete process tree."""
 
-    root_return_code: Optional[int]
+    root_return_code: int | None
     termination: TerminationResult
 
 
@@ -95,19 +94,19 @@ class ProcessTreeSnapshot:
     """One off-loop process-tree inspection sample (doc §5.4.1/§12)."""
 
     state: ProcessProbeState = ProcessProbeState.UNKNOWN
-    live_descendant_pids: Tuple[int, ...] = ()
+    live_descendant_pids: tuple[int, ...] = ()
     # 身份无法核实（UNKNOWN）的后代：apply_snapshot 必须保留这些 PID，
     # 绝不能因同一样本中的 LIVE 集合而被遗忘（doc 审计 P0-3A）。
-    unknown_descendant_pids: Tuple[int, ...] = ()
-    root_return_code: Optional[int] = None
-    root_identity_matches: Optional[bool] = None
-    remaining_pids: Tuple[int, ...] = ()
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    unknown_descendant_pids: tuple[int, ...] = ()
+    root_return_code: int | None = None
+    root_identity_matches: bool | None = None
+    remaining_pids: tuple[int, ...] = ()
+    failure_code: str | None = None
+    error_message: str | None = None
 
 
 def agent_stop_result_from_termination(
-    termination: Optional[TerminationResult],
+    termination: TerminationResult | None,
 ) -> AgentStopResult:
     """Convert a local supervisor termination result to the unified stop protocol.
 
@@ -133,7 +132,7 @@ def agent_stop_result_from_termination(
     )
 
 
-def containment_id_for_run_token(run_token: Optional[str]) -> Optional[str]:
+def containment_id_for_run_token(run_token: str | None) -> str | None:
     """Stable attempt containment id derived from the durable run token.
 
     The id is available before the child PID exists so it can be persisted at

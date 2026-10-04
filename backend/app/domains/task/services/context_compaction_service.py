@@ -11,16 +11,16 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any
 
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.engine.claude_event_adapter import extract_claude_compaction_event
 from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.context_token import (
@@ -30,7 +30,7 @@ from app.domains.task.models.context_token import (
 )
 from app.domains.task.models.log import SddExecutionLog
 from app.domains.task.models.task import SddTask
-
+from app.engine.claude_event_adapter import extract_claude_compaction_event
 
 MAX_LOG_SCAN_ROWS = 5000
 MAX_JOB_SCAN_ROWS = 300
@@ -87,14 +87,14 @@ class DetectedCompactionEvent:
     source: str
     source_ref_id: str
     source_label: str
-    detected_at: Optional[datetime]
+    detected_at: datetime | None
     preview: str
-    token_before: Optional[int] = None
-    token_after: Optional[int] = None
-    ai_job_id: Optional[str] = None
-    chat_message_id: Optional[str] = None
-    log_id: Optional[str] = None
-    locator: Optional[Dict[str, Any]] = None
+    token_before: int | None = None
+    token_after: int | None = None
+    ai_job_id: str | None = None
+    chat_message_id: str | None = None
+    log_id: str | None = None
+    locator: dict[str, Any] | None = None
 
 
 def _enum_value(value: Any) -> str:
@@ -123,7 +123,7 @@ def _text_has_compaction_signal(text: Any) -> bool:
     return bool(COMPACTION_EVENT_TEXT_RE.search(str(text or "")))
 
 
-def _safe_int_token(value: Any) -> Optional[int]:
+def _safe_int_token(value: Any) -> int | None:
     if value is None or value == "":
         return None
     try:
@@ -133,7 +133,7 @@ def _safe_int_token(value: Any) -> Optional[int]:
     return parsed if parsed >= 0 else None
 
 
-def _extract_token_pair_from_text(text: str) -> tuple[Optional[int], Optional[int]]:
+def _extract_token_pair_from_text(text: str) -> tuple[int | None, int | None]:
     for pattern in TOKEN_PAIR_PATTERNS:
         match = pattern.search(text)
         if not match:
@@ -145,17 +145,17 @@ def _extract_token_pair_from_text(text: str) -> tuple[Optional[int], Optional[in
     return None, None
 
 
-def _normalize_token_pair(before: Optional[int], after: Optional[int]) -> tuple[Optional[int], Optional[int]]:
+def _normalize_token_pair(before: int | None, after: int | None) -> tuple[int | None, int | None]:
     if before is not None and after is not None and after >= before:
         return None, None
     return before, after
 
 
-def _parse_json_candidate(text: str) -> Optional[Any]:
+def _parse_json_candidate(text: str) -> Any | None:
     raw = str(text or "").strip()
     if not raw:
         return None
-    if raw.startswith("{") or raw.startswith("["):
+    if raw.startswith(("{", "[")):
         try:
             return json.loads(raw)
         except json.JSONDecodeError:
@@ -163,7 +163,7 @@ def _parse_json_candidate(text: str) -> Optional[Any]:
     return None
 
 
-def _extract_token_pair(raw: Any, text: str) -> tuple[Optional[int], Optional[int]]:
+def _extract_token_pair(raw: Any, text: str) -> tuple[int | None, int | None]:
     if isinstance(raw, dict):
         parsed = extract_claude_compaction_event(raw)
         if parsed:
@@ -186,8 +186,8 @@ def _event_identity(event: DetectedCompactionEvent) -> str:
     return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
-def _source_status(source: str, status: str, *, event_count: int = 0, note: Optional[str] = None) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+def _source_status(source: str, status: str, *, event_count: int = 0, note: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "source": source,
         "status": status,
         "event_count": int(event_count or 0),
@@ -202,10 +202,10 @@ def _nearest_trigger_refs(
     *,
     workspace_id: str,
     task_id: str,
-    detected_at: Optional[datetime],
-    ai_job_id: Optional[str],
-    chat_message_id: Optional[str],
-) -> Dict[str, Any]:
+    detected_at: datetime | None,
+    ai_job_id: str | None,
+    chat_message_id: str | None,
+) -> dict[str, Any]:
     trigger_job_id = ai_job_id
     if not trigger_job_id and detected_at:
         job = (
@@ -258,9 +258,9 @@ def _risk_query(
     db: Session,
     *,
     snapshot_id: str,
-    categories: List[ContextTokenCategory],
-    detected_at: Optional[datetime],
-) -> List[SddContextTokenSegment]:
+    categories: list[ContextTokenCategory],
+    detected_at: datetime | None,
+) -> list[SddContextTokenSegment]:
     query = db.query(SddContextTokenSegment).filter(
         SddContextTokenSegment.snapshot_id == snapshot_id,
         SddContextTokenSegment.category.in_(categories),
@@ -270,7 +270,7 @@ def _risk_query(
     return query.order_by(SddContextTokenSegment.created_at.asc(), SddContextTokenSegment.id.asc()).limit(500).all()
 
 
-def _segment_ref(segment: SddContextTokenSegment) -> Dict[str, Any]:
+def _segment_ref(segment: SddContextTokenSegment) -> dict[str, Any]:
     return {
         "id": segment.id,
         "category": _enum_value(segment.category),
@@ -287,9 +287,9 @@ def _segment_ref(segment: SddContextTokenSegment) -> Dict[str, Any]:
 def _build_risks(
     db: Session,
     *,
-    snapshot: Optional[SddContextTokenSnapshot],
-    detected_at: Optional[datetime],
-) -> List[Dict[str, Any]]:
+    snapshot: SddContextTokenSnapshot | None,
+    detected_at: datetime | None,
+) -> list[dict[str, Any]]:
     if snapshot is None:
         return []
 
@@ -322,7 +322,11 @@ def _build_risks(
     subagent_rows = [
         row
         for row in subagent_candidates
-        if re.search(r"\b(subagent|agent|task tool|worker|reviewer)\b", " ".join([row.title or "", row.preview or "", row.source_kind or ""]), re.IGNORECASE)
+        if re.search(
+            r"\b(subagent|agent|task tool|worker|reviewer)\b",
+            " ".join([row.title or "", row.preview or "", row.source_kind or ""]),
+            re.IGNORECASE,
+        )
     ]
     risks.insert(
         3,
@@ -339,7 +343,7 @@ def _build_risks(
     return risks
 
 
-def _snapshot_total_tokens(snapshot: Optional[SddContextTokenSnapshot]) -> Optional[int]:
+def _snapshot_total_tokens(snapshot: SddContextTokenSnapshot | None) -> int | None:
     if snapshot is None:
         return None
     if snapshot.total_tokens is not None:
@@ -361,10 +365,10 @@ def _serialize_event(
     *,
     workspace_id: str,
     task_id: str,
-    snapshot: Optional[SddContextTokenSnapshot],
+    snapshot: SddContextTokenSnapshot | None,
     event: DetectedCompactionEvent,
     phase_after: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     event_id = _event_identity(event)
     trigger = _nearest_trigger_refs(
         db,
@@ -399,7 +403,7 @@ def _serialize_event(
     }
 
 
-def _phase_new_tokens(token_before: Optional[int], previous_after: Optional[int]) -> Optional[int]:
+def _phase_new_tokens(token_before: int | None, previous_after: int | None) -> int | None:
     if token_before is None:
         return None
     if previous_after is None:
@@ -409,9 +413,9 @@ def _phase_new_tokens(token_before: Optional[int], previous_after: Optional[int]
 
 def _build_phases(
     *,
-    snapshot: Optional[SddContextTokenSnapshot],
-    events: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    snapshot: SddContextTokenSnapshot | None,
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     current_total = _snapshot_total_tokens(snapshot)
     start_at = snapshot.created_at if snapshot is not None else None
     end_at = snapshot.updated_at or snapshot.created_at if snapshot is not None else None
@@ -430,9 +434,9 @@ def _build_phases(
             }
         ]
 
-    phases: List[Dict[str, Any]] = []
+    phases: list[dict[str, Any]] = []
     previous_started_at = start_at
-    previous_after: Optional[int] = None
+    previous_after: int | None = None
     for index, event in enumerate(events, start=1):
         token_before = event.get("token_before_estimate")
         token_after = event.get("token_after_estimate")
@@ -474,13 +478,13 @@ def _event_from_text_source(
     source_ref_id: str,
     source_label: str,
     text: str,
-    detected_at: Optional[datetime],
+    detected_at: datetime | None,
     raw: Any = None,
-    ai_job_id: Optional[str] = None,
-    chat_message_id: Optional[str] = None,
-    log_id: Optional[str] = None,
-    locator: Optional[Dict[str, Any]] = None,
-) -> Optional[DetectedCompactionEvent]:
+    ai_job_id: str | None = None,
+    chat_message_id: str | None = None,
+    log_id: str | None = None,
+    locator: dict[str, Any] | None = None,
+) -> DetectedCompactionEvent | None:
     has_signal = _text_has_compaction_signal(text)
     if not has_signal and isinstance(raw, dict):
         has_signal = extract_claude_compaction_event(raw) is not None
@@ -502,9 +506,9 @@ def _event_from_text_source(
     )
 
 
-def _dedupe_events(events: Iterable[DetectedCompactionEvent]) -> List[DetectedCompactionEvent]:
+def _dedupe_events(events: Iterable[DetectedCompactionEvent]) -> list[DetectedCompactionEvent]:
     seen: set[str] = set()
-    unique: List[DetectedCompactionEvent] = []
+    unique: list[DetectedCompactionEvent] = []
     for event in events:
         key = _event_identity(event)
         if key in seen:
@@ -520,7 +524,7 @@ def _scan_execution_logs(
     *,
     workspace_id: str,
     task_id: str,
-) -> List[DetectedCompactionEvent]:
+) -> list[DetectedCompactionEvent]:
     events = []
     rows = (
         db.query(SddExecutionLog)
@@ -556,7 +560,7 @@ def _scan_ai_jobs(
     *,
     workspace_id: str,
     task_id: str,
-) -> List[DetectedCompactionEvent]:
+) -> list[DetectedCompactionEvent]:
     events = []
     jobs = (
         db.query(SddAiJob)
@@ -594,7 +598,7 @@ def _scan_snapshot_raw_usage(
     *,
     workspace_id: str,
     task_id: str,
-) -> List[DetectedCompactionEvent]:
+) -> list[DetectedCompactionEvent]:
     events = []
     snapshots = (
         db.query(SddContextTokenSnapshot)
@@ -622,7 +626,7 @@ def _scan_snapshot_raw_usage(
     return events
 
 
-def _parse_trace_timestamp(line: str) -> Optional[datetime]:
+def _parse_trace_timestamp(line: str) -> datetime | None:
     raw = str(line or "")[:23]
     try:
         return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S.%f")
@@ -639,7 +643,7 @@ def _iter_recent_trace_files() -> Iterable[Path]:
     return files[:MAX_TRACE_FILES]
 
 
-def _file_looks_related(path: Path, *, task: Optional[SddTask], session_ids: set[str]) -> bool:
+def _file_looks_related(path: Path, *, task: SddTask | None, session_ids: set[str]) -> bool:
     name = path.name
     if any(sid and sid[:12] in name for sid in session_ids):
         return True
@@ -660,7 +664,7 @@ def _scan_text_file_for_compaction(
     source: str,
     source_label: str,
     source_ref_prefix: str,
-) -> List[DetectedCompactionEvent]:
+) -> list[DetectedCompactionEvent]:
     events = []
     try:
         if path.stat().st_size > MAX_FILE_SCAN_BYTES:
@@ -686,7 +690,7 @@ def _scan_text_file_for_compaction(
     return events
 
 
-def _known_session_ids(db: Session, *, task: Optional[SddTask], workspace_id: str, task_id: str) -> set[str]:
+def _known_session_ids(db: Session, *, task: SddTask | None, workspace_id: str, task_id: str) -> set[str]:
     session_ids = {str(task.session_id or "").strip()} if task else set()
     for (session_id,) in (
         db.query(SddAiJob.session_id)
@@ -710,10 +714,10 @@ def _known_session_ids(db: Session, *, task: Optional[SddTask], workspace_id: st
 def _scan_session_traces(
     db: Session,
     *,
-    task: Optional[SddTask],
+    task: SddTask | None,
     workspace_id: str,
     task_id: str,
-) -> List[DetectedCompactionEvent]:
+) -> list[DetectedCompactionEvent]:
     session_ids = _known_session_ids(db, task=task, workspace_id=workspace_id, task_id=task_id)
     events = []
     for path in _iter_recent_trace_files():
@@ -730,18 +734,18 @@ def _scan_session_traces(
     return events
 
 
-def _claude_session_file_candidates(session_ids: set[str]) -> List[Path]:
+def _claude_session_file_candidates(session_ids: set[str]) -> list[Path]:
     if not session_ids:
         return []
     root = Path.home() / ".claude" / "projects"
     if not root.exists() or not root.is_dir():
         return []
-    candidates: List[Path] = []
+    candidates: list[Path] = []
     for session_id in session_ids:
         candidates.extend(path for path in root.rglob(f"{session_id}.jsonl") if path.is_file())
         candidates.extend(path for path in root.rglob(f"{session_id}.json") if path.is_file())
     seen: set[str] = set()
-    unique: List[Path] = []
+    unique: list[Path] = []
     for path in candidates:
         key = str(path)
         if key in seen:
@@ -755,10 +759,10 @@ def _claude_session_file_candidates(session_ids: set[str]) -> List[Path]:
 def _scan_claude_session_files(
     db: Session,
     *,
-    task: Optional[SddTask],
+    task: SddTask | None,
     workspace_id: str,
     task_id: str,
-) -> List[DetectedCompactionEvent]:
+) -> list[DetectedCompactionEvent]:
     session_ids = _known_session_ids(db, task=task, workspace_id=workspace_id, task_id=task_id)
     events = []
     for path in _claude_session_file_candidates(session_ids):
@@ -778,11 +782,11 @@ def get_context_compaction(
     *,
     workspace_id: str,
     task_id: str,
-    snapshot: Optional[SddContextTokenSnapshot] = None,
-) -> Dict[str, Any]:
+    snapshot: SddContextTokenSnapshot | None = None,
+) -> dict[str, Any]:
     task = db.query(SddTask).filter(SddTask.workspace_id == workspace_id, SddTask.id == task_id).first()
-    source_events: List[DetectedCompactionEvent] = []
-    data_sources: List[Dict[str, Any]] = []
+    source_events: list[DetectedCompactionEvent] = []
+    data_sources: list[dict[str, Any]] = []
 
     log_events = _scan_execution_logs(db, workspace_id=workspace_id, task_id=task_id)
     source_events.extend(log_events)
@@ -812,7 +816,9 @@ def get_context_compaction(
     data_sources.append(
         _source_status(
             "claude_session_file",
-            "scanned" if _known_session_ids(db, task=task, workspace_id=workspace_id, task_id=task_id) else "no_session_id",
+            "scanned"
+            if _known_session_ids(db, task=task, workspace_id=workspace_id, task_id=task_id)
+            else "no_session_id",
             event_count=len(claude_file_events),
             note=None if claude_file_events else "仅在已知 Claude session_id 时扫描 ~/.claude 会话文件。",
         )

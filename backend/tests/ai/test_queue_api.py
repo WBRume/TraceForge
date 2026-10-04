@@ -1,20 +1,13 @@
-import os
-import sys
+from collections.abc import Iterator
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Iterator
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
 from app.domains.ai.routers import queue as queue_router
-from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType  # noqa: E402
-from app.domains.ai.services import queue_service  # noqa: E402
+from app.domains.ai.services import queue_service
+from app.domains.workflow.models.provision_job import ProvisionJobStatus, ProvisionJobType
 
 
 class _FakeDb:

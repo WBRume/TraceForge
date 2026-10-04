@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -11,7 +9,7 @@ from app.domains.asset.models.asset import SddAsset, SddAssetVersion
 from app.domains.task.models.task import SddTask
 
 
-def list_asset_versions(db: Session, asset_id: str) -> List[SddAssetVersion]:
+def list_asset_versions(db: Session, asset_id: str) -> list[SddAssetVersion]:
     return (
         db.query(SddAssetVersion)
         .filter(SddAssetVersion.asset_id == asset_id)
@@ -20,7 +18,7 @@ def list_asset_versions(db: Session, asset_id: str) -> List[SddAssetVersion]:
     )
 
 
-def get_asset_version(db: Session, asset_id: str, version_id: str) -> Optional[SddAssetVersion]:
+def get_asset_version(db: Session, asset_id: str, version_id: str) -> SddAssetVersion | None:
     return (
         db.query(SddAssetVersion)
         .filter(
@@ -32,11 +30,7 @@ def get_asset_version(db: Session, asset_id: str, version_id: str) -> Optional[S
 
 
 def next_version_no(db: Session, asset_id: str) -> int:
-    max_no = (
-        db.query(func.max(SddAssetVersion.version_no))
-        .filter(SddAssetVersion.asset_id == asset_id)
-        .scalar()
-    )
+    max_no = db.query(func.max(SddAssetVersion.version_no)).filter(SddAssetVersion.asset_id == asset_id).scalar()
     return int(max_no or 0) + 1
 
 

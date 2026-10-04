@@ -12,14 +12,6 @@ from datetime import datetime
 
 import pytest
 
-from tests.ai.jobs.ai_job_test_utils import (
-    _identity,
-    _job,
-    _owned_job,
-    _session_factory,
-    _terminate_request,
-    patch_ai_job_db,
-)
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
     AgentAttemptRuntimeState,
@@ -28,15 +20,22 @@ from app.agents.errors import AgentError
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.ai_job_convergence_service import (
+    EVIDENCE_CONFLICT,
     AttemptConvergenceRequest,
     ConvergenceIntent,
-    EVIDENCE_CONFLICT,
     resolve_attempt_evidence,
 )
 from app.domains.ai.services.jobs import attempts as ai_attempts
 from app.domains.ai.services.jobs import fencing as ai_fencing
 from app.domains.ai.services.jobs import registry as ai_registry
-
+from tests.ai.jobs.ai_job_test_utils import (
+    _identity,
+    _job,
+    _owned_job,
+    _session_factory,
+    _terminate_request,
+    patch_ai_job_db,
+)
 
 # ────────────────────── 14.1 证据权威性 ──────────────────────
 
@@ -47,11 +46,16 @@ def test_cancel_interrupted_attempt_only_finishes_when_ownership_is_clear(owner_
     with factory() as db:
         job = _job(db, status=AiJobStatus.INTERRUPTED)
         if owner_field:
-            value = datetime.utcnow() if owner_field == "lease_expires_at" else (123 if owner_field == "process_pid" else "old-owner")
+            value = (
+                datetime.utcnow()
+                if owner_field == "lease_expires_at"
+                else (123 if owner_field == "process_pid" else "old-owner")
+            )
             setattr(job, owner_field, value)
             db.commit()
         result = convergence.request_attempt_termination_in_txn(
-            db, convergence.AttemptTerminationRequest(job_id=job.id, mode="CANCEL"),
+            db,
+            convergence.AttemptTerminationRequest(job_id=job.id, mode="CANCEL"),
         )
         db.commit()
         assert result.changed
@@ -384,9 +388,7 @@ def test_late_progress_after_cancel_affects_zero_rows(monkeypatch):
     factory = _session_factory()
     db = factory()
     _seed_owned_running(db, cancel_requested=True)
-    original_context = dict(
-        db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first().context_json or {}
-    )
+    dict(db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first().context_json or {})
     patch_ai_job_db(monkeypatch, factory)
 
     result = ai_fencing.update_job_state_sync(

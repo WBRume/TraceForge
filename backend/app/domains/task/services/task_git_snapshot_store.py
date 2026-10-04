@@ -10,11 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import stat
 import tempfile
 import time
+from pathlib import Path
 
 from loguru import logger
 
@@ -59,7 +59,9 @@ def scan(root: str, policy: dict) -> tuple[list[str], list[str], dict[str, os.st
                 if ":" in entry.name or "\\" in entry.name:
                     raise ValueError(f"Unsupported snapshot path: {relative}")
                 info = entry.stat(follow_symlinks=False)
-                if (getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)) and not stat.S_ISLNK(info.st_mode):
+                if (
+                    getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                ) and not stat.S_ISLNK(info.st_mode):
                     raise ValueError(f"Protected junction is unsupported: {relative}")
                 if stat.S_ISDIR(info.st_mode):
                     directories.append(relative)
@@ -84,10 +86,25 @@ class Shadow:
         self.cold = not os.path.exists(self.directory)
 
     def run(self, args: list[str], data: bytes | None = None) -> bytes:
-        return git(self.cwd, ["--git-dir=" + self.directory, "--work-tree=" + self.cwd,
-                              "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
-                              "-c", "core.attributesFile=", "-c", "core.fsmonitor=false",
-                              "-c", "core.hooksPath=", *args], data)
+        return git(
+            self.cwd,
+            [
+                "--git-dir=" + self.directory,
+                "--work-tree=" + self.cwd,
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.safecrlf=false",
+                "-c",
+                "core.attributesFile=",
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=",
+                *args,
+            ],
+            data,
+        )
 
     def initialize(self) -> None:
         if not self.cold:
@@ -103,16 +120,27 @@ class Shadow:
             return
         fmt = git(self.source, ["rev-parse", "--show-object-format"]).decode().strip() if self.source else "sha1"
         self.run(["init", "--object-format=" + fmt, self.directory])
-        for key, value in [("core.bare", "false"), ("core.worktree", self.cwd),
-                           ("core.autocrlf", "false"), ("core.symlinks", "true"),
-                           ("core.longpaths", "true"), ("core.fsmonitor", "false"),
-                           ("index.version", "4"), ("index.threads", "true"),
-                           ("core.untrackedCache", "true"), ("gc.auto", "0")]:
+        for key, value in [
+            ("core.bare", "false"),
+            ("core.worktree", self.cwd),
+            ("core.autocrlf", "false"),
+            ("core.symlinks", "true"),
+            ("core.longpaths", "true"),
+            ("core.fsmonitor", "false"),
+            ("index.version", "4"),
+            ("index.threads", "true"),
+            ("core.untrackedCache", "true"),
+            ("gc.auto", "0"),
+        ]:
             self.run(["config", key, value])
         Path(self.directory, "info", "attributes").write_bytes(ATTRIBUTES)
         if self.source:
-            objects = git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
-            Path(self.directory, "objects", "info", "alternates").write_bytes((objects.replace("\\", "/") + "\n").encode("utf-8"))
+            objects = (
+                git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "objects"]).decode().strip()
+            )
+            Path(self.directory, "objects", "info", "alternates").write_bytes(
+                (objects.replace("\\", "/") + "\n").encode("utf-8")
+            )
             index = git(self.source, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).decode().strip()
             if os.path.isfile(index):
                 shutil.copyfile(index, os.path.join(self.directory, "index"))
@@ -123,6 +151,39 @@ class Shadow:
         if not os.path.isfile(os.path.join(self.directory, "index")):
             self.run(["read-tree", "--empty"])
         files.write_json(os.path.join(self.directory, "owner.json"), {"root": self.root, "relative": self.relative})
+
+    def _exclude_transformed_entries(self, protected, names, remove):
+        # Reuse only entries whose source representation is raw bytes.
+        attrs = git(
+            self.source,
+            ["check-attr", "-z", "--stdin", "text", "filter", "ident", "working-tree-encoding", "eol"],
+            nul(protected),
+        ).split(b"\0")
+        conversion = set()
+        for i in range(0, len(attrs) - 2, 3):
+            if attrs[i + 2] not in (b"unspecified", b"unset"):
+                if attrs[i + 1] in (b"text", b"eol"):
+                    conversion.add(os.fsdecode(attrs[i]))
+                else:
+                    remove.add(os.fsdecode(attrs[i]))
+        config = git(self.source, ["config", "--list", "--null"])
+        if any(
+            row.lower().startswith(b"core.autocrlf\n") and row.split(b"\n", 1)[1].lower() not in (b"false", b"0")
+            for row in config.split(b"\0")
+        ):
+            conversion.update(names)
+        if conversion:
+            # Native Git inspects EOLs without creating new objects. LF or
+            # binary bytes identical to the index need no conversion copy.
+            equal_eol = set()
+            for row in git(self.source, ["ls-files", "--eol", "-z"]).split(b"\0"):
+                if not row:
+                    continue
+                fields, name = row.split(b"\t", 1)
+                indexed_eol, work_eol = fields.split()[:2]
+                if indexed_eol[2:] == work_eol[2:] and work_eol[2:] in (b"lf", b"none", b"-text"):
+                    equal_eol.add(os.fsdecode(name))
+            remove.update(conversion - equal_eol)
 
     def capture(self, protected: list[str], ref: str) -> dict:
         self.initialize()
@@ -136,30 +197,8 @@ class Shadow:
             self.run(["update-index", "--no-skip-worktree", "-z", "--stdin"], nul(sorted(names)))
         remove = names - set(protected)
         if self.cold and self.source and protected:
-            # Reuse only entries whose source representation is raw bytes.
-            attrs = git(self.source, ["check-attr", "-z", "--stdin", "text", "filter", "ident", "working-tree-encoding", "eol"], nul(protected)).split(b"\0")
-            conversion = set()
-            for i in range(0, len(attrs) - 2, 3):
-                if attrs[i + 2] not in (b"unspecified", b"unset"):
-                    if attrs[i + 1] in (b"text", b"eol"):
-                        conversion.add(os.fsdecode(attrs[i]))
-                    else:
-                        remove.add(os.fsdecode(attrs[i]))
-            config = git(self.source, ["config", "--list", "--null"])
-            if any(row.lower().startswith(b"core.autocrlf\n") and row.split(b"\n", 1)[1].lower() not in (b"false", b"0") for row in config.split(b"\0")):
-                conversion.update(names)
-            if conversion:
-                # Native Git inspects EOLs without creating new objects. LF or
-                # binary bytes identical to the index need no conversion copy.
-                equal_eol = set()
-                for row in git(self.source, ["ls-files", "--eol", "-z"]).split(b"\0"):
-                    if not row:
-                        continue
-                    fields, name = row.split(b"\t", 1)
-                    indexed_eol, work_eol = fields.split()[:2]
-                    if indexed_eol[2:] == work_eol[2:] and work_eol[2:] in (b"lf", b"none", b"-text"):
-                        equal_eol.add(os.fsdecode(name))
-                remove.update(conversion - equal_eol)
+            self._exclude_transformed_entries(protected, names, remove)
+
         if remove:
             self.run(["update-index", "--force-remove", "-z", "--stdin"], nul(sorted(remove)))
         dirty = {os.fsdecode(p) for p in self.run(["diff-files", "--name-only", "-z"]).split(b"\0") if p}
@@ -190,7 +229,7 @@ class Shadow:
         roots = [source]
         for line in git(self.source, ["count-objects", "-v"]).decode().splitlines():
             if line.startswith("alternate: "):
-                roots.append(line[len("alternate: "):])
+                roots.append(line[len("alternate: ") :])
         target = Path(self.directory, "objects")
         if any(os.stat(root).st_dev != target.stat().st_dev for root in roots):
             self.run(["repack", "-a", "-d", "--window=0"])
@@ -251,18 +290,37 @@ class Shadow:
                     else:
                         stream.write(data)
                     after = os.lstat(full)
-                    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_ino) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_ino):
+                    if (before.st_size, before.st_mtime_ns, before.st_ctime_ns, before.st_ino) != (
+                        after.st_size,
+                        after.st_mtime_ns,
+                        after.st_ctime_ns,
+                        after.st_ino,
+                    ):
                         raise ValueError(f"File changed during snapshot: {relative}")
                     stream.write(b"\n")
                 stream.write(b"done\n")
             with open(stream_path, "rb") as stream:
-                result = run_git(["--git-dir=" + self.directory, "-c", "core.fsync=committed", "fast-import", "--quiet", "--done", "--export-marks=" + marks_path],
-                                 cwd=self.cwd, decode_text=False, stdin_file=stream)
+                result = run_git(
+                    [
+                        "--git-dir=" + self.directory,
+                        "-c",
+                        "core.fsync=committed",
+                        "fast-import",
+                        "--quiet",
+                        "--done",
+                        "--export-marks=" + marks_path,
+                    ],
+                    cwd=self.cwd,
+                    decode_text=False,
+                    stdin_file=stream,
+                )
             if result.returncode:
                 raise ValueError(f"Snapshot pack import failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
             marks = dict(line.split() for line in Path(marks_path).read_text().splitlines())
-            index = b"".join(f"{mode} {marks[':' + str(number)]}\t".encode() + os.fsencode(relative) + b"\0"
-                             for number, (relative, mode) in enumerate(zip(changed, modes), 1))
+            index = b"".join(
+                f"{mode} {marks[':' + str(number)]}\t".encode() + os.fsencode(relative) + b"\0"
+                for number, (relative, mode) in enumerate(zip(changed, modes, strict=False), 1)
+            )
             self.run(["update-index", "-z", "--index-info"], index)
             logger.info("Snapshot packed: changed_files={} bytes={}", len(changed), total_bytes)
 
@@ -286,8 +344,14 @@ def tree_entries(part: dict, root: str, paths: files.ReadPhasePaths | None = Non
     return result
 
 
-def capture(root: str, repo_rels: list[str], checkpoint: str, object_store: str, policy: dict,
-            extra_tracked: set[str] | None = None) -> dict:
+def capture(
+    root: str,
+    repo_rels: list[str],
+    checkpoint: str,
+    object_store: str,
+    policy: dict,
+    extra_tracked: set[str] | None = None,
+) -> dict:
     from app.domains.task.services import task_session_snapshot_service as service
 
     started = time.perf_counter()
@@ -315,7 +379,7 @@ def capture(root: str, repo_rels: list[str], checkpoint: str, object_store: str,
     modes = {}
     for rel in protected:
         group = next(p for p in ordered if p == "." or rel.startswith(p + "/"))
-        groups[group].append(rel if group == "." else rel[len(group) + 1:])
+        groups[group].append(rel if group == "." else rel[len(group) + 1 :])
         modes[rel] = stat.S_IMODE(leaves[rel].st_mode)
     token = hashlib.sha256(os.path.abspath(checkpoint).encode()).hexdigest()
     parts = []
@@ -323,15 +387,31 @@ def capture(root: str, repo_rels: list[str], checkpoint: str, object_store: str,
         parts.append(Shadow(root, object_store, relative, source).capture(groups[relative], "refs/traceforge/" + token))
     metadata_dir = os.path.join(checkpoint, "git")
     os.makedirs(metadata_dir, exist_ok=True)
-    payload = {"version": VERSION, "task_root": root, "object_store": object_store,
-               "policy": policy, "tracked": sorted(tracked), "partitions": parts,
-               "directories": directories, "modes": modes,
-               "directory_links": [rel for rel, info in leaves.items() if stat.S_ISLNK(info.st_mode)
-                                   and getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0)],
-               "repositories": [service._git_state(root, repo, metadata_dir) for repo in repositories]}
+    payload = {
+        "version": VERSION,
+        "task_root": root,
+        "object_store": object_store,
+        "policy": policy,
+        "tracked": sorted(tracked),
+        "partitions": parts,
+        "directories": directories,
+        "modes": modes,
+        "directory_links": [
+            rel
+            for rel, info in leaves.items()
+            if stat.S_ISLNK(info.st_mode)
+            and getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_DIRECTORY", 0)
+        ],
+        "repositories": [service._git_state(root, repo, metadata_dir) for repo in repositories],
+    }
     files.write_json(os.path.join(checkpoint, "worktree.json"), payload)
-    logger.info("Snapshot captured: files={} repositories={} scan_ms={:.1f} total_ms={:.1f}",
-                len(protected), len(repositories), (scanned - started) * 1000, (time.perf_counter() - started) * 1000)
+    logger.info(
+        "Snapshot captured: files={} repositories={} scan_ms={:.1f} total_ms={:.1f}",
+        len(protected),
+        len(repositories),
+        (scanned - started) * 1000,
+        (time.perf_counter() - started) * 1000,
+    )
     return payload
 
 
@@ -357,6 +437,60 @@ def validate(payload: dict) -> dict:
     return result
 
 
+def _restore_and_validate_git_controls(checkpoint, root, saved):
+    from app.domains.task.services import task_session_snapshot_service as service
+
+    # A compensation checkpoint can own Git controls removed by an earlier restore.
+    for original, parked in saved.get("quarantined_controls", {}).items():
+        directory = root if original == "." else files.safe_path(root, original)
+        target = os.path.join(directory, ".git")
+        if not os.path.lexists(target):
+            if os.path.commonpath([os.path.abspath(checkpoint), os.path.abspath(parked)]) != os.path.abspath(
+                checkpoint
+            ):
+                raise ValueError("Invalid Git compensation path")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            os.replace(parked, target)
+    for repo in saved["repositories"]:
+        actual = git(repo["repo_path"], ["rev-parse", "--absolute-git-dir"]).decode().strip()
+        if os.path.normcase(actual) != os.path.normcase(repo["git_dir"]):
+            raise ValueError("Repository identity changed")
+        if repo.get("index_copy") and service._sha256_file(repo["index_copy"]) != repo["index_sha256"]:
+            raise ValueError("Snapshot Git index is corrupt")
+
+
+def _restore_worktree_files(root, current, saved, before, desired, changed):
+    for rel in sorted(changed & before.keys(), key=lambda p: p.count("/"), reverse=True):
+        os.remove(files.safe_path(root, rel))
+    for rel in sorted(
+        set(current["directories"]) - set(saved["directories"]), key=lambda p: p.count("/"), reverse=True
+    ):
+        directory = files.safe_path(root, rel)
+        if os.path.isdir(directory) and not os.listdir(directory):
+            os.rmdir(directory)
+    for rel in sorted(set(saved["directories"]) - set(current["directories"]), key=lambda p: p.count("/")):
+        os.makedirs(files.safe_path(root, rel), exist_ok=True)
+    for rel in sorted(changed & desired.keys()):
+        item = desired[rel]
+        path = files.safe_path(root, rel)
+        if os.path.isdir(path):
+            os.rmdir(path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        data = git(root, ["--git-dir=" + item["git_dir"], "cat-file", "blob", item["oid"]])
+        if item["mode"] == "120000":
+            os.symlink(os.fsdecode(data), path, target_is_directory=rel in saved.get("directory_links", []))
+        else:
+            fd, temporary = tempfile.mkstemp(prefix=".restore-", dir=os.path.dirname(path))
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                os.chmod(temporary, saved["modes"][rel])
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+
+
 def restore(checkpoint: str, root: str, backup: str) -> None:
     from app.domains.task.services import task_session_snapshot_service as service
 
@@ -368,24 +502,22 @@ def restore(checkpoint: str, root: str, backup: str) -> None:
     with files.store_lock(saved["object_store"]):
         desired = validate(saved)
         validated_at = time.perf_counter()
-        logger.info("Snapshot restore validated: root={} files={} elapsed_ms={:.1f}", root, len(desired), (validated_at - started) * 1000)
-        # A compensation checkpoint can own Git controls removed by an earlier restore.
-        for original, parked in saved.get("quarantined_controls", {}).items():
-            directory = root if original == "." else files.safe_path(root, original)
-            target = os.path.join(directory, ".git")
-            if not os.path.lexists(target):
-                if os.path.commonpath([os.path.abspath(checkpoint), os.path.abspath(parked)]) != os.path.abspath(checkpoint):
-                    raise ValueError("Invalid Git compensation path")
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                os.replace(parked, target)
-        for repo in saved["repositories"]:
-            actual = git(repo["repo_path"], ["rev-parse", "--absolute-git-dir"]).decode().strip()
-            if os.path.normcase(actual) != os.path.normcase(repo["git_dir"]):
-                raise ValueError("Repository identity changed")
-            if repo.get("index_copy") and service._sha256_file(repo["index_copy"]) != repo["index_sha256"]:
-                raise ValueError("Snapshot Git index is corrupt")
-        current = capture(root, [r["repo_rel_path"] for r in saved["repositories"]], backup,
-                          saved["object_store"], saved["policy"], set(saved["tracked"]))
+        logger.info(
+            "Snapshot restore validated: root={} files={} elapsed_ms={:.1f}",
+            root,
+            len(desired),
+            (validated_at - started) * 1000,
+        )
+        _restore_and_validate_git_controls(checkpoint, root, saved)
+
+        current = capture(
+            root,
+            [r["repo_rel_path"] for r in saved["repositories"]],
+            backup,
+            saved["object_store"],
+            saved["policy"],
+            set(saved["tracked"]),
+        )
         before = entries(current)
         backed_up_at = time.perf_counter()
         wanted_repos = {r["repo_rel_path"] for r in saved["repositories"]}
@@ -393,57 +525,49 @@ def restore(checkpoint: str, root: str, backup: str) -> None:
         for repo in current["repositories"]:
             rel = repo["repo_rel_path"]
             if rel not in wanted_repos:
-                control = os.path.join(repo["repo_path"], ".git")
+                os.path.join(repo["repo_path"], ".git")
                 parked = os.path.join(backup, "git-created", hashlib.sha256(rel.encode()).hexdigest())
                 os.makedirs(os.path.dirname(parked), exist_ok=True)
                 current["quarantined_controls"][rel] = parked
         files.write_json(os.path.join(backup, "worktree.json"), current)
         for rel, parked in current["quarantined_controls"].items():
             os.replace(os.path.join(root, rel, ".git"), parked)
-        changed = {p for p in before.keys() | desired.keys()
-                   if (before.get(p, {}).get("oid"), before.get(p, {}).get("mode"), current["modes"].get(p))
-                   != (desired.get(p, {}).get("oid"), desired.get(p, {}).get("mode"), saved["modes"].get(p))}
-        for rel in sorted(changed & before.keys(), key=lambda p: p.count("/"), reverse=True):
-            os.remove(files.safe_path(root, rel))
-        for rel in sorted(set(current["directories"]) - set(saved["directories"]), key=lambda p: p.count("/"), reverse=True):
-            directory = files.safe_path(root, rel)
-            if os.path.isdir(directory) and not os.listdir(directory):
-                os.rmdir(directory)
-        for rel in sorted(set(saved["directories"]) - set(current["directories"]), key=lambda p: p.count("/")):
-            os.makedirs(files.safe_path(root, rel), exist_ok=True)
-        for rel in sorted(changed & desired.keys()):
-            item = desired[rel]
-            path = files.safe_path(root, rel)
-            if os.path.isdir(path):
-                os.rmdir(path)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            data = git(root, ["--git-dir=" + item["git_dir"], "cat-file", "blob", item["oid"]])
-            if item["mode"] == "120000":
-                os.symlink(os.fsdecode(data), path, target_is_directory=rel in saved.get("directory_links", []))
-            else:
-                fd, temporary = tempfile.mkstemp(prefix=".restore-", dir=os.path.dirname(path))
-                try:
-                    with os.fdopen(fd, "wb") as handle:
-                        handle.write(data)
-                    os.chmod(temporary, saved["modes"][rel])
-                    os.replace(temporary, path)
-                finally:
-                    if os.path.exists(temporary):
-                        os.remove(temporary)
+        changed = {
+            p
+            for p in before.keys() | desired.keys()
+            if (before.get(p, {}).get("oid"), before.get(p, {}).get("mode"), current["modes"].get(p))
+            != (desired.get(p, {}).get("oid"), desired.get(p, {}).get("mode"), saved["modes"].get(p))
+        }
+        _restore_worktree_files(root, current, saved, before, desired, changed)
+
         service._restore_git_metadata(saved["repositories"])
         restored_at = time.perf_counter()
         # A new capture verifies both deletions and additions and refreshes the live index.
-        verified = capture(root, [r["repo_rel_path"] for r in saved["repositories"]],
-                           os.path.join(backup, "verification"), saved["object_store"], saved["policy"], set(saved["tracked"]))
+        verified = capture(
+            root,
+            [r["repo_rel_path"] for r in saved["repositories"]],
+            os.path.join(backup, "verification"),
+            saved["object_store"],
+            saved["policy"],
+            set(saved["tracked"]),
+        )
         actual = entries(verified)
-        if {p: (e["oid"], e["mode"]) for p, e in actual.items()} != {p: (e["oid"], e["mode"]) for p, e in desired.items()}:
+        if {p: (e["oid"], e["mode"]) for p, e in actual.items()} != {
+            p: (e["oid"], e["mode"]) for p, e in desired.items()
+        }:
             raise ValueError("Restored files differ from checkpoint")
         if verified["modes"] != saved["modes"] or not set(saved["directories"]).issubset(verified["directories"]):
             raise ValueError("Restored file modes or directories differ from checkpoint")
-        logger.info("Snapshot restored: root={} changed_files={} validate_ms={:.1f} backup_ms={:.1f} restore_ms={:.1f} verify_ms={:.1f} total_ms={:.1f}",
-                    root, len(changed), (validated_at - started) * 1000, (backed_up_at - validated_at) * 1000,
-                    (restored_at - backed_up_at) * 1000, (time.perf_counter() - restored_at) * 1000,
-                    (time.perf_counter() - started) * 1000)
+        logger.info(
+            "Snapshot restored: root={} changed_files={} validate_ms={:.1f} backup_ms={:.1f} restore_ms={:.1f} verify_ms={:.1f} total_ms={:.1f}",
+            root,
+            len(changed),
+            (validated_at - started) * 1000,
+            (backed_up_at - validated_at) * 1000,
+            (restored_at - backed_up_at) * 1000,
+            (time.perf_counter() - restored_at) * 1000,
+            (time.perf_counter() - started) * 1000,
+        )
 
 
 def collect(object_store: str) -> None:
@@ -454,7 +578,13 @@ def collect(object_store: str) -> None:
             for part in payload["partitions"]:
                 live.setdefault(part["git_dir"], set()).add(part["ref"])
     for directory in Path(object_store, "shadow").glob("*"):
-        refs = git(object_store, ["--git-dir=" + str(directory), "for-each-ref", "--format=%(refname)", "refs/traceforge/"]).decode().splitlines()
+        refs = (
+            git(
+                object_store, ["--git-dir=" + str(directory), "for-each-ref", "--format=%(refname)", "refs/traceforge/"]
+            )
+            .decode()
+            .splitlines()
+        )
         for ref in set(refs) - live.get(str(directory), set()):
             git(object_store, ["--git-dir=" + str(directory), "update-ref", "-d", ref])
         # Git's index also roots the live state. Keep the index for the next turn.

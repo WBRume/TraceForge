@@ -4,15 +4,16 @@ Run from backend: python benchmarks/undo_snapshots.py <task-root>
 Only temporary snapshots are written. Immutable source Git objects may gain a
 hardlink; source working files, index, refs and configuration remain untouched.
 """
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -30,7 +31,10 @@ def main() -> None:
     store = Path(tempfile.mkdtemp(prefix="undo-benchmark-", dir=Path(__file__).resolve().parents[1] / "tmp"))
     policy = _snapshot_policy()
     repos, _, _ = snapshots.scan(str(root), policy)
-    indexes = [Path(snapshots.git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).decode().strip()) for repo in repos]
+    indexes = [
+        Path(snapshots.git(repo, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).decode().strip())
+        for repo in repos
+    ]
 
     def hashes():
         return {str(p): hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else None for p in indexes}
@@ -40,8 +44,12 @@ def main() -> None:
     for index in range(args.turns):
         started = time.perf_counter()
         payload = snapshots.capture(str(root), [], str(store / f"turn-{index}"), str(store), policy)
-        result = {"turn": index, "seconds": round(time.perf_counter() - started, 3),
-                  "files": len(payload["modes"]), "repositories": len(payload["repositories"])}
+        result = {
+            "turn": index,
+            "seconds": round(time.perf_counter() - started, 3),
+            "files": len(payload["modes"]),
+            "repositories": len(payload["repositories"]),
+        }
         results.append(result)
         print(json.dumps(result), flush=True)
     if hashes() != before:

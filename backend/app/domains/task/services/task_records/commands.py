@@ -2,14 +2,14 @@
 
 import os
 import shutil
-from typing import Optional
+
 from sqlalchemy.orm import Session
+
 from app.core.logging import get_logger
-from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
 from app.domains.auth.models.user import Workspace
+from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
 from app.domains.task.services import git_worktree_service
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
-
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -22,26 +22,30 @@ def set_task_following(
     following: bool,
 ) -> bool:
     normalized_user_id = str(user_id or "").strip()
-    row = db.query(SddTaskFollower).filter(
-        SddTaskFollower.task_id == task.id,
-        SddTaskFollower.workspace_id == task.workspace_id,
-        SddTaskFollower.user_id == normalized_user_id,
-    ).first()
+    row = (
+        db.query(SddTaskFollower)
+        .filter(
+            SddTaskFollower.task_id == task.id,
+            SddTaskFollower.workspace_id == task.workspace_id,
+            SddTaskFollower.user_id == normalized_user_id,
+        )
+        .first()
+    )
     if following and row is None:
-        db.add(SddTaskFollower(
-            task_id=task.id,
-            workspace_id=task.workspace_id,
-            user_id=normalized_user_id,
-        ))
+        db.add(
+            SddTaskFollower(
+                task_id=task.id,
+                workspace_id=task.workspace_id,
+                user_id=normalized_user_id,
+            )
+        )
     elif not following and row is not None:
         db.delete(row)
     db.commit()
     return following
 
 
-def update_task_status(
-    db: Session, task: SddTask, status: TaskStatus, error_message: Optional[str] = None
-) -> SddTask:
+def update_task_status(db: Session, task: SddTask, status: TaskStatus, error_message: str | None = None) -> SddTask:
     task.status = status
     if error_message:
         task.error_message = error_message
@@ -86,13 +90,12 @@ def _archive_task_dir_into_delete_trash(task_project_path: str, workspace_projec
 
 
 def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
-    task = db.query(SddTask).filter(
-        SddTask.id == task_id, SddTask.workspace_id == workspace_id
-    ).first()
+    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
         return False
 
     from app.domains.local_resource.service import is_local, release_or_defer
+
     if is_local(task):
         release_or_defer(db, task)
         db.delete(task)
@@ -101,9 +104,7 @@ def delete_task(db: Session, task_id: str, workspace_id: str) -> bool:
 
     workspace = db.query(Workspace).filter(Workspace.id == workspace_id).first()
     workspace_project_path = (
-        str(workspace.project_path or "").strip()
-        if workspace
-        else os.path.dirname(os.path.abspath(task.project_path))
+        str(workspace.project_path or "").strip() if workspace else os.path.dirname(os.path.abspath(task.project_path))
     )
     task_remote = str(task.git_repo_url or "").strip()
 

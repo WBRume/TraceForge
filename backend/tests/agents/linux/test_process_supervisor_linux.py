@@ -324,9 +324,7 @@ async def test_stop_by_run_token_discovery_kills_exact_token_target():
     try:
         assert target_pgid == target.pid
         assert _wait_until(lambda: _token_visible(token)), "token process not visible"
-        result = await process_supervisor.stop_by_run_token_discovery(
-            token, "test", not_before=not_before
-        )
+        result = await process_supervisor.stop_by_run_token_discovery(token, "test", not_before=not_before)
         assert result is not None
         assert result.confirmed_dead is True
         # SIGKILL 后的僵尸进程仍留在组内；先收割目标子进程再断言组消失。

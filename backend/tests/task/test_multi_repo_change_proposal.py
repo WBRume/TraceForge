@@ -16,29 +16,27 @@ BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
+import app.models.ai_job  # noqa: E402
+import app.models.api_mock  # noqa: E402
+import app.models.asset  # noqa: E402
+import app.models.chat  # noqa: E402
+import app.models.log  # noqa: E402
+import app.models.management  # noqa: E402
+import app.models.metric  # noqa: E402
+import app.models.provision_job  # noqa: E402
+import app.models.skill  # noqa: E402
+import app.models.task_change  # noqa: E402
+import app.models.task_cli_bootstrap  # noqa: E402
+import app.models.test_result  # noqa: E402
+import app.models.workspace_asset  # noqa: E402
+import app.models.workspace_repository  # noqa: E402,F401
 from app.database import Base  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
 from app.domains.task.models.task import SddTask  # noqa: E402
 from app.domains.task.models.task_repository import (  # noqa: E402
-    SddTaskRepository,
     TaskRepositoryState,
 )
 from app.domains.task.services import git_patch_service  # noqa: E402
-
-import app.models.asset  # noqa: E402,F401
-import app.models.chat  # noqa: E402,F401
-import app.models.log  # noqa: E402,F401
-import app.models.test_result  # noqa: E402,F401
-import app.models.metric  # noqa: E402,F401
-import app.models.skill  # noqa: E402,F401
-import app.models.api_mock  # noqa: E402,F401
-import app.models.ai_job  # noqa: E402,F401
-import app.models.workspace_asset  # noqa: E402,F401
-import app.models.task_change  # noqa: E402,F401
-import app.models.task_cli_bootstrap  # noqa: E402,F401
-import app.models.provision_job  # noqa: E402,F401
-import app.models.management  # noqa: E402,F401
-import app.models.workspace_repository  # noqa: E402,F401
 
 
 def _snapshot(repo_name="billing-core", changed=True):
@@ -126,19 +124,23 @@ class MultiRepoPatchSnapshotTest(unittest.TestCase):
         binding_unchanged.rel_path = "two"
         binding_unchanged.state = TaskRepositoryState.READY
 
-        with mock.patch(
-            "app.domains.task.services.task_workspace.repositories.get_task_repositories",
-            return_value=[binding_ready, binding_unchanged],
-        ), mock.patch(
-            "app.domains.task.services.git_patch_service.os.path.isdir",
-            return_value=True,
-        ), mock.patch.object(
-            git_patch_service,
-            "_generate_patch_snapshot_for_repo",
-            side_effect=[
-                _snapshot("one"),
-                git_patch_service.GitPatchError("No changes in task worktree", status_code=409),
-            ],
+        with (
+            mock.patch(
+                "app.domains.task.services.task_workspace.repositories.get_task_repositories",
+                return_value=[binding_ready, binding_unchanged],
+            ),
+            mock.patch(
+                "app.domains.task.services.git_patch_service.os.path.isdir",
+                return_value=True,
+            ),
+            mock.patch.object(
+                git_patch_service,
+                "_generate_patch_snapshot_for_repo",
+                side_effect=[
+                    _snapshot("one"),
+                    git_patch_service.GitPatchError("No changes in task worktree", status_code=409),
+                ],
+            ),
         ):
             snapshots = git_patch_service.generate_task_repo_patch_snapshots(task, None, db=db)
             self.assertEqual(len(snapshots), 1)
@@ -160,16 +162,20 @@ class MultiRepoPatchSnapshotTest(unittest.TestCase):
         binding.rel_path = "one"
         binding.state = TaskRepositoryState.READY
 
-        with mock.patch(
-            "app.domains.task.services.task_workspace.repositories.get_task_repositories",
-            return_value=[binding],
-        ), mock.patch(
-            "app.domains.task.services.git_patch_service.os.path.isdir",
-            return_value=True,
-        ), mock.patch.object(
-            git_patch_service,
-            "_generate_patch_snapshot_for_repo",
-            side_effect=git_patch_service.GitPatchError("No changes in task worktree", status_code=409),
+        with (
+            mock.patch(
+                "app.domains.task.services.task_workspace.repositories.get_task_repositories",
+                return_value=[binding],
+            ),
+            mock.patch(
+                "app.domains.task.services.git_patch_service.os.path.isdir",
+                return_value=True,
+            ),
+            mock.patch.object(
+                git_patch_service,
+                "_generate_patch_snapshot_for_repo",
+                side_effect=git_patch_service.GitPatchError("No changes in task worktree", status_code=409),
+            ),
         ):
             with self.assertRaises(git_patch_service.GitPatchError) as ctx:
                 git_patch_service.generate_task_repo_patch_snapshots(task, None, db=db)
@@ -183,13 +189,16 @@ class MultiRepoPatchSnapshotTest(unittest.TestCase):
         task.git_repo_url = "https://git.example.com/one.git"
         db = mock.Mock()
 
-        with mock.patch(
-            "app.domains.task.services.task_workspace.repositories.get_task_repositories",
-            return_value=[],
-        ), mock.patch.object(
-            git_patch_service,
-            "generate_task_patch_snapshot",
-            return_value=_snapshot("legacy"),
+        with (
+            mock.patch(
+                "app.domains.task.services.task_workspace.repositories.get_task_repositories",
+                return_value=[],
+            ),
+            mock.patch.object(
+                git_patch_service,
+                "generate_task_patch_snapshot",
+                return_value=_snapshot("legacy"),
+            ),
         ):
             snapshots = git_patch_service.generate_task_repo_patch_snapshots(task, None, db=db)
             self.assertEqual(len(snapshots), 1)

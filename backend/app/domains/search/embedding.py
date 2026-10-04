@@ -1,9 +1,12 @@
 """Bounded OpenAI-compatible embeddings; credentials never leave the server."""
+
 import asyncio
 import json
 import math
 from urllib.parse import urlsplit
+
 from cryptography.fernet import Fernet, InvalidToken
+
 from app.config import settings
 
 
@@ -36,7 +39,14 @@ def decrypt_key(encrypted):
 
 def validate_endpoint(endpoint):
     parsed = urlsplit(endpoint)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.query:
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+        or parsed.query
+    ):
         raise EmbeddingError("EMBEDDING_INVALID_ENDPOINT")
     return endpoint.rstrip("/")
 
@@ -55,7 +65,11 @@ def validate_vectors(payload, count, dimension=None):
         if not isinstance(vector, list) or not 1 <= len(vector) <= 4096:
             raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
         dimension = dimension or len(vector)
-        if len(vector) != dimension or not all(type(v) in (int, float) and math.isfinite(v) for v in vector) or not any(vector):
+        if (
+            len(vector) != dimension
+            or not all(type(v) in (int, float) and math.isfinite(v) for v in vector)
+            or not any(vector)
+        ):
             raise EmbeddingError("EMBEDDING_INVALID_RESPONSE")
         vectors[index] = vector
     return vectors
@@ -67,14 +81,24 @@ async def embed(client, profile, texts, *, query=False):
     timeout = settings.SEARCH_QUERY_EMBEDDING_TIMEOUT if query else settings.SEARCH_EMBEDDING_TIMEOUT
     prefix = profile.get("query_prefix" if query else "document_prefix", "")
     import httpx
+
     try:
         async with asyncio.timeout(timeout):
-            async with client.stream("POST", validate_endpoint(profile["endpoint"]),
-                    headers={"Authorization": "Bearer " + decrypt_key(profile["encrypted_api_key"])},
-                    json={"model": profile["model_id"], "input": [prefix + t for t in texts], "encoding_format": "float"}) as response:
+            async with client.stream(
+                "POST",
+                validate_endpoint(profile["endpoint"]),
+                headers={"Authorization": "Bearer " + decrypt_key(profile["encrypted_api_key"])},
+                json={"model": profile["model_id"], "input": [prefix + t for t in texts], "encoding_format": "float"},
+            ) as response:
                 if response.status_code != 200:
                     status = response.status_code
-                    code = "EMBEDDING_AUTH_FAILED" if status in (401, 403) else "EMBEDDING_RATE_LIMITED" if status == 429 else "EMBEDDING_PROVIDER_FAILED"
+                    code = (
+                        "EMBEDDING_AUTH_FAILED"
+                        if status in (401, 403)
+                        else "EMBEDDING_RATE_LIMITED"
+                        if status == 429
+                        else "EMBEDDING_PROVIDER_FAILED"
+                    )
                     raise EmbeddingError(code, status == 429 or status >= 500)
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():

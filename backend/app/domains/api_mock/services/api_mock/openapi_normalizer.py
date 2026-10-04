@@ -3,7 +3,7 @@ API MOCK OpenAPI Normalizer.
 """
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from .constants import HTTP_METHODS
 from .path_matcher import _normalize_path
@@ -14,7 +14,7 @@ except Exception:
     _yaml = None
 
 
-def _load_yaml_if_available(raw: str) -> Optional[Dict[str, Any]]:
+def _load_yaml_if_available(raw: str) -> dict[str, Any] | None:
     if _yaml is None:
         return None
     try:
@@ -24,52 +24,44 @@ def _load_yaml_if_available(raw: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
-def _normalize_swagger_2_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_swagger_2_to_oas3(doc: dict[str, Any]) -> dict[str, Any]:
     definitions = doc.get("definitions") if isinstance(doc.get("definitions"), dict) else {}
     paths = doc.get("paths") if isinstance(doc.get("paths"), dict) else {}
 
-    normalized_paths: Dict[str, Any] = {}
+    normalized_paths: dict[str, Any] = {}
     for path, path_item in paths.items():
         if not isinstance(path_item, dict):
             continue
-        op_item: Dict[str, Any] = {}
+        op_item: dict[str, Any] = {}
         for method, operation in path_item.items():
             if method.lower() not in HTTP_METHODS or not isinstance(operation, dict):
                 continue
 
             request_body = None
             parameters = operation.get("parameters") if isinstance(operation.get("parameters"), list) else []
-            normalized_parameters: List[Dict[str, Any]] = []
+            normalized_parameters: list[dict[str, Any]] = []
             for parameter in parameters:
                 if not isinstance(parameter, dict):
                     continue
                 if parameter.get("in") == "body":
                     request_body = {
-                        "content": {
-                            "application/json": {
-                                "schema": parameter.get("schema", {"type": "object"})
-                            }
-                        }
+                        "content": {"application/json": {"schema": parameter.get("schema", {"type": "object"})}}
                     }
                 else:
                     normalized_parameters.append(parameter)
 
             responses = operation.get("responses") if isinstance(operation.get("responses"), dict) else {}
-            normalized_responses: Dict[str, Any] = {}
+            normalized_responses: dict[str, Any] = {}
             for status_code, response in responses.items():
                 if not isinstance(response, dict):
                     continue
                 schema = response.get("schema")
                 normalized_responses[str(status_code)] = {
                     "description": response.get("description") or "",
-                    "content": {
-                        "application/json": {
-                            "schema": schema or {"type": "object"}
-                        }
-                    },
+                    "content": {"application/json": {"schema": schema or {"type": "object"}}},
                 }
 
-            op_payload: Dict[str, Any] = {
+            op_payload: dict[str, Any] = {
                 "summary": operation.get("summary"),
                 "description": operation.get("description"),
                 "operationId": operation.get("operationId"),
@@ -88,7 +80,9 @@ def _normalize_swagger_2_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "openapi": "3.0.3",
-        "info": doc.get("info") if isinstance(doc.get("info"), dict) else {"title": "Imported Swagger", "version": "1.0.0"},
+        "info": doc.get("info")
+        if isinstance(doc.get("info"), dict)
+        else {"title": "Imported Swagger", "version": "1.0.0"},
         "paths": normalized_paths,
         "components": {
             "schemas": definitions,
@@ -96,11 +90,39 @@ def _normalize_swagger_2_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _normalize_swagger_12_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_swagger_models(models: dict[str, Any]) -> dict[str, Any]:
+    normalized_models: dict[str, Any] = {}
+    for model_name, model in models.items():
+        if not isinstance(model, dict):
+            continue
+        properties = model.get("properties") if isinstance(model.get("properties"), dict) else {}
+        normalized_properties: dict[str, Any] = {}
+        required_fields = model.get("required") if isinstance(model.get("required"), list) else []
+        for prop_name, prop in properties.items():
+            if not isinstance(prop, dict):
+                continue
+            prop_type = prop.get("type")
+            if isinstance(prop_type, str) and prop_type in models:
+                normalized_properties[prop_name] = {"$ref": f"#/components/schemas/{prop_type}"}
+            else:
+                normalized_properties[prop_name] = {
+                    "type": (prop_type or "string") if isinstance(prop_type, str) else "string",
+                    "description": prop.get("description"),
+                }
+
+        normalized_models[model_name] = {
+            "type": "object",
+            "properties": normalized_properties,
+            "required": required_fields,
+        }
+    return normalized_models
+
+
+def _normalize_swagger_12_to_oas3(doc: dict[str, Any]) -> dict[str, Any]:
     apis = doc.get("apis") if isinstance(doc.get("apis"), list) else []
     models = doc.get("models") if isinstance(doc.get("models"), dict) else {}
 
-    normalized_paths: Dict[str, Any] = {}
+    normalized_paths: dict[str, Any] = {}
     for api in apis:
         if not isinstance(api, dict):
             continue
@@ -109,7 +131,7 @@ def _normalize_swagger_12_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
         if not operations:
             continue
 
-        path_item: Dict[str, Any] = {}
+        path_item: dict[str, Any] = {}
         for operation in operations:
             if not isinstance(operation, dict):
                 continue
@@ -132,11 +154,7 @@ def _normalize_swagger_12_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
                 "responses": {
                     "200": {
                         "description": "Success",
-                        "content": {
-                            "application/json": {
-                                "schema": response_schema
-                            }
-                        },
+                        "content": {"application/json": {"schema": response_schema}},
                     }
                 },
                 "tags": ["swagger-1.2"],
@@ -145,30 +163,7 @@ def _normalize_swagger_12_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
         if path_item:
             normalized_paths[path] = path_item
 
-    normalized_models: Dict[str, Any] = {}
-    for model_name, model in models.items():
-        if not isinstance(model, dict):
-            continue
-        properties = model.get("properties") if isinstance(model.get("properties"), dict) else {}
-        normalized_properties: Dict[str, Any] = {}
-        required_fields = model.get("required") if isinstance(model.get("required"), list) else []
-        for prop_name, prop in properties.items():
-            if not isinstance(prop, dict):
-                continue
-            prop_type = prop.get("type")
-            if isinstance(prop_type, str) and prop_type in models:
-                normalized_properties[prop_name] = {"$ref": f"#/components/schemas/{prop_type}"}
-            else:
-                normalized_properties[prop_name] = {
-                    "type": (prop_type or "string") if isinstance(prop_type, str) else "string",
-                    "description": prop.get("description"),
-                }
-
-        normalized_models[model_name] = {
-            "type": "object",
-            "properties": normalized_properties,
-            "required": required_fields,
-        }
+    normalized_models = _normalize_swagger_models(models)
 
     return {
         "openapi": "3.0.3",
@@ -183,14 +178,16 @@ def _normalize_swagger_12_to_oas3(doc: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _normalize_openapi_document(doc: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_openapi_document(doc: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(doc, dict):
         raise ValueError("Invalid OpenAPI document")
 
     if isinstance(doc.get("openapi"), str):
         normalized = {
             "openapi": doc.get("openapi") or "3.0.3",
-            "info": doc.get("info") if isinstance(doc.get("info"), dict) else {"title": "Imported API", "version": "1.0.0"},
+            "info": doc.get("info")
+            if isinstance(doc.get("info"), dict)
+            else {"title": "Imported API", "version": "1.0.0"},
             "paths": doc.get("paths") if isinstance(doc.get("paths"), dict) else {},
             "components": doc.get("components") if isinstance(doc.get("components"), dict) else {"schemas": {}},
         }
@@ -207,12 +204,12 @@ def _normalize_openapi_document(doc: Dict[str, Any]) -> Dict[str, Any]:
     raise ValueError("Unsupported OpenAPI/Swagger document version")
 
 
-def normalize_oas_from_text(raw_content: str) -> Dict[str, Any]:
+def normalize_oas_from_text(raw_content: str) -> dict[str, Any]:
     content = (raw_content or "").strip()
     if not content:
         raise ValueError("OpenAPI content is empty")
 
-    parsed: Optional[Dict[str, Any]] = None
+    parsed: dict[str, Any] | None = None
     try:
         candidate = json.loads(content)
         if isinstance(candidate, dict):
@@ -224,12 +221,14 @@ def normalize_oas_from_text(raw_content: str) -> Dict[str, Any]:
         parsed = _load_yaml_if_available(content)
 
     if parsed is None:
-        raise ValueError("Failed to parse OpenAPI/Swagger content (JSON/YAML). Please ensure the content is valid YAML or JSON format.")
+        raise ValueError(
+            "Failed to parse OpenAPI/Swagger content (JSON/YAML). Please ensure the content is valid YAML or JSON format."
+        )
 
     return _normalize_openapi_document(parsed)
 
 
-def _collect_schema_refs(value: Any, result: Optional[set] = None) -> set:
+def _collect_schema_refs(value: Any, result: set | None = None) -> set:
     refs = result or set()
     if isinstance(value, dict):
         ref_value = value.get("$ref")
@@ -243,16 +242,16 @@ def _collect_schema_refs(value: Any, result: Optional[set] = None) -> set:
     return refs
 
 
-def _extract_parameters(operation: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+def _extract_parameters(operation: dict[str, Any]) -> list[dict[str, Any]] | None:
     parameters = operation.get("parameters") if isinstance(operation.get("parameters"), list) else []
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     for parameter in parameters:
         if isinstance(parameter, dict):
             normalized.append(parameter)
     return normalized or None
 
 
-def _extract_request_schema(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _extract_request_schema(operation: dict[str, Any]) -> dict[str, Any] | None:
     request_body = operation.get("requestBody") if isinstance(operation.get("requestBody"), dict) else None
     if not request_body:
         return None
@@ -269,12 +268,12 @@ def _extract_request_schema(operation: Dict[str, Any]) -> Optional[Dict[str, Any
     return None
 
 
-def _extract_responses(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _extract_responses(operation: dict[str, Any]) -> dict[str, Any] | None:
     responses = operation.get("responses") if isinstance(operation.get("responses"), dict) else {}
     return responses or None
 
 
-def _extract_response_schema(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _extract_response_schema(operation: dict[str, Any]) -> dict[str, Any] | None:
     responses = operation.get("responses") if isinstance(operation.get("responses"), dict) else {}
     for preferred_code in ("200", "201", "default"):
         response = responses.get(preferred_code)
@@ -298,19 +297,19 @@ def _extract_response_schema(operation: Dict[str, Any]) -> Optional[Dict[str, An
     return None
 
 
-def _derive_primary_response_schema(responses: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _derive_primary_response_schema(responses: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(responses, dict):
         return None
     return _extract_response_schema({"responses": responses})
 
 
-def extract_endpoints_and_entities(normalized_oas: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def extract_endpoints_and_entities(normalized_oas: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     paths = normalized_oas.get("paths") if isinstance(normalized_oas.get("paths"), dict) else {}
     components = normalized_oas.get("components") if isinstance(normalized_oas.get("components"), dict) else {}
     schemas = components.get("schemas") if isinstance(components.get("schemas"), dict) else {}
 
-    endpoints: List[Dict[str, Any]] = []
-    entities: List[Dict[str, Any]] = []
+    endpoints: list[dict[str, Any]] = []
+    entities: list[dict[str, Any]] = []
 
     for path, path_item in paths.items():
         if not isinstance(path_item, dict):
@@ -322,7 +321,7 @@ def extract_endpoints_and_entities(normalized_oas: Dict[str, Any]) -> Tuple[List
             parameters_json = _extract_parameters(operation)
             responses_json = _extract_responses(operation)
             response_schema = _extract_response_schema(operation)
-            refs = sorted(list(_collect_schema_refs(request_schema) | _collect_schema_refs(response_schema)))
+            refs = sorted(_collect_schema_refs(request_schema) | _collect_schema_refs(response_schema))
 
             tags = operation.get("tags") if isinstance(operation.get("tags"), list) else []
             first_tag = str(tags[0]) if tags else "default"
@@ -360,7 +359,7 @@ def _clone_json(value: Any) -> Any:
     return json.loads(json.dumps(value)) if value is not None else None
 
 
-def serialize_document_content(raw_hint: str, normalized_oas: Dict[str, Any]) -> str:
+def serialize_document_content(raw_hint: str, normalized_oas: dict[str, Any]) -> str:
     if _yaml is not None:
         try:
             return _yaml.safe_dump(normalized_oas, sort_keys=False, allow_unicode=True)  # type: ignore[attr-defined]
@@ -369,51 +368,41 @@ def serialize_document_content(raw_hint: str, normalized_oas: Dict[str, Any]) ->
     return json.dumps(normalized_oas, ensure_ascii=False, indent=2)
 
 
-def set_operation_request_body(operation: Dict[str, Any], request_schema_json: Optional[Dict[str, Any]]) -> None:
+def set_operation_request_body(operation: dict[str, Any], request_schema_json: dict[str, Any] | None) -> None:
     if request_schema_json:
-        operation["requestBody"] = {
-            "content": {
-                "application/json": {
-                    "schema": request_schema_json
-                }
-            }
-        }
+        operation["requestBody"] = {"content": {"application/json": {"schema": request_schema_json}}}
     else:
         operation.pop("requestBody", None)
 
 
 def _normalize_responses_payload(
-    responses_json: Optional[Dict[str, Any]],
-    response_schema_json: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    responses_json: dict[str, Any] | None,
+    response_schema_json: dict[str, Any] | None,
+) -> dict[str, Any]:
     if isinstance(responses_json, dict) and responses_json:
         return responses_json
     if response_schema_json:
         return {
             "200": {
                 "description": "Success",
-                "content": {
-                    "application/json": {
-                        "schema": response_schema_json
-                    }
-                },
+                "content": {"application/json": {"schema": response_schema_json}},
             }
         }
     return {"200": {"description": "Success"}}
 
 
 def build_operation_payload(
-    base_operation: Optional[Dict[str, Any]],
+    base_operation: dict[str, Any] | None,
     *,
-    operation_id: Optional[str],
-    tag: Optional[str],
-    summary: Optional[str],
-    parameters_json: Optional[List[Dict[str, Any]]],
-    request_schema_json: Optional[Dict[str, Any]],
-    responses_json: Optional[Dict[str, Any]],
-    response_schema_json: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    operation: Dict[str, Any] = _clone_json(base_operation or {}) or {}
+    operation_id: str | None,
+    tag: str | None,
+    summary: str | None,
+    parameters_json: list[dict[str, Any]] | None,
+    request_schema_json: dict[str, Any] | None,
+    responses_json: dict[str, Any] | None,
+    response_schema_json: dict[str, Any] | None,
+) -> dict[str, Any]:
+    operation: dict[str, Any] = _clone_json(base_operation or {}) or {}
     if operation_id:
         operation["operationId"] = operation_id
     else:

@@ -1,4 +1,5 @@
 """阅读进度测试共享设施：全模型注册 + SQLite 内存库 + 种子数据。"""
+
 import os
 import sys
 
@@ -64,10 +65,17 @@ def seeded_db(db):
     for user in (user_a, user_b):
         db.add(WorkspaceMember(id=f"m-{user.id}", workspace_id=ws.id, user_id=user.id))
     task = SddTask(
-        id="task-1", workspace_id=ws.id, creator_id=user_a.id, name="T",
-        project_path="G:/repo/task", status=TaskStatus.PENDING,
-        session_generation=0, session_revision=0,
-        reading_change_seq=0, reading_epoch=1, reading_ready=True,
+        id="task-1",
+        workspace_id=ws.id,
+        creator_id=user_a.id,
+        name="T",
+        project_path="G:/repo/task",
+        status=TaskStatus.PENDING,
+        session_generation=0,
+        session_revision=0,
+        reading_change_seq=0,
+        reading_epoch=1,
+        reading_ready=True,
     )
     db.add(task)
     db.commit()

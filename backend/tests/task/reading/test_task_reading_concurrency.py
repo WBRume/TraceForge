@@ -6,6 +6,7 @@
 使用独立测试库（默认 sdd_platform_reading_test）：测试自建/自清表，不触碰
 sdd_platform 开发数据。SQLite 无行级锁语义，不能替代这里的并发验证。
 """
+
 import os
 import threading
 
@@ -16,12 +17,9 @@ from sqlalchemy.orm import sessionmaker
 from app.database import Base
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import reading_capture_service as rcs
 from app.domains.task.services import reading_progress_service as rps
-
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
-
 
 pytestmark = pytest.mark.live_revert
 
@@ -43,9 +41,7 @@ def _engine():
     with admin.connect() as conn:
         # 独立测试库整库重建（FK 环使逐表 drop 不可靠）；不触碰 sdd_platform 开发数据
         conn.execute(text(f"DROP DATABASE IF EXISTS `{TEST_DB_NAME}`"))
-        conn.execute(text(
-            f"CREATE DATABASE `{TEST_DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-        ))
+        conn.execute(text(f"CREATE DATABASE `{TEST_DB_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
     admin.dispose()
     url = f"mysql+pymysql://{s.DB_USER}:{s.DB_PASSWORD}@{s.DB_HOST}:{s.DB_PORT}/{TEST_DB_NAME}?charset=utf8mb4"
     engine = create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=10)
@@ -78,12 +74,32 @@ def seed(mysql_db):
     db.commit()
     for u in (ua, ub):
         db.add(WorkspaceMember(id=f"cm-{u.id}", workspace_id=ws.id, user_id=u.id))
-    db.add(SddTask(id="task-c1", workspace_id=ws.id, creator_id=ua.id, name="C1",
-                   project_path="G:/c/1", status=TaskStatus.PENDING,
-                   reading_change_seq=0, reading_epoch=1, reading_ready=True))
-    db.add(SddTask(id="task-c2", workspace_id=ws.id, creator_id=ua.id, name="C2",
-                   project_path="G:/c/2", status=TaskStatus.PENDING,
-                   reading_change_seq=0, reading_epoch=1, reading_ready=True))
+    db.add(
+        SddTask(
+            id="task-c1",
+            workspace_id=ws.id,
+            creator_id=ua.id,
+            name="C1",
+            project_path="G:/c/1",
+            status=TaskStatus.PENDING,
+            reading_change_seq=0,
+            reading_epoch=1,
+            reading_ready=True,
+        )
+    )
+    db.add(
+        SddTask(
+            id="task-c2",
+            workspace_id=ws.id,
+            creator_id=ua.id,
+            name="C2",
+            project_path="G:/c/2",
+            status=TaskStatus.PENDING,
+            reading_change_seq=0,
+            reading_epoch=1,
+            reading_ready=True,
+        )
+    )
     db.commit()
 
     class Env:
@@ -100,7 +116,6 @@ def seed(mysql_db):
 
 def test_concurrent_message_writes_allocate_unique_change_seq(seed):
     """并发写入：任务行锁保证 change_seq 严格唯一且连续分配。"""
-    results = []
     errors = []
 
     def worker(worker_id):
@@ -108,8 +123,13 @@ def test_concurrent_message_writes_allocate_unique_change_seq(seed):
         try:
             for i in range(5):
                 task_conversation_messages.save_chat_message(
-                    db, task_id="task-c1", workspace_id=seed.ws_id, creator_id="cu-a",
-                    role="assistant", content=f"w{worker_id}-{i}", message_type="text",
+                    db,
+                    task_id="task-c1",
+                    workspace_id=seed.ws_id,
+                    creator_id="cu-a",
+                    role="assistant",
+                    content=f"w{worker_id}-{i}",
+                    message_type="text",
                 )
         except Exception as exc:  # pragma: no cover
             errors.append(exc)
@@ -127,8 +147,10 @@ def test_concurrent_message_writes_allocate_unique_change_seq(seed):
     try:
         from app.domains.task.models.reading import TaskReadingItem
 
-        seqs = [int(row[0]) for row in db.query(TaskReadingItem.change_seq)
-                .filter(TaskReadingItem.task_id == "task-c1").all()]
+        seqs = [
+            int(row[0])
+            for row in db.query(TaskReadingItem.change_seq).filter(TaskReadingItem.task_id == "task-c1").all()
+        ]
         assert len(seqs) == 20
         assert len(set(seqs)) == 20, "change_seq must be globally unique per task"
         task = db.query(SddTask).get("task-c1")
@@ -142,18 +164,20 @@ def test_concurrent_receipts_merge_without_lost_updates(seed):
     db = seed.db_factory()
     try:
         for i in range(10):
-            task_conversation_messages.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
-                                           creator_id="cu-a", role="assistant", content=f"m{i}")
+            task_conversation_messages.save_chat_message(
+                db, task_id="task-c2", workspace_id=seed.ws_id, creator_id="cu-a", role="assistant", content=f"m{i}"
+            )
         rps.open_reading_session(db, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2")
         db.commit()
         from app.domains.task.models.reading import TaskReadingItem
 
-        items = db.query(TaskReadingItem).filter(
-            TaskReadingItem.task_id == "task-c2", TaskReadingItem.active.is_(True)).all()
-        first_half = [{"item_key": it.item_key, "change_seq": str(int(it.change_seq))}
-                      for it in items[:5]]
-        second_half = [{"item_key": it.item_key, "change_seq": str(int(it.change_seq))}
-                       for it in items[5:]]
+        items = (
+            db.query(TaskReadingItem)
+            .filter(TaskReadingItem.task_id == "task-c2", TaskReadingItem.active.is_(True))
+            .all()
+        )
+        first_half = [{"item_key": it.item_key, "change_seq": str(int(it.change_seq))} for it in items[:5]]
+        second_half = [{"item_key": it.item_key, "change_seq": str(int(it.change_seq))} for it in items[5:]]
     finally:
         db.close()
 
@@ -162,8 +186,15 @@ def test_concurrent_receipts_merge_without_lost_updates(seed):
     def submit(entries):
         session = seed.db_factory()
         try:
-            rps.submit_receipts(session, user_id="cu-b", workspace_id=seed.ws_id,
-                                task_id="task-c2", epoch=1, raw_items=entries, resume=None)
+            rps.submit_receipts(
+                session,
+                user_id="cu-b",
+                workspace_id=seed.ws_id,
+                task_id="task-c2",
+                epoch=1,
+                raw_items=entries,
+                resume=None,
+            )
             session.commit()
         except Exception as exc:
             session.rollback()
@@ -171,8 +202,10 @@ def test_concurrent_receipts_merge_without_lost_updates(seed):
         finally:
             session.close()
 
-    threads = [threading.Thread(target=submit, args=(first_half,)),
-               threading.Thread(target=submit, args=(second_half,))]
+    threads = [
+        threading.Thread(target=submit, args=(first_half,)),
+        threading.Thread(target=submit, args=(second_half,)),
+    ]
     for t in threads:
         t.start()
     for t in threads:
@@ -183,8 +216,12 @@ def test_concurrent_receipts_merge_without_lost_updates(seed):
     try:
         from app.domains.task.models.reading import TaskReadingReceipt
 
-        assert db.query(TaskReadingReceipt).filter(
-            TaskReadingReceipt.user_id == "cu-b", TaskReadingReceipt.task_id == "task-c2").count() == 10
+        assert (
+            db.query(TaskReadingReceipt)
+            .filter(TaskReadingReceipt.user_id == "cu-b", TaskReadingReceipt.task_id == "task-c2")
+            .count()
+            == 10
+        )
         prog = rps.read_only_progress(db, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2")
         # 已读事实并集：全部条目都有确切版本回执 → 无未读。
         # read_frontier_seq 可能停在并发提交时的可证明位置（允许 < 10）。
@@ -199,10 +236,12 @@ def test_concurrent_resume_cas_single_winner(seed):
     db = seed.db_factory()
     m1_id = m2_id = None
     try:
-        m1 = task_conversation_messages.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
-                                            creator_id="cu-a", role="assistant", content="anchor")
-        m2 = task_conversation_messages.save_chat_message(db, task_id="task-c2", workspace_id=seed.ws_id,
-                                            creator_id="cu-a", role="assistant", content="other")
+        m1 = task_conversation_messages.save_chat_message(
+            db, task_id="task-c2", workspace_id=seed.ws_id, creator_id="cu-a", role="assistant", content="anchor"
+        )
+        m2 = task_conversation_messages.save_chat_message(
+            db, task_id="task-c2", workspace_id=seed.ws_id, creator_id="cu-a", role="assistant", content="other"
+        )
         db.commit()
         m1_id, m2_id = str(m1.id), str(m2.id)
     finally:
@@ -214,10 +253,15 @@ def test_concurrent_resume_cas_single_winner(seed):
     def save_resume(message_id, seq):
         session = seed.db_factory()
         try:
-            resp = rps.submit_receipts(session, user_id="cu-b", workspace_id=seed.ws_id,
-                                       task_id="task-c2", epoch=1, raw_items=[],
-                                       resume={"message_id": message_id, "content_seq": seq,
-                                               "offset_ratio": 0.5, "expected_revision": "0"})
+            resp = rps.submit_receipts(
+                session,
+                user_id="cu-b",
+                workspace_id=seed.ws_id,
+                task_id="task-c2",
+                epoch=1,
+                raw_items=[],
+                resume={"message_id": message_id, "content_seq": seq, "offset_ratio": 0.5, "expected_revision": "0"},
+            )
             session.commit()
             outcomes.append(resp["resume_applied"])
         except Exception as exc:
@@ -230,12 +274,20 @@ def test_concurrent_resume_cas_single_winner(seed):
 
     db = seed.db_factory()
     try:
-        seq1 = str(int(db.query(TaskReadingItem.change_seq)
-                       .filter(TaskReadingItem.task_id == "task-c2",
-                               TaskReadingItem.message_id == m1_id).scalar()))
-        seq2 = str(int(db.query(TaskReadingItem.change_seq)
-                       .filter(TaskReadingItem.task_id == "task-c2",
-                               TaskReadingItem.message_id == m2_id).scalar()))
+        seq1 = str(
+            int(
+                db.query(TaskReadingItem.change_seq)
+                .filter(TaskReadingItem.task_id == "task-c2", TaskReadingItem.message_id == m1_id)
+                .scalar()
+            )
+        )
+        seq2 = str(
+            int(
+                db.query(TaskReadingItem.change_seq)
+                .filter(TaskReadingItem.task_id == "task-c2", TaskReadingItem.message_id == m2_id)
+                .scalar()
+            )
+        )
         # 用户必须先建立阅读状态（回执接口要求同 epoch 状态存在）
         rps.open_reading_session(db, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2")
         db.commit()
@@ -267,7 +319,8 @@ def test_epoch_conflict_blocks_stale_writer_mysql(seed):
     with _pytest.raises(rps.ReadingEpochChanged):
         session = seed.db_factory()
         try:
-            rps.submit_receipts(session, user_id="cu-b", workspace_id=seed.ws_id,
-                                task_id="task-c2", epoch=1, raw_items=[], resume=None)
+            rps.submit_receipts(
+                session, user_id="cu-b", workspace_id=seed.ws_id, task_id="task-c2", epoch=1, raw_items=[], resume=None
+            )
         finally:
             session.close()

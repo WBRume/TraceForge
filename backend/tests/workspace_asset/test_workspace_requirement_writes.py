@@ -1,40 +1,12 @@
 import asyncio
-import os
-import sys
 import json
 
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
-from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
     queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
 )
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
-)
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
+from app.domains.auth.models.user import User, WorkspaceMember, WorkspaceRole
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementAuditAction,
     RequirementImportBatchStatus,
@@ -46,10 +18,15 @@ from app.domains.workspace_asset.models.workspace_asset import (
     SddRequirementImportItem,
     SddTaskRequirement,
 )
-from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service  # noqa: E402
-from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner  # noqa: E402
-
-from tests.workspace_asset.test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session  # noqa: E402
+from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service
+from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner
+from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+from tests.workspace_asset.test_workspace_asset_boundary import (
+    _build_app,
+    _build_db,
+    _seed_workspace,
+    _session,
+)
 
 
 def _use_project_path(db, workspace, task, project_path):
@@ -165,12 +142,12 @@ def test_requirement_create_edit_and_audit_history_are_real_records():
         )
         assert updated.status_code == 200
         assert updated.json()["requirement"]["status"] == RequirementStatus.IN_PROGRESS.value
-        assert RequirementAuditAction.STATUS_CHANGED.value in {
-            item["action"] for item in updated.json()["audit_logs"]
-        }
+        assert RequirementAuditAction.STATUS_CHANGED.value in {item["action"] for item in updated.json()["audit_logs"]}
 
         with _session(SessionLocal) as db:
-            logs = db.query(SddRequirementAuditLog).filter(SddRequirementAuditLog.requirement_id == requirement_id).all()
+            logs = (
+                db.query(SddRequirementAuditLog).filter(SddRequirementAuditLog.requirement_id == requirement_id).all()
+            )
             assert {log.action for log in logs} == {
                 RequirementAuditAction.CREATED,
                 RequirementAuditAction.STATUS_CHANGED,
@@ -202,9 +179,7 @@ def test_requirement_import_preview_requires_confirm_before_creating_requirement
         job = preview.json()
         assert job["status"] in {"PENDING", "SUCCESS"}
         drive_queue()
-        job_result = client.get(
-            f"/api/workspaces/ws-import/workspace-assets/requirements/preview-jobs/{job['job_id']}"
-        )
+        job_result = client.get(f"/api/workspaces/ws-import/workspace-assets/requirements/preview-jobs/{job['job_id']}")
         assert job_result.status_code == 200
         assert job_result.json()["status"] == "SUCCESS"
         batch = job_result.json()["batch"]
@@ -280,7 +255,9 @@ def test_requirement_ai_preview_requires_configured_project_path(monkeypatch):
     try:
         monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
         with _session(SessionLocal) as db:
-            user, _workspace, _task = _seed_workspace(db, workspace_id="ws-import-no-path", task_id="task-import-no-path")
+            user, _workspace, _task = _seed_workspace(
+                db, workspace_id="ws-import-no-path", task_id="task-import-no-path"
+            )
 
         client = TestClient(_build_app(SessionLocal, user))
         preview = client.post(
@@ -330,14 +307,20 @@ def test_direct_import_prompt_location_and_edits_preserve_document_metadata():
             user, workspace, _ = _seed_workspace(db)
         client = TestClient(_build_app(sessions, user))
         base = f"/api/workspaces/{workspace.id}/workspace-assets/requirements"
-        response = client.post(f"{base}/imports/direct", files={"file": ("checkout.md", b"# Checkout\nValidate payment")},
-                               data={"source_uri": "docs/business/checkout.md", "task_prompt": "Implement checkout validation"})
+        response = client.post(
+            f"{base}/imports/direct",
+            files={"file": ("checkout.md", b"# Checkout\nValidate payment")},
+            data={"source_uri": "docs/business/checkout.md", "task_prompt": "Implement checkout validation"},
+        )
         assert response.status_code == 201
         requirement = response.json()["requirement"]
         assert requirement["task_prompt"] == "Implement checkout validation"
         assert requirement["source_uri"] == "docs/business/checkout.md"
         assert requirement["source_metadata"]["source_filename"] == "checkout.md"
-        edited = client.patch(f"{base}/{requirement['id']}", json={"task_prompt": "Edited implementation prompt", "source_uri": "docs/new-checkout.md"})
+        edited = client.patch(
+            f"{base}/{requirement['id']}",
+            json={"task_prompt": "Edited implementation prompt", "source_uri": "docs/new-checkout.md"},
+        )
         assert edited.status_code == 200
         result = edited.json()["requirement"]
         assert result["task_prompt"] == result["source_metadata"]["task_prompt"] == "Edited implementation prompt"
@@ -747,9 +730,12 @@ def test_requirement_split_draft_save_find_and_clear_lifecycle():
         assert client.get(f"{base}/req-draft/split-draft").status_code == 404
 
         # 已确认批次不再接受草稿写入
-        assert client.put(
-            f"{base}/import-batches/batch-draft-2/draft",
-            json={"items": [{"item_id": "item-draft-2", "include": True}]},
-        ).status_code == 409
+        assert (
+            client.put(
+                f"{base}/import-batches/batch-draft-2/draft",
+                json={"items": [{"item_id": "item-draft-2", "include": True}]},
+            ).status_code
+            == 409
+        )
     finally:
         engine.dispose()

@@ -5,7 +5,6 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -108,9 +107,7 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
                     return_value={
                         "role": "assistant",
                         "content": "需要确认",
-                        "metadata": {
-                            "confirmation": {"interaction_id": "interaction-1"}
-                        },
+                        "metadata": {"confirmation": {"interaction_id": "interaction-1"}},
                     }
                 ),
             ),
@@ -136,9 +133,7 @@ class WorkflowSegmentBufferTest(unittest.IsolatedAsyncioTestCase):
 
         from app.engine.session.gate import SessionGate
 
-        engine._gate = SessionGate(
-            task_id="task-1", job_id="job-1", session_revision=2, ttl_seconds=60.0
-        )
+        engine._gate = SessionGate(task_id="task-1", job_id="job-1", session_revision=2, ttl_seconds=60.0)
         engine.cli = MagicMock()
         engine.cli.interrupt = AsyncMock()
         await engine.interrupt()

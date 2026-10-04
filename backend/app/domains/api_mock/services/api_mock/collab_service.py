@@ -2,11 +2,12 @@
 API MOCK Collab Service.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.domains.api_mock.models.api_mock import ApiMockCollabEventType, SddApiMockCollabEvent, SddApiMockProject
+
 from .endpoint_service import get_endpoint
 
 
@@ -15,7 +16,7 @@ def list_collab_events(
     project: SddApiMockProject,
     *,
     limit: int = 100,
-) -> List[SddApiMockCollabEvent]:
+) -> list[SddApiMockCollabEvent]:
     return (
         db.query(SddApiMockCollabEvent)
         .filter(SddApiMockCollabEvent.project_id == project.id)
@@ -31,8 +32,8 @@ def create_collab_event(
     *,
     user_id: str,
     event_type: ApiMockCollabEventType,
-    endpoint_id: Optional[str],
-    payload: Optional[Dict[str, Any]],
+    endpoint_id: str | None,
+    payload: dict[str, Any] | None,
 ) -> SddApiMockCollabEvent:
     if endpoint_id:
         endpoint = get_endpoint(db, project, endpoint_id)

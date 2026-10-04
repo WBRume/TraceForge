@@ -4,29 +4,25 @@ Regression tests for task process asset write operations (task_process package).
 These tests exercise all CRUD write paths through the router endpoints.
 They must pass BEFORE and AFTER the service file refactoring.
 """
-import os
-import sys
 
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.task.models.task import TaskStatus
+from app.domains.task.models.task import (
+    SddTask,
+    TaskStatus,
+)
 from app.domains.workspace_asset.models.workspace_asset import (
     RequirementStatus,
     SddRequirement,
     SddTaskRequirement,
     TaskRequirementRelationType,
 )
-from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError  # noqa: E402
-
-from tests.workspace_asset.test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session  # noqa: E402
+from tests.workspace_asset.test_workspace_asset_boundary import (
+    _build_app,
+    _build_db,
+    _seed_workspace,
+    _session,
+)
 
 
 def _seed_requirement_link(db, workspace, task, user):
@@ -59,12 +55,11 @@ def _set_task_done(db, workspace_id, task_id):
 
 
 # Import SddTask for the helper above
-from app.domains.task.models.task import SddTask  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helper: get entity from section endpoint
 # ---------------------------------------------------------------------------
+
 
 def _get_section_items(client, ws_id, task_id, section):
     """Fetch items from a section list endpoint."""
@@ -83,6 +78,7 @@ def _get_detail(client, ws_id, task_id, section, entity_id):
 # ---------------------------------------------------------------------------
 # Human Review CRUD
 # ---------------------------------------------------------------------------
+
 
 def test_create_and_update_human_review():
     engine, SessionLocal = _build_db()
@@ -143,6 +139,7 @@ def test_create_and_update_human_review():
 # ---------------------------------------------------------------------------
 # Evidence CRUD
 # ---------------------------------------------------------------------------
+
 
 def test_create_and_update_evidence():
     engine, SessionLocal = _build_db()
@@ -225,6 +222,7 @@ def test_evidence_phase_gating():
 # Decision CRUD
 # ---------------------------------------------------------------------------
 
+
 def test_create_and_update_decision():
     engine, SessionLocal = _build_db()
     try:
@@ -281,9 +279,7 @@ def test_create_and_update_decision():
         assert updated["title"] == "Use PostgreSQL for production"
 
         # Verify audit log
-        audit_res = client.get(
-            "/api/workspaces/ws-decision/workspace-assets/tasks/task-decision/process-audit"
-        )
+        audit_res = client.get("/api/workspaces/ws-decision/workspace-assets/tasks/task-decision/process-audit")
         assert audit_res.status_code == 200
         audit_items = audit_res.json()["items"]
         decision_audits = [a for a in audit_items if a["record_type"] == "DECISION"]
@@ -310,7 +306,12 @@ def test_create_decision_with_line_refs():
                 "status": "PROPOSED",
                 "source_type": "TASK_DETAIL_BACKFILL",
                 "delta_line_refs": [
-                    {"file_path": "src/main.py", "line_start": 10, "line_end": 20, "selected_text": "def validate_checkout():"},
+                    {
+                        "file_path": "src/main.py",
+                        "line_start": 10,
+                        "line_end": 20,
+                        "selected_text": "def validate_checkout():",
+                    },
                 ],
             },
         )
@@ -347,6 +348,7 @@ def test_decision_validation_missing_title():
 # ---------------------------------------------------------------------------
 # Clarification CRUD
 # ---------------------------------------------------------------------------
+
 
 def test_create_and_update_clarification():
     engine, SessionLocal = _build_db()
@@ -421,6 +423,7 @@ def test_clarification_validation_missing_question():
 # ---------------------------------------------------------------------------
 # Final Summary
 # ---------------------------------------------------------------------------
+
 
 def test_final_summary_verified_requires_human_confirmation_and_no_blocking_clarification():
     engine, SessionLocal = _build_db()

@@ -11,7 +11,6 @@ T03 三路判定正例 + 加绑/解绑 + ticket 生命周期用例（B-21）。
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from app.domains.auth.errors import (
     ERR_OAUTH_PASSWORD_INVALID,
@@ -24,7 +23,6 @@ from app.domains.auth.errors import (
 from app.domains.auth.models.oauth import OAuthIdentity, OAuthTicket
 from app.domains.auth.models.user import User
 from app.domains.auth.services import auth_service, oauth_service
-
 from tests.conftest import (
     github_profile,
     make_identity,
@@ -32,8 +30,8 @@ from tests.conftest import (
     run_login_flow,
 )
 
-
 # ══════════════════ 路径 A：身份已存在 ══════════════════
+
 
 def test_path_a_existing_identity_login_ok_issues_tokens(db, github_mock, client: TestClient):
     user = make_user(db, email="octo@example.com", password="Octo-Pass-1")
@@ -58,9 +56,7 @@ def test_path_a_updates_last_login_and_snapshot(db, github_mock):
     identity = make_identity(db, user, provider="github", provider_uid="9001")
     assert identity.last_login_at is None
 
-    run_login_flow(
-        db, github_mock, profile=github_profile(uid=9001, name="Octo Renamed")
-    )
+    run_login_flow(db, github_mock, profile=github_profile(uid=9001, name="Octo Renamed"))
     db.refresh(identity)
     assert identity.last_login_at is not None
     # 资料快照随登录更新
@@ -69,11 +65,10 @@ def test_path_a_updates_last_login_and_snapshot(db, github_mock):
 
 # ══════════════════ 路径 B 正例 ══════════════════
 
+
 def test_path_b_correct_password_binds_and_logs_in(db, github_mock, client: TestClient):
     user = make_user(db, email="legacy@example.com", password="Legacy-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7001, email="legacy@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7001, email="legacy@example.com"))
     assert params["status"] == "BIND_REQUIRED"
 
     # resolve 只回脱敏邮箱
@@ -92,9 +87,7 @@ def test_path_b_correct_password_binds_and_logs_in(db, github_mock, client: Test
     claims = auth_service.decode_token(body["access_token"], expected_type="access")
     assert claims["sub"] == user.id
 
-    identities = (
-        db.query(OAuthIdentity).filter(OAuthIdentity.user_id == user.id).all()
-    )
+    identities = db.query(OAuthIdentity).filter(OAuthIdentity.user_id == user.id).all()
     assert len(identities) == 1
     assert identities[0].provider_uid == "7001"
 
@@ -102,9 +95,7 @@ def test_path_b_correct_password_binds_and_logs_in(db, github_mock, client: Test
 def test_path_b_email_login_still_works_after_bind(db, github_mock):
     """绑定不改变本地凭证：邮箱+密码登录照常可用。"""
     user = make_user(db, email="legacy@example.com", password="Legacy-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7002, email="legacy@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7002, email="legacy@example.com"))
     tokens = oauth_service.confirm_bind(db, params["ticket"], "Legacy-Pass-1")
     assert tokens.access_token
 
@@ -114,22 +105,17 @@ def test_path_b_email_login_still_works_after_bind(db, github_mock):
 
 # ══════════════════ 路径 C 正例 ══════════════════
 
+
 def test_path_c_complete_register_creates_user_and_identity(db, github_mock):
     make_user(db, email="existing@example.com", password="Whatever-1")  # 保证非首号用户
     # 三方未返回 email → 路径 C
     params = run_login_flow(db, github_mock, profile=github_profile(uid=7100, email=None))
     assert params["status"] == "REGISTER_REQUIRED"
 
-    tokens = oauth_service.complete_register(
-        db, params["ticket"], "newbie@example.com", "Newbie-Pass-1", "Newbie"
-    )
+    tokens = oauth_service.complete_register(db, params["ticket"], "newbie@example.com", "Newbie-Pass-1", "Newbie")
     assert tokens.access_token
 
-    user = (
-        db.query(User)
-        .filter(User.email == "newbie@example.com")
-        .one()
-    )
+    user = db.query(User).filter(User.email == "newbie@example.com").one()
     assert user.display_name == "Newbie"
     assert not user.is_admin
     # 建号与绑定同一事务：绑定已存在
@@ -150,9 +136,7 @@ def test_path_c_complete_register_creates_user_and_identity(db, github_mock):
 def test_path_c_with_provider_email_prefills_suggestion(db, github_mock, client: TestClient):
     """三方有 email 但未注册 → REGISTER_REQUIRED，resolve 预填 suggested_*。"""
     make_user(db, email="seed@example.com", password="Seed-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7200, email="fresh@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7200, email="fresh@example.com"))
     assert params["status"] == "REGISTER_REQUIRED"
 
     resp = client.post("/api/auth/oauth/resolve", json={"ticket": params["ticket"]})
@@ -163,11 +147,15 @@ def test_path_c_with_provider_email_prefills_suggestion(db, github_mock, client:
 
 # ══════════════════ 加绑 ══════════════════
 
+
 def test_bind_intent_normal_user_no_password_needed(db, github_mock):
     user = make_user(db, email="me@example.com", password="Me-Pass-1")
     params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7300, email="me@example.com"),
-        intent="bind", user=user,
+        db,
+        github_mock,
+        profile=github_profile(uid=7300, email="me@example.com"),
+        intent="bind",
+        user=user,
     )
     assert params["status"] == "LOGIN_OK"  # 以 LOGIN_OK 标记可绑定
 
@@ -217,8 +205,11 @@ def test_bind_intent_already_bound_idempotent(db, github_mock):
     make_identity(db, user, provider="github", provider_uid="7500")
 
     params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7500),
-        intent="bind", user=user,
+        db,
+        github_mock,
+        profile=github_profile(uid=7500),
+        intent="bind",
+        user=user,
     )
     assert params["status"] == "ALREADY_BOUND"
 
@@ -226,9 +217,7 @@ def test_bind_intent_already_bound_idempotent(db, github_mock):
     assert result.identity.user_id == user.id
     # 不产生重复绑定
     assert (
-        db.query(OAuthIdentity)
-        .filter(OAuthIdentity.user_id == user.id, OAuthIdentity.provider_uid == "7500")
-        .count()
+        db.query(OAuthIdentity).filter(OAuthIdentity.user_id == user.id, OAuthIdentity.provider_uid == "7500").count()
         == 1
     )
 
@@ -240,8 +229,11 @@ def test_bind_intent_conflict_when_identity_bound_to_other(db, github_mock):
     make_identity(db, other, provider="github", provider_uid="7600")
 
     params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7600),
-        intent="bind", user=me,
+        db,
+        github_mock,
+        profile=github_profile(uid=7600),
+        intent="bind",
+        user=me,
     )
     assert params["status"] == "BIND_CONFLICT"
 
@@ -251,6 +243,7 @@ def test_bind_intent_conflict_when_identity_bound_to_other(db, github_mock):
 
 
 # ══════════════════ 解绑 ══════════════════
+
 
 def test_unbind_then_password_login_still_works(db, github_mock, client: TestClient):
     user = make_user(db, email="me@example.com", password="Me-Pass-1")
@@ -300,6 +293,7 @@ def test_unbind_blocked_when_account_has_no_password(db):
 
 # ══════════════════ ticket 生命周期 ══════════════════
 
+
 def test_expired_ticket_resolve_returns_410(db, github_mock):
     """E-17：过期 ticket → 410 OAUTH_TICKET_EXPIRED。"""
     user = make_user(db, email="octo@example.com", password="Octo-Pass-1")
@@ -318,9 +312,7 @@ def test_expired_ticket_resolve_returns_410(db, github_mock):
 def test_resolve_is_idempotent_and_does_not_consume(db, github_mock, client: TestClient):
     """resolve 幂等读：可重复调用、不消费；之后 confirm 仍可用。"""
     make_user(db, email="legacy@example.com", password="Legacy-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=8001, email="legacy@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=8001, email="legacy@example.com"))
     ticket = params["ticket"]
 
     for _ in range(3):
@@ -332,9 +324,7 @@ def test_resolve_is_idempotent_and_does_not_consume(db, github_mock, client: Tes
     assert row.consumed_at is None
 
     # 多次 resolve 之后 confirm 仍正常
-    confirm = client.post(
-        "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Legacy-Pass-1"}
-    )
+    confirm = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Legacy-Pass-1"})
     assert confirm.status_code == 200
     assert confirm.json()["status"] == "BOUND"
 

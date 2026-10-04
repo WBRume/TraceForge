@@ -1,6 +1,4 @@
 import json
-import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,19 +7,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.database import Base  # noqa: E402
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.asset.models.asset  # noqa: F401,E402
-import app.domains.dashboard.models.metric  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
-import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
-from app.engine.claude_event_adapter import extract_claude_compaction_event, extract_claude_usage  # noqa: E402
+import app.domains.api_mock.models.api_mock
+import app.domains.asset.models.asset
+import app.domains.dashboard.models.metric
+import app.domains.task.models.test_result
+import app.domains.workflow.models.task_change
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.auth.models.user import User, Workspace
 from app.domains.skill.models.skill import (
@@ -30,15 +22,14 @@ from app.domains.skill.models.skill import (
     SkillRuntimeEventType,
     SkillRuntimeEvidenceLevel,
 )
-from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
 from app.domains.task.models.context_token import (
     ContextTokenCategory,
     SddContextTokenSegment,
-    SddContextTokenSnapshot,
 )
 from app.domains.task.models.log import LogType, SddExecutionLog
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.services import context_compaction_service, context_token_service  # noqa: E402
+from app.domains.task.services import context_compaction_service, context_token_service
+from app.engine.claude_event_adapter import extract_claude_compaction_event, extract_claude_usage
 
 
 class ContextTokenServiceTest(unittest.TestCase):
@@ -203,7 +194,9 @@ class ContextTokenServiceTest(unittest.TestCase):
             usage=None,
         )
 
-        payload = context_token_service.get_context_window(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")
+        payload = context_token_service.get_context_window(
+            self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1"
+        )
         self.assertFalse(payload["provider_tokens"]["available"])
         self.assertIsNone(payload["provider_tokens"]["input_tokens"])
         self.assertEqual(payload["snapshot"]["duration_ms"], 123)
@@ -211,7 +204,9 @@ class ContextTokenServiceTest(unittest.TestCase):
         self.assertEqual(payload["compaction"]["phases"][0]["phase_index"], 1)
 
     def test_context_window_aggregates_segments_by_snapshot_id(self):
-        snapshot = context_token_service.ensure_snapshot(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")
+        snapshot = context_token_service.ensure_snapshot(
+            self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1"
+        )
         context_token_service.record_segment(
             self.db,
             snapshot=snapshot,
@@ -285,7 +280,9 @@ class ContextTokenServiceTest(unittest.TestCase):
         self.assertEqual(payload["provider_tokens"]["input_tokens"], 100)
 
     def test_context_window_detects_compaction_from_execution_log(self):
-        snapshot = context_token_service.ensure_snapshot(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")
+        snapshot = context_token_service.ensure_snapshot(
+            self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1"
+        )
         context_token_service.update_snapshot_usage(
             self.db,
             snapshot=snapshot,
@@ -328,7 +325,9 @@ class ContextTokenServiceTest(unittest.TestCase):
         )
         self.db.commit()
 
-        payload = context_token_service.get_context_window(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")
+        payload = context_token_service.get_context_window(
+            self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1"
+        )
 
         compaction = payload["compaction"]
         self.assertEqual(compaction["status"], "detected")
@@ -346,7 +345,9 @@ class ContextTokenServiceTest(unittest.TestCase):
         self.assertEqual(risk_counts["subagent"], 1)
 
     def test_tool_result_promotes_to_runtime_skills_when_runtime_file_evidence_exists(self):
-        snapshot = context_token_service.ensure_snapshot(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")
+        snapshot = context_token_service.ensure_snapshot(
+            self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1"
+        )
         context_token_service.record_tool_result(
             self.db,
             workspace_id="ws-1",
@@ -385,7 +386,9 @@ class ContextTokenServiceTest(unittest.TestCase):
         self.assertEqual(row.skill_runtime_event_id, "event-1")
 
     def test_segments_store_hash_counts_and_short_preview_not_raw_text(self):
-        snapshot = context_token_service.ensure_snapshot(self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1")
+        snapshot = context_token_service.ensure_snapshot(
+            self.db, workspace_id="ws-1", task_id="task-1", ai_job_id="job-1"
+        )
         raw_text = "x" * 2000
         row = context_token_service.record_segment(
             self.db,

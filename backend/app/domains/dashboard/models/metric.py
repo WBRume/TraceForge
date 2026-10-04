@@ -2,10 +2,9 @@
 看板指标模型
 """
 
-from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Float, func
-)
+from sqlalchemy import Column, DateTime, Float, ForeignKey, String, func
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 

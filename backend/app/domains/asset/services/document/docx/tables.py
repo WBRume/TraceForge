@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
-
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from app.domains.asset.services.document.docx.paragraphs import parse_paragraph_content
 from app.domains.asset.services.document.docx.runs import merge_adjacent_runs
@@ -13,28 +12,28 @@ from app.domains.asset.services.document.docx.xml_utils import DOCX_NS_MAP
 
 def parse_table_block(
     table_el: ET.Element,
-    comments_by_id: Dict[str, Dict[str, Any]],
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    comments_by_id: dict[str, dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """解析 w:tbl → (table block, comment anchors)。
 
     单元格内多段落换行拼接，锚点偏移按 "段落\n单元格 | 单元格" 的
     行文本布局（分隔符 " | "、行间 "\n"）逐级累加。
     """
-    rows_payload: List[Dict[str, Any]] = []
-    row_line_texts: List[str] = []
-    table_anchors: List[Dict[str, Any]] = []
+    rows_payload: list[dict[str, Any]] = []
+    row_line_texts: list[str] = []
+    table_anchors: list[dict[str, Any]] = []
     table_offset = 0
 
     for row in table_el.findall("./w:tr", DOCX_NS_MAP):
-        row_cells: List[Dict[str, Any]] = []
-        row_text_parts: List[str] = []
-        row_anchor_items: List[Dict[str, Any]] = []
+        row_cells: list[dict[str, Any]] = []
+        row_text_parts: list[str] = []
+        row_anchor_items: list[dict[str, Any]] = []
         row_cursor = 0
 
         for cell in row.findall("./w:tc", DOCX_NS_MAP):
-            cell_runs: List[Dict[str, Any]] = []
-            cell_text_parts: List[str] = []
-            cell_anchors: List[Dict[str, Any]] = []
+            cell_runs: list[dict[str, Any]] = []
+            cell_text_parts: list[str] = []
+            cell_anchors: list[dict[str, Any]] = []
             cell_cursor = 0
 
             for paragraph in cell.findall("./w:p", DOCX_NS_MAP):
@@ -98,11 +97,11 @@ def parse_table_block(
     return block, table_anchors
 
 
-def table_to_markdown(table_rows: List[Dict[str, Any]]) -> str:
+def table_to_markdown(table_rows: list[dict[str, Any]]) -> str:
     if not table_rows:
         return ""
 
-    rows: List[List[str]] = []
+    rows: list[list[str]] = []
     max_cols = 0
     for row in table_rows:
         cols = [str(cell.get("text") or "").replace("\n", "<br>").strip() for cell in (row.get("cells") or [])]

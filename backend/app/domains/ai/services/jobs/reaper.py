@@ -10,13 +10,13 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import and_, or_
 
 from app.agents import (
-    AgentStopResult,
     EXECUTION_KIND_REMOTE_SESSION,
+    AgentStopResult,
 )
 from app.agents.supervision import process_supervisor
 from app.core.logging import get_logger
@@ -30,10 +30,9 @@ from app.domains.ai.services.ai_job_convergence_service import (
     request_attempt_termination_in_txn,
 )
 from app.domains.ai.services.jobs import attempts as attempt_ops
-from app.domains.ai.services.jobs import publishing
+from app.domains.ai.services.jobs import publishing, remote_recovery
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
-from app.domains.ai.services.jobs import remote_recovery
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -51,7 +50,7 @@ def _dirty_interrupted_ownership_predicate():
 # ────────────────────────── 可回收扫描与收养 ──────────────────────────
 
 
-def list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def list_reclaimable_jobs_sync(task_id: str | None = None) -> list[dict[str, Any]]:
     db = SessionLocal()
     try:
         now = datetime.utcnow()
@@ -61,11 +60,13 @@ def list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, 
                 SddAiJob.task_id == task_id if task_id is not None else True,
                 or_(
                     and_(
-                        SddAiJob.status.in_([
-                            AiJobStatus.RUNNING,
-                            AiJobStatus.TERMINATING,
-                            AiJobStatus.ORPHANED,
-                        ]),
+                        SddAiJob.status.in_(
+                            [
+                                AiJobStatus.RUNNING,
+                                AiJobStatus.TERMINATING,
+                                AiJobStatus.ORPHANED,
+                            ]
+                        ),
                         SddAiJob.manual_intervention_required.isnot(True),
                         (SddAiJob.next_reap_at.is_(None) | (SddAiJob.next_reap_at <= now)),
                     ),
@@ -81,7 +82,7 @@ def list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, 
             )
             .all()
         )
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         for job in rows:
             if row_has_leaked_interrupted_ownership(job):
                 # The attempt already stopped writing; a leaked ownership row
@@ -125,7 +126,7 @@ def list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, 
 
 def adopt_reclaimable_job_sync(
     job_id: str,
-    expected_run_token: Optional[str],
+    expected_run_token: str | None,
     adopted_run_token: str,
     reason: str,
 ) -> bool:
@@ -133,38 +134,35 @@ def adopt_reclaimable_job_sync(
     try:
         query = db.query(SddAiJob).filter(SddAiJob.id == job_id)
         query = query.filter(
-            SddAiJob.run_token == expected_run_token
-            if expected_run_token
-            else SddAiJob.run_token.is_(None)
+            SddAiJob.run_token == expected_run_token if expected_run_token else SddAiJob.run_token.is_(None)
         )
-        affected = (
-            query.filter(
-                or_(
-                    SddAiJob.status.in_([
+        affected = query.filter(
+            or_(
+                SddAiJob.status.in_(
+                    [
                         AiJobStatus.RUNNING,
                         AiJobStatus.TERMINATING,
                         AiJobStatus.ORPHANED,
-                    ]),
-                    and_(
-                        SddAiJob.status == AiJobStatus.INTERRUPTED,
-                        _dirty_interrupted_ownership_predicate(),
-                    ),
+                    ]
                 ),
-                SddAiJob.manual_intervention_required.isnot(True),
-            )
-            .update(
-                {
-                    SddAiJob.status: AiJobStatus.TERMINATING,
-                    SddAiJob.worker_id: WORKER_ID,
-                    SddAiJob.worker_boot_id: WORKER_BOOT_ID,
-                    SddAiJob.run_token: adopted_run_token,
-                    SddAiJob.termination_attempts: SddAiJob.termination_attempts + 1,
-                    SddAiJob.terminal_reason: reason,
-                    SddAiJob.failure_code: reason,
-                    SddAiJob.last_reap_attempt_at: datetime.utcnow(),
-                },
-                synchronize_session=False,
-            )
+                and_(
+                    SddAiJob.status == AiJobStatus.INTERRUPTED,
+                    _dirty_interrupted_ownership_predicate(),
+                ),
+            ),
+            SddAiJob.manual_intervention_required.isnot(True),
+        ).update(
+            {
+                SddAiJob.status: AiJobStatus.TERMINATING,
+                SddAiJob.worker_id: WORKER_ID,
+                SddAiJob.worker_boot_id: WORKER_BOOT_ID,
+                SddAiJob.run_token: adopted_run_token,
+                SddAiJob.termination_attempts: SddAiJob.termination_attempts + 1,
+                SddAiJob.terminal_reason: reason,
+                SddAiJob.failure_code: reason,
+                SddAiJob.last_reap_attempt_at: datetime.utcnow(),
+            },
+            synchronize_session=False,
         )
         db.commit()
         return int(affected or 0) == 1
@@ -175,24 +173,19 @@ def adopt_reclaimable_job_sync(
 # ────────────────────────── 停止流程 ──────────────────────────
 
 
-def _reap_stop_reason(row: Dict[str, Any], result: Any) -> str:
+def _reap_stop_reason(row: dict[str, Any], result: Any) -> str:
     if result is not None and getattr(result, "error_message", None):
         return str(result.error_message)
     return str(row.get("reason") or "REAP")
 
 
-def _reap_failure_code(row: Dict[str, Any], result: Any) -> str:
-    if result is not None and (
-        getattr(result, "error_code", None) or getattr(result, "failure_code", None)
-    ):
-        return str(
-            getattr(result, "error_code", None)
-            or getattr(result, "failure_code", None)
-        )
+def _reap_failure_code(row: dict[str, Any], result: Any) -> str:
+    if result is not None and (getattr(result, "error_code", None) or getattr(result, "failure_code", None)):
+        return str(getattr(result, "error_code", None) or getattr(result, "failure_code", None))
     return str(row.get("reason") or "REAP")
 
 
-async def stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
+async def stop_remote_session(row: dict[str, Any]) -> AgentStopResult:
     """Stop a remote provider session from durable reaper metadata (doc §10.4.2).
 
     - 使用持久化 backend/session id，不依赖内存 runtime；
@@ -204,7 +197,7 @@ async def stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
       NACK/UNKNOWN，绝不因为本地没有 PID 而声称远程 session 已停止；
     - ACK / NACK / 异常三条路径都必须释放 adapter 资源（``close()``）。
     """
-    reason = str(row.get("reason") or "REAP")
+    str(row.get("reason") or "REAP")
     backend_name = str(row.get("agent_backend") or "").strip()
     session_id = str(row.get("session_id") or "").strip()
     if not backend_name or not session_id:
@@ -260,7 +253,7 @@ async def stop_remote_session(row: Dict[str, Any]) -> AgentStopResult:
             )
 
 
-async def stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
+async def stop_attempt_processes(row: dict[str, Any], token: str) -> Any:
     """Run the fixed reaper order (doc 8 / §10.4.2) for one adopted attempt.
 
     0. REMOTE_SESSION 行按持久化 locator 分派 provider stop（durable stop）；
@@ -315,7 +308,7 @@ async def stop_attempt_processes(row: Dict[str, Any], token: str) -> Any:
 # ────────────────────────── 回收主流程 ──────────────────────────
 
 
-async def reap_stale_jobs(*, task_id: Optional[str] = None) -> int:
+async def reap_stale_jobs(*, task_id: str | None = None) -> int:
     """Reclaim attempts whose owner disappeared or whose lease expired."""
     if task_id is None:
         rows = await run_db(list_reclaimable_jobs_sync)
@@ -374,7 +367,7 @@ async def reap_stale_jobs(*, task_id: Optional[str] = None) -> int:
 # ────────────────────────── worker 关停支持 ──────────────────────────
 
 
-def mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
+def mark_worker_jobs_terminating_sync(reason: str) -> list[dict[str, Any]]:
     """Durably fence attempts before their in-process owners are stopped.
 
     所有 RUNNING -> TERMINATING 写入都走唯一 termination request 事务
@@ -388,16 +381,18 @@ def mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
                 db.query(SddAiJob.id)
                 .filter(
                     SddAiJob.worker_boot_id == WORKER_BOOT_ID,
-                    SddAiJob.status.in_([
-                        AiJobStatus.RUNNING,
-                        AiJobStatus.TERMINATING,
-                        AiJobStatus.ORPHANED,
-                    ]),
+                    SddAiJob.status.in_(
+                        [
+                            AiJobStatus.RUNNING,
+                            AiJobStatus.TERMINATING,
+                            AiJobStatus.ORPHANED,
+                        ]
+                    ),
                 )
                 .all()
             )
         ]
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
         changed = False
         for job_id in sorted(candidate_ids):
             candidate = db.get(SddAiJob, job_id)
@@ -411,9 +406,7 @@ def mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
                     mode="WORKER_SHUTDOWN",
                 ),
             )
-            job = (
-                db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-            )
+            job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
             if job is None:
                 continue
             if termination.changed:

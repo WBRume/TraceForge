@@ -3,8 +3,7 @@
 """
 
 import os
-import re
-from typing import Any, Dict
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -33,9 +32,7 @@ def _validate_workspace_root_dir(value: str) -> str:
         raise SystemConfigError("workspace_root_dir must be an absolute path", status_code=400)
     expanded = os.path.abspath(os.path.expanduser(value))
     if os.path.dirname(expanded) == expanded:
-        raise SystemConfigError(
-            "workspace_root_dir cannot be a filesystem root directory", status_code=400
-        )
+        raise SystemConfigError("workspace_root_dir cannot be a filesystem root directory", status_code=400)
     return value
 
 
@@ -50,7 +47,7 @@ def _workspace_root_dir_env_default() -> str:
 
 
 # 公开配置项白名单：key -> (默认值, 说明, 解析函数)
-_CONFIG_SPECS: Dict[str, Dict[str, Any]] = {
+_CONFIG_SPECS: dict[str, dict[str, Any]] = {
     CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED: {
         "default": "false",
         "description": (
@@ -82,7 +79,7 @@ class SystemConfigError(Exception):
         self.status_code = status_code
 
 
-def _get_spec(key: str) -> Dict[str, Any]:
+def _get_spec(key: str) -> dict[str, Any]:
     spec = _CONFIG_SPECS.get(key)
     if spec is None:
         raise SystemConfigError(f"Unknown system config: {key}", status_code=404)
@@ -94,7 +91,7 @@ def is_string_config(key: str) -> bool:
     return _get_spec(key).get("type") == "str"
 
 
-def _resolve_spec_default(spec: Dict[str, Any]) -> str:
+def _resolve_spec_default(spec: dict[str, Any]) -> str:
     """解析配置默认值：优先 default_fn（env 层），否则静态 default。"""
     default_fn = spec.get("default_fn")
     if default_fn is not None:
@@ -147,9 +144,9 @@ def set_config_value(db: Session, key: str, value: str, updated_by: str = "") ->
     return row
 
 
-def list_public_configs(db: Session) -> Dict[str, Any]:
+def list_public_configs(db: Session) -> dict[str, Any]:
     """返回前端可见的配置项（已按类型解析）。"""
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     for key in _CONFIG_SPECS:
         spec = _CONFIG_SPECS[key]
         raw = get_config_value(db, key)

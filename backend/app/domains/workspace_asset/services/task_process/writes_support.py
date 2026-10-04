@@ -7,7 +7,7 @@ Clarification / Final Summary）共用的前置校验与审计工具；展示器
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -52,7 +52,7 @@ def ensure_task_not_baselined(task: SddTask) -> None:
         )
 
 
-def ensure_requirement(db: Session, workspace_id: str, requirement_id: Optional[str]) -> Optional[SddRequirement]:
+def ensure_requirement(db: Session, workspace_id: str, requirement_id: str | None) -> SddRequirement | None:
     if not requirement_id:
         return None
     requirement = (
@@ -65,7 +65,7 @@ def ensure_requirement(db: Session, workspace_id: str, requirement_id: Optional[
     return requirement
 
 
-def ensure_ai_job(db: Session, workspace_id: str, task_id: str, ai_job_id: Optional[str]) -> Optional[SddAiJob]:
+def ensure_ai_job(db: Session, workspace_id: str, task_id: str, ai_job_id: str | None) -> SddAiJob | None:
     if not ai_job_id:
         return None
     job = (
@@ -78,7 +78,7 @@ def ensure_ai_job(db: Session, workspace_id: str, task_id: str, ai_job_id: Optio
     return job
 
 
-def ensure_ai_output(db: Session, workspace_id: str, task_id: str, output_id: Optional[str]) -> Optional[SddAiOutput]:
+def ensure_ai_output(db: Session, workspace_id: str, task_id: str, output_id: str | None) -> SddAiOutput | None:
     if not output_id:
         return None
     output = (
@@ -95,8 +95,8 @@ def ensure_human_review(
     db: Session,
     workspace_id: str,
     task_id: str,
-    review_id: Optional[str],
-) -> Optional[SddHumanReview]:
+    review_id: str | None,
+) -> SddHumanReview | None:
     if not review_id:
         return None
     review = (
@@ -117,8 +117,8 @@ def ensure_human_delta(
     db: Session,
     workspace_id: str,
     task_id: str,
-    delta_id: Optional[str],
-) -> Optional[SddHumanDelta]:
+    delta_id: str | None,
+) -> SddHumanDelta | None:
     if not delta_id:
         return None
     delta = (
@@ -135,7 +135,7 @@ def ensure_human_delta(
     return delta
 
 
-def ensure_evidence(db: Session, workspace_id: str, task_id: str, evidence_id: Optional[str]) -> Optional[SddEvidence]:
+def ensure_evidence(db: Session, workspace_id: str, task_id: str, evidence_id: str | None) -> SddEvidence | None:
     if not evidence_id:
         return None
     evidence = (
@@ -151,10 +151,10 @@ def ensure_evidence(db: Session, workspace_id: str, task_id: str, evidence_id: O
 def validate_evidence_source(
     *,
     source_type: EvidenceSourceType,
-    source_uri: Optional[str],
-    source_ref: Optional[str],
-    source_path: Optional[str],
-    source_metadata: Optional[Dict[str, Any]],
+    source_uri: str | None,
+    source_ref: str | None,
+    source_path: str | None,
+    source_metadata: dict[str, Any] | None,
 ) -> None:
     # All attachment fields are optional; source_type alone is sufficient.
     return
@@ -201,10 +201,10 @@ def add_process_audit(
     record_type: TaskProcessRecordType,
     record_id: str,
     action: TaskProcessAuditAction,
-    actor_id: Optional[str] = None,
-    before: Optional[Dict[str, Any]] = None,
-    after: Optional[Dict[str, Any]] = None,
-    reason: Optional[str] = None,
+    actor_id: str | None = None,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    reason: str | None = None,
 ) -> None:
     db.add(
         SddTaskProcessAuditLog(
@@ -266,9 +266,7 @@ def ensure_final_summary_verified_allowed(task: SddTask) -> None:
     from app.domains.workspace_asset.services.task_final_workflow import review_service
 
     expert_reviews = [
-        review
-        for review in (task.human_reviews or [])
-        if review.review_type == review_service.EXPERT_REVIEW_TYPE
+        review for review in (task.human_reviews or []) if review.review_type == review_service.EXPERT_REVIEW_TYPE
     ]
     if not expert_reviews:
         raise WorkspaceAssetError(

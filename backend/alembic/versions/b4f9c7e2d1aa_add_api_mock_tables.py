@@ -6,17 +6,17 @@ Create Date: 2026-03-27 23:30:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b4f9c7e2d1aa"
-down_revision: Union[str, None] = "6f52f8d3b9aa"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "6f52f8d3b9aa"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _has_index(inspector, table_name: str, index_name: str) -> bool:
@@ -180,7 +180,9 @@ def upgrade() -> None:
         )
 
     inspector = sa.inspect(bind)
-    if inspector.has_table("sdd_api_mock_projects") and not _has_fk(inspector, "sdd_api_mock_projects", "fk_api_mock_project_active_source_version"):
+    if inspector.has_table("sdd_api_mock_projects") and not _has_fk(
+        inspector, "sdd_api_mock_projects", "fk_api_mock_project_active_source_version"
+    ):
         op.create_foreign_key(
             "fk_api_mock_project_active_source_version",
             "sdd_api_mock_projects",
@@ -222,7 +224,9 @@ def downgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
 
-    if inspector.has_table("sdd_api_mock_projects") and _has_fk(inspector, "sdd_api_mock_projects", "fk_api_mock_project_active_source_version"):
+    if inspector.has_table("sdd_api_mock_projects") and _has_fk(
+        inspector, "sdd_api_mock_projects", "fk_api_mock_project_active_source_version"
+    ):
         op.drop_constraint("fk_api_mock_project_active_source_version", "sdd_api_mock_projects", type_="foreignkey")
 
     table_order = [

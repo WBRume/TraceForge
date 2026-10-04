@@ -15,15 +15,13 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 
-from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.chat import ChatMessage, MessageType
 from app.domains.task.models.session_share import TaskSessionShare
-from app.domains.task.models.session_turn import TaskSessionTurn, TaskSessionTurnStatus
 from app.domains.task.models.task import SddTask
 from app.domains.task.services.session_share_service import ShareError
 
@@ -58,7 +56,7 @@ def _encode_cursor(share_id: str, generation: int, revision: int, offset: int) -
     return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> Dict[str, int]:
+def _decode_cursor(cursor: str) -> dict[str, int]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
@@ -72,7 +70,7 @@ def _decode_cursor(cursor: str) -> Dict[str, int]:
         raise SharedHistoryCursorError("分页游标无效") from exc
 
 
-def _card_summary(metadata: Optional[dict], content: str) -> Optional[str]:
+def _card_summary(metadata: dict | None, content: str) -> str | None:
     """结构化卡片的只读摘要；不可用时返回占位提示。"""
     if not isinstance(metadata, dict):
         return None
@@ -94,7 +92,7 @@ def _order_index_expr():
     )
 
 
-def _project_message(msg: ChatMessage) -> Dict[str, Any]:
+def _project_message(msg: ChatMessage) -> dict[str, Any]:
     message_type = msg.message_type.value if hasattr(msg.message_type, "value") else str(msg.message_type)
     safe_type = message_type if message_type in _SAFE_MESSAGE_TYPES else "unsupported"
     metadata = msg.metadata_json if isinstance(msg.metadata_json, dict) else {}
@@ -105,9 +103,9 @@ def _project_message(msg: ChatMessage) -> Dict[str, Any]:
         "safe_message_type": safe_type,
         "created_at": msg.created_at,
         # 仅结构化卡片给摘要；普通文本消息 content 已可见
-        "safe_card_summary": _card_summary(metadata, msg.content) if message_type not in (
-            MessageType.TEXT.value, MessageType.THINKING.value
-        ) else None,
+        "safe_card_summary": _card_summary(metadata, msg.content)
+        if message_type not in (MessageType.TEXT.value, MessageType.THINKING.value)
+        else None,
     }
 
 
@@ -124,9 +122,9 @@ def load_shared_history(
     *,
     share: TaskSessionShare,
     task: SddTask,
-    cursor: Optional[str],
+    cursor: str | None,
     page_size: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """按绑定代次分页读取公开历史（倒序分页 + 块内正序，与内部历史一致）。"""
     page_size = max(1, min(int(page_size or PAGE_SIZE_DEFAULT), PAGE_SIZE_MAX))
     generation = int(share.session_generation or 0)
@@ -135,19 +133,14 @@ def load_shared_history(
     if cursor:
         decoded = _decode_cursor(cursor)
         if decoded["share_id"] != share.id or decoded["generation"] != generation:
-            raise SharedHistoryCursorError()
+            raise SharedHistoryCursorError
         # revision 变化不必撤销分享，但必须使旧游标失效
         if decoded["revision"] != int(task.session_revision or 0):
-            raise SharedHistoryCursorError()
+            raise SharedHistoryCursorError
         offset = max(0, decoded["offset"])
 
     task_filter, generation_filter = _effective_generation_filter(share)
-    total = (
-        db.query(sqlfunc.count(ChatMessage.id))
-        .filter(task_filter, generation_filter)
-        .scalar()
-        or 0
-    )
+    total = db.query(sqlfunc.count(ChatMessage.id)).filter(task_filter, generation_filter).scalar() or 0
 
     rows_desc = (
         db.query(ChatMessage)
@@ -168,9 +161,7 @@ def load_shared_history(
     next_offset = offset + len(rows_desc)
     has_more = next_offset < total
     next_cursor = (
-        _encode_cursor(share.id, generation, int(task.session_revision or 0), next_offset)
-        if has_more
-        else None
+        _encode_cursor(share.id, generation, int(task.session_revision or 0), next_offset) if has_more else None
     )
 
     return {

@@ -4,26 +4,23 @@ Revision ID: 8f9e0a1b2c3
 Revises: 7d8e9f0a1b2c
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "8f9e0a1b2c3"
-down_revision: Union[str, None] = "7d8e9f0a1b2c"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "7d8e9f0a1b2c"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 _FK_NAME = "fk_sdd_ai_jobs_manual_intervention_operator_id_users"
 
 
 def _has_fk(inspector: sa.Inspector) -> bool:
-    return any(
-        (foreign_key.get("name") or "") == _FK_NAME
-        for foreign_key in inspector.get_foreign_keys("sdd_ai_jobs")
-    )
+    return any((foreign_key.get("name") or "") == _FK_NAME for foreign_key in inspector.get_foreign_keys("sdd_ai_jobs"))
 
 
 def upgrade() -> None:

@@ -15,10 +15,14 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agents import (
+    EXECUTION_KIND_LOCAL_PROCESS,
+    EXECUTION_KIND_REMOTE_SESSION,
+)
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
@@ -44,10 +48,6 @@ from app.domains.ai.services.jobs.constants import (
     task_id_from_queue_key,
 )
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID, runtime
-from app.agents import (
-    EXECUTION_KIND_LOCAL_PROCESS,
-    EXECUTION_KIND_REMOTE_SESSION,
-)
 from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.models.task_cli_bootstrap import SddTaskCliBootstrap
 
@@ -64,7 +64,7 @@ logger = get_logger(__name__, category="ai_session")
 # ────────────────────────── 通用 JSON/行工具 ──────────────────────────
 
 
-def merge_json(original: Any, patch: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def merge_json(original: Any, patch: dict[str, Any] | None) -> dict[str, Any]:
     merged = dict(original) if isinstance(original, dict) else {}
     if patch:
         merged.update(patch)
@@ -127,14 +127,14 @@ def row_execution_kind(job: SddAiJob) -> str:
     return EXECUTION_KIND_LOCAL_PROCESS
 
 
-def resolve_execution_kind_for_backend(backend_name: Optional[str]) -> str:
+def resolve_execution_kind_for_backend(backend_name: str | None) -> str:
     """Map a backend name to its declared execution kind (doc §7 chain)."""
     name = str(backend_name or "").strip() or "claude-code"
     if name in ("claude-code", "mock"):
         return EXECUTION_KIND_LOCAL_PROCESS
     try:
-        from app.agents.registry import AGENT_BACKENDS
         from app.agents.adapters import register_all
+        from app.agents.registry import AGENT_BACKENDS
 
         if not AGENT_BACKENDS:
             register_all()
@@ -150,11 +150,11 @@ def resolve_execution_kind_for_backend(backend_name: Optional[str]) -> str:
 def resolve_execution_kind_for_claim(
     db: Session,
     *,
-    task_id: Optional[str],
-    workspace_id: Optional[str],
+    task_id: str | None,
+    workspace_id: str | None,
 ) -> str:
     """Claim 时在同一事务内解析并写入 execution kind（doc §7.2）。"""
-    name: Optional[str] = None
+    name: str | None = None
     if task_id:
         row = db.query(SddTask.agent_backend).filter(SddTask.id == task_id).first()
         name = str(row[0] or "").strip() or None if row else None
@@ -178,7 +178,7 @@ def resolve_execution_kind_for_claim(
 # ────────────────────────── 序列化 ──────────────────────────
 
 
-def serialize_job(job: SddAiJob) -> Dict[str, Any]:
+def serialize_job(job: SddAiJob) -> dict[str, Any]:
     return {
         "id": job.id,
         "workspace_id": job.workspace_id,
@@ -239,7 +239,7 @@ def serialize_job(job: SddAiJob) -> Dict[str, Any]:
 # ────────────────────────── 作业类别与守卫查询 ──────────────────────────
 
 
-def normalize_job_kind(value: Optional[str]) -> str:
+def normalize_job_kind(value: str | None) -> str:
     normalized = str(value or "").strip().upper()
     if normalized == JOB_KIND_TASK_BASELINE:
         return JOB_KIND_TASK_BASELINE
@@ -270,13 +270,10 @@ def has_diagnosis_summary_job(db, task_id: str) -> bool:
         )
         .all()
     )
-    for job in jobs:
-        if job_kind_of(job) == JOB_KIND_DIAGNOSIS_SUMMARY:
-            return True
-    return False
+    return any(job_kind_of(job) == JOB_KIND_DIAGNOSIS_SUMMARY for job in jobs)
 
 
-def find_active_summary_job(db, task_id: str) -> Optional[SddAiJob]:
+def find_active_summary_job(db, task_id: str) -> SddAiJob | None:
     """进行中的一键总结任务（PENDING/RUNNING）。"""
     jobs = (
         db.query(SddAiJob)
@@ -294,7 +291,7 @@ def find_active_summary_job(db, task_id: str) -> Optional[SddAiJob]:
     return None
 
 
-def find_active_chat_job(db, task_id: str) -> Optional[SddAiJob]:
+def find_active_chat_job(db, task_id: str) -> SddAiJob | None:
     """进行中的聊天任务（PENDING/RUNNING/WAITING_HITL；WAITING_HITL 视为会话进行中）。"""
     jobs = (
         db.query(SddAiJob)
@@ -312,7 +309,7 @@ def find_active_chat_job(db, task_id: str) -> Optional[SddAiJob]:
     return None
 
 
-def get_job(db: Session, *, job_id: str) -> Optional[SddAiJob]:
+def get_job(db: Session, *, job_id: str) -> SddAiJob | None:
     return db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
 
 
@@ -321,7 +318,7 @@ def list_thread_jobs(
     *,
     thread_id: str,
     active_only: bool = True,
-) -> List[SddAiJob]:
+) -> list[SddAiJob]:
     cleanup_stale_running_jobs(db, thread_id=thread_id)
     query = db.query(SddAiJob).filter(
         SddAiJob.thread_id == thread_id,
@@ -337,7 +334,7 @@ def list_task_jobs(
     *,
     task_id: str,
     active_only: bool = True,
-) -> List[SddAiJob]:
+) -> list[SddAiJob]:
     cleanup_stale_running_jobs(db, task_id=task_id)
     query = db.query(SddAiJob).filter(
         SddAiJob.task_id == task_id,
@@ -348,7 +345,7 @@ def list_task_jobs(
     return query.order_by(SddAiJob.created_at.desc()).all()
 
 
-def job_prompt_text(db: Session, thread_id: str) -> Optional[str]:
+def job_prompt_text(db: Session, thread_id: str) -> str | None:
     job = (
         db.query(SddAiJob.prompt_text)
         .filter(
@@ -367,14 +364,14 @@ def job_prompt_text(db: Session, thread_id: str) -> Optional[str]:
 def apply_task_chat_job_interrupted(
     db: Session,
     job: SddAiJob,
-    task: Optional[SddTask],
+    task: SddTask | None,
     reason: str,
     *,
-    message: Optional[str] = None,
-    session_id: Optional[str] = None,
-    context_patch: Optional[Dict[str, Any]] = None,
-    result_patch: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    message: str | None = None,
+    session_id: str | None = None,
+    context_patch: dict[str, Any] | None = None,
+    result_patch: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """把 TASK_CHAT 作业和所属任务标记为可恢复的 INTERRUPTED（纯字段赋值 helper）。
 
     自动失败（底层 API 报错、超时、欠费、网络抖动等）不应进入终态 FAILED；
@@ -385,9 +382,7 @@ def apply_task_chat_job_interrupted(
     ownership 字段，保证 INTERRUPTED 是干净的“当前 attempt 已停止，允许恢复”。
     """
     now = datetime.utcnow()
-    resolved_session_id = str(
-        session_id or job.session_id or (getattr(task, "session_id", None) or "")
-    ).strip() or None
+    resolved_session_id = str(session_id or job.session_id or (getattr(task, "session_id", None) or "")).strip() or None
     reason_text = str(reason or "AI 执行异常")[:500]
     job.status = AiJobStatus.INTERRUPTED
     job.progress = 100
@@ -424,8 +419,8 @@ def apply_task_chat_job_interrupted(
 def cleanup_stale_running_jobs(
     db: Session,
     *,
-    thread_id: Optional[str] = None,
-    task_id: Optional[str] = None,
+    thread_id: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     cutoff = datetime.utcnow() - timedelta(minutes=_RUNNING_STALE_MINUTES)
     query = db.query(SddAiJob).filter(
@@ -489,9 +484,9 @@ def create_asset_thread_job(
     asset_id: str,
     thread_id: str,
     creator_id: str,
-    prompt_text: Optional[str],
+    prompt_text: str | None,
     job_kind: str = JOB_KIND_THREAD_AI_REPLY,
-    context_json: Optional[Dict[str, Any]] = None,
+    context_json: dict[str, Any] | None = None,
 ) -> SddAiJob:
     normalized_kind = normalize_job_kind(job_kind)
     payload_context = {
@@ -526,12 +521,12 @@ def create_task_chat_job(
     task_id: str,
     creator_id: str,
     prompt_text: str,
-    context_json: Optional[Dict[str, Any]] = None,
-    session_id: Optional[str] = None,
-    chat_message_id: Optional[str] = None,
-    session_turn_id: Optional[str] = None,
-    session_generation: Optional[int] = None,
-    session_revision: Optional[int] = None,
+    context_json: dict[str, Any] | None = None,
+    session_id: str | None = None,
+    chat_message_id: str | None = None,
+    session_turn_id: str | None = None,
+    session_generation: int | None = None,
+    session_revision: int | None = None,
     commit: bool = True,
 ) -> SddAiJob:
     payload_context = {"source": "task_chat"}
@@ -587,7 +582,7 @@ def create_diagnosis_summary_job(
     """创建独立队列中的只读诊断总结任务。"""
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     source_session_id = str(getattr(task, "session_id", None) or "").strip()
-    source_job_id: Optional[str] = None
+    source_job_id: str | None = None
     if not source_session_id:
         source_job = (
             db.query(SddAiJob)
@@ -733,7 +728,7 @@ def is_job_cancelled_or_final_sync(job_id: str) -> bool:
         db.close()
 
 
-def get_job_status_sync(job_id: str) -> Optional[AiJobStatus]:
+def get_job_status_sync(job_id: str) -> AiJobStatus | None:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob.status).filter(SddAiJob.id == job_id).first()
@@ -744,7 +739,7 @@ def get_job_status_sync(job_id: str) -> Optional[AiJobStatus]:
         db.close()
 
 
-async def get_job_status(job_id: str) -> Optional[AiJobStatus]:
+async def get_job_status(job_id: str) -> AiJobStatus | None:
     return await run_db(get_job_status_sync, job_id)
 
 
@@ -796,7 +791,7 @@ def is_task_queue_paused(db: Session, queue_key: str) -> bool:
     return row[0] in TASK_QUEUE_PAUSED_STATUSES
 
 
-def take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
+def take_next_pending_job_id_sync(queue_key: str) -> str | None:
     db = SessionLocal()
     try:
         if is_task_queue_paused(db, queue_key):
@@ -829,11 +824,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
 
         # Claim 必须在同一事务内解析并写入显式 execution kind（doc §7.2/C4），
         # 运行中的 job 不允许长期保持 None。
-        claim_target = (
-            db.query(SddAiJob.workspace_id, SddAiJob.task_id)
-            .filter(SddAiJob.id == job_id)
-            .first()
-        )
+        claim_target = db.query(SddAiJob.workspace_id, SddAiJob.task_id).filter(SddAiJob.id == job_id).first()
         execution_kind = resolve_execution_kind_for_claim(
             db,
             task_id=str(claim_target[1]) if claim_target and claim_target[1] else None,
@@ -883,6 +874,7 @@ def take_next_pending_job_id_sync(queue_key: str) -> Optional[str]:
             return None
         db.expire_all()
         from app.domains.notification.services.task_awareness import capture_job
+
         capture_job(db, db.get(SddAiJob, job_id), allow_start=True)
         db.commit()
         return job_id
@@ -899,16 +891,11 @@ def _containment_id_for_run_token(run_token: str) -> str:
 # ────────────────────────── 恢复扫描支持 ──────────────────────────
 
 
-def list_pending_queue_keys_sync() -> List[str]:
+def list_pending_queue_keys_sync() -> list[str]:
     """List queue keys in a worker thread; never open ORM sessions on-loop."""
     db = SessionLocal()
     try:
-        rows = (
-            db.query(SddAiJob.queue_key)
-            .filter(SddAiJob.status == AiJobStatus.PENDING)
-            .distinct()
-            .all()
-        )
+        rows = db.query(SddAiJob.queue_key).filter(SddAiJob.status == AiJobStatus.PENDING).distinct().all()
         managed_prefixes = (
             f"{AiJobChannel.TASK_CHAT.value}:",
             f"{AiJobChannel.ASSET_THREAD.value}:",
@@ -917,10 +904,6 @@ def list_pending_queue_keys_sync() -> List[str]:
             "PLAYBOOK_PROMOTION:",
             f"{constants.QUEUE_KEY_TASK_BASELINE}:",
         )
-        return [
-            str(row[0] or "").strip()
-            for row in rows
-            if str(row[0] or "").strip().startswith(managed_prefixes)
-        ]
+        return [str(row[0] or "").strip() for row in rows if str(row[0] or "").strip().startswith(managed_prefixes)]
     finally:
         db.close()

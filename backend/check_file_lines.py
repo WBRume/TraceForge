@@ -24,9 +24,7 @@ def source_files(project_root: Path) -> list[Path]:
     )
     names = sorted(set(result.stdout.decode("utf-8").split("\0")) - {""})
     return [
-        project_root / name
-        for name in names
-        if Path(name).suffix.lower() == ".py" and (project_root / name).is_file()
+        project_root / name for name in names if Path(name).suffix.lower() == ".py" and (project_root / name).is_file()
     ]
 
 

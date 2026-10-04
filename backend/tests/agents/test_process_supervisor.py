@@ -11,9 +11,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.errors import AgentError
-from app.agents.contract import AgentRunRequest
+import app.agents.supervision.tree as supervisor_tree
+import app.agents.supervision.windows as supervisor_windows
 from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
+from app.agents.contract import AgentRunRequest
+from app.agents.errors import AgentError
 from app.agents.supervision import (
     PROCESS_TREE_UNKNOWN,
     ManagedAgentProcess,
@@ -250,9 +252,9 @@ def test_agent_result_cannot_be_success_when_tree_death_is_unconfirmed():
 
 def test_bridge_records_termination_evidence_into_attempt_runtime():
     """wait/cancel results must be recorded under the exact process identity."""
-    import app.agents as agents_pkg
     from datetime import datetime, timezone
 
+    import app.agents as agents_pkg
     from app.agents.contract import AgentProcessIdentity
 
     identity = AgentProcessIdentity(
@@ -296,18 +298,14 @@ def test_bridge_records_termination_evidence_into_attempt_runtime():
 
             # Same identity later confirmed dead converges the unconfirmed
             # state (doc case A) instead of staying False forever.
-            managed.close = AsyncMock(
-                return_value=TerminationResult(confirmed_dead=True, root_return_code=0)
-            )
+            managed.close = AsyncMock(return_value=TerminationResult(confirmed_dead=True, root_return_code=0))
             await bridge.cancel()
             assert runtime.termination_confirmed_dead is True
 
             agents_pkg.reset_agent_attempt_runtime(token)
             runtime = agents_pkg.AgentAttemptRuntimeState()
             token = agents_pkg.bind_agent_attempt_runtime(runtime)
-            managed.close = AsyncMock(
-                return_value=TerminationResult(confirmed_dead=True, root_return_code=0)
-            )
+            managed.close = AsyncMock(return_value=TerminationResult(confirmed_dead=True, root_return_code=0))
             await bridge.cancel()
             assert runtime.termination_confirmed_dead is True
         finally:
@@ -325,9 +323,7 @@ def test_bridge_cancel_records_evidence_when_unbound_context_is_safe():
         process = SimpleNamespace(returncode=0)
         managed = MagicMock()
         managed.process = process
-        managed.close = AsyncMock(
-            return_value=TerminationResult(confirmed_dead=True, root_return_code=0)
-        )
+        managed.close = AsyncMock(return_value=TerminationResult(confirmed_dead=True, root_return_code=0))
         bridge.process = process
         bridge._managed_process = managed
         bridge._running = True
@@ -337,6 +333,7 @@ def test_bridge_cancel_records_evidence_when_unbound_context_is_safe():
         assert result is not None and result.confirmed_dead is True
 
     asyncio.run(_run())
+
 
 async def _wait_until(predicate, timeout: float = 10.0) -> bool:
     deadline = asyncio.get_running_loop().time() + timeout
@@ -376,11 +373,7 @@ def test_spawn_callback_cancellation_closes_process_tree():
         # Let the supervisor finish registering the managed process before
         # the callback cancellation arrives.
         await asyncio.sleep(0.2)
-        managed = next(
-            item
-            for item in list(process_supervisor._processes)
-            if item.run_token == "test-cancel-window"
-        )
+        managed = next(item for item in list(process_supervisor._processes) if item.run_token == "test-cancel-window")
         pid = managed.pid
 
         start_task.cancel()
@@ -392,17 +385,18 @@ def test_spawn_callback_cancellation_closes_process_tree():
         # cancellation; the uncancellable cleanup task owns this.
         assert await _wait_until(
             lambda: all(
-                item.process.returncode is not None
-                and not item.known_descendant_pids
+                item.process.returncode is not None and not item.known_descendant_pids
                 for item in process_supervisor._processes
             )
         ), "process tree survived the spawn-callback cancellation window"
         await process_supervisor.drain_cleanup_tasks(timeout=5.0)
         assert process_supervisor.active_count == 0
         assert not await _wait_until(
-            lambda: psutil.pid_exists(pid)
-            and psutil.Process(pid).is_running()
-            and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE,
+            lambda: (
+                psutil.pid_exists(pid)
+                and psutil.Process(pid).is_running()
+                and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            ),
             timeout=2.0,
         )
         # Evidence must never claim a clean death that was not proven; the
@@ -478,7 +472,6 @@ def test_spawn_callback_timeout_closes_tree_and_raises_timeout():
 def test_cleanup_false_then_true_converges_same_identity():
     """第一次清理 False、第二次清理 True（同一 identity）必须收敛为已死亡。"""
     import app.agents as agents_pkg
-
 
     async def _run():
         runtime = agents_pkg.AgentAttemptRuntimeState()
@@ -572,9 +565,7 @@ def test_stop_attempt_handles_all_processes_under_run_token():
             run_token="test-token-multi",
         )
         pids = (managed_first.pid, managed_second.pid)
-        assert len(
-            [item for item in process_supervisor._processes if item.run_token == "test-token-multi"]
-        ) == 2
+        assert len([item for item in process_supervisor._processes if item.run_token == "test-token-multi"]) == 2
 
         try:
             result = await process_supervisor.stop_attempt("test-token-multi", "reap_all")
@@ -582,15 +573,10 @@ def test_stop_attempt_handles_all_processes_under_run_token():
             assert result.confirmed_dead is True
             assert await _wait_until(
                 lambda: all(
-                    not psutil.pid_exists(pid)
-                    or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-                    for pid in pids
+                    not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE for pid in pids
                 )
             )
-            assert all(
-                item.run_token != "test-token-multi"
-                for item in process_supervisor._processes
-            )
+            assert all(item.run_token != "test-token-multi" for item in process_supervisor._processes)
         finally:
             await process_supervisor.stop_attempt("test-token-multi", "test_cleanup")
             process_supervisor.forget(managed_first)
@@ -639,7 +625,9 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
 
     async def _run():
         child = await asyncio.create_subprocess_exec(
-            sys.executable, "-c", "import time; time.sleep(30)",
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -648,10 +636,7 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
         # 其余使用不存在的 PID：psutil 快速失败路径同样走 executor。
         for index in range(1, 5):
             managed_items.append(_FakeManaged(999999 - index))
-        tasks = [
-            asyncio.create_task(supervision_managed.monitor_tree(item))
-            for item in managed_items
-        ]
+        tasks = [asyncio.create_task(supervision_managed.monitor_tree(item)) for item in managed_items]
         max_gap = 0.0
         last_beat = asyncio.get_running_loop().time()
         deadline = last_beat + 0.8
@@ -679,15 +664,11 @@ def test_monitor_inspection_keeps_event_loop_responsive(monkeypatch):
         assert all(item.snapshots > 0 for item in managed_items)
         return max_gap
 
-    monkeypatch.setattr(
-        "app.config.settings.AGENT_PROCESS_MONITOR_INTERVAL_SECONDS", 0.05
-    )
+    monkeypatch.setattr("app.config.settings.AGENT_PROCESS_MONITOR_INTERVAL_SECONDS", 0.05)
     max_gap = asyncio.run(_run())
     # 主事件循环 heartbeat 延迟阈值：远小于采样周期 * 受管进程数。
     assert max_gap < 0.35, f"event loop stalled: max heartbeat gap={max_gap:.3f}s"
 
-import app.agents.supervision.tree as supervisor_tree
-import app.agents.supervision.windows as supervisor_windows
 
 # ────────────── P0-2：三态探测与假死亡证明防护（doc §5） ──────────────
 
@@ -865,10 +846,7 @@ def test_concurrent_inspect_tree_keeps_event_loop_responsive(monkeypatch):
 
     async def _run():
         loop = asyncio.get_running_loop()
-        managed_items = [
-            ManagedAgentProcess(process=SimpleNamespace(pid=1000 + i, returncode=0))
-            for i in range(5)
-        ]
+        managed_items = [ManagedAgentProcess(process=SimpleNamespace(pid=1000 + i, returncode=0)) for i in range(5)]
         max_lag = 0.0
         stop = asyncio.Event()
 
@@ -886,9 +864,7 @@ def test_concurrent_inspect_tree_keeps_event_loop_responsive(monkeypatch):
         return results, max_lag
 
     results, max_lag = asyncio.run(_run())
-    assert all(
-        r.state == ProcessProbeState.CONFIRMED_DEAD for r in results
-    )
+    assert all(r.state == ProcessProbeState.CONFIRMED_DEAD for r in results)
     # 5 个并发 50ms 假检查全部发生在 inspection executor 中；
     # 事件循环 heartbeat 不应被阻塞超过调度余量。
     assert max_lag < 0.1, f"event loop stalled: max heartbeat lag={max_lag:.3f}s"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import AsyncExitStack
-from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -16,11 +15,11 @@ from app.domains.task.models.task import TaskStatus
 from app.domains.task.routers.task.deps import (
     TASKS_ROUTE_PREFIX,
     ensure_task_not_baselined,
-    get_task_or_404,
     get_db_bind,
-    run_route_db_txn,
+    get_task_or_404,
     raise_task_lock_conflict,
     raise_workspace_lock_conflict,
+    run_route_db_txn,
     verify_workspace_access,
     verify_workspace_permission,
 )
@@ -32,7 +31,12 @@ from app.domains.task.schemas.task import (
 )
 from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.chat_submission_service import SubmissionError
+from app.domains.task.services.conversation import history as task_conversation_history
+from app.domains.task.services.provisioning import creation as task_provisioning_creation
+from app.domains.task.services.task_records import commands as task_task_records_commands
+from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.task.services.task_session_control_service import TASK_RUNNING_MSG
+from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 from app.domains.workflow.schemas.provision import (
     ProvisionJobAcceptedResponse,
     ProvisionJobResponse,
@@ -40,12 +44,6 @@ from app.domains.workflow.schemas.provision import (
 from app.domains.workflow.services import provision_job_service
 from app.domains.workspace.services import workspace_service
 from app.engine.session import get_engine
-
-from app.domains.task.services.conversation import history as task_conversation_history
-from app.domains.task.services.provisioning import creation as task_provisioning_creation
-from app.domains.task.services.task_records import commands as task_task_records_commands
-from app.domains.task.services.task_records import queries as task_task_records_queries
-from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
@@ -89,7 +87,8 @@ def create_task(
             repository_branches=[
                 {"repository_id": item.repository_id, "branch_name": item.branch_name}
                 for item in (data.repository_branches or [])
-            ] or None,
+            ]
+            or None,
             repository_ids=list(data.repository_ids or []) or None,
         )
         job = provision_job_service.create_job(
@@ -127,7 +126,7 @@ def create_task(
             workspace_id=ws_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -139,7 +138,7 @@ def create_task(
             workspace_id=ws_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/{task_id}/provision-job/cancel", response_model=ProvisionJobResponse)
@@ -169,10 +168,10 @@ def cancel_task_provision_job(
 @router.get("", response_model=TaskListResponse)
 def list_tasks(
     ws_id: str,
-    status: Optional[str] = None,
-    task_type: Optional[str] = Query(default=None),
-    relation: Optional[str] = Query(default=None),
-    requirement_id: Optional[str] = Query(default=None),
+    status: str | None = None,
+    task_type: str | None = Query(default=None),
+    relation: str | None = Query(default=None),
+    requirement_id: str | None = Query(default=None),
     independent: bool = Query(default=False),
     following: bool = Query(default=False),
     page: int = Query(1, ge=1),
@@ -238,9 +237,7 @@ def get_task_following(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    following = task.id in task_task_records_queries.list_following_task_ids(
-        db, ws_id, current_user.id, [task.id]
-    )
+    following = task.id in task_task_records_queries.list_following_task_ids(db, ws_id, current_user.id, [task.id])
     return TaskFollowResponse(task_id=task.id, is_following=following)
 
 
@@ -253,9 +250,7 @@ def follow_task_messages(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    following = task_task_records_commands.set_task_following(
-        db, task=task, user_id=current_user.id, following=True
-    )
+    following = task_task_records_commands.set_task_following(db, task=task, user_id=current_user.id, following=True)
     return TaskFollowResponse(task_id=task.id, is_following=following)
 
 
@@ -268,9 +263,7 @@ def unfollow_task_messages(
 ):
     verify_workspace_access(ws_id, current_user.id, db)
     task = get_task_or_404(db, task_id, ws_id)
-    following = task_task_records_commands.set_task_following(
-        db, task=task, user_id=current_user.id, following=False
-    )
+    following = task_task_records_commands.set_task_following(db, task=task, user_id=current_user.id, following=False)
     return TaskFollowResponse(task_id=task.id, is_following=following)
 
 
@@ -299,10 +292,18 @@ async def delete_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    await run_route_db_txn(db, get_db_bind(db), lambda session: verify_workspace_permission(
-        ws_id, current_user.id, session, WorkspacePermission.DELETE_TASK,
-        "No permission to delete tasks", task_id=task_id,
-    ))
+    await run_route_db_txn(
+        db,
+        get_db_bind(db),
+        lambda session: verify_workspace_permission(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.DELETE_TASK,
+            "No permission to delete tasks",
+            task_id=task_id,
+        ),
+    )
 
     current_task = get_task_or_404(db, task_id, ws_id)
     ensure_task_not_baselined(current_task)
@@ -337,7 +338,7 @@ async def delete_task(
             workspace_id=ws_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 409)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 409)), detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -350,7 +351,7 @@ async def delete_task(
             workspace_id=ws_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Task not found")
     task_cli_state_service.schedule_task_cli_state_cleanup(ws_id, task_id)
@@ -406,10 +407,18 @@ async def clear_task_history(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    await run_route_db_txn(db, get_db_bind(db), lambda session: verify_workspace_permission(
-        ws_id, current_user.id, session, WorkspacePermission.MANAGE_TASK_STATUS,
-        "No permission to clear task history", task_id=task_id,
-    ))
+    await run_route_db_txn(
+        db,
+        get_db_bind(db),
+        lambda session: verify_workspace_permission(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.MANAGE_TASK_STATUS,
+            "No permission to clear task history",
+            task_id=task_id,
+        ),
+    )
     try:
         async with lock_task(task_id):
             task = get_task_or_404(db, task_id, ws_id)

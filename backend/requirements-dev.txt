@@ -1,0 +1,3 @@
+# 静态检查工具；运行时依赖仍通过 requirements.txt 安装。
+# 与 ruff.toml 中的 required-version 同步升级。
+ruff==0.16.7

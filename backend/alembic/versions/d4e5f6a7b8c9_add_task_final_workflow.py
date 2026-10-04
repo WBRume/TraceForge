@@ -5,16 +5,17 @@ Revises: c3d4e5f6a7b8
 Create Date: 2026-05-29
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
-
 revision: str = "d4e5f6a7b8c9"
-down_revision: Union[str, None] = "c3d4e5f6a7b8"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "c3d4e5f6a7b8"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 TASK_STATUS_VALUES = [
@@ -164,25 +165,47 @@ def upgrade() -> None:
     _create_table_safe(
         "sdd_review_clarification_links",
         sa.Column("id", sa.String(length=36), primary_key=True),
-        sa.Column("workspace_id", sa.String(length=36), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "workspace_id", sa.String(length=36), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("task_id", sa.String(length=36), sa.ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("review_id", sa.String(length=36), sa.ForeignKey("sdd_human_reviews.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("clarification_id", sa.String(length=36), sa.ForeignKey("sdd_clarifications.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "review_id", sa.String(length=36), sa.ForeignKey("sdd_human_reviews.id", ondelete="CASCADE"), nullable=False
+        ),
+        sa.Column(
+            "clarification_id",
+            sa.String(length=36),
+            sa.ForeignKey("sdd_clarifications.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("link_type", sa.String(length=80), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
-        sa.UniqueConstraint("review_id", "clarification_id", name="uq_sdd_review_clarification_links_review_clarification"),
+        sa.UniqueConstraint(
+            "review_id", "clarification_id", name="uq_sdd_review_clarification_links_review_clarification"
+        ),
     )
-    _create_index_safe("ix_sdd_review_clarification_links_workspace_id", "sdd_review_clarification_links", ["workspace_id"])
+    _create_index_safe(
+        "ix_sdd_review_clarification_links_workspace_id", "sdd_review_clarification_links", ["workspace_id"]
+    )
     _create_index_safe("ix_sdd_review_clarification_links_task_id", "sdd_review_clarification_links", ["task_id"])
     _create_index_safe("ix_sdd_review_clarification_links_review_id", "sdd_review_clarification_links", ["review_id"])
-    _create_index_safe("ix_sdd_review_clarification_links_clarification_id", "sdd_review_clarification_links", ["clarification_id"])
+    _create_index_safe(
+        "ix_sdd_review_clarification_links_clarification_id", "sdd_review_clarification_links", ["clarification_id"]
+    )
 
     _create_table_safe(
         "sdd_clarification_threads",
         sa.Column("id", sa.String(length=36), primary_key=True),
-        sa.Column("workspace_id", sa.String(length=36), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "workspace_id", sa.String(length=36), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("task_id", sa.String(length=36), sa.ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("clarification_id", sa.String(length=36), sa.ForeignKey("sdd_clarifications.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "clarification_id",
+            sa.String(length=36),
+            sa.ForeignKey("sdd_clarifications.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("author_id", sa.String(length=36), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("entry_type", sa.String(length=40), nullable=False, server_default="COMMENT"),
         sa.Column("body", sa.Text(), nullable=False),
@@ -191,15 +214,24 @@ def upgrade() -> None:
     )
     _create_index_safe("ix_sdd_clarification_threads_workspace_id", "sdd_clarification_threads", ["workspace_id"])
     _create_index_safe("ix_sdd_clarification_threads_task_id", "sdd_clarification_threads", ["task_id"])
-    _create_index_safe("ix_sdd_clarification_threads_clarification_id", "sdd_clarification_threads", ["clarification_id"])
+    _create_index_safe(
+        "ix_sdd_clarification_threads_clarification_id", "sdd_clarification_threads", ["clarification_id"]
+    )
     _create_index_safe("ix_sdd_clarification_threads_author_id", "sdd_clarification_threads", ["author_id"])
 
     _create_table_safe(
         "sdd_task_baselines",
         sa.Column("id", sa.String(length=36), primary_key=True),
-        sa.Column("workspace_id", sa.String(length=36), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "workspace_id", sa.String(length=36), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("task_id", sa.String(length=36), sa.ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("summary_id", sa.String(length=36), sa.ForeignKey("sdd_task_final_summaries.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "summary_id",
+            sa.String(length=36),
+            sa.ForeignKey("sdd_task_final_summaries.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("snapshot_json", sa.JSON(), nullable=True),
         sa.Column("baselined_by_id", sa.String(length=36), sa.ForeignKey("users.id"), nullable=True),

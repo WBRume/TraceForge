@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -18,9 +17,9 @@ def create_notifications(
     *,
     type: str,
     title: str,
-    body: Optional[str] = None,
-    payload_json: Optional[dict] = None,
-    workspace_id: Optional[str] = None,
+    body: str | None = None,
+    payload_json: dict | None = None,
+    workspace_id: str | None = None,
 ) -> list[SddUserNotification]:
     """为一批收件人各创建一条站内信（去重收件人，忽略空 id）。"""
     seen: set[str] = set()
@@ -67,18 +66,11 @@ def list_notifications(
     page: int = 1,
     page_size: int = 20,
 ) -> tuple[list[dict], int]:
-    query = db.query(SddUserNotification).filter(
-        SddUserNotification.recipient_user_id == user_id
-    )
+    query = db.query(SddUserNotification).filter(SddUserNotification.recipient_user_id == user_id)
     if unread_only:
         query = query.filter(SddUserNotification.read_at.is_(None))
     total = query.count()
-    rows = (
-        query.order_by(SddUserNotification.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-        .all()
-    )
+    rows = query.order_by(SddUserNotification.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return [_serialize(row) for row in rows], total
 
 
@@ -125,7 +117,7 @@ def mark_all_read(db: Session, user_id: str) -> int:
     return updated
 
 
-def delete_notification(db: Session, user_id: str, notification_id: str) -> Optional[bool]:
+def delete_notification(db: Session, user_id: str, notification_id: str) -> bool | None:
     """删除单条通知。返回被删通知此前是否未读（调用方据此修正未读数）；通知不存在返回 None。"""
     row = (
         db.query(SddUserNotification)
@@ -145,11 +137,7 @@ def delete_notification(db: Session, user_id: str, notification_id: str) -> Opti
 
 def delete_all_notifications(db: Session, user_id: str) -> tuple[int, int]:
     """清空用户全部通知。返回 (删除总数, 其中未读条数)。"""
-    rows = (
-        db.query(SddUserNotification)
-        .filter(SddUserNotification.recipient_user_id == user_id)
-        .all()
-    )
+    rows = db.query(SddUserNotification).filter(SddUserNotification.recipient_user_id == user_id).all()
     total = len(rows)
     unread = sum(1 for row in rows if row.read_at is None)
     if total:

@@ -9,10 +9,8 @@
 
 import asyncio
 import time
-from typing import Optional
 
 from app.agents import AgentAttemptContext
-from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
@@ -37,10 +35,10 @@ class SessionGate:
         self,
         *,
         task_id: str,
-        job_id: Optional[str],
-        session_revision: Optional[int],
+        job_id: str | None,
+        session_revision: int | None,
         ttl_seconds: float,
-        attempt: Optional[AgentAttemptContext] = None,
+        attempt: AgentAttemptContext | None = None,
         additional_fences=(),
     ):
         self.task_id = task_id
@@ -53,7 +51,7 @@ class SessionGate:
         self._stale = False
         self._db_current = True
         self._last_refresh = 0.0
-        self._refresh_task: Optional[asyncio.Task] = None
+        self._refresh_task: asyncio.Task | None = None
 
     def invalidate(self) -> None:
         self._stale = True
@@ -137,7 +135,9 @@ class SessionGate:
                 return False
             if job.task_id:
                 task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-                if not task or int(task.session_revision if task.session_revision is not None else -1) != int(self.session_revision):
+                if not task or int(task.session_revision if task.session_revision is not None else -1) != int(
+                    self.session_revision
+                ):
                     return False
             return int(job.session_revision if job.session_revision is not None else -1) == int(self.session_revision)
         except Exception:

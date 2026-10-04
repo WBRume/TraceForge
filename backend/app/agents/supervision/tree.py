@@ -14,7 +14,6 @@ bounded executor 执行。三态聚合规则（doc §5.4.3）：
 from __future__ import annotations
 
 import os
-from typing import Optional, Tuple
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
@@ -25,7 +24,7 @@ from app.agents.supervision import windows
 from app.agents.supervision.model import ProcessProbeState, ProcessTreeSnapshot
 
 
-def windows_job_probe(managed) -> Tuple[ProcessProbeState, set]:
+def windows_job_probe(managed) -> tuple[ProcessProbeState, set]:
     """Probe Windows Job Object containment (executor-side only).
 
     - 查询成功且为空集合：该 containment 的明确空证据（CONFIRMED_DEAD）；
@@ -36,9 +35,7 @@ def windows_job_probe(managed) -> Tuple[ProcessProbeState, set]:
     if os.name != "nt" or not managed.job_handle:
         return (ProcessProbeState.CONFIRMED_DEAD, set())
     try:
-        pids = windows.query_job_process_ids(
-            int(managed.job_handle), exclude_pid=int(managed.pid)
-        )
+        pids = windows.query_job_process_ids(int(managed.job_handle), exclude_pid=int(managed.pid))
         if pids is None:
             return (ProcessProbeState.UNKNOWN, set())
         return (ProcessProbeState.LIVE, pids) if pids else (ProcessProbeState.CONFIRMED_DEAD, set())
@@ -46,7 +43,7 @@ def windows_job_probe(managed) -> Tuple[ProcessProbeState, set]:
         return (ProcessProbeState.UNKNOWN, set())
 
 
-def posix_group_probe(managed) -> Tuple[ProcessProbeState, set]:
+def posix_group_probe(managed) -> tuple[ProcessProbeState, set]:
     """Probe the POSIX process group containment (executor-side only)."""
     if os.name == "nt" or not managed.process_group_id:
         return (ProcessProbeState.CONFIRMED_DEAD, set())
@@ -101,39 +98,10 @@ def probe_known_pid(pid: int) -> ProcessProbeState:
         return ProcessProbeState.UNKNOWN
 
 
-def inspect_process_tree_snapshot(managed) -> ProcessTreeSnapshot:
-    """Pure synchronous psutil snapshot; never call directly from the event loop.
-
-    三态聚合规则（doc §5.4.3）：任一 identity 明确存活 -> LIVE；没有存活
-    但存在 UNKNOWN -> UNKNOWN；仅当 root 明确退出、所有已登记 identity
-    明确不存在且 containment 明确为空时 -> CONFIRMED_DEAD。
-    """
-    root_return_code = getattr(managed.process, "returncode", None)
-    root_alive = root_return_code is None
-    root_pid = int(managed.pid)
-    live: set = set()
-    unknown: set = set()
-    # containment（Job Object / POSIX 进程组）探测不确定：即使没有可填写
-    # 的 UNKNOWN PID 也必须保持 UNKNOWN 状态（doc 审计 P0-3A）。
+def _inspect_containment(managed, live):
     containment_unknown = False
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
-    root_identity_matches: Optional[bool] = None
-
-    if psutil is None:
-        if root_alive:
-            return ProcessTreeSnapshot(
-                state=ProcessProbeState.LIVE,
-                root_return_code=None,
-                remaining_pids=(root_pid,),
-            )
-        return ProcessTreeSnapshot(
-            state=ProcessProbeState.UNKNOWN,
-            root_return_code=root_return_code,
-            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
-            error_message="psutil is unavailable; descendant death cannot be confirmed",
-        )
-
+    failure_code = None
+    error_message = None
     # 1. Windows Job Object containment。
     job_state, job_pids = windows_job_probe(managed)
     if job_state == ProcessProbeState.LIVE:
@@ -151,20 +119,60 @@ def inspect_process_tree_snapshot(managed) -> ProcessTreeSnapshot:
         containment_unknown = True
         failure_code = failure_code or "PROCESS_GROUP_UNKNOWN"
         error_message = error_message or "POSIX process group probe failed; containment unknown"
+    return containment_unknown, failure_code, error_message
+
+
+def _root_identity_matches(managed, root_pid):
+    try:
+        proc = psutil.Process(root_pid)
+        if managed.process_start_time is not None:
+            root_identity_matches = abs(float(proc.create_time()) - managed.process_start_time) <= 2.0
+        else:
+            root_identity_matches = True
+    except (psutil.Error, OSError, ValueError):
+        root_identity_matches = None
+    return root_identity_matches
+
+
+def inspect_process_tree_snapshot(managed) -> ProcessTreeSnapshot:
+    """Pure synchronous psutil snapshot; never call directly from the event loop.
+
+    三态聚合规则（doc §5.4.3）：任一 identity 明确存活 -> LIVE；没有存活
+    但存在 UNKNOWN -> UNKNOWN；仅当 root 明确退出、所有已登记 identity
+    明确不存在且 containment 明确为空时 -> CONFIRMED_DEAD。
+    """
+    root_return_code = getattr(managed.process, "returncode", None)
+    root_alive = root_return_code is None
+    root_pid = int(managed.pid)
+    live: set = set()
+    unknown: set = set()
+    # containment（Job Object / POSIX 进程组）探测不确定：即使没有可填写
+    # 的 UNKNOWN PID 也必须保持 UNKNOWN 状态（doc 审计 P0-3A）。
+    containment_unknown = False
+    failure_code: str | None = None
+    error_message: str | None = None
+    root_identity_matches: bool | None = None
+
+    if psutil is None:
+        if root_alive:
+            return ProcessTreeSnapshot(
+                state=ProcessProbeState.LIVE,
+                root_return_code=None,
+                remaining_pids=(root_pid,),
+            )
+        return ProcessTreeSnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            root_return_code=root_return_code,
+            failure_code="PROCESS_INSPECTION_UNAVAILABLE",
+            error_message="psutil is unavailable; descendant death cannot be confirmed",
+        )
+
+    containment_unknown, failure_code, error_message = _inspect_containment(managed, live)
 
     # 3. Root liveness（asyncio returncode 是 root 存活/退出的权威来源）。
     if root_alive:
         live.add(root_pid)
-        try:
-            proc = psutil.Process(root_pid)
-            if managed.process_start_time is not None:
-                root_identity_matches = (
-                    abs(float(proc.create_time()) - managed.process_start_time) <= 2.0
-                )
-            else:
-                root_identity_matches = True
-        except (psutil.Error, OSError, ValueError):
-            root_identity_matches = None
+        root_identity_matches = _root_identity_matches(managed, root_pid)
 
     # 4. 已登记 immutable identities。
     for pid in list(managed.known_descendant_pids):

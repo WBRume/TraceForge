@@ -3,6 +3,7 @@
 OpenCode keeps its native message-revert path. These strategies describe the
 file-backed Claude/DSH recovery contract used by the shared undo coordinator.
 """
+
 from __future__ import annotations
 
 import os
@@ -121,9 +122,15 @@ _CLAUDE = ClaudeSessionCheckpoint()
 _DSH = DshSessionCheckpoint()
 _NATIVE = NativeSessionCheckpoint()
 _ADAPTERS: dict[str, SessionCheckpointAdapter] = {
-    "claude": _CLAUDE, "claude-code": _CLAUDE,
-    "dsh": _DSH, "dsh-webhost": _DSH, "webhost": _DSH,
-    "opencode": _NATIVE, "none": _NATIVE, "mock": _NATIVE, "": _NATIVE,
+    "claude": _CLAUDE,
+    "claude-code": _CLAUDE,
+    "dsh": _DSH,
+    "dsh-webhost": _DSH,
+    "webhost": _DSH,
+    "opencode": _NATIVE,
+    "none": _NATIVE,
+    "mock": _NATIVE,
+    "": _NATIVE,
 }
 
 

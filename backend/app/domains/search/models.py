@@ -1,10 +1,12 @@
 """Search bookkeeping deliberately has no cascading source foreign keys."""
+
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Index, Integer, JSON, String, Text, UniqueConstraint
-from app.database import Base
+from sqlalchemy import JSON, BigInteger, Boolean, Column, DateTime, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.mysql import DATETIME
+
+from app.database import Base
 
 UTC_DATETIME = DateTime().with_variant(DATETIME(fsp=6), "mysql")
 
@@ -24,7 +26,10 @@ class SearchDocumentState(Base):
     projection_hash = Column(String(64))
     deleted = Column(Boolean, nullable=False, default=False)
     updated_at = Column(UTC_DATETIME, nullable=False, default=datetime.utcnow)
-    __table_args__ = (Index("ix_search_state_workspace", "workspace_id", "entity_key"), Index("ix_search_state_task", "task_id", "entity_key"))
+    __table_args__ = (
+        Index("ix_search_state_workspace", "workspace_id", "entity_key"),
+        Index("ix_search_state_task", "task_id", "entity_key"),
+    )
 
 
 class QueueColumns:

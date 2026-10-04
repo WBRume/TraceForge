@@ -5,17 +5,17 @@ Revises: 02ed62002f0a
 Create Date: 2026-04-15 12:30:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c4f7b2e1a9d8"
-down_revision: Union[str, None] = "02ed62002f0a"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "02ed62002f0a"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _drop_table_if_exists(table_name: str) -> None:

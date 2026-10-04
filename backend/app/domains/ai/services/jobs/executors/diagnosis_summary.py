@@ -8,23 +8,22 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.agents import current_agent_attempt
 from app.agents.selection import backend_supports_fork, fork_session_for_backend, resolve_task_backend
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
-from app.core.offload import run_db, run_db_txn
+from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import provider_turn, state
 from app.domains.ai.services.jobs.constants import JOB_KIND_DIAGNOSIS_SUMMARY
-from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError, attempt_is_current_sync
+from app.domains.ai.services.jobs.registry import runtime
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import diagnosis_result_service
-
 from app.domains.task.services.conversation import history as task_conversation_history
 
 logger = get_logger(__name__, category="ai_session")
@@ -32,8 +31,10 @@ logger = get_logger(__name__, category="ai_session")
 
 def _resolve_task_project_path(task) -> str:
     """解析任务 CLI 工作目录（与正常会话引擎一致）。"""
-    from app.domains.local_resource.service import is_local, local_path
     from sqlalchemy.orm import object_session
+
+    from app.domains.local_resource.service import is_local, local_path
+
     if is_local(task):
         return local_path(object_session(task), task)
     project_path = str(getattr(task, "project_path", None) or "").strip() or "."
@@ -47,7 +48,6 @@ def _resolve_task_project_path(task) -> str:
 def collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int = 60000) -> str:
     """汇总问题定位任务的会话文本（user/assistant/system），供一键总结使用。"""
     from app.domains.task.models.chat import ChatMessage, MessageType
-
 
     rows = (
         db.query(ChatMessage)
@@ -80,7 +80,7 @@ def collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int 
     limit = max(0, int(max_chars or 60000))
     if len(transcript) > limit:
         head = transcript[: limit * 3 // 4]
-        tail = transcript[-limit // 4:]
+        tail = transcript[-limit // 4 :]
         transcript = f"{head}\n\n…（中间内容过长已截断）…\n\n{tail}"
     return transcript
 
@@ -88,8 +88,8 @@ def collect_diagnosis_transcript_sync(db: Session, task_id: str, max_chars: int 
 def _prepare_diagnosis_summary_sync(
     db: Session,
     job_id: str,
-    run_token: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_token: str | None = None,
+) -> dict[str, Any] | None:
     """诊断总结准备段（线程内执行，由 run_db_txn 包装）。
 
     一次性完成 job/task 加载、transcript 汇总、project_path 解析与
@@ -104,16 +104,18 @@ def _prepare_diagnosis_summary_sync(
     if not task or getattr(task, "task_type", None) != "DIAGNOSIS":
         raise ValueError("Only diagnosis tasks support diagnosis summary")
     job_context = job.context_json if isinstance(job.context_json, dict) else {}
-    source_session_id = str(
-        job_context.get("source_session_id") or job.session_id or task.session_id or ""
-    ).strip()
+    source_session_id = str(job_context.get("source_session_id") or job.session_id or task.session_id or "").strip()
     from app.domains.task.models.chat_submission import TaskChatSubmission
 
-    if db.query(TaskChatSubmission.id).filter(
-        TaskChatSubmission.task_id == task.id,
-        TaskChatSubmission.chat_message_id.isnot(None),
-        TaskChatSubmission.status != "SUCCEEDED",
-    ).first():
+    if (
+        db.query(TaskChatSubmission.id)
+        .filter(
+            TaskChatSubmission.task_id == task.id,
+            TaskChatSubmission.chat_message_id.isnot(None),
+            TaskChatSubmission.status != "SUCCEEDED",
+        )
+        .first()
+    ):
         # Provider history can contain failed turns that the filtered database
         # transcript excludes. Do not reintroduce them through a native fork.
         source_session_id = ""
@@ -134,7 +136,7 @@ def _prepare_diagnosis_summary_sync(
     }
 
 
-async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
+async def execute_diagnosis_summary_job(job_id: str) -> bool | None:
     """问题定位任务「一键总结问题案例」执行器。
 
     汇总会话 → 按原定位结果 JSON 契约生成结构化结果 → 反填定位结果卡片并广播。
@@ -143,24 +145,25 @@ async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
     """
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
-    prepared = await run_db_txn(
-        lambda db: _prepare_diagnosis_summary_sync(db, job_id, run_token)
-    )
+    prepared = await run_db_txn(lambda db: _prepare_diagnosis_summary_sync(db, job_id, run_token))
     if prepared is None:
         return None
     task_id = prepared["task_id"]
     creator_id = prepared["creator_id"]
     source_session_id = prepared["source_session_id"]
 
-    with bind_task_context(
-        task_id=task_id,
-        workspace_id=prepared["workspace_id"],
-        user_id=creator_id,
-    ), bind_ai_context(
-        job_id=job_id,
-        task_id=task_id,
-        session_id=None,
-        event_type="diagnosis_summary",
+    with (
+        bind_task_context(
+            task_id=task_id,
+            workspace_id=prepared["workspace_id"],
+            user_id=creator_id,
+        ),
+        bind_ai_context(
+            job_id=job_id,
+            task_id=task_id,
+            session_id=None,
+            event_type="diagnosis_summary",
+        ),
     ):
         await state.update_job_state(
             job_id,
@@ -180,7 +183,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
             job_id,
             context_patch={"summary_session_mode": summary_mode},
         )
-        summary_session_id: Optional[str] = None
+        summary_session_id: str | None = None
         native_fork_on_resume = False
         if can_fork:
             try:
@@ -227,7 +230,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
                 fork_session=native_fork_on_resume,
                 permission_mode="read-only",
             )
-        except RuntimeError as exc:
+        except RuntimeError:
             if await attempt_ops.is_job_cancelled_or_final(job_id):
                 logger.info("Diagnosis summary run cancelled; discard result: job={}", job_id)
                 return False
@@ -246,11 +249,9 @@ async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
         if payload is None:
             raise ValueError("Failed to parse structured diagnosis summary")
 
-        def _persist_diagnosis_result_sync(db: Session) -> Dict[str, Any]:
+        def _persist_diagnosis_result_sync(db: Session) -> dict[str, Any]:
             if not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
-                raise AgentAttemptFencedError(
-                    f"Diagnosis summary attempt is no longer current: {job_id}"
-                )
+                raise AgentAttemptFencedError(f"Diagnosis summary attempt is no longer current: {job_id}")
             latest_task = db.query(SddTask).filter(SddTask.id == task_id).first()
             if not latest_task:
                 raise ValueError("Task disappeared during diagnosis summary")
@@ -278,9 +279,7 @@ async def execute_diagnosis_summary_job(job_id: str) -> Optional[bool]:
             progress=100,
             message="定位结果已生成",
             result_patch={
-                "summary_excerpt": str(
-                    payload.summary or payload.root_cause or summary_text
-                )[:1200],
+                "summary_excerpt": str(payload.summary or payload.root_cause or summary_text)[:1200],
                 "summary_source": "diagnosis_summary",
             },
             session_id=str(result.get("session_id") or "") or None,

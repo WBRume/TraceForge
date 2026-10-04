@@ -6,34 +6,34 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.background_tasks import retain_background_task
 from app.core.logging import audit_log
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.schemas.queue import QueueJobActions, QueueJobItem
 from app.domains.api_mock.models.api_mock import ApiMockJobStatus, SddApiMockJob, SddApiMockProject
-from app.domains.workflow.models.provision_job import (
-    ProvisionJobStatus,
-    ProvisionJobType,
-    SddProvisionJob,
-)
+from app.domains.api_mock.services import api_mock_service
+from app.domains.auth.models.user import User, WorkspaceMember, WorkspacePermission
 from app.domains.skill.models.skill import SddSkill, SddSkillAnalysis, SkillAnalysisStatus
+from app.domains.skill.services import skill_analysis_service
 from app.domains.task.models.task import SddTask
 from app.domains.task.models.task_cli_bootstrap import (
     SddTaskCliBootstrap,
     TaskCliBootstrapStatus,
 )
-from app.domains.auth.models.user import User, WorkspaceMember, WorkspacePermission
-from app.domains.ai.schemas.queue import QueueJobActions, QueueJobItem
-from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
-from app.domains.api_mock.services import api_mock_service
-from app.domains.skill.services import skill_analysis_service
-from app.domains.task.services import task_cli_state_service
+from app.domains.workflow.models.provision_job import (
+    ProvisionJobStatus,
+    ProvisionJobType,
+    SddProvisionJob,
+)
 from app.domains.workflow.services import provision_job_service
 from app.domains.workspace.services import workspace_service
-
 
 QUEUE_SOURCE_PROVISION = "provision"
 QUEUE_SOURCE_API_MOCK = "api_mock"
@@ -52,7 +52,7 @@ def list_orphaned_jobs(
     user_id: str,
     page: int = 1,
     page_size: int = 50,
-) -> Tuple[List[SddAiJob], int]:
+) -> tuple[list[SddAiJob], int]:
     """Admin-only ORPHANED evidence view; no status mutation is performed."""
     if not _is_admin(db, user_id):
         raise PermissionError("Only platform administrators can inspect orphaned jobs")
@@ -119,17 +119,19 @@ def _append_orphan_recovery_history(
     action: str,
     operator_id: str,
     reason: str,
-    evidence: Optional[str] = None,
+    evidence: str | None = None,
 ) -> None:
     context = dict(job.context_json) if isinstance(job.context_json, dict) else {}
     history = list(context.get("orphan_recovery_history") or [])
-    history.append({
-        "action": action,
-        "operator_id": str(operator_id),
-        "reason": reason,
-        "evidence": evidence,
-        "at": datetime.utcnow().isoformat() + "Z",
-    })
+    history.append(
+        {
+            "action": action,
+            "operator_id": str(operator_id),
+            "reason": reason,
+            "evidence": evidence,
+            "at": datetime.utcnow().isoformat() + "Z",
+        }
+    )
     context["orphan_recovery_history"] = history[-50:]
     job.context_json = context
 
@@ -140,9 +142,9 @@ def _adopt_orphaned_job_for_manual_action(
     job_id: str,
     operator_id: str,
     reason: str,
-    evidence: Optional[str],
+    evidence: str | None,
     action: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """CAS an ORPHANED job into a single administrator-owned termination."""
     if not _is_admin(db, operator_id):
         raise PermissionError("Only platform administrators can recover orphaned jobs")
@@ -151,18 +153,11 @@ def _adopt_orphaned_job_for_manual_action(
     if not normalized_reason:
         raise ValueError("reason is required")
     normalized_job_id = str(job_id or "").strip()
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.id == normalized_job_id)
-        .with_for_update()
-        .first()
-    )
+    job = db.query(SddAiJob).filter(SddAiJob.id == normalized_job_id).with_for_update().first()
     if not job:
         raise LookupError("Queue job not found")
     if job.status != AiJobStatus.ORPHANED:
-        raise ValueError(
-            f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})"
-        )
+        raise ValueError(f"Queue job is no longer ORPHANED (current status: {_enum_text(job.status)})")
 
     from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
 
@@ -215,7 +210,7 @@ def begin_orphaned_retry_termination(
     job_id: str,
     operator_id: str,
     reason: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     return _adopt_orphaned_job_for_manual_action(
         db,
         job_id=job_id,
@@ -233,7 +228,7 @@ def begin_orphaned_cleanup_confirmation(
     operator_id: str,
     reason: str,
     evidence: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     normalized_evidence = str(evidence or "").strip()
     if not normalized_evidence:
         raise ValueError("evidence is required")
@@ -273,15 +268,11 @@ def _is_admin(db: Session, user_id: str) -> bool:
 
 
 def _workspace_member_ids(db: Session, user_id: str) -> set[str]:
-    rows = (
-        db.query(WorkspaceMember.workspace_id)
-        .filter(WorkspaceMember.user_id == str(user_id or "").strip())
-        .all()
-    )
+    rows = db.query(WorkspaceMember.workspace_id).filter(WorkspaceMember.user_id == str(user_id or "").strip()).all()
     return {str(row[0]) for row in rows if row and row[0]}
 
 
-def _can_manage_task_jobs(db: Session, *, workspace_id: Optional[str], user_id: str) -> bool:
+def _can_manage_task_jobs(db: Session, *, workspace_id: str | None, user_id: str) -> bool:
     ws_id = str(workspace_id or "").strip()
     if not ws_id:
         return False
@@ -293,7 +284,7 @@ def _can_manage_task_jobs(db: Session, *, workspace_id: Optional[str], user_id: 
     )
 
 
-def _can_manage_api_mock_jobs(db: Session, *, workspace_id: Optional[str], user_id: str) -> bool:
+def _can_manage_api_mock_jobs(db: Session, *, workspace_id: str | None, user_id: str) -> bool:
     ws_id = str(workspace_id or "").strip()
     if not ws_id:
         return False
@@ -305,7 +296,7 @@ def _can_manage_api_mock_jobs(db: Session, *, workspace_id: Optional[str], user_
     )
 
 
-def _can_manage_skill_jobs(db: Session, *, workspace_id: Optional[str], user_id: str) -> bool:
+def _can_manage_skill_jobs(db: Session, *, workspace_id: str | None, user_id: str) -> bool:
     ws_id = str(workspace_id or "").strip()
     if not ws_id:
         return False
@@ -317,7 +308,7 @@ def _can_manage_skill_jobs(db: Session, *, workspace_id: Optional[str], user_id:
     )
 
 
-def _is_mine(creator_id: Optional[str], user_id: str) -> bool:
+def _is_mine(creator_id: str | None, user_id: str) -> bool:
     return str(creator_id or "").strip() == str(user_id or "").strip()
 
 
@@ -325,10 +316,10 @@ def _build_target_path(
     *,
     source: str,
     job_type: str,
-    workspace_id: Optional[str],
-    task_id: Optional[str],
-    skill_id: Optional[str] = None,
-) -> Optional[str]:
+    workspace_id: str | None,
+    task_id: str | None,
+    skill_id: str | None = None,
+) -> str | None:
     ws_id = str(workspace_id or "").strip()
     tk_id = str(task_id or "").strip()
     sk_id = str(skill_id or "").strip()
@@ -351,7 +342,7 @@ def _build_target_path(
     return None
 
 
-def _sort_items(items: Sequence[QueueJobItem]) -> List[QueueJobItem]:
+def _sort_items(items: Sequence[QueueJobItem]) -> list[QueueJobItem]:
     return sorted(
         items,
         key=lambda item: (
@@ -362,7 +353,7 @@ def _sort_items(items: Sequence[QueueJobItem]) -> List[QueueJobItem]:
     )
 
 
-def _paginate(items: Sequence[QueueJobItem], page: int, page_size: int) -> Tuple[List[QueueJobItem], int]:
+def _paginate(items: Sequence[QueueJobItem], page: int, page_size: int) -> tuple[list[QueueJobItem], int]:
     safe_page = max(1, int(page or 1))
     safe_page_size = max(1, min(int(page_size or 10), 200))
     total = len(items)
@@ -371,7 +362,7 @@ def _paginate(items: Sequence[QueueJobItem], page: int, page_size: int) -> Tuple
     return list(items[start:end]), total
 
 
-def _build_provision_actions(item_status: str, target_path: Optional[str]) -> QueueJobActions:
+def _build_provision_actions(item_status: str, target_path: str | None) -> QueueJobActions:
     return QueueJobActions(
         can_stop=False,
         can_retry=item_status == "FAILED",
@@ -406,7 +397,7 @@ def _mark_stale_import_skill_job_failed(db: Session, job: SddProvisionJob) -> No
     db.refresh(job)
 
 
-def _build_api_mock_actions(*, job_type: str, item_status: str, target_path: Optional[str]) -> QueueJobActions:
+def _build_api_mock_actions(*, job_type: str, item_status: str, target_path: str | None) -> QueueJobActions:
     active = item_status in {"PENDING", "RUNNING"}
     can_retry = item_status == "FAILED" and job_type in {API_MOCK_JOB_SYNC, API_MOCK_JOB_AUTO}
     can_stop = active and job_type in {API_MOCK_JOB_SYNC, API_MOCK_JOB_AUTO, API_MOCK_JOB_IMPORT}
@@ -417,7 +408,7 @@ def _build_api_mock_actions(*, job_type: str, item_status: str, target_path: Opt
     )
 
 
-def _build_bootstrap_actions(item_status: str, target_path: Optional[str]) -> QueueJobActions:
+def _build_bootstrap_actions(item_status: str, target_path: str | None) -> QueueJobActions:
     return QueueJobActions(
         can_stop=False,
         can_retry=item_status in {"PENDING", "FAILED"},
@@ -425,7 +416,7 @@ def _build_bootstrap_actions(item_status: str, target_path: Optional[str]) -> Qu
     )
 
 
-def _build_skill_analysis_actions(item_status: str, target_path: Optional[str]) -> QueueJobActions:
+def _build_skill_analysis_actions(item_status: str, target_path: str | None) -> QueueJobActions:
     return QueueJobActions(
         can_stop=False,
         can_retry=item_status == "FAILED",
@@ -438,9 +429,9 @@ def _list_provision_items(
     *,
     user_id: str,
     view: str,
-    workspace_id: Optional[str],
-    status_filter: Optional[str],
-) -> List[QueueJobItem]:
+    workspace_id: str | None,
+    status_filter: str | None,
+) -> list[QueueJobItem]:
     query = db.query(SddProvisionJob)
     ws_id = str(workspace_id or "").strip()
     mine_only = str(view or "mine").strip().lower() == "mine"
@@ -463,7 +454,7 @@ def _list_provision_items(
         query = query.filter(SddProvisionJob.workspace_id == ws_id)
 
     rows = query.order_by(SddProvisionJob.created_at.desc()).limit(500).all()
-    items: List[QueueJobItem] = []
+    items: list[QueueJobItem] = []
     for row in rows:
         _mark_stale_import_skill_job_failed(db, row)
         status = _to_queue_status(_enum_text(row.status))
@@ -506,12 +497,11 @@ def _list_api_mock_items(
     *,
     user_id: str,
     view: str,
-    workspace_id: Optional[str],
-    status_filter: Optional[str],
-) -> List[QueueJobItem]:
-    query = (
-        db.query(SddApiMockJob, SddApiMockProject)
-        .join(SddApiMockProject, SddApiMockProject.id == SddApiMockJob.project_id)
+    workspace_id: str | None,
+    status_filter: str | None,
+) -> list[QueueJobItem]:
+    query = db.query(SddApiMockJob, SddApiMockProject).join(
+        SddApiMockProject, SddApiMockProject.id == SddApiMockJob.project_id
     )
     ws_id = str(workspace_id or "").strip()
     mine_only = str(view or "mine").strip().lower() == "mine"
@@ -534,7 +524,7 @@ def _list_api_mock_items(
         query = query.filter(SddApiMockProject.workspace_id == ws_id)
 
     rows = query.order_by(SddApiMockJob.created_at.desc()).limit(500).all()
-    items: List[QueueJobItem] = []
+    items: list[QueueJobItem] = []
     for job, project in rows:
         status = _to_queue_status(_enum_text(job.status))
         if status_filter_norm and status_filter_norm != status:
@@ -576,13 +566,10 @@ def _list_bootstrap_items(
     *,
     user_id: str,
     view: str,
-    workspace_id: Optional[str],
-    status_filter: Optional[str],
-) -> List[QueueJobItem]:
-    query = (
-        db.query(SddTaskCliBootstrap, SddTask)
-        .join(SddTask, SddTask.id == SddTaskCliBootstrap.task_id)
-    )
+    workspace_id: str | None,
+    status_filter: str | None,
+) -> list[QueueJobItem]:
+    query = db.query(SddTaskCliBootstrap, SddTask).join(SddTask, SddTask.id == SddTaskCliBootstrap.task_id)
     ws_id = str(workspace_id or "").strip()
     mine_only = str(view or "mine").strip().lower() == "mine"
     status_filter_norm = str(status_filter or "").strip().upper()
@@ -604,7 +591,7 @@ def _list_bootstrap_items(
         query = query.filter(SddTaskCliBootstrap.workspace_id == ws_id)
 
     rows = query.order_by(SddTaskCliBootstrap.created_at.desc()).limit(500).all()
-    items: List[QueueJobItem] = []
+    items: list[QueueJobItem] = []
     for bootstrap, task in rows:
         raw_status = _enum_text(bootstrap.status)
         status = _to_queue_status(raw_status)
@@ -643,13 +630,10 @@ def _list_skill_analysis_items(
     *,
     user_id: str,
     view: str,
-    workspace_id: Optional[str],
-    status_filter: Optional[str],
-) -> List[QueueJobItem]:
-    query = (
-        db.query(SddSkillAnalysis, SddSkill)
-        .join(SddSkill, SddSkill.id == SddSkillAnalysis.skill_id)
-    )
+    workspace_id: str | None,
+    status_filter: str | None,
+) -> list[QueueJobItem]:
+    query = db.query(SddSkillAnalysis, SddSkill).join(SddSkill, SddSkill.id == SddSkillAnalysis.skill_id)
     ws_id = str(workspace_id or "").strip()
     mine_only = str(view or "mine").strip().lower() == "mine"
     status_filter_norm = str(status_filter or "").strip().upper()
@@ -671,7 +655,7 @@ def _list_skill_analysis_items(
         query = query.filter(SddSkillAnalysis.workspace_id == ws_id)
 
     rows = query.order_by(SddSkillAnalysis.created_at.desc()).limit(500).all()
-    items: List[QueueJobItem] = []
+    items: list[QueueJobItem] = []
     for analysis, skill in rows:
         semantic_degraded = skill_analysis_service.is_semantic_degraded_analysis(analysis)
         status = "SUCCESS" if semantic_degraded else _to_queue_status(_enum_text(analysis.status))
@@ -715,24 +699,20 @@ def list_queue_jobs(
     *,
     user_id: str,
     view: str = "mine",
-    workspace_id: Optional[str] = None,
-    source: Optional[str] = None,
-    status: Optional[str] = None,
+    workspace_id: str | None = None,
+    source: str | None = None,
+    status: str | None = None,
     page: int = 1,
     page_size: int = 10,
-) -> Tuple[List[QueueJobItem], int]:
+) -> tuple[list[QueueJobItem], int]:
     normalized_view = str(view or "mine").strip().lower() or "mine"
     if normalized_view not in {"mine", "workspace_all"}:
         normalized_view = "mine"
 
     normalized_source = str(source or "").strip().lower()
-    selected_sources = (
-        {normalized_source}
-        if normalized_source in QUEUE_SOURCES
-        else set(QUEUE_SOURCES)
-    )
+    selected_sources = {normalized_source} if normalized_source in QUEUE_SOURCES else set(QUEUE_SOURCES)
 
-    items: List[QueueJobItem] = []
+    items: list[QueueJobItem] = []
     if QUEUE_SOURCE_PROVISION in selected_sources:
         items.extend(
             _list_provision_items(
@@ -782,8 +762,8 @@ def list_queue_jobs(
 def _can_view_queue_job(
     db: Session,
     *,
-    workspace_id: Optional[str],
-    creator_id: Optional[str],
+    workspace_id: str | None,
+    creator_id: str | None,
     user_id: str,
 ) -> bool:
     if _is_mine(creator_id, user_id):
@@ -814,11 +794,7 @@ def get_queue_job(
     normalized_user_id = str(user_id or "").strip()
 
     if normalized_source == QUEUE_SOURCE_PROVISION:
-        row = (
-            db.query(SddProvisionJob)
-            .filter(SddProvisionJob.id == normalized_job_id)
-            .first()
-        )
+        row = db.query(SddProvisionJob).filter(SddProvisionJob.id == normalized_job_id).first()
         if not row:
             raise LookupError("Queue job not found")
         if not _can_view_queue_job(
@@ -1001,13 +977,13 @@ def get_queue_job(
 def _start_provision_job(new_job_id: str, job_type: str) -> None:
     loop = asyncio.get_running_loop()
     if job_type == ProvisionJobType.CREATE_WORKSPACE.value:
-        loop.create_task(provision_job_service.run_create_workspace_job(new_job_id))
+        retain_background_task(loop.create_task(provision_job_service.run_create_workspace_job(new_job_id)))
         return
     if job_type == ProvisionJobType.CREATE_TASK.value:
-        loop.create_task(provision_job_service.run_create_task_job(new_job_id))
+        retain_background_task(loop.create_task(provision_job_service.run_create_task_job(new_job_id)))
         return
     if job_type == ProvisionJobType.IMPORT_SKILL.value:
-        loop.create_task(provision_job_service.run_import_skill_job(new_job_id))
+        retain_background_task(loop.create_task(provision_job_service.run_import_skill_job(new_job_id)))
         return
     raise ValueError("Unsupported provision job type for retry")
 
@@ -1019,17 +995,19 @@ def _start_api_mock_job(
     workspace_id: str,
     task_id: str,
     user_id: str,
-    endpoint_id: Optional[str] = None,
+    endpoint_id: str | None = None,
 ) -> None:
     loop = asyncio.get_running_loop()
     if job_type == API_MOCK_JOB_SYNC:
-        loop.create_task(
-            asyncio.to_thread(
-                api_mock_service.run_sync_job_background,
-                job_id,
-                workspace_id,
-                task_id,
-                user_id,
+        retain_background_task(
+            loop.create_task(
+                asyncio.to_thread(
+                    api_mock_service.run_sync_job_background,
+                    job_id,
+                    workspace_id,
+                    task_id,
+                    user_id,
+                )
             )
         )
         return
@@ -1037,14 +1015,16 @@ def _start_api_mock_job(
         eid = str(endpoint_id or "").strip()
         if not eid:
             raise ValueError("Missing endpoint_id for auto mock retry")
-        loop.create_task(
-            asyncio.to_thread(
-                api_mock_service.run_auto_mock_job_background,
-                job_id,
-                workspace_id,
-                task_id,
-                user_id,
-                endpoint_id=eid,
+        retain_background_task(
+            loop.create_task(
+                asyncio.to_thread(
+                    api_mock_service.run_auto_mock_job_background,
+                    job_id,
+                    workspace_id,
+                    task_id,
+                    user_id,
+                    endpoint_id=eid,
+                )
             )
         )
         return
@@ -1057,7 +1037,7 @@ def stop_queue_job(
     source: str,
     job_id: str,
     user_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     normalized_source = str(source or "").strip().lower()
     if normalized_source == QUEUE_SOURCE_PROVISION:
         raise ValueError("Stop is not supported for provision jobs")
@@ -1102,226 +1082,234 @@ def stop_queue_job(
     raise ValueError("Unsupported queue source")
 
 
+def _retry_provision_job(db, job_id, normalized_user_id, normalized_source):
+    source_job = db.query(SddProvisionJob).filter(SddProvisionJob.id == str(job_id or "").strip()).first()
+    if not source_job:
+        raise LookupError("Queue job not found")
+    if source_job.job_type == ProvisionJobType.CREATE_WORKSPACE:
+        if not _is_mine(source_job.creator_id, normalized_user_id):
+            raise PermissionError("No permission to retry this queue job")
+    elif source_job.job_type == ProvisionJobType.IMPORT_SKILL:
+        can_manage = _can_manage_skill_jobs(
+            db,
+            workspace_id=source_job.workspace_id,
+            user_id=normalized_user_id,
+        )
+        if not can_manage and not _is_mine(source_job.creator_id, normalized_user_id):
+            raise PermissionError("No permission to retry this queue job")
+    else:
+        can_manage = _can_manage_task_jobs(
+            db,
+            workspace_id=source_job.workspace_id,
+            user_id=normalized_user_id,
+        )
+        if not can_manage and not _is_mine(source_job.creator_id, normalized_user_id):
+            raise PermissionError("No permission to retry this queue job")
+    if source_job.status != ProvisionJobStatus.FAILED:
+        raise ValueError("Only failed provision jobs can be retried")
+
+    new_job = provision_job_service.retry_job(
+        db,
+        source_job=source_job,
+        creator_id=normalized_user_id,
+        message="Provision retry queued",
+    )
+    _start_provision_job(new_job.id, _enum_text(new_job.job_type))
+    audit_log(
+        action="queue_retry",
+        outcome="success",
+        resource_type="queue_job",
+        resource_id=source_job.id,
+        source=normalized_source,
+        operator_id=normalized_user_id,
+        new_job_id=new_job.id,
+        workspace_id=new_job.workspace_id,
+        task_id=new_job.task_id,
+    )
+    return {
+        "source": normalized_source,
+        "job_id": source_job.id,
+        "new_job_id": new_job.id,
+        "message": "Provision retry queued",
+    }
+
+
+def _retry_api_mock_job(db, job_id, normalized_user_id, normalized_source):
+    row = (
+        db.query(SddApiMockJob, SddApiMockProject)
+        .join(SddApiMockProject, SddApiMockProject.id == SddApiMockJob.project_id)
+        .filter(SddApiMockJob.id == str(job_id or "").strip())
+        .first()
+    )
+    if not row:
+        raise LookupError("Queue job not found")
+    source_job, project = row
+    if not _can_manage_api_mock_jobs(db, workspace_id=project.workspace_id, user_id=normalized_user_id):
+        raise PermissionError("No permission to retry API MOCK jobs")
+    if source_job.status != ApiMockJobStatus.FAILED:
+        raise ValueError("Only failed API MOCK jobs can be retried")
+    if str(source_job.job_type or "") == API_MOCK_JOB_IMPORT:
+        raise ValueError("Retry is not supported for IMPORT_SWAGGER jobs")
+    if str(source_job.job_type or "") not in {API_MOCK_JOB_SYNC, API_MOCK_JOB_AUTO}:
+        raise ValueError("Retry is not supported for this API MOCK job type")
+
+    endpoint_id: str | None = None
+    if str(source_job.job_type or "") == API_MOCK_JOB_AUTO:
+        source_payload = source_job.result_json if isinstance(source_job.result_json, dict) else {}
+        endpoint_id = str(source_payload.get("target_endpoint_id") or "").strip() or None
+        if not endpoint_id:
+            raise ValueError("Unable to retry AUTO_GENERATE_MOCK_CASES without endpoint target")
+
+    new_job = api_mock_service.create_job(
+        db,
+        project,
+        creator_id=normalized_user_id,
+        job_type=str(source_job.job_type or ""),
+        message="Retry queued",
+    )
+
+    if str(source_job.job_type or "") == API_MOCK_JOB_AUTO:
+        api_mock_service.set_auto_mock_job_target(
+            db,
+            project.id,
+            new_job,
+            endpoint_id=endpoint_id,
+        )
+
+    _start_api_mock_job(
+        job_type=str(source_job.job_type or ""),
+        job_id=new_job.id,
+        workspace_id=str(project.workspace_id or ""),
+        task_id=str(project.task_id or ""),
+        user_id=normalized_user_id,
+        endpoint_id=endpoint_id,
+    )
+    audit_log(
+        action="queue_retry",
+        outcome="success",
+        resource_type="queue_job",
+        resource_id=source_job.id,
+        source=normalized_source,
+        operator_id=normalized_user_id,
+        new_job_id=new_job.id,
+        workspace_id=project.workspace_id,
+        task_id=project.task_id,
+    )
+    return {
+        "source": normalized_source,
+        "job_id": source_job.id,
+        "new_job_id": new_job.id,
+        "message": "API MOCK retry queued",
+    }
+
+
+def _retry_bootstrap_job(db, job_id, normalized_user_id, normalized_source):
+    row = (
+        db.query(SddTaskCliBootstrap, SddTask)
+        .join(SddTask, SddTask.id == SddTaskCliBootstrap.task_id)
+        .filter(SddTaskCliBootstrap.id == str(job_id or "").strip())
+        .first()
+    )
+    if not row:
+        raise LookupError("Queue job not found")
+    record, task = row
+    if not _can_manage_task_jobs(db, workspace_id=record.workspace_id, user_id=normalized_user_id):
+        raise PermissionError("No permission to retry bootstrap jobs")
+    status_text = _enum_text(record.status)
+    if status_text not in {
+        TaskCliBootstrapStatus.PENDING.value,
+        TaskCliBootstrapStatus.FAILED.value,
+        TaskCliBootstrapStatus.STALE.value,
+    }:
+        raise ValueError("Only pending/failed/stale bootstrap jobs can be retried")
+
+    record.status = TaskCliBootstrapStatus.PENDING
+    record.progress = 0
+    record.message = "Bootstrap retry queued"
+    record.error_message = None
+    db.commit()
+    db.refresh(record)
+    from app.domains.ai.services.jobs.store import create_task_baseline_job
+
+    baseline_job = create_task_baseline_job(
+        db,
+        workspace_id=record.workspace_id,
+        task_id=record.task_id,
+        creator_id=normalized_user_id,
+    )
+    audit_log(
+        action="queue_retry",
+        outcome="success",
+        resource_type="queue_job",
+        resource_id=record.id,
+        source=normalized_source,
+        operator_id=normalized_user_id,
+        workspace_id=record.workspace_id,
+        task_id=record.task_id,
+        new_job_id=baseline_job.id,
+    )
+    return {
+        "source": normalized_source,
+        "job_id": record.id,
+        "new_job_id": baseline_job.id,
+        "queue_key": baseline_job.queue_key,
+        "message": "Bootstrap retry queued",
+    }
+
+
+def _retry_skill_analysis_job(db, job_id, normalized_user_id, normalized_source):
+    source_job = db.query(SddSkillAnalysis).filter(SddSkillAnalysis.id == str(job_id or "").strip()).first()
+    if not source_job:
+        raise LookupError("Queue job not found")
+    if not _can_manage_skill_jobs(db, workspace_id=source_job.workspace_id, user_id=normalized_user_id):
+        raise PermissionError("No permission to retry skill analysis jobs")
+    if source_job.status != SkillAnalysisStatus.FAILED:
+        raise ValueError("Only failed skill analysis jobs can be retried")
+
+    new_job = skill_analysis_service.retry_analysis_job(
+        db,
+        source=source_job,
+        user_id=normalized_user_id,
+    )
+    skill_analysis_service.schedule_analysis_job(new_job.id)
+    audit_log(
+        action="queue_retry",
+        outcome="success",
+        resource_type="queue_job",
+        resource_id=source_job.id,
+        source=normalized_source,
+        operator_id=normalized_user_id,
+        new_job_id=new_job.id,
+        workspace_id=new_job.workspace_id,
+        skill_id=new_job.skill_id,
+    )
+    return {
+        "source": normalized_source,
+        "job_id": source_job.id,
+        "new_job_id": new_job.id,
+        "message": "Skill analysis retry queued",
+    }
+
+
 def retry_queue_job(
     db: Session,
     *,
     source: str,
     job_id: str,
     user_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     normalized_source = str(source or "").strip().lower()
     normalized_user_id = str(user_id or "").strip()
 
     if normalized_source == QUEUE_SOURCE_PROVISION:
-        source_job = (
-            db.query(SddProvisionJob)
-            .filter(SddProvisionJob.id == str(job_id or "").strip())
-            .first()
-        )
-        if not source_job:
-            raise LookupError("Queue job not found")
-        if source_job.job_type == ProvisionJobType.CREATE_WORKSPACE:
-            if not _is_mine(source_job.creator_id, normalized_user_id):
-                raise PermissionError("No permission to retry this queue job")
-        elif source_job.job_type == ProvisionJobType.IMPORT_SKILL:
-            can_manage = _can_manage_skill_jobs(
-                db,
-                workspace_id=source_job.workspace_id,
-                user_id=normalized_user_id,
-            )
-            if not can_manage and not _is_mine(source_job.creator_id, normalized_user_id):
-                raise PermissionError("No permission to retry this queue job")
-        else:
-            can_manage = _can_manage_task_jobs(
-                db,
-                workspace_id=source_job.workspace_id,
-                user_id=normalized_user_id,
-            )
-            if not can_manage and not _is_mine(source_job.creator_id, normalized_user_id):
-                raise PermissionError("No permission to retry this queue job")
-        if source_job.status != ProvisionJobStatus.FAILED:
-            raise ValueError("Only failed provision jobs can be retried")
-
-        new_job = provision_job_service.retry_job(
-            db,
-            source_job=source_job,
-            creator_id=normalized_user_id,
-            message="Provision retry queued",
-        )
-        _start_provision_job(new_job.id, _enum_text(new_job.job_type))
-        audit_log(
-            action="queue_retry",
-            outcome="success",
-            resource_type="queue_job",
-            resource_id=source_job.id,
-            source=normalized_source,
-            operator_id=normalized_user_id,
-            new_job_id=new_job.id,
-            workspace_id=new_job.workspace_id,
-            task_id=new_job.task_id,
-        )
-        return {
-            "source": normalized_source,
-            "job_id": source_job.id,
-            "new_job_id": new_job.id,
-            "message": "Provision retry queued",
-        }
+        return _retry_provision_job(db, job_id, normalized_user_id, normalized_source)
 
     if normalized_source == QUEUE_SOURCE_API_MOCK:
-        row = (
-            db.query(SddApiMockJob, SddApiMockProject)
-            .join(SddApiMockProject, SddApiMockProject.id == SddApiMockJob.project_id)
-            .filter(SddApiMockJob.id == str(job_id or "").strip())
-            .first()
-        )
-        if not row:
-            raise LookupError("Queue job not found")
-        source_job, project = row
-        if not _can_manage_api_mock_jobs(db, workspace_id=project.workspace_id, user_id=normalized_user_id):
-            raise PermissionError("No permission to retry API MOCK jobs")
-        if source_job.status != ApiMockJobStatus.FAILED:
-            raise ValueError("Only failed API MOCK jobs can be retried")
-        if str(source_job.job_type or "") == API_MOCK_JOB_IMPORT:
-            raise ValueError("Retry is not supported for IMPORT_SWAGGER jobs")
-        if str(source_job.job_type or "") not in {API_MOCK_JOB_SYNC, API_MOCK_JOB_AUTO}:
-            raise ValueError("Retry is not supported for this API MOCK job type")
-
-        endpoint_id: Optional[str] = None
-        if str(source_job.job_type or "") == API_MOCK_JOB_AUTO:
-            source_payload = source_job.result_json if isinstance(source_job.result_json, dict) else {}
-            endpoint_id = str(source_payload.get("target_endpoint_id") or "").strip() or None
-            if not endpoint_id:
-                raise ValueError("Unable to retry AUTO_GENERATE_MOCK_CASES without endpoint target")
-
-        new_job = api_mock_service.create_job(
-            db,
-            project,
-            creator_id=normalized_user_id,
-            job_type=str(source_job.job_type or ""),
-            message="Retry queued",
-        )
-
-        if str(source_job.job_type or "") == API_MOCK_JOB_AUTO:
-            api_mock_service.set_auto_mock_job_target(
-                db,
-                project.id,
-                new_job,
-                endpoint_id=endpoint_id,
-            )
-
-        _start_api_mock_job(
-            job_type=str(source_job.job_type or ""),
-            job_id=new_job.id,
-            workspace_id=str(project.workspace_id or ""),
-            task_id=str(project.task_id or ""),
-            user_id=normalized_user_id,
-            endpoint_id=endpoint_id,
-        )
-        audit_log(
-            action="queue_retry",
-            outcome="success",
-            resource_type="queue_job",
-            resource_id=source_job.id,
-            source=normalized_source,
-            operator_id=normalized_user_id,
-            new_job_id=new_job.id,
-            workspace_id=project.workspace_id,
-            task_id=project.task_id,
-        )
-        return {
-            "source": normalized_source,
-            "job_id": source_job.id,
-            "new_job_id": new_job.id,
-            "message": "API MOCK retry queued",
-        }
+        return _retry_api_mock_job(db, job_id, normalized_user_id, normalized_source)
 
     if normalized_source == QUEUE_SOURCE_BOOTSTRAP:
-        row = (
-            db.query(SddTaskCliBootstrap, SddTask)
-            .join(SddTask, SddTask.id == SddTaskCliBootstrap.task_id)
-            .filter(SddTaskCliBootstrap.id == str(job_id or "").strip())
-            .first()
-        )
-        if not row:
-            raise LookupError("Queue job not found")
-        record, task = row
-        if not _can_manage_task_jobs(db, workspace_id=record.workspace_id, user_id=normalized_user_id):
-            raise PermissionError("No permission to retry bootstrap jobs")
-        status_text = _enum_text(record.status)
-        if status_text not in {
-            TaskCliBootstrapStatus.PENDING.value,
-            TaskCliBootstrapStatus.FAILED.value,
-            TaskCliBootstrapStatus.STALE.value,
-        }:
-            raise ValueError("Only pending/failed/stale bootstrap jobs can be retried")
-
-        record.status = TaskCliBootstrapStatus.PENDING
-        record.progress = 0
-        record.message = "Bootstrap retry queued"
-        record.error_message = None
-        db.commit()
-        db.refresh(record)
-        from app.domains.ai.services.jobs.store import create_task_baseline_job
-
-        baseline_job = create_task_baseline_job(
-            db,
-            workspace_id=record.workspace_id,
-            task_id=record.task_id,
-            creator_id=normalized_user_id,
-        )
-        audit_log(
-            action="queue_retry",
-            outcome="success",
-            resource_type="queue_job",
-            resource_id=record.id,
-            source=normalized_source,
-            operator_id=normalized_user_id,
-            workspace_id=record.workspace_id,
-            task_id=record.task_id,
-            new_job_id=baseline_job.id,
-        )
-        return {
-            "source": normalized_source,
-            "job_id": record.id,
-            "new_job_id": baseline_job.id,
-            "queue_key": baseline_job.queue_key,
-            "message": "Bootstrap retry queued",
-        }
+        return _retry_bootstrap_job(db, job_id, normalized_user_id, normalized_source)
 
     if normalized_source == QUEUE_SOURCE_SKILL_ANALYSIS:
-        source_job = (
-            db.query(SddSkillAnalysis)
-            .filter(SddSkillAnalysis.id == str(job_id or "").strip())
-            .first()
-        )
-        if not source_job:
-            raise LookupError("Queue job not found")
-        if not _can_manage_skill_jobs(db, workspace_id=source_job.workspace_id, user_id=normalized_user_id):
-            raise PermissionError("No permission to retry skill analysis jobs")
-        if source_job.status != SkillAnalysisStatus.FAILED:
-            raise ValueError("Only failed skill analysis jobs can be retried")
-
-        new_job = skill_analysis_service.retry_analysis_job(
-            db,
-            source=source_job,
-            user_id=normalized_user_id,
-        )
-        skill_analysis_service.schedule_analysis_job(new_job.id)
-        audit_log(
-            action="queue_retry",
-            outcome="success",
-            resource_type="queue_job",
-            resource_id=source_job.id,
-            source=normalized_source,
-            operator_id=normalized_user_id,
-            new_job_id=new_job.id,
-            workspace_id=new_job.workspace_id,
-            skill_id=new_job.skill_id,
-        )
-        return {
-            "source": normalized_source,
-            "job_id": source_job.id,
-            "new_job_id": new_job.id,
-            "message": "Skill analysis retry queued",
-        }
+        return _retry_skill_analysis_job(db, job_id, normalized_user_id, normalized_source)
     raise ValueError("Unsupported queue source")

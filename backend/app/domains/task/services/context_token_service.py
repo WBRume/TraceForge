@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
@@ -19,17 +20,16 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
+from app.domains.skill.models.skill import SddSkillRuntimeEvent, SkillRuntimeEventType
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.context_token import (
     ContextTokenCategory,
     SddContextTokenSegment,
     SddContextTokenSnapshot,
 )
-from app.domains.skill.models.skill import SddSkillRuntimeEvent, SkillRuntimeEventType
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import context_compaction_service
 from app.domains.task.services.task_doc_scan import iter_task_rule_docs
-
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -66,7 +66,7 @@ def _coerce_category(value: Any) -> ContextTokenCategory:
         raise ValueError(f"Unsupported context token category: {value}") from exc
 
 
-def _clip(value: Any, limit: int) -> Optional[str]:
+def _clip(value: Any, limit: int) -> str | None:
     text = str(value or "").strip()
     if not text:
         return None
@@ -91,23 +91,23 @@ def _preview(text: str) -> str:
     return f"{normalized[:PREVIEW_LIMIT]}..."
 
 
-def _content_hash(text: str) -> Optional[str]:
+def _content_hash(text: str) -> str | None:
     if not text:
         return None
     return hashlib.sha256(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def _text_stats(content: Any) -> Tuple[str, int, int, Optional[str], Optional[str]]:
+def _text_stats(content: Any) -> tuple[str, int, int, str | None, str | None]:
     text = _json_text(content)
     char_count = len(text)
     byte_count = len(text.encode("utf-8", errors="ignore"))
     return text, char_count, byte_count, _content_hash(text), _preview(text)
 
 
-def _json_safe_metadata(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _json_safe_metadata(value: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
-    safe: Dict[str, Any] = {}
+    safe: dict[str, Any] = {}
     for key, child in value.items():
         if child is None or isinstance(child, (bool, int, float)):
             safe[str(key)] = child
@@ -117,8 +117,7 @@ def _json_safe_metadata(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
             continue
         if isinstance(child, list):
             safe[str(key)] = [
-                item if item is None or isinstance(item, (bool, int, float)) else str(item)[:160]
-                for item in child[:40]
+                item if item is None or isinstance(item, (bool, int, float)) else str(item)[:160] for item in child[:40]
             ]
             continue
         if isinstance(child, dict):
@@ -131,11 +130,11 @@ def _json_safe_metadata(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, A
     return safe
 
 
-def _safe_locator(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _safe_locator(value: dict[str, Any] | None) -> dict[str, Any] | None:
     return _json_safe_metadata(value)
 
 
-def _token_value(value: Any) -> Optional[int]:
+def _token_value(value: Any) -> int | None:
     if value is None or value == "":
         return None
     try:
@@ -155,18 +154,16 @@ def ensure_snapshot(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    model: Optional[str] = None,
-    status: Optional[str] = None,
+    ai_job_id: str | None = None,
+    session_id: str | None = None,
+    model: str | None = None,
+    status: str | None = None,
 ) -> SddContextTokenSnapshot:
     normalized_job_id = str(ai_job_id or "").strip() or None
     snapshot = None
     if normalized_job_id:
         snapshot = (
-            db.query(SddContextTokenSnapshot)
-            .filter(SddContextTokenSnapshot.ai_job_id == normalized_job_id)
-            .first()
+            db.query(SddContextTokenSnapshot).filter(SddContextTokenSnapshot.ai_job_id == normalized_job_id).first()
         )
     if snapshot is None and session_id:
         snapshot = (
@@ -215,8 +212,8 @@ def ensure_snapshot_for_job(
     db: Session,
     job: SddAiJob,
     *,
-    model: Optional[str] = None,
-    status: Optional[str] = None,
+    model: str | None = None,
+    status: str | None = None,
 ) -> SddContextTokenSnapshot:
     return ensure_snapshot(
         db,
@@ -234,8 +231,8 @@ def find_snapshot(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str] = None,
-) -> Optional[SddContextTokenSnapshot]:
+    ai_job_id: str | None = None,
+) -> SddContextTokenSnapshot | None:
     query = db.query(SddContextTokenSnapshot).filter(
         SddContextTokenSnapshot.workspace_id == workspace_id,
         SddContextTokenSnapshot.task_id == task_id,
@@ -252,10 +249,10 @@ def _existing_segment(
     snapshot_id: str,
     category: ContextTokenCategory,
     source_kind: str,
-    source_ref_id: Optional[str] = None,
-    tool_use_id: Optional[str] = None,
-    content_hash: Optional[str] = None,
-) -> Optional[SddContextTokenSegment]:
+    source_ref_id: str | None = None,
+    tool_use_id: str | None = None,
+    content_hash: str | None = None,
+) -> SddContextTokenSegment | None:
     query = db.query(SddContextTokenSegment).filter(
         SddContextTokenSegment.snapshot_id == snapshot_id,
         SddContextTokenSegment.category == category,
@@ -277,18 +274,18 @@ def record_segment(
     category: Any,
     source_kind: str,
     content: Any = None,
-    provider_tokens: Optional[int] = None,
-    attribution_units: Optional[int] = None,
-    source_ref_id: Optional[str] = None,
-    chat_message_id: Optional[str] = None,
-    asset_id: Optional[str] = None,
-    asset_version_id: Optional[str] = None,
-    skill_runtime_event_id: Optional[str] = None,
-    tool_use_id: Optional[str] = None,
-    locator_json: Optional[Dict[str, Any]] = None,
-    title: Optional[str] = None,
-    preview: Optional[str] = None,
-    metadata_json: Optional[Dict[str, Any]] = None,
+    provider_tokens: int | None = None,
+    attribution_units: int | None = None,
+    source_ref_id: str | None = None,
+    chat_message_id: str | None = None,
+    asset_id: str | None = None,
+    asset_version_id: str | None = None,
+    skill_runtime_event_id: str | None = None,
+    tool_use_id: str | None = None,
+    locator_json: dict[str, Any] | None = None,
+    title: str | None = None,
+    preview: str | None = None,
+    metadata_json: dict[str, Any] | None = None,
     dedupe: bool = False,
     commit: bool = True,
 ) -> SddContextTokenSegment:
@@ -352,11 +349,11 @@ def _apply_snapshot_usage(
     db: Session,
     snapshot: SddContextTokenSnapshot,
     *,
-    usage: Optional[Dict[str, Any]] = None,
-    model: Optional[str] = None,
-    status: Optional[str] = None,
-    duration_ms: Optional[int] = None,
-    total_cost_usd: Optional[float] = None,
+    usage: dict[str, Any] | None = None,
+    model: str | None = None,
+    status: str | None = None,
+    duration_ms: int | None = None,
+    total_cost_usd: float | None = None,
     raw_usage_json: Any = None,
 ) -> None:
     """把用量/模型/状态合并进 snapshot（不提交）；供 update_snapshot_usage 与批量落库共用。"""
@@ -400,18 +397,18 @@ def _apply_snapshot_usage(
 def update_snapshot_usage(
     db: Session,
     *,
-    snapshot: Optional[SddContextTokenSnapshot] = None,
-    workspace_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    ai_job_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    usage: Optional[Dict[str, Any]] = None,
-    model: Optional[str] = None,
-    status: Optional[str] = None,
-    duration_ms: Optional[int] = None,
-    total_cost_usd: Optional[float] = None,
+    snapshot: SddContextTokenSnapshot | None = None,
+    workspace_id: str | None = None,
+    task_id: str | None = None,
+    ai_job_id: str | None = None,
+    session_id: str | None = None,
+    usage: dict[str, Any] | None = None,
+    model: str | None = None,
+    status: str | None = None,
+    duration_ms: int | None = None,
+    total_cost_usd: float | None = None,
     raw_usage_json: Any = None,
-) -> Optional[SddContextTokenSnapshot]:
+) -> SddContextTokenSnapshot | None:
     if snapshot is None:
         if not workspace_id or not task_id:
             return None
@@ -441,11 +438,35 @@ def update_snapshot_usage(
     return snapshot
 
 
+def _ensure_batch_snapshots(db, entries, _snapshot_key):
+    # 先集中 ensure 全部 snapshot（此时无 pending segment 行，内部 commit 不破坏原子性）
+    status_by_key: dict[tuple[str, str, str, str], str] = {}
+    for recorder, kwargs in entries:
+        key = _snapshot_key(kwargs)
+        if recorder == "hitl" and kwargs.get("response") is None:
+            status_by_key[key] = "WAITING_HITL"
+        else:
+            status_by_key.setdefault(key, "RUNNING")
+
+    snapshots: dict[tuple[str, str, str, str], SddContextTokenSnapshot] = {}
+    for key, snapshot_status in status_by_key.items():
+        workspace_id, task_id, ai_job_id, session_id = key
+        snapshots[key] = ensure_snapshot(
+            db,
+            workspace_id=workspace_id,
+            task_id=task_id,
+            ai_job_id=ai_job_id or None,
+            session_id=session_id or None,
+            status=snapshot_status,
+        )
+    return snapshots
+
+
 def record_segments_batch(
     db: Session,
-    entries: List[Tuple[str, Dict[str, Any]]],
+    entries: list[tuple[str, dict[str, Any]]],
     *,
-    snapshot_update: Optional[Dict[str, Any]] = None,
+    snapshot_update: dict[str, Any] | None = None,
 ) -> int:
     """批量落库 context segments（单事务一次 commit），供引擎按窗口 flush。
 
@@ -467,7 +488,7 @@ def record_segments_batch(
         if recorder not in supported:
             raise ValueError(f"Unsupported batch segment recorder: {recorder}")
 
-    def _snapshot_key(kwargs: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    def _snapshot_key(kwargs: dict[str, Any]) -> tuple[str, str, str, str]:
         return (
             str(kwargs.get("workspace_id") or ""),
             str(kwargs.get("task_id") or ""),
@@ -475,28 +496,8 @@ def record_segments_batch(
             str(kwargs.get("session_id") or ""),
         )
 
-    # 先集中 ensure 全部 snapshot（此时无 pending segment 行，内部 commit 不破坏原子性）
-    status_by_key: Dict[Tuple[str, str, str, str], str] = {}
-    for recorder, kwargs in entries:
-        key = _snapshot_key(kwargs)
-        if recorder == "hitl" and kwargs.get("response") is None:
-            status_by_key[key] = "WAITING_HITL"
-        else:
-            status_by_key.setdefault(key, "RUNNING")
+    snapshots = _ensure_batch_snapshots(db, entries, _snapshot_key)
 
-    snapshots: Dict[Tuple[str, str, str, str], SddContextTokenSnapshot] = {}
-    for key, snapshot_status in status_by_key.items():
-        workspace_id, task_id, ai_job_id, session_id = key
-        snapshots[key] = ensure_snapshot(
-            db,
-            workspace_id=workspace_id,
-            task_id=task_id,
-            ai_job_id=ai_job_id or None,
-            session_id=session_id or None,
-            status=snapshot_status,
-        )
-
-    processed = 0
     # 批内去重（autoflush=False 下 _existing_segment 看不到同批未 flush 的行）
     seen_dedupe_keys: set = set()
     try:
@@ -547,7 +548,9 @@ def record_segments_batch(
                 record_segment(
                     db,
                     snapshot=snapshot,
-                    category=ContextTokenCategory.RUNTIME_SKILLS if has_runtime_skill_evidence else ContextTokenCategory.TOOL_RESULT,
+                    category=ContextTokenCategory.RUNTIME_SKILLS
+                    if has_runtime_skill_evidence
+                    else ContextTokenCategory.TOOL_RESULT,
                     source_kind="runtime_skill_tool_result" if has_runtime_skill_evidence else "tool_result",
                     source_ref_id=tool_use_id,
                     tool_use_id=tool_use_id,
@@ -582,7 +585,9 @@ def record_segments_batch(
                     db,
                     snapshot=snapshot,
                     category=ContextTokenCategory.HITL,
-                    source_kind=str(kwargs.get("source_kind") or ("confirmation_prompt" if is_confirmation else "hitl_prompt")),
+                    source_kind=str(
+                        kwargs.get("source_kind") or ("confirmation_prompt" if is_confirmation else "hitl_prompt")
+                    ),
                     source_ref_id=interaction_id if is_confirmation else snapshot.ai_job_id,
                     content=content,
                     title="Confirmation" if is_confirmation else "HITL",
@@ -636,7 +641,7 @@ def record_task_prompt(
     *,
     snapshot: SddContextTokenSnapshot,
     prompt_text: str,
-    chat_message_id: Optional[str] = None,
+    chat_message_id: str | None = None,
 ) -> SddContextTokenSegment:
     return record_segment(
         db,
@@ -656,7 +661,7 @@ def record_existing_history(
     db: Session,
     *,
     snapshot: SddContextTokenSnapshot,
-    exclude_chat_message_id: Optional[str] = None,
+    exclude_chat_message_id: str | None = None,
 ) -> None:
     rows = (
         db.query(ChatMessage)
@@ -706,7 +711,7 @@ def record_chat_message(
     )
 
 
-def _latest_asset_version(db: Session, asset: SddAsset) -> Optional[SddAssetVersion]:
+def _latest_asset_version(db: Session, asset: SddAsset) -> SddAssetVersion | None:
     if asset.active_version_id:
         version = db.query(SddAssetVersion).filter(SddAssetVersion.id == asset.active_version_id).first()
         if version:
@@ -801,7 +806,7 @@ def seed_snapshot_for_job(
     *,
     job: SddAiJob,
     prompt_text: str,
-    chat_message_id: Optional[str] = None,
+    chat_message_id: str | None = None,
 ) -> SddContextTokenSnapshot:
     snapshot = ensure_snapshot_for_job(db, job)
     task = db.query(SddTask).filter(SddTask.id == job.task_id, SddTask.workspace_id == job.workspace_id).first()
@@ -818,12 +823,12 @@ def record_tool_input(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
-    session_id: Optional[str],
+    ai_job_id: str | None,
+    session_id: str | None,
     tool_name: str,
     tool_input: Any,
     tool_use_id: str,
-) -> Optional[SddContextTokenSegment]:
+) -> SddContextTokenSegment | None:
     snapshot = ensure_snapshot(
         db,
         workspace_id=workspace_id,
@@ -853,12 +858,12 @@ def record_tool_result(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
-    session_id: Optional[str],
+    ai_job_id: str | None,
+    session_id: str | None,
     tool_use_id: str,
     output: Any,
     is_error: bool = False,
-) -> Optional[SddContextTokenSegment]:
+) -> SddContextTokenSegment | None:
     snapshot = ensure_snapshot(
         db,
         workspace_id=workspace_id,
@@ -880,7 +885,9 @@ def record_tool_result(
     return record_segment(
         db,
         snapshot=snapshot,
-        category=ContextTokenCategory.RUNTIME_SKILLS if has_runtime_skill_evidence else ContextTokenCategory.TOOL_RESULT,
+        category=ContextTokenCategory.RUNTIME_SKILLS
+        if has_runtime_skill_evidence
+        else ContextTokenCategory.TOOL_RESULT,
         source_kind="runtime_skill_tool_result" if has_runtime_skill_evidence else "tool_result",
         source_ref_id=tool_use_id,
         tool_use_id=tool_use_id,
@@ -896,10 +903,10 @@ def record_thinking(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
-    session_id: Optional[str],
+    ai_job_id: str | None,
+    session_id: str | None,
     content: str,
-) -> Optional[SddContextTokenSegment]:
+) -> SddContextTokenSegment | None:
     snapshot = ensure_snapshot(
         db,
         workspace_id=workspace_id,
@@ -925,12 +932,12 @@ def record_hitl(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
-    session_id: Optional[str],
+    ai_job_id: str | None,
+    session_id: str | None,
     prompt: str,
-    response: Optional[str] = None,
+    response: str | None = None,
     source_kind: str = "hitl_prompt",
-) -> Optional[SddContextTokenSegment]:
+) -> SddContextTokenSegment | None:
     snapshot = ensure_snapshot(
         db,
         workspace_id=workspace_id,
@@ -958,7 +965,7 @@ def record_runtime_skill_event(
     event: SddSkillRuntimeEvent,
     *,
     content: Any = None,
-) -> Optional[SddContextTokenSegment]:
+) -> SddContextTokenSegment | None:
     snapshot = ensure_snapshot(
         db,
         workspace_id=event.workspace_id,
@@ -970,7 +977,9 @@ def record_runtime_skill_event(
     source_ref = event.id
     content_value = content
     if content_value is None:
-        content_value = event.tool_result_preview or event.matched_path or event.relative_path or event.materialized_dir or ""
+        content_value = (
+            event.tool_result_preview or event.matched_path or event.relative_path or event.materialized_dir or ""
+        )
     return record_segment(
         db,
         snapshot=snapshot,
@@ -997,10 +1006,10 @@ def promote_tool_result_to_runtime_skill(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str],
+    ai_job_id: str | None,
     tool_use_id: str,
-    runtime_event_ids: Optional[List[str]] = None,
-    preview: Optional[str] = None,
+    runtime_event_ids: list[str] | None = None,
+    preview: str | None = None,
 ) -> None:
     normalized_tool_use_id = str(tool_use_id or "").strip()
     if not normalized_tool_use_id:
@@ -1051,14 +1060,14 @@ def promote_tool_result_to_runtime_skill(
         )
 
 
-def _provider_tokens_payload(snapshot: Optional[SddContextTokenSnapshot]) -> Dict[str, Any]:
+def _provider_tokens_payload(snapshot: SddContextTokenSnapshot | None) -> dict[str, Any]:
     payload = {field: (getattr(snapshot, field) if snapshot else None) for field in PROVIDER_TOKEN_FIELDS}
     payload["available"] = any(payload[field] is not None for field in PROVIDER_TOKEN_FIELDS)
     payload["status"] = "available" if payload["available"] else "unavailable"
     return payload
 
 
-def _serialize_snapshot(snapshot: Optional[SddContextTokenSnapshot]) -> Optional[Dict[str, Any]]:
+def _serialize_snapshot(snapshot: SddContextTokenSnapshot | None) -> dict[str, Any] | None:
     if snapshot is None:
         return None
     agent_backend = None
@@ -1082,7 +1091,7 @@ def _serialize_snapshot(snapshot: Optional[SddContextTokenSnapshot]) -> Optional
     }
 
 
-def _serialize_segment(row: SddContextTokenSegment) -> Dict[str, Any]:
+def _serialize_segment(row: SddContextTokenSegment) -> dict[str, Any]:
     return {
         "id": row.id,
         "snapshot_id": row.snapshot_id,
@@ -1109,10 +1118,7 @@ def _serialize_segment(row: SddContextTokenSegment) -> Dict[str, Any]:
 
 def _snapshot_has_usable_provider_tokens(snapshot: SddContextTokenSnapshot) -> bool:
     """判断快照是否带有可展示的 provider token 数据（0 视为无实际用量）。"""
-    return any(
-        getattr(snapshot, field, None) not in (None, 0)
-        for field in PROVIDER_TOKEN_FIELDS
-    )
+    return any(getattr(snapshot, field, None) not in (None, 0) for field in PROVIDER_TOKEN_FIELDS)
 
 
 def _find_snapshot_with_usage(
@@ -1120,8 +1126,8 @@ def _find_snapshot_with_usage(
     *,
     workspace_id: str,
     task_id: str,
-    exclude_id: Optional[str] = None,
-) -> Optional[SddContextTokenSnapshot]:
+    exclude_id: str | None = None,
+) -> SddContextTokenSnapshot | None:
     """在任务快照中找最近一条有真实 provider token 数据的快照。"""
     rows = (
         db.query(SddContextTokenSnapshot)
@@ -1145,11 +1151,11 @@ def get_context_window(
     *,
     workspace_id: str,
     task_id: str,
-    ai_job_id: Optional[str] = None,
-    category: Optional[str] = None,
+    ai_job_id: str | None = None,
+    category: str | None = None,
     page: int = 1,
     page_size: int = 50,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     snapshot = find_snapshot(db, workspace_id=workspace_id, task_id=task_id, ai_job_id=ai_job_id)
     # 当前快照可能来自“刚中断/未产生 usage”的回合，若没有任何真实 token 数据，
     # 回退到最近一条有 provider token 用量的历史快照，避免界面显示全 unavailable/0。
@@ -1217,7 +1223,7 @@ def get_context_window(
         )
     categories.sort(key=lambda item: (-int(item["attribution_units"]), str(item["category"])))
 
-    segments: List[Dict[str, Any]] = []
+    segments: list[dict[str, Any]] = []
     segments_total = 0
     if selected_category:
         segment_query = db.query(SddContextTokenSegment).filter(

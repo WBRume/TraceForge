@@ -7,16 +7,15 @@ Create Date: 2026-08-15 12:00:00.000000
 - sdd_assets.asset_type ENUM 增加 DIAGNOSIS_DOC（问题定位任务上传的需求/日志等辅助文档）
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 from alembic import op
 
-
 # revision identifiers, used by Alembic.
 revision: str = "2f8e5a1c3b9d"
-down_revision: Union[str, None] = "1d9a7c4e2f5b"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "1d9a7c4e2f5b"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

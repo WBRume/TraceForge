@@ -6,17 +6,17 @@ Create Date: 2026-04-01 12:00:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "1e7f9ab4c2d3"
-down_revision: Union[str, None] = "0f4a4b8cf7c1"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "0f4a4b8cf7c1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -55,9 +55,15 @@ def upgrade() -> None:
         sa.UniqueConstraint("task_id", name="uq_sdd_task_cli_bootstraps_task_id"),
     )
     op.create_index(op.f("ix_sdd_task_cli_bootstraps_task_id"), "sdd_task_cli_bootstraps", ["task_id"], unique=False)
-    op.create_index(op.f("ix_sdd_task_cli_bootstraps_workspace_id"), "sdd_task_cli_bootstraps", ["workspace_id"], unique=False)
-    op.create_index(op.f("ix_sdd_task_cli_bootstraps_spec_asset_id"), "sdd_task_cli_bootstraps", ["spec_asset_id"], unique=False)
-    op.create_index(op.f("ix_sdd_task_cli_bootstraps_spec_version_id"), "sdd_task_cli_bootstraps", ["spec_version_id"], unique=False)
+    op.create_index(
+        op.f("ix_sdd_task_cli_bootstraps_workspace_id"), "sdd_task_cli_bootstraps", ["workspace_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_sdd_task_cli_bootstraps_spec_asset_id"), "sdd_task_cli_bootstraps", ["spec_asset_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_sdd_task_cli_bootstraps_spec_version_id"), "sdd_task_cli_bootstraps", ["spec_version_id"], unique=False
+    )
     op.create_index(op.f("ix_sdd_task_cli_bootstraps_status"), "sdd_task_cli_bootstraps", ["status"], unique=False)
 
 

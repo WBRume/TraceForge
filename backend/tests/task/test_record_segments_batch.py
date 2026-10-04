@@ -3,7 +3,6 @@
 import os
 import sys
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -57,21 +56,27 @@ def test_batch_writes_single_transaction_with_dedupe(db):
         ("tool_input", _tool_input_kwargs("call-1")),  # 批内去重
         ("tool_input", _tool_input_kwargs("call-2")),
         ("tool_result", _tool_result_kwargs("call-1")),
-        ("thinking", {
-            "workspace_id": "ws-batch",
-            "task_id": "task-batch",
-            "ai_job_id": "job-batch",
-            "session_id": "session-batch",
-            "content": "thinking merged",
-        }),
-        ("hitl", {
-            "workspace_id": "ws-batch",
-            "task_id": "task-batch",
-            "ai_job_id": "job-batch",
-            "session_id": "session-batch",
-            "prompt": "请确认",
-            "source_kind": "hitl_prompt",
-        }),
+        (
+            "thinking",
+            {
+                "workspace_id": "ws-batch",
+                "task_id": "task-batch",
+                "ai_job_id": "job-batch",
+                "session_id": "session-batch",
+                "content": "thinking merged",
+            },
+        ),
+        (
+            "hitl",
+            {
+                "workspace_id": "ws-batch",
+                "task_id": "task-batch",
+                "ai_job_id": "job-batch",
+                "session_id": "session-batch",
+                "prompt": "请确认",
+                "source_kind": "hitl_prompt",
+            },
+        ),
     ]
     snapshot_update = {
         "workspace_id": "ws-batch",
@@ -81,9 +86,7 @@ def test_batch_writes_single_transaction_with_dedupe(db):
         "usage": {"input_tokens": 42},
     }
 
-    processed = context_token_service.record_segments_batch(
-        db, entries, snapshot_update=snapshot_update
-    )
+    processed = context_token_service.record_segments_batch(db, entries, snapshot_update=snapshot_update)
 
     assert processed == 5
     assert _count(db, ContextTokenCategory.TOOL_INPUT) == 2
@@ -91,11 +94,7 @@ def test_batch_writes_single_transaction_with_dedupe(db):
     assert _count(db, ContextTokenCategory.THINKING) == 1
     assert _count(db, ContextTokenCategory.HITL) == 1
 
-    snapshots = (
-        db.query(SddContextTokenSnapshot)
-        .filter(SddContextTokenSnapshot.task_id == "task-batch")
-        .all()
-    )
+    snapshots = db.query(SddContextTokenSnapshot).filter(SddContextTokenSnapshot.task_id == "task-batch").all()
     assert len(snapshots) == 1
     assert snapshots[0].input_tokens == 42
     # 批内含无响应 HITL → snapshot 标记 WAITING_HITL
@@ -103,12 +102,8 @@ def test_batch_writes_single_transaction_with_dedupe(db):
 
 
 def test_repeated_batches_dedupe_tool_input(db):
-    context_token_service.record_segments_batch(
-        db, [("tool_input", _tool_input_kwargs("call-1"))]
-    )
-    context_token_service.record_segments_batch(
-        db, [("tool_input", _tool_input_kwargs("call-1"))]
-    )
+    context_token_service.record_segments_batch(db, [("tool_input", _tool_input_kwargs("call-1"))])
+    context_token_service.record_segments_batch(db, [("tool_input", _tool_input_kwargs("call-1"))])
     assert _count(db, ContextTokenCategory.TOOL_INPUT) == 1
 
 
@@ -122,23 +117,39 @@ def test_unknown_recorder_rejected(db):
 
 def test_chat_confirmation_preserves_entire_batch_and_running_snapshot(db):
     common = {
-        "workspace_id": "ws-batch", "task_id": "task-batch",
-        "ai_job_id": "job-batch", "session_id": "session-batch",
+        "workspace_id": "ws-batch",
+        "task_id": "task-batch",
+        "ai_job_id": "job-batch",
+        "session_id": "session-batch",
     }
-    written = context_token_service.record_segments_batch(db, [
-        ("tool_input", _tool_input_kwargs("call-form")),
-        ("thinking", {**common, "content": "正在收集项目需求"}),
-        ("confirmation", {**common, "prompt": "使用哪个构建工具？",
-                          "source_kind": "confirmation_prompt",
-                          "interaction_id": "interaction-form"}),
-    ])
+    written = context_token_service.record_segments_batch(
+        db,
+        [
+            ("tool_input", _tool_input_kwargs("call-form")),
+            ("thinking", {**common, "content": "正在收集项目需求"}),
+            (
+                "confirmation",
+                {
+                    **common,
+                    "prompt": "使用哪个构建工具？",
+                    "source_kind": "confirmation_prompt",
+                    "interaction_id": "interaction-form",
+                },
+            ),
+        ],
+    )
 
     assert written == 3
     assert _count(db, ContextTokenCategory.TOOL_INPUT) == 1
     assert _count(db, ContextTokenCategory.THINKING) == 1
-    confirmation = db.query(SddContextTokenSegment).filter_by(
-        task_id="task-batch", source_kind="confirmation_prompt",
-    ).one()
+    confirmation = (
+        db.query(SddContextTokenSegment)
+        .filter_by(
+            task_id="task-batch",
+            source_kind="confirmation_prompt",
+        )
+        .one()
+    )
     assert confirmation.source_ref_id == "interaction-form"
     assert confirmation.metadata_json == {"interaction_id": "interaction-form", "has_response": False}
     assert db.query(SddContextTokenSnapshot).filter_by(task_id="task-batch").one().status == "RUNNING"

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -21,7 +20,6 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     ClarificationMessageCreateRequest,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import ClarificationCreateRequest
-from app.domains.workspace_asset.services.task_final_workflow import baseline_service
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
@@ -29,6 +27,7 @@ from app.domains.workspace_asset.services.common.primitives import (
     normalize_enum,
 )
 from app.domains.workspace_asset.services.common.process_presenters import clarification_response
+from app.domains.workspace_asset.services.task_final_workflow import baseline_service
 from app.domains.workspace_asset.services.task_process.writes_support import (
     add_process_audit,
     ensure_evidence,
@@ -36,7 +35,6 @@ from app.domains.workspace_asset.services.task_process.writes_support import (
     ensure_requirement,
     get_task_or_error,
 )
-
 
 QUESTION_ENTRY_TYPES = {"QUESTION", "FOLLOW_UP", "REOPEN"}
 
@@ -61,7 +59,7 @@ def _link_review_clarification(
     *,
     workspace_id: str,
     task_id: str,
-    review: Optional[SddHumanReview],
+    review: SddHumanReview | None,
     clarification: SddClarification,
 ) -> None:
     if not review:
@@ -102,8 +100,8 @@ def create_clarification_for_review(
     *,
     workspace_id: str,
     task_id: str,
-    review: Optional[SddHumanReview],
-    actor_id: Optional[str],
+    review: SddHumanReview | None,
+    actor_id: str | None,
     payload: ClarificationCreateRequest,
 ) -> SddClarification:
     task = get_task_or_error(db, workspace_id, task_id)
@@ -180,7 +178,7 @@ def create_workflow_clarification(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: ClarificationCreateRequest,
 ) -> str:
     clarification = create_clarification_for_review(
@@ -200,7 +198,7 @@ def _apply_message_status(
     *,
     entry_type: str,
     body: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
 ) -> None:
     if entry_type in QUESTION_ENTRY_TYPES:
         clarification.status = ClarificationStatus.OPEN
@@ -225,7 +223,7 @@ def add_message(
     workspace_id: str,
     task_id: str,
     clarification_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: ClarificationMessageCreateRequest,
 ) -> str:
     clarification = _ensure_clarification(db, workspace_id, task_id, clarification_id)
@@ -256,9 +254,7 @@ def add_message(
         record_type=TaskProcessRecordType.CLARIFICATION,
         record_id=clarification.id,
         action=(
-            TaskProcessAuditAction.FINALIZED
-            if entry_type == "CONFIRM_RESOLUTION"
-            else TaskProcessAuditAction.UPDATED
+            TaskProcessAuditAction.FINALIZED if entry_type == "CONFIRM_RESOLUTION" else TaskProcessAuditAction.UPDATED
         ),
         actor_id=actor_id,
         before=before,

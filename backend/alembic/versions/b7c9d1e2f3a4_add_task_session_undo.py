@@ -1,15 +1,15 @@
 """add task session turn checkpoints and undo metadata"""
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "b7c9d1e2f3a4"
-down_revision: Union[str, None] = "f3bc9223e419"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "f3bc9223e419"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _has_table(inspector: sa.Inspector, name: str) -> bool:
@@ -54,7 +54,12 @@ def upgrade() -> None:
             sa.Column("provider_message_ids_json", sa.JSON(), nullable=True),
             sa.Column("checkpoint_path", sa.String(1000), nullable=True),
             sa.Column("worktree_snapshot_path", sa.String(1000), nullable=True),
-            sa.Column("status", sa.Enum("ACTIVE", "REVERTING", "REVERTED", name="task_session_turn_status"), nullable=False, server_default="ACTIVE"),
+            sa.Column(
+                "status",
+                sa.Enum("ACTIVE", "REVERTING", "REVERTED", name="task_session_turn_status"),
+                nullable=False,
+                server_default="ACTIVE",
+            ),
             sa.Column("operation_id", sa.String(80), nullable=True),
             sa.Column("reverted_at", sa.DateTime(), nullable=True),
             sa.Column("reverted_by_id", sa.String(36), nullable=True),
@@ -81,7 +86,9 @@ def upgrade() -> None:
         ("ix_sdd_task_session_turns_status", ["status"]),
         ("ix_sdd_task_session_turns_operation_id", ["operation_id"]),
     ):
-        if _has_table(inspector, "sdd_task_session_turns") and not _has_index(inspector, "sdd_task_session_turns", name):
+        if _has_table(inspector, "sdd_task_session_turns") and not _has_index(
+            inspector, "sdd_task_session_turns", name
+        ):
             op.create_index(name, "sdd_task_session_turns", columns, unique=False)
 
     inspector = sa.inspect(bind)
@@ -93,7 +100,12 @@ def upgrade() -> None:
             sa.Column("workspace_id", sa.String(36), nullable=False),
             sa.Column("operation_id", sa.String(80), nullable=False),
             sa.Column("target_turn_id", sa.String(36), nullable=True),
-            sa.Column("status", sa.Enum("REVERTING", "REVERTED", "FAILED", name="task_session_operation_status"), nullable=False, server_default="REVERTING"),
+            sa.Column(
+                "status",
+                sa.Enum("REVERTING", "REVERTED", "FAILED", name="task_session_operation_status"),
+                nullable=False,
+                server_default="REVERTING",
+            ),
             sa.Column("current_state_backup_path", sa.String(1000), nullable=True),
             sa.Column("error_code", sa.String(80), nullable=True),
             sa.Column("error_message", sa.Text(), nullable=True),
@@ -114,17 +126,51 @@ def upgrade() -> None:
         ("ix_sdd_task_session_operations_target_turn_id", ["target_turn_id"]),
         ("ix_sdd_task_session_operations_status", ["status"]),
     ):
-        if _has_table(inspector, "sdd_task_session_operations") and not _has_index(inspector, "sdd_task_session_operations", name):
+        if _has_table(inspector, "sdd_task_session_operations") and not _has_index(
+            inspector, "sdd_task_session_operations", name
+        ):
             op.create_index(name, "sdd_task_session_operations", columns, unique=False)
 
-    _add_column("sdd_tasks", sa.Column("session_generation", sa.Integer(), nullable=False, server_default="0"), index_name="ix_sdd_tasks_session_generation")
-    _add_column("sdd_tasks", sa.Column("session_revision", sa.Integer(), nullable=False, server_default="0"), index_name="ix_sdd_tasks_session_revision")
-    _add_column("sdd_ai_jobs", sa.Column("session_turn_id", sa.String(36), nullable=True), index_name="ix_sdd_ai_jobs_session_turn_id")
-    _add_column("sdd_ai_jobs", sa.Column("session_generation", sa.Integer(), nullable=True), index_name="ix_sdd_ai_jobs_session_generation")
-    _add_column("sdd_ai_jobs", sa.Column("session_revision", sa.Integer(), nullable=True), index_name="ix_sdd_ai_jobs_session_revision")
-    _add_column("chat_messages", sa.Column("session_turn_id", sa.String(36), nullable=True), index_name="ix_chat_messages_session_turn_id")
-    _add_column("chat_messages", sa.Column("session_generation", sa.Integer(), nullable=True), index_name="ix_chat_messages_session_generation")
-    _add_column("sdd_execution_logs", sa.Column("session_turn_id", sa.String(36), nullable=True), index_name="ix_sdd_execution_logs_session_turn_id")
+    _add_column(
+        "sdd_tasks",
+        sa.Column("session_generation", sa.Integer(), nullable=False, server_default="0"),
+        index_name="ix_sdd_tasks_session_generation",
+    )
+    _add_column(
+        "sdd_tasks",
+        sa.Column("session_revision", sa.Integer(), nullable=False, server_default="0"),
+        index_name="ix_sdd_tasks_session_revision",
+    )
+    _add_column(
+        "sdd_ai_jobs",
+        sa.Column("session_turn_id", sa.String(36), nullable=True),
+        index_name="ix_sdd_ai_jobs_session_turn_id",
+    )
+    _add_column(
+        "sdd_ai_jobs",
+        sa.Column("session_generation", sa.Integer(), nullable=True),
+        index_name="ix_sdd_ai_jobs_session_generation",
+    )
+    _add_column(
+        "sdd_ai_jobs",
+        sa.Column("session_revision", sa.Integer(), nullable=True),
+        index_name="ix_sdd_ai_jobs_session_revision",
+    )
+    _add_column(
+        "chat_messages",
+        sa.Column("session_turn_id", sa.String(36), nullable=True),
+        index_name="ix_chat_messages_session_turn_id",
+    )
+    _add_column(
+        "chat_messages",
+        sa.Column("session_generation", sa.Integer(), nullable=True),
+        index_name="ix_chat_messages_session_generation",
+    )
+    _add_column(
+        "sdd_execution_logs",
+        sa.Column("session_turn_id", sa.String(36), nullable=True),
+        index_name="ix_sdd_execution_logs_session_turn_id",
+    )
 
     # Existing MySQL ENUM columns need an explicit value addition.  SQLite and
     # other test dialects use the model metadata and do not need this DDL.
@@ -136,7 +182,7 @@ def upgrade() -> None:
         )
 
     inspector = sa.inspect(bind)
-    for table, column, referred, name in (
+    for table, column, _referred, name in (
         ("sdd_ai_jobs", "session_turn_id", "sdd_task_session_turns.id", "fk_sdd_ai_jobs_session_turn"),
         ("chat_messages", "session_turn_id", "sdd_task_session_turns.id", "fk_chat_messages_session_turn"),
         ("sdd_execution_logs", "session_turn_id", "sdd_task_session_turns.id", "fk_sdd_execution_logs_session_turn"),

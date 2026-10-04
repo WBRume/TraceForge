@@ -8,9 +8,7 @@ RAG 推送 Outbox 持久化模型。
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from sqlalchemy import Column, DateTime, Integer, String, Text, JSON, func
+from sqlalchemy import JSON, Column, DateTime, Integer, String, Text, func
 
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid

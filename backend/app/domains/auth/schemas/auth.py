@@ -2,9 +2,9 @@
 认证相关 Pydantic Schemas
 """
 
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
 from datetime import datetime
+
+from pydantic import BaseModel, EmailStr, Field
 
 
 class UserRegister(BaseModel):
@@ -36,8 +36,8 @@ class UserResponse(BaseModel):
     id: str
     email: str
     display_name: str
-    avatar_url: Optional[str] = None
-    avatar_svg: Optional[str] = None
+    avatar_url: str | None = None
+    avatar_svg: str | None = None
     is_admin: bool = False
     created_at: datetime
     # OAuth 增量（接口 11 / GET /auth/me）：已绑定的三方 provider 名列表，如 ["github"]。

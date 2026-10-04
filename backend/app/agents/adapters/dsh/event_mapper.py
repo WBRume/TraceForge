@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+from typing import Any
 
 from app.agents.events import AgentEvent
 
@@ -35,7 +35,7 @@ def _json_text(value: Any, max_len: int = 5000) -> str:
     return text
 
 
-def _extract_usage(event: dict[str, Any]) -> Optional[dict[str, Any]]:
+def _extract_usage(event: dict[str, Any]) -> dict[str, Any] | None:
     """从 assistant/chunk usage 或 assistant/message usage 中提取统一 usage。"""
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     if event.get("type") == "assistant/chunk":
@@ -63,7 +63,7 @@ def _extract_usage(event: dict[str, Any]) -> Optional[dict[str, Any]]:
 def _tool_output_text(data: dict[str, Any]) -> str:
     message = data.get("message") if isinstance(data.get("message"), dict) else {}
     content = message.get("content") if isinstance(message.get("content"), list) else []
-    parts: List[str] = []
+    parts: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -77,148 +77,199 @@ def _tool_output_text(data: dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def map_dsh_event(event: dict[str, Any]) -> List[AgentEvent]:
-    """把一个 DSH session.event 转换为 0~N 个 AgentEvent。"""
-    if not isinstance(event, dict):
-        return []
-
-    events: List[AgentEvent] = []
-    event_type = _text(event.get("type"))
-    data = event.get("data") if isinstance(event.get("data"), dict) else {}
-
-    if event_type == "assistant/message":
-        message = data.get("message") if isinstance(data.get("message"), dict) else {}
-        content = message.get("content") if isinstance(message.get("content"), list) else []
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            block_type = _text(block.get("type"))
-            if block_type == "text":
-                text = _text(block.get("text"))
-                if text:
-                    events.append(AgentEvent(
+def _map_assistant_message(event: dict[str, Any], data: dict[str, Any]) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = _text(block.get("type"))
+        if block_type == "text":
+            text = _text(block.get("text"))
+            if text:
+                events.append(
+                    AgentEvent(
                         type="text",
                         payload={"text": text},
                         provider=PROVIDER,
                         raw=event,
                         time=_iso_time(),
-                    ))
-            elif block_type == "reasoning":
-                reasoning = _text(block.get("text") or block.get("content"))
-                if reasoning:
-                    events.append(AgentEvent(
+                    )
+                )
+        elif block_type == "reasoning":
+            reasoning = _text(block.get("text") or block.get("content"))
+            if reasoning:
+                events.append(
+                    AgentEvent(
                         type="thinking",
                         payload={"text": reasoning},
                         provider=PROVIDER,
                         raw=event,
                         time=_iso_time(),
-                    ))
-            # tool-call 由 tool/call 事件统一映射，避免重复
-        usage = _extract_usage(event)
-        if usage:
-            events.append(AgentEvent(
+                    )
+                )
+        # tool-call 由 tool/call 事件统一映射，避免重复
+    usage = _extract_usage(event)
+    if usage:
+        events.append(
+            AgentEvent(
                 type="usage",
                 payload=usage,
                 provider=PROVIDER,
                 raw=event,
                 time=_iso_time(),
-            ))
-    elif event_type == "assistant/chunk":
-        chunk = data.get("chunk") if isinstance(data.get("chunk"), dict) else {}
-        chunk_type = _text(chunk.get("type"))
-        if chunk_type == "text-delta":
-            text = _text(chunk.get("text"))
-            if text:
-                events.append(AgentEvent(
+            )
+        )
+    return events
+
+
+def _map_assistant_chunk(event: dict[str, Any], data: dict[str, Any]) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    chunk = data.get("chunk") if isinstance(data.get("chunk"), dict) else {}
+    chunk_type = _text(chunk.get("type"))
+    if chunk_type == "text-delta":
+        text = _text(chunk.get("text"))
+        if text:
+            events.append(
+                AgentEvent(
                     type="text_delta",
                     payload={"delta": text, "text": text},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-        elif chunk_type == "reasoning-delta" or chunk_type == "thinking-delta":
-            text = _text(chunk.get("text"))
-            if text:
-                events.append(AgentEvent(
+                )
+            )
+    elif chunk_type == "reasoning-delta" or chunk_type == "thinking-delta":
+        text = _text(chunk.get("text"))
+        if text:
+            events.append(
+                AgentEvent(
                     type="thinking",
                     payload={"text": text, "delta": text},
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-        elif chunk_type == "usage":
-            usage = _extract_usage(event)
-            if usage:
-                events.append(AgentEvent(
+                )
+            )
+    elif chunk_type == "usage":
+        usage = _extract_usage(event)
+        if usage:
+            events.append(
+                AgentEvent(
                     type="usage",
                     payload=usage,
                     provider=PROVIDER,
                     raw=event,
                     time=_iso_time(),
-                ))
-    elif event_type == "tool/call":
-        events.append(AgentEvent(
-            type="tool_use",
-            payload={
-                "tool_use_id": _text(data.get("callId")),
-                "tool_name": _text(data.get("name")),
-                "tool_input": _parse_json_arguments(data.get("arguments")),
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
-    elif event_type == "tool/result":
-        message = data.get("message") if isinstance(data.get("message"), dict) else {}
-        is_error = False
-        content = message.get("content") if isinstance(message.get("content"), list) else []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool-result":
-                is_error = bool(block.get("isError"))
-        events.append(AgentEvent(
+                )
+            )
+    return events
+
+
+def _map_tool_result(event: dict[str, Any], data: dict[str, Any]) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
+    message = data.get("message") if isinstance(data.get("message"), dict) else {}
+    is_error = False
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool-result":
+            is_error = bool(block.get("isError"))
+    events.append(
+        AgentEvent(
             type="tool_result",
             payload={
-                "tool_use_id": _text((message.get("source") or {}).get("callId") if isinstance(message.get("source"), dict) else ""),
+                "tool_use_id": _text(
+                    (message.get("source") or {}).get("callId") if isinstance(message.get("source"), dict) else ""
+                ),
                 "output": _tool_output_text(data),
                 "is_error": is_error,
             },
             provider=PROVIDER,
             raw=event,
             time=_iso_time(),
-        ))
+        )
+    )
+    return events
+
+
+def map_dsh_event(event: dict[str, Any]) -> list[AgentEvent]:
+    """把一个 DSH session.event 转换为 0~N 个 AgentEvent。"""
+    if not isinstance(event, dict):
+        return []
+
+    events: list[AgentEvent] = []
+    event_type = _text(event.get("type"))
+    data = event.get("data") if isinstance(event.get("data"), dict) else {}
+
+    if event_type == "assistant/message":
+        events.extend(_map_assistant_message(event, data))
+    elif event_type == "assistant/chunk":
+        events.extend(_map_assistant_chunk(event, data))
+    elif event_type == "tool/call":
+        events.append(
+            AgentEvent(
+                type="tool_use",
+                payload={
+                    "tool_use_id": _text(data.get("callId")),
+                    "tool_name": _text(data.get("name")),
+                    "tool_input": _parse_json_arguments(data.get("arguments")),
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+    elif event_type == "tool/result":
+        events.extend(_map_tool_result(event, data))
     elif event_type == "turn/end":
         reason = data.get("reason") if isinstance(data.get("reason"), dict) else {}
         kind = _text(reason.get("kind"))
         is_error = kind in ("error", "failed")
-        events.append(AgentEvent(
-            type="error" if is_error else "result",
-            payload={
-                "success": not is_error,
-                "result": "",
-                "finish_reason": kind or "completed",
-                "session_id": "",
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
-    elif event_type in ("step/start", "step/end", "turn/start", "user/message", "request/header",
-                        "request/context", "session/title", "agent/inbox/spliced", "session"):
-        events.append(AgentEvent(
-            type="log",
-            payload={"level": "debug", "message": f"[dsh:{event_type}] {_json_text(data, 1200)}"},
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="error" if is_error else "result",
+                payload={
+                    "success": not is_error,
+                    "result": "",
+                    "finish_reason": kind or "completed",
+                    "session_id": "",
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
+    elif event_type in (
+        "step/start",
+        "step/end",
+        "turn/start",
+        "user/message",
+        "request/header",
+        "request/context",
+        "session/title",
+        "agent/inbox/spliced",
+        "session",
+    ):
+        events.append(
+            AgentEvent(
+                type="log",
+                payload={"level": "debug", "message": f"[dsh:{event_type}] {_json_text(data, 1200)}"},
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
     else:
-        events.append(AgentEvent(
-            type="log",
-            payload={"level": "info", "message": f"[dsh:{event_type}] {_json_text(event, 2000)}"},
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="log",
+                payload={"level": "info", "message": f"[dsh:{event_type}] {_json_text(event, 2000)}"},
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
     return events
 
 

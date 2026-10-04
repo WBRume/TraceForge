@@ -1,5 +1,4 @@
 import os
-import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -9,37 +8,32 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.auth.models.user  # noqa: F401
-import app.domains.task.models.task  # noqa: F401
-import app.domains.task.models.log  # noqa: F401
-import app.domains.task.models.test_result  # noqa: F401
-import app.domains.task.models.chat  # noqa: F401
-import app.domains.task.models.context_token  # noqa: F401
-import app.domains.task.models.task_cli_bootstrap  # noqa: F401
-import app.domains.asset.models.asset  # noqa: F401
-import app.domains.dashboard.models.metric  # noqa: F401
-import app.domains.skill.models.skill  # noqa: F401
-import app.domains.api_mock.models.api_mock  # noqa: F401
-import app.domains.ai.models.ai_job  # noqa: F401
-import app.domains.workflow.models.provision_job  # noqa: F401
-import app.domains.workflow.models.task_change  # noqa: F401
+import app.domains.ai.models.ai_job
+import app.domains.api_mock.models.api_mock
+import app.domains.asset.models.asset
+import app.domains.auth.models.user
+import app.domains.dashboard.models.metric
+import app.domains.skill.models.skill
+import app.domains.task.models.chat
+import app.domains.task.models.context_token
+import app.domains.task.models.log
+import app.domains.task.models.task
+import app.domains.task.models.task_cli_bootstrap
+import app.domains.task.models.test_result
+import app.domains.workflow.models.provision_job
+import app.domains.workflow.models.task_change
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
 from app.database import Base
 from app.domains.skill.models.skill import SddSkillAnalysis, SkillAnalysisRefKind, SkillAnalysisStatus, SkillRiskLevel
 from app.domains.skill.services.skill_analysis_service import (
     SemanticAnalysisContractError,
-    deterministic_scan,
-    get_latest_analysis,
-    serialize_analysis,
     _json_from_text,
     _merge_semantic_result,
     _semantic_prompt,
     _set_analysis_state,
+    deterministic_scan,
+    get_latest_analysis,
+    serialize_analysis,
 )
 
 

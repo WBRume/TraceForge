@@ -7,9 +7,7 @@ cancel 不误报 finished、迟到终止不可覆盖终态、TERMINATING 防降�
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 
-from tests.ai.jobs.reliability_helpers import _job, _owned_job, _session_factory
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts as ai_attempts
 from app.domains.ai.services.jobs import fencing as ai_fencing
@@ -17,6 +15,7 @@ from app.domains.ai.services.jobs import reaper as ai_reaper
 from app.domains.ai.services.jobs import registry as ai_registry
 from app.domains.ai.services.jobs import store as ai_store
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+from tests.ai.jobs.reliability_helpers import _job, _owned_job, _session_factory
 
 
 def test_two_claims_only_one_gets_run_token(monkeypatch):

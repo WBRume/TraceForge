@@ -1,6 +1,6 @@
 """Durable execution events and independent webhook delivery leases."""
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid

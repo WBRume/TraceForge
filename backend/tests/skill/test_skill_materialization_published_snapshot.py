@@ -7,15 +7,11 @@ from types import SimpleNamespace
 from unittest import mock
 
 from app.domains.skill.services.packages import storage as storage_service
-from app.domains.skill.services.packages import versions as skill_packages_versions
 from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
-
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
-
-
 
 
 def _run_git(args, cwd):
@@ -64,7 +60,7 @@ class SkillMaterializationSnapshotTest(unittest.TestCase):
                 skill_runtime_materialization._copy_single_skill_package(fake_skill, target_dir)
 
             copied_file = os.path.join(target_dir, "SKILL.md")
-            with open(copied_file, "r", encoding="utf-8") as file:
+            with open(copied_file, encoding="utf-8") as file:
                 copied = file.read()
 
             self.assertEqual(copied, "published\n")

@@ -8,24 +8,24 @@ pointed at any project-relative markdown directories or files.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
 
 from app.config import settings
 
 TASK_DOC_EXTENSIONS = {".md", ".markdown"}
 
 
-def _split_csv(raw: Optional[str]) -> List[str]:
+def _split_csv(raw: str | None) -> list[str]:
     return [part.strip() for part in str(raw or "").split(",") if part.strip()]
 
 
-def plan_doc_root_parts() -> List[Tuple[str, ...]]:
+def plan_doc_root_parts() -> list[tuple[str, ...]]:
     """Return plan/spec markdown root directories as relative path tuples.
 
     ``.`` is normalized to an empty tuple (project root itself).
     """
-    roots: List[Tuple[str, ...]] = []
+    roots: list[tuple[str, ...]] = []
     for rel in _split_csv(settings.TASK_PLAN_DOC_ROOTS):
         normalized = rel.replace("\\", "/").strip("/")
         if normalized in ("", "."):
@@ -43,7 +43,7 @@ def plan_doc_root_label() -> str:
     return ", ".join(labels) if labels else "docs/superpowers"
 
 
-def rule_doc_scan_paths() -> List[str]:
+def rule_doc_scan_paths() -> list[str]:
     """Project-relative files/directories scanned into task context."""
     return _split_csv(settings.TASK_RULE_DOC_SCAN_PATHS)
 

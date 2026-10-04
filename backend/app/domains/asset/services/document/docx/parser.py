@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import io
 import re
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
-
-import xml.etree.ElementTree as ET
+from typing import Any
 
 try:
     from docx import Document as DocxDocument  # type: ignore
@@ -41,7 +40,7 @@ def looks_like_docx_bytes(raw) -> bool:
     return any(name.startswith("word/") for name in names)
 
 
-def empty_payload() -> Dict[str, Any]:
+def empty_payload() -> dict[str, Any]:
     return {
         "normalized_markdown": "",
         "blocks_json": [],
@@ -59,7 +58,7 @@ def empty_payload() -> Dict[str, Any]:
     }
 
 
-def _block_to_markdown_line(block: Dict[str, Any]) -> str:
+def _block_to_markdown_line(block: dict[str, Any]) -> str:
     block_type = str(block.get("type") or "paragraph")
     text = str(block.get("text") or "")
     stripped = text.strip()
@@ -81,111 +80,8 @@ def _block_to_markdown_line(block: Dict[str, Any]) -> str:
     return stripped
 
 
-def parse_docx_payload_via_xml(raw: bytes) -> Dict[str, Any]:
-    """基于 OOXML 直接解析（保留 runs/表格/批注等富文档特征）。"""
-    try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-            document_xml = zf.read("word/document.xml")
-            comments_xml = zf.read("word/comments.xml") if "word/comments.xml" in zf.namelist() else b""
-            numbering_xml = zf.read("word/numbering.xml") if "word/numbering.xml" in zf.namelist() else b""
-    except Exception:
-        return empty_payload()
-
-    try:
-        document_root = ET.fromstring(document_xml)
-    except Exception:
-        return empty_payload()
-
-    comments_root = None
-    if comments_xml:
-        try:
-            comments_root = ET.fromstring(comments_xml)
-        except Exception:
-            comments_root = None
-
-    numbering_root = None
-    if numbering_xml:
-        try:
-            numbering_root = ET.fromstring(numbering_xml)
-        except Exception:
-            numbering_root = None
-
-    comments_by_id = parse_comments(comments_root)
-    numbering = parse_numbering(numbering_root)
-    numbering_state: Dict[str, List[int]] = defaultdict(list)
-
-    body = document_root.find("./w:body", DOCX_NS_MAP)
-    if body is None:
-        return empty_payload()
-
-    blocks: List[Dict[str, Any]] = []
-    markdown_lines: List[str] = []
-    anchor_items: List[Dict[str, Any]] = []
-    order = 0
-
-    def append_block(block: Dict[str, Any], anchors: List[Dict[str, Any]]) -> None:
-        nonlocal order
-        order += 1
-        block_id = f"blk-{order}"
-        block["id"] = block_id
-        block["order"] = order
-        blocks.append(block)
-        markdown_line = _block_to_markdown_line(block)
-        if markdown_line:
-            markdown_lines.append(markdown_line)
-        for item in anchors:
-            item["block_id"] = block_id
-            anchor_items.append(item)
-
-    for child in list(body):
-        tag = local_name(child.tag)
-        if tag == "p":
-            paragraph_data = parse_paragraph_content(child, comments_by_id)
-            text = str(paragraph_data.get("text") or "")
-            if not text.strip():
-                continue
-
-            para_meta = extract_paragraph_meta(child)
-            style_name = str(para_meta.get("style") or "")
-            has_numbering = bool(para_meta.get("num_id"))
-            block_type, block_meta = classify_paragraph_type(style_name, has_numbering)
-            block_meta.update({k: v for k, v in para_meta.items() if k in {"style", "level"}})
-
-            if block_type == "list_item":
-                level = max(0, safe_int(para_meta.get("level"), 0))
-                num_id = str(para_meta.get("num_id") or "").strip() or None
-                marker = resolve_list_marker(
-                    num_id=num_id,
-                    level=level,
-                    numbering=numbering,
-                    numbering_state=numbering_state,
-                )
-                block_meta["level"] = level
-                block_meta["marker"] = marker
-                if num_id:
-                    block_meta["num_id"] = num_id
-
-            append_block(
-                {
-                    "type": block_type,
-                    "text": text,
-                    "runs": paragraph_data.get("runs") or [],
-                    "meta": block_meta,
-                },
-                list(paragraph_data.get("comment_anchors") or []),
-            )
-            continue
-
-        if tag == "tbl":
-            table_block, table_anchors = parse_table_block(child, comments_by_id)
-            if not table_block["text"] and not table_block["table"]["rows"]:
-                continue
-            append_block(table_block, table_anchors)
-
-    markdown = "\n\n".join(line for line in markdown_lines if line).strip()
-    block_text_by_id = {str(block.get("id")): str(block.get("text") or "") for block in blocks}
-
-    docx_comments: List[Dict[str, Any]] = []
+def _resolve_comment_anchors(anchor_items, comments_by_id, block_text_by_id):
+    docx_comments: list[dict[str, Any]] = []
     seen_comment_keys = set()
     for anchor in anchor_items:
         comment_id = str(anchor.get("comment_id") or "").strip()
@@ -223,6 +119,119 @@ def parse_docx_payload_via_xml(raw: bytes) -> Dict[str, Any]:
                 "content": str(comment_data.get("content") or "").strip() or "",
             }
         )
+    return docx_comments
+
+
+def _append_paragraph_block(child, comments_by_id, numbering, numbering_state, append_block):
+    paragraph_data = parse_paragraph_content(child, comments_by_id)
+    text = str(paragraph_data.get("text") or "")
+    if not text.strip():
+        return
+
+    para_meta = extract_paragraph_meta(child)
+    style_name = str(para_meta.get("style") or "")
+    has_numbering = bool(para_meta.get("num_id"))
+    block_type, block_meta = classify_paragraph_type(style_name, has_numbering)
+    block_meta.update({k: v for k, v in para_meta.items() if k in {"style", "level"}})
+
+    if block_type == "list_item":
+        level = max(0, safe_int(para_meta.get("level"), 0))
+        num_id = str(para_meta.get("num_id") or "").strip() or None
+        marker = resolve_list_marker(
+            num_id=num_id,
+            level=level,
+            numbering=numbering,
+            numbering_state=numbering_state,
+        )
+        block_meta["level"] = level
+        block_meta["marker"] = marker
+        if num_id:
+            block_meta["num_id"] = num_id
+
+    append_block(
+        {
+            "type": block_type,
+            "text": text,
+            "runs": paragraph_data.get("runs") or [],
+            "meta": block_meta,
+        },
+        list(paragraph_data.get("comment_anchors") or []),
+    )
+    return
+
+
+def parse_docx_payload_via_xml(raw: bytes) -> dict[str, Any]:
+    """基于 OOXML 直接解析（保留 runs/表格/批注等富文档特征）。"""
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            document_xml = zf.read("word/document.xml")
+            comments_xml = zf.read("word/comments.xml") if "word/comments.xml" in zf.namelist() else b""
+            numbering_xml = zf.read("word/numbering.xml") if "word/numbering.xml" in zf.namelist() else b""
+    except Exception:
+        return empty_payload()
+
+    try:
+        document_root = ET.fromstring(document_xml)
+    except Exception:
+        return empty_payload()
+
+    comments_root = None
+    if comments_xml:
+        try:
+            comments_root = ET.fromstring(comments_xml)
+        except Exception:
+            comments_root = None
+
+    numbering_root = None
+    if numbering_xml:
+        try:
+            numbering_root = ET.fromstring(numbering_xml)
+        except Exception:
+            numbering_root = None
+
+    comments_by_id = parse_comments(comments_root)
+    numbering = parse_numbering(numbering_root)
+    numbering_state: dict[str, list[int]] = defaultdict(list)
+
+    body = document_root.find("./w:body", DOCX_NS_MAP)
+    if body is None:
+        return empty_payload()
+
+    blocks: list[dict[str, Any]] = []
+    markdown_lines: list[str] = []
+    anchor_items: list[dict[str, Any]] = []
+    order = 0
+
+    def append_block(block: dict[str, Any], anchors: list[dict[str, Any]]) -> None:
+        nonlocal order
+        order += 1
+        block_id = f"blk-{order}"
+        block["id"] = block_id
+        block["order"] = order
+        blocks.append(block)
+        markdown_line = _block_to_markdown_line(block)
+        if markdown_line:
+            markdown_lines.append(markdown_line)
+        for item in anchors:
+            item["block_id"] = block_id
+            anchor_items.append(item)
+
+    for child in list(body):
+        tag = local_name(child.tag)
+        if tag == "p":
+            _append_paragraph_block(child, comments_by_id, numbering, numbering_state, append_block)
+            continue
+
+        if tag == "tbl":
+            table_block, table_anchors = parse_table_block(child, comments_by_id)
+            if not table_block["text"] and not table_block["table"]["rows"]:
+                continue
+            append_block(table_block, table_anchors)
+
+    markdown = "\n\n".join(line for line in markdown_lines if line).strip()
+    block_text_by_id = {str(block.get("id")): str(block.get("text") or "") for block in blocks}
+
+    docx_comments = _resolve_comment_anchors(anchor_items, comments_by_id, block_text_by_id)
 
     return {
         "normalized_markdown": markdown,
@@ -241,14 +250,14 @@ def parse_docx_payload_via_xml(raw: bytes) -> Dict[str, Any]:
     }
 
 
-def parse_docx_via_python_docx(raw: bytes) -> Tuple[str, List[Dict[str, Any]]]:
+def parse_docx_via_python_docx(raw: bytes) -> tuple[str, list[dict[str, Any]]]:
     """python-docx 兜底解析（仅保留段落文本与基础样式分类）。"""
     if DocxDocument is None:
         return "", []
     doc = DocxDocument(io.BytesIO(raw))  # type: ignore[misc]
 
-    lines: List[str] = []
-    blocks: List[Dict[str, Any]] = []
+    lines: list[str] = []
+    blocks: list[dict[str, Any]] = []
     order = 0
     for paragraph in doc.paragraphs:
         text = (paragraph.text or "").strip()
@@ -258,7 +267,7 @@ def parse_docx_via_python_docx(raw: bytes) -> Tuple[str, List[Dict[str, Any]]]:
         style_name_l = style_name.lower()
 
         block_type = "paragraph"
-        meta: Dict[str, Any] = {"style": style_name}
+        meta: dict[str, Any] = {"style": style_name}
         markdown_line = text
 
         if style_name_l.startswith("heading"):
@@ -295,14 +304,14 @@ def parse_docx_via_python_docx(raw: bytes) -> Tuple[str, List[Dict[str, Any]]]:
     return markdown, blocks
 
 
-def parse_docx_payload(raw: bytes) -> Dict[str, Any]:
+def parse_docx_payload(raw: bytes) -> dict[str, Any]:
     """DOCX → 统一 payload：优先 XML 管线，失败时回退 python-docx。"""
     parsed = parse_docx_payload_via_xml(raw)
     if parsed.get("blocks_json") or parsed.get("normalized_markdown"):
         return parsed
 
     markdown = ""
-    blocks: List[Dict[str, Any]] = []
+    blocks: list[dict[str, Any]] = []
     try:
         markdown, blocks = parse_docx_via_python_docx(raw)
     except Exception:

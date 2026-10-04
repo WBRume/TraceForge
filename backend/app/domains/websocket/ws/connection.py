@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
 from fastapi import WebSocket
 
@@ -20,7 +21,7 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="task_execution")
 
-_QueueItem = Tuple[str, object, int]
+_QueueItem = tuple[str, object, int]
 
 
 def _ws_send_timeout() -> float:
@@ -65,22 +66,22 @@ class ConnectionEvicted(Exception):
 
 async def _receive_or_raise_evicted(
     receiver: Callable[[], Awaitable[Any]],
-    connection: Optional["OutboundConnection"],
+    connection: OutboundConnection | None,
 ) -> Any:
     while True:
         if connection is not None and connection.dropped:
-            raise ConnectionEvicted()
+            raise ConnectionEvicted
         try:
             return await receiver()
         except RuntimeError:
             if connection is not None and connection.dropped:
-                raise ConnectionEvicted() from None
+                raise ConnectionEvicted from None
             raise
 
 
 async def receive_json_until_evicted(
     websocket: WebSocket,
-    connection: Optional["OutboundConnection"],
+    connection: OutboundConnection | None,
 ) -> Any:
     """Receive one JSON frame; raise :class:`ConnectionEvicted` once evicted."""
     return await _receive_or_raise_evicted(websocket.receive_json, connection)
@@ -88,7 +89,7 @@ async def receive_json_until_evicted(
 
 async def receive_text_until_evicted(
     websocket: WebSocket,
-    connection: Optional["OutboundConnection"],
+    connection: OutboundConnection | None,
 ) -> str:
     """Receive one text frame; raise :class:`ConnectionEvicted` once evicted."""
     return await _receive_or_raise_evicted(websocket.receive_text, connection)
@@ -101,9 +102,9 @@ class OutboundConnection:
         self,
         websocket: WebSocket,
         *,
-        queue_size: Optional[int] = None,
-        max_bytes: Optional[int] = None,
-        client_id: Optional[str] = None,
+        queue_size: int | None = None,
+        max_bytes: int | None = None,
+        client_id: str | None = None,
         message_kind: str = "text",
         on_evicted=None,
         generation: int = 0,
@@ -112,38 +113,36 @@ class OutboundConnection:
         self.client_id = str(client_id or "") or None
         self.generation = int(generation or 0)
         self.message_kind = message_kind if message_kind in {"text", "json"} else "text"
-        self._queue: asyncio.Queue[Optional[_QueueItem]] = asyncio.Queue(
+        self._queue: asyncio.Queue[_QueueItem | None] = asyncio.Queue(
             maxsize=max(1, int(queue_size if queue_size is not None else _queue_size()))
         )
         self._max_bytes = max(1, int(max_bytes if max_bytes is not None else _max_bytes()))
         self._pending_bytes = 0
-        self._sender_task: Optional[asyncio.Task] = None
-        self._close_task: Optional[asyncio.Task] = None
+        self._sender_task: asyncio.Task | None = None
+        self._close_task: asyncio.Task | None = None
         self._queue_low_water = asyncio.Event()
         self._queue_low_water.set()
         self._closed = False
         self.dropped = False
         self.state = ConnectionState.CONNECTING
-        self.barrier_sequence: Optional[int] = None
-        self.cutover_sequence: Optional[int] = None
-        self.replay_task: Optional[asyncio.Task] = None
-        self._deferred_live: list[Tuple[str, object, int, Optional[int]]] = []
+        self.barrier_sequence: int | None = None
+        self.cutover_sequence: int | None = None
+        self.replay_task: asyncio.Task | None = None
+        self._deferred_live: list[tuple[str, object, int, int | None]] = []
         self._deferred_bytes = 0
-        self._max_deferred_events = max(
-            1, int(getattr(settings, "WS_DEFERRED_LIVE_MAX_EVENTS", 256) or 256)
-        )
+        self._max_deferred_events = max(1, int(getattr(settings, "WS_DEFERRED_LIVE_MAX_EVENTS", 256) or 256))
         self._max_deferred_bytes = max(
             1, int(getattr(settings, "WS_DEFERRED_LIVE_MAX_BYTES", 1024 * 1024) or 1024 * 1024)
         )
         self._on_evicted = on_evicted
-        self.eviction_reason: Optional[str] = None
+        self.eviction_reason: str | None = None
 
     @property
-    def sender_task(self) -> Optional[asyncio.Task]:
+    def sender_task(self) -> asyncio.Task | None:
         return self._sender_task
 
     @property
-    def close_task(self) -> Optional[asyncio.Task]:
+    def close_task(self) -> asyncio.Task | None:
         return self._close_task
 
     @property
@@ -174,7 +173,7 @@ class OutboundConnection:
         text = json.dumps(payload, ensure_ascii=False, default=str)
         return self._submit("json", payload, len(text.encode("utf-8", errors="ignore")))
 
-    def submit_frame(self, value: object, *, kind: Optional[str] = None) -> bool:
+    def submit_frame(self, value: object, *, kind: str | None = None) -> bool:
         selected_kind = kind or self.message_kind
         if selected_kind == "json" and isinstance(value, dict):
             return self.submit_json(value)
@@ -182,7 +181,7 @@ class OutboundConnection:
             return self.submit_text(json.dumps(value, ensure_ascii=False, default=str))
         return self.submit_text(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
 
-    def defer_frame(self, value: object, *, kind: Optional[str] = None, sequence: Optional[int] = None) -> bool:
+    def defer_frame(self, value: object, *, kind: str | None = None, sequence: int | None = None) -> bool:
         """Hold a frame until replay/resync hands over to live delivery."""
         if self._closed or self.dropped:
             return False
@@ -203,7 +202,7 @@ class OutboundConnection:
         self._deferred_bytes += size
         return True
 
-    def drain_deferred(self) -> list[Tuple[str, object, int, Optional[int]]]:
+    def drain_deferred(self) -> list[tuple[str, object, int, int | None]]:
         items = list(self._deferred_live)
         self._deferred_live.clear()
         self._deferred_bytes = 0
@@ -224,9 +223,7 @@ class OutboundConnection:
         if self._closed or self.dropped:
             return False
         if size > self._max_bytes:
-            logger.warning(
-                f"WS outbound message exceeds byte limit ({size} > {self._max_bytes}), evicting connection"
-            )
+            logger.warning(f"WS outbound message exceeds byte limit ({size} > {self._max_bytes}), evicting connection")
             self.evict("message_over_byte_limit")
             return False
         try:
@@ -261,12 +258,14 @@ class OutboundConnection:
         self.dropped = True
         self._closed = True
         self.state = ConnectionState.CLOSED
-        if self._sender_task is not None and not self._sender_task.done():
-            if self._sender_task is not asyncio.current_task():
-                self._sender_task.cancel()
-        if self.replay_task is not None and not self.replay_task.done():
-            if self.replay_task is not asyncio.current_task():
-                self.replay_task.cancel()
+        if (
+            self._sender_task is not None and (not self._sender_task.done())
+        ) and self._sender_task is not asyncio.current_task():
+            self._sender_task.cancel()
+        if (
+            self.replay_task is not None and (not self.replay_task.done())
+        ) and self.replay_task is not asyncio.current_task():
+            self.replay_task.cancel()
         if already:
             return
         self._close_socket(code=1001)
@@ -276,9 +275,7 @@ class OutboundConnection:
                 callback(self)
             except Exception:
                 logger.exception("WS evict callback failed")
-        logger.info(
-            f"WebSocket connection evicted: reason={reason} client_id={self.client_id or ''}"
-        )
+        logger.info(f"WebSocket connection evicted: reason={reason} client_id={self.client_id or ''}")
 
     def _close_socket(self, code: int) -> None:
         close = getattr(self.websocket, "close", None)
@@ -302,10 +299,11 @@ class OutboundConnection:
     async def close(self) -> None:
         self._closed = True
         self.state = ConnectionState.CLOSING
-        if self.replay_task is not None and not self.replay_task.done():
-            if self.replay_task is not asyncio.current_task():
-                self.replay_task.cancel()
-                await asyncio.gather(self.replay_task, return_exceptions=True)
+        if (
+            self.replay_task is not None and (not self.replay_task.done())
+        ) and self.replay_task is not asyncio.current_task():
+            self.replay_task.cancel()
+            await asyncio.gather(self.replay_task, return_exceptions=True)
         task = self._sender_task
         if task is None or task.done():
             self.state = ConnectionState.CLOSED
@@ -350,15 +348,16 @@ class OutboundConnection:
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
-                        logger.warning(
-                            f"WS send failed/timeout ({type(exc).__name__}: {exc}), evicting connection"
-                        )
+                        logger.warning(f"WS send failed/timeout ({type(exc).__name__}: {exc}), evicting connection")
                         self.evict("send_failed")
                         return
                 finally:
                     self._pending_bytes = max(0, self._pending_bytes - size)
                     self._queue.task_done()
-                    if self._queue.qsize() < max(1, self._queue.maxsize // 2) and self._pending_bytes < self._max_bytes // 2:
+                    if (
+                        self._queue.qsize() < max(1, self._queue.maxsize // 2)
+                        and self._pending_bytes < self._max_bytes // 2
+                    ):
                         self._queue_low_water.set()
         except asyncio.CancelledError:
             raise
@@ -376,11 +375,11 @@ class ConnectionRegistry:
         self._hub_registry = RoomHubRegistry(**kwargs)
 
     @property
-    def rooms(self) -> Dict[str, Dict[WebSocket, OutboundConnection]]:
+    def rooms(self) -> dict[str, dict[WebSocket, OutboundConnection]]:
         return self._hub_registry.rooms
 
     @property
-    def presence(self) -> Dict[str, Dict[WebSocket, str]]:
+    def presence(self) -> dict[str, dict[WebSocket, str]]:
         return self._hub_registry.presence
 
     async def connect(
@@ -388,10 +387,10 @@ class ConnectionRegistry:
         room_key: str,
         websocket: WebSocket,
         *,
-        user_id: Optional[str] = None,
-        client_id: Optional[str] = None,
-        epoch: Optional[str] = None,
-        last_sequence: Optional[int] = None,
+        user_id: str | None = None,
+        client_id: str | None = None,
+        epoch: str | None = None,
+        last_sequence: int | None = None,
         message_kind: str = "text",
     ) -> OutboundConnection:
         return await self._hub_registry.connect(
@@ -404,7 +403,7 @@ class ConnectionRegistry:
             message_kind=message_kind,
         )
 
-    def disconnect(self, room_key: str, websocket: WebSocket) -> Optional[OutboundConnection]:
+    def disconnect(self, room_key: str, websocket: WebSocket) -> OutboundConnection | None:
         return self._hub_registry.disconnect(room_key, websocket)
 
     async def complete_resync(
@@ -422,10 +421,10 @@ class ConnectionRegistry:
             barrier_sequence=barrier_sequence,
         )
 
-    def broadcast_text(self, room_key: str, text: str, *, sequenced: Optional[bool] = None) -> int:
+    def broadcast_text(self, room_key: str, text: str, *, sequenced: bool | None = None) -> int:
         return self._hub_registry.publish_text(room_key, text, sequenced=sequenced)
 
-    def broadcast_json(self, room_key: str, payload: dict, *, sequenced: Optional[bool] = None) -> int:
+    def broadcast_json(self, room_key: str, payload: dict, *, sequenced: bool | None = None) -> int:
         return self._hub_registry.publish_json(room_key, payload, sequenced=sequenced)
 
     def send_to_user(self, room_key: str, user_id: str, payload: dict) -> int:
@@ -434,7 +433,7 @@ class ConnectionRegistry:
     def has_subscribers(self, room_key: str) -> bool:
         return self._hub_registry.has_subscribers(room_key)
 
-    def online_users(self, room_key: str) -> List[str]:
+    def online_users(self, room_key: str) -> list[str]:
         return self._hub_registry.online_users(room_key)
 
     async def sweep(self) -> int:

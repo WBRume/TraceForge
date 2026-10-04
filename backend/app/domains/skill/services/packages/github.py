@@ -1,17 +1,20 @@
 """Import and synchronize source-owned skill packages from GitHub."""
 
 from __future__ import annotations
+
 import os
 from datetime import datetime
-from typing import Optional, Tuple
+
 from sqlalchemy.orm import Session
-from app.domains.skill.models.skill import SddSkill, SddSkillVersion
+
 from app.domains.auth.models.user import User
-from app.domains.skill.services.packages import git as git_service, github_source as github_import_service, storage as storage_service
+from app.domains.skill.models.skill import SddSkill, SddSkillVersion
 from app.domains.skill.services.catalog import creation as skill_catalog_creation
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import git as git_service
+from app.domains.skill.services.packages import github_source as github_import_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
-
 
 GITHUB_OFFICIAL_SOURCE_TYPE = "GITHUB_OFFICIAL"
 
@@ -23,9 +26,9 @@ def import_skill_from_github(
     context_workspace_id: str,
     repo_url: str,
     skill_name: str,
-    description: Optional[str],
+    description: str | None,
     dimension_value: str,
-    workspace_id: Optional[str],
+    workspace_id: str | None,
     follow_official_source: bool = False,
 ) -> SddSkill:
     dimension, target_workspace_id = skill_catalog_policy._resolve_creation_target_scope(
@@ -50,10 +53,9 @@ def import_skill_from_github(
             if not resolved_skill_name:
                 raise ValueError("Failed to resolve imported skill directory name")
 
-            resolved_description = (
-                skill_catalog_policy._normalize_optional_text(description)
-                or github_import_service.read_skill_description(source_skill_dir)
-            )
+            resolved_description = skill_catalog_policy._normalize_optional_text(
+                description
+            ) or github_import_service.read_skill_description(source_skill_dir)
             skill, package_abs_path = skill_catalog_creation._build_new_skill_record(
                 user_id=user.id,
                 name=resolved_skill_name,
@@ -102,7 +104,7 @@ def sync_skill_from_official_source(
     skill: SddSkill,
     *,
     context_workspace_id: str,
-) -> Tuple[Optional[SddSkillVersion], bool]:
+) -> tuple[SddSkillVersion | None, bool]:
     if not skill_catalog_policy.can_manage_skill(db, skill, user):
         raise PermissionError("No permission to sync this skill")
     if not skill_catalog_policy.ensure_skill_visible_in_workspace(skill, context_workspace_id):
@@ -135,7 +137,7 @@ def sync_skill_from_official_source(
 
             sync_note = f"Sync from GitHub: {skill.source_repo_url}#{relative_source}"
             commit_meta = git_service.commit_all(repo_path, sync_note)
-            version: Optional[SddSkillVersion] = None
+            version: SddSkillVersion | None = None
             if commit_meta:
                 version = skill_packages_versions.record_published_version(
                     db,
@@ -144,7 +146,6 @@ def sync_skill_from_official_source(
                     commit_meta=commit_meta,
                     change_note=sync_note,
                 )
-
 
             skill.source_subdir = relative_source
             skill.source_commit_sha = source_commit_sha

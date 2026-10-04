@@ -1,9 +1,8 @@
 # Re-export stubs for Alembic model discovery
+from app.domains.local_resource.models import LocalResource, LocalResourceOperation, TaskExecutionBinding  # noqa: F401
 from app.models.session_turn import (  # noqa: F401
-    TaskSessionTurn,
-    TaskSessionTurnStatus,
     TaskSessionOperation,
     TaskSessionOperationStatus,
+    TaskSessionTurn,
+    TaskSessionTurnStatus,
 )
-
-from app.domains.local_resource.models import LocalResource, TaskExecutionBinding, LocalResourceOperation  # noqa: F401

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 
 def build_asset_thread_prompt(
     *,
@@ -16,14 +14,12 @@ def build_asset_thread_prompt(
     selected_text: str,
     anchor_block_text: str,
     neighbor_text: str,
-    history_lines: List[str],
-    manual_prompt: Optional[str],
+    history_lines: list[str],
+    manual_prompt: str | None,
 ) -> str:
     manual = (manual_prompt or "").strip()
     filtered_history = [
-        line
-        for line in (history_lines or [])
-        if not str(line or "").strip().lower().startswith("[ai]")
+        line for line in (history_lines or []) if not str(line or "").strip().lower().startswith("[ai]")
     ]
     history_text = "\n".join(filtered_history).strip() if filtered_history else "(暂无)"
     return (
@@ -67,7 +63,7 @@ def build_resolution_proposal_prompt(
     thread_id: str,
     anchor_text: str,
     block_context_text: str,
-    discussion_lines: List[str],
+    discussion_lines: list[str],
 ) -> str:
     history_text = "\n".join(discussion_lines).strip() if discussion_lines else "(暂无有效讨论内容)"
 
@@ -191,7 +187,7 @@ def build_resolution_rewrite_prompt(
     anchor_text: str,
     block_context_text: str,
     proposal_text: str,
-    rewrite_scope: Optional[str] = None,
+    rewrite_scope: str | None = None,
     selection_mode: bool = False,
 ) -> str:
     scope = str(rewrite_scope or "").strip().lower()

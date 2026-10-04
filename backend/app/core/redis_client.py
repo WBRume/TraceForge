@@ -6,12 +6,11 @@ from __future__ import annotations
 
 import asyncio
 import weakref
-from typing import Any, Optional
+from typing import Any
 
 from app.config import settings
 
-
-_REDIS_CLIENTS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
+_REDIS_CLIENTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any] = weakref.WeakKeyDictionary()
 _REDIS_CLIENT_LOCK = asyncio.Lock()
 
 

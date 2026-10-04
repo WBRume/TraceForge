@@ -1,18 +1,24 @@
 """User-isolated bounded ranking snapshots; Redis failure is explicit."""
+
 import base64
 import hashlib
 import hmac
 import json
 import time
 from uuid import uuid4
+
 from fastapi import HTTPException
+
 from app.config import settings
 from app.core.redis_client import get_redis_client
 
 
 def signing_key():
-    return settings.SEARCH_CURSOR_SECRET.encode() if settings.SEARCH_CURSOR_SECRET else hmac.new(
-        settings.JWT_SECRET_KEY.encode(), b'traceforge-search-cursor-v1', hashlib.sha256).digest()
+    return (
+        settings.SEARCH_CURSOR_SECRET.encode()
+        if settings.SEARCH_CURSOR_SECRET
+        else hmac.new(settings.JWT_SECRET_KEY.encode(), b"traceforge-search-cursor-v1", hashlib.sha256).digest()
+    )
 
 
 def sign(payload):
@@ -24,14 +30,14 @@ def sign(payload):
 def unsign(token, purpose, user_id):
     try:
         if len(token) > 4096:
-            raise ValueError()
+            raise ValueError
         raw, mac = token.split(".")
         expected = hmac.new(signing_key(), raw.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(mac, expected):
-            raise ValueError()
+            raise ValueError
         data = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
         if data["purpose"] != purpose or data["user"] != user_id or data["expires"] < time.time():
-            raise ValueError()
+            raise ValueError
         return data
     except (ValueError, KeyError, TypeError):
         raise HTTPException(410, "SEARCH_CURSOR_EXPIRED") from None
@@ -71,13 +77,15 @@ def key(user, session):
 
 async def create(user, binding, candidates, metadata):
     sid = uuid4().hex
-    snapshot = dict(binding=binding, candidates=candidates, metadata=metadata, expires=int(time.time()) + 300)
+    snapshot = {"binding": binding, "candidates": candidates, "metadata": metadata, "expires": int(time.time()) + 300}
     raw = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     if len(raw.encode()) > 524288:
         raise HTTPException(503, "SEARCH_SESSION_TOO_LARGE")
     try:
         redis = await get_redis_client()
-        accepted = await redis.eval(CREATE, 3, key(user, "sessions"), key("all", "sessions"), key(user, sid), time.time(), raw)
+        accepted = await redis.eval(
+            CREATE, 3, key(user, "sessions"), key("all", "sessions"), key(user, sid), time.time(), raw
+        )
         if not accepted:
             raise HTTPException(429, "SEARCH_SESSION_CAPACITY")
     except HTTPException:
@@ -103,7 +111,16 @@ async def read(user, cursor, binding):
 
 
 def cursor(user, sid, snapshot, offset, shown):
-    return sign(dict(purpose="search", user=user, session=sid, offset=offset, shown=shown, expires=snapshot["expires"]))
+    return sign(
+        {
+            "purpose": "search",
+            "user": user,
+            "session": sid,
+            "offset": offset,
+            "shown": shown,
+            "expires": snapshot["expires"],
+        }
+    )
 
 
 async def close(user, token):

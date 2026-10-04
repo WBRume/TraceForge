@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import uuid
-from typing import Any, Dict
+from typing import Any
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -29,12 +29,12 @@ class JobRuntime:
     """单事件循环内的作业运行时状态（随进程生命周期存续）。"""
 
     def __init__(self) -> None:
-        self.queue_locks: Dict[str, asyncio.Lock] = {}
-        self.queue_runners: Dict[str, asyncio.Task] = {}
-        self.cancel_events: Dict[str, asyncio.Event] = {}
-        self.heartbeat_tasks: Dict[str, asyncio.Task] = {}
+        self.queue_locks: dict[str, asyncio.Lock] = {}
+        self.queue_runners: dict[str, asyncio.Task] = {}
+        self.cancel_events: dict[str, asyncio.Event] = {}
+        self.heartbeat_tasks: dict[str, asyncio.Task] = {}
         # reaper / dispatcher 常驻 worker 任务（由 workers 模块写入）。
-        self.worker_tasks: Dict[str, asyncio.Task] = {}
+        self.worker_tasks: dict[str, asyncio.Task] = {}
         self.shutting_down: bool = False
         self.detached_jobs: set[str] = set()
 
@@ -59,7 +59,7 @@ class JobRuntime:
             self.queue_locks[queue_key] = lock
         return lock
 
-    def reap_queue_runner(self, queue_key: str, task: "asyncio.Task") -> None:
+    def reap_queue_runner(self, queue_key: str, task: asyncio.Task) -> None:
         """Runner 结束后回收注册表条目（单事件循环内同步判定，无 await 夹缝）。
 
         仅当条目仍指向本 task 时摘除（避免误删后继 runner）；同 key 锁在无后继
@@ -88,8 +88,9 @@ class JobRuntime:
         running = self.queue_runners.get(queue_key)
         if running and not running.done():
             return
-        coroutine = (run_queue(queue_key, recovered_job_id=recovered_job_id)
-                     if recovered_job_id else run_queue(queue_key))
+        coroutine = (
+            run_queue(queue_key, recovered_job_id=recovered_job_id) if recovered_job_id else run_queue(queue_key)
+        )
         runner = loop.create_task(coroutine)
         self.queue_runners[queue_key] = runner
         runner.add_done_callback(lambda task: self.reap_queue_runner(queue_key, task))
@@ -122,7 +123,7 @@ class JobRuntime:
     def clear_cancel(self, job_id: str) -> None:
         self.cancel_events.pop(job_id, None)
 
-    def clear_cancel_for_payload(self, payload: Dict[str, Any]) -> None:
+    def clear_cancel_for_payload(self, payload: dict[str, Any]) -> None:
         """可恢复 INTERRUPTED 行必须回收取消事件，避免恢复回合被旧信号误杀。"""
         if str(payload.get("status") or "") == AiJobStatus.INTERRUPTED.value:
             self.clear_cancel(str(payload.get("id") or ""))

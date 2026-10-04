@@ -4,14 +4,14 @@ Asset-backed storage helpers for change proposals and local verification artifac
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
-from app.domains.task.models.task import SddTask
 from app.domains.asset.services.document import versioning as document_versioning
+from app.domains.task.models.task import SddTask
 
 
 def _decode_excerpt(raw: bytes, *, limit: int = 12000) -> str:
@@ -40,9 +40,9 @@ def create_patch_asset(
     proposal_no: int,
     patch_set_no: int,
     patch_text: str,
-    metadata: Optional[Dict[str, Any]] = None,
-    repo_slug: Optional[str] = None,
-) -> Tuple[SddAsset, SddAssetVersion]:
+    metadata: dict[str, Any] | None = None,
+    repo_slug: str | None = None,
+) -> tuple[SddAsset, SddAssetVersion]:
     suffix = f"-{repo_slug}" if repo_slug else ""
     file_name = f"change-proposal-{proposal_no}-patch-set-{patch_set_no}{suffix}.patch"
     raw = str(patch_text or "").encode("utf-8")
@@ -78,8 +78,8 @@ def create_verification_log_asset(
     run_id: str,
     file_name: str,
     file_content: bytes,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Tuple[SddAsset, SddAssetVersion, str]:
+    metadata: dict[str, Any] | None = None,
+) -> tuple[SddAsset, SddAssetVersion, str]:
     excerpt = _decode_excerpt(file_content)
     safe_name = file_name or f"verification-run-{run_id}.log"
     asset, version = document_versioning.create_task_asset_version_from_bytes(
@@ -112,8 +112,8 @@ def create_conflict_report_asset(
     report_id: str,
     file_name: str,
     file_content: bytes,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Tuple[SddAsset, SddAssetVersion, str]:
+    metadata: dict[str, Any] | None = None,
+) -> tuple[SddAsset, SddAssetVersion, str]:
     excerpt = _decode_excerpt(file_content)
     safe_name = file_name or f"conflict-report-{report_id}.log"
     asset, version = document_versioning.create_task_asset_version_from_bytes(

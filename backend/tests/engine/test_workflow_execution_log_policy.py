@@ -5,7 +5,6 @@ import sys
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -27,16 +26,20 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_text_and_provider_debug_events_are_not_execution_logs(self):
         engine = self._engine()
 
-        await engine.handle_agent_event(AgentEvent(
-            type="text",
-            payload={"text": "assistant reply"},
-            provider="opencode",
-        ))
-        await engine.handle_agent_event(AgentEvent(
-            type="log",
-            payload={"level": "debug", "message": "provider status"},
-            provider="opencode",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="text",
+                payload={"text": "assistant reply"},
+                provider="opencode",
+            )
+        )
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="log",
+                payload={"level": "debug", "message": "provider status"},
+                provider="opencode",
+            )
+        )
 
         engine.frontend.push_chat.assert_awaited_once_with("assistant", "assistant reply")
         engine.logs.queue.assert_not_called()
@@ -45,25 +48,31 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
         engine = self._engine()
 
         # delta 帧：累积 buffer、节流发送（不立即推 WS）
-        await engine.handle_agent_event(AgentEvent(
-            type="thinking",
-            payload={"text": "check", "delta": "check"},
-            provider="dsh",
-        ))
-        await engine.handle_agent_event(AgentEvent(
-            type="thinking",
-            payload={"text": "ing", "delta": "ing"},
-            provider="dsh",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="thinking",
+                payload={"text": "check", "delta": "check"},
+                provider="dsh",
+            )
+        )
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="thinking",
+                payload={"text": "ing", "delta": "ing"},
+                provider="dsh",
+            )
+        )
         self.assertEqual(engine.thinking.content, "checking")
         self.assertEqual(engine.frontend.push.await_count, 0)
 
         # 快照帧（无 delta 键）：整体替换 + 立即发送
-        await engine.handle_agent_event(AgentEvent(
-            type="thinking",
-            payload={"text": "FINAL"},
-            provider="dsh",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="thinking",
+                payload={"text": "FINAL"},
+                provider="dsh",
+            )
+        )
         self.assertEqual(engine.thinking.content, "FINAL")
         self.assertEqual(engine.frontend.push.await_count, 1)
         frame = engine.frontend.push.await_args.args[1]
@@ -75,16 +84,20 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_thinking_delta_frame_merged_and_final(self):
         engine = self._engine()
 
-        await engine.handle_agent_event(AgentEvent(
-            type="thinking",
-            payload={"text": "a", "delta": "a"},
-            provider="dsh",
-        ))
-        await engine.handle_agent_event(AgentEvent(
-            type="thinking",
-            payload={"text": "b", "delta": "b"},
-            provider="dsh",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="thinking",
+                payload={"text": "a", "delta": "a"},
+                provider="dsh",
+            )
+        )
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="thinking",
+                payload={"text": "b", "delta": "b"},
+                provider="dsh",
+            )
+        )
         self.assertEqual(engine.frontend.push.await_count, 0)
 
         # 节流窗口到期：两条 delta 合并为一帧增量
@@ -108,31 +121,31 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
         engine = self._engine()
 
         with (
-            patch(
-                "app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_use_trace"
-            ),
-            patch(
-                "app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_result_trace"
-            ),
+            patch("app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_use_trace"),
+            patch("app.engine.session.engine.skill_runtime_trace_service.enqueue_tool_result_trace"),
         ):
-            await engine.handle_agent_event(AgentEvent(
-                type="tool_use",
-                payload={
-                    "tool_name": "read_file",
-                    "tool_input": {"path": "README.md"},
-                    "tool_use_id": "call-1",
-                },
-                provider="opencode",
-            ))
-            await engine.handle_agent_event(AgentEvent(
-                type="tool_result",
-                payload={
-                    "tool_use_id": "call-1",
-                    "output": "contents",
-                    "is_error": False,
-                },
-                provider="opencode",
-            ))
+            await engine.handle_agent_event(
+                AgentEvent(
+                    type="tool_use",
+                    payload={
+                        "tool_name": "read_file",
+                        "tool_input": {"path": "README.md"},
+                        "tool_use_id": "call-1",
+                    },
+                    provider="opencode",
+                )
+            )
+            await engine.handle_agent_event(
+                AgentEvent(
+                    type="tool_result",
+                    payload={
+                        "tool_use_id": "call-1",
+                        "output": "contents",
+                        "is_error": False,
+                    },
+                    provider="opencode",
+                )
+            )
 
         assert engine.logs.queue.call_count == 2
         stored = [json.loads(call.args[0]) for call in engine.logs.queue.call_args_list]
@@ -148,11 +161,13 @@ class WorkflowExecutionLogPolicyTest(unittest.IsolatedAsyncioTestCase):
     async def test_compaction_event_keeps_observability_fallback(self):
         engine = self._engine()
 
-        await engine.handle_agent_event(AgentEvent(
-            type="context_compacted",
-            payload={"summary": "tokens 120000 -> 32000"},
-            provider="claude-code",
-        ))
+        await engine.handle_agent_event(
+            AgentEvent(
+                type="context_compacted",
+                payload={"summary": "tokens 120000 -> 32000"},
+                provider="claude-code",
+            )
+        )
 
         engine.logs.queue.assert_called_once()
         assert engine.logs.queue.call_args.args[0].startswith("[compaction]")

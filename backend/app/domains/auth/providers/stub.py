@@ -47,7 +47,7 @@ class StubProvider(OAuthProvider):
 
         code 参数仅保持与真实 IdP 契约一致；本演示不校验具体值。
         """
-        # noqa: ARG001 —— code / redirect_uri 仅为契约占位
+
         return "stub-access-token"
 
     def fetch_profile(self, access_token: str) -> OAuthProfile:
@@ -56,7 +56,7 @@ class StubProvider(OAuthProvider):
         固定邮箱 demo@example.com（RFC 2606 保留演示域名，EmailStr 校验通过）：
         首次走路径 C（补全注册），之后走路径 A（直接登录），一条 demo 即可覆盖两条主判定路径。
         """
-        # noqa: ARG001 —— access_token 仅为契约占位
+
         return OAuthProfile(
             provider_uid="stub-1001",
             email="demo@example.com",

@@ -5,12 +5,12 @@ Task-level Claude CLI bootstrap state model.
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    JSON,
     Column,
     DateTime,
     Enum,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
     func,

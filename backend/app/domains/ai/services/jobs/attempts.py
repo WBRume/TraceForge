@@ -13,15 +13,14 @@
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.agents import (
+    EXECUTION_KIND_LOCAL_PROCESS,
+    EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptContext,
     AgentAttemptRuntimeState,
     AgentStopResult,
-    EXECUTION_KIND_LOCAL_PROCESS,
-    EXECUTION_KIND_REMOTE_SESSION,
     ProviderCallState,
     current_agent_attempt,
     current_agent_attempt_runtime,
@@ -38,11 +37,13 @@ from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services import ai_job_convergence_service as convergence
 from app.domains.ai.services.ai_job_convergence_service import (
     AttemptConvergenceRequest,
-    AttemptFinalizerEvidence as _FinalizerEvidence,
     AttemptTerminationRequest,
     ConvergenceIntent,
     request_attempt_termination_in_txn,
     resolve_attempt_evidence,
+)
+from app.domains.ai.services.ai_job_convergence_service import (
+    AttemptFinalizerEvidence as _FinalizerEvidence,
 )
 from app.domains.ai.services.jobs.constants import FINAL_STATUSES
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID, runtime
@@ -53,7 +54,7 @@ logger = get_logger(__name__, category="ai_session")
 # ────────────────────────── 绑定上下文 ──────────────────────────
 
 
-def load_attempt_context_sync(job_id: str) -> Optional[AgentAttemptContext]:
+def load_attempt_context_sync(job_id: str) -> AgentAttemptContext | None:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -82,7 +83,9 @@ def attempt_execution_kind() -> str:
     """Durable execution kind of the bound attempt (never inferred from PIDs)."""
     attempt = current_agent_attempt()
     kind = getattr(attempt, "execution_kind", None) if attempt else None
-    return kind if kind in (EXECUTION_KIND_LOCAL_PROCESS, EXECUTION_KIND_REMOTE_SESSION) else EXECUTION_KIND_LOCAL_PROCESS
+    return (
+        kind if kind in (EXECUTION_KIND_LOCAL_PROCESS, EXECUTION_KIND_REMOTE_SESSION) else EXECUTION_KIND_LOCAL_PROCESS
+    )
 
 
 # ────────────────────────── 证据解析 ──────────────────────────
@@ -90,14 +93,14 @@ def attempt_execution_kind() -> str:
 
 def resolve_current_attempt_evidence(
     *,
-    execution_kind: Optional[str] = None,
-    runtime: Optional[AgentAttemptRuntimeState] = None,
-    stop_result: Optional[AgentStopResult] = None,
-    typed_error: Optional[BaseException] = None,
-    provider_result: Optional[Any] = None,
-    fallback_started: Optional[bool] = None,
-    fallback_dead: Optional[bool] = None,
-    fallback_failure_code: Optional[str] = None,
+    execution_kind: str | None = None,
+    runtime: AgentAttemptRuntimeState | None = None,
+    stop_result: AgentStopResult | None = None,
+    typed_error: BaseException | None = None,
+    provider_result: Any | None = None,
+    fallback_started: bool | None = None,
+    fallback_dead: bool | None = None,
+    fallback_failure_code: str | None = None,
     fallback_remaining_pids: tuple = (),
 ) -> _FinalizerEvidence:
     """唯一证据解析入口（doc §6.2）：identity-aware runtime 为权威。"""
@@ -114,7 +117,7 @@ def resolve_current_attempt_evidence(
     )
 
 
-def attempt_evidence(exc: Optional[BaseException] = None) -> tuple[bool, Optional[bool]]:
+def attempt_evidence(exc: BaseException | None = None) -> tuple[bool, bool | None]:
     """Return (process_started, dead) from the attempt runtime + typed exception.
 
     The identity-aware runtime aggregate is authoritative; the typed exception
@@ -124,16 +127,16 @@ def attempt_evidence(exc: Optional[BaseException] = None) -> tuple[bool, Optiona
     return (evidence.process_started, evidence.termination_confirmed_dead)
 
 
-def attempt_process_started(exc: Optional[BaseException] = None) -> bool:
+def attempt_process_started(exc: BaseException | None = None) -> bool:
     return attempt_evidence(exc)[0]
 
 
-def attempt_termination_evidence(exc: Optional[BaseException] = None) -> Optional[bool]:
+def attempt_termination_evidence(exc: BaseException | None = None) -> bool | None:
     """Read the authoritative attempt-local death proof (with typed-exception fallback)."""
     return attempt_evidence(exc)[1]
 
 
-def bridge_stop_result(bridge: Any) -> Optional[AgentStopResult]:
+def bridge_stop_result(bridge: Any) -> AgentStopResult | None:
     """Convert the bridge's last local termination into the unified stop result.
 
     返回 None 表示该 bridge 没有（或尚未产生）本地终止结果；远程 bridge
@@ -146,7 +149,7 @@ def bridge_stop_result(bridge: Any) -> Optional[AgentStopResult]:
 
 
 def close_unresolved_provider_call(
-    call: Optional[Any],
+    call: Any | None,
     *,
     stop_acknowledged: bool = False,
     tree_dead: bool = False,
@@ -179,8 +182,8 @@ def close_unresolved_provider_call(
 
 
 def provider_call_ready_for_retry(
-    call: Optional[Any],
-    attempt: Optional[AgentAttemptContext],
+    call: Any | None,
+    attempt: AgentAttemptContext | None,
 ) -> bool:
     """Retry gate: the previous call must be finished before overlapping.
 
@@ -193,12 +196,8 @@ def provider_call_ready_for_retry(
     if call.state in (ProviderCallState.ENDED, ProviderCallState.NOT_STARTED):
         return True
     kind = getattr(attempt, "execution_kind", None) or EXECUTION_KIND_LOCAL_PROCESS
-    if kind == EXECUTION_KIND_REMOTE_SESSION:
-        # STARTED/UNKNOWN：与未结束的远程调用重叠被禁止。
-        return False
-    # 本地进程路径：重试前提（进程树确认死亡）已在外层检查；未决记录
-    # 不阻塞本地新进程，但其证据绝不会被冒用（resolve 按 call 隔离）。
-    return True
+    # 远程 STARTED/UNKNOWN 禁止重叠；本地进程的死亡证据已由调用方检查。
+    return kind != EXECUTION_KIND_REMOTE_SESSION
 
 
 # ────────────────────────── 进程身份落库 ──────────────────────────
@@ -262,14 +261,14 @@ def persist_process_identity_sync(job_id: str, run_token: str, identity) -> bool
         db.close()
 
 
-def _merge_json(original: Any, patch: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _merge_json(original: Any, patch: dict[str, Any] | None) -> dict[str, Any]:
     merged = dict(original) if isinstance(original, dict) else {}
     if patch:
         merged.update(patch)
     return merged
 
 
-async def persist_process_identity(identity, attempt: Optional[AgentAttemptContext]) -> bool:
+async def persist_process_identity(identity, attempt: AgentAttemptContext | None) -> bool:
     """Engine 注入的 ``on_process_started`` 钩子：attach 本地进程身份。"""
     if getattr(identity, "pid", None) is None or attempt is None:
         return True
@@ -339,11 +338,11 @@ def begin_termination_sync(job_id: str, run_token: str, reason: str) -> bool:
 
 
 def termination_evidence_for_row(
-    row: Optional[SddAiJob],
+    row: SddAiJob | None,
     *,
-    confirmed_dead: Optional[bool],
-    failure_code: Optional[str],
-    reason: Optional[str],
+    confirmed_dead: bool | None,
+    failure_code: str | None,
+    reason: str | None,
 ) -> _FinalizerEvidence:
     """Build termination evidence for a row read outside the lock.
 
@@ -356,15 +355,11 @@ def termination_evidence_for_row(
     kind = str(getattr(row, "process_execution_kind", None) or "").strip()
     if kind not in (EXECUTION_KIND_LOCAL_PROCESS, EXECUTION_KIND_REMOTE_SESSION):
         kind = EXECUTION_KIND_LOCAL_PROCESS
-    started = bool(
-        row is not None
-        and (row.process_pid is not None or row.process_group_id is not None)
-    )
+    started = bool(row is not None and (row.process_pid is not None or row.process_group_id is not None))
     remote_started = False
     if kind == EXECUTION_KIND_REMOTE_SESSION:
         remote_started = bool(
-            (row is not None and str(getattr(row, "session_id", None) or "").strip())
-            or confirmed_dead is False
+            (row is not None and str(getattr(row, "session_id", None) or "").strip()) or confirmed_dead is False
         )
     return _FinalizerEvidence(
         execution_kind=kind,
@@ -385,10 +380,10 @@ def converge_termination_sync(
     *,
     evidence: _FinalizerEvidence,
     reason: str,
-    failure_code: Optional[str] = None,
+    failure_code: str | None = None,
     intent: ConvergenceIntent = ConvergenceIntent.TERMINATION_FINALIZE,
-    termination_mode: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    termination_mode: str | None = None,
+) -> dict[str, Any] | None:
     """TERMINATION/REAPER 收敛 DB 段（线程内执行，由 run_db 包装）。
 
     死亡证据决策表只存在于统一 convergence 事务；本函数只负责把停止结果
@@ -429,8 +424,8 @@ def finish_termination_sync(
     confirmed_dead: bool,
     reason: str,
     failure_code: str,
-    evidence: Optional[_FinalizerEvidence] = None,
-) -> Optional[Dict[str, Any]]:
+    evidence: _FinalizerEvidence | None = None,
+) -> dict[str, Any] | None:
     """Compatibility wrapper: reaper/worker-shutdown terminal writes.
 
     兼容入口保留旧签名；终态写入与决策全部转交统一 convergence 事务。
@@ -487,9 +482,7 @@ async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
         attempt.job_id,
         attempt.run_token,
         evidence=evidence,
-        reason=str(
-            evidence.error_message or reason
-        ),
+        reason=str(evidence.error_message or reason),
         failure_code=evidence.failure_code or reason,
     )
     if payload:
@@ -500,14 +493,14 @@ async def terminate_attempt(attempt: AgentAttemptContext, reason: str) -> None:
 
 async def finalize_attempt_termination(
     job_id: str,
-    run_token: Optional[str],
+    run_token: str | None,
     *,
     confirmed_dead: bool,
     reason: str,
     failure_code: str,
-    evidence: Optional[_FinalizerEvidence] = None,
-    termination_mode: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    evidence: _FinalizerEvidence | None = None,
+    termination_mode: str | None = None,
+) -> dict[str, Any] | None:
     """Converge a stopped attempt only after process-death verification.
 
     Callers that own an engine (for example the task interrupt endpoint) use
@@ -556,7 +549,7 @@ def mark_task_chat_jobs_cancelled(
     workspace_id: str,
     task_id: str,
     message: str = "Task execution stopped",
-) -> List[str]:
+) -> list[str]:
     """批量取消请求（doc §4.5.2）：候选 id -> 排序 -> 逐个唯一 termination 事务。
 
     本函数不再直接写 job 状态：所有 TERMINATING/CANCELLED 写入都通过
@@ -577,7 +570,7 @@ def mark_task_chat_jobs_cancelled(
         )
     ]
     # 排序保证多行加锁顺序一致，避免与其它批量路径互相死锁。
-    job_ids: List[str] = []
+    job_ids: list[str] = []
     for job_id in sorted(candidate_ids):
         result = request_attempt_termination_in_txn(
             db,
@@ -605,7 +598,7 @@ def cancel_job(
     *,
     workspace_id: str,
     job_id: str,
-) -> Optional[SddAiJob]:
+) -> SddAiJob | None:
     """取消请求事务（doc §9.1 / §4.5.1）：唯一 termination request 入口。
 
     与 finalizer 共享同一 job 行锁，因此两种锁顺序只能得到：
@@ -623,18 +616,10 @@ def cancel_job(
         ),
     )
     if not result.changed:
-        job = (
-            db.query(SddAiJob)
-            .filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id)
-            .first()
-        )
+        job = db.query(SddAiJob).filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id).first()
         return job
     db.commit()
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id)
-        .first()
-    )
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id, SddAiJob.workspace_id == workspace_id).first()
     if job is None:
         return None
     # commit 后才触发当前 runner 的 cancellation signal（doc §9.1 第 5 步）。

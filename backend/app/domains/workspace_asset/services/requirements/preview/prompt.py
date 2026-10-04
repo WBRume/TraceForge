@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
@@ -25,10 +25,10 @@ def build_requirement_preview_prompt(
     *,
     mode: str,
     markdown: str,
-    source_kind: Optional[str],
-    source_ref: Optional[str],
-    source_uri: Optional[str],
-    file_name: Optional[str],
+    source_kind: str | None,
+    source_ref: str | None,
+    source_uri: str | None,
+    file_name: str | None,
 ) -> str:
     return (
         "你是 SDD-Native Workspace Assets 的 Requirements 拆分助手。\n"
@@ -67,7 +67,7 @@ def build_requirement_preview_prompt(
     )
 
 
-def extract_json_object(text: str) -> Dict[str, Any]:
+def extract_json_object(text: str) -> dict[str, Any]:
     candidate = str(text or "").strip()
     if candidate.startswith("```"):
         candidate = re.sub(r"^```(?:json)?\s*", "", candidate, flags=re.IGNORECASE).strip()
@@ -82,12 +82,12 @@ def extract_json_object(text: str) -> Dict[str, Any]:
     return parsed
 
 
-def normalize_ai_preview_items(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+def normalize_ai_preview_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     raw_items = payload.get("items")
     if not isinstance(raw_items, list):
         raise ValueError("AI preview response must include an items array")
 
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for index, raw in enumerate(raw_items):
         if not isinstance(raw, dict):
             continue
@@ -112,7 +112,8 @@ def normalize_ai_preview_items(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "body": body,
                 "acceptance_criteria": normalize_list(raw.get("acceptance_criteria") or raw.get("acceptanceCriteria")),
                 "priority": clean_optional(raw.get("priority"), limit=40),
-                "source_ref": clean_optional(raw.get("source_ref") or raw.get("sourceRef"), limit=300) or f"ai:{index + 1}",
+                "source_ref": clean_optional(raw.get("source_ref") or raw.get("sourceRef"), limit=300)
+                or f"ai:{index + 1}",
                 "source_metadata": source_metadata,
                 "order_index": index,
             }
@@ -125,17 +126,19 @@ def normalize_ai_preview_items(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 def coalesce_simple_import_preview_items(
     *,
     markdown: str,
-    file_name: Optional[str],
-    items: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    file_name: str | None,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """import preview 防过度拆分：AI 给出多条但原文明显是单条需求时收敛为 1 条。"""
     if len(items) <= 1 or not looks_like_single_requirement(markdown):
         return items
     first_item = items[0]
     source_metadata = first_item.get("source_metadata") if isinstance(first_item.get("source_metadata"), dict) else {}
-    task_prompt = clean_optional(source_metadata.get("task_prompt")) or clean_optional(
-        first_item.get("task_prompt")
-    ) or f"Implement Requirement: {direct_import_title(file_name or 'Requirement', markdown)}"
+    task_prompt = (
+        clean_optional(source_metadata.get("task_prompt"))
+        or clean_optional(first_item.get("task_prompt"))
+        or f"Implement Requirement: {direct_import_title(file_name or 'Requirement', markdown)}"
+    )
     return [
         {
             "title": direct_import_title(file_name or "Requirement", markdown),

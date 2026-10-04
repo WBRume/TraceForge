@@ -97,5 +97,5 @@ def task_id_from_queue_key(queue_key: str) -> str | None:
     prefix = next((candidate for candidate in prefixes if normalized.startswith(candidate)), None)
     if prefix is None:
         return None
-    task_id = normalized[len(prefix):].strip()
+    task_id = normalized[len(prefix) :].strip()
     return task_id or None

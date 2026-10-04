@@ -1,13 +1,17 @@
 """Create skill catalog entries and initialize their package publication."""
 
 from __future__ import annotations
+
 import shutil
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+
 from sqlalchemy.orm import Session
-from app.domains.skill.models.skill import SddSkill, SkillDimension
+
 from app.domains.auth.models.user import User, generate_uuid
-from app.domains.skill.services.packages import git as git_service, storage as storage_service
+from app.domains.skill.models.skill import SddSkill, SkillDimension
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import git as git_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
 
 
@@ -15,12 +19,12 @@ def _build_new_skill_record(
     *,
     user_id: str,
     name: str,
-    description: Optional[str],
+    description: str | None,
     dimension: SkillDimension,
-    workspace_id: Optional[str],
+    workspace_id: str | None,
     entry_file_path: str,
-    manifest_path: Optional[str],
-) -> Tuple[SddSkill, str]:
+    manifest_path: str | None,
+) -> tuple[SddSkill, str]:
     skill_id = generate_uuid()
     package_path = storage_service.package_relative_path(
         skill_id,
@@ -55,7 +59,7 @@ def _persist_new_skill(
     package_abs_path: str,
     package_initializer: Callable[[SddSkill], None],
     auto_publish_initial_version: bool = False,
-    initial_change_note: Optional[str] = None,
+    initial_change_note: str | None = None,
 ) -> SddSkill:
     try:
         db.add(skill)
@@ -77,7 +81,6 @@ def _persist_new_skill(
                 change_note=initial_change_note,
             )
 
-
         db.commit()
         db.refresh(skill)
         return skill
@@ -93,14 +96,14 @@ def create_skill(
     *,
     context_workspace_id: str,
     name: str,
-    description: Optional[str],
+    description: str | None,
     dimension_value: str,
-    workspace_id: Optional[str],
+    workspace_id: str | None,
     entry_file_path: str,
-    manifest_path: Optional[str],
+    manifest_path: str | None,
     entry_content: str,
-    manifest_content: Optional[str],
-    initial_entries: Optional[List[Dict[str, object]]] = None,
+    manifest_content: str | None,
+    initial_entries: list[dict[str, object]] | None = None,
 ) -> SddSkill:
     dimension, target_workspace_id = skill_catalog_policy._resolve_creation_target_scope(
         db,
@@ -122,6 +125,7 @@ def create_skill(
         entry_file_path=entry_file_path,
         manifest_path=manifest_path,
     )
+
     def _init_layout(created_skill: SddSkill) -> None:
         storage_service.init_package_layout(
             skill=created_skill,

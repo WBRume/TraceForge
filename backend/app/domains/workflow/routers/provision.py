@@ -2,8 +2,6 @@
 Provision job routes.
 """
 
-from typing import List
-
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -17,17 +15,14 @@ from app.domains.workspace.services import workspace_service
 router = APIRouter(prefix="/provision-jobs", tags=["Provision Jobs"])
 
 
-@router.get("/active", response_model=List[ProvisionJobResponse])
+@router.get("/active", response_model=list[ProvisionJobResponse])
 def list_active_provision_jobs(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """当前用户（仅创建人）名下未终态的任务创建 job，用于前端准备浮窗状态恢复。"""
     jobs = provision_job_service.list_active_jobs_for_creator(db, current_user.id)
-    return [
-        ProvisionJobResponse(**provision_job_service.serialize_active_job(db, job))
-        for job in jobs
-    ]
+    return [ProvisionJobResponse(**provision_job_service.serialize_active_job(db, job)) for job in jobs]
 
 
 @router.post("/{job_id}/cancel", response_model=ProvisionJobResponse)

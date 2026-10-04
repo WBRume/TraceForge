@@ -1,12 +1,12 @@
 """Publish uploaded task specifications as versioned assets and invalidate agent baselines."""
 
 import os
-from typing import Tuple
+
 from sqlalchemy.orm import Session
-from app.domains.task.models.task import SddTask
+
 from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import versioning as document_versioning
-
+from app.domains.task.models.task import SddTask
 
 PDF_SPEC_BOOTSTRAP_DISABLED_EXTS = {".pdf"}
 
@@ -20,7 +20,7 @@ def upload_task_spec(
     task_id: str,
     file_name: str,
     file_content: bytes,
-) -> Tuple[str, str, str]:
+) -> tuple[str, str, str]:
     """
     直接将上传的文件写入项目生成目录下的 .sdd 隔离文件夹中
     """
@@ -30,12 +30,11 @@ def upload_task_spec(
 
     ext = os.path.splitext(file_name or "")[1].lower()
     if ext == ".doc":
-        raise ValueError(
-            "Legacy .doc files are not supported; please convert to .docx or upload a PDF"
-        )
+        raise ValueError("Legacy .doc files are not supported; please convert to .docx or upload a PDF")
 
-    from app.domains.local_resource.service import is_local, materialize_file
     from app.domains.asset.services.document.storage import normalize_filename
+    from app.domains.local_resource.service import is_local, materialize_file
+
     file_name = normalize_filename(file_name)
     if is_local(task):
         task.spec_doc_path = materialize_file(task, ".sdd/spec/" + file_name, file_content)

@@ -15,37 +15,20 @@ from __future__ import annotations
 
 import os
 from contextlib import ExitStack
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session, joinedload
 
 from app.agents import current_agent_attempt
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
-from app.core.offload import run_db, run_db_txn
+from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.asset.models.asset import (
-    AssetThreadMessageRole,
-    SddAssetResolutionProposal,
-    SddAssetThread,
-)
-from app.domains.asset.services import asset_discussion_service, asset_resolution_service
-from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.ai.services.jobs import provider_turn, state
 from app.domains.ai.services.jobs.constants import (
     JOB_KIND_RESOLUTION_PROPOSAL,
     JOB_KIND_RESOLUTION_REWRITE,
     JOB_KIND_THREAD_AI_REPLY,
     as_status,
-)
-from app.domains.ai.services.jobs.registry import runtime
-from app.domains.ai.services.jobs.fencing import (
-    AgentAttemptFencedError,
-    attempt_is_current_sync,
-)
-from app.domains.ai.services.jobs.store import (
-    get_job_status,
-    job_kind_from_job,
-    job_prompt_text,
 )
 from app.domains.ai.services.jobs.executors.asset_prompts import (
     extract_block_text,
@@ -58,13 +41,29 @@ from app.domains.ai.services.jobs.executors.asset_prompts import (
     serialize_proposal_for_ws,
     thread_history_lines,
 )
+from app.domains.ai.services.jobs.fencing import (
+    AgentAttemptFencedError,
+    attempt_is_current_sync,
+)
+from app.domains.ai.services.jobs.registry import runtime
+from app.domains.ai.services.jobs.store import (
+    get_job_status,
+    job_kind_from_job,
+    job_prompt_text,
+)
+from app.domains.asset.models.asset import (
+    AssetThreadMessageRole,
+    SddAssetResolutionProposal,
+    SddAssetThread,
+)
+from app.domains.asset.services import asset_discussion_service, asset_resolution_service
+from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.task.services import task_cli_state_service
 from app.domains.task.services.ai_context_service import (
     build_asset_thread_prompt,
     build_resolution_proposal_prompt,
     build_resolution_rewrite_prompt,
 )
-
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
 
 logger = get_logger(__name__, category="ai_session")
@@ -79,8 +78,8 @@ logger = get_logger(__name__, category="ai_session")
 def _prepare_asset_thread_context_sync(
     db: Session,
     job_id: str,
-    run_token: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_token: str | None = None,
+) -> dict[str, Any] | None:
     """asset thread job 上下文准备段 A（线程内执行，由 run_db_txn 包装）。
 
     只做读取与轻量状态推进，返回纯数据；CLI 前后的其余 DB 段各自独立事务。
@@ -88,8 +87,7 @@ def _prepare_asset_thread_context_sync(
     job = (
         db.query(SddAiJob)
         .options(
-            joinedload(SddAiJob.thread)
-            .joinedload(SddAssetThread.task),
+            joinedload(SddAiJob.thread).joinedload(SddAssetThread.task),
             joinedload(SddAiJob.thread).joinedload(SddAssetThread.asset),
         )
         .filter(SddAiJob.id == job_id)
@@ -130,13 +128,160 @@ def _prepare_asset_thread_context_sync(
     }
 
 
+def _build_proposal_run(db, base, thread, task, version, run_state):
+    context_json = base.get("context_json") or {}
+    overwrite_existing_draft = bool(context_json.get("overwrite_existing_draft"))
+    context_version = resolve_context_version(
+        db,
+        thread=thread,
+        requested_version_id=str(context_json.get("context_version_id") or "").strip() or None,
+    )
+    anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
+        db,
+        thread=thread,
+        context_version=context_version,
+    )
+    effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
+    effective_block_id = (
+        str((effective_anchor or {}).get("block_id") or thread.block_id or "").strip() or thread.block_id
+    )
+    selected_block = (
+        asset_discussion_service.get_block_by_id(context_version, effective_block_id) if context_version else None
+    )
+    if not selected_block and version:
+        selected_block = asset_discussion_service.get_block_by_id(version, thread.block_id)
+        effective_block_id = thread.block_id
+        effective_anchor = {
+            "block_id": thread.block_id,
+            "selected_text": thread.selected_text,
+            "char_start": thread.char_start,
+            "char_end": thread.char_end,
+        }
+    anchor_meta = resolve_thread_anchor_text(
+        thread,
+        selected_block,
+        selected_text=(effective_anchor or {}).get("selected_text"),
+        char_start=(effective_anchor or {}).get("char_start"),
+        char_end=(effective_anchor or {}).get("char_end"),
+    )
+    discussion_lines = proposal_discussion_lines(thread)
+    source_message_ids = proposal_source_message_ids(thread)
+    prompt = build_resolution_proposal_prompt(
+        task_name=task.name if task else "",
+        document_name=thread.asset.name if thread.asset else "",
+        document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
+        block_id=effective_block_id or "",
+        thread_id=thread.id or "",
+        anchor_text=anchor_meta["anchor_text"],
+        block_context_text=anchor_meta["block_text"],
+        discussion_lines=discussion_lines,
+    )
+    run_state.update(
+        {
+            "prompt": prompt,
+            "overwrite_existing_draft": overwrite_existing_draft,
+            "source_message_ids": source_message_ids,
+            "effective_anchor": effective_anchor,
+            "context_version_id": context_version.id if context_version else None,
+            "anchor_text": anchor_meta["anchor_text"],
+            "block_text": anchor_meta["block_text"],
+            "discussion_lines_tail": discussion_lines[-12:],
+        }
+    )
+    return run_state
+
+
+def _build_rewrite_run(db, base, thread, task, version, run_state):
+    context_json = base.get("context_json") or {}
+    proposal_id = str(context_json.get("proposal_id") or "").strip()
+    if not proposal_id:
+        raise ValueError("proposal_id is required for rewrite job")
+
+    proposal = (
+        db.query(SddAssetResolutionProposal)
+        .filter(
+            SddAssetResolutionProposal.id == proposal_id,
+            SddAssetResolutionProposal.thread_id == thread.id,
+        )
+        .first()
+    )
+    if not proposal:
+        raise ValueError("Resolution proposal not found for rewrite")
+
+    proposal_text = str(context_json.get("proposal_text") or "").strip()
+    if not proposal_text:
+        patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
+        proposal_text = str(patch.get("proposal_text") or "").strip()
+    if not proposal_text:
+        raise ValueError("proposal_text is required for rewrite")
+    requested_scope = str(context_json.get("rewrite_scope") or "").strip().lower()
+    if requested_scope not in {"anchor", "document"}:
+        requested_scope = "anchor"
+    context_version = resolve_context_version(
+        db,
+        thread=thread,
+        requested_version_id=str(context_json.get("context_version_id") or "").strip() or proposal.base_version_id,
+    )
+    anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
+        db,
+        thread=thread,
+        context_version=context_version,
+    )
+    effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
+    relocated_anchor = normalize_relocated_anchor(context_json.get("relocated_anchor"))
+    if relocated_anchor:
+        effective_anchor = relocated_anchor
+    effective_block_id = (
+        str((effective_anchor or {}).get("block_id") or thread.block_id or "").strip() or thread.block_id
+    )
+    selected_block = (
+        asset_discussion_service.get_block_by_id(context_version, effective_block_id) if context_version else None
+    )
+    if not selected_block:
+        raise ValueError("Anchor block not found for rewrite context")
+    anchor_meta = resolve_thread_anchor_text(
+        thread,
+        selected_block,
+        selected_text=(effective_anchor or {}).get("selected_text"),
+        char_start=(effective_anchor or {}).get("char_start"),
+        char_end=(effective_anchor or {}).get("char_end"),
+    )
+    selection_mode = bool(anchor_meta["selected_text"])
+    prompt = build_resolution_rewrite_prompt(
+        task_name=task.name if task else "",
+        document_name=thread.asset.name if thread.asset else "",
+        document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
+        block_id=effective_block_id or "",
+        thread_id=thread.id or "",
+        anchor_text=anchor_meta["anchor_text"],
+        block_context_text=anchor_meta["block_text"],
+        proposal_text=proposal_text,
+        rewrite_scope=requested_scope,
+        selection_mode=selection_mode,
+    )
+    run_state.update(
+        {
+            "prompt": prompt,
+            "proposal_id": proposal_id,
+            "proposal_text": proposal_text,
+            "rewrite_scope": requested_scope,
+            "selection_mode": selection_mode,
+            "effective_anchor": effective_anchor,
+            "context_version_id": context_version.id if context_version else None,
+            "anchor_text": anchor_meta["anchor_text"],
+            "block_text": anchor_meta["block_text"],
+        }
+    )
+    return run_state
+
+
 def _build_asset_thread_run_sync(
     db: Session,
     *,
     job_id: str,
-    base: Dict[str, Any],
+    base: dict[str, Any],
     session_plan,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """asset thread job 准备段 B（线程内执行）：prompt 构建与执行参数解析。"""
     job_kind = base["job_kind"]
     thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
@@ -148,25 +293,17 @@ def _build_asset_thread_run_sync(
     resume_session_id = session_plan.session_id
     fork_first_turn = session_plan.fork_first_turn
     if not fork_first_turn:
-        resume_session_id = (
-            task_cli_state_service.get_latest_thread_session_id(db, thread.id)
-            or resume_session_id
-        )
+        resume_session_id = task_cli_state_service.get_latest_thread_session_id(db, thread.id) or resume_session_id
     # 线程执行目录 = 任务目录（含 git worktree），评审答疑可直接读仓库内容
 
-
-    project_path = (
-        task_task_workspace_repositories.resolve_task_cli_dir(db, task)
-        if task
-        else "."
-    )
+    project_path = task_task_workspace_repositories.resolve_task_cli_dir(db, task) if task else "."
     if getattr(task, "execution_location", "SERVER") != "LOCAL" and not os.path.isdir(project_path):
         project_path = (task.project_path if task and task.project_path else ".").strip() or "."
     if getattr(task, "execution_location", "SERVER") != "LOCAL" and not os.path.isdir(project_path):
         project_path = "."
     thread_cwd = project_path
 
-    run_state: Dict[str, Any] = {
+    run_state: dict[str, Any] = {
         **base,
         "thread_backend": thread_backend,
         "resume_session_id": resume_session_id,
@@ -176,157 +313,15 @@ def _build_asset_thread_run_sync(
     }
 
     if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
-        context_json = base.get("context_json") or {}
-        overwrite_existing_draft = bool(context_json.get("overwrite_existing_draft"))
-        context_version = resolve_context_version(
-            db,
-            thread=thread,
-            requested_version_id=str(context_json.get("context_version_id") or "").strip() or None,
-        )
-        anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
-            db,
-            thread=thread,
-            context_version=context_version,
-        )
-        effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
-        effective_block_id = str(
-            (effective_anchor or {}).get("block_id")
-            or thread.block_id
-            or ""
-        ).strip() or thread.block_id
-        selected_block = (
-            asset_discussion_service.get_block_by_id(context_version, effective_block_id)
-            if context_version
-            else None
-        )
-        if not selected_block and version:
-            selected_block = asset_discussion_service.get_block_by_id(version, thread.block_id)
-            effective_block_id = thread.block_id
-            effective_anchor = {
-                "block_id": thread.block_id,
-                "selected_text": thread.selected_text,
-                "char_start": thread.char_start,
-                "char_end": thread.char_end,
-            }
-        anchor_meta = resolve_thread_anchor_text(
-            thread,
-            selected_block,
-            selected_text=(effective_anchor or {}).get("selected_text"),
-            char_start=(effective_anchor or {}).get("char_start"),
-            char_end=(effective_anchor or {}).get("char_end"),
-        )
-        discussion_lines = proposal_discussion_lines(thread)
-        source_message_ids = proposal_source_message_ids(thread)
-        prompt = build_resolution_proposal_prompt(
-            task_name=task.name if task else "",
-            document_name=thread.asset.name if thread.asset else "",
-            document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
-            block_id=effective_block_id or "",
-            thread_id=thread.id or "",
-            anchor_text=anchor_meta["anchor_text"],
-            block_context_text=anchor_meta["block_text"],
-            discussion_lines=discussion_lines,
-        )
-        run_state.update({
-            "prompt": prompt,
-            "overwrite_existing_draft": overwrite_existing_draft,
-            "source_message_ids": source_message_ids,
-            "effective_anchor": effective_anchor,
-            "context_version_id": context_version.id if context_version else None,
-            "anchor_text": anchor_meta["anchor_text"],
-            "block_text": anchor_meta["block_text"],
-            "discussion_lines_tail": discussion_lines[-12:],
-        })
-        return run_state
+        return _build_proposal_run(db, base, thread, task, version, run_state)
 
     if job_kind == JOB_KIND_RESOLUTION_REWRITE:
-        context_json = base.get("context_json") or {}
-        proposal_id = str(context_json.get("proposal_id") or "").strip()
-        if not proposal_id:
-            raise ValueError("proposal_id is required for rewrite job")
-
-        proposal = (
-            db.query(SddAssetResolutionProposal)
-            .filter(
-                SddAssetResolutionProposal.id == proposal_id,
-                SddAssetResolutionProposal.thread_id == thread.id,
-            )
-            .first()
-        )
-        if not proposal:
-            raise ValueError("Resolution proposal not found for rewrite")
-
-        proposal_text = str(context_json.get("proposal_text") or "").strip()
-        if not proposal_text:
-            patch = proposal.proposed_patch_json if isinstance(proposal.proposed_patch_json, dict) else {}
-            proposal_text = str(patch.get("proposal_text") or "").strip()
-        if not proposal_text:
-            raise ValueError("proposal_text is required for rewrite")
-        requested_scope = str(context_json.get("rewrite_scope") or "").strip().lower()
-        if requested_scope not in {"anchor", "document"}:
-            requested_scope = "anchor"
-        context_version = resolve_context_version(
-            db,
-            thread=thread,
-            requested_version_id=str(context_json.get("context_version_id") or "").strip() or proposal.base_version_id,
-        )
-        anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
-            db,
-            thread=thread,
-            context_version=context_version,
-        )
-        effective_anchor = anchor_eval.get("effective_anchor") if isinstance(anchor_eval, dict) else {}
-        relocated_anchor = normalize_relocated_anchor(context_json.get("relocated_anchor"))
-        if relocated_anchor:
-            effective_anchor = relocated_anchor
-        effective_block_id = str(
-            (effective_anchor or {}).get("block_id")
-            or thread.block_id
-            or ""
-        ).strip() or thread.block_id
-        selected_block = (
-            asset_discussion_service.get_block_by_id(context_version, effective_block_id)
-            if context_version
-            else None
-        )
-        if not selected_block:
-            raise ValueError("Anchor block not found for rewrite context")
-        anchor_meta = resolve_thread_anchor_text(
-            thread,
-            selected_block,
-            selected_text=(effective_anchor or {}).get("selected_text"),
-            char_start=(effective_anchor or {}).get("char_start"),
-            char_end=(effective_anchor or {}).get("char_end"),
-        )
-        selection_mode = bool(anchor_meta["selected_text"])
-        prompt = build_resolution_rewrite_prompt(
-            task_name=task.name if task else "",
-            document_name=thread.asset.name if thread.asset else "",
-            document_version_label=(f"v{context_version.version_no}" if context_version else "unknown"),
-            block_id=effective_block_id or "",
-            thread_id=thread.id or "",
-            anchor_text=anchor_meta["anchor_text"],
-            block_context_text=anchor_meta["block_text"],
-            proposal_text=proposal_text,
-            rewrite_scope=requested_scope,
-            selection_mode=selection_mode,
-        )
-        run_state.update({
-            "prompt": prompt,
-            "proposal_id": proposal_id,
-            "proposal_text": proposal_text,
-            "rewrite_scope": requested_scope,
-            "selection_mode": selection_mode,
-            "effective_anchor": effective_anchor,
-            "context_version_id": context_version.id if context_version else None,
-            "anchor_text": anchor_meta["anchor_text"],
-            "block_text": anchor_meta["block_text"],
-        })
-        return run_state
+        return _build_rewrite_run(db, base, thread, task, version, run_state)
 
     context = (
         asset_discussion_service.get_block_context(version, thread.block_id)
-        if version else {"selected": None, "neighbors": []}
+        if version
+        else {"selected": None, "neighbors": []}
     )
     selected_block = context.get("selected") if isinstance(context, dict) else None
     neighbor_blocks = context.get("neighbors") if isinstance(context, dict) else []
@@ -334,9 +329,7 @@ def _build_asset_thread_run_sync(
     selected_text = anchor_meta["anchor_text"]
     anchor_block_text = anchor_meta["block_text"]
     neighbor_text = "\n".join(
-        f"- {extract_block_text(item)}"
-        for item in (neighbor_blocks or [])
-        if extract_block_text(item)
+        f"- {extract_block_text(item)}" for item in (neighbor_blocks or []) if extract_block_text(item)
     ).strip()
     history_lines = thread_history_lines(thread)
     prompt = build_asset_thread_prompt(
@@ -352,13 +345,15 @@ def _build_asset_thread_run_sync(
         history_lines=history_lines,
         manual_prompt=job_prompt_text(db, base["thread_id"]),
     )
-    run_state.update({
-        "prompt": prompt,
-        "selected_text": selected_text,
-        "anchor_block_text": anchor_block_text,
-        "neighbor_text": neighbor_text,
-        "history_lines": history_lines,
-    })
+    run_state.update(
+        {
+            "prompt": prompt,
+            "selected_text": selected_text,
+            "anchor_block_text": anchor_block_text,
+            "neighbor_text": neighbor_text,
+            "history_lines": history_lines,
+        }
+    )
     return run_state
 
 
@@ -368,10 +363,10 @@ def _build_asset_thread_run_sync(
 def _persist_asset_proposal_sync(
     db: Session,
     *,
-    base: Dict[str, Any],
+    base: dict[str, Any],
     proposal_text: str,
-    run_token: Optional[str] = None,
-) -> Dict[str, Any]:
+    run_token: str | None = None,
+) -> dict[str, Any]:
     if not attempt_is_current_sync(db, job_id=str(base.get("job_id") or ""), run_token=run_token):
         raise AgentAttemptFencedError("Asset proposal attempt is no longer current")
     thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
@@ -403,14 +398,14 @@ def _persist_asset_proposal_sync(
 def _persist_asset_rewrite_sync(
     db: Session,
     *,
-    base: Dict[str, Any],
+    base: dict[str, Any],
     proposal_text: str,
     rewritten_text: str,
     rewrite_scope: str,
     rewritten_markdown: str,
     selection_mode: bool,
-    run_token: Optional[str] = None,
-) -> Dict[str, Any]:
+    run_token: str | None = None,
+) -> dict[str, Any]:
     if not attempt_is_current_sync(db, job_id=str(base.get("job_id") or ""), run_token=run_token):
         raise AgentAttemptFencedError("Asset rewrite attempt is no longer current")
     thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
@@ -451,9 +446,7 @@ def _persist_asset_rewrite_sync(
         )
     )
     if not rewrite_ready or not has_merged:
-        raise ValueError(
-            "Resolution rewrite persisted without merged AST payload"
-        )
+        raise ValueError("Resolution rewrite persisted without merged AST payload")
     return {
         "proposal": serialize_proposal_for_ws(proposal),
         "proposal_id": str(proposal.id),
@@ -463,12 +456,12 @@ def _persist_asset_rewrite_sync(
 def _persist_asset_reply_sync(
     db: Session,
     *,
-    base: Dict[str, Any],
+    base: dict[str, Any],
     reply: str,
-    thread_backend: Optional[str],
+    thread_backend: str | None,
     job_id: str,
-    run_token: Optional[str] = None,
-) -> Dict[str, Any]:
+    run_token: str | None = None,
+) -> dict[str, Any]:
     if not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
         raise AgentAttemptFencedError("Asset reply attempt is no longer current")
     thread = asset_discussion_service.get_thread(db, asset_id=base["asset_id"], thread_id=base["thread_id"])
@@ -506,16 +499,14 @@ def _persist_asset_failure_message_sync(
     *,
     job_id: str,
     error_text: str,
-    run_token: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_token: str | None = None,
+) -> dict[str, Any] | None:
     failed_job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
     if not failed_job or not failed_job.thread_id:
         return None
     if not attempt_is_current_sync(db, job_id=job_id, run_token=run_token):
         return None
-    thread = asset_discussion_service.get_thread(
-        db, asset_id=failed_job.asset_id, thread_id=failed_job.thread_id
-    )
+    thread = asset_discussion_service.get_thread(db, asset_id=failed_job.asset_id, thread_id=failed_job.thread_id)
     if not thread:
         return None
     failure_message = asset_discussion_service.add_thread_message(
@@ -547,15 +538,170 @@ def _persist_asset_failure_message_sync(
 # ────────────────────────── 执行器 ──────────────────────────
 
 
-async def execute_asset_thread_job(job_id: str) -> Optional[bool]:
+async def _execute_proposal_turn(job_id, base, run_state, run_token):
+    thread_cwd = run_state["thread_cwd"]
+    thread_backend = run_state["thread_backend"]
+    resume_session_id = run_state["resume_session_id"]
+    fork_first_turn = run_state["fork_first_turn"]
+    prompt = run_state["prompt"]
+    provider_seen = False
+    await state.update_job_state(
+        job_id,
+        progress=46,
+        message="Generating resolution proposal",
+        context_patch={
+            "thread_workspace": thread_cwd,
+            "discussion_lines": run_state["discussion_lines_tail"],
+            "anchor_text": run_state["anchor_text"],
+            "block_text": run_state["block_text"],
+            "context_version_id": run_state["context_version_id"],
+            "effective_anchor": run_state["effective_anchor"],
+        },
+    )
+    result = await provider_turn.run_cli_single_turn(
+        prompt,
+        thread_cwd,
+        session_id=resume_session_id,
+        should_cancel=lambda: runtime.is_cancel_requested(job_id),
+        backend_name=thread_backend,
+        fork_session=fork_first_turn,
+    )
+    provider_seen = bool(str(result.get("text") or "").strip())
+    if fork_first_turn:
+        await task_cli_state_service.record_thread_session_id_async(
+            base["thread_id"], str(result.get("session_id") or "")
+        )
+    proposal_text = str(result.get("text") or "").strip()
+    final_session_id = str(result.get("session_id") or "").strip()
+    if not proposal_text:
+        raise ValueError("Resolution proposal text is empty")
+
+    persisted = await run_db_txn(
+        lambda db: _persist_asset_proposal_sync(
+            db,
+            base=run_state,
+            proposal_text=proposal_text,
+            run_token=run_token,
+        )
+    )
+    await asset_discussion_ws_manager.broadcast(
+        base["asset_id"],
+        {
+            "type": "proposal_created",
+            "asset_id": base["asset_id"],
+            "thread_id": base["thread_id"],
+            "proposal": persisted["proposal"],
+        },
+    )
+    await state.update_job_state(
+        job_id,
+        status=AiJobStatus.SUCCESS,
+        progress=100,
+        message="Resolution proposal generated",
+        result_patch={
+            "proposal_id": persisted["proposal_id"],
+            "proposal_excerpt": proposal_text[:1200],
+        },
+        session_id=final_session_id or None,
+        agent_backend=thread_backend,
+        finalize=True,
+        process_started=result.get("process_started"),
+        termination_confirmed_dead=result.get("termination_confirmed_dead"),
+    )
+    return provider_seen
+
+
+async def _execute_rewrite_turn(job_id, base, run_state, run_token):
+    thread_cwd = run_state["thread_cwd"]
+    thread_backend = run_state["thread_backend"]
+    resume_session_id = run_state["resume_session_id"]
+    fork_first_turn = run_state["fork_first_turn"]
+    prompt = run_state["prompt"]
+    provider_seen = False
+    await state.update_job_state(
+        job_id,
+        progress=48,
+        message="Rewriting document from proposal",
+        context_patch={
+            "proposal_id": run_state["proposal_id"],
+            "thread_workspace": thread_cwd,
+            "rewrite_scope": run_state["rewrite_scope"],
+            "selection_mode": run_state["selection_mode"],
+            "anchor_text": run_state["anchor_text"],
+            "block_text": run_state["block_text"],
+            "context_version_id": run_state["context_version_id"],
+            "effective_anchor": run_state["effective_anchor"],
+        },
+    )
+    result = await provider_turn.run_cli_single_turn(
+        prompt,
+        thread_cwd,
+        session_id=resume_session_id,
+        should_cancel=lambda: runtime.is_cancel_requested(job_id),
+        backend_name=thread_backend,
+        fork_session=fork_first_turn,
+    )
+    provider_seen = provider_seen or bool(str(result.get("text") or "").strip())
+    if fork_first_turn:
+        await task_cli_state_service.record_thread_session_id_async(
+            base["thread_id"], str(result.get("session_id") or "")
+        )
+    rewrite_payload = parse_rewrite_payload(str(result.get("text") or ""))
+    rewrite_scope = run_state["rewrite_scope"] or str(rewrite_payload.get("scope") or "anchor").strip().lower()
+    rewritten_text = str(rewrite_payload.get("anchor_text") or "").strip()
+    rewritten_markdown = str(rewrite_payload.get("document_markdown") or "").strip()
+    final_session_id = str(result.get("session_id") or "").strip()
+    if rewrite_scope == "document" and not rewritten_markdown:
+        raise ValueError("Rewritten document markdown is empty")
+    if rewrite_scope != "document" and not rewritten_text:
+        raise ValueError("Rewritten block text is empty")
+
+    persisted = await run_db_txn(
+        lambda db: _persist_asset_rewrite_sync(
+            db,
+            base=run_state,
+            proposal_text=run_state["proposal_text"],
+            rewritten_text=rewritten_text,
+            rewrite_scope=rewrite_scope,
+            rewritten_markdown=rewritten_markdown,
+            selection_mode=run_state["selection_mode"],
+            run_token=run_token,
+        )
+    )
+    await asset_discussion_ws_manager.broadcast(
+        base["asset_id"],
+        {
+            "type": "proposal_created",
+            "asset_id": base["asset_id"],
+            "thread_id": base["thread_id"],
+            "proposal": persisted["proposal"],
+        },
+    )
+    await state.update_job_state(
+        job_id,
+        status=AiJobStatus.SUCCESS,
+        progress=100,
+        message="Resolution proposal rewrite completed",
+        result_patch={
+            "proposal_id": persisted["proposal_id"],
+            "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
+        },
+        session_id=final_session_id or None,
+        agent_backend=thread_backend,
+        finalize=True,
+        process_started=result.get("process_started"),
+        termination_confirmed_dead=result.get("termination_confirmed_dead"),
+    )
+    return provider_seen
+
+
+async def execute_asset_thread_job(job_id: str) -> bool | None:
     job_kind = JOB_KIND_THREAD_AI_REPLY
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
     provider_seen = False
     try:
-        base = await run_db_txn(
-            lambda db: _prepare_asset_thread_context_sync(db, job_id, run_token)
-        )
+        base = await run_db_txn(lambda db: _prepare_asset_thread_context_sync(db, job_id, run_token))
         if base is None:
             return None
         job_kind = base["job_kind"]
@@ -605,147 +751,10 @@ async def execute_asset_thread_job(job_id: str) -> Optional[bool]:
             prompt = run_state["prompt"]
 
             if job_kind == JOB_KIND_RESOLUTION_PROPOSAL:
-                await state.update_job_state(
-                    job_id,
-                    progress=46,
-                    message="Generating resolution proposal",
-                    context_patch={
-                        "thread_workspace": thread_cwd,
-                        "discussion_lines": run_state["discussion_lines_tail"],
-                        "anchor_text": run_state["anchor_text"],
-                        "block_text": run_state["block_text"],
-                        "context_version_id": run_state["context_version_id"],
-                        "effective_anchor": run_state["effective_anchor"],
-                    },
-                )
-                result = await provider_turn.run_cli_single_turn(
-                    prompt,
-                    thread_cwd,
-                    session_id=resume_session_id,
-                    should_cancel=lambda: runtime.is_cancel_requested(job_id),
-                    backend_name=thread_backend,
-                    fork_session=fork_first_turn,
-                )
-                provider_seen = bool(str(result.get("text") or "").strip())
-                if fork_first_turn:
-                    await task_cli_state_service.record_thread_session_id_async(
-                        base["thread_id"], str(result.get("session_id") or "")
-                    )
-                proposal_text = str(result.get("text") or "").strip()
-                final_session_id = str(result.get("session_id") or "").strip()
-                if not proposal_text:
-                    raise ValueError("Resolution proposal text is empty")
-
-                persisted = await run_db_txn(
-                    lambda db: _persist_asset_proposal_sync(
-                        db,
-                        base=run_state,
-                        proposal_text=proposal_text,
-                        run_token=run_token,
-                    )
-                )
-                await asset_discussion_ws_manager.broadcast(
-                    base["asset_id"],
-                    {
-                        "type": "proposal_created",
-                        "asset_id": base["asset_id"],
-                        "thread_id": base["thread_id"],
-                        "proposal": persisted["proposal"],
-                    },
-                )
-                await state.update_job_state(
-                    job_id,
-                    status=AiJobStatus.SUCCESS,
-                    progress=100,
-                    message="Resolution proposal generated",
-                    result_patch={
-                        "proposal_id": persisted["proposal_id"],
-                        "proposal_excerpt": proposal_text[:1200],
-                    },
-                    session_id=final_session_id or None,
-                    agent_backend=thread_backend,
-                    finalize=True,
-                    process_started=result.get("process_started"),
-                    termination_confirmed_dead=result.get("termination_confirmed_dead"),
-                )
-                return provider_seen
+                return await _execute_proposal_turn(job_id, base, run_state, run_token)
 
             if job_kind == JOB_KIND_RESOLUTION_REWRITE:
-                await state.update_job_state(
-                    job_id,
-                    progress=48,
-                    message="Rewriting document from proposal",
-                    context_patch={
-                        "proposal_id": run_state["proposal_id"],
-                        "thread_workspace": thread_cwd,
-                        "rewrite_scope": run_state["rewrite_scope"],
-                        "selection_mode": run_state["selection_mode"],
-                        "anchor_text": run_state["anchor_text"],
-                        "block_text": run_state["block_text"],
-                        "context_version_id": run_state["context_version_id"],
-                        "effective_anchor": run_state["effective_anchor"],
-                    },
-                )
-                result = await provider_turn.run_cli_single_turn(
-                    prompt,
-                    thread_cwd,
-                    session_id=resume_session_id,
-                    should_cancel=lambda: runtime.is_cancel_requested(job_id),
-                    backend_name=thread_backend,
-                    fork_session=fork_first_turn,
-                )
-                provider_seen = provider_seen or bool(str(result.get("text") or "").strip())
-                if fork_first_turn:
-                    await task_cli_state_service.record_thread_session_id_async(
-                        base["thread_id"], str(result.get("session_id") or "")
-                    )
-                rewrite_payload = parse_rewrite_payload(str(result.get("text") or ""))
-                rewrite_scope = run_state["rewrite_scope"] or str(rewrite_payload.get("scope") or "anchor").strip().lower()
-                rewritten_text = str(rewrite_payload.get("anchor_text") or "").strip()
-                rewritten_markdown = str(rewrite_payload.get("document_markdown") or "").strip()
-                final_session_id = str(result.get("session_id") or "").strip()
-                if rewrite_scope == "document" and not rewritten_markdown:
-                    raise ValueError("Rewritten document markdown is empty")
-                if rewrite_scope != "document" and not rewritten_text:
-                    raise ValueError("Rewritten block text is empty")
-
-                persisted = await run_db_txn(
-                    lambda db: _persist_asset_rewrite_sync(
-                        db,
-                        base=run_state,
-                        proposal_text=run_state["proposal_text"],
-                        rewritten_text=rewritten_text,
-                        rewrite_scope=rewrite_scope,
-                        rewritten_markdown=rewritten_markdown,
-                        selection_mode=run_state["selection_mode"],
-                        run_token=run_token,
-                    )
-                )
-                await asset_discussion_ws_manager.broadcast(
-                    base["asset_id"],
-                    {
-                        "type": "proposal_created",
-                        "asset_id": base["asset_id"],
-                        "thread_id": base["thread_id"],
-                        "proposal": persisted["proposal"],
-                    },
-                )
-                await state.update_job_state(
-                    job_id,
-                    status=AiJobStatus.SUCCESS,
-                    progress=100,
-                    message="Resolution proposal rewrite completed",
-                    result_patch={
-                        "proposal_id": persisted["proposal_id"],
-                        "rewrite_excerpt": (rewritten_text or rewritten_markdown)[:1200],
-                    },
-                    session_id=final_session_id or None,
-                    agent_backend=thread_backend,
-                    finalize=True,
-                    process_started=result.get("process_started"),
-                    termination_confirmed_dead=result.get("termination_confirmed_dead"),
-                )
-                return provider_seen
+                return await _execute_rewrite_turn(job_id, base, run_state, run_token)
 
             await state.update_job_state(job_id, progress=24, message="Preparing AI prompt")
 
@@ -838,7 +847,7 @@ async def execute_asset_thread_job(job_id: str) -> Optional[bool]:
             return None
         try:
             failure_state = await run_db_txn(
-                lambda db: _persist_asset_failure_message_sync(
+                lambda db, *, exc=exc: _persist_asset_failure_message_sync(
                     db,
                     job_id=job_id,
                     error_text=str(exc),

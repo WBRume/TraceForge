@@ -7,13 +7,13 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.logging import audit_log, get_logger
-from app.dependencies import get_db, get_current_user
+from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User
 from app.domains.auth.schemas.auth import (
+    TokenResponse,
     UserAvatarUpdate,
     UserRegister,
     UserResponse,
-    TokenResponse,
 )
 from app.domains.auth.services import auth_service
 
@@ -36,7 +36,7 @@ def register(user_data: UserRegister, db: Session = Depends(get_db)):
         return user
     except ValueError as e:
         logger.warning("Register rejected for email {}: {}", user_data.email, str(e))
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -91,4 +91,4 @@ def update_my_avatar(
     try:
         return auth_service.update_user_avatar(db, current_user, payload.avatar_svg)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

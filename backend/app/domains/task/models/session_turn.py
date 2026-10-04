@@ -2,7 +2,7 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Column, DateTime, Enum, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -30,7 +30,9 @@ class TaskSessionTurn(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_message_id = Column(String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, unique=True)
+    user_message_id = Column(
+        String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
     ai_job_id = Column(String(36), ForeignKey("sdd_ai_jobs.id", ondelete="SET NULL"), nullable=True, unique=True)
     session_generation = Column(Integer, nullable=False, index=True)
     turn_index = Column(Integer, nullable=False)
@@ -58,9 +60,7 @@ class TaskSessionTurn(Base):
 
 class TaskSessionOperation(Base):
     __tablename__ = "sdd_task_session_operations"
-    __table_args__ = (
-        UniqueConstraint("task_id", "operation_id", name="uq_task_session_operation_task_id"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "operation_id", name="uq_task_session_operation_task_id"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)

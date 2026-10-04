@@ -1,11 +1,19 @@
 """Personal profile lifecycle and task-bound resource operations."""
+
 from __future__ import annotations
+
 import asyncio
 import hashlib
-import json
-import uuid
-from app.domains.local_resource.client import ResourceClient, ResourceError, validate_url, encrypt_credentials, decrypt_credentials, require_enabled
-from app.domains.local_resource.models import LocalResource, TaskExecutionBinding, LocalResourceOperation
+
+from app.domains.local_resource.client import (
+    ResourceClient,
+    ResourceError,
+    decrypt_credentials,
+    encrypt_credentials,
+    require_enabled,
+    validate_url,
+)
+from app.domains.local_resource.models import LocalResource, LocalResourceOperation, TaskExecutionBinding
 from app.domains.workspace.services import workspace_service
 
 
@@ -40,7 +48,22 @@ def require_online(config):
 
 
 def profile(row):
-    return {key: getattr(row, key) for key in ("id", "workspace_id", "owner_user_id", "backend", "host_id", "profile_revision", "service_url", "resource_service_url", "encrypted_credentials", "workspace_root", "repositories_json")}
+    return {
+        key: getattr(row, key)
+        for key in (
+            "id",
+            "workspace_id",
+            "owner_user_id",
+            "backend",
+            "host_id",
+            "profile_revision",
+            "service_url",
+            "resource_service_url",
+            "encrypted_credentials",
+            "workspace_root",
+            "repositories_json",
+        )
+    }
 
 
 def serialize(row):
@@ -60,7 +83,11 @@ def owned(db, resource_id, user_id, workspace_id=None):
 def save(db, workspace_id, user_id, data, resource_id=None):
     require_enabled()
     require_member(db, workspace_id, user_id)
-    row = owned(db, resource_id, user_id, workspace_id) if resource_id else LocalResource(workspace_id=workspace_id, owner_user_id=user_id)
+    row = (
+        owned(db, resource_id, user_id, workspace_id)
+        if resource_id
+        else LocalResource(workspace_id=workspace_id, owner_user_id=user_id)
+    )
     credentials = decrypt_credentials(row.encrypted_credentials) if resource_id else {}
     for key in ("host_token", "agent_token", "agent_username"):
         value = getattr(data, key)
@@ -91,9 +118,15 @@ def save(db, workspace_id, user_id, data, resource_id=None):
 def ensure_roots_granted(config, workspace_root=None, repo_roots=None):
     """Best-effort grant roots on the resource host via authenticated POST /v1/roots/grant."""
     ws = workspace_root or config.get("workspace_root")
-    repos = repo_roots if repo_roots is not None else [
-        r.get("local_path") for r in (config.get("repositories_json") or []) if isinstance(r, dict) and r.get("local_path")
-    ]
+    repos = (
+        repo_roots
+        if repo_roots is not None
+        else [
+            r.get("local_path")
+            for r in (config.get("repositories_json") or [])
+            if isinstance(r, dict) and r.get("local_path")
+        ]
+    )
     roots = [r for r in ([ws] + (repos or [])) if r and isinstance(r, str)]
     if not roots:
         return
@@ -104,12 +137,15 @@ def ensure_roots_granted(config, workspace_root=None, repo_roots=None):
 
 
 def build_provider(config):
-    from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
     from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+    from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
+
     credentials = decrypt_credentials(config["encrypted_credentials"])
     url = validate_url(config["service_url"])
     if config["backend"] == "opencode":
-        return OpenCodeAdapter(url, username=credentials.get("agent_username", "opencode"), password=credentials.get("agent_token", ""))
+        return OpenCodeAdapter(
+            url, username=credentials.get("agent_username", "opencode"), password=credentials.get("agent_token", "")
+        )
     if config["backend"] == "dsh":
         return DshServerAdapter(url, browser_token=credentials.get("agent_token", ""), browser_cookie="")
     raise ResourceError("Claude Code CLI 暂不支持本地资源", "LOCAL_BACKEND_UNSUPPORTED", 422)
@@ -138,16 +174,19 @@ def check_connection(db, workspace_id, user_id, data):
             credentials[key] = value
     if not credentials.get("host_token"):
         raise ResourceError("请输入同机资源服务配对凭据", "RESOURCE_CREDENTIAL_REQUIRED", 422)
-    return verify_connection({
-        "backend": data.backend,
-        "service_url": validate_url(data.service_url),
-        "resource_service_url": validate_url(data.resource_service_url),
-        "encrypted_credentials": encrypt_credentials(credentials),
-    })
+    return verify_connection(
+        {
+            "backend": data.backend,
+            "service_url": validate_url(data.service_url),
+            "resource_service_url": validate_url(data.resource_service_url),
+            "encrypted_credentials": encrypt_credentials(credentials),
+        }
+    )
 
 
 def verify_connection(config):
     from urllib.parse import urlsplit
+
     if urlsplit(config["service_url"]).hostname != urlsplit(config["resource_service_url"]).hostname:
         raise ResourceError("Agent 和同机资源服务请使用相同的主机地址，不同端口", "RESOURCE_HOST_MISMATCH", 422)
     client = ResourceClient(config)
@@ -162,7 +201,11 @@ def verify_connection(config):
 def verify(config):
     connection = verify_connection(config)
     ensure_roots_granted(config)
-    inspection = ResourceClient(config).request("POST", "/v1/repositories/inspect", {"workspace_root": config["workspace_root"], "repositories": config["repositories_json"]})
+    inspection = ResourceClient(config).request(
+        "POST",
+        "/v1/repositories/inspect",
+        {"workspace_root": config["workspace_root"], "repositories": config["repositories_json"]},
+    )
     return {**connection, **inspection}
 
 
@@ -170,6 +213,7 @@ def bind_task(db, task, execution):
     require_enabled()
     row = owned(db, execution.resource_id, task.creator_id, task.workspace_id)
     from app.agents.selection import resolve_workspace_backend
+
     if row.backend != resolve_workspace_backend(db, task.workspace_id):
         raise ResourceError("本地服务与工作区引擎不匹配", "LOCAL_BACKEND_MISMATCH")
     if row.profile_revision != execution.profile_revision:
@@ -198,7 +242,12 @@ def runtime_profile(db, binding_row):
     config = dict(binding_row.profile_json)
     require_member(db, config["workspace_id"], config["owner_user_id"])
     current = db.get(LocalResource, binding_row.resource_id)
-    if current and current.host_id == config.get("host_id") and current.service_url == config["service_url"] and current.resource_service_url == config["resource_service_url"]:
+    if (
+        current
+        and current.host_id == config.get("host_id")
+        and current.service_url == config["service_url"]
+        and current.resource_service_url == config["resource_service_url"]
+    ):
         # Credentials may rotate on the same host; endpoint/path/provider binding never moves.
         config["encrypted_credentials"] = current.encrypted_credentials
     return config
@@ -206,10 +255,12 @@ def runtime_profile(db, binding_row):
 
 def task_profile(task_id):
     from app.database import SessionLocal
+
     with SessionLocal() as db:
         row = db.get(TaskExecutionBinding, task_id)
         if not row:
             from app.domains.task.models.task import SddTask
+
             task = db.get(SddTask, task_id)
             if task and is_local(task):
                 raise ResourceError("本地执行绑定缺失，不能退回服务器执行", "RESOURCE_BINDING_MISSING")
@@ -238,11 +289,26 @@ def provision_task(db, task):
     # provision validates every repository before fetching/creating its worktree;
     # avoid a duplicate repositories/inspect pass on the request path.
     mappings = {r["repository_id"]: r for r in row.profile_json["repositories_json"]}
-    repos = [{**mappings[r.repository_id], "repo_url": r.repo_url, "repo_name": r.repo_name,
-              "rel_path": r.rel_path, "branch_name": r.branch_name} for r in task.repo_bindings]
-    receipt = execute(db, task, "provision", {"workspace_root": row.profile_json["workspace_root"], "repositories": repos}, "provision-" + task.id)
+    repos = [
+        {
+            **mappings[r.repository_id],
+            "repo_url": r.repo_url,
+            "repo_name": r.repo_name,
+            "rel_path": r.rel_path,
+            "branch_name": r.branch_name,
+        }
+        for r in task.repo_bindings
+    ]
+    receipt = execute(
+        db,
+        task,
+        "provision",
+        {"workspace_root": row.profile_json["workspace_root"], "repositories": repos},
+        "provision-" + task.id,
+    )
     row.receipt_json = receipt
     from app.domains.task.models.task_repository import TaskRepositoryState
+
     for repo in task.repo_bindings:
         actual = next(r for r in receipt["repositories"] if r["repository_id"] == repo.repository_id)
         repo.base_commit_sha, repo.state = actual["base_commit_sha"], TaskRepositoryState.READY
@@ -258,7 +324,8 @@ def local_path(db, task):
 
 
 def remote_patches(db, task):
-    from app.domains.task.services.git_patch_service import RepoPatchSnapshot, PatchFileChange
+    from app.domains.task.services.git_patch_service import PatchFileChange, RepoPatchSnapshot
+
     result = execute(db, task, "generate_patch", {})
     snapshots = []
     for item in result["repositories"]:
@@ -279,10 +346,22 @@ def task_operation(task_id, kind, payload):
 
 def materialize_file(task, relative, content):
     import base64
+
     from sqlalchemy.orm import object_session
+
     db = object_session(task)
-    payload = {"files": [{"path": relative, "content": base64.b64encode(content).decode(), "sha256": hashlib.sha256(content).hexdigest()}]}
-    result = execute(db, task, "materialize", payload) if db is not None else task_operation(task.id, "materialize", payload)
+    payload = {
+        "files": [
+            {
+                "path": relative,
+                "content": base64.b64encode(content).decode(),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        ]
+    }
+    result = (
+        execute(db, task, "materialize", payload) if db is not None else task_operation(task.id, "materialize", payload)
+    )
     return result["paths"][0]
 
 
@@ -291,8 +370,14 @@ def release_or_defer(db, task):
     operation_id = "release-" + task.id
     operation = db.get(LocalResourceOperation, operation_id)
     if not operation:
-        operation = LocalResourceOperation(id=operation_id, task_id=task.id, kind="release",
-            payload_hash=hashlib.sha256(b"{}").hexdigest(), binding_json=config, state="PENDING")
+        operation = LocalResourceOperation(
+            id=operation_id,
+            task_id=task.id,
+            kind="release",
+            payload_hash=hashlib.sha256(b"{}").hexdigest(),
+            binding_json=config,
+            state="PENDING",
+        )
         db.add(operation)
     try:
         operation.result_json = ResourceClient(config).operation(task.id, "release", {}, operation_id)

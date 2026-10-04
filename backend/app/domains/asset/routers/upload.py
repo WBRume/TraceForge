@@ -1,4 +1,4 @@
-﻿"""
+"""
 File upload routes.
 """
 
@@ -43,7 +43,7 @@ async def upload_file(
         }
     except Exception as exc:
         logger.exception(f"Upload API error: {exc}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
 
 
 @router.get("/files/{file_name}")

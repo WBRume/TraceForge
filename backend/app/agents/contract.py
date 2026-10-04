@@ -1,19 +1,18 @@
-"""Agent 适配层统一契约（v0.2.0）。
-
-"""
+"""Agent 适配层统一契约（v0.2.0）。"""
 
 from __future__ import annotations
 
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Literal
 
+from app.agents.errors import AgentConfigurationError, AgentError
 from app.agents.events import AgentEvent
-from app.agents.errors import AgentError, AgentConfigurationError
 
 AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
 AgentProcessStartedCallback = Callable[["AgentProcessIdentity"], Awaitable[bool] | bool]
@@ -97,9 +96,7 @@ class AttemptFinalizerEvidence:
     provider_calls_authoritative: bool = False
 
 
-_CURRENT_ATTEMPT: ContextVar[AgentAttemptContext | None] = ContextVar(
-    "traceforge_current_agent_attempt", default=None
-)
+_CURRENT_ATTEMPT: ContextVar[AgentAttemptContext | None] = ContextVar("traceforge_current_agent_attempt", default=None)
 
 
 def current_agent_attempt() -> AgentAttemptContext | None:
@@ -133,7 +130,7 @@ class ProcessDeathState(str, Enum):
     CONFIRMED_DEAD = "CONFIRMED_DEAD"
 
 
-def agent_process_identity_key(identity: "AgentProcessIdentity | None") -> str:
+def agent_process_identity_key(identity: AgentProcessIdentity | None) -> str:
     """Immutable identity key; must never be the PID alone.
 
     The computation is total: any malformed identity object degrades to a
@@ -147,10 +144,7 @@ def agent_process_identity_key(identity: "AgentProcessIdentity | None") -> str:
             started_ts = "0"
         else:
             started_ts = f"{float(started_at.timestamp()):.6f}"
-        return (
-            f"{int(identity.pid)}:{started_ts}:"
-            f"{identity.process_group_id}:{identity.containment_id}"
-        )
+        return f"{int(identity.pid)}:{started_ts}:{identity.process_group_id}:{identity.containment_id}"
     except Exception:
         return f"identity-object:{id(identity)}"
 
@@ -159,7 +153,7 @@ def agent_process_identity_key(identity: "AgentProcessIdentity | None") -> str:
 class ProcessTerminationEvidence:
     """Evidence for one local process identified by an immutable identity."""
 
-    identity: "AgentProcessIdentity | None" = None
+    identity: AgentProcessIdentity | None = None
     state: ProcessDeathState = ProcessDeathState.STARTED
     failure_code: str | None = None
     error: str | None = None
@@ -222,7 +216,7 @@ class ProviderStopEvidence:
     acknowledged: bool
 
 
-def agent_attempt_key(attempt: "AgentAttemptContext | None") -> tuple:
+def agent_attempt_key(attempt: AgentAttemptContext | None) -> tuple:
     """(job_id, run_token, worker_boot_id) 归属键；没有 attempt 时为空元组。
 
     空元组不与任何已登记 call 匹配：无 attempt 上下文的调用方不得消费
@@ -264,7 +258,7 @@ class AgentAttemptRuntimeState:
     unidentified: ProcessTerminationEvidence | None = None
     _unidentified_started: bool = False
     # REMOTE_SESSION 停止证据（attempt-local，唯一槽位，最新覆盖）。
-    remote_stop_result: "AgentStopResult | None" = None
+    remote_stop_result: AgentStopResult | None = None
     # 远程会话是否已经建立（session_started 已发生）；用于把“从未建立远程
     # 会话”的取消与“会话存在但停止未被确认”区分开。
     remote_session_started: bool = False
@@ -297,11 +291,7 @@ class AgentAttemptRuntimeState:
         key = tuple(attempt_key or ())
         if not key:
             return []
-        return [
-            call
-            for call in self.provider_calls.values()
-            if tuple(call.attempt_key or ()) == key
-        ]
+        return [call for call in self.provider_calls.values() if tuple(call.attempt_key or ()) == key]
 
     def matches_current_attempt(self, call: ProviderCallEvidence) -> bool:
         """Whether the currently bound attempt still owns this call's events.
@@ -310,11 +300,9 @@ class AgentAttemptRuntimeState:
         """
         if call is None:
             return False
-        return agent_attempt_key(_CURRENT_ATTEMPT.get()) == tuple(
-            call.attempt_key or ()
-        )
+        return agent_attempt_key(_CURRENT_ATTEMPT.get()) == tuple(call.attempt_key or ())
 
-    def record_remote_stop(self, stop_result: "AgentStopResult | None") -> None:
+    def record_remote_stop(self, stop_result: AgentStopResult | None) -> None:
         """Record the attempt's remote stop acknowledgement (latest wins).
 
         旧 attempt 级单槽：仅作日志/兼容诊断；存在 per-call 记录的 attempt
@@ -324,7 +312,7 @@ class AgentAttemptRuntimeState:
             return
         self.remote_stop_result = stop_result
 
-    def record_provider_call_stop(self, stop: "ProviderStopEvidence | None") -> bool:
+    def record_provider_call_stop(self, stop: ProviderStopEvidence | None) -> bool:
         """Bind stop evidence to one provider call (doc 审计 0c381413 §2.4).
 
         校验规则（任一不匹配即拒绝，返回 ``False``）：
@@ -353,7 +341,7 @@ class AgentAttemptRuntimeState:
             call.state = ProviderCallState.ENDED
         return True
 
-    def provider_stop_for(self, call_id: str) -> "ProviderStopEvidence | None":
+    def provider_stop_for(self, call_id: str) -> ProviderStopEvidence | None:
         """Bound per-call stop evidence, or ``None`` (never the global slot)."""
         return self.provider_stops.get(str(call_id or ""))
 
@@ -364,9 +352,7 @@ class AgentAttemptRuntimeState:
             return None
         return bool(stop.stop_acknowledged)
 
-    def record_process_started(
-        self, identity: "AgentProcessIdentity | None" = None
-    ) -> None:
+    def record_process_started(self, identity: AgentProcessIdentity | None = None) -> None:
         if identity is None:
             self._unidentified_started = True
             if self.unidentified is None:
@@ -388,7 +374,7 @@ class AgentAttemptRuntimeState:
         self,
         *,
         confirmed_dead: bool | None,
-        identity: "AgentProcessIdentity | None" = None,
+        identity: AgentProcessIdentity | None = None,
         failure_code: str | None = None,
         error: str | None = None,
         remaining_pids: tuple[int, ...] = (),
@@ -517,11 +503,7 @@ class AgentAttemptRuntimeState:
         candidates = list(self.processes.values())
         if self.unidentified is not None:
             candidates.append(self.unidentified)
-        return [
-            evidence
-            for evidence in candidates
-            if evidence.state != ProcessDeathState.CONFIRMED_DEAD
-        ]
+        return [evidence for evidence in candidates if evidence.state != ProcessDeathState.CONFIRMED_DEAD]
 
 
 _CURRENT_ATTEMPT_RUNTIME: ContextVar[AgentAttemptRuntimeState | None] = ContextVar(
@@ -542,7 +524,7 @@ def reset_agent_attempt_runtime(token) -> None:
     _CURRENT_ATTEMPT_RUNTIME.reset(token)
 
 
-def record_attempt_process_started(identity: "AgentProcessIdentity | None" = None) -> None:
+def record_attempt_process_started(identity: AgentProcessIdentity | None = None) -> None:
     """Mark that a local Agent process has started within the bound attempt.
 
     The identity is mandatory for supervisor-owned processes: evidence is
@@ -555,7 +537,7 @@ def record_attempt_process_started(identity: "AgentProcessIdentity | None" = Non
 
 def record_attempt_termination(
     termination: Any,
-    identity: "AgentProcessIdentity | None" = None,
+    identity: AgentProcessIdentity | None = None,
 ) -> None:
     """Record a TerminationResult-like object into the bound attempt state.
 
@@ -579,7 +561,7 @@ def record_attempt_termination(
     )
 
 
-def record_attempt_remote_stop(stop_result: "AgentStopResult | None") -> None:
+def record_attempt_remote_stop(stop_result: AgentStopResult | None) -> None:
     """Record a REMOTE_SESSION stop acknowledgement into the bound attempt.
 
     Only a structured ``AgentStopResult`` is accepted: a bare ``None`` (the
@@ -593,9 +575,9 @@ def record_attempt_remote_stop(stop_result: "AgentStopResult | None") -> None:
 
 
 def record_attempt_provider_call_stop(
-    call: "ProviderCallEvidence | None",
-    stop_result: "AgentStopResult | None",
-    runtime: "AgentAttemptRuntimeState | None" = None,
+    call: ProviderCallEvidence | None,
+    stop_result: AgentStopResult | None,
+    runtime: AgentAttemptRuntimeState | None = None,
 ) -> bool:
     """Bind a REMOTE_SESSION stop result to one specific call.
 
@@ -628,9 +610,7 @@ def record_attempt_remote_session_started() -> None:
         state.remote_session_started = True
 
 
-def record_provider_call_session_started(
-    call: "ProviderCallEvidence | None", session_id: Any = None
-) -> None:
+def record_provider_call_session_started(call: ProviderCallEvidence | None, session_id: Any = None) -> None:
     """Register the provider session id on one call (NOT_STARTED -> STARTED).
 
     某些 bridge 的 session_id 晚于 result 到达：ENDED 是终局状态，绝不
@@ -645,9 +625,7 @@ def record_provider_call_session_started(
         call.state = ProviderCallState.STARTED
 
 
-def record_provider_call_result(
-    call: "ProviderCallEvidence | None", *, is_error: bool
-) -> None:
+def record_provider_call_result(call: ProviderCallEvidence | None, *, is_error: bool) -> None:
     """Record a terminal provider result event on one call (-> ENDED).
 
     必须在 result 事件到达时立即调用：早于 JSON 解析、业务落库、错误
@@ -662,7 +640,7 @@ def record_provider_call_result(
 
 
 def mark_provider_call_unresolved(
-    call: "ProviderCallEvidence | None",
+    call: ProviderCallEvidence | None,
 ) -> None:
     """Exception path: an in-flight call becomes UNKNOWN, never ENDED.
 
@@ -782,6 +760,7 @@ class AgentBackend(ABC):
     def get_runtime_control(self):
         """Optional SOP control plane; old adapters retain their exact contract."""
         from app.agents.runtime_control import UnsupportedRuntimeControl
+
         return UnsupportedRuntimeControl()
 
     @abstractmethod
@@ -794,17 +773,17 @@ class AgentBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def interrupt(self, run_id: str | None = None) -> "AgentStopResult":
+    async def interrupt(self, run_id: str | None = None) -> AgentStopResult:
         """中断当前回合，尽量保留会话；必须返回唯一停止结果。"""
         raise NotImplementedError
 
     @abstractmethod
-    async def cancel(self, run_id: str | None = None) -> "AgentStopResult":
+    async def cancel(self, run_id: str | None = None) -> AgentStopResult:
         """取消当前回合；必须返回唯一停止结果（doc 5）。"""
         raise NotImplementedError
 
     @abstractmethod
-    async def cancel_persisted_session(self, session_id: str) -> "AgentStopResult":
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
         """按持久化 provider session id 停止远程会话（doc 修复方案 §9.3）。
 
         供 reaper 等无内存 runtime 的调用方使用：目标必须是显式传入的
@@ -858,7 +837,10 @@ class AgentBackend(ABC):
             raise AgentConfigurationError(
                 f"{self.name} does not support resume but got session_id={request.session_id}"
             )
-        if "long_connection" in self.capabilities.hitl_modes and type(self).respond_to_ask_user is AgentBackend.respond_to_ask_user:
+        if (
+            "long_connection" in self.capabilities.hitl_modes
+            and type(self).respond_to_ask_user is AgentBackend.respond_to_ask_user
+        ):
             raise AgentConfigurationError(
                 f"{self.name} declares long_connection HITL but does not implement respond_to_ask_user"
             )

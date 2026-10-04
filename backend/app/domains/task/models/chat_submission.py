@@ -1,5 +1,6 @@
 """Durable transport receipts, deliberately outside the searchable message model."""
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, func
+
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid

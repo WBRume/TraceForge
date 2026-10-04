@@ -8,7 +8,7 @@ import copy
 import difflib
 import io
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -21,12 +21,12 @@ from app.domains.asset.models.asset import (
     SddAssetThread,
     SddAssetVersion,
 )
-from app.domains.task.models.task import SddTask
 from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import payload as document_payload
 from app.domains.asset.services.document import repository as document_repository
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.document.docx import apply_blocks_to_docx_inplace
+from app.domains.task.models.task import SddTask
 from app.domains.task.services import task_cli_state_service
 
 try:
@@ -41,7 +41,7 @@ class ResolutionServiceError(ValueError):
         self.status_code = status_code
 
 
-def _render_block_to_markdown(block: Dict[str, Any]) -> str:
+def _render_block_to_markdown(block: dict[str, Any]) -> str:
     text = str(block.get("text") or "").strip()
     block_type = str(block.get("type") or "paragraph")
     meta = block.get("meta") or {}
@@ -57,8 +57,8 @@ def _render_block_to_markdown(block: Dict[str, Any]) -> str:
     return text
 
 
-def _blocks_to_markdown(blocks: List[Dict[str, Any]]) -> str:
-    lines: List[str] = []
+def _blocks_to_markdown(blocks: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
     for block in blocks:
         if not isinstance(block, dict):
             continue
@@ -73,8 +73,8 @@ def _normalize_role(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def _collect_source_message_ids(thread: SddAssetThread) -> List[str]:
-    messages = sorted(list(thread.messages or []), key=lambda item: item.created_at)
+def _collect_source_message_ids(thread: SddAssetThread) -> list[str]:
+    messages = sorted(thread.messages or [], key=lambda item: item.created_at)
     return [
         item.id
         for item in messages
@@ -94,17 +94,17 @@ def _build_diff(old_text: str, new_text: str) -> str:
     return "\n".join(lines)
 
 
-def _copy_without_keys(payload: Dict[str, Any], drop_keys: set[str]) -> Dict[str, Any]:
+def _copy_without_keys(payload: dict[str, Any], drop_keys: set[str]) -> dict[str, Any]:
     return {k: copy.deepcopy(v) for k, v in payload.items() if k not in drop_keys and v is not None}
 
 
-def _run_style(run: Dict[str, Any]) -> Dict[str, Any]:
+def _run_style(run: dict[str, Any]) -> dict[str, Any]:
     return _copy_without_keys(run, {"text", "revision"})
 
 
-def _normalize_runs(raw_runs: Any, fallback_text: str) -> List[Dict[str, Any]]:
+def _normalize_runs(raw_runs: Any, fallback_text: str) -> list[dict[str, Any]]:
     if isinstance(raw_runs, list):
-        normalized: List[Dict[str, Any]] = []
+        normalized: list[dict[str, Any]] = []
         for item in raw_runs:
             if not isinstance(item, dict):
                 continue
@@ -129,11 +129,11 @@ def _normalize_runs(raw_runs: Any, fallback_text: str) -> List[Dict[str, Any]]:
     return [{"text": text}]
 
 
-def _runs_text(runs: List[Dict[str, Any]]) -> str:
+def _runs_text(runs: list[dict[str, Any]]) -> str:
     return "".join(str(item.get("text") or "") for item in runs)
 
 
-def _append_run(runs: List[Dict[str, Any]], run: Dict[str, Any]) -> None:
+def _append_run(runs: list[dict[str, Any]], run: dict[str, Any]) -> None:
     text = str(run.get("text") or "")
     if not text:
         return
@@ -152,11 +152,11 @@ def _append_run(runs: List[Dict[str, Any]], run: Dict[str, Any]) -> None:
     runs.append(candidate)
 
 
-def _slice_runs(runs: List[Dict[str, Any]], start: int, end: int) -> List[Dict[str, Any]]:
+def _slice_runs(runs: list[dict[str, Any]], start: int, end: int) -> list[dict[str, Any]]:
     if end <= start:
         return []
     cursor = 0
-    chunks: List[Dict[str, Any]] = []
+    chunks: list[dict[str, Any]] = []
     for run in runs:
         run_text = str(run.get("text") or "")
         run_start = cursor
@@ -175,11 +175,11 @@ def _slice_runs(runs: List[Dict[str, Any]], start: int, end: int) -> List[Dict[s
     return chunks
 
 
-def _style_for_insert(runs: List[Dict[str, Any]], index: int) -> Dict[str, Any]:
+def _style_for_insert(runs: list[dict[str, Any]], index: int) -> dict[str, Any]:
     if not runs:
         return {}
     cursor = 0
-    last_style: Dict[str, Any] = {}
+    last_style: dict[str, Any] = {}
     for run in runs:
         run_text = str(run.get("text") or "")
         style = _run_style(run)
@@ -193,18 +193,18 @@ def _style_for_insert(runs: List[Dict[str, Any]], index: int) -> Dict[str, Any]:
     return last_style or _run_style(runs[0])
 
 
-def _next_change_id(counter: List[int]) -> str:
+def _next_change_id(counter: list[int]) -> str:
     counter[0] += 1
     return f"chg-{counter[0]}"
 
 
 def _compose_revision_runs(
-    old_runs: List[Dict[str, Any]],
+    old_runs: list[dict[str, Any]],
     old_text: str,
     new_text: str,
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     matcher = difflib.SequenceMatcher(a=old_text, b=new_text)
-    merged_runs: List[Dict[str, Any]] = []
+    merged_runs: list[dict[str, Any]] = []
     change_counter = [0]
     stats = {
         "inserted_chars": 0,
@@ -233,7 +233,7 @@ def _compose_revision_runs(
             inserted_text = new_text[j1:j2]
             if inserted_text:
                 change_id = _next_change_id(change_counter)
-                insert_run: Dict[str, Any] = {"text": inserted_text}
+                insert_run: dict[str, Any] = {"text": inserted_text}
                 insert_run.update(_style_for_insert(old_runs, i1))
                 insert_run["revision"] = {"change_id": change_id, "op": "insert", "status": "pending"}
                 _append_run(merged_runs, insert_run)
@@ -248,9 +248,9 @@ def _compose_revision_runs(
 def _apply_patch_to_block_text(
     original_text: str,
     *,
-    selected_text: Optional[str],
-    char_start: Optional[int],
-    char_end: Optional[int],
+    selected_text: str | None,
+    char_start: int | None,
+    char_end: int | None,
     replacement_text: str,
 ) -> str:
     if char_start is not None and char_end is not None and 0 <= char_start <= char_end <= len(original_text):
@@ -261,10 +261,10 @@ def _apply_patch_to_block_text(
 
 
 def _build_new_block_ast(
-    old_block: Dict[str, Any],
-    old_runs: List[Dict[str, Any]],
+    old_block: dict[str, Any],
+    old_runs: list[dict[str, Any]],
     new_text: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     block = copy.deepcopy(old_block)
     block["text"] = new_text
     if new_text:
@@ -276,14 +276,14 @@ def _build_new_block_ast(
     return block
 
 
-def _build_old_block_ast(old_block: Dict[str, Any], old_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _build_old_block_ast(old_block: dict[str, Any], old_runs: list[dict[str, Any]]) -> dict[str, Any]:
     block = copy.deepcopy(old_block)
     block["runs"] = copy.deepcopy(old_runs)
     block["text"] = _runs_text(old_runs)
     return block
 
 
-def _build_merged_block_ast(old_block: Dict[str, Any], merged_runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _build_merged_block_ast(old_block: dict[str, Any], merged_runs: list[dict[str, Any]]) -> dict[str, Any]:
     block = copy.deepcopy(old_block)
     block["runs"] = copy.deepcopy(merged_runs)
     block["text"] = _runs_text(merged_runs)
@@ -294,8 +294,8 @@ def _sanitize_final_block_ast(
     final_block_ast: Any,
     *,
     block_id: str,
-    fallback_block: Dict[str, Any],
-) -> Dict[str, Any]:
+    fallback_block: dict[str, Any],
+) -> dict[str, Any]:
     if not isinstance(final_block_ast, dict):
         raise ResolutionServiceError("final_block_ast must be an object", status_code=422)
 
@@ -316,7 +316,7 @@ def _sanitize_final_block_ast(
             if status == "pending":
                 raise ResolutionServiceError("There are pending revisions not processed", status_code=422)
 
-    sanitized_runs: List[Dict[str, Any]] = []
+    sanitized_runs: list[dict[str, Any]] = []
     for run in runs:
         text = str(run.get("text") or "")
         if not text:
@@ -340,19 +340,19 @@ def _sanitize_final_block_ast(
 def _sanitize_final_blocks_ast(
     final_blocks_ast: Any,
     *,
-    base_blocks: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    base_blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     if not isinstance(final_blocks_ast, list) or not final_blocks_ast:
         raise ResolutionServiceError("final_blocks_ast must be a non-empty array", status_code=422)
 
-    base_map: Dict[str, Dict[str, Any]] = {}
+    base_map: dict[str, dict[str, Any]] = {}
     for idx, block in enumerate(base_blocks):
         if not isinstance(block, dict):
             continue
         block_id = str(block.get("id") or f"blk-{idx + 1}")
         base_map[block_id] = block
 
-    sanitized: List[Dict[str, Any]] = []
+    sanitized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for idx, raw in enumerate(final_blocks_ast):
         if not isinstance(raw, dict):
@@ -382,11 +382,11 @@ def _sanitize_final_blocks_ast(
 
 
 def _replace_block_ast(
-    blocks: List[Dict[str, Any]],
+    blocks: list[dict[str, Any]],
     *,
     block_id: str,
-    target_block: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    target_block: dict[str, Any],
+) -> list[dict[str, Any]]:
     cloned = copy.deepcopy(blocks)
     replaced = False
     for idx, block in enumerate(cloned):
@@ -399,7 +399,7 @@ def _replace_block_ast(
     return cloned
 
 
-def _rewrite_change_ids_with_prefix(runs: List[Dict[str, Any]], prefix: str) -> None:
+def _rewrite_change_ids_with_prefix(runs: list[dict[str, Any]], prefix: str) -> None:
     for run in runs:
         revision = run.get("revision")
         if not isinstance(revision, dict):
@@ -411,13 +411,13 @@ def _rewrite_change_ids_with_prefix(runs: List[Dict[str, Any]], prefix: str) -> 
 
 
 def _build_deleted_block_revision(
-    old_block: Dict[str, Any],
+    old_block: dict[str, Any],
     *,
     idx: int,
-) -> Tuple[Dict[str, Any], Dict[str, int]]:
+) -> tuple[dict[str, Any], dict[str, int]]:
     old_runs = _normalize_runs(old_block.get("runs"), str(old_block.get("text") or ""))
     old_text = _runs_text(old_runs)
-    merged_runs: List[Dict[str, Any]] = []
+    merged_runs: list[dict[str, Any]] = []
     change_id = f"blk-del-{idx + 1}"
     for run in old_runs:
         piece = copy.deepcopy(run)
@@ -438,13 +438,13 @@ def _build_deleted_block_revision(
 
 
 def _build_inserted_block_revision(
-    new_block: Dict[str, Any],
+    new_block: dict[str, Any],
     *,
     idx: int,
-) -> Tuple[Dict[str, Any], Dict[str, int]]:
+) -> tuple[dict[str, Any], dict[str, int]]:
     new_runs = _normalize_runs(new_block.get("runs"), str(new_block.get("text") or ""))
     new_text = _runs_text(new_runs)
-    merged_runs: List[Dict[str, Any]] = []
+    merged_runs: list[dict[str, Any]] = []
     change_id = f"blk-ins-{idx + 1}"
     for run in new_runs:
         piece = copy.deepcopy(run)
@@ -464,20 +464,20 @@ def _build_inserted_block_revision(
     return merged_block, stats
 
 
-def _merge_stats(target: Dict[str, int], delta: Dict[str, int]) -> None:
+def _merge_stats(target: dict[str, int], delta: dict[str, int]) -> None:
     for key, value in delta.items():
         target[key] = int(target.get(key, 0)) + int(value or 0)
 
 
 def _compose_document_revisions(
     *,
-    old_blocks: List[Dict[str, Any]],
-    candidate_blocks: List[Dict[str, Any]],
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, int]]:
-    old_blocks_ast: List[Dict[str, Any]] = []
-    new_blocks_ast: List[Dict[str, Any]] = []
-    merged_blocks_ast: List[Dict[str, Any]] = []
-    total_stats: Dict[str, int] = {
+    old_blocks: list[dict[str, Any]],
+    candidate_blocks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
+    old_blocks_ast: list[dict[str, Any]] = []
+    new_blocks_ast: list[dict[str, Any]] = []
+    merged_blocks_ast: list[dict[str, Any]] = []
+    total_stats: dict[str, int] = {
         "inserted_chars": 0,
         "deleted_chars": 0,
         "inserted_segments": 0,
@@ -490,9 +490,7 @@ def _compose_document_revisions(
     for idx in range(length):
         old_block = old_blocks[idx] if idx < len(old_blocks) and isinstance(old_blocks[idx], dict) else None
         new_block_raw = (
-            candidate_blocks[idx]
-            if idx < len(candidate_blocks) and isinstance(candidate_blocks[idx], dict)
-            else None
+            candidate_blocks[idx] if idx < len(candidate_blocks) and isinstance(candidate_blocks[idx], dict) else None
         )
 
         if old_block is not None and new_block_raw is not None:
@@ -579,9 +577,9 @@ def create_resolution_proposal(
     creator_id: str,
     proposed_text: str,
     overwrite_existing_draft: bool = False,
-    source_message_ids: Optional[List[str]] = None,
-    version: Optional[SddAssetVersion] = None,
-    effective_anchor: Optional[Dict[str, Any]] = None,
+    source_message_ids: list[str] | None = None,
+    version: SddAssetVersion | None = None,
+    effective_anchor: dict[str, Any] | None = None,
 ) -> SddAssetResolutionProposal:
     version = version or thread.version
     if not version:
@@ -606,7 +604,7 @@ def create_resolution_proposal(
         raise ResolutionServiceError("proposed_text is required", status_code=422)
 
     old_block_ast = _build_old_block_ast(block, old_runs)
-    patch_json: Dict[str, Any] = {
+    patch_json: dict[str, Any] = {
         "thread_id": thread.id,
         "block_id": block_id,
         "selected_text": str(anchor.get("selected_text") or thread.selected_text or "").strip() or None,
@@ -665,53 +663,55 @@ def create_resolution_proposal(
     return proposal
 
 
-def update_resolution_proposal_rewrite(
-    db: Session,
-    *,
-    thread: SddAssetThread,
-    proposal: SddAssetResolutionProposal,
-    proposal_text: str,
-    rewritten_text: str,
-    rewrite_scope: str = "anchor",
-    rewritten_markdown: Optional[str] = None,
-    selection_mode: bool = False,
-    context_version_id: Optional[str] = None,
-    relocated_anchor: Optional[Dict[str, Any]] = None,
-) -> SddAssetResolutionProposal:
-    if proposal.status != AssetResolutionProposalStatus.DRAFT:
-        raise ResolutionServiceError("Only draft proposals can be rewritten", status_code=409)
-    if proposal.thread_id != thread.id:
-        raise ResolutionServiceError("Proposal does not belong to thread")
+def _rewrite_document_proposal(
+    db, proposal, proposal_text, rewritten_markdown, base_blocks, block_id, old_text, block, old_runs, patch
+):
+    markdown = str(rewritten_markdown or "").strip()
+    if not markdown:
+        raise ResolutionServiceError("Rewritten document markdown cannot be empty", status_code=422)
+    parsed = document_payload.parse_document_payload("proposal-rewrite.md", markdown.encode("utf-8"))
+    candidate_blocks = list(parsed.get("blocks_json") or [])
+    if not candidate_blocks:
+        raise ResolutionServiceError("Failed to parse rewritten document blocks", status_code=422)
 
-    requested_version_id = str(context_version_id or "").strip() or str(proposal.base_version_id)
-    version = document_repository.get_asset_version(db, thread.asset_id, requested_version_id)
-    if not version and str(requested_version_id) != str(proposal.base_version_id):
-        version = document_repository.get_asset_version(db, thread.asset_id, proposal.base_version_id)
-    if not version:
-        raise ResolutionServiceError("Proposal base version not found")
+    old_blocks_ast, new_blocks_ast, merged_blocks_ast, change_stats = _compose_document_revisions(
+        old_blocks=base_blocks,
+        candidate_blocks=candidate_blocks,
+    )
+    new_markdown = str(parsed.get("normalized_markdown") or "").strip() or _blocks_to_markdown(new_blocks_ast)
 
-    patch = copy.deepcopy(proposal.proposed_patch_json) if isinstance(proposal.proposed_patch_json, dict) else {}
-    relocated = relocated_anchor if isinstance(relocated_anchor, dict) else {}
-    block_id = str(relocated.get("block_id") or patch.get("block_id") or thread.block_id or "").strip()
-    if not block_id:
-        raise ResolutionServiceError("Proposal block_id is invalid")
+    anchor_merged = next(
+        (item for item in merged_blocks_ast if str(item.get("id") or "") == block_id),
+        merged_blocks_ast[0] if merged_blocks_ast else None,
+    )
+    anchor_new = next(
+        (item for item in new_blocks_ast if str(item.get("id") or "") == block_id),
+        new_blocks_ast[0] if new_blocks_ast else None,
+    )
+    patch["old_text"] = old_text
+    patch["new_text"] = str((anchor_new or {}).get("text") or "")
+    patch["old_block_ast"] = _build_old_block_ast(block, old_runs)
+    patch["new_block_ast"] = copy.deepcopy(anchor_new) if isinstance(anchor_new, dict) else None
+    patch["merged_block_ast"] = copy.deepcopy(anchor_merged) if isinstance(anchor_merged, dict) else None
+    patch["old_blocks_ast"] = old_blocks_ast
+    patch["new_blocks_ast"] = new_blocks_ast
+    patch["merged_blocks_ast"] = merged_blocks_ast
+    patch["new_markdown"] = new_markdown
+    patch["change_stats"] = change_stats
+    patch["rewrite_scope"] = "document"
+    patch["rewrite_status"] = "ready"
+    patch["proposal_text"] = str(proposal_text or "").strip() or str(patch.get("proposal_text") or "").strip()
+    proposal.proposed_patch_json = patch
+    flag_modified(proposal, "proposed_patch_json")
+    proposal.diff_text = _build_diff(_blocks_to_markdown(base_blocks), new_markdown)
+    db.flush()
+    return proposal
 
-    base_blocks = list(version.blocks_json or [])
-    block = asset_discussion_service.get_block_by_id(version, block_id)
-    if not block:
-        raise ResolutionServiceError("Anchor block not found on version")
 
-    old_runs = _normalize_runs(block.get("runs"), str(block.get("text") or ""))
-    old_text = _runs_text(old_runs)
-    if not old_text.strip():
-        raise ResolutionServiceError("Target block text is empty", status_code=422)
-
-    selected_text_for_patch = str(
-        relocated.get("selected_text")
-        or patch.get("selected_text")
-        or thread.selected_text
-        or ""
-    ).strip() or None
+def _update_rewrite_anchor(patch, relocated, thread, old_text, block_id, version):
+    selected_text_for_patch = (
+        str(relocated.get("selected_text") or patch.get("selected_text") or thread.selected_text or "").strip() or None
+    )
     char_start_raw = relocated.get("char_start", patch.get("char_start", thread.char_start))
     char_end_raw = relocated.get("char_end", patch.get("char_end", thread.char_end))
     try:
@@ -748,49 +748,59 @@ def update_resolution_proposal_rewrite(
             "char_start": char_start,
             "char_end": char_end,
         }
+    return selected_text_for_patch, char_start, char_end
+
+
+def update_resolution_proposal_rewrite(
+    db: Session,
+    *,
+    thread: SddAssetThread,
+    proposal: SddAssetResolutionProposal,
+    proposal_text: str,
+    rewritten_text: str,
+    rewrite_scope: str = "anchor",
+    rewritten_markdown: str | None = None,
+    selection_mode: bool = False,
+    context_version_id: str | None = None,
+    relocated_anchor: dict[str, Any] | None = None,
+) -> SddAssetResolutionProposal:
+    if proposal.status != AssetResolutionProposalStatus.DRAFT:
+        raise ResolutionServiceError("Only draft proposals can be rewritten", status_code=409)
+    if proposal.thread_id != thread.id:
+        raise ResolutionServiceError("Proposal does not belong to thread")
+
+    requested_version_id = str(context_version_id or "").strip() or str(proposal.base_version_id)
+    version = document_repository.get_asset_version(db, thread.asset_id, requested_version_id)
+    if not version and str(requested_version_id) != str(proposal.base_version_id):
+        version = document_repository.get_asset_version(db, thread.asset_id, proposal.base_version_id)
+    if not version:
+        raise ResolutionServiceError("Proposal base version not found")
+
+    patch = copy.deepcopy(proposal.proposed_patch_json) if isinstance(proposal.proposed_patch_json, dict) else {}
+    relocated = relocated_anchor if isinstance(relocated_anchor, dict) else {}
+    block_id = str(relocated.get("block_id") or patch.get("block_id") or thread.block_id or "").strip()
+    if not block_id:
+        raise ResolutionServiceError("Proposal block_id is invalid")
+
+    base_blocks = list(version.blocks_json or [])
+    block = asset_discussion_service.get_block_by_id(version, block_id)
+    if not block:
+        raise ResolutionServiceError("Anchor block not found on version")
+
+    old_runs = _normalize_runs(block.get("runs"), str(block.get("text") or ""))
+    old_text = _runs_text(old_runs)
+    if not old_text.strip():
+        raise ResolutionServiceError("Target block text is empty", status_code=422)
+
+    selected_text_for_patch, char_start, char_end = _update_rewrite_anchor(
+        patch, relocated, thread, old_text, block_id, version
+    )
 
     normalized_scope = str(rewrite_scope or "anchor").strip().lower()
     if normalized_scope == "document":
-        markdown = str(rewritten_markdown or "").strip()
-        if not markdown:
-            raise ResolutionServiceError("Rewritten document markdown cannot be empty", status_code=422)
-        parsed = document_payload.parse_document_payload("proposal-rewrite.md", markdown.encode("utf-8"))
-        candidate_blocks = list(parsed.get("blocks_json") or [])
-        if not candidate_blocks:
-            raise ResolutionServiceError("Failed to parse rewritten document blocks", status_code=422)
-
-        old_blocks_ast, new_blocks_ast, merged_blocks_ast, change_stats = _compose_document_revisions(
-            old_blocks=base_blocks,
-            candidate_blocks=candidate_blocks,
+        return _rewrite_document_proposal(
+            db, proposal, proposal_text, rewritten_markdown, base_blocks, block_id, old_text, block, old_runs, patch
         )
-        new_markdown = str(parsed.get("normalized_markdown") or "").strip() or _blocks_to_markdown(new_blocks_ast)
-
-        anchor_merged = next(
-            (item for item in merged_blocks_ast if str(item.get("id") or "") == block_id),
-            merged_blocks_ast[0] if merged_blocks_ast else None,
-        )
-        anchor_new = next(
-            (item for item in new_blocks_ast if str(item.get("id") or "") == block_id),
-            new_blocks_ast[0] if new_blocks_ast else None,
-        )
-        patch["old_text"] = old_text
-        patch["new_text"] = str((anchor_new or {}).get("text") or "")
-        patch["old_block_ast"] = _build_old_block_ast(block, old_runs)
-        patch["new_block_ast"] = copy.deepcopy(anchor_new) if isinstance(anchor_new, dict) else None
-        patch["merged_block_ast"] = copy.deepcopy(anchor_merged) if isinstance(anchor_merged, dict) else None
-        patch["old_blocks_ast"] = old_blocks_ast
-        patch["new_blocks_ast"] = new_blocks_ast
-        patch["merged_blocks_ast"] = merged_blocks_ast
-        patch["new_markdown"] = new_markdown
-        patch["change_stats"] = change_stats
-        patch["rewrite_scope"] = "document"
-        patch["rewrite_status"] = "ready"
-        patch["proposal_text"] = str(proposal_text or "").strip() or str(patch.get("proposal_text") or "").strip()
-        proposal.proposed_patch_json = patch
-        flag_modified(proposal, "proposed_patch_json")
-        proposal.diff_text = _build_diff(_blocks_to_markdown(base_blocks), new_markdown)
-        db.flush()
-        return proposal
 
     rewrite_result = str(rewritten_text or "").strip()
     if not rewrite_result:
@@ -834,8 +844,8 @@ def _try_apply_docx_text(
     *,
     old_text: str,
     new_text: str,
-    selected_text: Optional[str],
-) -> Optional[bytes]:
+    selected_text: str | None,
+) -> bytes | None:
     if not DocxDocument:
         return None
     base_path = (base_version.original_path or "").strip()
@@ -878,7 +888,7 @@ def _refresh_task_spec_pointer_and_bootstrap(
     asset: SddAsset,
     version: SddAssetVersion,
     refresh_mode: str = "FULL",
-    refresh_context_json: Optional[Dict[str, Any]] = None,
+    refresh_context_json: dict[str, Any] | None = None,
 ) -> None:
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if task and version.original_path:
@@ -895,51 +905,18 @@ def _refresh_task_spec_pointer_and_bootstrap(
     )
 
 
-def apply_resolution_proposal(
-    db: Session,
-    *,
-    asset: SddAsset,
-    thread: SddAssetThread,
-    proposal: SddAssetResolutionProposal,
-    actor_user_id: str,
-    final_block_ast: Any,
-    final_blocks_ast: Optional[List[Any]] = None,
-    change_note: Optional[str] = None,
-) -> SddAssetVersion:
-    if proposal.status != AssetResolutionProposalStatus.DRAFT:
-        raise ResolutionServiceError("Only draft proposals can be applied", status_code=409)
-    if proposal.thread_id != thread.id:
-        raise ResolutionServiceError("Proposal does not belong to thread")
-    if proposal.base_version_id is None:
-        raise ResolutionServiceError("Proposal base version is missing")
-
-    active_version_id = str(asset.active_version_id or "").strip()
-    proposal_version_id = str(proposal.base_version_id or "").strip()
-    requested_base_version_id = active_version_id or proposal_version_id
-    base_version = document_repository.get_asset_version(db, asset.id, requested_base_version_id)
-    if not base_version and requested_base_version_id != proposal_version_id:
-        base_version = document_repository.get_asset_version(db, asset.id, proposal_version_id)
-    if not base_version:
-        raise ResolutionServiceError("Proposal base version not found")
-
-    patch = copy.deepcopy(proposal.proposed_patch_json) if isinstance(proposal.proposed_patch_json, dict) else {}
-    base_blocks = base_version.blocks_json or []
-    if not isinstance(base_blocks, list):
-        raise ResolutionServiceError("Base version blocks are invalid")
-
+def _resolve_apply_anchor(db, thread, base_version, proposal_version_id, patch):
     anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
         db,
         thread=thread,
         context_version=base_version,
     )
     context_anchor = (
-        anchor_eval.get("effective_anchor")
-        if isinstance(anchor_eval.get("effective_anchor"), dict)
-        else {}
+        anchor_eval.get("effective_anchor") if isinstance(anchor_eval.get("effective_anchor"), dict) else {}
     )
     prefer_context_anchor = str(base_version.id) != proposal_version_id
 
-    def _first_non_empty(*values: Any) -> Optional[str]:
+    def _first_non_empty(*values: Any) -> str | None:
         for value in values:
             normalized = str(value or "").strip()
             if normalized:
@@ -1012,98 +989,16 @@ def apply_resolution_proposal(
     if str(base_version.id) != proposal_version_id:
         patch["rebased_from_version_id"] = proposal_version_id
         patch["rebased_to_version_id"] = base_version.id
+    return block_id, base_block, selected_text_for_apply
 
-    old_runs = _normalize_runs(base_block.get("runs"), str(base_block.get("text") or ""))
-    old_text = _runs_text(old_runs)
-    if not old_text.strip():
-        raise ResolutionServiceError("Base block content is empty", status_code=422)
 
-    rewrite_scope = str(patch.get("rewrite_scope") or "anchor").strip().lower()
-    use_document_apply = bool(final_blocks_ast) or rewrite_scope == "document"
-
-    if use_document_apply:
-        effective_blocks = final_blocks_ast
-        if not effective_blocks:
-            merged_blocks = patch.get("merged_blocks_ast")
-            if isinstance(merged_blocks, list) and merged_blocks:
-                effective_blocks = merged_blocks
-        sanitized_blocks = _sanitize_final_blocks_ast(
-            effective_blocks,
-            base_blocks=base_blocks,
-        )
-        next_blocks = copy.deepcopy(sanitized_blocks)
-        next_markdown = _blocks_to_markdown(next_blocks)
-        anchor_applied = next(
-            (item for item in next_blocks if str(item.get("id") or "") == block_id),
-            next_blocks[0] if next_blocks else None,
-        )
-        new_text = str((anchor_applied or {}).get("text") or "")
-        patch["new_text"] = new_text
-        patch["final_blocks_ast"] = copy.deepcopy(next_blocks)
-        patch["final_block_ast"] = copy.deepcopy(anchor_applied) if isinstance(anchor_applied, dict) else None
-        patch["rewrite_scope"] = "document"
-        proposal.diff_text = _build_diff(_blocks_to_markdown(base_blocks), next_markdown)
-    else:
-        sanitized_block = _sanitize_final_block_ast(
-            final_block_ast,
-            block_id=block_id,
-            fallback_block=base_block,
-        )
-        new_text = _runs_text(_normalize_runs(sanitized_block.get("runs"), str(sanitized_block.get("text") or "")))
-        if not new_text.strip():
-            raise ResolutionServiceError("Resulting block content cannot be empty", status_code=422)
-        next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=sanitized_block)
-        next_markdown = _blocks_to_markdown(next_blocks)
-        patch["new_text"] = new_text
-        patch["final_block_ast"] = copy.deepcopy(sanitized_block)
-        patch["rewrite_scope"] = "anchor"
-        proposal.diff_text = _build_diff(old_text, new_text)
-
-    patch["old_text"] = old_text
-    patch["change_stats"] = patch.get("change_stats") or {}
-    proposal.proposed_patch_json = patch
-    flag_modified(proposal, "proposed_patch_json")
-
-    output_bytes: Optional[bytes] = None
-    if (asset.source_ext or "").lower() == ".docx":
-        if not use_document_apply:
-            output_bytes = _try_apply_docx_text(
-                base_version,
-                old_text=old_text,
-                new_text=new_text,
-                selected_text=selected_text_for_apply,
-            )
-        else:
-            output_bytes = apply_blocks_to_docx_inplace(
-                str(base_version.original_path or ""),
-                base_blocks,
-                next_blocks,
-            )
-    if output_bytes is None:
-        output_bytes = next_markdown.encode("utf-8")
-
-    version = document_versioning.create_asset_version_from_normalized_content(
-        db,
-        asset,
-        creator_id=actor_user_id,
-        normalized_markdown=next_markdown,
-        blocks_json=next_blocks,
-        change_note=change_note or f"Applied thread {thread.id} resolution",
-        base_version_id=base_version.id,
-        output_ext=asset.source_ext or base_version.original_ext or ".md",
-        output_mime=asset.source_mime or base_version.original_mime or "text/markdown",
-        output_file_bytes=output_bytes,
-        output_file_name=asset.source_file_name or f"spec-v{base_version.version_no + 1}.md",
-    )
-
+def _refresh_applied_anchor(db, thread, version, patch, block_id, actor_user_id):
     effective_anchor = patch.get("effective_anchor") if isinstance(patch.get("effective_anchor"), dict) else {}
     effective_block_id = str(effective_anchor.get("block_id") or block_id or "").strip() or block_id
-    effective_selected_text = str(
-        effective_anchor.get("selected_text")
-        or patch.get("selected_text")
-        or thread.selected_text
-        or ""
-    ).strip() or None
+    effective_selected_text = (
+        str(effective_anchor.get("selected_text") or patch.get("selected_text") or thread.selected_text or "").strip()
+        or None
+    )
     effective_char_start = effective_anchor.get("char_start", patch.get("char_start", thread.char_start))
     effective_char_end = effective_anchor.get("char_end", patch.get("char_end", thread.char_end))
     try:
@@ -1153,6 +1048,173 @@ def apply_resolution_proposal(
             reason=None,
             version_id=None,
         )
+    return effective_block_id, effective_selected_text
+
+
+def _create_applied_version(
+    db,
+    asset,
+    thread,
+    actor_user_id,
+    change_note,
+    base_version,
+    base_blocks,
+    next_blocks,
+    next_markdown,
+    old_text,
+    new_text,
+    selected_text_for_apply,
+    use_document_apply,
+):
+    output_bytes: bytes | None = None
+    if (asset.source_ext or "").lower() == ".docx":
+        if not use_document_apply:
+            output_bytes = _try_apply_docx_text(
+                base_version,
+                old_text=old_text,
+                new_text=new_text,
+                selected_text=selected_text_for_apply,
+            )
+        else:
+            output_bytes = apply_blocks_to_docx_inplace(
+                str(base_version.original_path or ""),
+                base_blocks,
+                next_blocks,
+            )
+    if output_bytes is None:
+        output_bytes = next_markdown.encode("utf-8")
+
+    version = document_versioning.create_asset_version_from_normalized_content(
+        db,
+        asset,
+        creator_id=actor_user_id,
+        normalized_markdown=next_markdown,
+        blocks_json=next_blocks,
+        change_note=change_note or f"Applied thread {thread.id} resolution",
+        base_version_id=base_version.id,
+        output_ext=asset.source_ext or base_version.original_ext or ".md",
+        output_mime=asset.source_mime or base_version.original_mime or "text/markdown",
+        output_file_bytes=output_bytes,
+        output_file_name=asset.source_file_name or f"spec-v{base_version.version_no + 1}.md",
+    )
+    return version
+
+
+def _apply_proposal_blocks(
+    proposal, patch, base_blocks, base_block, block_id, old_text, final_blocks_ast, final_block_ast
+):
+    rewrite_scope = str(patch.get("rewrite_scope") or "anchor").strip().lower()
+    use_document_apply = bool(final_blocks_ast) or rewrite_scope == "document"
+
+    if use_document_apply:
+        effective_blocks = final_blocks_ast
+        if not effective_blocks:
+            merged_blocks = patch.get("merged_blocks_ast")
+            if isinstance(merged_blocks, list) and merged_blocks:
+                effective_blocks = merged_blocks
+        sanitized_blocks = _sanitize_final_blocks_ast(
+            effective_blocks,
+            base_blocks=base_blocks,
+        )
+        next_blocks = copy.deepcopy(sanitized_blocks)
+        next_markdown = _blocks_to_markdown(next_blocks)
+        anchor_applied = next(
+            (item for item in next_blocks if str(item.get("id") or "") == block_id),
+            next_blocks[0] if next_blocks else None,
+        )
+        new_text = str((anchor_applied or {}).get("text") or "")
+        patch["new_text"] = new_text
+        patch["final_blocks_ast"] = copy.deepcopy(next_blocks)
+        patch["final_block_ast"] = copy.deepcopy(anchor_applied) if isinstance(anchor_applied, dict) else None
+        patch["rewrite_scope"] = "document"
+        proposal.diff_text = _build_diff(_blocks_to_markdown(base_blocks), next_markdown)
+    else:
+        sanitized_block = _sanitize_final_block_ast(
+            final_block_ast,
+            block_id=block_id,
+            fallback_block=base_block,
+        )
+        new_text = _runs_text(_normalize_runs(sanitized_block.get("runs"), str(sanitized_block.get("text") or "")))
+        if not new_text.strip():
+            raise ResolutionServiceError("Resulting block content cannot be empty", status_code=422)
+        next_blocks = _replace_block_ast(base_blocks, block_id=block_id, target_block=sanitized_block)
+        next_markdown = _blocks_to_markdown(next_blocks)
+        patch["new_text"] = new_text
+        patch["final_block_ast"] = copy.deepcopy(sanitized_block)
+        patch["rewrite_scope"] = "anchor"
+        proposal.diff_text = _build_diff(old_text, new_text)
+    return use_document_apply, next_blocks, next_markdown, new_text
+
+
+def apply_resolution_proposal(
+    db: Session,
+    *,
+    asset: SddAsset,
+    thread: SddAssetThread,
+    proposal: SddAssetResolutionProposal,
+    actor_user_id: str,
+    final_block_ast: Any,
+    final_blocks_ast: list[Any] | None = None,
+    change_note: str | None = None,
+) -> SddAssetVersion:
+    if proposal.status != AssetResolutionProposalStatus.DRAFT:
+        raise ResolutionServiceError("Only draft proposals can be applied", status_code=409)
+    if proposal.thread_id != thread.id:
+        raise ResolutionServiceError("Proposal does not belong to thread")
+    if proposal.base_version_id is None:
+        raise ResolutionServiceError("Proposal base version is missing")
+
+    active_version_id = str(asset.active_version_id or "").strip()
+    proposal_version_id = str(proposal.base_version_id or "").strip()
+    requested_base_version_id = active_version_id or proposal_version_id
+    base_version = document_repository.get_asset_version(db, asset.id, requested_base_version_id)
+    if not base_version and requested_base_version_id != proposal_version_id:
+        base_version = document_repository.get_asset_version(db, asset.id, proposal_version_id)
+    if not base_version:
+        raise ResolutionServiceError("Proposal base version not found")
+
+    patch = copy.deepcopy(proposal.proposed_patch_json) if isinstance(proposal.proposed_patch_json, dict) else {}
+    base_blocks = base_version.blocks_json or []
+    if not isinstance(base_blocks, list):
+        raise ResolutionServiceError("Base version blocks are invalid")
+
+    block_id, base_block, selected_text_for_apply = _resolve_apply_anchor(
+        db, thread, base_version, proposal_version_id, patch
+    )
+
+    old_runs = _normalize_runs(base_block.get("runs"), str(base_block.get("text") or ""))
+    old_text = _runs_text(old_runs)
+    if not old_text.strip():
+        raise ResolutionServiceError("Base block content is empty", status_code=422)
+
+    use_document_apply, next_blocks, next_markdown, new_text = _apply_proposal_blocks(
+        proposal, patch, base_blocks, base_block, block_id, old_text, final_blocks_ast, final_block_ast
+    )
+
+    patch["old_text"] = old_text
+    patch["change_stats"] = patch.get("change_stats") or {}
+    proposal.proposed_patch_json = patch
+    flag_modified(proposal, "proposed_patch_json")
+
+    version = _create_applied_version(
+        db,
+        asset,
+        thread,
+        actor_user_id,
+        change_note,
+        base_version,
+        base_blocks,
+        next_blocks,
+        next_markdown,
+        old_text,
+        new_text,
+        selected_text_for_apply,
+        use_document_apply,
+    )
+
+    effective_block_id, effective_selected_text = _refresh_applied_anchor(
+        db, thread, version, patch, block_id, actor_user_id
+    )
 
     if thread.task_id:
         refresh_mode = "DELTA" if str(patch.get("rewrite_scope") or "anchor").strip().lower() == "anchor" else "FULL"
@@ -1194,10 +1256,10 @@ def apply_resolution_proposal(
     return version
 
 
-def _pick_closest_occurrence(text: str, keyword: str, target: Optional[int]) -> Optional[int]:
+def _pick_closest_occurrence(text: str, keyword: str, target: int | None) -> int | None:
     if not text or not keyword:
         return None
-    points: List[int] = []
+    points: list[int] = []
     from_index = 0
     while from_index <= len(text) - len(keyword):
         idx = text.find(keyword, from_index)
@@ -1213,9 +1275,9 @@ def _pick_closest_occurrence(text: str, keyword: str, target: Optional[int]) -> 
 
 
 def _remap_anchor_selection(
-    effective_anchor: Dict[str, Any],
+    effective_anchor: dict[str, Any],
     new_text: str,
-) -> tuple[Optional[str], Optional[int], Optional[int]]:
+) -> tuple[str | None, int | None, int | None]:
     old_selected = str(effective_anchor.get("selected_text") or "").strip()
     if not old_selected or old_selected not in new_text:
         return None, None, None
@@ -1237,9 +1299,9 @@ def manual_edit_block(
     block_id: str,
     new_text: str,
     actor_user_id: str,
-    context_version_id: Optional[str] = None,
-    change_note: Optional[str] = None,
-) -> Tuple[SddAssetVersion, List[SddAssetThread]]:
+    context_version_id: str | None = None,
+    change_note: str | None = None,
+) -> tuple[SddAssetVersion, list[SddAssetThread]]:
     text = str(new_text or "").strip()
     if not text:
         raise ResolutionServiceError("Edited block content cannot be empty", status_code=422)
@@ -1284,7 +1346,7 @@ def manual_edit_block(
         output_file_name=asset.source_file_name or f"spec-v{base_version.version_no + 1}.md",
     )
 
-    affected_threads: List[SddAssetThread] = []
+    affected_threads: list[SddAssetThread] = []
     for thread in asset_discussion_service.list_threads(db, asset_id=asset.id):
         anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
             db,
@@ -1292,9 +1354,7 @@ def manual_edit_block(
             context_version=base_version,
         )
         effective_anchor = (
-            anchor_eval.get("effective_anchor")
-            if isinstance(anchor_eval.get("effective_anchor"), dict)
-            else {}
+            anchor_eval.get("effective_anchor") if isinstance(anchor_eval.get("effective_anchor"), dict) else {}
         )
         if str(effective_anchor.get("block_id") or "").strip() != str(block_id).strip():
             continue

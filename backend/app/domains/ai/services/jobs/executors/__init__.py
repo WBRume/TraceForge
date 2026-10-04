@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.agents import AgentRunResult, current_agent_attempt
 from app.agents.errors import AgentExecutionDetached
@@ -26,8 +26,9 @@ from app.domains.ai.services.jobs.constants import (
     looks_like_timeout_text,
 )
 from app.domains.ai.services.jobs.registry import runtime
-from . import asset_thread, diagnosis_summary, task_baseline, task_chat
 from app.domains.task.models.task import SddTask
+
+from . import asset_thread, diagnosis_summary, task_baseline, task_chat
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -52,17 +53,17 @@ class JobExecutionOutcome:
       写入 ``error``，不得丢失。
     """
 
-    requested_status: Optional[AiJobStatus] = None
-    message: Optional[str] = None
-    result_patch: Optional[Dict[str, Any]] = None
-    context_patch: Optional[Dict[str, Any]] = None
-    provider_result: Optional[AgentRunResult] = None
-    stop_result: Optional[Any] = None
-    error: Optional[BaseException] = None
+    requested_status: AiJobStatus | None = None
+    message: str | None = None
+    result_patch: dict[str, Any] | None = None
+    context_patch: dict[str, Any] | None = None
+    provider_result: AgentRunResult | None = None
+    stop_result: Any | None = None
+    error: BaseException | None = None
     provider_outcome_seen: bool = False
 
 
-def load_dispatch_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
+def load_dispatch_context_sync(job_id: str) -> dict[str, Any] | None:
     """执行分派前置查询（线程内执行，由 run_db 包装）。
 
     返回 None：job 不存在，或已处于不可执行状态（停止/中断发生在排队阶段
@@ -101,17 +102,22 @@ def load_dispatch_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
-def load_failure_context_sync(job_id: str) -> Optional[Dict[str, Any]]:
+def load_failure_context_sync(job_id: str) -> dict[str, Any] | None:
     """异常收尾查询（线程内执行，由 run_db 包装）；None 表示已终态/不存在。"""
     db = SessionLocal()
     try:
         latest = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
-        if not latest or latest.status in {
-            AiJobStatus.SUCCESS,
-            AiJobStatus.FAILED,
-            AiJobStatus.CANCELLED,
-            AiJobStatus.REVERTED,
-        } or latest.status == AiJobStatus.INTERRUPTED:
+        if (
+            not latest
+            or latest.status
+            in {
+                AiJobStatus.SUCCESS,
+                AiJobStatus.FAILED,
+                AiJobStatus.CANCELLED,
+                AiJobStatus.REVERTED,
+            }
+            or latest.status == AiJobStatus.INTERRUPTED
+        ):
             return None
         job_context = latest.context_json if isinstance(latest.context_json, dict) else {}
         return {
@@ -152,8 +158,9 @@ async def execute_job(job_id: str) -> JobExecutionOutcome:
 
     with bind_ai_context(job_id=job_id, event_type="execute_job"):
         try:
-            if job_kind == 'PLAYBOOK_PROMOTION':
+            if job_kind == "PLAYBOOK_PROMOTION":
                 from app.domains.diagnosis_playbook.promotion import run
+
                 provider_seen = await run(job_id)
                 return JobExecutionOutcome(requested_status=None, provider_outcome_seen=provider_seen)
             if queue_key.startswith("REQUIREMENT_PREVIEW:"):
@@ -206,10 +213,10 @@ async def execute_job(job_id: str) -> JobExecutionOutcome:
                 return JobExecutionOutcome(requested_status=None, error=exc)
             failure_channel = failure_context["channel"]
             failure_kind = failure_context["job_kind"]
-            if (
-                failure_channel == AiJobChannel.TASK_CHAT
-                and failure_kind not in {JOB_KIND_DIAGNOSIS_SUMMARY, JOB_KIND_TASK_BASELINE}
-            ):
+            if failure_channel == AiJobChannel.TASK_CHAT and failure_kind not in {
+                JOB_KIND_DIAGNOSIS_SUMMARY,
+                JOB_KIND_TASK_BASELINE,
+            }:
                 # 引擎外围异常也必须走同一个 TASK_CHAT failure finalizer，
                 # 由 attempt 证据决定 ORPHANED 或干净的 INTERRUPTED。
                 await task_chat.finalize_task_chat_job_failure(

@@ -49,9 +49,7 @@ def _snap(matches=(), unknown_pids=()) -> TokenDiscoverySnapshot:
         state = ProcessProbeState.UNKNOWN
     else:
         state = ProcessProbeState.CONFIRMED_DEAD
-    return TokenDiscoverySnapshot(
-        state=state, matches=tuple(matches), unknown_pids=tuple(unknown_pids)
-    )
+    return TokenDiscoverySnapshot(state=state, matches=tuple(matches), unknown_pids=tuple(unknown_pids))
 
 
 NOT_BEFORE = datetime.now(timezone.utc)
@@ -61,8 +59,10 @@ NOT_BEFORE = datetime.now(timezone.utc)
 async def test_pre_kill_conflict_reports_no_tree_kill():
     """发送前冲突：未发出任何信号，tree_kill_used=False。"""
     initial = _snap(matches=(_match(999906, create_time=None),))
-    with patch.object(discovery_mod, "token_snapshot", AsyncMock(return_value=initial)), \
-         patch.object(discovery_mod, "kill_token_matches", AsyncMock()) as kill:
+    with (
+        patch.object(discovery_mod, "token_snapshot", AsyncMock(return_value=initial)),
+        patch.object(discovery_mod, "kill_token_matches", AsyncMock()) as kill,
+    ):
         result = await reclaim_mod.stop_by_run_token_discovery("tok", "audit", not_before=NOT_BEFORE)
     assert result is not None
     assert result.confirmed_dead is False
@@ -80,8 +80,10 @@ async def test_post_kill_conflict_reports_tree_kill_used():
         _snap(matches=(_match(999907),)),
         _snap(matches=(_match(999907, create_time=None),)),
     ]
-    with patch.object(discovery_mod, "token_snapshot", AsyncMock(side_effect=snapshots)), \
-         patch.object(discovery_mod, "kill_token_matches", AsyncMock()) as kill:
+    with (
+        patch.object(discovery_mod, "token_snapshot", AsyncMock(side_effect=snapshots)),
+        patch.object(discovery_mod, "kill_token_matches", AsyncMock()) as kill,
+    ):
         result = await reclaim_mod.stop_by_run_token_discovery("tok", "audit", not_before=NOT_BEFORE)
     assert result is not None
     assert result.confirmed_dead is False
@@ -94,8 +96,10 @@ async def test_post_kill_conflict_reports_tree_kill_used():
 async def test_double_empty_scan_confirms_dead():
     """double-scan grace 后仍为空：合法死亡证明（不触发发送）。"""
     snapshot_mock = AsyncMock(return_value=_snap())
-    with patch.object(discovery_mod, "token_snapshot", snapshot_mock), \
-         patch.object(discovery_mod, "kill_token_matches", AsyncMock()) as kill:
+    with (
+        patch.object(discovery_mod, "token_snapshot", snapshot_mock),
+        patch.object(discovery_mod, "kill_token_matches", AsyncMock()) as kill,
+    ):
         result = await reclaim_mod.stop_by_run_token_discovery("tok", "audit", not_before=NOT_BEFORE)
     assert result is not None
     assert result.confirmed_dead is True

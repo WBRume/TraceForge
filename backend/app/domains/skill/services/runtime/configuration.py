@@ -1,9 +1,9 @@
 """Apply a task skill selection and materialize its published runtime snapshot."""
 
 from sqlalchemy.orm import Session
-from app.domains.task.models.task import SddTask
 
 from app.domains.skill.services.runtime import bindings, materialization
+from app.domains.task.models.task import SddTask
 
 
 def replace_task_skills_for_initialize(
@@ -34,4 +34,4 @@ def replace_task_skills_for_initialize(
         return [skill.id for skill in selected_skills]
     except Exception as exc:
         db.rollback()
-        raise ValueError(f"Failed to update task skills: {exc}")
+        raise ValueError(f"Failed to update task skills: {exc}") from exc

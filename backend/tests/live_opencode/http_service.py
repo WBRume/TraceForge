@@ -3,6 +3,7 @@
 The stop file asks uvicorn to run its normal graceful shutdown / app lifespan.
 MySQL, Redis, auth, HTTP routes, dispatchers and finalizers are the real ones.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -24,10 +25,11 @@ async def serve(root: Path, hard_seconds: int):
     )
     import httpx
     import uvicorn
-    from app.main import app
+
     from app.agents.adapters import register_all
     from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
     from app.agents.registry import AGENT_BACKENDS
+    from app.main import app
     from tests.live_opencode.transport import LiveTransport, record
 
     log = root / f"http-{os.getpid()}.jsonl"
@@ -36,7 +38,9 @@ async def serve(root: Path, hard_seconds: int):
         async def _ensure_client(self):
             if self._client is None or self._client.is_closed:
                 self._client = httpx.AsyncClient(
-                    auth=self._auth, timeout=30, trust_env=False,
+                    auth=self._auth,
+                    timeout=30,
+                    trust_env=False,
                     transport=LiveTransport(root, log),
                 )
             return self._client

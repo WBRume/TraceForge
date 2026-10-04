@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -30,7 +30,8 @@ from app.domains.ai.services.ai_job_convergence_service import (
     resolve_attempt_evidence,
 )
 from app.domains.ai.services.jobs.provider_turn import run_cli_single_turn
-from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime as ai_job_runtime
+from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
+from app.domains.ai.services.jobs.registry import runtime as ai_job_runtime
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.requirements.preview.job_service import (
     create_requirement_preview_batch,
@@ -55,8 +56,8 @@ logger = get_logger(__name__, category="workspace_asset")
 
 def preview_attempt_is_current(
     job: SddAiJob,
-    run_token: Optional[str],
-    worker_boot_id: Optional[str] = None,
+    run_token: str | None,
+    worker_boot_id: str | None = None,
 ) -> bool:
     effective_token = run_token or None
     effective_boot_id = str(worker_boot_id or WORKER_BOOT_ID)
@@ -72,16 +73,14 @@ def preview_attempt_is_current(
 
 def assert_preview_attempt_current(
     job: SddAiJob,
-    run_token: Optional[str],
-    worker_boot_id: Optional[str] = None,
+    run_token: str | None,
+    worker_boot_id: str | None = None,
 ) -> None:
     if not preview_attempt_is_current(job, run_token, worker_boot_id):
-        raise AttemptFencedError(
-            f"Requirement preview attempt is no longer current: job_id={job.id}"
-        )
+        raise AttemptFencedError(f"Requirement preview attempt is no longer current: job_id={job.id}")
 
 
-def load_preview_job_sync(db: Session, job_id: str) -> Optional[SddAiJob]:
+def load_preview_job_sync(db: Session, job_id: str) -> SddAiJob | None:
     return db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
 
 
@@ -89,15 +88,15 @@ def update_preview_job_state(
     db: Session,
     job: SddAiJob,
     *,
-    status: Optional[AiJobStatus] = None,
-    progress: Optional[int] = None,
-    message: Optional[str] = None,
-    error: Optional[str] = None,
-    context_patch: Optional[Dict[str, Any]] = None,
-    result: Optional[Dict[str, Any]] = None,
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-    evidence: Optional[Any] = None,
+    status: AiJobStatus | None = None,
+    progress: int | None = None,
+    message: str | None = None,
+    error: str | None = None,
+    context_patch: dict[str, Any] | None = None,
+    result: dict[str, Any] | None = None,
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+    evidence: Any | None = None,
 ) -> None:
     """preview job 状态写入（doc §6.3/§7.3）。
 
@@ -115,9 +114,7 @@ def update_preview_job_state(
         or job.cancel_requested_at is not None
     ):
         logger.warning("Dropped fenced requirement preview write: job_id={}", job.id)
-        raise AttemptFencedError(
-            f"Requirement preview attempt is fenced: job_id={job.id}"
-        )
+        raise AttemptFencedError(f"Requirement preview attempt is fenced: job_id={job.id}")
     finalizing = status in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}
     if finalizing:
         # 统一 ownership 收敛（doc §11 / 修复方案 §7.3.1）：事务内核心，
@@ -134,9 +131,7 @@ def update_preview_job_state(
                 evidence=evidence
                 if evidence is not None
                 else resolve_attempt_evidence(
-                    execution_kind=str(
-                        getattr(job, "process_execution_kind", None) or ""
-                    ).strip() or "LOCAL_PROCESS",
+                    execution_kind=str(getattr(job, "process_execution_kind", None) or "").strip() or "LOCAL_PROCESS",
                 ),
                 message=message,
                 error_message=error,
@@ -151,9 +146,7 @@ def update_preview_job_state(
                 job.id,
                 convergence_result.status,
             )
-            raise AttemptFencedError(
-                f"Requirement preview convergence fenced: job_id={job.id}"
-            )
+            raise AttemptFencedError(f"Requirement preview convergence fenced: job_id={job.id}")
         # 注意：不得 expire/refresh —— convergence 的写入尚未 flush，
         # expire 会丢弃未提交修改；提交由最外层 run_db_txn 负责。
         return
@@ -182,17 +175,12 @@ def fail_requirement_preview_sync(
     job_id: str,
     message: str,
     error: str,
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-    evidence: Optional[Any] = None,
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+    evidence: Any | None = None,
 ) -> None:
     """preview job 失败终态（线程内单事务，重新加载 job 并加锁）。"""
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.id == job_id)
-        .with_for_update()
-        .first()
-    )
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
     if not job:
         return
     if not preview_attempt_is_current(job, run_token, worker_boot_id):
@@ -219,7 +207,7 @@ def load_requirement_import_context_sync(
     db: Session,
     *,
     job_id: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """恢复/执行前置查询：从 job.context_json 读取持久化的导入内容。"""
     job = load_preview_job_sync(db, job_id)
     if not job:
@@ -250,13 +238,13 @@ def prepare_requirement_import_sync(
     *,
     job_id: str,
     markdown: str,
-    source_kind: Optional[str],
-    source_ref: Optional[str],
-    source_uri: Optional[str],
+    source_kind: str | None,
+    source_ref: str | None,
+    source_uri: str | None,
     file_name: str,
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+) -> dict[str, Any] | None:
     """import preview 准备段（线程内单事务）：状态推进 + prompt + backend。"""
     job = load_preview_job_sync(db, job_id)
     if not job:
@@ -264,8 +252,13 @@ def prepare_requirement_import_sync(
     if not preview_attempt_is_current(job, run_token, worker_boot_id):
         raise WorkspaceAssetError("Requirement preview attempt is no longer current", status_code=409)
     update_preview_job_state(
-        db, job, status=AiJobStatus.RUNNING, progress=8, message="Parsing requirement document",
-        run_token=run_token, worker_boot_id=worker_boot_id,
+        db,
+        job,
+        status=AiJobStatus.RUNNING,
+        progress=8,
+        message="Parsing requirement document",
+        run_token=run_token,
+        worker_boot_id=worker_boot_id,
     )
     project_path = workspace_project_path_or_error(db, job.workspace_id)
     prompt = build_requirement_preview_prompt(
@@ -278,8 +271,12 @@ def prepare_requirement_import_sync(
     )
     job.prompt_text = prompt
     update_preview_job_state(
-        db, job, progress=28, message="Running agent CLI requirement preview",
-        run_token=run_token, worker_boot_id=worker_boot_id,
+        db,
+        job,
+        progress=28,
+        message="Running agent CLI requirement preview",
+        run_token=run_token,
+        worker_boot_id=worker_boot_id,
     )
     backend_name = resolve_workspace_backend(db, job.workspace_id)
     return {
@@ -297,15 +294,15 @@ def finalize_requirement_import_sync(
     job_id: str,
     file_name: str,
     markdown: str,
-    source_kind: Optional[str],
-    source_uri: Optional[str],
-    source_ref: Optional[str],
-    items: List[dict],
+    source_kind: str | None,
+    source_uri: str | None,
+    source_ref: str | None,
+    items: list[dict],
     metadata: dict,
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-    evidence: Optional[Any] = None,
-) -> Dict[str, Any]:
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+    evidence: Any | None = None,
+) -> dict[str, Any]:
     """import preview 收尾段（线程内单事务，doc §7.3.2）。
 
     正确顺序：先 ``FOR UPDATE`` 锁 job -> fence 校验 -> 创建 batch/items/
@@ -314,12 +311,7 @@ def finalize_requirement_import_sync(
     """
     from app.domains.workspace_asset.models.workspace_asset import RequirementAuditAction
 
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.id == job_id)
-        .with_for_update()
-        .first()
-    )
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
     if not job:
         raise WorkspaceAssetError("Requirement preview job not found", status_code=404)
     assert_preview_attempt_current(job, run_token, worker_boot_id)
@@ -360,9 +352,9 @@ def prepare_requirement_split_sync(
     db: Session,
     *,
     job_id: str,
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+) -> dict[str, Any] | None:
     """split preview 准备段（线程内单事务）。"""
     job = load_preview_job_sync(db, job_id)
     if not job:
@@ -379,8 +371,13 @@ def prepare_requirement_split_sync(
         raise WorkspaceAssetError("Requirement content is required for AI split preview.", status_code=422)
     project_path = workspace_project_path_or_error(db, job.workspace_id)
     update_preview_job_state(
-        db, job, status=AiJobStatus.RUNNING, progress=16, message="Running Claude Code CLI split preview",
-        run_token=run_token, worker_boot_id=worker_boot_id,
+        db,
+        job,
+        status=AiJobStatus.RUNNING,
+        progress=16,
+        message="Running Claude Code CLI split preview",
+        run_token=run_token,
+        worker_boot_id=worker_boot_id,
     )
     prompt = build_requirement_preview_prompt(
         mode="split",
@@ -394,7 +391,9 @@ def prepare_requirement_split_sync(
     backend_name = resolve_workspace_backend(db, job.workspace_id)
     return {
         "requirement_id": str(requirement.id),
-        "parent_source_metadata": requirement.source_metadata_json if isinstance(requirement.source_metadata_json, dict) else {},
+        "parent_source_metadata": requirement.source_metadata_json
+        if isinstance(requirement.source_metadata_json, dict)
+        else {},
         "requirement_source_uri": requirement.source_uri,
         "change_reason": context.get("change_reason"),
         "workspace_id": str(job.workspace_id),
@@ -410,23 +409,18 @@ def finalize_requirement_split_sync(
     db: Session,
     *,
     job_id: str,
-    prepared: Dict[str, Any],
-    items: List[dict],
-    backend_name: Optional[str],
-    session_id: Optional[str],
-    run_token: Optional[str] = None,
-    worker_boot_id: Optional[str] = None,
-    evidence: Optional[Any] = None,
-) -> Dict[str, Any]:
+    prepared: dict[str, Any],
+    items: list[dict],
+    backend_name: str | None,
+    session_id: str | None,
+    run_token: str | None = None,
+    worker_boot_id: str | None = None,
+    evidence: Any | None = None,
+) -> dict[str, Any]:
     """split preview 收尾段（线程内单事务，doc §7.3.2：先锁 job 再建副作用）。"""
     from app.domains.workspace_asset.models.workspace_asset import RequirementAuditAction
 
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.id == job_id)
-        .with_for_update()
-        .first()
-    )
+    job = db.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
     if not job:
         raise WorkspaceAssetError("Requirement preview job not found", status_code=404)
     assert_preview_attempt_current(job, run_token, worker_boot_id)
@@ -502,7 +496,7 @@ def _prepare_attempt():
     return current_agent_attempt()
 
 
-def _attempt_run_token(attempt) -> Optional[str]:
+def _attempt_run_token(attempt) -> str | None:
     return attempt.run_token if attempt else None
 
 
@@ -510,7 +504,7 @@ def _attempt_boot_id(attempt) -> str:
     return str(attempt.worker_boot_id) if attempt else WORKER_BOOT_ID
 
 
-async def run_requirement_import_preview_job(job_id: str, run_token: Optional[str] = None) -> bool:
+async def run_requirement_import_preview_job(job_id: str, run_token: str | None = None) -> bool:
     """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。
 
     输入内容在作业创建时已解析并持久化到 job.context_json，
@@ -526,12 +520,10 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
     # attempt-local 证据（doc 修复方案 §10.4）：只能在绑定 attempt runtime
     # 的事件循环 task 中解析；异常分支必须把已捕获证据显式传入 DB finalizer，
     # 绝不在 DB executor 线程重新读取 ContextVar。
-    attempt_evidence: Optional[Any] = None
+    attempt_evidence: Any | None = None
     resolved_execution_kind = _resolve_execution_kind(attempt)
     try:
-        context = await run_db_txn(
-            lambda db: load_requirement_import_context_sync(db, job_id=job_id)
-        )
+        context = await run_db_txn(lambda db: load_requirement_import_context_sync(db, job_id=job_id))
         if context is None:
             return False
         prepared = await run_db_txn(
@@ -625,8 +617,12 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
             return provider_outcome_seen
         try:
             await run_db_txn(
-                lambda db: fail_requirement_preview_sync(
-                    db, job_id=job_id, message="Requirement AI preview failed", error=str(exc), run_token=run_token,
+                lambda db, *, exc=exc: fail_requirement_preview_sync(
+                    db,
+                    job_id=job_id,
+                    message="Requirement AI preview failed",
+                    error=str(exc),
+                    run_token=run_token,
                     worker_boot_id=worker_boot_id,
                     evidence=attempt_evidence,
                 )
@@ -636,7 +632,7 @@ async def run_requirement_import_preview_job(job_id: str, run_token: Optional[st
         return provider_outcome_seen
 
 
-async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str] = None) -> bool:
+async def run_requirement_split_preview_job(job_id: str, run_token: str | None = None) -> bool:
     """三段式：准备段（DB 线程）→ CLI（零 session）→ 收尾段（DB 线程）。
 
     evidence 在事件循环线程解析后显式传入 DB finalizer（doc §6.3）。
@@ -647,11 +643,13 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
     provider_outcome_seen = False
     # attempt-local 证据（doc 修复方案 §10.4）：与 import preview 使用相同
     # helper，避免一条路径再次漏传。
-    attempt_evidence: Optional[Any] = None
+    attempt_evidence: Any | None = None
     resolved_execution_kind = _resolve_execution_kind(attempt)
     try:
         prepared = await run_db_txn(
-            lambda db: prepare_requirement_split_sync(db, job_id=job_id, run_token=run_token, worker_boot_id=worker_boot_id)
+            lambda db: prepare_requirement_split_sync(
+                db, job_id=job_id, run_token=run_token, worker_boot_id=worker_boot_id
+            )
         )
         if prepared is None:
             return False
@@ -680,7 +678,9 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
         parsed_json = extract_json_object(str(ai_result.get("text") or ""))
         items = normalize_ai_preview_items(parsed_json)
         if len(items) <= 1:
-            raise WorkspaceAssetError("AI split preview must produce at least two Requirement preview items.", status_code=422)
+            raise WorkspaceAssetError(
+                "AI split preview must produce at least two Requirement preview items.", status_code=422
+            )
         await run_db_txn(
             lambda db: finalize_requirement_split_sync(
                 db,
@@ -708,8 +708,12 @@ async def run_requirement_split_preview_job(job_id: str, run_token: Optional[str
             return provider_outcome_seen
         try:
             await run_db_txn(
-                lambda db: fail_requirement_preview_sync(
-                    db, job_id=job_id, message="Requirement split preview failed", error=str(exc), run_token=run_token,
+                lambda db, *, exc=exc: fail_requirement_preview_sync(
+                    db,
+                    job_id=job_id,
+                    message="Requirement split preview failed",
+                    error=str(exc),
+                    run_token=run_token,
                     worker_boot_id=worker_boot_id,
                     evidence=attempt_evidence,
                 )

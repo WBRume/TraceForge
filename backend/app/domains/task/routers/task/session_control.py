@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -29,14 +27,19 @@ from app.domains.task.schemas.task import (
     TaskResumeInterruptedRequest,
     TaskUndoMessageRequest,
 )
-from app.domains.task.services import chat_submission_service, context_token_service, pre_input_service, task_session_control_service, task_session_service
-
+from app.domains.task.services import (
+    chat_submission_service,
+    context_token_service,
+    pre_input_service,
+    task_session_control_service,
+    task_session_service,
+)
 from app.domains.task.services.task_records import queries as task_task_records_queries
 
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
 
-def _load_task_control_context_sync(db: Session, *, ws_id: str, task_id: str) -> Dict[str, str]:
+def _load_task_control_context_sync(db: Session, *, ws_id: str, task_id: str) -> dict[str, str]:
     task = get_task_or_404(db, task_id, ws_id)
     ensure_task_not_baselined(task)
     return {"task_id": task.id, "workspace_id": task.workspace_id}
@@ -48,14 +51,14 @@ def _prepare_task_undo_context_sync(
     ws_id: str,
     task_id: str,
     user_id: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     verify_workspace_permission(
         ws_id,
         user_id,
         db,
         WorkspacePermission.MANAGE_TASK_STATUS,
         "No permission to undo task messages",
-            task_id=task_id,
+        task_id=task_id,
     )
     task = get_task_or_404(db, task_id, ws_id)
     try:
@@ -70,7 +73,7 @@ def _prepare_task_undo_context_sync(
 async def interrupt_task(
     ws_id: str,
     task_id: str,
-    body: TaskInterruptRequest = Body(default=TaskInterruptRequest()),
+    body: TaskInterruptRequest = Body(default_factory=TaskInterruptRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -92,10 +95,9 @@ async def interrupt_task(
     try:
         async with lock_task(task_id):
             state = await run_route_db_txn(
-                db, db_bind,
-                lambda session: _load_task_control_context_sync(
-                    db=session, ws_id=ws_id, task_id=task_id
-                ),
+                db,
+                db_bind,
+                lambda session: _load_task_control_context_sync(db=session, ws_id=ws_id, task_id=task_id),
             )
             return await task_session_control_service.interrupt_task(
                 db,
@@ -114,24 +116,31 @@ async def interrupt_task(
 async def resume_interrupted_task(
     ws_id: str,
     task_id: str,
-    body: TaskResumeInterruptedRequest = Body(default=TaskResumeInterruptedRequest()),
+    body: TaskResumeInterruptedRequest = Body(default_factory=TaskResumeInterruptedRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     db_bind = get_db_bind(db)
-    await run_route_db_txn(db, db_bind, lambda session: verify_workspace_permission(
-        ws_id, current_user.id, session, WorkspacePermission.START_TASK,
-        "No permission to resume tasks", task_id=task_id,
-    ))
+    await run_route_db_txn(
+        db,
+        db_bind,
+        lambda session: verify_workspace_permission(
+            ws_id,
+            current_user.id,
+            session,
+            WorkspacePermission.START_TASK,
+            "No permission to resume tasks",
+            task_id=task_id,
+        ),
+    )
     db.close()
 
     try:
         async with lock_task(task_id):
             await run_route_db_txn(
-                db, db_bind,
-                lambda session: _load_task_control_context_sync(
-                    db=session, ws_id=ws_id, task_id=task_id
-                ),
+                db,
+                db_bind,
+                lambda session: _load_task_control_context_sync(db=session, ws_id=ws_id, task_id=task_id),
             )
             return await task_session_control_service.resume_interrupted_task(
                 task_id=task_id,
@@ -234,7 +243,8 @@ def get_task_session_state(
         raise HTTPException(404, "Task not found")
     keys = [value for value in (client_message_ids or "").split(",") if value.strip()]
     state = chat_submission_service.build_session_state(
-        db, task_id, actor_id=str(current_user.id), client_message_ids=keys)
+        db, task_id, actor_id=str(current_user.id), client_message_ids=keys
+    )
     if state is None:
         raise HTTPException(404, "Task not found")
     return state
@@ -264,8 +274,8 @@ def list_task_ai_jobs(
 def get_task_context_window(
     ws_id: str,
     task_id: str,
-    ai_job_id: Optional[str] = Query(default=None),
-    category: Optional[str] = Query(default=None),
+    ai_job_id: str | None = Query(default=None),
+    category: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -284,7 +294,7 @@ def get_task_context_window(
             page_size=page_size,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ContextWindowResponse(**payload)
 
 

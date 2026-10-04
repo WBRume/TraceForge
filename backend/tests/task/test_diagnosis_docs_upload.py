@@ -6,29 +6,17 @@ CLI 工作区 .sdd/diagnosis 文件落盘、研发任务拒绝、创建任务时
 """
 
 import os
-import sys
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-  # noqa: E402
-from app.domains.task.models.task import TaskType  # noqa: E402
-from app.domains.task.routers import task as task_router  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session, _seed_workspace  # noqa: E402
-
-from app.dependencies import get_current_user
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
 from app.domains.asset.routers import assets as asset_assets
+from app.domains.task.models.task import TaskType
+from app.domains.task.routers import task as task_router
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 def _build_app(SessionLocal, user):
@@ -154,7 +142,6 @@ def test_upload_diagnosis_doc_zip_archive(tmp_path):
 
 def test_create_diagnosis_task_uses_phenomenon_as_description():
 
-
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
@@ -187,7 +174,6 @@ def test_create_diagnosis_task_uses_phenomenon_as_description():
 
 def test_create_diagnosis_task_requires_phenomenon_via_service():
 
-
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
@@ -208,7 +194,9 @@ def test_create_diagnosis_task_requires_phenomenon_via_api():
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            user, workspace, _ = _seed_workspace(db, workspace_id="ws-diag-api-required", task_id="task-diag-api-required")
+            user, workspace, _ = _seed_workspace(
+                db, workspace_id="ws-diag-api-required", task_id="task-diag-api-required"
+            )
             ws_id = workspace.id
         client = TestClient(_build_app(SessionLocal, user))
 

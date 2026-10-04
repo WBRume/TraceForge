@@ -6,17 +6,17 @@ Create Date: 2026-03-25 19:30:00.000000
 
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "9c3b5b2d18b0"
-down_revision: Union[str, None] = "4a12a0f3c9f4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "4a12a0f3c9f4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _has_index(inspector: sa.Inspector, table_name: str, index_name: str) -> bool:
@@ -58,7 +58,9 @@ def upgrade() -> None:
         if not _has_index(inspector, "sdd_skill_versions", op.f("ix_sdd_skill_versions_skill_id")):
             op.create_index(op.f("ix_sdd_skill_versions_skill_id"), "sdd_skill_versions", ["skill_id"], unique=False)
         if not _has_index(inspector, "sdd_skill_versions", op.f("ix_sdd_skill_versions_creator_id")):
-            op.create_index(op.f("ix_sdd_skill_versions_creator_id"), "sdd_skill_versions", ["creator_id"], unique=False)
+            op.create_index(
+                op.f("ix_sdd_skill_versions_creator_id"), "sdd_skill_versions", ["creator_id"], unique=False
+            )
 
     if not inspector.has_table("sdd_skill_expert_ratings"):
         op.create_table(

@@ -3,7 +3,9 @@
 Each leg contributes 1 / (60 + one-based rank). Scores from different engines
 are never normalized or compared. At most 400 parent entities enter fusion.
 """
+
 import asyncio
+
 from app.domains.search.es import search_body
 
 
