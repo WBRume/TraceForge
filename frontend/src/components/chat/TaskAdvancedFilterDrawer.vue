@@ -90,18 +90,10 @@ onBeforeUnmount(() => {
   <Transition name="task-filter-pop">
     <section ref="popover" v-if="open" class="task-filter-popover" role="dialog" :aria-label="t('chat.task_advanced_filter_title')">
       <header class="task-filter-popover-header">
-        <div>
-          <h4>{{ t('chat.task_advanced_filter_title') }}</h4>
-          <p>{{ t('chat.task_advanced_filter_hint') }}</p>
-        </div>
+        <h4>{{ t('chat.task_advanced_filter_title') }}</h4>
         <button type="button" class="task-filter-close" :aria-label="t('common.close')" @click="open = false">×</button>
       </header>
       <div class="task-filter-popover-body">
-        <div class="task-relation-heading">
-          <span>{{ t('chat.task_relation_label') }}</span>
-          <span class="task-relation-count">{{ draftRelations.length }}</span>
-        </div>
-        <p class="task-relation-empty-hint" v-if="draftRelations.length === 0">{{ t('chat.task_relation_all_desc') }}</p>
         <div class="task-relation-options">
           <label
             v-for="option in relationOptions"
@@ -161,13 +153,6 @@ onBeforeUnmount(() => {
   font-size: 0.86rem;
 }
 
-.task-filter-popover-header p {
-  margin: 4px 0 0;
-  color: var(--color-text-muted);
-  font-size: 0.7rem;
-  line-height: 1.4;
-}
-
 .task-filter-close {
   display: inline-flex;
   align-items: center;
@@ -196,35 +181,6 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   padding: 12px 14px;
-}
-
-.task-relation-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--color-text-title);
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.task-relation-count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: var(--radius-full);
-  color: var(--color-primary-700);
-  background: var(--color-primary-50);
-  font-size: 0.68rem;
-}
-
-.task-relation-empty-hint {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
-  line-height: 1.6;
 }
 
 .task-relation-options {

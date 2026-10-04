@@ -1001,6 +1001,7 @@ onMounted(() => {
         :selected-thread-id="selectedThreadId"
         :assistant-job-map="assistantJobMap"
         :proposal-job-map="proposalJobMap"
+        :readonly="readOnlyMode || historicalVersionReadonly"
         :can-comment="effectiveCapabilities.can_comment"
         :can-ai-reply="effectiveCapabilities.can_ai_reply"
         :ai-available="effectiveCapabilities.ai_available"
