@@ -12,15 +12,16 @@ import asyncio
 import inspect
 import random
 import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from app.agents.supervision import containment_capability, process_supervisor
 from app.config import settings
 from app.core.logging import get_logger
 from app.core.offload import run_db
-from app.domains.ai.services.jobs import reaper
 from app.domains.ai.services.jobs import attempts as attempt_ops
+from app.domains.ai.services.jobs import reaper
 from app.domains.ai.services.jobs.publishing import broadcast_job_payload
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.store import list_pending_queue_keys_sync
@@ -30,7 +31,7 @@ logger = get_logger(__name__, category="ai_session")
 
 # ────────────────────────── 健康遥测 ──────────────────────────
 
-_RUNTIME_WORKER_HEALTH: Dict[str, Dict[str, Any]] = {}
+_RUNTIME_WORKER_HEALTH: dict[str, dict[str, Any]] = {}
 
 
 def _set_runtime_worker_health(name: str, **updates: Any) -> None:
@@ -39,11 +40,7 @@ def _set_runtime_worker_health(name: str, **updates: Any) -> None:
 
 
 def _runtime_worker_stale_seconds(name: str) -> float:
-    setting_name = (
-        "AI_JOB_REAPER_STALE_SECONDS"
-        if name == "reaper"
-        else "AI_JOB_DISPATCHER_STALE_SECONDS"
-    )
+    setting_name = "AI_JOB_REAPER_STALE_SECONDS" if name == "reaper" else "AI_JOB_DISPATCHER_STALE_SECONDS"
     return max(0.1, float(getattr(settings, setting_name, 60.0) or 60.0))
 
 
@@ -54,7 +51,7 @@ def _runtime_worker_operation_timeout_seconds() -> float:
     )
 
 
-def _runtime_timestamp_age(value: Any) -> Optional[float]:
+def _runtime_timestamp_age(value: Any) -> float | None:
     if not value:
         return None
     try:
@@ -66,10 +63,10 @@ def _runtime_timestamp_age(value: Any) -> Optional[float]:
         return None
 
 
-def runtime_worker_health() -> Dict[str, Any]:
+def runtime_worker_health() -> dict[str, Any]:
     """Return bounded readiness telemetry for the durable runtime loops."""
     threshold = max(1, int(getattr(settings, "AI_JOB_WORKER_FAILURE_ALERT_THRESHOLD", 3) or 3))
-    result: Dict[str, Any] = {}
+    result: dict[str, Any] = {}
     overall = True
     now_monotonic = time.monotonic()
     for name in ("reaper", "dispatcher"):
@@ -97,12 +94,14 @@ def runtime_worker_health() -> Dict[str, Any]:
         if stalled:
             state["state"] = "stalled"
             state.setdefault("last_error_type", "WorkerOperationTimeout")
-        state.update({
-            "alive": alive,
-            "running": alive,
-            "healthy": healthy,
-            "current_iteration_age_seconds": round(iteration_age, 3),
-        })
+        state.update(
+            {
+                "alive": alive,
+                "running": alive,
+                "healthy": healthy,
+                "current_iteration_age_seconds": round(iteration_age, 3),
+            }
+        )
         # Monotonic timestamps are process-local implementation details and
         # should not become part of the public readiness contract.
         state.pop("iteration_started_monotonic", None)
@@ -113,7 +112,7 @@ def runtime_worker_health() -> Dict[str, Any]:
     return result
 
 
-def process_containment_readiness() -> Dict[str, Any]:
+def process_containment_readiness() -> dict[str, Any]:
     """Attempt-containment readiness for local Agent jobs (doc 7.4).
 
     When the deployment requires containment, an unavailable provider must
@@ -178,7 +177,9 @@ def _restart_runtime_worker(name: str, previous: asyncio.Task) -> None:
 
 async def run_runtime_worker_loop(name: str, operation: Callable[[], Any], interval: int) -> None:
     failures = 0
-    _set_runtime_worker_health(name, state="starting", alive=True, running=True, failure_count=0, consecutive_failures=0)
+    _set_runtime_worker_health(
+        name, state="starting", alive=True, running=True, failure_count=0, consecutive_failures=0
+    )
     while not runtime.shutting_down:
         started_at = datetime.utcnow()
         started_monotonic = time.monotonic()
@@ -222,10 +223,7 @@ async def run_runtime_worker_loop(name: str, operation: Callable[[], Any], inter
                     running=True,
                     last_error_at=datetime.utcnow().isoformat() + "Z",
                     last_error_type="WorkerOperationTimeout",
-                    last_error=(
-                        f"{name} operation exceeded "
-                        f"{_runtime_worker_operation_timeout_seconds():g}s"
-                    ),
+                    last_error=(f"{name} operation exceeded {_runtime_worker_operation_timeout_seconds():g}s"),
                 )
                 # Do not launch a replacement scan.  The same operation owns
                 # the worker until it genuinely completes or the process is
@@ -388,8 +386,7 @@ async def start_runtime_workers() -> int:
 async def shutdown_runtime_workers() -> None:
     """Stop dispatch/queue/heartbeat tasks before infrastructure shutdown."""
     runtime.shutting_down = True
-    from app.domains.task.services import chat_submission_service
-    from app.domains.task.services import task_event_publisher
+    from app.domains.task.services import chat_submission_service, task_event_publisher
 
     await chat_submission_service.shutdown()
     await task_event_publisher.shutdown()
@@ -431,14 +428,18 @@ async def shutdown_runtime_workers() -> None:
                 not_before=row.get("job_started_at"),
             )
         confirmed_dead = bool(result is not None and result.confirmed_dead)
-        payload = await run_db(
-            attempt_ops.finish_termination_sync,
-            row["job_id"],
-            token,
-            confirmed_dead=confirmed_dead,
-            reason=(result.error_message if result and result.error_message else "WORKER_SHUTDOWN"),
-            failure_code=(result.error_code if result and result.error_code else "WORKER_SHUTDOWN"),
-        ) if token else None
+        payload = (
+            await run_db(
+                attempt_ops.finish_termination_sync,
+                row["job_id"],
+                token,
+                confirmed_dead=confirmed_dead,
+                reason=(result.error_message if result and result.error_message else "WORKER_SHUTDOWN"),
+                failure_code=(result.error_code if result and result.error_code else "WORKER_SHUTDOWN"),
+            )
+            if token
+            else None
+        )
         if payload:
             runtime.clear_cancel_for_payload(payload)
             await broadcast_job_payload(payload)

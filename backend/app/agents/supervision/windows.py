@@ -17,7 +17,6 @@ import asyncio
 import ctypes
 import ctypes.wintypes
 import os
-from typing import Optional, Tuple
 
 from app.core.logging import get_logger
 
@@ -83,7 +82,7 @@ def resume_process(process_handle: int) -> None:
         raise OSError(result, "NtResumeProcess failed")
 
 
-def create_kill_on_close_job() -> Optional[int]:
+def create_kill_on_close_job() -> int | None:
     """Create a kill-on-close Windows Job Object when available."""
     if os.name != "nt":
         return None
@@ -143,7 +142,7 @@ def create_kill_on_close_job() -> Optional[int]:
         return None
 
 
-def close_handle(handle: Optional[int]) -> None:
+def close_handle(handle: int | None) -> None:
     if handle and os.name == "nt":
         try:
             windows_kernel32().CloseHandle(ctypes.wintypes.HANDLE(handle))
@@ -161,7 +160,7 @@ def assign_process_to_job(job_handle: int, process_handle: int) -> None:
         raise RuntimeError("AssignProcessToJobObject failed")
 
 
-def terminate_job(job_handle: Optional[int]) -> bool:
+def terminate_job(job_handle: int | None) -> bool:
     """Terminate every process assigned to the Job Object."""
     if not job_handle:
         return False
@@ -174,10 +173,10 @@ def terminate_job(job_handle: Optional[int]) -> bool:
 
 
 def query_job_process_ids(
-    job_handle: Optional[int],
+    job_handle: int | None,
     *,
-    exclude_pid: Optional[int] = None,
-) -> Optional[set]:
+    exclude_pid: int | None = None,
+) -> set | None:
     """PID set assigned to one Job Object; ``None`` when the query fails.
 
     JOB_OBJECT_BASIC_PROCESS_ID_LIST stores ULONG_PTR PIDs.  A DWORD array
@@ -213,7 +212,7 @@ def query_job_process_ids(
 
 def windows_process_handles(
     process: asyncio.subprocess.Process,
-) -> Tuple[Optional[int], Optional[int]]:
+) -> tuple[int | None, int | None]:
     """Extract Popen process/thread handles from asyncio's Windows transport."""
     transport = getattr(process, "_transport", None)
     popen = None
@@ -232,14 +231,18 @@ def windows_process_handles(
     )
 
 
-async def taskkill_tree(pid: int, *, timeout: float = 5.0) -> Optional[str]:
+async def taskkill_tree(pid: int, *, timeout: float = 5.0) -> str | None:
     """Force-kill one PID and its whole descendant tree via taskkill.
 
     返回 None 表示成功；失败返回错误描述（供调用方写入结构化诊断）。
     """
     try:
         taskkill = await asyncio.create_subprocess_exec(
-            "taskkill", "/PID", str(pid), "/T", "/F",
+            "taskkill",
+            "/PID",
+            str(pid),
+            "/T",
+            "/F",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
@@ -255,7 +258,10 @@ async def taskkill_pid(pid: int, *, timeout: float = 5.0) -> bool:
     """Force-kill one PID via taskkill (no tree)."""
     try:
         taskkill = await asyncio.create_subprocess_exec(
-            "taskkill", "/PID", str(pid), "/F",
+            "taskkill",
+            "/PID",
+            str(pid),
+            "/F",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,

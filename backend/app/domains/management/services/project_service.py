@@ -8,7 +8,6 @@ custom repositories.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
@@ -21,7 +20,6 @@ from app.domains.management.models.management import (
     RepoRefType,
     SddManagementProduct,
     SddManagementProductVersion,
-    SddManagementProductVersionRepo,
     SddManagementProject,
     SddManagementProjectProduct,
     SddManagementProjectRelease,
@@ -39,7 +37,7 @@ class ProjectServiceError(ValueError):
 
 # Delivery lifecycle state machine: adjacent forward/backward transitions.
 # Backward transitions are allowed so a misclicked advancement can be reverted.
-LIFECYCLE_TRANSITIONS: Dict[ProjectLifecycleStatus, ProjectLifecycleStatus] = {
+LIFECYCLE_TRANSITIONS: dict[ProjectLifecycleStatus, ProjectLifecycleStatus] = {
     ProjectLifecycleStatus.INITIATED: ProjectLifecycleStatus.DEVELOPING,
     ProjectLifecycleStatus.DEVELOPING: ProjectLifecycleStatus.DELIVERING,
     ProjectLifecycleStatus.DELIVERING: ProjectLifecycleStatus.MAINTAINING,
@@ -47,7 +45,7 @@ LIFECYCLE_TRANSITIONS: Dict[ProjectLifecycleStatus, ProjectLifecycleStatus] = {
 }
 
 # Full ordered flow, used to resolve the previous status of a given status.
-LIFECYCLE_ORDER: List[ProjectLifecycleStatus] = [
+LIFECYCLE_ORDER: list[ProjectLifecycleStatus] = [
     ProjectLifecycleStatus.INITIATED,
     ProjectLifecycleStatus.DEVELOPING,
     ProjectLifecycleStatus.DELIVERING,
@@ -84,11 +82,11 @@ def _value(value) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def next_lifecycle_status(current: ProjectLifecycleStatus) -> Optional[ProjectLifecycleStatus]:
+def next_lifecycle_status(current: ProjectLifecycleStatus) -> ProjectLifecycleStatus | None:
     return LIFECYCLE_TRANSITIONS.get(current)
 
 
-def previous_lifecycle_status(current: ProjectLifecycleStatus) -> Optional[ProjectLifecycleStatus]:
+def previous_lifecycle_status(current: ProjectLifecycleStatus) -> ProjectLifecycleStatus | None:
     try:
         index = LIFECYCLE_ORDER.index(current)
     except ValueError:
@@ -96,7 +94,7 @@ def previous_lifecycle_status(current: ProjectLifecycleStatus) -> Optional[Proje
     return LIFECYCLE_ORDER[index - 1] if index > 0 else None
 
 
-def _allowed_lifecycle_targets(current: ProjectLifecycleStatus) -> List[ProjectLifecycleStatus]:
+def _allowed_lifecycle_targets(current: ProjectLifecycleStatus) -> list[ProjectLifecycleStatus]:
     return [
         status
         for status in (
@@ -107,7 +105,7 @@ def _allowed_lifecycle_targets(current: ProjectLifecycleStatus) -> List[ProjectL
     ]
 
 
-def serialize_project(project: SddManagementProject) -> Dict[str, object]:
+def serialize_project(project: SddManagementProject) -> dict[str, object]:
     return {
         "id": project.id,
         "name": project.name,
@@ -125,15 +123,12 @@ def serialize_project(project: SddManagementProject) -> Dict[str, object]:
 def list_projects(
     db: Session,
     *,
-    keyword: Optional[str] = None,
-    lifecycle_status: Optional[str] = None,
+    keyword: str | None = None,
+    lifecycle_status: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> Tuple[List[Dict[str, object]], int]:
-    query = (
-        db.query(SddManagementProject)
-        .options(joinedload(SddManagementProject.products))
-    )
+) -> tuple[list[dict[str, object]], int]:
+    query = db.query(SddManagementProject).options(joinedload(SddManagementProject.products))
     normalized_keyword = str(keyword or "").strip()
     if normalized_keyword:
         pattern = f"%{normalized_keyword}%"
@@ -146,9 +141,7 @@ def list_projects(
             )
         )
     if lifecycle_status:
-        query = query.filter(
-            SddManagementProject.lifecycle_status == _normalize_lifecycle(lifecycle_status)
-        )
+        query = query.filter(SddManagementProject.lifecycle_status == _normalize_lifecycle(lifecycle_status))
 
     total = query.count()
     projects = (
@@ -160,7 +153,7 @@ def list_projects(
     return [serialize_project(project) for project in projects], total
 
 
-def get_project(db: Session, project_id: str) -> Optional[SddManagementProject]:
+def get_project(db: Session, project_id: str) -> SddManagementProject | None:
     return (
         db.query(SddManagementProject)
         .options(
@@ -173,7 +166,7 @@ def get_project(db: Session, project_id: str) -> Optional[SddManagementProject]:
     )
 
 
-def serialize_project_product(link: SddManagementProjectProduct) -> Dict[str, object]:
+def serialize_project_product(link: SddManagementProjectProduct) -> dict[str, object]:
     product = link.product
     version = link.version
     return {
@@ -189,7 +182,7 @@ def serialize_project_product(link: SddManagementProjectProduct) -> Dict[str, ob
     }
 
 
-def serialize_release(release: SddManagementProjectRelease) -> Dict[str, object]:
+def serialize_release(release: SddManagementProjectRelease) -> dict[str, object]:
     product = release.product
     return {
         "id": release.id,
@@ -218,7 +211,7 @@ def serialize_release(release: SddManagementProjectRelease) -> Dict[str, object]
     }
 
 
-def serialize_project_detail(project: SddManagementProject) -> Dict[str, object]:
+def serialize_project_detail(project: SddManagementProject) -> dict[str, object]:
     payload = serialize_project(project)
     payload["releases"] = [serialize_release(release) for release in project.releases]
     payload["products"] = [serialize_project_product(link) for link in project.products]
@@ -230,10 +223,10 @@ def create_project(
     *,
     name: str,
     code: str,
-    customer: Optional[str] = None,
-    organization: Optional[str] = None,
-    description: Optional[str] = None,
-    creator_id: Optional[str] = None,
+    customer: str | None = None,
+    organization: str | None = None,
+    description: str | None = None,
+    creator_id: str | None = None,
 ) -> SddManagementProject:
     normalized_name = str(name or "").strip()
     normalized_code = str(code or "").strip()
@@ -260,11 +253,11 @@ def update_project(
     db: Session,
     project: SddManagementProject,
     *,
-    name: Optional[str] = None,
-    code: Optional[str] = None,
-    customer: Optional[str] = None,
-    organization: Optional[str] = None,
-    description: Optional[str] = None,
+    name: str | None = None,
+    code: str | None = None,
+    customer: str | None = None,
+    organization: str | None = None,
+    description: str | None = None,
 ) -> SddManagementProject:
     if name is not None:
         project.name = str(name).strip() or project.name
@@ -294,12 +287,8 @@ def delete_project(db: Session, project: SddManagementProject) -> None:
     release_count = len(project.releases or [])
     if product_count > 0 or release_count > 0:
         raise ProjectServiceError(
-            "Cannot delete project '{name}' because it still contains {products} product(s) "
-            "and {releases} release(s). Remove or detach them first.".format(
-                name=project.name,
-                products=product_count,
-                releases=release_count,
-            ),
+            f"Cannot delete project '{project.name}' because it still contains {product_count} product(s) "
+            f"and {release_count} release(s). Remove or detach them first.",
             status_code=409,
         )
     db.delete(project)
@@ -339,6 +328,7 @@ def transition_lifecycle(
 
 
 # ── Project products (with per-product delivery progress) ─────────────────
+
 
 def _assert_no_custom_baseline_conflict(
     db: Session,
@@ -391,8 +381,8 @@ def add_project_product(
     project: SddManagementProject,
     *,
     product_id: str,
-    product_version_id: Optional[str] = None,
-    creator_id: Optional[str] = None,
+    product_version_id: str | None = None,
+    creator_id: str | None = None,
 ) -> SddManagementProjectProduct:
     product = db.query(SddManagementProduct).filter(SddManagementProduct.id == product_id).first()
     if not product:
@@ -516,7 +506,7 @@ def transition_project_product_delivery(
     return link
 
 
-def get_project_product(db: Session, project_id: str, product_id: str) -> Optional[SddManagementProjectProduct]:
+def get_project_product(db: Session, project_id: str, product_id: str) -> SddManagementProjectProduct | None:
     return (
         db.query(SddManagementProjectProduct)
         .options(
@@ -533,18 +523,19 @@ def get_project_product(db: Session, project_id: str, product_id: str) -> Option
 
 # ── Releases ───────────────────────────────────────────────────────────────
 
+
 def create_release(
     db: Session,
     project: SddManagementProject,
     *,
     release_no: str,
     name: str,
-    product_id: Optional[str],
+    product_id: str | None,
     status: str = "DRAFT",
-    release_date: Optional[datetime] = None,
-    notes: Optional[str] = None,
-    custom_repos: Optional[List[Dict[str, str]]] = None,
-    creator_id: Optional[str] = None,
+    release_date: datetime | None = None,
+    notes: str | None = None,
+    custom_repos: list[dict[str, str]] | None = None,
+    creator_id: str | None = None,
 ) -> SddManagementProjectRelease:
     normalized_no = str(release_no or "").strip()
     normalized_name = str(name or "").strip()
@@ -630,7 +621,7 @@ def create_release(
     return release
 
 
-def get_release(db: Session, project_id: str, release_id: str) -> Optional[SddManagementProjectRelease]:
+def get_release(db: Session, project_id: str, release_id: str) -> SddManagementProjectRelease | None:
     return (
         db.query(SddManagementProjectRelease)
         .options(joinedload(SddManagementProjectRelease.repos))
@@ -646,11 +637,11 @@ def update_release(
     db: Session,
     release: SddManagementProjectRelease,
     *,
-    release_no: Optional[str] = None,
-    name: Optional[str] = None,
-    status: Optional[str] = None,
-    release_date: Optional[datetime] = None,
-    notes: Optional[str] = None,
+    release_no: str | None = None,
+    name: str | None = None,
+    status: str | None = None,
+    release_date: datetime | None = None,
+    notes: str | None = None,
 ) -> SddManagementProjectRelease:
     if release_no is not None:
         normalized_no = str(release_no).strip()
@@ -686,18 +677,19 @@ def delete_release(db: Session, release: SddManagementProjectRelease) -> None:
 
 # ── Workspace repo set resolution ──────────────────────────────────────────
 
+
 def resolve_project_repo_set(
     db: Session,
     project: SddManagementProject,
-    product_ids: Optional[List[str]] = None,
-) -> List[Dict[str, object]]:
+    product_ids: list[str] | None = None,
+) -> list[dict[str, object]]:
     """Resolve the effective repository set for a project and product selection.
 
     The repository set is the union of the tag/branch bindings of every
     selected product.
     """
     selected = {str(item).strip() for item in (product_ids or []) if str(item).strip()}
-    repo_map: Dict[str, Dict[str, object]] = {}
+    repo_map: dict[str, dict[str, object]] = {}
 
     for link in project.products:
         if selected and link.product_id not in selected:

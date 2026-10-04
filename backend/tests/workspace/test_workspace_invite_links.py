@@ -51,6 +51,7 @@ def _seed_user(db, user_id: str, email: str, name: str) -> User:
 
 # ────────────────────────── 服务层 ──────────────────────────
 
+
 def test_create_invite_link_defaults_and_expiry(db):
     owner = _seed_user(db, "user-1", "owner@example.com", "Owner")
     _seed_workspace(db, "ws-1", "WS", owner)
@@ -146,9 +147,7 @@ def test_accept_invite_link_rejects_invalid_states(db):
         raise AssertionError("revoked link should fail")
 
     # 已过期
-    expired = workspace_service.create_invite_link(
-        db, "ws-1", creator_user_id=owner.id, role="DEVELOPER", valid_days=1
-    )
+    expired = workspace_service.create_invite_link(db, "ws-1", creator_user_id=owner.id, role="DEVELOPER", valid_days=1)
     expired = workspace_service.get_invite_link(db, "ws-1", expired.id)
     expired.expires_at = expired.created_at - timedelta(days=1)
     db.commit()
@@ -160,9 +159,7 @@ def test_accept_invite_link_rejects_invalid_states(db):
         raise AssertionError("expired link should fail")
 
     # 次数耗尽
-    limited = workspace_service.create_invite_link(
-        db, "ws-1", creator_user_id=owner.id, role="DEVELOPER", max_uses=1
-    )
+    limited = workspace_service.create_invite_link(db, "ws-1", creator_user_id=owner.id, role="DEVELOPER", max_uses=1)
     workspace_service.accept_invite_link(db, limited.token, invitee)
     another = _seed_user(db, "user-3", "another@example.com", "Another")
     try:
@@ -174,6 +171,7 @@ def test_accept_invite_link_rejects_invalid_states(db):
 
 
 # ────────────────────────── API 层 ──────────────────────────
+
 
 def _build_client(db, current_user: User):
     app = FastAPI()

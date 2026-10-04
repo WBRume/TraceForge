@@ -8,9 +8,19 @@
   不使用客户端时间 / UUID / 可变 created_at 推断顺序；
 - 只保存定位与操作所需的最少元数据，不复制消息正文。
 """
+
 from sqlalchemy import (
-    BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer,
-    String, UniqueConstraint, func,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import relationship
 
@@ -89,9 +99,7 @@ class TaskReadingState(Base):
     resume_updated_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    __table_args__ = (
-        Index("ix_task_reading_states_workspace", "workspace_id", "user_id"),
-    )
+    __table_args__ = (Index("ix_task_reading_states_workspace", "workspace_id", "user_id"),)
 
 
 class TaskReadingReceipt(Base):
@@ -106,6 +114,4 @@ class TaskReadingReceipt(Base):
     seen_change_seq = Column(BigInteger, nullable=False)
     seen_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    __table_args__ = (
-        Index("ix_task_reading_receipts_seen", "user_id", "task_id", "reading_epoch", "seen_change_seq"),
-    )
+    __table_args__ = (Index("ix_task_reading_receipts_seen", "user_id", "task_id", "reading_epoch", "seen_change_seq"),)

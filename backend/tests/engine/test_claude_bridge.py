@@ -1,15 +1,10 @@
-import json
 import hashlib
+import json
 import os
 import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
-
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.engine.claude_bridge import SubprocessCliBridge, resolve_claude_permission_args
 
@@ -26,11 +21,14 @@ class ClaudeBridgePromptInputTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(session_id=session_id, fork=fork):
                 bridge = SubprocessCliBridge(cli_path=sys.executable)
                 events = []
-                with tempfile.TemporaryDirectory() as cwd, patch.object(
-                    bridge, "_resolve_cli_base_args", return_value=[sys.executable, "-c", script]
+                with (
+                    tempfile.TemporaryDirectory() as cwd,
+                    patch.object(bridge, "_resolve_cli_base_args", return_value=[sys.executable, "-c", script]),
                 ):
                     try:
-                        await bridge.start_session(prompt, cwd, events.append, session_id=session_id, fork_session=fork, model="custom-model")
+                        await bridge.start_session(
+                            prompt, cwd, events.append, session_id=session_id, fork_session=fork, model="custom-model"
+                        )
                         await bridge.wait()
                     finally:
                         if bridge.is_running():
@@ -140,7 +138,7 @@ class _ChunkedStdout:
     """按固定大小输出字节块，模拟流式 stdout.read(4096) 的块边界。"""
 
     def __init__(self, payload: bytes, chunk_size: int):
-        self._chunks = [payload[i:i + chunk_size] for i in range(0, len(payload), chunk_size)]
+        self._chunks = [payload[i : i + chunk_size] for i in range(0, len(payload), chunk_size)]
 
     async def read(self, _n: int) -> bytes:
         if not self._chunks:
@@ -158,9 +156,7 @@ class ClaudeBridgeUtf8StreamDecodeTest(unittest.IsolatedAsyncioTestCase):
     """
 
     def _ndjson(self, *payloads):
-        return b"".join(
-            (json.dumps(p, ensure_ascii=False) + "\n").encode("utf-8") for p in payloads
-        )
+        return b"".join((json.dumps(p, ensure_ascii=False) + "\n").encode("utf-8") for p in payloads)
 
     async def _run_read_loop(self, payload: bytes, chunk_size: int):
         received = []

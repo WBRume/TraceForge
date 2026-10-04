@@ -5,28 +5,21 @@
 - 会话创建时按仓库选填分支覆盖。
 """
 
-import os
-import sys
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.dependencies import get_current_user, get_db, require_admin  # noqa: E402
-from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
-from app.domains.management.models.management import SddManagementRepository  # noqa: E402
-from app.domains.system_config.models.system_config import SystemConfig  # noqa: E402
-from app.domains.system_config.services import system_config_service  # noqa: E402
-from app.domains.task.services import git_worktree_service  # noqa: E402
-from app.domains.workspace.routers import workspace as workspace_router  # noqa: E402
-from app.domains.workspace.services import workspace_service  # noqa: E402
-
+from app.dependencies import get_current_user, get_db, require_admin
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.management.models.management import SddManagementRepository
+from app.domains.system_config.models.system_config import SystemConfig
+from app.domains.system_config.services import system_config_service
+from app.domains.task.services import git_worktree_service
 from app.domains.task.services.provisioning import creation as task_provisioning_creation
+from app.domains.workspace.routers import workspace as workspace_router
+from app.domains.workspace.services import workspace_service
 
 
 def _seed_user(db) -> User:
@@ -66,9 +59,10 @@ def _disable_mgmt_selection(db) -> None:
 
 
 def test_system_config_defaults_to_disabled(db):
-    assert system_config_service.get_config_bool(
-        db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED
-    ) is False
+    assert (
+        system_config_service.get_config_bool(db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED)
+        is False
+    )
     public = system_config_service.list_public_configs(db)
     assert public[system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED] is False
 
@@ -78,9 +72,7 @@ def test_system_config_set_and_read_roundtrip(db):
         db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED, "false", "admin-1"
     )
     assert (
-        system_config_service.get_config_bool(
-            db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED
-        )
+        system_config_service.get_config_bool(db, system_config_service.CONFIG_PROJECT_PRODUCT_MANAGEMENT_ENABLED)
         is False
     )
     with pytest.raises(system_config_service.SystemConfigError):
@@ -266,7 +258,6 @@ def test_standalone_multi_repo_job_clones_repos_end_to_end(db, tmp_path, monkeyp
 
     from app.domains.workflow.models.provision_job import ProvisionJobStatus
     from app.domains.workflow.services import provision_job_service
-    from app.domains.workspace.models.workspace_repository import WorkspaceRepositoryState
 
     def _init_source_repo(path: Path, filename: str) -> str:
         path.mkdir(parents=True, exist_ok=True)
@@ -401,7 +392,7 @@ def _seed_workspace_with_repos(db):
             state=WorkspaceRepositoryState.READY,
         ),
     ]
-    db.add_all([user, workspace, member] + ws_repos)
+    db.add_all([user, workspace, member, *ws_repos])
     db.commit()
     return user, workspace
 
@@ -546,9 +537,7 @@ def _fake_job():
 def test_create_workspace_api_rejects_project_selection_when_disabled(db, monkeypatch):
     _disable_mgmt_selection(db)
     app = _build_test_app(db)
-    monkeypatch.setattr(
-        workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job()
-    )
+    monkeypatch.setattr(workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job())
 
     client = TestClient(app)
     resp = client.post(
@@ -569,9 +558,8 @@ def test_create_workspace_api_rejects_project_selection_when_disabled(db, monkey
 def test_create_workspace_api_standalone_requires_names_but_allows_empty_repos_when_disabled(db, monkeypatch):
     _disable_mgmt_selection(db)
     app = _build_test_app(db)
-    monkeypatch.setattr(
-        workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job()
-    )
+    monkeypatch.setattr(workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job())
+
     async def _noop(_job_id):
         return None
 
@@ -649,9 +637,7 @@ def test_create_workspace_api_legacy_flow_when_enabled(db, monkeypatch):
     async def _noop(_job_id):
         return None
 
-    monkeypatch.setattr(
-        workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job()
-    )
+    monkeypatch.setattr(workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job())
     monkeypatch.setattr(workspace_router.provision_job_service, "run_create_workspace_job", _noop)
 
     client = TestClient(app)

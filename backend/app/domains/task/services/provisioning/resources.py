@@ -2,17 +2,16 @@
 
 import os
 import shutil
-from typing import Callable, Optional
-from sqlalchemy.orm import Session
-from app.core.logging import bind_task_context, get_logger
-from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.auth.models.user import Workspace
+from collections.abc import Callable
 
+from sqlalchemy.orm import Session
+
+from app.core.logging import bind_task_context, get_logger
+from app.domains.auth.models.user import Workspace
+from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
+from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services import git_worktree_service
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
-
-from app.domains.skill.services.runtime import materialization as skill_runtime_materialization
-
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -31,14 +30,28 @@ def _prepare_initial_workspace_checkpoint(db: Session, ws: Workspace, task: SddT
     if metadata.get("initial_workspace_checkpoint"):
         return
     if resource.is_local(task):
-        result = resource.execute(db, task, "snapshot", {
-            "action": "create", "provider": "opencode", "session_id": None,
-        }, "snapshot-initial-" + task.id)
+        result = resource.execute(
+            db,
+            task,
+            "snapshot",
+            {
+                "action": "create",
+                "provider": "opencode",
+                "session_id": None,
+            },
+            "snapshot-initial-" + task.id,
+        )
         checkpoint = encode(task.id, result["root"])
     else:
         result = snapshots._create_checkpoint_sync(
-            task.project_path, [repo.rel_path for repo in task_task_workspace_repositories.get_task_repositories(db, task.id)],
-            "none", None, ws.id, ws.name, task.id, task.name,
+            task.project_path,
+            [repo.rel_path for repo in task_task_workspace_repositories.get_task_repositories(db, task.id)],
+            "none",
+            None,
+            ws.id,
+            ws.name,
+            task.id,
+            task.name,
         )
         checkpoint = result["root"]
     metadata["initial_workspace_checkpoint"] = checkpoint
@@ -52,8 +65,8 @@ def prepare_task_resources_for_provision(
     *,
     workspace_id: str,
     task_id: str,
-    cancel_check: Optional[Callable[[], bool]] = None,
-    snapshot_progress: Optional[Callable[[], None]] = None,
+    cancel_check: Callable[[], bool] | None = None,
+    snapshot_progress: Callable[[], None] | None = None,
 ) -> SddTask:
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
@@ -81,6 +94,7 @@ def prepare_task_resources_for_provision(
             raise ProvisionJobCancelled("Task no longer provisioning")
 
     from app.domains.local_resource.service import is_local, provision_task
+
     with bind_task_context(task_id=task.id, workspace_id=workspace_id, user_id=task.creator_id):
         try:
             _checkpoint()
@@ -152,11 +166,13 @@ def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> 
 
     checkpoint = (task.task_meta_json or {}).get("initial_workspace_checkpoint")
     if checkpoint:
-        from app.domains.task.services import task_session_snapshot_service as snapshots
         from app.domains.local_resource import snapshots as remote
+        from app.domains.task.services import task_session_snapshot_service as snapshots
+
         try:
             if checkpoint.startswith(remote.PREFIX):
                 from app.domains.local_resource.service import execute
+
                 _, path = remote.decode(checkpoint)
                 execute(db, task, "snapshot", {"action": "cleanup", "checkpoint_root": path})
             else:
@@ -165,6 +181,7 @@ def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> 
             logger.warning("Failed to clean initial checkpoint for task {}: {}", task.id, exc)
 
     from app.domains.local_resource.service import is_local, release_or_defer
+
     if is_local(task):
         release_or_defer(db, task)
         db.delete(task)
@@ -178,7 +195,9 @@ def rollback_provision_task(db: Session, *, workspace_id: str, task_id: str) -> 
     try:
         if task_repos and ws:
             task_task_workspace_repositories.cleanup_task_repositories(db, ws, task, missing_ok=True)
-        elif ws and git_worktree_service.should_use_git_worktree(workspace_project_path, ws.git_repo_url or task.git_repo_url):
+        elif ws and git_worktree_service.should_use_git_worktree(
+            workspace_project_path, ws.git_repo_url or task.git_repo_url
+        ):
             git_worktree_service.remove_task_worktree(
                 repo_path=workspace_project_path,
                 task_id=task.id,

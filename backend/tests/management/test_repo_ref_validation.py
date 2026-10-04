@@ -20,7 +20,6 @@ from app.domains.management.services.git_ref_service import (  # noqa: E402
     validate_repository_accessible,
 )
 
-
 LS_REMOTE_OUTPUT = (
     "abc123\tHEAD\n"
     "abc123\trefs/heads/main\n"
@@ -33,12 +32,15 @@ LS_REMOTE_OUTPUT = (
 class ParseRemoteRefsTest(unittest.TestCase):
     def test_parse_output(self):
         entries = parse_ls_remote_output(LS_REMOTE_OUTPUT)
-        self.assertEqual(entries, [
-            ("BRANCH", "main", "abc123"),
-            ("BRANCH", "release/v8r21", "def456"),
-            ("TAG", "v8r21.0", "111222"),
-            ("TAG", "v8r21.1", "333444"),
-        ])
+        self.assertEqual(
+            entries,
+            [
+                ("BRANCH", "main", "abc123"),
+                ("BRANCH", "release/v8r21", "def456"),
+                ("TAG", "v8r21.0", "111222"),
+                ("TAG", "v8r21.1", "333444"),
+            ],
+        )
 
     def test_fetch_remote_refs_raises_on_failure(self):
         result = mock.Mock()

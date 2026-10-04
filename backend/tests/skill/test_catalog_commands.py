@@ -13,10 +13,14 @@ from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed
 def seed_skill(db, storage_root):
     user, _workspace, _task = _seed_workspace(db)
     skill = SddSkill(
-        id="catalog-skill", name="Before", dimension=SkillDimension.GLOBAL,
-        creator_id=user.id, last_modifier_id=user.id,
+        id="catalog-skill",
+        name="Before",
+        dimension=SkillDimension.GLOBAL,
+        creator_id=user.id,
+        last_modifier_id=user.id,
         package_path=storage_service.package_relative_path("catalog-skill", SkillDimension.GLOBAL, None, "Before"),
-        entry_file_path="SKILL.md", manifest_path="",
+        entry_file_path="SKILL.md",
+        manifest_path="",
     )
     db.add(skill)
     db.commit()
@@ -27,11 +31,21 @@ def seed_skill(db, storage_root):
 
 
 def rename(db, user, skill, **overrides):
-    return update_skill_metadata(db, user, skill, **{
-        "context_workspace_id": "ws-1", "name": "After", "description": None,
-        "dimension_value": None, "workspace_id": None, "entry_file_path": None,
-        "manifest_path": None, **overrides,
-    })
+    return update_skill_metadata(
+        db,
+        user,
+        skill,
+        **{
+            "context_workspace_id": "ws-1",
+            "name": "After",
+            "description": None,
+            "dimension_value": None,
+            "workspace_id": None,
+            "entry_file_path": None,
+            "manifest_path": None,
+            **overrides,
+        },
+    )
 
 
 def test_invalid_entry_is_rejected_before_moving_package(tmp_path, monkeypatch):
@@ -57,11 +71,15 @@ def test_commit_failure_restores_package_and_catalog(tmp_path, monkeypatch):
         with _session(factory) as db:
             user, skill, directory = seed_skill(db, tmp_path)
             old_path = skill.package_path
-            target = Path(storage_service.package_abs_path_from_relative(
-                storage_service.package_relative_path(skill.id, SkillDimension.GLOBAL, None, "After")
-            ))
+            target = Path(
+                storage_service.package_abs_path_from_relative(
+                    storage_service.package_relative_path(skill.id, SkillDimension.GLOBAL, None, "After")
+                )
+            )
+
             def fail_commit():
                 raise RuntimeError("database unavailable")
+
             monkeypatch.setattr(db, "commit", fail_commit)
             with pytest.raises(RuntimeError, match="database unavailable"):
                 rename(db, user, skill)

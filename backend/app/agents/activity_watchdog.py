@@ -9,7 +9,6 @@ from typing import TypeVar
 
 from app.agents.errors import AgentTimeoutError
 
-
 T = TypeVar("T")
 
 # Provider keep-alives are intentionally excluded.  These events prove that the
@@ -121,7 +120,9 @@ class AgentActivityWatchdog:
                 changed = asyncio.create_task(self._state_changed.wait())
                 try:
                     done, _ = await asyncio.wait(
-                        {task, changed}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED,
+                        {task, changed},
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
                 finally:
                     changed.cancel()

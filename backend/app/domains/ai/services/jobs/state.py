@@ -6,48 +6,46 @@ payload 广播（:mod:`publishing`）与终态后的取消信号回收/队列调
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.agents import AgentRunResult, AgentStopResult, current_agent_attempt
 from app.core.offload import run_db
+from app.domains.ai.services.jobs import publishing
 from app.domains.ai.services.jobs.attempts import resolve_current_attempt_evidence
 from app.domains.ai.services.jobs.constants import FINAL_STATUSES
-from app.domains.ai.services.jobs import publishing
-from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.fencing import update_job_state_sync
+from app.domains.ai.services.jobs.registry import runtime
 
 
 async def update_job_state(
     job_id: str,
     *,
-    status: Optional[Any] = None,
-    progress: Optional[int] = None,
-    message: Optional[str] = None,
-    context_patch: Optional[Dict[str, Any]] = None,
-    result_patch: Optional[Dict[str, Any]] = None,
-    error_message: Optional[str] = None,
-    session_id: Optional[str] = None,
-    agent_backend: Optional[str] = None,
+    status: Any | None = None,
+    progress: int | None = None,
+    message: str | None = None,
+    context_patch: dict[str, Any] | None = None,
+    result_patch: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    session_id: str | None = None,
+    agent_backend: str | None = None,
     finalize: bool = False,
-    run_token: Optional[str] = None,
-    process_started: Optional[bool] = None,
-    termination_confirmed_dead: Optional[bool] = None,
-    failure_code: Optional[str] = None,
+    run_token: str | None = None,
+    process_started: bool | None = None,
+    termination_confirmed_dead: bool | None = None,
+    failure_code: str | None = None,
     remaining_pids: tuple = (),
-    evidence: Optional[Any] = None,
-    stop_result: Optional[AgentStopResult] = None,
-    typed_error: Optional[BaseException] = None,
-    provider_result: Optional[AgentRunResult] = None,
-) -> Optional[Dict[str, Any]]:
+    evidence: Any | None = None,
+    stop_result: AgentStopResult | None = None,
+    typed_error: BaseException | None = None,
+    provider_result: AgentRunResult | None = None,
+) -> dict[str, Any] | None:
     attempt = current_agent_attempt()
     effective_run_token = run_token or (attempt.run_token if attempt else None)
     is_terminal_write = bool(finalize) or (status is not None and status in FINAL_STATUSES)
     resolved_evidence = evidence
     if is_terminal_write and resolved_evidence is None:
         resolved_evidence = resolve_current_attempt_evidence(
-            execution_kind=(
-                getattr(attempt, "execution_kind", None) if attempt else None
-            ),
+            execution_kind=(getattr(attempt, "execution_kind", None) if attempt else None),
             stop_result=stop_result,
             typed_error=typed_error,
             provider_result=provider_result,

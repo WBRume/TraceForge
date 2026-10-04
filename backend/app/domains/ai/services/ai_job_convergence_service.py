@@ -16,10 +16,10 @@ commit 之后执行。
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, Literal, Optional, Tuple
+from typing import Any, Literal
 
 from sqlalchemy.orm import Session
 
@@ -68,14 +68,14 @@ class ConvergenceIntent(str, Enum):
     REAPER_FINALIZE = "REAPER_FINALIZE"
 
 
-def _merge_json(original: Any, patch: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _merge_json(original: Any, patch: dict[str, Any] | None) -> dict[str, Any]:
     merged = dict(original) if isinstance(original, dict) else {}
     if patch:
         merged.update(patch)
     return merged
 
 
-def _attr_bool(value: Any) -> Optional[bool]:
+def _attr_bool(value: Any) -> bool | None:
     if value is None:
         return None
     return bool(value)
@@ -83,7 +83,7 @@ def _attr_bool(value: Any) -> Optional[bool]:
 
 def _verified_provider_result(
     provider_result: Any,
-    runtime: Optional[AgentAttemptRuntimeState],
+    runtime: AgentAttemptRuntimeState | None,
     attempt_key: tuple,
 ) -> bool:
     """Whether ``provider_result`` is a verified terminal provider outcome.
@@ -106,9 +106,7 @@ def _verified_provider_result(
             if call.call_id == call_id:
                 # result_success 非 None 才是真实 result（ACK 终止的调用
                 # 不伪造 outcome）。
-                return call.state is ProviderCallState.ENDED and (
-                    call.result_success is not None
-                )
+                return call.state is ProviderCallState.ENDED and (call.result_success is not None)
         return False
     # 其他形状（SimpleNamespace 等）不是 single-turn 展示字典；按真实
     # 终局结果对象处理，保持 engine 路径的既有行为。
@@ -116,8 +114,8 @@ def _verified_provider_result(
 
 
 def _provider_call_evidence(
-    runtime: Optional[AgentAttemptRuntimeState],
-    attempt_key: Optional[tuple],
+    runtime: AgentAttemptRuntimeState | None,
+    attempt_key: tuple | None,
     provider_result: Any,
 ) -> tuple[bool, bool]:
     """Read per-call provider evidence for one attempt (07e04775 §4.4).
@@ -138,8 +136,7 @@ def _provider_call_evidence(
     if not calls:
         return False, False
     ended_with_result = [
-        call for call in calls
-        if call.state is ProviderCallState.ENDED and call.result_success is not None
+        call for call in calls if call.state is ProviderCallState.ENDED and call.result_success is not None
     ]
     unresolved = [call for call in calls if call.unresolved]
     seen = bool(ended_with_result) and not unresolved
@@ -161,9 +158,9 @@ def _bound_call_stop_acknowledged(
 
 
 def _remote_per_call_evidence(
-    runtime: Optional[AgentAttemptRuntimeState],
+    runtime: AgentAttemptRuntimeState | None,
     attempt_key: tuple,
-) -> Optional[Tuple[Tuple[str, ...], bool, bool, bool]]:
+) -> tuple[tuple[str, ...], bool, bool, bool] | None:
     """Read authoritative per-call evidence for one attempt (0c381413 §2.5).
 
     返回 ``(unresolved_call_ids, provider_outcome_seen, remote_stop_acknowledged,
@@ -189,25 +186,13 @@ def _remote_per_call_evidence(
         return None
     unresolved_ids = tuple(call.call_id for call in calls if call.unresolved)
     ended_with_result = [
-        call
-        for call in calls
-        if call.state is ProviderCallState.ENDED and call.result_success is not None
+        call for call in calls if call.state is ProviderCallState.ENDED and call.result_success is not None
     ]
-    started_calls = [
-        call for call in calls if call.state is not ProviderCallState.NOT_STARTED
-    ]
-    stopped_calls = [
-        call
-        for call in started_calls
-        if _bound_call_stop_acknowledged(runtime, call)
-    ]
+    started_calls = [call for call in calls if call.state is not ProviderCallState.NOT_STARTED]
+    stopped_calls = [call for call in started_calls if _bound_call_stop_acknowledged(runtime, call)]
     outcome_seen = bool(ended_with_result) and not unresolved_ids
-    stop_acknowledged: Optional[bool] = None
-    if (
-        started_calls
-        and not unresolved_ids
-        and len(stopped_calls) == len(started_calls)
-    ):
+    stop_acknowledged: bool | None = None
+    if started_calls and not unresolved_ids and len(stopped_calls) == len(started_calls):
         stop_acknowledged = True
     any_started = bool(started_calls)
     return unresolved_ids, outcome_seen, stop_acknowledged, any_started
@@ -216,18 +201,140 @@ def _remote_per_call_evidence(
 # ────────────────────────── 唯一证据解析器 ──────────────────────────
 
 
+def _resolve_remote_evidence(
+    kind, runtime, stop_result, typed_error, provider_result, fallback_failure_code, resolved_attempt_key
+):
+    remote_stop = (
+        stop_result
+        if (stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_REMOTE_SESSION)
+        else None
+    )
+    per_call = _remote_per_call_evidence(runtime, resolved_attempt_key)
+    failure_code = None
+    error_message = None
+    for candidate in (
+        remote_stop.failure_code if remote_stop is not None else None,
+        getattr(runtime, "remote_stop_result", None).failure_code
+        if runtime is not None and runtime.remote_stop_result is not None
+        else None,
+        getattr(typed_error, "failure_code", None),
+        fallback_failure_code,
+    ):
+        if candidate:
+            failure_code = str(candidate)
+            break
+    for candidate in (
+        remote_stop.error_message if remote_stop is not None else None,
+        str(typed_error) if typed_error is not None else None,
+    ):
+        if candidate:
+            error_message = str(candidate)
+            break
+    if per_call is not None:
+        # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时证据以
+        # per-call 为权威。provider outcome 只能来自已 ENDED 且携带
+        # 真实 result 的调用；attempt 级单槽 ACK 与 supplied result
+        # 一律不得旁路未决检查。停止 ACK 必须按 call 绑定（§2.4）。
+        unresolved_ids, provider_seen, remote_ack, any_call_started = per_call
+        remote_started = (bool(runtime.remote_session_started) if runtime is not None else False) or any_call_started
+        return AttemptFinalizerEvidence(
+            execution_kind=kind,
+            process_started=False,
+            termination_confirmed_dead=None,
+            remote_stop_acknowledged=remote_ack,
+            failure_code=failure_code,
+            error_message=error_message,
+            remaining_pids=(),
+            source="remote",
+            remote_session_started=remote_started,
+            provider_outcome_seen=provider_seen,
+            unresolved_provider_call_ids=unresolved_ids,
+            provider_calls_authoritative=True,
+        )
+    # 无 per-call 记录的旧路径单独处理；不能将空 runtime 当作从未开始
+    # （durable locator / reaper 流程仍按既有语义收敛）。
+    remote_ack = (
+        bool(remote_stop.stop_acknowledged)
+        if remote_stop is not None and remote_stop.stop_acknowledged
+        else (False if remote_stop is not None else None)
+    )
+    if remote_ack is None and runtime is not None:
+        runtime_ack = runtime.remote_stop_acknowledged
+        remote_ack = runtime_ack
+    calls_outcome, any_call_started = _provider_call_evidence(runtime, resolved_attempt_key, provider_result)
+    remote_started = (bool(runtime.remote_session_started) if runtime is not None else False) or any_call_started
+    provider_seen = calls_outcome or _verified_provider_result(provider_result, runtime, resolved_attempt_key)
+    return AttemptFinalizerEvidence(
+        execution_kind=kind,
+        process_started=False,
+        termination_confirmed_dead=None,
+        remote_stop_acknowledged=remote_ack,
+        failure_code=failure_code,
+        error_message=error_message,
+        remaining_pids=(),
+        source="remote",
+        remote_session_started=remote_started,
+        provider_outcome_seen=provider_seen,
+    )
+
+
+def _resolve_fallback_death(stop_result, typed_error, provider_result, fallback_dead):
+    conflict = False
+    fallback_candidates: list[bool] = []
+    if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS:
+        candidate = _attr_bool(stop_result.local_process_confirmed_dead)
+        if candidate is not None:
+            fallback_candidates.append(candidate)
+    if typed_error is not None:
+        candidate = _attr_bool(getattr(typed_error, "termination_confirmed_dead", None))
+        if candidate is not None:
+            fallback_candidates.append(candidate)
+    if provider_result is not None:
+        candidate = _attr_bool(getattr(provider_result, "termination_confirmed_dead", None))
+        if candidate is not None:
+            fallback_candidates.append(candidate)
+    if fallback_dead is not None:
+        fallback_candidates.append(bool(fallback_dead))
+    if any(value is True for value in fallback_candidates) and any(value is False for value in fallback_candidates):
+        # 无身份 fallback 互相冲突：不得用 False/True 优先掩盖冲突。
+        conflict = True
+        resolved_fallback_dead: bool | None = None
+    elif fallback_candidates:
+        resolved_fallback_dead = fallback_candidates[0]
+    else:
+        resolved_fallback_dead = None
+    return resolved_fallback_dead, conflict
+
+
+def _resolve_process_started(runtime_started, stop_result, typed_error, fallback_started):
+    if runtime_started is not None:
+        started = runtime_started
+    else:
+        started_candidates: list[bool] = []
+        if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS:
+            started_candidates.append(bool(stop_result.local_process_started))
+        if typed_error is not None:
+            candidate = getattr(typed_error, "process_started", None)
+            if candidate is not None:
+                started_candidates.append(bool(candidate))
+        if fallback_started is not None:
+            started_candidates.append(bool(fallback_started))
+        started = any(started_candidates)
+    return started
+
+
 def resolve_attempt_evidence(
     *,
     execution_kind: ExecutionKind,
-    runtime: Optional[AgentAttemptRuntimeState] = None,
-    stop_result: Optional[AgentStopResult] = None,
-    typed_error: Optional[BaseException] = None,
-    provider_result: Optional[AgentRunResult] = None,
-    fallback_started: Optional[bool] = None,
-    fallback_dead: Optional[bool] = None,
-    fallback_failure_code: Optional[str] = None,
-    fallback_remaining_pids: Tuple[int, ...] = (),
-    attempt_key: Optional[tuple] = None,
+    runtime: AgentAttemptRuntimeState | None = None,
+    stop_result: AgentStopResult | None = None,
+    typed_error: BaseException | None = None,
+    provider_result: AgentRunResult | None = None,
+    fallback_started: bool | None = None,
+    fallback_dead: bool | None = None,
+    fallback_failure_code: str | None = None,
+    fallback_remaining_pids: tuple[int, ...] = (),
+    attempt_key: tuple | None = None,
 ) -> AttemptFinalizerEvidence:
     """按固定优先级合并 attempt 证据（doc §6.2）。
 
@@ -246,96 +353,17 @@ def resolve_attempt_evidence(
     等于“从未开始”。
     """
     kind = execution_kind if execution_kind in EXECUTION_KINDS else EXECUTION_KIND_LOCAL_PROCESS
-    resolved_attempt_key = (
-        tuple(attempt_key or ())
-        if attempt_key is not None
-        else current_agent_attempt_key()
-    )
+    resolved_attempt_key = tuple(attempt_key or ()) if attempt_key is not None else current_agent_attempt_key()
 
     if kind == EXECUTION_KIND_REMOTE_SESSION:
-        remote_stop = stop_result if (
-            stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_REMOTE_SESSION
-        ) else None
-        per_call = _remote_per_call_evidence(runtime, resolved_attempt_key)
-        failure_code = None
-        error_message = None
-        for candidate in (
-            remote_stop.failure_code if remote_stop is not None else None,
-            getattr(runtime, "remote_stop_result", None).failure_code
-            if runtime is not None and runtime.remote_stop_result is not None
-            else None,
-            getattr(typed_error, "failure_code", None),
-            fallback_failure_code,
-        ):
-            if candidate:
-                failure_code = str(candidate)
-                break
-        for candidate in (
-            remote_stop.error_message if remote_stop is not None else None,
-            str(typed_error) if typed_error is not None else None,
-        ):
-            if candidate:
-                error_message = str(candidate)
-                break
-        if per_call is not None:
-            # P0（doc 审计 0c381413 §2.5）：per-call 记录存在时证据以
-            # per-call 为权威。provider outcome 只能来自已 ENDED 且携带
-            # 真实 result 的调用；attempt 级单槽 ACK 与 supplied result
-            # 一律不得旁路未决检查。停止 ACK 必须按 call 绑定（§2.4）。
-            unresolved_ids, provider_seen, remote_ack, any_call_started = per_call
-            remote_started = (
-                bool(runtime.remote_session_started) if runtime is not None else False
-            ) or any_call_started
-            return AttemptFinalizerEvidence(
-                execution_kind=kind,
-                process_started=False,
-                termination_confirmed_dead=None,
-                remote_stop_acknowledged=remote_ack,
-                failure_code=failure_code,
-                error_message=error_message,
-                remaining_pids=(),
-                source="remote",
-                remote_session_started=remote_started,
-                provider_outcome_seen=provider_seen,
-                unresolved_provider_call_ids=unresolved_ids,
-                provider_calls_authoritative=True,
-            )
-        # 无 per-call 记录的旧路径单独处理；不能将空 runtime 当作从未开始
-        # （durable locator / reaper 流程仍按既有语义收敛）。
-        remote_ack = (
-            bool(remote_stop.stop_acknowledged)
-            if remote_stop is not None and remote_stop.stop_acknowledged
-            else (False if remote_stop is not None else None)
-        )
-        if remote_ack is None and runtime is not None:
-            runtime_ack = runtime.remote_stop_acknowledged
-            remote_ack = runtime_ack
-        calls_outcome, any_call_started = _provider_call_evidence(
-            runtime, resolved_attempt_key, provider_result
-        )
-        remote_started = (
-            bool(runtime.remote_session_started) if runtime is not None else False
-        ) or any_call_started
-        provider_seen = calls_outcome or _verified_provider_result(
-            provider_result, runtime, resolved_attempt_key
-        )
-        return AttemptFinalizerEvidence(
-            execution_kind=kind,
-            process_started=False,
-            termination_confirmed_dead=None,
-            remote_stop_acknowledged=remote_ack,
-            failure_code=failure_code,
-            error_message=error_message,
-            remaining_pids=(),
-            source="remote",
-            remote_session_started=remote_started,
-            provider_outcome_seen=provider_seen,
+        return _resolve_remote_evidence(
+            kind, runtime, stop_result, typed_error, provider_result, fallback_failure_code, resolved_attempt_key
         )
 
     # ── LOCAL_PROCESS ──
     conflict = False
-    runtime_dead: Optional[bool] = None
-    runtime_started: Optional[bool] = None
+    runtime_dead: bool | None = None
+    runtime_started: bool | None = None
     runtime_has_evidence = False
     if runtime is not None:
         runtime_has_evidence = bool(runtime.has_process_evidence)
@@ -343,31 +371,7 @@ def resolve_attempt_evidence(
             runtime_started = bool(runtime.process_started)
             runtime_dead = runtime.termination_confirmed_dead
 
-    fallback_candidates: list[bool] = []
-    if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS:
-        candidate = _attr_bool(stop_result.local_process_confirmed_dead)
-        if candidate is not None:
-            fallback_candidates.append(candidate)
-    if typed_error is not None:
-        candidate = _attr_bool(getattr(typed_error, "termination_confirmed_dead", None))
-        if candidate is not None:
-            fallback_candidates.append(candidate)
-    if provider_result is not None:
-        candidate = _attr_bool(getattr(provider_result, "termination_confirmed_dead", None))
-        if candidate is not None:
-            fallback_candidates.append(candidate)
-    if fallback_dead is not None:
-        fallback_candidates.append(bool(fallback_dead))
-    if any(value is True for value in fallback_candidates) and any(
-        value is False for value in fallback_candidates
-    ):
-        # 无身份 fallback 互相冲突：不得用 False/True 优先掩盖冲突。
-        conflict = True
-        resolved_fallback_dead: Optional[bool] = None
-    elif fallback_candidates:
-        resolved_fallback_dead = fallback_candidates[0]
-    else:
-        resolved_fallback_dead = None
+    resolved_fallback_dead, conflict = _resolve_fallback_death(stop_result, typed_error, provider_result, fallback_dead)
 
     if runtime_has_evidence and runtime_dead is not None:
         # 规则 2：runtime 明确结果权威，任何 fallback 都不得改变。
@@ -383,25 +387,13 @@ def resolve_attempt_evidence(
         dead = resolved_fallback_dead
         source = "fallback" if dead is not None else "none"
 
-    if runtime_started is not None:
-        started = runtime_started
-    else:
-        started_candidates: list[bool] = []
-        if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS:
-            started_candidates.append(bool(stop_result.local_process_started))
-        if typed_error is not None:
-            candidate = getattr(typed_error, "process_started", None)
-            if candidate is not None:
-                started_candidates.append(bool(candidate))
-        if fallback_started is not None:
-            started_candidates.append(bool(fallback_started))
-        started = any(started_candidates)
+    started = _resolve_process_started(runtime_started, stop_result, typed_error, fallback_started)
 
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    failure_code: str | None = None
+    error_message: str | None = None
     if conflict:
         failure_code = EVIDENCE_CONFLICT
-    remaining: Tuple[int, ...] = ()
+    remaining: tuple[int, ...] = ()
     if runtime is not None and runtime_has_evidence:
         remaining = tuple(runtime.remaining_pids)
         failure_code = failure_code or runtime.termination_failure_code
@@ -409,10 +401,14 @@ def resolve_attempt_evidence(
     if not remaining and stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS:
         remaining = tuple(stop_result.remaining_pids or ())
     failure_code = failure_code or (
-        stop_result.failure_code if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS else None
+        stop_result.failure_code
+        if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS
+        else None
     )
     error_message = error_message or (
-        stop_result.error_message if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS else None
+        stop_result.error_message
+        if stop_result is not None and stop_result.execution_kind == EXECUTION_KIND_LOCAL_PROCESS
+        else None
     )
     failure_code = failure_code or getattr(typed_error, "failure_code", None) or fallback_failure_code
     if error_message is None and typed_error is not None:
@@ -427,17 +423,15 @@ def resolve_attempt_evidence(
         remaining_pids=tuple(sorted(set(remaining))) or tuple(fallback_remaining_pids or ()),
         source=source,
         remote_session_started=False,
-        provider_outcome_seen=(
-            _verified_provider_result(provider_result, runtime, resolved_attempt_key)
-        ),
+        provider_outcome_seen=(_verified_provider_result(provider_result, runtime, resolved_attempt_key)),
     )
 
 
 def evidence_from_stop_result(
-    stop_result: Optional[AgentStopResult],
+    stop_result: AgentStopResult | None,
     *,
-    remote_session_started: Optional[bool] = None,
-    execution_kind: Optional[ExecutionKind] = None,
+    remote_session_started: bool | None = None,
+    execution_kind: ExecutionKind | None = None,
 ) -> AttemptFinalizerEvidence:
     """Build finalizer evidence directly from a unified stop result.
 
@@ -461,9 +455,7 @@ def evidence_from_stop_result(
             error_message=(stop_result.error_message if stop_result is not None else None),
             remaining_pids=(),
             source="stop_result" if stop_result is not None else "none",
-            remote_session_started=(
-                bool(remote_session_started) if remote_session_started is not None else False
-            ),
+            remote_session_started=(bool(remote_session_started) if remote_session_started is not None else False),
             provider_outcome_seen=False,
         )
     if stop_result is None:
@@ -477,11 +469,7 @@ def evidence_from_stop_result(
             remaining_pids=(),
             source="none",
         )
-    dead = (
-        None
-        if stop_result.local_process_confirmed_dead is None
-        else bool(stop_result.local_process_confirmed_dead)
-    )
+    dead = None if stop_result.local_process_confirmed_dead is None else bool(stop_result.local_process_confirmed_dead)
     return AttemptFinalizerEvidence(
         execution_kind=kind,
         process_started=bool(stop_result.local_process_started),
@@ -504,25 +492,25 @@ class AttemptConvergenceRequest:
     job_id: str
     run_token: str
     worker_boot_id: str
-    requested_status: Optional[AiJobStatus]
-    reason: Optional[str]
+    requested_status: AiJobStatus | None
+    reason: str | None
     evidence: AttemptFinalizerEvidence
-    session_revision: Optional[int] = None
-    result_patch: Optional[Dict[str, Any]] = None
-    context_patch: Optional[Dict[str, Any]] = None
+    session_revision: int | None = None
+    result_patch: dict[str, Any] | None = None
+    context_patch: dict[str, Any] | None = None
     intent: ConvergenceIntent = ConvergenceIntent.NORMAL_FINALIZE
-    message: Optional[str] = None
-    progress: Optional[int] = None
-    error_message: Optional[str] = None
-    session_id: Optional[str] = None
-    agent_backend: Optional[str] = None
+    message: str | None = None
+    progress: int | None = None
+    error_message: str | None = None
+    session_id: str | None = None
+    agent_backend: str | None = None
     mark_task_interrupted: bool = False
-    interrupt_session_id: Optional[str] = None
+    interrupt_session_id: str | None = None
     reap_bookkeeping: bool = False
     # 终止请求的模式（CANCEL/INTERRUPT/WORKER_SHUTDOWN），仅 termination 意图
     # 收敛时由调用方传入；INTERRUPT 表示用户临时中断，job 落可恢复的
     # INTERRUPTED 而不是 CANCELLED。
-    termination_mode: Optional[str] = None
+    termination_mode: str | None = None
 
 
 @dataclass
@@ -531,7 +519,7 @@ class ConvergenceResult:
 
     job_id: str
     status: str
-    payload: Optional[Dict[str, Any]] = None
+    payload: dict[str, Any] | None = None
     changed: bool = False
     broadcast: bool = False
     is_final: bool = False
@@ -584,9 +572,7 @@ def _derive_termination_business_status(
     # 且此时取消事件已被 runner 清空，第二个 CLI 会跑完整流程（P0 回归）。
     if job.cancel_requested_at is not None:
         return AiJobStatus.CANCELLED
-    if queue_key.startswith("REQUIREMENT_PREVIEW:") and int(job.attempt_count or 0) < int(
-        job.max_attempts or 1
-    ):
+    if queue_key.startswith("REQUIREMENT_PREVIEW:") and int(job.attempt_count or 0) < int(job.max_attempts or 1):
         return AiJobStatus.PENDING
     if queue_key.startswith("TASK_BASELINE:"):
         return AiJobStatus.FAILED
@@ -598,19 +584,22 @@ def _derive_termination_business_status(
 def _apply_task_interrupt_in_txn(
     db: Session,
     job: SddAiJob,
-    task: Optional[SddTask],
+    task: SddTask | None,
     request: AttemptConvergenceRequest,
     now: datetime,
 ) -> None:
     """TASK_CHAT 可恢复中断（正常失败路径）：job + task 同事务更新。"""
     reason_text = str(request.reason or "AI 执行异常")[:500]
-    resolved_session_id = str(
-        request.interrupt_session_id
-        or request.session_id
-        or job.session_id
-        or (getattr(task, "session_id", None) or "")
-    ).strip() or None
-    patch: Dict[str, Any] = {
+    resolved_session_id = (
+        str(
+            request.interrupt_session_id
+            or request.session_id
+            or job.session_id
+            or (getattr(task, "session_id", None) or "")
+        ).strip()
+        or None
+    )
+    patch: dict[str, Any] = {
         "interrupted": True,
         "interrupted_at": now.isoformat() + "Z",
     }
@@ -661,11 +650,7 @@ def _apply_business_status_in_txn(
         job.finished_at = None
         _clear_ownership_fields(job)
     elif final_status == AiJobStatus.INTERRUPTED and request.mark_task_interrupted:
-        task = (
-            db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if job.task_id
-            else None
-        )
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).first() if job.task_id else None
         _apply_task_interrupt_in_txn(db, job, task, request, now)
     elif final_status == AiJobStatus.INTERRUPTED:
         job.status = AiJobStatus.INTERRUPTED
@@ -702,10 +687,11 @@ def _apply_business_status_in_txn(
         _clear_ownership_fields(job)
     if request.progress is not None and final_status != AiJobStatus.PENDING:
         job.progress = max(0, min(100, int(request.progress)))
-    if not termination_like and final_status in {AiJobStatus.FAILED, AiJobStatus.INTERRUPTED}:
+    if (
+        not termination_like and final_status in {AiJobStatus.FAILED, AiJobStatus.INTERRUPTED}
+    ) and request.evidence.failure_code:
         # 外围异常收尾必须保留结构化 failure code（诊断，不反向改变终态）。
-        if request.evidence.failure_code:
-            job.failure_code = request.evidence.failure_code
+        job.failure_code = request.evidence.failure_code
     if termination_like:
         # 终止/收割路径的统一 bookkeeping（与旧 _finish_termination_sync 一致）。
         job.terminal_reason = reason
@@ -727,6 +713,7 @@ def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobS
     if final_status not in {AiJobStatus.SUCCESS, AiJobStatus.FAILED, AiJobStatus.CANCELLED}:
         return
     from app.domains.task.services import chat_submission_service
+
     try:
         chat_submission_service.finalize_submission_in_txn(db, job, final_status)
     except Exception as exc:
@@ -734,7 +721,8 @@ def _finalize_submission_in_txn(db: Session, job: SddAiJob, final_status: AiJobS
         # the reconciler picks the receipt up on the next send/recover pass.
         logger.warning(
             "Submission finalize alongside job convergence deferred: job_id={}, error={}",
-            job.id, exc,
+            job.id,
+            exc,
         )
 
 
@@ -786,11 +774,11 @@ def _decide_final_status(
     job: SddAiJob,
     request: AttemptConvergenceRequest,
     execution_kind: ExecutionKind,
-) -> Tuple[AiJobStatus, str]:
+) -> tuple[AiJobStatus, str]:
     """决策表（doc §8.3）的唯一实现；返回 (final_status, orphan_failure_code)。"""
     evidence = request.evidence
     intent = request.intent
-    reason = str(request.reason or "")
+    str(request.reason or "")
     if execution_kind == EXECUTION_KIND_REMOTE_SESSION and evidence.unresolved_provider_call_ids:
         # P0（doc 审计 0c381413 §2.5）：未决 provider call 是终局决策的
         # 独立输入，优先于一切 outcome / stop ACK 证据——这是防止其他
@@ -813,12 +801,9 @@ def _decide_final_status(
             # ORPHANED，保留 ownership / durable locator 给 reaper。
             return AiJobStatus.ORPHANED, evidence.failure_code or REMOTE_STOP_UNCONFIRMED
         unresolved_local = (
-            (evidence.process_started is True or evidence.termination_confirmed_dead is False)
-            and evidence.termination_confirmed_dead is not True
-        )
-        unresolved_persisted_owner = _has_local_ownership(job) and (
-            evidence.termination_confirmed_dead is not True
-        )
+            evidence.process_started is True or evidence.termination_confirmed_dead is False
+        ) and evidence.termination_confirmed_dead is not True
+        unresolved_persisted_owner = _has_local_ownership(job) and (evidence.termination_confirmed_dead is not True)
         if unresolved_local or unresolved_persisted_owner:
             return AiJobStatus.ORPHANED, evidence.failure_code or PROCESS_TREE_STILL_ALIVE
         return request.requested_status or AiJobStatus.FAILED, PROCESS_TREE_STILL_ALIVE
@@ -860,12 +845,7 @@ def converge_job_attempt_in_txn(
     transaction 中的调用方必须使用本函数，提交所有权归最外层事务。
     """
     now = datetime.utcnow()
-    job = (
-        db.query(SddAiJob)
-        .filter(SddAiJob.id == request.job_id)
-        .with_for_update()
-        .first()
-    )
+    job = db.query(SddAiJob).filter(SddAiJob.id == request.job_id).with_for_update().first()
     if job is None:
         return ConvergenceResult(job_id=request.job_id, status="", payload=None, changed=False)
 
@@ -878,12 +858,16 @@ def converge_job_attempt_in_txn(
         )
 
     # 2. 真正终态 / WAITING_HITL：幂等返回。
-    if job.status in {
-        AiJobStatus.SUCCESS,
-        AiJobStatus.FAILED,
-        AiJobStatus.CANCELLED,
-        AiJobStatus.REVERTED,
-    } or job.status == AiJobStatus.WAITING_HITL:
+    if (
+        job.status
+        in {
+            AiJobStatus.SUCCESS,
+            AiJobStatus.FAILED,
+            AiJobStatus.CANCELLED,
+            AiJobStatus.REVERTED,
+        }
+        or job.status == AiJobStatus.WAITING_HITL
+    ):
         return _noop()
 
     # 3. run token / worker boot id 校验。
@@ -904,10 +888,10 @@ def converge_job_attempt_in_txn(
         and job.task_id
         and job.session_revision is not None
     ):
-        task_revision_row = (
-            db.query(SddTask.session_revision).filter(SddTask.id == job.task_id).first()
-        )
-        if not task_revision_row or int(task_revision_row[0] if task_revision_row[0] is not None else -1) != int(job.session_revision):
+        task_revision_row = db.query(SddTask.session_revision).filter(SddTask.id == job.task_id).first()
+        if not task_revision_row or int(task_revision_row[0] if task_revision_row[0] is not None else -1) != int(
+            job.session_revision
+        ):
             return _noop()
 
     # 5. 按 intent 校验来源状态。
@@ -981,9 +965,7 @@ def converge_job_attempt_sync(
     if not result.changed:
         return result
     db.commit()
-    refreshed = (
-        db.query(SddAiJob).filter(SddAiJob.id == request.job_id).first()
-    )
+    refreshed = db.query(SddAiJob).filter(SddAiJob.id == request.job_id).first()
     if refreshed is not None:
         result.payload = _serialize_converged_job(refreshed)
     return result
@@ -1005,16 +987,16 @@ class AttemptTerminationRequest:
     """
 
     job_id: str
-    workspace_id: Optional[str] = None
-    task_id: Optional[str] = None
-    actor_user_id: Optional[str] = None
+    workspace_id: str | None = None
+    task_id: str | None = None
+    actor_user_id: str | None = None
     reason: str = ""
     mode: TerminationMode = "CANCEL"
-    expected_run_token: Optional[str] = None
-    message: Optional[str] = None
-    failure_code: Optional[str] = None
-    interrupt_session_id: Optional[str] = None
-    interrupt_context_patch: Optional[Dict[str, Any]] = None
+    expected_run_token: str | None = None
+    message: str | None = None
+    failure_code: str | None = None
+    interrupt_session_id: str | None = None
+    interrupt_context_patch: dict[str, Any] | None = None
     mark_task_interrupted: bool = False
 
 
@@ -1025,13 +1007,30 @@ class TerminationRequestResult:
     job_id: str
     status: str
     changed: bool
-    run_token: Optional[str] = None
-    session_id: Optional[str] = None
-    worker_boot_id: Optional[str] = None
+    run_token: str | None = None
+    session_id: str | None = None
+    worker_boot_id: str | None = None
 
 
 def _job_active_ownership(job: SddAiJob) -> bool:
     return job.process_pid is not None or job.process_group_id is not None
+
+
+def _mark_task_interrupted(db, job, request, resolved_session_id, reason, now):
+    if request.mark_task_interrupted and job.task_id:
+        task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
+        if task is not None and task.status not in {
+            TaskStatus.DONE,
+            TaskStatus.FAILED,
+            TaskStatus.BASELINED,
+        }:
+            task_session_id = resolved_session_id or str(getattr(task, "session_id", None) or "").strip() or None
+            task.status = TaskStatus.INTERRUPTED
+            task.session_id = task_session_id
+            task.error_message = None
+            task.interrupt_reason = reason
+            task.interrupted_by_id = request.actor_user_id
+            task.interrupted_at = now
 
 
 def request_attempt_termination_in_txn(
@@ -1059,16 +1058,12 @@ def request_attempt_termination_in_txn(
         job_query = job_query.filter(SddAiJob.run_token == request.expected_run_token)
     job = job_query.with_for_update().first()
     if job is None:
-        return TerminationRequestResult(
-            job_id=request.job_id, status="", changed=False
-        )
+        return TerminationRequestResult(job_id=request.job_id, status="", changed=False)
 
     def _result(changed: bool) -> TerminationRequestResult:
         return TerminationRequestResult(
             job_id=str(job.id),
-            status=str(
-                job.status.value if hasattr(job.status, "value") else job.status
-            ),
+            status=str(job.status.value if hasattr(job.status, "value") else job.status),
             changed=changed,
             run_token=str(job.run_token or "") or None,
             session_id=str(job.session_id or "") or None,
@@ -1084,9 +1079,7 @@ def request_attempt_termination_in_txn(
         # 幂等：终态永不回退（doc §4.5.1 规则 3）。
         return _result(False)
 
-    resolved_session_id = str(
-        request.interrupt_session_id or (job.session_id or "")
-    ).strip() or None
+    resolved_session_id = str(request.interrupt_session_id or (job.session_id or "")).strip() or None
 
     # Preserve why termination began even if a later reaper finalizes it as CANCELLED.
     context = dict(job.context_json or {})
@@ -1097,14 +1090,19 @@ def request_attempt_termination_in_txn(
     clean_interrupted = job.status == AiJobStatus.INTERRUPTED and not any(
         getattr(job, field, None) is not None
         for field in (
-            "run_token", "worker_id", "worker_boot_id", "process_pid",
-            "process_started_at", "process_group_id", "process_containment_id",
-            "heartbeat_at", "lease_expires_at",
+            "run_token",
+            "worker_id",
+            "worker_boot_id",
+            "process_pid",
+            "process_started_at",
+            "process_group_id",
+            "process_containment_id",
+            "heartbeat_at",
+            "lease_expires_at",
         )
     )
     if (job.status in {AiJobStatus.PENDING, AiJobStatus.WAITING_HITL} or clean_interrupted) and (
-        request.mode != "WORKER_SHUTDOWN"
-        and not _job_active_ownership(job)
+        request.mode != "WORKER_SHUTDOWN" and not _job_active_ownership(job)
     ):
         # 无活动归属的排队/HITL 作业：直接落 CANCELLED 终态。
         job.cancel_requested_at = now
@@ -1118,9 +1116,7 @@ def request_attempt_termination_in_txn(
             job.interrupted_by_id = request.actor_user_id
             job.interrupted_at = now
             if request.interrupt_context_patch:
-                job.context_json = _merge_json(
-                    job.context_json, request.interrupt_context_patch
-                )
+                job.context_json = _merge_json(job.context_json, request.interrupt_context_patch)
         return _result(True)
 
     job.cancel_requested_at = now
@@ -1130,10 +1126,7 @@ def request_attempt_termination_in_txn(
     else:
         job.message = request.message or "Job cancellation requested"
     job.terminal_reason = reason
-    job.failure_code = (
-        request.failure_code
-        or (CANCEL_REQUESTED if request.mode == "CANCEL" else reason)
-    )
+    job.failure_code = request.failure_code or (CANCEL_REQUESTED if request.mode == "CANCEL" else reason)
     job.termination_attempts = int(job.termination_attempts or 0) + 1
     job.finished_at = None
     if request.mode == "INTERRUPT":
@@ -1142,7 +1135,7 @@ def request_attempt_termination_in_txn(
         job.interrupt_reason = reason
         job.interrupted_by_id = request.actor_user_id
         job.interrupted_at = now
-        patch: Dict[str, Any] = {
+        patch: dict[str, Any] = {
             "interrupted": True,
             "interrupted_at": now.isoformat() + "Z",
         }
@@ -1151,29 +1144,14 @@ def request_attempt_termination_in_txn(
         if request.interrupt_context_patch:
             patch.update(request.interrupt_context_patch)
         job.context_json = _merge_json(job.context_json, patch)
-        if request.mark_task_interrupted and job.task_id:
-            task = (
-                db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            )
-            if task is not None and task.status not in {
-                TaskStatus.DONE,
-                TaskStatus.FAILED,
-                TaskStatus.BASELINED,
-            }:
-                task_session_id = resolved_session_id or str(
-                    getattr(task, "session_id", None) or ""
-                ).strip() or None
-                task.status = TaskStatus.INTERRUPTED
-                task.session_id = task_session_id
-                task.error_message = None
-                task.interrupt_reason = reason
-                task.interrupted_by_id = request.actor_user_id
-                task.interrupted_at = now
+        _mark_task_interrupted(db, job, request, resolved_session_id, reason, now)
+
     return _result(True)
 
 
-def _serialize_converged_job(job: SddAiJob) -> Dict[str, Any]:
+def _serialize_converged_job(job: SddAiJob) -> dict[str, Any]:
     """Serialize the converged row without importing ai_job_service (no cycles)."""
+
     def _as_text(value: Any) -> str:
         return value.value if hasattr(value, "value") else str(value)
 

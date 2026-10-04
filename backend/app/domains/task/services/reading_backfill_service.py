@@ -7,10 +7,11 @@
 - 重启后从 system_configs 断点继续；完成后核对覆盖/指纹/唯一性再置 reading_ready；
 - 既有 sort_seq 未准备好的任务先跳过并报告，不为本功能擅自重排原会话。
 """
+
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
@@ -33,7 +34,7 @@ CHECKPOINT_PREFIX = "reading_backfill_cursor:"
 CHECKPOINT_VALUE_MAX = 480
 
 
-def get_checkpoint(db: Session, key: str) -> Optional[Dict[str, Any]]:
+def get_checkpoint(db: Session, key: str) -> dict[str, Any] | None:
     row = db.get(SystemConfig, key)
     if row is None:
         return None
@@ -46,17 +47,19 @@ def get_checkpoint(db: Session, key: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def set_checkpoint(db: Session, key: str, payload: Dict[str, Any]) -> None:
+def set_checkpoint(db: Session, key: str, payload: dict[str, Any]) -> None:
     import json
 
     value = json.dumps(payload, separators=(",", ":"))[:CHECKPOINT_VALUE_MAX]
     row = db.get(SystemConfig, key)
     if row is None:
-        db.add(SystemConfig(
-            key=key,
-            value=value,
-            description="task reading backfill cursor (resumable)",
-        ))
+        db.add(
+            SystemConfig(
+                key=key,
+                value=value,
+                description="task reading backfill cursor (resumable)",
+            )
+        )
     else:
         row.value = value
 
@@ -71,7 +74,7 @@ def _order_tuple(message: ChatMessage):
     return (message.created_at or datetime.min, message.sort_seq, message.id)
 
 
-def iter_task_ids(db: Session) -> List[str]:
+def iter_task_ids(db: Session) -> list[str]:
     rows = db.query(SddTask.id).order_by(SddTask.id.asc()).all()
     return [row[0] for row in rows]
 
@@ -81,7 +84,7 @@ def backfill_task_batch(
     *,
     task_id: str,
     batch_size: int = 200,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """单任务一批短事务回填；返回进度与断点。
 
     每批一个独立事务（由 CLI 控制提交）：锁 task → keyset 取一批源 →
@@ -145,44 +148,48 @@ def backfill_task_batch(
         if not projection["visible"]:
             # 不可见源（THINKING 等）不产生条目，但记录 item 缺席事实：
             # 为保证“缺失核对”的确定性，用 inactive 占位条目标记已扫描。
-            db.add(TaskReadingItem(
-                task_id=task_id,
-                item_key=item_key,
-                workspace_id=task.workspace_id,
-                kind=KIND_MESSAGE,
-                message_id=str(message.id),
-                change_seq=seq,
-                first_change_seq=seq,
-                active=False,
-                content_fingerprint=None,
-                role=str(projection.get("role") or "") or None,
-                creator_id=projection.get("creator_id"),
-                session_turn_id=projection.get("session_turn_id"),
-                session_generation=projection.get("session_generation"),
-                order_created_at=projection.get("order_created_at"),
-                order_sort_seq=projection.get("order_sort_seq"),
-                order_message_id=projection.get("order_message_id"),
-                deleted_change_seq=seq,
-            ))
+            db.add(
+                TaskReadingItem(
+                    task_id=task_id,
+                    item_key=item_key,
+                    workspace_id=task.workspace_id,
+                    kind=KIND_MESSAGE,
+                    message_id=str(message.id),
+                    change_seq=seq,
+                    first_change_seq=seq,
+                    active=False,
+                    content_fingerprint=None,
+                    role=str(projection.get("role") or "") or None,
+                    creator_id=projection.get("creator_id"),
+                    session_turn_id=projection.get("session_turn_id"),
+                    session_generation=projection.get("session_generation"),
+                    order_created_at=projection.get("order_created_at"),
+                    order_sort_seq=projection.get("order_sort_seq"),
+                    order_message_id=projection.get("order_message_id"),
+                    deleted_change_seq=seq,
+                )
+            )
         else:
-            db.add(TaskReadingItem(
-                task_id=task_id,
-                item_key=item_key,
-                workspace_id=task.workspace_id,
-                kind=KIND_MESSAGE,
-                message_id=str(message.id),
-                change_seq=seq,
-                first_change_seq=seq,
-                active=True,
-                content_fingerprint=projection["fingerprint"],
-                role=projection.get("role"),
-                creator_id=projection.get("creator_id"),
-                session_turn_id=projection.get("session_turn_id"),
-                session_generation=projection.get("session_generation"),
-                order_created_at=projection.get("order_created_at"),
-                order_sort_seq=projection.get("order_sort_seq"),
-                order_message_id=projection.get("order_message_id"),
-            ))
+            db.add(
+                TaskReadingItem(
+                    task_id=task_id,
+                    item_key=item_key,
+                    workspace_id=task.workspace_id,
+                    kind=KIND_MESSAGE,
+                    message_id=str(message.id),
+                    change_seq=seq,
+                    first_change_seq=seq,
+                    active=True,
+                    content_fingerprint=projection["fingerprint"],
+                    role=projection.get("role"),
+                    creator_id=projection.get("creator_id"),
+                    session_turn_id=projection.get("session_turn_id"),
+                    session_generation=projection.get("session_generation"),
+                    order_created_at=projection.get("order_created_at"),
+                    order_sort_seq=projection.get("order_sort_seq"),
+                    order_message_id=projection.get("order_message_id"),
+                )
+            )
         created += 1
     done = len(batch) < batch_size
     if batch:
@@ -207,7 +214,7 @@ def backfill_task_batch(
     }
 
 
-def verify_task(db: Session, *, task_id: str) -> Dict[str, Any]:
+def verify_task(db: Session, *, task_id: str) -> dict[str, Any]:
     """核对当前有效源覆盖、指纹、删除与序号唯一性；通过则置 reading_ready。"""
     task = lock_task_row(db, task_id)
     if task is None:
@@ -221,22 +228,19 @@ def verify_task(db: Session, *, task_id: str) -> Dict[str, Any]:
     )
     if unsorted_count:
         return {
-            "task_id": task_id, "ok": False,
-            "error": "SORT_SEQ_NOT_READY", "unsorted_messages": int(unsorted_count),
+            "task_id": task_id,
+            "ok": False,
+            "error": "SORT_SEQ_NOT_READY",
+            "unsorted_messages": int(unsorted_count),
         }
 
-    source_ids = {
-        str(mid)
-        for (mid,) in db.query(ChatMessage.id).filter(ChatMessage.task_id == task_id).all()
-    }
+    source_ids = {str(mid) for (mid,) in db.query(ChatMessage.id).filter(ChatMessage.task_id == task_id).all()}
     items = (
-        db.query(TaskReadingItem)
-        .filter(TaskReadingItem.task_id == task_id, TaskReadingItem.kind == KIND_MESSAGE)
-        .all()
+        db.query(TaskReadingItem).filter(TaskReadingItem.task_id == task_id, TaskReadingItem.kind == KIND_MESSAGE).all()
     )
-    missing_projection: List[str] = []
-    stale_active: List[str] = []
-    fingerprint_mismatch: List[str] = []
+    missing_projection: list[str] = []
+    stale_active: list[str] = []
+    fingerprint_mismatch: list[str] = []
     covered = set()
     for item in items:
         if item.message_id is None:
@@ -282,7 +286,7 @@ def verify_task(db: Session, *, task_id: str) -> Dict[str, Any]:
     return result
 
 
-def coverage_check(db: Session, *, task_id: str) -> Dict[str, Any]:
+def coverage_check(db: Session, *, task_id: str) -> dict[str, Any]:
     """轻量就绪核对（count 级，不重算指纹）：
 
     - 既有 sort_seq 全部就绪；
@@ -300,15 +304,12 @@ def coverage_check(db: Session, *, task_id: str) -> Dict[str, Any]:
     )
     if unsorted_count:
         return {
-            "task_id": task_id, "ok": False,
-            "error": "SORT_SEQ_NOT_READY", "unsorted_messages": int(unsorted_count),
+            "task_id": task_id,
+            "ok": False,
+            "error": "SORT_SEQ_NOT_READY",
+            "unsorted_messages": int(unsorted_count),
         }
-    source_count = int(
-        db.query(func.count(ChatMessage.id))
-        .filter(ChatMessage.task_id == task_id)
-        .scalar()
-        or 0
-    )
+    source_count = int(db.query(func.count(ChatMessage.id)).filter(ChatMessage.task_id == task_id).scalar() or 0)
     item_count = int(
         db.query(func.count(TaskReadingItem.message_id))
         .filter(
@@ -357,7 +358,7 @@ def ensure_reading_ready(db: Session, task: SddTask) -> bool:
     return False
 
 
-def backfill_status(db: Session) -> Dict[str, Any]:
+def backfill_status(db: Session) -> dict[str, Any]:
     rows = db.query(SddTask).order_by(SddTask.id.asc()).all()
     out = []
     for task in rows:
@@ -367,26 +368,23 @@ def backfill_status(db: Session) -> Dict[str, Any]:
             .scalar()
             or 0
         )
-        source_count = (
-            db.query(func.count(ChatMessage.id))
-            .filter(ChatMessage.task_id == task.id)
-            .scalar()
-            or 0
-        )
+        source_count = db.query(func.count(ChatMessage.id)).filter(ChatMessage.task_id == task.id).scalar() or 0
         cursor = get_checkpoint(db, CHECKPOINT_PREFIX + task.id)
-        out.append({
-            "task_id": task.id,
-            "reading_ready": bool(task.reading_ready),
-            "reading_change_seq": int(task.reading_change_seq or 0),
-            "reading_epoch": int(task.reading_epoch or 1),
-            "source_messages": int(source_count),
-            "message_items": int(item_count),
-            "cursor": cursor,
-        })
+        out.append(
+            {
+                "task_id": task.id,
+                "reading_ready": bool(task.reading_ready),
+                "reading_change_seq": int(task.reading_change_seq or 0),
+                "reading_epoch": int(task.reading_epoch or 1),
+                "source_messages": int(source_count),
+                "message_items": int(item_count),
+                "cursor": cursor,
+            }
+        )
     return {"tasks": out}
 
 
-def cleanup_receipts(db: Session, *, batch_size: int = 500) -> Dict[str, Any]:
+def cleanup_receipts(db: Session, *, batch_size: int = 500) -> dict[str, Any]:
     """旧 epoch 回执与已被前缀覆盖回执按批清理（保留当前 epoch notices）。"""
     from app.domains.task.models.reading import TaskReadingReceipt, TaskReadingState
 

@@ -5,16 +5,16 @@ Revises: 6a7b8c9d0e1f
 Create Date: 2026-05-09 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "7d3f2a9b4c6e"
-down_revision: Union[str, None] = "6a7b8c9d0e1f"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "6a7b8c9d0e1f"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 human_review_outcome_enum = sa.Enum(
@@ -202,7 +202,9 @@ def upgrade() -> None:
         ondelete="SET NULL",
     )
     op.create_index("ix_sdd_clarifications_requirement_id", "sdd_clarifications", ["requirement_id"])
-    op.create_index("ix_sdd_clarifications_converted_requirement_id", "sdd_clarifications", ["converted_requirement_id"])
+    op.create_index(
+        "ix_sdd_clarifications_converted_requirement_id", "sdd_clarifications", ["converted_requirement_id"]
+    )
     op.create_index("ix_sdd_clarifications_blocking_level", "sdd_clarifications", ["blocking_level"])
 
     op.create_table(

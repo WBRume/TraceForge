@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -45,8 +43,8 @@ def get_task_runtime_skills(
 def get_task_runtime_skill_events(
     ws_id: str,
     task_id: str,
-    skill_id: Optional[str] = Query(default=None),
-    event_type: Optional[str] = Query(default=None),
+    skill_id: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     group_by_skill: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
@@ -82,7 +80,7 @@ def get_task_runtime_skill_file_tree(
             skill_id=skill_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     return TaskSkillRuntimeFileTreeResponse(task_id=task.id, skill_id=skill_id, nodes=nodes)
 
 
@@ -105,9 +103,9 @@ def get_task_runtime_skill_file_content(
             path=path,
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     return TaskSkillRuntimeFileContentResponse(
         task_id=task.id,
         skill_id=skill_id,
@@ -146,9 +144,9 @@ def write_task_runtime_skill_file_content(
             content=body.content,
         )
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     return TaskSkillRuntimeFileContentResponse(
         task_id=task.id,
         skill_id=skill_id,

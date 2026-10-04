@@ -14,8 +14,9 @@ OAuth Provider 基础设施层（B-10）。
 
 import abc
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, ClassVar, Optional
+from typing import ClassVar
 
 import httpx
 
@@ -35,10 +36,10 @@ class OAuthProfile:
     """
 
     provider_uid: str
-    email: Optional[str] = None
-    email_verified: Optional[bool] = None
-    display_name: Optional[str] = None
-    avatar_url: Optional[str] = None
+    email: str | None = None
+    email_verified: bool | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
     raw: dict = field(default_factory=dict)
 
 
@@ -70,7 +71,7 @@ def _http_client() -> httpx.Client:
 def _request_with_retry(
     fn: Callable[[], httpx.Response],
     *,
-    max_retries: Optional[int] = None,
+    max_retries: int | None = None,
 ) -> httpx.Response:
     """执行 HTTP 请求，仅对网络类错误做有限重试（K-3 / NFR-P3）。
 
@@ -82,7 +83,7 @@ def _request_with_retry(
     """
     retries = int(settings.OAUTH_HTTP_MAX_RETRIES if max_retries is None else max_retries)
     attempts = retries + 1
-    last_error: Optional[BaseException] = None
+    last_error: BaseException | None = None
     for _ in range(attempts):
         try:
             return fn()
@@ -108,11 +109,9 @@ class OAuthProvider(abc.ABC):
 
     def is_configured(self) -> bool:
         """是否已启用：client_id 与 client_secret 均非空（NFR-M2，空 = 不启用）。"""
-        return bool(oauth_setting(self.name, "CLIENT_ID")) and bool(
-            oauth_setting(self.name, "CLIENT_SECRET")
-        )
+        return bool(oauth_setting(self.name, "CLIENT_ID")) and bool(oauth_setting(self.name, "CLIENT_SECRET"))
 
-    def resolve_redirect_uri(self, client_type: str, loopback_port: Optional[int] = None) -> str:
+    def resolve_redirect_uri(self, client_type: str, loopback_port: int | None = None) -> str:
         """按 client_type 解析本次授权的 redirect_uri。
 
         - ``web`` → ``OAUTH_{NAME}_REDIRECT_URI_WEB``
@@ -126,9 +125,7 @@ class OAuthProvider(abc.ABC):
                 parts = urllib.parse.urlsplit(raw_uri)
                 hostname = parts.hostname or "127.0.0.1"
                 netloc = f"{hostname}:{int(loopback_port)}"
-                return urllib.parse.urlunsplit(
-                    (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
-                )
+                return urllib.parse.urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
             return raw_uri
         return oauth_setting(self.name, "REDIRECT_URI_WEB")
 

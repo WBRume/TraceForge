@@ -22,14 +22,12 @@ import signal
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, Tuple
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
 except ImportError:  # pragma: no cover - packaging/runtime guard
     psutil = None  # type: ignore[assignment]
 
-from app.core.logging import get_logger
 from app.agents.supervision.identity import signal_after_identity_recheck
 from app.agents.supervision.inspection import (
     InspectionQueueSaturated,
@@ -41,6 +39,7 @@ from app.agents.supervision.model import (
     TOKEN_DISCOVERY_UNKNOWN,
     ProcessProbeState,
 )
+from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="agent_process")
 
@@ -54,8 +53,8 @@ class DiscoveredTokenProcess:
     """Identity captured at scan time for one exact-token process match."""
 
     pid: int
-    process_group_id: Optional[int] = None
-    create_time: Optional[float] = None
+    process_group_id: int | None = None
+    create_time: float | None = None
     command: str = ""
     command_readable: bool = False
 
@@ -70,13 +69,13 @@ class TokenDiscoverySnapshot:
     """
 
     state: ProcessProbeState = ProcessProbeState.UNKNOWN
-    matches: Tuple[DiscoveredTokenProcess, ...] = ()
-    unknown_pids: Tuple[int, ...] = ()
-    failure_code: Optional[str] = None
-    error_message: Optional[str] = None
+    matches: tuple[DiscoveredTokenProcess, ...] = ()
+    unknown_pids: tuple[int, ...] = ()
+    failure_code: str | None = None
+    error_message: str | None = None
 
 
-def candidate_predates_attempt(proc, not_before: Optional[datetime]) -> bool:
+def candidate_predates_attempt(proc, not_before: datetime | None) -> bool:
     """Narrow, verifiable exclusion for environ-unreadable candidates (P0-2).
 
     只有``not_before`` 可信且候选 create time 可读、且严格早于 attempt 边界
@@ -86,18 +85,103 @@ def candidate_predates_attempt(proc, not_before: Optional[datetime]) -> bool:
     if not_before is None:
         return False
     try:
-        expected = (
-            not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
-        )
+        expected = not_before if not_before.tzinfo else not_before.replace(tzinfo=timezone.utc)
         create_time = float(proc.create_time())
     except (psutil.Error, OSError, ValueError, AttributeError, TypeError):
         return False
     return create_time < expected.timestamp() - 2.0
 
 
+def _matches_process_token(proc, pid, current_uid, token, env_var, not_before, record_unknown) -> bool:
+    if current_uid is not None:
+        try:
+            if proc.uids().real != current_uid:
+                return False
+        except psutil.NoSuchProcess:
+            return False
+        except (psutil.AccessDenied, psutil.Error, OSError) as exc:
+            record_unknown(pid, exc)
+            return False
+    # P0-2：不再按命令名预过滤。普通工具子进程（sleep/bash/python/
+    # git…）与 CLI 一样继承 token，也可能脱离原 PGID；可读取 environ
+    # 的同 UID 候选一律执行精确 token 匹配。
+    try:
+        environ = proc.environ()
+    except (psutil.NoSuchProcess, psutil.ZombieProcess):
+        return False
+    except (psutil.AccessDenied, psutil.Error, OSError) as exc:
+        # 僵尸进程正在退出：environ 不可读属于退出语义，不是存活
+        # token 目标（与模块内"zombie == 明确退出"语义一致）。
+        try:
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                return False
+        except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            return False
+        except (psutil.AccessDenied, psutil.Error, OSError, AttributeError):
+            # status 不可读（无法核实退出状态）：继续走排除规则。
+            pass
+        # environ 不可读：只有"启动时间早于本 attempt"的可验证证据
+        # 才允许排除；无法证明时保留 UNKNOWN（不能牺牲正确性换取
+        # 收敛）。
+        if candidate_predates_attempt(proc, not_before):
+            return False
+        record_unknown(pid, exc)
+        return False
+    return environ.get(env_var) == token
+
+
+def _capture_token_process(proc, pid) -> DiscoveredTokenProcess | None:
+    pgid: int | None = None
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        # 精确命中却在身份捕获前消失：正常消失，继续扫描。
+        return None
+    except (PermissionError, OSError):
+        pgid = None
+    create_time: float | None = None
+    try:
+        create_time = float(proc.create_time())
+    except (psutil.Error, OSError, ValueError):
+        create_time = None
+    command = ""
+    command_readable = False
+    try:
+        command = " ".join(proc.cmdline()).lower()
+        command_readable = True
+    except (psutil.Error, OSError, ValueError):
+        command_readable = False
+    return DiscoveredTokenProcess(
+        pid=pid,
+        process_group_id=pgid,
+        create_time=create_time,
+        command=command,
+        command_readable=command_readable,
+    )
+
+
+def _token_discovery_result(matches, unknown, error_message) -> TokenDiscoverySnapshot:
+    if matches:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.LIVE,
+            matches=tuple(matches),
+            unknown_pids=tuple(sorted(unknown)),
+            failure_code=TOKEN_DISCOVERY_UNKNOWN if unknown else None,
+            error_message=error_message,
+        )
+    if unknown:
+        return TokenDiscoverySnapshot(
+            state=ProcessProbeState.UNKNOWN,
+            unknown_pids=tuple(sorted(unknown)),
+            failure_code=TOKEN_DISCOVERY_UNKNOWN,
+            error_message=error_message or f"{len(unknown)} process(es) could not be inspected",
+        )
+    return TokenDiscoverySnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+
+
 def scan_token_processes_sync(
     run_token: str,
-    not_before: Optional[datetime] = None,
+    not_before: datetime | None = None,
     *,
     env_var: str = RUN_TOKEN_ENV_VAR,
 ) -> TokenDiscoverySnapshot:
@@ -138,7 +222,7 @@ def scan_token_processes_sync(
         current_uid = None
     matches: list = []
     unknown: list = []
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     def _record_unknown(pid: int, exc: BaseException) -> None:
         nonlocal error_message
@@ -164,122 +248,42 @@ def scan_token_processes_sync(
                     continue
             except OSError:
                 pass
-            if current_uid is not None:
-                try:
-                    if proc.uids().real != current_uid:
-                        continue
-                except psutil.NoSuchProcess:
-                    continue
-                except (psutil.AccessDenied, psutil.Error, OSError) as exc:
-                    _record_unknown(pid, exc)
-                    continue
-            # P0-2：不再按命令名预过滤。普通工具子进程（sleep/bash/python/
-            # git…）与 CLI 一样继承 token，也可能脱离原 PGID；可读取 environ
-            # 的同 UID 候选一律执行精确 token 匹配。
-            try:
-                environ = proc.environ()
-            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+            if not _matches_process_token(proc, pid, current_uid, token, env_var, not_before, _record_unknown):
                 continue
-            except (psutil.AccessDenied, psutil.Error, OSError) as exc:
-                # 僵尸进程正在退出：environ 不可读属于退出语义，不是存活
-                # token 目标（与模块内"zombie == 明确退出"语义一致）。
-                try:
-                    if proc.status() == psutil.STATUS_ZOMBIE:
-                        continue
-                except (psutil.NoSuchProcess, psutil.ZombieProcess):
-                    continue
-                except (psutil.AccessDenied, psutil.Error, OSError, AttributeError):
-                    # status 不可读（无法核实退出状态）：继续走排除规则。
-                    pass
-                # environ 不可读：只有"启动时间早于本 attempt"的可验证证据
-                # 才允许排除；无法证明时保留 UNKNOWN（不能牺牲正确性换取
-                # 收敛）。
-                if candidate_predates_attempt(proc, not_before):
-                    continue
-                _record_unknown(pid, exc)
-                continue
-            if environ.get(env_var) != token:
-                continue
-            pgid: Optional[int] = None
-            try:
-                pgid = os.getpgid(pid)
-            except ProcessLookupError:
-                # 精确命中却在身份捕获前消失：正常消失，继续扫描。
-                continue
-            except (PermissionError, OSError):
-                pgid = None
-            create_time: Optional[float] = None
-            try:
-                create_time = float(proc.create_time())
-            except (psutil.Error, OSError, ValueError):
-                create_time = None
-            command = ""
-            command_readable = False
-            try:
-                command = " ".join(proc.cmdline()).lower()
-                command_readable = True
-            except (psutil.Error, OSError, ValueError):
-                command_readable = False
-            matches.append(
-                DiscoveredTokenProcess(
-                    pid=pid,
-                    process_group_id=pgid,
-                    create_time=create_time,
-                    command=command,
-                    command_readable=command_readable,
-                )
-            )
+
+            match = _capture_token_process(proc, pid)
+            if match is not None:
+                matches.append(match)
+
     except (psutil.Error, OSError) as exc:
         return TokenDiscoverySnapshot(
             state=ProcessProbeState.UNKNOWN,
             failure_code=TOKEN_DISCOVERY_UNKNOWN,
             error_message=str(exc) or type(exc).__name__,
         )
-    if matches:
-        return TokenDiscoverySnapshot(
-            state=ProcessProbeState.LIVE,
-            matches=tuple(matches),
-            unknown_pids=tuple(sorted(unknown)),
-            failure_code=TOKEN_DISCOVERY_UNKNOWN if unknown else None,
-            error_message=error_message,
-        )
-    if unknown:
-        return TokenDiscoverySnapshot(
-            state=ProcessProbeState.UNKNOWN,
-            unknown_pids=tuple(sorted(unknown)),
-            failure_code=TOKEN_DISCOVERY_UNKNOWN,
-            error_message=error_message
-            or f"{len(unknown)} process(es) could not be inspected",
-        )
-    return TokenDiscoverySnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
+    return _token_discovery_result(matches, unknown, error_message)
 
 
 def scan_spawn_token_processes_sync(
     spawn_token: str,
-    not_before: Optional[datetime] = None,
+    not_before: datetime | None = None,
 ) -> TokenDiscoverySnapshot:
     """Spawn-lineage scan: identical rules, keyed on the per-spawn token.
 
     P0-3：``TRACEFORGE_SPAWN_TOKEN`` 由 spawn 时注入且 uuid4 不可预测，
     任何携带者都可证明属于该次 spawn 的后代树。
     """
-    return scan_token_processes_sync(
-        spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR
-    )
+    return scan_token_processes_sync(spawn_token, not_before, env_var=SPAWN_TOKEN_ENV_VAR)
 
 
 async def token_snapshot(
     run_token: str,
-    not_before: Optional[datetime] = None,
+    not_before: datetime | None = None,
     *,
     env_var: str = RUN_TOKEN_ENV_VAR,
 ) -> TokenDiscoverySnapshot:
     """One complete token scan off the loop (UNKNOWN on queue saturation)."""
-    fn = (
-        scan_token_processes_sync
-        if env_var == RUN_TOKEN_ENV_VAR
-        else scan_spawn_token_processes_sync
-    )
+    fn = scan_token_processes_sync if env_var == RUN_TOKEN_ENV_VAR else scan_spawn_token_processes_sync
     try:
         return await run_process_probe(fn, run_token, not_before)
     except InspectionQueueSaturated as exc:
@@ -293,8 +297,8 @@ async def token_snapshot(
 def token_identity_ok(
     match: DiscoveredTokenProcess,
     *,
-    not_before: Optional[datetime],
-    not_after: Optional[datetime],
+    not_before: datetime | None,
+    not_after: datetime | None,
 ) -> bool:
     """Validate a discovered token match against trusted identity bounds.
 
@@ -316,11 +320,11 @@ def token_identity_ok(
 
 
 def partition_token_matches(
-    matches: Tuple[DiscoveredTokenProcess, ...],
+    matches: tuple[DiscoveredTokenProcess, ...],
     *,
-    not_before: Optional[datetime],
-    not_after: Optional[datetime],
-) -> Tuple[Tuple[DiscoveredTokenProcess, ...], Tuple[DiscoveredTokenProcess, ...]]:
+    not_before: datetime | None,
+    not_after: datetime | None,
+) -> tuple[tuple[DiscoveredTokenProcess, ...], tuple[DiscoveredTokenProcess, ...]]:
     """Split token matches into (killable, identity-conflicts)."""
     good: list = []
     conflicts: list = []
@@ -333,7 +337,7 @@ def partition_token_matches(
 
 
 async def kill_token_matches(
-    matches: Tuple[DiscoveredTokenProcess, ...],
+    matches: tuple[DiscoveredTokenProcess, ...],
     signals: list,
     *,
     sig: int = _DEFAULT_KILL_SIGNAL,
@@ -358,8 +362,7 @@ async def kill_token_matches(
         )
         if outcome == "unverified":
             logger.warning(
-                "Token process identity changed/unreadable between scan and "
-                "send; signal skipped: pid={}",
+                "Token process identity changed/unreadable between scan and send; signal skipped: pid={}",
                 match.pid,
             )
 
@@ -377,9 +380,9 @@ class TokenContainmentOutcome:
     """
 
     state: ProcessProbeState = ProcessProbeState.CONFIRMED_DEAD
-    live_pids: Tuple[int, ...] = ()
-    unknown: Optional[TokenDiscoverySnapshot] = None
-    conflicts: Tuple[DiscoveredTokenProcess, ...] = ()
+    live_pids: tuple[int, ...] = ()
+    unknown: TokenDiscoverySnapshot | None = None
+    conflicts: tuple[DiscoveredTokenProcess, ...] = ()
     # 收敛过程中是否执行过任何发送尝试（诊断证据：loop 中途发现冲突时，
     # 之前的信号已经发出，调用方必须如实上报 tree_kill_used）。
     kill_attempted: bool = False
@@ -399,8 +402,8 @@ def _outcome_of_final(final: TokenDiscoverySnapshot) -> TokenContainmentOutcome:
 async def converge_token_kill(
     run_token: str,
     *,
-    not_before: Optional[datetime],
-    not_after: Optional[datetime],
+    not_before: datetime | None,
+    not_after: datetime | None,
     signals: list,
     initial: TokenDiscoverySnapshot,
     max_wait: float = 5.0,
@@ -423,9 +426,7 @@ async def converge_token_kill(
         # 杀死迟到匹配——由调用方下次重试时自然覆盖，doc §6.4）。
         final = await token_snapshot(run_token, not_before)
         return _outcome_of_final(final)
-    good, conflicts = partition_token_matches(
-        initial.matches, not_before=not_before, not_after=not_after
-    )
+    good, conflicts = partition_token_matches(initial.matches, not_before=not_before, not_after=not_after)
     if conflicts:
         return TokenContainmentOutcome(state=ProcessProbeState.LIVE, conflicts=conflicts)
     if good:
@@ -441,12 +442,8 @@ async def converge_token_kill(
                 state=ProcessProbeState.UNKNOWN, unknown=snapshot, kill_attempted=kill_attempted
             )
         if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
-            return TokenContainmentOutcome(
-                state=ProcessProbeState.CONFIRMED_DEAD, kill_attempted=kill_attempted
-            )
-        good, conflicts = partition_token_matches(
-            snapshot.matches, not_before=not_before, not_after=not_after
-        )
+            return TokenContainmentOutcome(state=ProcessProbeState.CONFIRMED_DEAD, kill_attempted=kill_attempted)
+        good, conflicts = partition_token_matches(snapshot.matches, not_before=not_before, not_after=not_after)
         if conflicts:
             return TokenContainmentOutcome(
                 state=ProcessProbeState.LIVE, conflicts=conflicts, kill_attempted=kill_attempted

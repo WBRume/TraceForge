@@ -2,13 +2,13 @@
 Workspace service.
 """
 
+import datetime
 import json
 import os
 import re
 import secrets
-import datetime
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Optional
 
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
@@ -26,9 +26,9 @@ from app.domains.management.models.management import (
     SddManagementProjectProduct,
 )
 from app.domains.task.services import git_worktree_service
+from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 
-
-PERMISSION_FIELD_MAP: Dict[WorkspacePermission, str] = {
+PERMISSION_FIELD_MAP: dict[WorkspacePermission, str] = {
     WorkspacePermission.CREATE_TASK: "create_task",
     WorkspacePermission.START_TASK: "start_task",
     WorkspacePermission.MANAGE_TASK_STATUS: "manage_task_status",
@@ -46,9 +46,9 @@ PERMISSION_FIELD_MAP: Dict[WorkspacePermission, str] = {
     WorkspacePermission.PUBLISH_API_MOCK: "publish_api_mock",
 }
 
-ALL_PERMISSIONS: Set[WorkspacePermission] = set(PERMISSION_FIELD_MAP.keys())
+ALL_PERMISSIONS: set[WorkspacePermission] = set(PERMISSION_FIELD_MAP.keys())
 
-DEFAULT_ROLE_PERMISSIONS: Dict[WorkspaceRole, Set[WorkspacePermission]] = {
+DEFAULT_ROLE_PERMISSIONS: dict[WorkspaceRole, set[WorkspacePermission]] = {
     WorkspaceRole.OWNER: ALL_PERMISSIONS,
     WorkspaceRole.DEVELOPER: {
         WorkspacePermission.CREATE_TASK,
@@ -78,12 +78,12 @@ def _normalize_role(role: WorkspaceRole | str) -> WorkspaceRole:
     return WorkspaceRole(role)
 
 
-def _permission_set_to_json(permissions: Set[WorkspacePermission]) -> str:
+def _permission_set_to_json(permissions: set[WorkspacePermission]) -> str:
     values = sorted(p.value for p in permissions)
     return json.dumps(values, ensure_ascii=True)
 
 
-def _permission_set_from_json(raw: Optional[str], role: WorkspaceRole) -> Set[WorkspacePermission]:
+def _permission_set_from_json(raw: str | None, role: WorkspaceRole) -> set[WorkspacePermission]:
     if role == WorkspaceRole.OWNER:
         return set(ALL_PERMISSIONS)
 
@@ -98,7 +98,7 @@ def _permission_set_from_json(raw: Optional[str], role: WorkspaceRole) -> Set[Wo
     if not isinstance(values, list):
         return set(DEFAULT_ROLE_PERMISSIONS[role])
 
-    parsed: Set[WorkspacePermission] = set()
+    parsed: set[WorkspacePermission] = set()
     for value in values:
         if not isinstance(value, str):
             continue
@@ -113,30 +113,27 @@ def _permission_set_from_json(raw: Optional[str], role: WorkspaceRole) -> Set[Wo
     return parsed
 
 
-def _flags_to_permission_set(flags: Dict[str, bool], role: WorkspaceRole) -> Set[WorkspacePermission]:
+def _flags_to_permission_set(flags: dict[str, bool], role: WorkspaceRole) -> set[WorkspacePermission]:
     if role == WorkspaceRole.OWNER:
         return set(ALL_PERMISSIONS)
 
-    permissions: Set[WorkspacePermission] = set()
+    permissions: set[WorkspacePermission] = set()
     for permission, field in PERMISSION_FIELD_MAP.items():
         if bool(flags.get(field, False)):
             permissions.add(permission)
     return permissions
 
 
-def default_permissions_for_role(role: WorkspaceRole | str) -> Set[WorkspacePermission]:
+def default_permissions_for_role(role: WorkspaceRole | str) -> set[WorkspacePermission]:
     normalized = _normalize_role(role)
     return set(DEFAULT_ROLE_PERMISSIONS[normalized])
 
 
-def permissions_to_flags(permissions: Set[WorkspacePermission]) -> Dict[str, bool]:
-    return {
-        field: permission in permissions
-        for permission, field in PERMISSION_FIELD_MAP.items()
-    }
+def permissions_to_flags(permissions: set[WorkspacePermission]) -> dict[str, bool]:
+    return {field: permission in permissions for permission, field in PERMISSION_FIELD_MAP.items()}
 
 
-def get_workspace_member(db: Session, workspace_id: str, user_id: str) -> Optional[WorkspaceMember]:
+def get_workspace_member(db: Session, workspace_id: str, user_id: str) -> WorkspaceMember | None:
     return (
         db.query(WorkspaceMember)
         .filter(
@@ -154,7 +151,7 @@ def is_workspace_expert(db: Session, workspace_id: str, user_id: str) -> bool:
     return bool(member.is_expert)
 
 
-def list_user_expert_workspace_ids(db: Session, user_id: str) -> List[str]:
+def list_user_expert_workspace_ids(db: Session, user_id: str) -> list[str]:
     rows = (
         db.query(WorkspaceMember.workspace_id)
         .filter(
@@ -170,7 +167,7 @@ def is_user_expert_in_any_workspace(db: Session, user_id: str) -> bool:
     return len(list_user_expert_workspace_ids(db, user_id)) > 0
 
 
-def get_workspace_and_member(db: Session, workspace_id: str, user_id: str) -> Optional[Tuple[Workspace, WorkspaceMember]]:
+def get_workspace_and_member(db: Session, workspace_id: str, user_id: str) -> tuple[Workspace, WorkspaceMember] | None:
     member = get_workspace_member(db, workspace_id, user_id)
     if not member:
         return None
@@ -193,12 +190,12 @@ def get_workspace_and_member(db: Session, workspace_id: str, user_id: str) -> Op
     return workspace, member
 
 
-def get_user_role(db: Session, workspace_id: str, user_id: str) -> Optional[WorkspaceRole]:
+def get_user_role(db: Session, workspace_id: str, user_id: str) -> WorkspaceRole | None:
     member = get_workspace_member(db, workspace_id, user_id)
     return member.role if member else None
 
 
-def get_user_permissions(db: Session, workspace_id: str, user_id: str) -> Set[WorkspacePermission]:
+def get_user_permissions(db: Session, workspace_id: str, user_id: str) -> set[WorkspacePermission]:
     member = get_workspace_member(db, workspace_id, user_id)
     if not member:
         return set()
@@ -220,7 +217,7 @@ def can_delete_workspace(db: Session, workspace_id: str, user_id: str) -> bool:
     return role == WorkspaceRole.OWNER
 
 
-def serialize_workspace_repository(row) -> Dict[str, object]:
+def serialize_workspace_repository(row) -> dict[str, object]:
     return {
         "id": row.id,
         "workspace_id": row.workspace_id,
@@ -238,7 +235,7 @@ def serialize_workspace_repository(row) -> Dict[str, object]:
     }
 
 
-def serialize_workspace_owner(owner) -> Optional[Dict[str, object]]:
+def serialize_workspace_owner(owner) -> dict[str, object] | None:
     if owner is None:
         return None
     return {
@@ -250,7 +247,7 @@ def serialize_workspace_owner(owner) -> Optional[Dict[str, object]]:
     }
 
 
-def serialize_workspace_project(project) -> Optional[Dict[str, object]]:
+def serialize_workspace_project(project) -> dict[str, object] | None:
     if project is None:
         return None
     return {
@@ -260,7 +257,7 @@ def serialize_workspace_project(project) -> Optional[Dict[str, object]]:
     }
 
 
-def serialize_workspace_products(project) -> List[Dict[str, object]]:
+def serialize_workspace_products(project) -> list[dict[str, object]]:
     if project is None:
         return []
     products = []
@@ -279,7 +276,7 @@ def serialize_workspace_products(project) -> List[Dict[str, object]]:
     return products
 
 
-def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[str, object]:
+def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> dict[str, object]:
     repositories = [serialize_workspace_repository(row) for row in workspace.repositories]
     project = workspace.project
     return {
@@ -304,7 +301,7 @@ def serialize_workspace(workspace: Workspace, member: WorkspaceMember) -> Dict[s
     }
 
 
-def _normalize_optional(value: Optional[str]) -> Optional[str]:
+def _normalize_optional(value: str | None) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
 
@@ -335,8 +332,8 @@ def _is_path_within(path: str, base: str) -> bool:
 def apply_workspace_root_dir_policy(
     db: Session,
     name: str,
-    project_path: Optional[str],
-) -> Optional[str]:
+    project_path: str | None,
+) -> str | None:
     """应用“工作区根目录”系统配置项。
 
     - 配置为空：保持原有逻辑，直接返回调用方传入的路径；
@@ -345,9 +342,7 @@ def apply_workspace_root_dir_policy(
     """
     from app.domains.system_config.services import system_config_service
 
-    root_dir = system_config_service.get_config_str(
-        db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR
-    )
+    root_dir = system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
     if not root_dir:
         return project_path
     workspace_base = os.path.join(root_dir, system_config_service.WORKSPACE_BASE_SEGMENT)
@@ -363,9 +358,9 @@ def apply_workspace_root_dir_policy(
 
 def preflight_workspace_conflicts(
     db: Session,
-    name: Optional[str] = None,
-    project_path: Optional[str] = None,
-) -> Dict[str, Any]:
+    name: str | None = None,
+    project_path: str | None = None,
+) -> dict[str, Any]:
     """创建工作区前的冲突预检（仅供参考，不阻断创建）。
 
     - 工作区重名：已存在同名工作区；
@@ -374,23 +369,16 @@ def preflight_workspace_conflicts(
     normalized_name = str(name or "").strip()
     normalized_path = _normalize_optional(project_path)
 
-    name_rows: List[Workspace] = []
+    name_rows: list[Workspace] = []
     if normalized_name:
         # 全局校验（不限当前用户）：防止用户 B 创建与用户 A 已建工作区同名的场景；
         # 名称按大小写不敏感比较，保证 MySQL（ci 排序规则）与 SQLite 行为一致。
-        name_rows = (
-            db.query(Workspace)
-            .filter(func.lower(Workspace.name) == normalized_name.lower())
-            .all()
-        )
+        name_rows = db.query(Workspace).filter(func.lower(Workspace.name) == normalized_name.lower()).all()
 
-    path_rows: List[Workspace] = []
+    path_rows: list[Workspace] = []
     if normalized_path:
         candidates = (
-            db.query(Workspace)
-            .options(joinedload(Workspace.owner))
-            .filter(Workspace.project_path.isnot(None))
-            .all()
+            db.query(Workspace).options(joinedload(Workspace.owner)).filter(Workspace.project_path.isnot(None)).all()
         )
         for row in candidates:
             other = str(row.project_path or "").strip()
@@ -399,14 +387,12 @@ def preflight_workspace_conflicts(
             if _is_path_within(normalized_path, other) or _is_path_within(other, normalized_path):
                 path_rows.append(row)
 
-    def _brief(row: Workspace, with_path: bool = False) -> Dict[str, str]:
+    def _brief(row: Workspace, with_path: bool = False) -> dict[str, str]:
         owner = row.owner
         owner_name = ""
         if owner is not None:
-            owner_name = str(
-                getattr(owner, "display_name", "") or getattr(owner, "email", "") or ""
-            )
-        info: Dict[str, str] = {
+            owner_name = str(getattr(owner, "display_name", "") or getattr(owner, "email", "") or "")
+        info: dict[str, str] = {
             "id": row.id,
             "name": row.name,
             "owner_name": owner_name,
@@ -423,28 +409,161 @@ def preflight_workspace_conflicts(
     }
 
 
+def _create_custom_repository_workspace(
+    db,
+    user,
+    name,
+    description,
+    normalized_project_path,
+    normalized_project_name,
+    normalized_product_name,
+    repositories,
+    _slugify_unique,
+):
+    from app.domains.management.models.management import SddManagementRepository
+    from app.domains.management.services import repository_service as mgmt_repository_service
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository, WorkspaceRepositoryState
+
+    # 独立多仓库模式：未关联管理项目，手动指定项目/产品名称，并逐仓选择分支。
+    if not normalized_project_path:
+        raise git_worktree_service.GitWorktreeError(
+            "project_path is required when repositories are provided",
+            status_code=400,
+        )
+    if not normalized_project_name or not normalized_product_name:
+        raise git_worktree_service.GitWorktreeError(
+            "project_name and product_name are required when repositories are provided",
+            status_code=400,
+        )
+
+    repo_rows = (
+        db.query(SddManagementRepository)
+        .filter(SddManagementRepository.id.in_([str(item.get("repository_id") or "").strip() for item in repositories]))
+        .all()
+    )
+    repos_by_id = {row.id: row for row in repo_rows}
+    seen_slugs: set = set()
+    workspace = Workspace(
+        name=name,
+        description=description,
+        project_path=normalized_project_path,
+        git_repo_url=None,
+        project_id=None,
+        custom_project_name=normalized_project_name,
+        custom_product_name=normalized_product_name,
+        owner_id=user.id,
+    )
+    db.add(workspace)
+    db.flush()
+    for item in repositories:
+        repo_id = str(item.get("repository_id") or "").strip()
+        repo_row = repos_by_id.get(repo_id)
+        if repo_row is None:
+            raise ValueError(f"Repository not found: {repo_id}")
+        branch_name = str(item.get("branch_name") or "").strip() or str(repo_row.default_branch or "main").strip()
+        slug = mgmt_repository_service.build_repo_slug(repo_row.name)
+        candidate = _slugify_unique(slug, seen_slugs)
+        base_dir = os.path.join(normalized_project_path or "", candidate)
+        db.add(
+            SddWorkspaceRepository(
+                workspace_id=workspace.id,
+                repository_id=repo_row.id,
+                repo_url=repo_row.git_url,
+                repo_name=repo_row.name,
+                repo_slug=candidate,
+                branch_name=branch_name,
+                ref_type="BRANCH",
+                base_dir=base_dir,
+                state=WorkspaceRepositoryState.PENDING,
+            )
+        )
+    return workspace
+
+
+def _create_project_workspace(
+    db, user, name, description, normalized_project_path, project_id, product_ids, repositories
+):
+    from app.domains.management.services import project_service
+    from app.domains.management.services import repository_service as mgmt_repository_service
+    from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository, WorkspaceRepositoryState
+
+    # Multi-repository layout: the workspace references a management project
+    # and its repository set is materialized by the provision job.
+    project = db.query(SddManagementProject).filter(SddManagementProject.id == project_id).first()
+    if not project:
+        raise ValueError("Project not found")
+    if not normalized_project_path:
+        raise git_worktree_service.GitWorktreeError(
+            "project_path is required when project_id is provided",
+            status_code=400,
+        )
+
+    workspace = Workspace(
+        name=name,
+        description=description,
+        project_path=normalized_project_path,
+        git_repo_url=None,
+        project_id=project.id,
+        owner_id=user.id,
+    )
+    db.add(workspace)
+    db.flush()
+
+    repo_set = project_service.resolve_project_repo_set(db, project, product_ids=product_ids or None)
+    if repositories is not None:
+        selected_ids = {
+            str(item.get("repository_id") or "").strip()
+            for item in repositories
+            if str(item.get("repository_id") or "").strip()
+        }
+        available_ids = {str(item["repository_id"]) for item in repo_set}
+        unknown = selected_ids - available_ids
+        if unknown:
+            raise ValueError(
+                "Selected repositories are not part of the project repository set: " + ", ".join(sorted(unknown))
+            )
+        repo_set = [item for item in repo_set if str(item["repository_id"]) in selected_ids]
+    seen_slugs: set = set()
+    for item in repo_set:
+        slug = mgmt_repository_service.build_repo_slug(item["repository_name"])
+        candidate = slug
+        sequence = 1
+        while candidate in seen_slugs:
+            candidate = f"{slug}-{sequence}"
+            sequence += 1
+        seen_slugs.add(candidate)
+        base_dir = os.path.join(normalized_project_path or "", candidate)
+        db.add(
+            SddWorkspaceRepository(
+                workspace_id=workspace.id,
+                repository_id=item["repository_id"],
+                repo_url=item["git_url"],
+                repo_name=item["repository_name"],
+                repo_slug=candidate,
+                branch_name=str(item.get("branch_name") or item.get("ref_name") or "").strip(),
+                ref_type=str(item.get("ref_type") or "BRANCH").strip().upper(),
+                base_dir=base_dir,
+                state=WorkspaceRepositoryState.PENDING,
+            )
+        )
+    return workspace
+
+
 def create_workspace(
     db: Session,
     user: User,
     name: str,
-    description: Optional[str] = None,
-    project_path: Optional[str] = None,
-    git_repo_url: Optional[str] = None,
-    project_id: Optional[str] = None,
-    product_ids: Optional[List[str]] = None,
-    repositories: Optional[List[Dict[str, str]]] = None,
-    project_name: Optional[str] = None,
-    product_name: Optional[str] = None,
+    description: str | None = None,
+    project_path: str | None = None,
+    git_repo_url: str | None = None,
+    project_id: str | None = None,
+    product_ids: list[str] | None = None,
+    repositories: list[dict[str, str]] | None = None,
+    project_name: str | None = None,
+    product_name: str | None = None,
 ) -> Workspace:
     if product_ids and len(product_ids) > 1:
         raise ValueError("workspace can only select one product")
-    from app.domains.management.services import project_service
-    from app.domains.management.services import repository_service as mgmt_repository_service
-    from app.domains.management.models.management import SddManagementRepository
-    from app.domains.workspace.models.workspace_repository import (
-        SddWorkspaceRepository,
-        WorkspaceRepositoryState,
-    )
 
     normalized_project_path = _normalize_optional(project_path)
     normalized_git_repo_url = _normalize_optional(git_repo_url)
@@ -452,9 +571,7 @@ def create_workspace(
     normalized_product_name = _normalize_optional(product_name)
 
     # 工作区根目录配置项：为空保持原有逻辑；非空时填充默认路径并限制在 根目录/workspace 之内
-    normalized_project_path = apply_workspace_root_dir_policy(
-        db, name, normalized_project_path
-    )
+    normalized_project_path = apply_workspace_root_dir_policy(db, name, normalized_project_path)
 
     def _slugify_unique(slug: str, seen: set) -> str:
         candidate = slug
@@ -466,137 +583,21 @@ def create_workspace(
         return candidate
 
     if not project_id and repositories:
-        # 独立多仓库模式：未关联管理项目，手动指定项目/产品名称，并逐仓选择分支。
-        if not normalized_project_path:
-            raise git_worktree_service.GitWorktreeError(
-                "project_path is required when repositories are provided",
-                status_code=400,
-            )
-        if not normalized_project_name or not normalized_product_name:
-            raise git_worktree_service.GitWorktreeError(
-                "project_name and product_name are required when repositories are provided",
-                status_code=400,
-            )
-
-        repo_rows = (
-            db.query(SddManagementRepository)
-            .filter(
-                SddManagementRepository.id.in_(
-                    [str(item.get("repository_id") or "").strip() for item in repositories]
-                )
-            )
-            .all()
+        workspace = _create_custom_repository_workspace(
+            db,
+            user,
+            name,
+            description,
+            normalized_project_path,
+            normalized_project_name,
+            normalized_product_name,
+            repositories,
+            _slugify_unique,
         )
-        repos_by_id = {row.id: row for row in repo_rows}
-        seen_slugs: set = set()
-        workspace = Workspace(
-            name=name,
-            description=description,
-            project_path=normalized_project_path,
-            git_repo_url=None,
-            project_id=None,
-            custom_project_name=normalized_project_name,
-            custom_product_name=normalized_product_name,
-            owner_id=user.id,
-        )
-        db.add(workspace)
-        db.flush()
-        for item in repositories:
-            repo_id = str(item.get("repository_id") or "").strip()
-            repo_row = repos_by_id.get(repo_id)
-            if repo_row is None:
-                raise ValueError(f"Repository not found: {repo_id}")
-            branch_name = str(item.get("branch_name") or "").strip() or str(
-                repo_row.default_branch or "main"
-            ).strip()
-            slug = mgmt_repository_service.build_repo_slug(repo_row.name)
-            candidate = _slugify_unique(slug, seen_slugs)
-            base_dir = os.path.join(normalized_project_path or "", candidate)
-            db.add(
-                SddWorkspaceRepository(
-                    workspace_id=workspace.id,
-                    repository_id=repo_row.id,
-                    repo_url=repo_row.git_url,
-                    repo_name=repo_row.name,
-                    repo_slug=candidate,
-                    branch_name=branch_name,
-                    ref_type="BRANCH",
-                    base_dir=base_dir,
-                    state=WorkspaceRepositoryState.PENDING,
-                )
-            )
     elif project_id:
-        # Multi-repository layout: the workspace references a management project
-        # and its repository set is materialized by the provision job.
-        project = (
-            db.query(SddManagementProject)
-            .filter(SddManagementProject.id == project_id)
-            .first()
-            )
-        if not project:
-            raise ValueError("Project not found")
-        if not normalized_project_path:
-            raise git_worktree_service.GitWorktreeError(
-                "project_path is required when project_id is provided",
-                status_code=400,
-            )
-
-        workspace = Workspace(
-            name=name,
-            description=description,
-            project_path=normalized_project_path,
-            git_repo_url=None,
-            project_id=project.id,
-            owner_id=user.id,
+        workspace = _create_project_workspace(
+            db, user, name, description, normalized_project_path, project_id, product_ids, repositories
         )
-        db.add(workspace)
-        db.flush()
-
-        repo_set = project_service.resolve_project_repo_set(
-            db, project, product_ids=product_ids or None
-        )
-        if repositories is not None:
-            selected_ids = {
-                str(item.get("repository_id") or "").strip()
-                for item in repositories
-                if str(item.get("repository_id") or "").strip()
-            }
-            available_ids = {
-                str(item["repository_id"]) for item in repo_set
-            }
-            unknown = selected_ids - available_ids
-            if unknown:
-                raise ValueError(
-                    "Selected repositories are not part of the project repository set: "
-                    + ", ".join(sorted(unknown))
-                )
-            repo_set = [
-                item for item in repo_set
-                if str(item["repository_id"]) in selected_ids
-            ]
-        seen_slugs: set = set()
-        for item in repo_set:
-            slug = mgmt_repository_service.build_repo_slug(item["repository_name"])
-            candidate = slug
-            sequence = 1
-            while candidate in seen_slugs:
-                candidate = f"{slug}-{sequence}"
-                sequence += 1
-            seen_slugs.add(candidate)
-            base_dir = os.path.join(normalized_project_path or "", candidate)
-            db.add(
-                SddWorkspaceRepository(
-                    workspace_id=workspace.id,
-                    repository_id=item["repository_id"],
-                    repo_url=item["git_url"],
-                    repo_name=item["repository_name"],
-                    repo_slug=candidate,
-                    branch_name=str(item.get("branch_name") or item.get("ref_name") or "").strip(),
-                    ref_type=str(item.get("ref_type") or "BRANCH").strip().upper(),
-                    base_dir=base_dir,
-                    state=WorkspaceRepositoryState.PENDING,
-                )
-            )
     else:
         if normalized_git_repo_url and not normalized_project_path:
             raise git_worktree_service.GitWorktreeError(
@@ -648,7 +649,7 @@ def create_workspace(
     return workspace
 
 
-def list_user_workspaces(db: Session, user: User) -> List[Workspace]:
+def list_user_workspaces(db: Session, user: User) -> list[Workspace]:
     member_rows = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).all()
     ws_ids = [m.workspace_id for m in member_rows]
     if not ws_ids:
@@ -656,12 +657,8 @@ def list_user_workspaces(db: Session, user: User) -> List[Workspace]:
     return db.query(Workspace).filter(Workspace.id.in_(ws_ids)).all()
 
 
-def list_user_workspace_summaries(db: Session, user: User) -> List[Dict[str, object]]:
-    member_rows = (
-        db.query(WorkspaceMember)
-        .filter(WorkspaceMember.user_id == user.id)
-        .all()
-    )
+def list_user_workspace_summaries(db: Session, user: User) -> list[dict[str, object]]:
+    member_rows = db.query(WorkspaceMember).filter(WorkspaceMember.user_id == user.id).all()
     if not member_rows:
         return []
 
@@ -683,14 +680,14 @@ def list_user_workspace_summaries(db: Session, user: User) -> List[Dict[str, obj
     return [serialize_workspace(workspace, by_workspace[workspace.id]) for workspace in workspaces]
 
 
-def get_workspace(db: Session, workspace_id: str, user: User) -> Optional[Workspace]:
+def get_workspace(db: Session, workspace_id: str, user: User) -> Workspace | None:
     member = get_workspace_member(db, workspace_id, user.id)
     if not member:
         return None
     return db.query(Workspace).filter(Workspace.id == workspace_id).first()
 
 
-def get_workspace_summary(db: Session, workspace_id: str, user: User) -> Optional[Dict[str, object]]:
+def get_workspace_summary(db: Session, workspace_id: str, user: User) -> dict[str, object] | None:
     pair = get_workspace_and_member(db, workspace_id, user.id)
     if not pair:
         return None
@@ -703,7 +700,7 @@ def add_member(
     workspace_id: str,
     user_email: str,
     role: str,
-    permissions_flags: Optional[Dict[str, bool]] = None,
+    permissions_flags: dict[str, bool] | None = None,
     is_expert: bool = False,
 ) -> WorkspaceMember:
     user = db.query(User).filter(User.email == user_email).first()
@@ -743,7 +740,7 @@ def add_member(
     return member
 
 
-def list_workspace_members(db: Session, workspace_id: str) -> List[WorkspaceMember]:
+def list_workspace_members(db: Session, workspace_id: str) -> list[WorkspaceMember]:
     return (
         db.query(WorkspaceMember)
         .options(joinedload(WorkspaceMember.user))
@@ -758,8 +755,8 @@ def list_workspace_members_paginated(
     workspace_id: str,
     page: int,
     page_size: int,
-    keyword: Optional[str] = None,
-) -> Tuple[Optional[WorkspaceMember], List[WorkspaceMember], int]:
+    keyword: str | None = None,
+) -> tuple[WorkspaceMember | None, list[WorkspaceMember], int]:
     owner_member = (
         db.query(WorkspaceMember)
         .options(joinedload(WorkspaceMember.user))
@@ -783,31 +780,21 @@ def list_workspace_members_paginated(
     normalized_keyword = (keyword or "").strip()
     if normalized_keyword:
         fuzzy_pattern = f"%{normalized_keyword}%"
-        query = (
-            query
-            .join(User, WorkspaceMember.user_id == User.id)
-            .filter(
-                or_(
-                    User.display_name.ilike(fuzzy_pattern),
-                    User.email.ilike(fuzzy_pattern),
-                )
+        query = query.join(User, WorkspaceMember.user_id == User.id).filter(
+            or_(
+                User.display_name.ilike(fuzzy_pattern),
+                User.email.ilike(fuzzy_pattern),
             )
         )
 
     total = query.count()
     offset = max(page - 1, 0) * page_size
-    items = (
-        query
-        .order_by(WorkspaceMember.joined_at.asc())
-        .offset(offset)
-        .limit(page_size)
-        .all()
-    )
+    items = query.order_by(WorkspaceMember.joined_at.asc()).offset(offset).limit(page_size).all()
 
     return owner_member, items, total
 
 
-def get_workspace_member_by_id(db: Session, workspace_id: str, member_id: str) -> Optional[WorkspaceMember]:
+def get_workspace_member_by_id(db: Session, workspace_id: str, member_id: str) -> WorkspaceMember | None:
     return (
         db.query(WorkspaceMember)
         .options(joinedload(WorkspaceMember.user))
@@ -823,9 +810,9 @@ def update_member(
     db: Session,
     workspace_id: str,
     member_id: str,
-    role: Optional[str] = None,
-    permissions_flags: Optional[Dict[str, bool]] = None,
-    is_expert: Optional[bool] = None,
+    role: str | None = None,
+    permissions_flags: dict[str, bool] | None = None,
+    is_expert: bool | None = None,
 ) -> WorkspaceMember:
     member = get_workspace_member_by_id(db, workspace_id, member_id)
     if not member:
@@ -871,13 +858,12 @@ def remove_member(db: Session, workspace_id: str, member_id: str, operator_user_
     # 移除成员：删除其在工作区的个人阅读状态与回执（重新加入按首次访问处理）
     from app.domains.task.models.reading import TaskReadingReceipt, TaskReadingState
     from app.domains.task.models.task import SddTask
+
     db.query(TaskReadingState).filter(
         TaskReadingState.user_id == member.user_id,
         TaskReadingState.workspace_id == workspace_id,
     ).delete(synchronize_session=False)
-    workspace_task_ids = (
-        db.query(SddTask.id).filter(SddTask.workspace_id == workspace_id).subquery()
-    )
+    workspace_task_ids = db.query(SddTask.id).filter(SddTask.workspace_id == workspace_id).subquery()
     db.query(TaskReadingReceipt).filter(
         TaskReadingReceipt.user_id == member.user_id,
         TaskReadingReceipt.task_id.in_(workspace_task_ids),
@@ -887,7 +873,7 @@ def remove_member(db: Session, workspace_id: str, member_id: str, operator_user_
     db.commit()
 
 
-def member_to_response(member: WorkspaceMember) -> Dict[str, object]:
+def member_to_response(member: WorkspaceMember) -> dict[str, object]:
     permissions = _permission_set_from_json(member.permissions_json, member.role)
     return {
         "id": member.id,
@@ -905,7 +891,7 @@ def member_to_response(member: WorkspaceMember) -> Dict[str, object]:
     }
 
 
-def get_user_permission_payload(db: Session, workspace_id: str, user_id: str) -> Optional[Dict[str, object]]:
+def get_user_permission_payload(db: Session, workspace_id: str, user_id: str) -> dict[str, object] | None:
     member = get_workspace_member(db, workspace_id, user_id)
     if not member:
         return None
@@ -927,7 +913,7 @@ def delete_workspace(db: Session, workspace_id: str) -> bool:
 
     original_project_path = str(ws.project_path or "").strip()
     configured_remote = str(ws.git_repo_url or "").strip()
-    archived_path: Optional[str] = None
+    archived_path: str | None = None
 
     if git_worktree_service.should_use_git_worktree(original_project_path, configured_remote):
         archived_path = git_worktree_service.archive_workspace_repository(
@@ -949,8 +935,7 @@ def delete_workspace(db: Session, workspace_id: str) -> bool:
                 )
             except Exception as rollback_exc:
                 raise RuntimeError(
-                    "Workspace archived but database deletion failed and rollback failed. "
-                    f"archive_path={archived_path}"
+                    f"Workspace archived but database deletion failed and rollback failed. archive_path={archived_path}"
                 ) from rollback_exc
         raise RuntimeError("Workspace deletion failed after archive migration") from exc
     return True
@@ -979,26 +964,17 @@ class InviteClaimRaceLost(ValueError):
     """
 
 
-def _lock_workspace_for_member_change(
-    db: Session, workspace_id: str
-) -> Optional[Workspace]:
+def _lock_workspace_for_member_change(db: Session, workspace_id: str) -> Workspace | None:
     """Lock the workspace row first (doc 审计 0c381413 §4.2).
 
     所有会改变工作区成员集合的路径（accept/revoke）都先锁 Workspace、
     再锁 InviteLink；该顺序短暂串行化同工作区的邀请领取，同时保证
     revoke 与 accept 不会交错出"检查-写入"竞态。
     """
-    return (
-        db.query(Workspace)
-        .filter(Workspace.id == workspace_id)
-        .with_for_update()
-        .one_or_none()
-    )
+    return db.query(Workspace).filter(Workspace.id == workspace_id).with_for_update().one_or_none()
 
 
-def _lock_invite_link(
-    db: Session, token: str, workspace_id: str
-) -> Optional["WorkspaceInviteLink"]:
+def _lock_invite_link(db: Session, token: str, workspace_id: str) -> Optional["WorkspaceInviteLink"]:
     """Re-read the link under lock; never trust the identity-map snapshot."""
     from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 
@@ -1018,7 +994,7 @@ def accept_invite_in_txn(
     db: Session,
     token: str,
     user_id: str,
-) -> Tuple[WorkspaceMember, "WorkspaceInviteLink", bool]:
+) -> tuple[WorkspaceMember, "WorkspaceInviteLink", bool]:
     """接受邀请的事务核心（doc 审计 0c381413 §4.2）。
 
     事务边界归调用方：本函数只加锁、写成员与计数并 ``flush``，成功由
@@ -1039,11 +1015,7 @@ def accept_invite_in_txn(
     """
     from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 
-    locator = (
-        db.query(WorkspaceInviteLink)
-        .filter(WorkspaceInviteLink.token == token)
-        .first()
-    )
+    locator = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.token == token).first()
     if locator is None:
         raise ValueError("Invite link not found")
     if _lock_workspace_for_member_change(db, locator.workspace_id) is None:
@@ -1103,7 +1075,7 @@ def accept_invite_in_txn(
     except InviteClaimRaceLost:
         savepoint.rollback()
         raise
-    except IntegrityError as exc:
+    except IntegrityError:
         savepoint.rollback()
         # REPEATABLE READ 下普通 SELECT 复用事务旧快照，可能仍看不到并发
         # 已提交的成员；必须用锁定读（当前读）重读——冲突本身意味着对方
@@ -1129,7 +1101,7 @@ def accept_invite_link(
     db: Session,
     token: str,
     user: User,
-) -> Tuple[Optional[WorkspaceMember], Optional["WorkspaceInviteLink"], bool]:
+) -> tuple[WorkspaceMember | None, Optional["WorkspaceInviteLink"], bool]:
     """接受邀请（commit-owning 兼容入口）。
 
     返回 ``(member, link, already_member)``。链接无效/失效抛
@@ -1144,11 +1116,7 @@ def accept_invite_link(
         db.rollback()
         from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 
-        link = (
-            db.query(WorkspaceInviteLink)
-            .filter(WorkspaceInviteLink.token == token)
-            .first()
-        )
+        link = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.token == token).first()
         return None, link, False
     except Exception:
         db.rollback()
@@ -1169,10 +1137,10 @@ def create_invite_link(
     workspace_id: str,
     creator_user_id: str,
     role: str,
-    permissions_flags: Optional[Dict[str, bool]] = None,
+    permissions_flags: dict[str, bool] | None = None,
     is_expert: bool = False,
-    valid_days: Optional[int] = None,
-    max_uses: Optional[int] = None,
+    valid_days: int | None = None,
+    max_uses: int | None = None,
 ) -> "WorkspaceInviteLink":
     from app.domains.workspace.models.invite_link import TOKEN_LENGTH, WorkspaceInviteLink
 
@@ -1222,7 +1190,7 @@ def get_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional["W
     )
 
 
-def list_invite_links(db: Session, workspace_id: str) -> List["WorkspaceInviteLink"]:
+def list_invite_links(db: Session, workspace_id: str) -> list["WorkspaceInviteLink"]:
     from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 
     return (
@@ -1233,9 +1201,7 @@ def list_invite_links(db: Session, workspace_id: str) -> List["WorkspaceInviteLi
     )
 
 
-def revoke_invite_link_in_txn(
-    db: Session, workspace_id: str, link_id: str
-) -> Optional["WorkspaceInviteLink"]:
+def revoke_invite_link_in_txn(db: Session, workspace_id: str, link_id: str) -> Optional["WorkspaceInviteLink"]:
     """撤销邀请链接 = 删除链接行（事务核心，doc 审计 0c381413 §4.2）。
 
     与 accept 使用同一锁顺序：先锁 Workspace 行，再以
@@ -1276,7 +1242,7 @@ def revoke_invite_link_in_txn(
     return snapshot
 
 
-def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional[Any]:
+def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Any | None:
     """撤销邀请链接（commit-owning 兼容入口）。
 
     返回删除快照（SimpleNamespace；行已删除，无需 refresh）。
@@ -1289,7 +1255,7 @@ def revoke_invite_link(db: Session, workspace_id: str, link_id: str) -> Optional
     return link
 
 
-def invite_link_status(link: "WorkspaceInviteLink", now: Optional[datetime.datetime] = None) -> str:
+def invite_link_status(link: "WorkspaceInviteLink", now: datetime.datetime | None = None) -> str:
     current = now or _utcnow()
     if link.revoked_at:
         return INVITE_STATUS_REVOKED
@@ -1300,7 +1266,7 @@ def invite_link_status(link: "WorkspaceInviteLink", now: Optional[datetime.datet
     return INVITE_STATUS_ACTIVE
 
 
-def serialize_invite_link(link: "WorkspaceInviteLink") -> Dict[str, object]:
+def serialize_invite_link(link: "WorkspaceInviteLink") -> dict[str, object]:
     status = invite_link_status(link)
     remaining_uses = None
     if link.max_uses is not None:
@@ -1324,7 +1290,9 @@ def serialize_invite_link(link: "WorkspaceInviteLink") -> Dict[str, object]:
     }
 
 
-def get_invite_for_preview(db: Session, token: str) -> Optional[Tuple["WorkspaceInviteLink", Workspace, Dict[str, object]]]:
+def get_invite_for_preview(
+    db: Session, token: str
+) -> tuple["WorkspaceInviteLink", Workspace, dict[str, object]] | None:
     from app.domains.workspace.models.invite_link import WorkspaceInviteLink
 
     link = db.query(WorkspaceInviteLink).filter(WorkspaceInviteLink.token == token).first()
@@ -1348,9 +1316,5 @@ def workspace_uses_git_worktree(db: Session, workspace_id: str) -> bool:
         return False
     if bool(str(workspace.project_path or "").strip() and str(workspace.git_repo_url or "").strip()):
         return True
-    repo_count = (
-        db.query(SddWorkspaceRepository)
-        .filter(SddWorkspaceRepository.workspace_id == workspace_id)
-        .count()
-    )
+    repo_count = db.query(SddWorkspaceRepository).filter(SddWorkspaceRepository.workspace_id == workspace_id).count()
     return repo_count > 0

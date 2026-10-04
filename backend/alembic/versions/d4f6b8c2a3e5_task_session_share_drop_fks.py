@@ -9,16 +9,16 @@ Create Date: 2026-09-18 00:00:00.000000
 建议表的 share_id 仅作溯源字段（带索引，无约束）。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
-
 revision: str = "d4f6b8c2a3e5"
-down_revision: Union[str, None] = "c9e3a5b7d2f1"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "c9e3a5b7d2f1"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 # b8d2f4a6c1e9 建表时生成的外键（按表内实际约束名动态发现）
@@ -54,11 +54,26 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.create_foreign_key("fk_tss_task", "sdd_task_session_shares", "sdd_tasks", ["task_id"], ["id"], ondelete="CASCADE")
-    op.create_foreign_key("fk_tss_workspace", "sdd_task_session_shares", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE")
+    op.create_foreign_key(
+        "fk_tss_task", "sdd_task_session_shares", "sdd_tasks", ["task_id"], ["id"], ondelete="CASCADE"
+    )
+    op.create_foreign_key(
+        "fk_tss_workspace", "sdd_task_session_shares", "workspaces", ["workspace_id"], ["id"], ondelete="CASCADE"
+    )
     op.create_foreign_key("fk_tss_creator", "sdd_task_session_shares", "users", ["creator_id"], ["id"])
-    op.create_foreign_key("fk_tsa_share", "sdd_task_share_accesses", "sdd_task_session_shares", ["share_id"], ["id"], ondelete="CASCADE")
-    op.create_foreign_key("fk_tsg_share", "sdd_task_share_suggestions", "sdd_task_session_shares", ["share_id"], ["id"], ondelete="CASCADE")
-    op.create_foreign_key("fk_tsg_task", "sdd_task_share_suggestions", "sdd_tasks", ["task_id"], ["id"], ondelete="CASCADE")
+    op.create_foreign_key(
+        "fk_tsa_share", "sdd_task_share_accesses", "sdd_task_session_shares", ["share_id"], ["id"], ondelete="CASCADE"
+    )
+    op.create_foreign_key(
+        "fk_tsg_share",
+        "sdd_task_share_suggestions",
+        "sdd_task_session_shares",
+        ["share_id"],
+        ["id"],
+        ondelete="CASCADE",
+    )
+    op.create_foreign_key(
+        "fk_tsg_task", "sdd_task_share_suggestions", "sdd_tasks", ["task_id"], ["id"], ondelete="CASCADE"
+    )
     op.create_foreign_key("fk_tsg_recipient", "sdd_task_share_suggestions", "users", ["recipient_user_id"], ["id"])
     op.create_foreign_key("fk_tsg_sender", "sdd_task_share_suggestions", "users", ["sender_user_id"], ["id"])

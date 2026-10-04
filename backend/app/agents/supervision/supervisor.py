@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import BinaryIO, Optional
+from typing import BinaryIO
 
 from app.agents.contract import record_attempt_termination
 from app.agents.supervision import reclaim, spawn
@@ -56,17 +56,12 @@ class ProcessSupervisor:
         树检查只能在 inspection executor 中执行；本计数以 asyncio returncode
         与缓存的已知后代为准，仅供诊断展示。
         """
-        return sum(
-            1
-            for item in self._processes
-            if item.process.returncode is None or item.known_descendant_pids
-        )
+        return sum(1 for item in self._processes if item.process.returncode is None or item.known_descendant_pids)
 
     def forget(self, managed: ManagedAgentProcess) -> None:
         cached = managed._last_termination
         if managed._closed or (
-            managed.process.returncode is not None
-            and bool(cached is not None and cached.confirmed_dead)
+            managed.process.returncode is not None and bool(cached is not None and cached.confirmed_dead)
         ):
             self._processes.discard(managed)
 
@@ -78,11 +73,11 @@ class ProcessSupervisor:
         *,
         cwd: str,
         env: dict,
-        run_token: Optional[str] = None,
-        worker_boot_id: Optional[str] = None,
+        run_token: str | None = None,
+        worker_boot_id: str | None = None,
         on_process_started=None,
-        containment_id: Optional[str] = None,
-        process_attach_timeout_seconds: Optional[float] = None,
+        containment_id: str | None = None,
+        process_attach_timeout_seconds: float | None = None,
         stdin: int | BinaryIO = asyncio.subprocess.DEVNULL,
     ) -> ManagedAgentProcess:
         return await spawn.spawn_supervised(
@@ -100,7 +95,7 @@ class ProcessSupervisor:
 
     # ── attempt 级停止（本 worker 持有的进程）───────────────────────
 
-    async def stop_attempt(self, run_token: str, reason: str) -> Optional[TerminationResult]:
+    async def stop_attempt(self, run_token: str, reason: str) -> TerminationResult | None:
         """Stop every process registered under this run token (doc 10).
 
         Must not stop only the first match: a retry or a spawn race can leave
@@ -127,9 +122,7 @@ class ProcessSupervisor:
                 (item.root_return_code for item in results if item.root_return_code is not None),
                 None,
             ),
-            signals_sent=tuple(
-                signal for item in results for signal in item.signals_sent
-            ),
+            signals_sent=tuple(signal for item in results for signal in item.signals_sent),
             tree_kill_used=any(item.tree_kill_used for item in results),
         )
 
@@ -140,7 +133,7 @@ class ProcessSupervisor:
             return_exceptions=True,
         )
         output: list = []
-        for managed, result in zip(processes, results):
+        for managed, result in zip(processes, results, strict=False):
             if isinstance(result, TerminationResult):
                 record_attempt_termination(result, managed.process_identity)
                 output.append(result)
@@ -174,11 +167,11 @@ class ProcessSupervisor:
 
     async def stop_persisted(
         self,
-        pid: Optional[int],
+        pid: int | None,
         process_started_at,
         reason: str,
-        process_group_id: Optional[int] = None,
-        run_token: Optional[str] = None,
+        process_group_id: int | None = None,
+        run_token: str | None = None,
         not_before=None,
     ) -> TerminationResult:
         return await reclaim.stop_persisted(
@@ -197,7 +190,7 @@ class ProcessSupervisor:
         *,
         not_before=None,
         not_after=None,
-    ) -> Optional[TerminationResult]:
+    ) -> TerminationResult | None:
         return await reclaim.stop_by_run_token_discovery(
             run_token,
             reason,
@@ -207,9 +200,9 @@ class ProcessSupervisor:
 
     async def verify_persisted_cleanup(
         self,
-        pid: Optional[int],
+        pid: int | None,
         process_started_at,
-        process_group_id: Optional[int] = None,
+        process_group_id: int | None = None,
     ) -> TerminationResult:
         return await reclaim.verify_persisted_cleanup(
             pid,

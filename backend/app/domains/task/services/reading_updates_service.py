@@ -8,9 +8,10 @@
 - 先按 reading_items 元数据筛选，再仅为本页有效消息批量读取正文并调用
   共用历史序列化器；body 与 change_seq 来自同一 DB 一致性读取。
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import and_, or_
@@ -19,14 +20,12 @@ from sqlalchemy.orm import Session
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.reading import TaskReadingItem, TaskReadingReceipt
 from app.domains.task.models.task import SddTask
+from app.domains.task.services.conversation.history import serialize_history_messages
 from app.domains.task.services.reading_capture_service import (
     KIND_CLEARED,
     KIND_MESSAGE,
     KIND_RETRACTED,
 )
-
-from app.domains.task.services.conversation.history import serialize_history_messages
-
 
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 100
@@ -37,7 +36,7 @@ FILTER_OTHER_MEMBERS = "other-members"
 FILTER_MEMBER = "member"
 
 
-def _member_filter_condition(current_user_id: str, filter_name: str, member_id: Optional[str]):
+def _member_filter_condition(current_user_id: str, filter_name: str, member_id: str | None):
     """成员筛选：严格只过滤真实用户输入；notice 一律保留，避免筛选隐藏撤回事实。"""
     notice_keep = TaskReadingItem.kind.in_([KIND_RETRACTED, KIND_CLEARED])
     member_input = and_(
@@ -53,7 +52,7 @@ def _member_filter_condition(current_user_id: str, filter_name: str, member_id: 
     return None
 
 
-def _group_key(item: TaskReadingItem) -> Optional[str]:
+def _group_key(item: TaskReadingItem) -> str | None:
     if item.kind != KIND_MESSAGE:
         return None
     if item.session_turn_id:
@@ -61,7 +60,7 @@ def _group_key(item: TaskReadingItem) -> Optional[str]:
     return None
 
 
-def _decode_cursor(cursor: Optional[str]) -> int:
+def _decode_cursor(cursor: str | None) -> int:
     if not cursor:
         return 0
     try:
@@ -81,10 +80,10 @@ def list_updates(
     task_id: str,
     window_token: str,
     filter_name: str = FILTER_ALL,
-    member_id: Optional[str] = None,
+    member_id: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
-    cursor: Optional[str] = None,
-) -> Dict[str, Any]:
+    cursor: str | None = None,
+) -> dict[str, Any]:
     from app.domains.task.services.reading_progress_service import PURPOSE_WINDOW, unsign_token
 
     token = unsign_token(window_token, PURPOSE_WINDOW, user_id)
@@ -113,11 +112,7 @@ def list_updates(
     if condition is not None:
         query = query.filter(condition)
     # keyset 递增；limit+1 探测 has_more，短页允许
-    rows = (
-        query.order_by(TaskReadingItem.change_seq.asc())
-        .limit(limit + 1)
-        .all()
-    )
+    rows = query.order_by(TaskReadingItem.change_seq.asc()).limit(limit + 1).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
 
@@ -127,27 +122,27 @@ def list_updates(
     state = get_state(db, user_id, task_id)
     frontier = int(state.read_frontier_seq or 0) if state is not None else 0
     page_keys = [row.item_key for row in rows]
-    receipts: Dict[str, int] = {}
+    receipts: dict[str, int] = {}
     if page_keys:
         receipts = {
             receipt.item_key: int(receipt.seen_change_seq or 0)
-            for receipt in db.query(TaskReadingReceipt).filter(
+            for receipt in db.query(TaskReadingReceipt)
+            .filter(
                 TaskReadingReceipt.user_id == user_id,
                 TaskReadingReceipt.task_id == task_id,
                 TaskReadingReceipt.reading_epoch == int(task.reading_epoch),
                 TaskReadingReceipt.item_key.in_(page_keys),
-            ).all()
+            )
+            .all()
         }
 
-    message_rows: List[TaskReadingItem] = [row for row in rows if row.kind == KIND_MESSAGE]
+    message_rows: list[TaskReadingItem] = [row for row in rows if row.kind == KIND_MESSAGE]
     message_ids = [str(row.message_id) for row in message_rows if row.message_id]
-    messages_by_id: Dict[str, ChatMessage] = {}
-    dtos_by_id: Dict[str, Dict[str, Any]] = {}
+    messages_by_id: dict[str, ChatMessage] = {}
+    dtos_by_id: dict[str, dict[str, Any]] = {}
     if message_ids:
         source_rows = (
-            db.query(ChatMessage)
-            .filter(ChatMessage.task_id == task_id, ChatMessage.id.in_(message_ids))
-            .all()
+            db.query(ChatMessage).filter(ChatMessage.task_id == task_id, ChatMessage.id.in_(message_ids)).all()
         )
         messages_by_id = {row.id: row for row in source_rows}
         existing = [messages_by_id[mid] for mid in message_ids if mid in messages_by_id]
@@ -155,7 +150,7 @@ def list_updates(
             dtos = serialize_history_messages(db, task, existing, workspace_id, task_id)
             dtos_by_id = {str(dto.get("id")): dto for dto in dtos}
 
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     for row in rows:
         change_seq = int(row.change_seq)
         read = (
@@ -164,7 +159,7 @@ def list_updates(
             # 本人产生的条目（输入或本人会话的 AI 回复）视为已知
             or str(row.creator_id or "") == str(user_id)
         )
-        entry: Dict[str, Any] = {
+        entry: dict[str, Any] = {
             "item_key": row.item_key,
             "change_seq": str(change_seq),
             "kind": row.kind,

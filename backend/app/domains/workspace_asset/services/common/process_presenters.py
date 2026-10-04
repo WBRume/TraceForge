@@ -8,10 +8,10 @@ Summary / Process Audit / Task 文件项）的统一响应构建器。
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from app.domains.asset.services import decision_service
 from app.domains.asset.models.asset import SddAsset
+from app.domains.asset.services import decision_service
 from app.domains.workflow.models.task_change import (
     SddTaskChangeProposal,
     SddTaskChangeProposalFile,
@@ -94,7 +94,7 @@ def human_review_comment_response(comment: SddHumanReviewComment) -> HumanReview
     )
 
 
-def _review_target_refs(review: SddHumanReview) -> List[Dict[str, Any]]:
+def _review_target_refs(review: SddHumanReview) -> list[dict[str, Any]]:
     target_ref = review.target_ref_json
     if isinstance(target_ref, dict) and isinstance(target_ref.get("targets"), list):
         return [item for item in target_ref["targets"] if isinstance(item, dict)]
@@ -120,9 +120,7 @@ def human_review_response(review: SddHumanReview) -> HumanReviewResponse:
         derived_status=getattr(review, "_derived_status", None),
         due_date=review.due_date,
         resolved_at=review.resolved_at,
-        linked_clarification_ids=[
-            item.clarification_id for item in (review.clarification_links or [])
-        ],
+        linked_clarification_ids=[item.clarification_id for item in (review.clarification_links or [])],
         comments=[human_review_comment_response(item) for item in (review.comments or [])],
         created_at=review.created_at,
         updated_at=review.updated_at,
@@ -132,12 +130,12 @@ def human_review_response(review: SddHumanReview) -> HumanReviewResponse:
 def human_delta_response(
     delta: SddHumanDelta,
     *,
-    diff_text: Optional[str] = None,
-    file_diffs: Optional[List[Dict[str, Any]]] = None,
+    diff_text: str | None = None,
+    file_diffs: list[dict[str, Any]] | None = None,
 ) -> HumanDeltaResponse:
     from app.domains.workspace_asset.services.human_delta_compare_service import (
-        _proposal_summary,
         _evidence_summary,
+        _proposal_summary,
     )
 
     proposal_summary = None
@@ -245,7 +243,9 @@ def final_summary_response(summary: SddTaskFinalSummary) -> TaskFinalSummaryResp
         next_steps=summary.next_steps,
         final_evidence_ids=normalize_list(summary.final_evidence_ids_json),
         review_checklist=summary.review_checklist_json if isinstance(summary.review_checklist_json, dict) else None,
-        clarification_summary=summary.clarification_summary_json if isinstance(summary.clarification_summary_json, dict) else None,
+        clarification_summary=summary.clarification_summary_json
+        if isinstance(summary.clarification_summary_json, dict)
+        else None,
         delta_summary=summary.delta_summary_json if isinstance(summary.delta_summary_json, dict) else None,
         decision_summary=summary.decision_summary_json if isinstance(summary.decision_summary_json, dict) else None,
         human_confirmation_review_id=summary.human_confirmation_review_id,
@@ -279,14 +279,14 @@ def process_audit_response(log: SddTaskProcessAuditLog) -> TaskProcessAuditLogRe
 
 def task_file_items(
     *,
-    specs: List[SddAsset],
-    plans: List[SddAsset],
-    ai_outputs: List[SddAiOutput],
-    change_proposals: List[SddTaskChangeProposal],
-    verification_runs: List[SddTaskVerificationRun],
-    conflict_reports: List[SddTaskConflictReport],
-) -> List[TaskFileItemResponse]:
-    items: List[TaskFileItemResponse] = []
+    specs: list[SddAsset],
+    plans: list[SddAsset],
+    ai_outputs: list[SddAiOutput],
+    change_proposals: list[SddTaskChangeProposal],
+    verification_runs: list[SddTaskVerificationRun],
+    conflict_reports: list[SddTaskConflictReport],
+) -> list[TaskFileItemResponse]:
+    items: list[TaskFileItemResponse] = []
     items.extend(task_file_from_asset(asset) for asset in [*specs, *plans])
     items.extend(task_file_from_ai_output(output) for output in ai_outputs)
     for proposal in change_proposals:

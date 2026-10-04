@@ -15,22 +15,23 @@ import json
 import os
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 
 from app.agents import (
+    EXECUTION_KIND_REMOTE_SESSION,
     AgentAttemptContext,
     AgentBackend,
     AgentEvent,
     AgentRunResult,
     AgentStopResult,
     AgentTimeoutError,
-    EXECUTION_KIND_REMOTE_SESSION,
     current_agent_attempt_runtime,
     record_attempt_remote_session_started,
     record_attempt_remote_stop,
 )
-from app.agents.run_logging import run_agent_backend_with_logging
 from app.agents.errors import AgentExecutionDetached
+from app.agents.run_logging import run_agent_backend_with_logging
 from app.config import settings
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db, run_git_job
@@ -40,6 +41,7 @@ from app.domains.task.models.log import LogType
 from app.domains.task.models.session_turn import TaskSessionTurn
 from app.domains.task.models.task import TaskStatus
 from app.engine.claude_event_adapter import claude_stream_to_agent_events
+from app.engine.session import turn_setup
 from app.engine.session.frontend import FrontendFeed, ThinkingStream
 from app.engine.session.gate import SessionGate
 from app.engine.session.persistence import (
@@ -49,7 +51,6 @@ from app.engine.session.persistence import (
     update_task_status,
 )
 from app.engine.session.registry import register_engine, unregister_engine
-from app.engine.session import turn_setup
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -94,14 +95,14 @@ class TaskAgentEngine:
         ws_id: str,
         user_id: str,
         *,
-        job_id: Optional[str] = None,
-        backend_name: Optional[str] = None,
-        on_result: Optional[Callable[[bool, str, Optional[int], Optional[float], str], Any]] = None,
-        on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
-        on_session: Optional[Callable[[str, str], Any]] = None,
-        on_error: Optional[Callable[[str, str], Any]] = None,
-        on_process_started: Optional[Callable[[Any, Optional[AgentAttemptContext]], Any]] = None,
-        attempt: Optional[AgentAttemptContext] = None,
+        job_id: str | None = None,
+        backend_name: str | None = None,
+        on_result: Callable[[bool, str, int | None, float | None, str], Any] | None = None,
+        on_hitl: Callable[[str, str, list | None, str | None, str], Any] | None = None,
+        on_session: Callable[[str, str], Any] | None = None,
+        on_error: Callable[[str, str], Any] | None = None,
+        on_process_started: Callable[[Any, AgentAttemptContext | None], Any] | None = None,
+        attempt: AgentAttemptContext | None = None,
         execution_profile=None,
     ):
         self.task_id = task_id
@@ -113,16 +114,16 @@ class TaskAgentEngine:
         # 指定 backend（任务粘性/工作区配置）；为空回退全局 .env
         self.backend_name = backend_name
         self.cli: Any = self._create_engine_backend()
-        self.session_id: Optional[str] = None  # CLI session id (可跨对话恢复)
+        self.session_id: str | None = None  # CLI session id (可跨对话恢复)
         self.running = False
         # 空闲时间戳：非 running 起点由收割器据此判定 TTL
         self._last_idle_since = time.monotonic()
 
-        self.current_job_id: Optional[str] = job_id
-        self.attempt: Optional[AgentAttemptContext] = attempt
-        self.session_turn_id: Optional[str] = None
-        self.session_revision: Optional[int] = None
-        self._run_task: Optional[asyncio.Task] = None
+        self.current_job_id: str | None = job_id
+        self.attempt: AgentAttemptContext | None = attempt
+        self.session_turn_id: str | None = None
+        self.session_revision: int | None = None
+        self._run_task: asyncio.Task | None = None
         self.on_result = on_result
         self.on_hitl = on_hitl
         self.on_session = on_session
@@ -130,25 +131,25 @@ class TaskAgentEngine:
         # 进程身份 attach 钩子由调用方（AI 作业层）注入，引擎不反向依赖
         # 具体持久化实现（依赖倒置）。
         self.on_process_started = on_process_started
-        self.last_result_success: Optional[bool] = None
+        self.last_result_success: bool | None = None
         self.last_result_text: str = ""
         self.last_result_interrupted = False
         self._guide_turn = None
         self._guide_text = ""
-        self.last_termination_confirmed_dead: Optional[bool] = None
+        self.last_termination_confirmed_dead: bool | None = None
         # 最近一次真实 provider result（AgentRunResult）。只有 backend 返回
         # 结果对象时才赋值：引擎异常/超时/中断路径不会设置它，finalizer
         # 以此区分"provider 已结束"与"业务是否成功"（doc 审计 P1-1）。
-        self.last_result: Optional[AgentRunResult] = None
+        self.last_result: AgentRunResult | None = None
         self._hitl_requested_in_turn = False
         self._interrupt_requested = False
-        self._runtime_model: Optional[str] = None
-        self._runtime_skill_index: List[Any] = []
+        self._runtime_model: str | None = None
+        self._runtime_skill_index: list[Any] = []
         # 事件门禁与回合级缓存（run() 时加载）
-        self._gate: Optional[SessionGate] = None
-        self._session_generation: Optional[int] = None
+        self._gate: SessionGate | None = None
+        self._session_generation: int | None = None
         # HITL 确认登记：interaction_id -> provider_request_id
-        self._pending_confirmations: Dict[str, str] = {}
+        self._pending_confirmations: dict[str, str] = {}
 
         # 子组件：前端呈现通道与持久化批量窗口
         self.frontend = FrontendFeed(self)
@@ -183,7 +184,7 @@ class TaskAgentEngine:
             return await result
         return bool(result)
 
-    async def _emit_hook(self, callback: Optional[Callable], *args: Any) -> None:
+    async def _emit_hook(self, callback: Callable | None, *args: Any) -> None:
         if not callback:
             return
         try:
@@ -196,13 +197,13 @@ class TaskAgentEngine:
     def set_job_callbacks(
         self,
         *,
-        job_id: Optional[str] = None,
-        on_result: Optional[Callable[[bool, str, Optional[int], Optional[float], str], Any]] = None,
-        on_hitl: Optional[Callable[[str, str, Optional[list], Optional[str], str], Any]] = None,
-        on_session: Optional[Callable[[str, str], Any]] = None,
-        on_error: Optional[Callable[[str, str], Any]] = None,
-        on_process_started: Optional[Callable[[Any, Optional[AgentAttemptContext]], Any]] = None,
-        attempt: Optional[AgentAttemptContext] = None,
+        job_id: str | None = None,
+        on_result: Callable[[bool, str, int | None, float | None, str], Any] | None = None,
+        on_hitl: Callable[[str, str, list | None, str | None, str], Any] | None = None,
+        on_session: Callable[[str, str], Any] | None = None,
+        on_error: Callable[[str, str], Any] | None = None,
+        on_process_started: Callable[[Any, AgentAttemptContext | None], Any] | None = None,
+        attempt: AgentAttemptContext | None = None,
     ) -> None:
         if job_id is not None:
             self.current_job_id = job_id
@@ -222,11 +223,11 @@ class TaskAgentEngine:
     # ─────────────── 门禁 ───────────────
 
     @property
-    def gate(self) -> Optional[SessionGate]:
+    def gate(self) -> SessionGate | None:
         return self._gate
 
     @property
-    def session_generation(self) -> Optional[int]:
+    def session_generation(self) -> int | None:
         return self._session_generation
 
     def is_current(self) -> bool:
@@ -247,9 +248,7 @@ class TaskAgentEngine:
     def can_deliver_confirmation(self, interaction_id: str) -> bool:
         return bool(
             interaction_id in self._pending_confirmations
-            and "long_connection" in getattr(
-                getattr(self.cli, "capabilities", None), "hitl_modes", []
-            )
+            and "long_connection" in getattr(getattr(self.cli, "capabilities", None), "hitl_modes", [])
             and self.running
         )
 
@@ -282,20 +281,87 @@ class TaskAgentEngine:
         self._pending_confirmations.clear()
         self.thinking.reset()
 
-    async def run(self, prompt: str, *, fresh_session: bool = False, recovery: Optional[dict] = None):
+    async def _handle_run_error(self, e, recovery):
+        if recovery and not self._interrupt_requested:
+            raise AgentExecutionDetached(f"OpenCode recovery deferred: {e}") from e
+        if hasattr(e, "termination_confirmed_dead"):
+            self.last_termination_confirmed_dead = e.termination_confirmed_dead
+        # 远程 adapter 在 session 已建立后的异常出口必须尝试停止并
+        # 记录结构化 stop 证据；stop 失败不吞异常语义，而是把
+        # ACK=False/UNKNOWN 交给 convergence（doc 修复方案 §8.3）。
+        # P0-2/P1-2 之前：非 timeout 的 AgentError 直接抛到 failure
+        # finalizer，NORMAL_FINALIZE 可能清掉仍存活 session 的 ownership。
+        await self._stop_remote_session_after_error()
+        error_text = str(e)
+        is_timeout = any(marker in error_text.lower() for marker in _TIMEOUT_TEXT_MARKERS)
+        if self._interrupt_requested:
+            logger.info(f"TaskAgentEngine stopped after user interrupt: {e}")
+            self.last_result_success = None
+            self.last_result_text = error_text
+        elif is_timeout:
+            logger.warning(f"TaskAgentEngine timed out (resumable): {e}")
+            self.last_result_interrupted = True
+            self.last_result_success = None
+            self.last_result_text = error_text
+            self.segments.update_snapshot(status="INTERRUPTED")
+            await self.segments.flush()
+            await update_task_status(self, TaskStatus.INTERRUPTED, error_text)
+            await self.frontend.push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
+        else:
+            logger.exception(f"TaskAgentEngine error, session is resumable: {e}")
+            self.segments.update_snapshot(status="INTERRUPTED")
+            await self.segments.flush()
+            await update_task_status(self, TaskStatus.INTERRUPTED, error_text)
+            await self.frontend.push_status("INTERRUPTED", f"引擎异常，可继续发送消息恢复: {e}")
+            self.last_result_success = False
+            self.last_result_text = error_text
+            await self._emit_hook(self.on_error, error_text, self.current_job_id or "")
+
+    async def _prepare_turn_environment(self, recovery):
+        # 事件门禁：回合开始时一次性加载 job/task revision 快照（off-loop）
+        self._gate = SessionGate(
+            task_id=self.task_id,
+            job_id=self.current_job_id,
+            session_revision=self.session_revision,
+            ttl_seconds=float(getattr(settings, "REVISION_GATE_TTL_SECONDS", 1.0) or 1.0),
+            attempt=self.attempt,
+        )
+        await self._gate.load()
+        self._session_generation = await run_db(self.frontend.load_session_generation_sync)
+
+        await update_task_status(self, TaskStatus.CODING)
+
+        project_path = await run_db(turn_setup.resolve_project_path_sync, self.task_id)
+        if not recovery:
+            await run_git_job(turn_setup.materialize_task_skills_sync, self.task_id)
+        self._runtime_skill_index = await run_db(turn_setup.build_runtime_skill_index_sync, self.task_id)
+        env_overrides = turn_setup.build_env_overrides(
+            ws_id=self.ws_id,
+            task_id=self.task_id,
+            user_id=self.user_id,
+            job_id=self.current_job_id,
+            attempt=self.attempt,
+        )
+        return project_path, env_overrides
+
+    async def run(self, prompt: str, *, fresh_session: bool = False, recovery: dict | None = None):
         """
         主入口：将用户 prompt 发送给 agent backend 并处理事件流
         支持首次启动和恢复会话
         """
         if self.execution_profile is not None:
             from app.engine.session.execution_profile import run_profiled_turn
+
             return await run_profiled_turn(self, prompt)
         self._run_task = asyncio.current_task()
-        with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
-            job_id=self.current_job_id,
-            task_id=self.task_id,
-            session_id=self.session_id,
-            event_type="engine_run",
+        with (
+            bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id),
+            bind_ai_context(
+                job_id=self.current_job_id,
+                task_id=self.task_id,
+                session_id=self.session_id,
+                event_type="engine_run",
+            ),
         ):
             if fresh_session:
                 # 强制干净会话启动，确保 provider 不带 --resume。
@@ -310,30 +376,7 @@ class TaskAgentEngine:
             logger.info(f"TaskAgentEngine run: task={self.task_id}, prompt_length={len(prompt)}")
 
             try:
-                # 事件门禁：回合开始时一次性加载 job/task revision 快照（off-loop）
-                self._gate = SessionGate(
-                    task_id=self.task_id,
-                    job_id=self.current_job_id,
-                    session_revision=self.session_revision,
-                    ttl_seconds=float(getattr(settings, "REVISION_GATE_TTL_SECONDS", 1.0) or 1.0),
-                    attempt=self.attempt,
-                )
-                await self._gate.load()
-                self._session_generation = await run_db(self.frontend.load_session_generation_sync)
-
-                await update_task_status(self, TaskStatus.CODING)
-
-                project_path = await run_db(turn_setup.resolve_project_path_sync, self.task_id)
-                if not recovery:
-                    await run_git_job(turn_setup.materialize_task_skills_sync, self.task_id)
-                self._runtime_skill_index = await run_db(turn_setup.build_runtime_skill_index_sync, self.task_id)
-                env_overrides = turn_setup.build_env_overrides(
-                    ws_id=self.ws_id,
-                    task_id=self.task_id,
-                    user_id=self.user_id,
-                    job_id=self.current_job_id,
-                    attempt=self.attempt,
-                )
+                project_path, env_overrides = await self._prepare_turn_environment(recovery)
 
                 guide_turn = await run_db(turn_setup.playbook_turn_sync, self.task_id)
                 self._guide_turn = guide_turn["fence"]
@@ -365,9 +408,7 @@ class TaskAgentEngine:
                     # 真实 provider result 已到达：先登记再持久化。持久化
                     # 失败不能抹掉"provider 已结束"的证据（doc 审计 P1-1）。
                     self.last_result = result
-                    self.last_termination_confirmed_dead = getattr(
-                        result, "termination_confirmed_dead", None
-                    )
+                    self.last_termination_confirmed_dead = getattr(result, "termination_confirmed_dead", None)
                     if result.session_id:
                         self.session_id = result.session_id
                     await run_db(self._persist_provider_state_sync, result)
@@ -391,9 +432,7 @@ class TaskAgentEngine:
                 raise
             except AgentTimeoutError as e:
                 logger.warning(f"TaskAgentEngine timed out (resumable): {e}")
-                self.last_termination_confirmed_dead = getattr(
-                    e, "termination_confirmed_dead", None
-                )
+                self.last_termination_confirmed_dead = getattr(e, "termination_confirmed_dead", None)
                 self.last_result_interrupted = True
                 self.last_result_success = None
                 self.last_result_text = str(e)
@@ -402,42 +441,8 @@ class TaskAgentEngine:
                 await update_task_status(self, TaskStatus.INTERRUPTED, str(e))
                 await self.frontend.push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
             except Exception as e:
-                if recovery and not self._interrupt_requested:
-                    raise AgentExecutionDetached(f"OpenCode recovery deferred: {e}") from e
-                if hasattr(e, "termination_confirmed_dead"):
-                    self.last_termination_confirmed_dead = getattr(
-                        e, "termination_confirmed_dead"
-                    )
-                # 远程 adapter 在 session 已建立后的异常出口必须尝试停止并
-                # 记录结构化 stop 证据；stop 失败不吞异常语义，而是把
-                # ACK=False/UNKNOWN 交给 convergence（doc 修复方案 §8.3）。
-                # P0-2/P1-2 之前：非 timeout 的 AgentError 直接抛到 failure
-                # finalizer，NORMAL_FINALIZE 可能清掉仍存活 session 的 ownership。
-                await self._stop_remote_session_after_error()
-                error_text = str(e)
-                is_timeout = any(marker in error_text.lower() for marker in _TIMEOUT_TEXT_MARKERS)
-                if self._interrupt_requested:
-                    logger.info(f"TaskAgentEngine stopped after user interrupt: {e}")
-                    self.last_result_success = None
-                    self.last_result_text = error_text
-                elif is_timeout:
-                    logger.warning(f"TaskAgentEngine timed out (resumable): {e}")
-                    self.last_result_interrupted = True
-                    self.last_result_success = None
-                    self.last_result_text = error_text
-                    self.segments.update_snapshot(status="INTERRUPTED")
-                    await self.segments.flush()
-                    await update_task_status(self, TaskStatus.INTERRUPTED, error_text)
-                    await self.frontend.push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
-                else:
-                    logger.exception(f"TaskAgentEngine error, session is resumable: {e}")
-                    self.segments.update_snapshot(status="INTERRUPTED")
-                    await self.segments.flush()
-                    await update_task_status(self, TaskStatus.INTERRUPTED, error_text)
-                    await self.frontend.push_status("INTERRUPTED", f"引擎异常，可继续发送消息恢复: {e}")
-                    self.last_result_success = False
-                    self.last_result_text = error_text
-                    await self._emit_hook(self.on_error, error_text, self.current_job_id or "")
+                await self._handle_run_error(e, recovery)
+
             finally:
                 await self._drain_buffers()
                 self.running = False
@@ -452,6 +457,7 @@ class TaskAgentEngine:
 
     async def _save_execution_checkpoint(self, checkpoint: dict) -> None:
         from app.domains.ai.services.jobs.remote_recovery import save_checkpoint_sync
+
         await run_db(save_checkpoint_sync, self.attempt, checkpoint)
         self.remote_execution_checkpoint = dict(checkpoint)
 
@@ -466,16 +472,19 @@ class TaskAgentEngine:
                 return
             metadata = result.metadata if isinstance(result.metadata, dict) else {}
             ids = metadata.get("provider_message_ids")
-            turn.provider_session_id = str(result.session_id or self.session_id or "").strip() or turn.provider_session_id
+            turn.provider_session_id = (
+                str(result.session_id or self.session_id or "").strip() or turn.provider_session_id
+            )
             turn.provider_message_ids_json = {
                 "provider_message_ids": [str(value) for value in ids if str(value).strip()]
-                if isinstance(ids, list) else [],
+                if isinstance(ids, list)
+                else [],
                 "provider_user_message_id": str(metadata.get("provider_user_message_id") or "").strip() or None,
-                "provider_assistant_message_id": str(metadata.get("provider_assistant_message_id") or "").strip() or None,
+                "provider_assistant_message_id": str(metadata.get("provider_assistant_message_id") or "").strip()
+                or None,
                 "raw_trace_path": (
                     str(result.raw_trace).strip()
-                    if result.raw_trace and isinstance(result.raw_trace, str)
-                    and os.path.isfile(result.raw_trace)
+                    if result.raw_trace and isinstance(result.raw_trace, str) and os.path.isfile(result.raw_trace)
                     else None
                 ),
             }
@@ -498,9 +507,7 @@ class TaskAgentEngine:
         cli = self.cli
         if cli is None or self.session_id is None:
             return
-        kind = str(
-            getattr(getattr(cli, "capabilities", None), "execution_kind", "") or ""
-        ).strip()
+        kind = str(getattr(getattr(cli, "capabilities", None), "execution_kind", "") or "").strip()
         if kind != "REMOTE_SESSION":
             return
 
@@ -519,17 +526,14 @@ class TaskAgentEngine:
                     timeout=stop_timeout,
                 )
             else:
-                stop_result = await asyncio.wait_for(
-                    cli.cancel(), timeout=stop_timeout
-                )
+                stop_result = await asyncio.wait_for(cli.cancel(), timeout=stop_timeout)
             if isinstance(stop_result, AgentStopResult):
                 record_attempt_remote_stop(stop_result)
         except asyncio.CancelledError:
             raise
         except Exception as stop_exc:
             logger.warning(
-                "Remote session stop after engine error was not confirmed: "
-                "task_id={}, session_id={}, error={}",
+                "Remote session stop after engine error was not confirmed: task_id={}, session_id={}, error={}",
                 self.task_id,
                 self.session_id,
                 stop_exc,
@@ -543,17 +547,20 @@ class TaskAgentEngine:
                 )
             )
 
-    async def send_message(self, prompt: str, *, job_id: Optional[str] = None):
+    async def send_message(self, prompt: str, *, job_id: str | None = None):
         """
         处理用户追加消息：以相同 session_id 启动新的 provider 进程 (--resume)
         """
         if job_id is not None:
             self.current_job_id = job_id
-        with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
-            job_id=self.current_job_id,
-            task_id=self.task_id,
-            session_id=self.session_id,
-            event_type="engine_send_message",
+        with (
+            bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id),
+            bind_ai_context(
+                job_id=self.current_job_id,
+                task_id=self.task_id,
+                session_id=self.session_id,
+                event_type="engine_send_message",
+            ),
         ):
             if self.running:
                 logger.warning("Engine is still running, ignoring message")
@@ -576,11 +583,14 @@ class TaskAgentEngine:
         """
         if self.execution_profile is not None:
             return await self.execution_profile.cancel(self)
-        with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
-            job_id=self.current_job_id,
-            task_id=self.task_id,
-            session_id=self.session_id,
-            event_type="engine_interrupt",
+        with (
+            bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id),
+            bind_ai_context(
+                job_id=self.current_job_id,
+                task_id=self.task_id,
+                session_id=self.session_id,
+                event_type="engine_interrupt",
+            ),
         ):
             self._interrupt_requested = True
             # 门禁立即失效：中断后的迟到事件一律丢弃
@@ -601,11 +611,14 @@ class TaskAgentEngine:
             result = await self.execution_profile.cancel(self)
             unregister_engine(self.task_id, self.scope_id)
             return result
-        with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
-            job_id=self.current_job_id,
-            task_id=self.task_id,
-            session_id=self.session_id,
-            event_type="engine_stop",
+        with (
+            bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id),
+            bind_ai_context(
+                job_id=self.current_job_id,
+                task_id=self.task_id,
+                session_id=self.session_id,
+                event_type="engine_stop",
+            ),
         ):
             if self.cli:
                 stop_result = await self.cli.cancel()
@@ -615,11 +628,15 @@ class TaskAgentEngine:
             run_task = self._run_task
             if run_task is not None and run_task is not asyncio.current_task():
                 try:
-                    await asyncio.wait_for(asyncio.shield(run_task), timeout=float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0))
+                    await asyncio.wait_for(
+                        asyncio.shield(run_task),
+                        timeout=float(getattr(settings, "TASK_SESSION_REVERT_WAIT_SECONDS", 30.0) or 30.0),
+                    )
                 except asyncio.TimeoutError as exc:
                     raise RuntimeError("Agent run did not exit after cancellation") from exc
             unregister_engine(self.task_id)
             logger.info(f"TaskAgentEngine stopped: {self.task_id}")
+        return None
 
     # ─────────────── 事件入口 ───────────────
 
@@ -632,17 +649,42 @@ class TaskAgentEngine:
         for agent_event in agent_events:
             await self.handle_agent_event(agent_event)
 
+    async def _on_text(self, payload):
+        text = str(payload.get("text") or "")
+        if text:
+            if self._guide_turn:
+                self._guide_text = (self._guide_text + text)[-200001:]
+            await self.thinking.finish()
+            key = payload.get("provider_event_key")
+            await self.frontend.push_chat(
+                "assistant", text, **({"metadata": {"provider_event_key": key}} if key else {})
+            )
+
+    async def _on_thinking(self, payload):
+        text = str(payload.get("text") or "")
+        if text:
+            await self.thinking.handle_update(text, is_delta=payload.get("delta") is not None)
+            self.segments.mark_thinking_dirty()
+
+    async def _on_provider_log(self, payload):
+        message = str(payload.get("message") or "")
+        if message:
+            logger.debug(f"Agent provider event: message_length={len(message)}")
+
     async def handle_agent_event(self, event: AgentEvent):
         """处理统一 AgentEvent，供 AgentBackend.run() 路径使用。"""
         if not self.is_current():
             return
         event_type = event.type
         payload = event.payload
-        with bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id), bind_ai_context(
-            job_id=self.current_job_id,
-            task_id=self.task_id,
-            session_id=self.session_id,
-            event_type=str(event_type or "unknown"),
+        with (
+            bind_task_context(task_id=self.task_id, workspace_id=self.ws_id, user_id=self.user_id),
+            bind_ai_context(
+                job_id=self.current_job_id,
+                task_id=self.task_id,
+                session_id=self.session_id,
+                event_type=str(event_type or "unknown"),
+            ),
         ):
             if event_type != "session_started":
                 await self._observe_model(payload.get("model"))
@@ -651,19 +693,9 @@ class TaskAgentEngine:
             elif event_type == "model":
                 pass
             elif event_type == "text":
-                text = str(payload.get("text") or "")
-                if text:
-                    if self._guide_turn:
-                        self._guide_text = (self._guide_text + text)[-200001:]
-                    await self.thinking.finish()
-                    key = payload.get("provider_event_key")
-                    await self.frontend.push_chat("assistant", text,
-                                                  **({"metadata": {"provider_event_key": key}} if key else {}))
+                await self._on_text(payload)
             elif event_type == "thinking":
-                text = str(payload.get("text") or "")
-                if text:
-                    await self.thinking.handle_update(text, is_delta=payload.get("delta") is not None)
-                    self.segments.mark_thinking_dirty()
+                await self._on_thinking(payload)
             elif event_type == "tool_use":
                 await self._on_tool_use(payload)
             elif event_type == "tool_result":
@@ -671,18 +703,14 @@ class TaskAgentEngine:
             elif event_type == "ask_user":
                 await self._on_ask_user(payload)
             elif event_type == "usage":
-                self.segments.update_snapshot(
-                    usage=payload, raw_usage_json=payload.get("raw_usage"), status="RUNNING"
-                )
+                self.segments.update_snapshot(usage=payload, raw_usage_json=payload.get("raw_usage"), status="RUNNING")
             elif event_type == "context_compacted":
                 self.logs.queue(
                     f"[compaction] {str(payload.get('summary') or payload)}",
                     LogType.STDOUT,
                 )
             elif event_type == "log":
-                message = str(payload.get("message") or "")
-                if message:
-                    logger.debug(f"Agent provider event: message_length={len(message)}")
+                await self._on_provider_log(payload)
             elif event_type == "result":
                 await self._on_result(payload, is_error=False)
             elif event_type == "error":
@@ -691,7 +719,7 @@ class TaskAgentEngine:
     # ─────────────── 事件分支 ───────────────
 
     @staticmethod
-    def _normalize_runtime_model(value: Any) -> Optional[str]:
+    def _normalize_runtime_model(value: Any) -> str | None:
         """Normalize a provider/model label received from an Agent backend."""
         model = str(value or "").strip()
         return model or None
@@ -728,11 +756,17 @@ class TaskAgentEngine:
         tool_name = str(payload.get("tool_name") or "unknown")
         tool_input = payload.get("tool_input", {})
         tool_id = str(payload.get("tool_use_id") or "")
-        self.logs.queue(json.dumps({
-            "tool_name": tool_name,
-            "tool_input": tool_input,
-            "tool_use_id": tool_id,
-        }, ensure_ascii=False), LogType.STDOUT)
+        self.logs.queue(
+            json.dumps(
+                {
+                    "tool_name": tool_name,
+                    "tool_input": tool_input,
+                    "tool_use_id": tool_id,
+                },
+                ensure_ascii=False,
+            ),
+            LogType.STDOUT,
+        )
         self.segments.record(
             "tool_input",
             workspace_id=self.ws_id,
@@ -767,10 +801,13 @@ class TaskAgentEngine:
         tool_use_id = str(payload.get("tool_use_id") or "")
         output = str(payload.get("output") or "")
         is_error = bool(payload.get("is_error"))
-        self.logs.queue(json.dumps(
-            {"tool_use_id": tool_use_id, "output": output[:2000], "is_error": is_error},
-            ensure_ascii=False,
-        ), LogType.STDOUT)
+        self.logs.queue(
+            json.dumps(
+                {"tool_use_id": tool_use_id, "output": output[:2000], "is_error": is_error},
+                ensure_ascii=False,
+            ),
+            LogType.STDOUT,
+        )
         self.segments.record(
             "tool_result",
             workspace_id=self.ws_id,
@@ -810,17 +847,19 @@ class TaskAgentEngine:
         self,
         prompt: str,
         hitl_type: str = "text",
-        options: Optional[list] = None,
-        context: Optional[str] = None,
-        provider_request_id: Optional[str] = None,
-        fields: Optional[list] = None,
+        options: list | None = None,
+        context: str | None = None,
+        provider_request_id: str | None = None,
+        fields: list | None = None,
     ):
         """Persist a visible confirmation message and register its private provider locator."""
         if not self.is_current():
             return
-        interaction_id = (str(uuid.uuid5(uuid.NAMESPACE_URL,
-                          f"{self.current_job_id}:{self.session_id}:{provider_request_id}"))
-                          if provider_request_id else str(uuid.uuid4()))
+        interaction_id = (
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"{self.current_job_id}:{self.session_id}:{provider_request_id}"))
+            if provider_request_id
+            else str(uuid.uuid4())
+        )
         if hitl_type == "form" and fields:
             normalized_kind = "form"
         elif hitl_type in {"boolean", "approval"}:
@@ -836,9 +875,7 @@ class TaskAgentEngine:
         }
         if normalized_kind == "form":
             confirmation["fields"] = fields
-        self._pending_confirmations[interaction_id] = str(
-            provider_request_id or interaction_id
-        )
+        self._pending_confirmations[interaction_id] = str(provider_request_id or interaction_id)
         self.segments.record(
             "confirmation",
             workspace_id=self.ws_id,
@@ -904,7 +941,8 @@ class TaskAgentEngine:
                 total_cost_usd=cost,
             )
             logger.bind(finish_reason=finish_reason, is_error=is_error, duration_ms=duration).warning(
-                "Agent execution timed out, session is resumable")
+                "Agent execution timed out, session is resumable"
+            )
             await update_task_status(self, TaskStatus.INTERRUPTED, "Agent execution timed out; session is resumable")
             await update_task_metrics(self, cost, duration, "INTERRUPTED")
             await self.frontend.push_status("INTERRUPTED", "执行超时，可继续发送消息恢复")
@@ -937,8 +975,15 @@ class TaskAgentEngine:
             if self._guide_turn:
                 try:
                     from app.domains.diagnosis_playbook.guide_session import publish
-                    guide_state = await run_db(turn_setup.record_playbook_result_sync, self.task_id,
-                        self._guide_turn, result_text, self.current_job_id, self._guide_text)
+
+                    guide_state = await run_db(
+                        turn_setup.record_playbook_result_sync,
+                        self.task_id,
+                        self._guide_turn,
+                        result_text,
+                        self.current_job_id,
+                        self._guide_text,
+                    )
                     if guide_state:
                         await publish(self.task_id, guide_state)
                 except Exception:

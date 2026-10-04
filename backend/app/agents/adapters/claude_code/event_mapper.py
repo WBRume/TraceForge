@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List
+from typing import Any
 
 from app.agents.events import AgentEvent
 from app.engine.claude_event_adapter import (
@@ -38,47 +38,53 @@ def _json_text(value: Any, max_len: int = 5000) -> str:
     return text
 
 
-def _map_assistant_block(block: dict[str, Any]) -> List[AgentEvent]:
-    events: List[AgentEvent] = []
+def _map_assistant_block(block: dict[str, Any]) -> list[AgentEvent]:
+    events: list[AgentEvent] = []
     block_type = _text(block.get("type")).lower()
     if block_type == "thinking":
         thinking = _text(block.get("thinking"))
         if thinking:
-            events.append(AgentEvent(
-                type="thinking",
-                payload={"text": thinking},
-                provider=PROVIDER,
-                raw=block,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="thinking",
+                    payload={"text": thinking},
+                    provider=PROVIDER,
+                    raw=block,
+                    time=_iso_time(),
+                )
+            )
     elif block_type == "text":
         text = _text(block.get("text"))
         if text:
-            events.append(AgentEvent(
-                type="text",
-                payload={"text": text},
-                provider=PROVIDER,
-                raw=block,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="text",
+                    payload={"text": text},
+                    provider=PROVIDER,
+                    raw=block,
+                    time=_iso_time(),
+                )
+            )
     elif block_type == "tool_use":
         tool_name = _text(block.get("name"))
         tool_use_id = _text(block.get("id"))
-        events.append(AgentEvent(
-            type="tool_use",
-            payload={
-                "tool_use_id": tool_use_id,
-                "tool_name": tool_name,
-                "tool_input": block.get("input", {}),
-            },
-            provider=PROVIDER,
-            raw=block,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="tool_use",
+                payload={
+                    "tool_use_id": tool_use_id,
+                    "tool_name": tool_name,
+                    "tool_input": block.get("input", {}),
+                },
+                provider=PROVIDER,
+                raw=block,
+                time=_iso_time(),
+            )
+        )
     elif block_type == "tool_result":
         output = block.get("output", block.get("content"))
         if isinstance(output, list):
-            parts: List[str] = []
+            parts: list[str] = []
             for item in output:
                 if isinstance(item, dict):
                     parts.append(_text(item.get("text") or item.get("output")))
@@ -87,58 +93,64 @@ def _map_assistant_block(block: dict[str, Any]) -> List[AgentEvent]:
             output_text = "\n".join(p for p in parts if p)
         else:
             output_text = _text(output)
-        events.append(AgentEvent(
-            type="tool_result",
-            payload={
-                "tool_use_id": _text(block.get("tool_use_id")),
-                "output": output_text,
-                "is_error": bool(block.get("is_error")),
-            },
-            provider=PROVIDER,
-            raw=block,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="tool_result",
+                payload={
+                    "tool_use_id": _text(block.get("tool_use_id")),
+                    "output": output_text,
+                    "is_error": bool(block.get("is_error")),
+                },
+                provider=PROVIDER,
+                raw=block,
+                time=_iso_time(),
+            )
+        )
     return events
 
 
-def map_claude_event(event: dict[str, Any]) -> List[AgentEvent]:
+def map_claude_event(event: dict[str, Any]) -> list[AgentEvent]:
     """把一个 Claude CLI stream-json 事件转换为 0~N 个 AgentEvent。"""
     if not isinstance(event, dict):
         return []
 
-    events: List[AgentEvent] = []
+    events: list[AgentEvent] = []
     event_type = _text(event.get("type")).lower()
     subtype = _text(event.get("subtype")).lower()
 
     compaction = extract_claude_compaction_event(event)
     if compaction:
-        events.append(AgentEvent(
-            type="context_compacted",
-            payload={
-                "summary": "",
-                "source": "claude-code",
-                "token_before": compaction.get("token_before"),
-                "token_after": compaction.get("token_after"),
-                "event_type": compaction.get("event_type"),
-                "subtype": compaction.get("subtype"),
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="context_compacted",
+                payload={
+                    "summary": "",
+                    "source": "claude-code",
+                    "token_before": compaction.get("token_before"),
+                    "token_after": compaction.get("token_after"),
+                    "event_type": compaction.get("event_type"),
+                    "subtype": compaction.get("subtype"),
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
         return events
 
     if event_type == "system" and subtype == "init":
-        return [AgentEvent(
-            type="session_started",
-            payload={
-                "provider_session_id": _text(event.get("session_id")),
-                "model": _text(event.get("model")),
-            },
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        )]
+        return [
+            AgentEvent(
+                type="session_started",
+                payload={
+                    "provider_session_id": _text(event.get("session_id")),
+                    "model": _text(event.get("model")),
+                },
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        ]
 
     if event_type == "system" and subtype in _SILENT_SYSTEM_SUBTYPES:
         return events
@@ -146,13 +158,15 @@ def map_claude_event(event: dict[str, Any]) -> List[AgentEvent]:
     if event_type == "system" and subtype in _DEBUG_SYSTEM_SUBTYPES:
         hook_name = _text(event.get("hook_name"))
         detail = f" hook={hook_name}" if hook_name else ""
-        events.append(AgentEvent(
-            type="log",
-            payload={"level": "debug", "message": f"[system:{subtype}]{detail}"},
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type="log",
+                payload={"level": "debug", "message": f"[system:{subtype}]{detail}"},
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
         return events
 
     if event_type == "assistant":
@@ -163,13 +177,15 @@ def map_claude_event(event: dict[str, Any]) -> List[AgentEvent]:
                 events.extend(_map_assistant_block(block))
         usage = extract_claude_usage(event)
         if usage:
-            events.append(AgentEvent(
-                type="usage",
-                payload={key: value for key, value in usage.items() if key != "raw_usage"},
-                provider=PROVIDER,
-                raw=event,
-                time=_iso_time(),
-            ))
+            events.append(
+                AgentEvent(
+                    type="usage",
+                    payload={key: value for key, value in usage.items() if key != "raw_usage"},
+                    provider=PROVIDER,
+                    raw=event,
+                    time=_iso_time(),
+                )
+            )
         return events
 
     if event_type == "result":
@@ -177,7 +193,9 @@ def map_claude_event(event: dict[str, Any]) -> List[AgentEvent]:
         usage = extract_claude_usage(event)
         result_text = _text(event.get("result"))
         if not result_text:
-            result_text = _json_text({k: event.get(k) for k in ("duration_ms", "total_cost_usd") if event.get(k) is not None})
+            result_text = _json_text(
+                {k: event.get(k) for k in ("duration_ms", "total_cost_usd") if event.get(k) is not None}
+            )
         payload: dict[str, Any] = {
             "success": not is_error,
             "result": result_text,
@@ -189,22 +207,26 @@ def map_claude_event(event: dict[str, Any]) -> List[AgentEvent]:
         if usage:
             payload["usage"] = {key: value for key, value in usage.items() if key != "raw_usage"}
         event_type_out = "error" if is_error else "result"
-        events.append(AgentEvent(
-            type=event_type_out,
-            payload=payload,
-            provider=PROVIDER,
-            raw=event,
-            time=_iso_time(),
-        ))
+        events.append(
+            AgentEvent(
+                type=event_type_out,
+                payload=payload,
+                provider=PROVIDER,
+                raw=event,
+                time=_iso_time(),
+            )
+        )
         return events
 
     # 其他事件统一作为 log 上行，避免信息丢失
     text = format_claude_event_log_line({"type": event_type, "text": _json_text(event)})
-    events.append(AgentEvent(
-        type="log",
-        payload={"level": "info", "message": text or _json_text(event)},
-        provider=PROVIDER,
-        raw=event,
-        time=_iso_time(),
-    ))
+    events.append(
+        AgentEvent(
+            type="log",
+            payload={"level": "info", "message": text or _json_text(event)},
+            provider=PROVIDER,
+            raw=event,
+            time=_iso_time(),
+        )
+    )
     return events

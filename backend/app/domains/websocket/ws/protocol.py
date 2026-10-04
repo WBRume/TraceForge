@@ -11,8 +11,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
-
+from typing import Any
 
 SERVER_EPOCH = uuid.uuid4().hex
 
@@ -31,8 +30,8 @@ class EventEnvelope:
     event_id: str
     event_type: str
     payload: Any
-    aggregate_id: Optional[str] = None
-    aggregate_version: Optional[int] = None
+    aggregate_id: str | None = None
+    aggregate_version: int | None = None
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
@@ -53,12 +52,12 @@ class EventEnvelope:
 def control_frame(
     frame_type: str,
     *,
-    epoch: Optional[str] = None,
-    from_sequence: Optional[int] = None,
-    to_sequence: Optional[int] = None,
-    barrier_sequence: Optional[int] = None,
-    high_watermark: Optional[int] = None,
-    reason: Optional[str] = None,
+    epoch: str | None = None,
+    from_sequence: int | None = None,
+    to_sequence: int | None = None,
+    barrier_sequence: int | None = None,
+    high_watermark: int | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     frame: dict[str, Any] = {"type": frame_type}
     if epoch is not None:

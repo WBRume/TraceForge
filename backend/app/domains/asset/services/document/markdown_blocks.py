@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 
-def markdown_to_blocks(markdown: str) -> List[Dict[str, Any]]:
+def markdown_to_blocks(markdown: str) -> list[dict[str, Any]]:
     """按标题/列表/段落切分 markdown → blocks（id 为 blk-N）。"""
     lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    blocks: List[Dict[str, Any]] = []
-    current_para: List[str] = []
+    blocks: list[dict[str, Any]] = []
+    current_para: list[str] = []
     block_index = 0
 
     def flush_paragraph() -> None:
@@ -79,8 +79,8 @@ def markdown_to_blocks(markdown: str) -> List[Dict[str, Any]]:
 def plain_text_to_markdown(text: str) -> str:
     """纯文本 → 规范 markdown（连续行合并为段落，空行分段）。"""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-    out: List[str] = []
-    buffer: List[str] = []
+    out: list[str] = []
+    buffer: list[str] = []
 
     def flush() -> None:
         if not buffer:

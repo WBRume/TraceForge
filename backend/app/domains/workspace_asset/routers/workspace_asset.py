@@ -3,41 +3,50 @@ Workspace Assets API routes.
 """
 
 import asyncio
-from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_current_user, get_db
 from app.core.offload import run_db_txn
+from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.workspace.services import workspace_service
+from app.domains.workspace_asset.schemas.task_final_workflow import (
+    ClarificationMessageCreateRequest,
+    FinalSummaryDraftRequest,
+    FinalWorkflowReviewTargetPreviewResponse,
+    FinalWorkflowReviewUpsertRequest,
+    TaskFinalWorkflowResponse,
+    WorkflowClarificationCreateRequest,
+    WorkflowFinalSummaryUpsertRequest,
+)
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ClarificationCreateRequest,
-    ClarificationUpdateRequest,
     ClarificationResponse,
+    ClarificationUpdateRequest,
     DecisionCreateRequest,
-    DecisionUpdateRequest,
     DecisionResponse,
+    DecisionUpdateRequest,
     EvidenceCreateRequest,
-    EvidenceUpdateRequest,
     EvidenceResponse,
+    EvidenceUpdateRequest,
     HumanDeltaCreateRequest,
-    HumanDeltaUpdateRequest,
     HumanDeltaResponse,
     HumanDeltaSuggestionsResponse,
+    HumanDeltaUpdateRequest,
     HumanReviewCommentCreateRequest,
     HumanReviewCreateRequest,
-    HumanReviewUpdateRequest,
     HumanReviewResponse,
+    HumanReviewUpdateRequest,
     RequirementCreateRequest,
     RequirementDetailResponse,
-    RequirementOptionsResponse,
     RequirementImportBatchResponse,
     RequirementImportConfirmRequest,
+    RequirementOptionsResponse,
     RequirementPreviewJobResponse,
-    RequirementSplitRequest,
     RequirementSplitDraftPayload,
     RequirementSplitPreviewRequest,
+    RequirementSplitRequest,
     RequirementTaskLinkRequest,
     RequirementUpdateRequest,
     TaskClarificationsSectionResponse,
@@ -54,23 +63,13 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     TaskHumanReviewsSectionResponse,
     TaskProcessAuditLogResponse,
     TaskProcessAuditSectionResponse,
+    WorkbenchDeltaResponse,
     WorkspaceAssetsKnowledgeResponse,
     WorkspaceAssetsOverviewResponse,
     WorkspaceAssetsRequirementsResponse,
     WorkspaceAssetsTasksResponse,
     WorkspaceAssetsTraceabilityResponse,
-    WorkbenchDeltaResponse,
 )
-from app.domains.workspace_asset.schemas.task_final_workflow import (
-    ClarificationMessageCreateRequest,
-    FinalSummaryDraftRequest,
-    FinalWorkflowReviewUpsertRequest,
-    FinalWorkflowReviewTargetPreviewResponse,
-    TaskFinalWorkflowResponse,
-    WorkflowClarificationCreateRequest,
-    WorkflowFinalSummaryUpsertRequest,
-)
-from app.domains.workspace.services import workspace_service
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.overview import get_overview, list_knowledge_assets
 from app.domains.workspace_asset.services.requirements import import_service
@@ -95,7 +94,6 @@ from app.domains.workspace_asset.services.tasks import list_query, sections
 from app.domains.workspace_asset.services.tasks import summary_query as task_summary_query
 from app.domains.workspace_asset.services.traceability import get_traceability
 
-
 router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspace Assets"])
 
 # 不挂在 workspace 前缀下的全局路由：供右下角浮窗在任意页面恢复进行中的
@@ -103,7 +101,7 @@ router = APIRouter(prefix="/workspaces/{ws_id}/workspace-assets", tags=["Workspa
 global_router = APIRouter(prefix="/requirement-preview-jobs", tags=["Workspace Assets"])
 
 
-@global_router.get("/active", response_model=List[RequirementPreviewJobResponse])
+@global_router.get("/active", response_model=list[RequirementPreviewJobResponse])
 def list_active_requirement_preview_jobs(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -122,10 +120,10 @@ def _verify_view_assets(ws_id: str, current_user: User, db: Session) -> None:
 @router.get("/requirement-options", response_model=RequirementOptionsResponse)
 def list_requirement_options(
     ws_id: str,
-    q: Optional[str] = None,
-    ids: Optional[str] = None,
+    q: str | None = None,
+    ids: str | None = None,
     scope: str = Query("all", pattern="^(all|roots|children)$"),
-    parent_id: Optional[str] = None,
+    parent_id: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(40, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -133,8 +131,14 @@ def list_requirement_options(
 ):
     _verify_view_assets(ws_id, current_user, db)
     return requirement_queries.list_requirement_options(
-        db, ws_id, q=q, ids=ids.split(",") if ids is not None else None,
-        page=page, page_size=page_size, scope=scope, parent_id=parent_id,
+        db,
+        ws_id,
+        q=q,
+        ids=ids.split(",") if ids is not None else None,
+        page=page,
+        page_size=page_size,
+        scope=scope,
+        parent_id=parent_id,
     )
 
 
@@ -160,7 +164,7 @@ def _workflow_state_for_user(
     task_id: str,
     current_user: User,
     *,
-    can_manage: Optional[bool] = None,
+    can_manage: bool | None = None,
 ) -> TaskFinalWorkflowResponse:
     allowed = _can_manage_task_process_assets(ws_id, current_user, db) if can_manage is None else can_manage
     return workflow_state.get_workflow_state(
@@ -200,11 +204,11 @@ def get_workspace_assets_overview(
 @router.get("/requirements", response_model=WorkspaceAssetsRequirementsResponse)
 def list_workspace_asset_requirements(
     ws_id: str,
-    q: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(default=None),
-    priority: Optional[str] = Query(default=None),
-    source_kind: Optional[str] = Query(default=None),
-    parent_id: Optional[str] = Query(default=None),
+    q: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    priority: str | None = Query(default=None),
+    source_kind: str | None = Query(default=None),
+    parent_id: str | None = Query(default=None),
     scope: str = Query(default="tree", pattern="^(tree|flat|children)$"),
     sort_by: str = Query(default="created_at"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
@@ -251,11 +255,11 @@ def create_workspace_asset_requirement(
 )
 async def create_workspace_asset_requirement_import_preview(
     ws_id: str,
-    file: Optional[UploadFile] = File(default=None),
-    text: Optional[str] = Form(default=None),
-    source_kind: Optional[str] = Form(default="document"),
-    source_uri: Optional[str] = Form(default=None),
-    source_ref: Optional[str] = Form(default=None),
+    file: UploadFile | None = File(default=None),
+    text: str | None = Form(default=None),
+    source_kind: str | None = Form(default="document"),
+    source_uri: str | None = Form(default=None),
+    source_ref: str | None = Form(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -292,13 +296,13 @@ async def create_workspace_asset_requirement_import_preview(
 )
 async def create_workspace_asset_requirement_direct_import(
     ws_id: str,
-    file: Optional[UploadFile] = File(default=None),
-    text: Optional[str] = Form(default=None),
-    source_kind: Optional[str] = Form(default="document"),
-    source_uri: Optional[str] = Form(default=None),
-    source_ref: Optional[str] = Form(default=None),
-    change_reason: Optional[str] = Form(default=None),
-    task_prompt: Optional[str] = Form(default=None),
+    file: UploadFile | None = File(default=None),
+    text: str | None = Form(default=None),
+    source_kind: str | None = Form(default="document"),
+    source_uri: str | None = Form(default=None),
+    source_ref: str | None = Form(default=None),
+    change_reason: str | None = Form(default=None),
+    task_prompt: str | None = Form(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -415,7 +419,7 @@ def unlink_workspace_asset_requirement_task(
     ws_id: str,
     requirement_id: str,
     task_id: str,
-    change_reason: Optional[str] = Query(default=None),
+    change_reason: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -552,11 +556,11 @@ def clear_workspace_asset_requirement_split_draft(
 @router.get("/tasks", response_model=WorkspaceAssetsTasksResponse)
 def list_workspace_asset_tasks(
     ws_id: str,
-    q: Optional[str] = Query(None, description="Search task name or description"),
-    requirement_q: Optional[str] = Query(None, description="Search associated requirement title"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    current_phase: Optional[str] = Query(None, description="Filter by current phase"),
-    relation: Optional[str] = Query(None, description="Filter by relationship to current user"),
+    q: str | None = Query(None, description="Search task name or description"),
+    requirement_q: str | None = Query(None, description="Search associated requirement title"),
+    status: str | None = Query(None, description="Filter by status"),
+    current_phase: str | None = Query(None, description="Filter by current phase"),
+    relation: str | None = Query(None, description="Filter by relationship to current user"),
     sort_by: str = Query("created_at", description="Sort field"),
     sort_order: str = Query("desc", description="Sort order (asc/desc)"),
     page: int = Query(1, description="Page number, 1-indexed"),
@@ -918,7 +922,11 @@ def update_workspace_asset_task_final_workflow_review(
         _raise_task_detail_write_error(exc)
 
 
-@router.post("/tasks/{task_id}/final-workflow/clarifications", response_model=TaskFinalWorkflowResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/final-workflow/clarifications",
+    response_model=TaskFinalWorkflowResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def create_workspace_asset_task_final_workflow_clarification(
     ws_id: str,
     task_id: str,
@@ -975,7 +983,7 @@ def create_workspace_asset_task_final_workflow_clarification_message(
 def create_workspace_asset_task_final_summary_draft(
     ws_id: str,
     task_id: str,
-    payload: FinalSummaryDraftRequest = FinalSummaryDraftRequest(),
+    payload: FinalSummaryDraftRequest = Body(default_factory=FinalSummaryDraftRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1057,7 +1065,9 @@ def get_workspace_asset_task_detail(
     return _task_detail_or_404(db, ws_id, task_id)
 
 
-@router.post("/tasks/{task_id}/human-reviews", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/human-reviews", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED
+)
 def create_workspace_asset_task_human_review(
     ws_id: str,
     task_id: str,
@@ -1111,7 +1121,9 @@ def create_workspace_asset_task_human_review_comment(
     return _task_summary_or_404(db, ws_id, task_id)
 
 
-@router.post("/tasks/{task_id}/human-deltas", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/human-deltas", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_workspace_asset_task_human_delta(
     ws_id: str,
     task_id: str,
@@ -1122,10 +1134,15 @@ async def create_workspace_asset_task_human_delta(
 
     try:
         async with queue_workspace_compare_jobs(workspace_id=ws_id):
+
             def create_delta_sync(db: Session):
                 _verify_manage_task_process_assets(ws_id, current_user, db)
                 human_delta_writes.create_human_delta(
-                    db, ws_id, task_id, current_user.id, payload,
+                    db,
+                    ws_id,
+                    task_id,
+                    current_user.id,
+                    payload,
                 )
                 return _task_summary_or_404(db, ws_id, task_id)
 
@@ -1187,7 +1204,9 @@ def update_workspace_asset_task_evidence(
     return _task_summary_or_404(db, ws_id, task_id)
 
 
-@router.post("/tasks/{task_id}/decisions", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/decisions", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED
+)
 def create_workspace_asset_task_decision(
     ws_id: str,
     task_id: str,
@@ -1220,7 +1239,9 @@ def update_workspace_asset_task_decision(
     return _task_summary_or_404(db, ws_id, task_id)
 
 
-@router.post("/tasks/{task_id}/clarifications", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/tasks/{task_id}/clarifications", response_model=TaskDetailSummaryResponse, status_code=status.HTTP_201_CREATED
+)
 def create_workspace_asset_task_clarification(
     ws_id: str,
     task_id: str,

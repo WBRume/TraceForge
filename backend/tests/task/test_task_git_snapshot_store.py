@@ -1,7 +1,8 @@
 """Real filesystem and Git round trips for persistent snapshot indexes."""
-from pathlib import Path
+
 import os
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -99,7 +100,9 @@ def test_empty_non_git_and_git_init_can_be_undone_and_compensated(tmp_path):
     head = git(root, "rev-parse", "HEAD")
     restore(tmp_path)
     assert list(root.iterdir()) == []
-    service._restore_worktree_sync(str(tmp_path / "turn-a/current-worktree"), str(root), str(tmp_path / "turn-a/recovery"))
+    service._restore_worktree_sync(
+        str(tmp_path / "turn-a/current-worktree"), str(root), str(tmp_path / "turn-a/recovery")
+    )
     assert git(root, "rev-parse", "HEAD") == head
     assert (root / "new").is_file()
 
@@ -223,8 +226,8 @@ def test_linked_worktree_uses_own_index(tmp_path):
 
 
 def test_dsh_ambiguous_session_is_not_treated_as_missing(tmp_path, monkeypatch):
-    from app.agents.session_checkpoint import session_checkpoint_adapter
     from app.agents.errors import SessionForkError
+    from app.agents.session_checkpoint import session_checkpoint_adapter
 
     for project in ("project-one", "project-two"):
         write(tmp_path, project + "/session-test/session.jsonl", b"{}\n")
@@ -240,9 +243,11 @@ def test_tree_enumeration_checks_shared_parents_once_per_read_phase(tmp_path, mo
     write(root, "shared/deep/a")
     real_stat = os.lstat
     calls = []
+
     def counted(path, *args, **kwargs):
         calls.append(str(path))
         return real_stat(path, *args, **kwargs)
+
     monkeypatch.setattr(os, "lstat", counted)
     paths = files.ReadPhasePaths(str(root))
     for index in range(1000):
@@ -255,11 +260,14 @@ def test_tree_enumeration_checks_shared_parents_once_per_read_phase(tmp_path, mo
 @pytest.mark.parametrize("junction", [False, True])
 def test_read_phase_paths_still_reject_link_parents(tmp_path, monkeypatch, junction):
     real_stat = os.lstat
+
     def linked(path, *args, **kwargs):
         if Path(path).name == "link":
-            return SimpleNamespace(st_mode=stat.S_IFDIR if junction else stat.S_IFLNK,
-                                   st_file_attributes=0x400 if junction else 0)
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR if junction else stat.S_IFLNK, st_file_attributes=0x400 if junction else 0
+            )
         return real_stat(path, *args, **kwargs)
+
     monkeypatch.setattr(os, "lstat", linked)
     monkeypatch.setattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400, raising=False)
     with pytest.raises(ValueError, match="traverses a link"):

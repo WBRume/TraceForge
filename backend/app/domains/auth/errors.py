@@ -10,27 +10,26 @@ OAuth 错误体系（B-14，对应设计文档 §4.5 错误码规范）。
   ``app.add_exception_handler(OAuthAPIError, oauth_api_error_handler)``。
 """
 
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
-from fastapi import HTTPException
 
 # ══════════════════ 错误码常量（§4.5 错误码全表） ══════════════════
 
-ERR_OAUTH_PROVIDER_NOT_FOUND = "OAUTH_PROVIDER_NOT_FOUND"      # 404 provider 未注册
-ERR_OAUTH_PROVIDER_DISABLED = "OAUTH_PROVIDER_DISABLED"        # 404 provider 未配置 client_id/secret
-ERR_OAUTH_TICKET_INVALID = "OAUTH_TICKET_INVALID"              # 404 ticket 不存在
-ERR_OAUTH_TICKET_EXPIRED = "OAUTH_TICKET_EXPIRED"              # 410 ticket 过期（E-17）
-ERR_OAUTH_TICKET_LOCKED = "OAUTH_TICKET_LOCKED"                # 423 连续失败锁定（E-18）
-ERR_OAUTH_PASSWORD_REQUIRED = "OAUTH_PASSWORD_REQUIRED"        # 400 管理员加绑未传密码
-ERR_OAUTH_PASSWORD_INVALID = "OAUTH_PASSWORD_INVALID"          # 🔴 401 密码错误/账号不存在（同码同文案）
-ERR_OAUTH_EMAIL_TAKEN = "OAUTH_EMAIL_TAKEN"                    # 409 手填邮箱已注册（E-1b）
-ERR_OAUTH_IDENTITY_CONFLICT = "OAUTH_IDENTITY_CONFLICT"        # 409 身份已绑其他账号（E-2）
-ERR_OAUTH_NO_PASSWORD = "OAUTH_NO_PASSWORD"                    # 400 解绑防御：账号无密码（E-6b）
+ERR_OAUTH_PROVIDER_NOT_FOUND = "OAUTH_PROVIDER_NOT_FOUND"  # 404 provider 未注册
+ERR_OAUTH_PROVIDER_DISABLED = "OAUTH_PROVIDER_DISABLED"  # 404 provider 未配置 client_id/secret
+ERR_OAUTH_TICKET_INVALID = "OAUTH_TICKET_INVALID"  # 404 ticket 不存在
+ERR_OAUTH_TICKET_EXPIRED = "OAUTH_TICKET_EXPIRED"  # 410 ticket 过期（E-17）
+ERR_OAUTH_TICKET_LOCKED = "OAUTH_TICKET_LOCKED"  # 423 连续失败锁定（E-18）
+ERR_OAUTH_PASSWORD_REQUIRED = "OAUTH_PASSWORD_REQUIRED"  # 400 管理员加绑未传密码
+ERR_OAUTH_PASSWORD_INVALID = "OAUTH_PASSWORD_INVALID"  # 🔴 401 密码错误/账号不存在（同码同文案）
+ERR_OAUTH_EMAIL_TAKEN = "OAUTH_EMAIL_TAKEN"  # 409 手填邮箱已注册（E-1b）
+ERR_OAUTH_IDENTITY_CONFLICT = "OAUTH_IDENTITY_CONFLICT"  # 409 身份已绑其他账号（E-2）
+ERR_OAUTH_NO_PASSWORD = "OAUTH_NO_PASSWORD"  # 400 解绑防御：账号无密码（E-6b）
 ERR_REGISTER_EMAIL_NOT_ALLOWED = "REGISTER_EMAIL_NOT_ALLOWED"  # 403 域名白名单未通过
-ERR_OAUTH_UPSTREAM_ERROR = "OAUTH_UPSTREAM_ERROR"              # 502 三方服务不可用（E-9）
-ERR_AUTH_REQUIRED = "AUTH_REQUIRED"                            # 401 intent=bind 缺 token
+ERR_OAUTH_UPSTREAM_ERROR = "OAUTH_UPSTREAM_ERROR"  # 502 三方服务不可用（E-9）
+ERR_AUTH_REQUIRED = "AUTH_REQUIRED"  # 401 intent=bind 缺 token
 
 
 class OAuthAPIError(HTTPException):
@@ -53,6 +52,7 @@ class OAuthAPIError(HTTPException):
 
 
 # ══════════════════ 语义化异常子类（services 层抛出） ══════════════════
+
 
 class OAuthProviderNotFoundError(OAuthAPIError):
     """provider 未注册（未 import / 未装饰注册）。"""
@@ -201,6 +201,7 @@ class AuthRequiredError(OAuthAPIError):
 
 
 # ══════════════════ Exception Handler（main.py 注册，B-16） ══════════════════
+
 
 async def oauth_api_error_handler(request: Request, exc: OAuthAPIError) -> JSONResponse:
     """统一输出 ``{"detail": ..., "code": ..., **extra}``。

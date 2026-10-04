@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.agents import (
-    AgentRunResult,
     EXECUTION_KIND_LOCAL_PROCESS,
+    AgentRunResult,
     current_agent_attempt,
 )
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
@@ -34,11 +34,10 @@ from app.domains.ai.services.ai_job_convergence_service import (
     resolve_attempt_evidence,
 )
 from app.domains.ai.services.jobs import attempts as attempt_ops
-from app.domains.ai.services.jobs import state
+from app.domains.ai.services.jobs import publishing, state
 from app.domains.ai.services.jobs.constants import FINAL_STATUSES, looks_like_timeout_text
-from app.domains.ai.services.jobs import publishing
-from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.fencing import attempt_is_current_sync
+from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
 from app.domains.task.models.task import SddTask
 from app.engine.session import TaskAgentEngine, get_engine
@@ -53,7 +52,7 @@ def _sync_engine_session_sync(
     db,
     job_id: str,
     session_id: str,
-    run_token: Optional[str] = None,
+    run_token: str | None = None,
 ) -> bool:
     """引擎 session 上报落库（线程内执行，由 run_db_txn 包装）；返回是否继续广播。"""
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -76,9 +75,7 @@ async def on_engine_session(session_id: str, job_id: str) -> None:
         return
     attempt = current_agent_attempt()
     run_token = attempt.run_token if attempt else None
-    proceed = await run_db_txn(
-        lambda db: _sync_engine_session_sync(db, job_id, session_id, run_token)
-    )
+    proceed = await run_db_txn(lambda db: _sync_engine_session_sync(db, job_id, session_id, run_token))
     if not proceed:
         return
     await state.update_job_state(job_id, session_id=session_id)
@@ -87,8 +84,8 @@ async def on_engine_session(session_id: str, job_id: str) -> None:
 async def on_engine_hitl(
     prompt: str,
     hitl_type: str,
-    options: Optional[list],
-    context: Optional[str],
+    options: list | None,
+    context: str | None,
     job_id: str,
 ) -> None:
     if not job_id:
@@ -113,7 +110,7 @@ def _engine_result_gate_sync(
     job_id: str,
     *,
     success: bool,
-    run_token: Optional[str] = None,
+    run_token: str | None = None,
 ) -> bool:
     """结果回调前置检查（线程内执行，由 run_db 包装）；返回是否继续处理。
 
@@ -134,9 +131,7 @@ def _engine_result_gate_sync(
             return False
         if job.status in {AiJobStatus.INTERRUPTED, AiJobStatus.REVERTED}:
             return False
-        if job.status == AiJobStatus.WAITING_HITL and not success:
-            return False
-        return True
+        return not (job.status == AiJobStatus.WAITING_HITL and not success)
     finally:
         db.close()
 
@@ -144,8 +139,8 @@ def _engine_result_gate_sync(
 async def on_engine_result(
     success: bool,
     result: str,
-    duration_ms: Optional[int],
-    cost_usd: Optional[float],
+    duration_ms: int | None,
+    cost_usd: float | None,
     job_id: str,
 ) -> None:
     if not job_id:
@@ -199,7 +194,7 @@ async def confirmation_delivery_available(
     *,
     task_id: str,
     interaction_id: str,
-    job_id: Optional[str] = None,
+    job_id: str | None = None,
 ) -> bool:
     """Return whether the current long-connection engine owns this confirmation."""
     engine = get_engine(task_id)
@@ -215,7 +210,7 @@ async def deliver_confirmation_response(
     task_id: str,
     interaction_id: str,
     response: str,
-    job_id: Optional[str] = None,
+    job_id: str | None = None,
 ) -> bool:
     """Wake the already-running provider through the service boundary."""
     engine = get_engine(task_id)
@@ -229,7 +224,7 @@ async def deliver_confirmation_response(
 # ────────────────────────── 引擎接线与回合执行 ──────────────────────────
 
 
-def _load_task_chat_turn_state_sync(db, job_id: str) -> Optional[Dict[str, Any]]:
+def _load_task_chat_turn_state_sync(db, job_id: str) -> dict[str, Any] | None:
     from app.agents.selection import resolve_task_backend
 
     job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -253,7 +248,7 @@ def _load_task_chat_turn_state_sync(db, job_id: str) -> Optional[Dict[str, Any]]
     }
 
 
-async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
+async def _run_task_chat_turn(job_id: str, prompt: str) -> bool | None:
     state_row = await run_db_txn(lambda db: _load_task_chat_turn_state_sync(db, job_id))
     if state_row is None:
         return None
@@ -297,15 +292,18 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
     engine.session_turn_id = state_row["session_turn_id"]
     engine.session_revision = state_row["session_revision"]
 
-    with bind_task_context(
-        task_id=state_row["task_id"],
-        workspace_id=state_row["workspace_id"],
-        user_id=state_row["creator_id"],
-    ), bind_ai_context(
-        job_id=job_id,
-        task_id=state_row["task_id"],
-        session_id=state_row["job_session_id"],
-        event_type="run_task_chat_turn",
+    with (
+        bind_task_context(
+            task_id=state_row["task_id"],
+            workspace_id=state_row["workspace_id"],
+            user_id=state_row["creator_id"],
+        ),
+        bind_ai_context(
+            job_id=job_id,
+            task_id=state_row["task_id"],
+            session_id=state_row["job_session_id"],
+            event_type="run_task_chat_turn",
+        ),
     ):
         await state.update_job_state(job_id, status=AiJobStatus.RUNNING, progress=55, message="AI is processing")
 
@@ -326,20 +324,23 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
         return getattr(engine, "last_result", None) is not None
 
 
-async def execute_task_chat_job(job_id: str, dispatch: Dict[str, Any]) -> Optional[bool]:
+async def execute_task_chat_job(job_id: str, dispatch: dict[str, Any]) -> bool | None:
     """执行普通任务聊天回合（诊断总结/基线已由分派器先行分流）。"""
     if not str(dispatch.get("workspace_id") or ""):
         raise ValueError("Task not found for AI job")
     try:
-        with bind_task_context(
-            task_id=dispatch["task_id"],
-            workspace_id=dispatch["workspace_id"],
-            user_id=dispatch["creator_id"],
-        ), bind_ai_context(
-            job_id=job_id,
-            task_id=dispatch["task_id"],
-            session_id=dispatch["session_id"],
-            event_type="execute_task_chat_job",
+        with (
+            bind_task_context(
+                task_id=dispatch["task_id"],
+                workspace_id=dispatch["workspace_id"],
+                user_id=dispatch["creator_id"],
+            ),
+            bind_ai_context(
+                job_id=job_id,
+                task_id=dispatch["task_id"],
+                session_id=dispatch["session_id"],
+                event_type="execute_task_chat_job",
+            ),
         ):
             prompt = str(dispatch.get("hitl_resume_prompt") or dispatch["prompt_text"] or "").strip()
             if not prompt:
@@ -366,17 +367,17 @@ def _finalize_task_chat_job_sync(
     db,
     *,
     job_id: str,
-    last_result_success: Optional[bool],
+    last_result_success: bool | None,
     last_result_text: str,
     is_timeout_interrupted: bool,
-    engine_session_id: Optional[str],
-    run_token: Optional[str] = None,
-    process_started: Optional[bool] = None,
-    termination_confirmed_dead: Optional[bool] = None,
-    failure_code: Optional[str] = None,
+    engine_session_id: str | None,
+    run_token: str | None = None,
+    process_started: bool | None = None,
+    termination_confirmed_dead: bool | None = None,
+    failure_code: str | None = None,
     remaining_pids: tuple = (),
-    evidence: Optional[Any] = None,
-) -> Optional[Dict[str, Any]]:
+    evidence: Any | None = None,
+) -> dict[str, Any] | None:
     """finalize DB 段（线程内执行，由 run_db 包装）；返回 None 表示无需收尾。
 
     本函数不再拥有独立的死亡证据决策表（doc §11）：只负责把引擎结果和
@@ -433,13 +434,14 @@ def _finalize_task_chat_job_sync(
     if not result.changed or not result.payload:
         return None
     from app.domains.diagnosis_playbook.guide_execution import on_job_finished
+
     guide_state = on_job_finished(db, job)
     if guide_state:
         result.payload["guide_snapshot"] = guide_state
     return result.payload
 
 
-def engine_provider_result(engine: Any) -> Optional[AgentRunResult]:
+def engine_provider_result(engine: Any) -> AgentRunResult | None:
     """Extract the provider outcome evidence from an engine (doc 审计 P1-1).
 
     优先使用真实 ``AgentRunResult``（引擎异常/持久化失败都不会设置它）；
@@ -493,6 +495,7 @@ async def finalize_task_chat_job_from_engine(job_id: str, engine: TaskAgentEngin
     await publishing.broadcast_job_payload(payload)
     if payload.get("guide_snapshot"):
         from app.domains.diagnosis_playbook.guide_execution import dispatch
+
         await dispatch(payload["task_id"], payload["guide_snapshot"])
     if not is_success:
         return
@@ -504,8 +507,8 @@ async def finalize_task_chat_job_failure(
     reason: str,
     *,
     is_timeout_interrupted: bool = False,
-    engine_session_id: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
+    engine_session_id: str | None = None,
+) -> dict[str, Any] | None:
     """统一 TASK_CHAT 失败收尾（引擎外围异常/恢复失败共用）。
 
     与 ``finalize_task_chat_job_from_engine`` 共享同一个唯一 convergence
@@ -532,5 +535,6 @@ async def finalize_task_chat_job_failure(
     await publishing.broadcast_job_payload(payload)
     if payload.get("guide_snapshot"):
         from app.domains.diagnosis_playbook.guide_execution import dispatch
+
         await dispatch(payload["task_id"], payload["guide_snapshot"])
     return payload

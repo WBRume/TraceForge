@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 from app.config import settings
 from app.domains.auth.models.oauth import OAuthIdentity
 from app.domains.auth.services import auth_service
-
 from tests.conftest import (
     auth_headers,
     github_profile,
@@ -28,8 +27,8 @@ from tests.conftest import (
     run_login_flow,
 )
 
-
 # ══════════════════ 1. providers 列表 ══════════════════
+
 
 def test_providers_returns_enabled_github(client: TestClient, github_mock):
     """已配置 client_id/secret 的 provider 出现在列表中，并带前端所需的展示字段。"""
@@ -56,6 +55,7 @@ def test_providers_hides_unconfigured_provider(client: TestClient, monkeypatch):
 
 # ══════════════════ 2. authorize / callback ══════════════════
 
+
 def test_authorize_returns_url_with_state(client: TestClient, github_mock):
     """authorize 返回三方授权 URL，且 URL 中的 state 与响应体一致。"""
     resp = client.get("/api/auth/oauth/github/authorize", params={"intent": "login"})
@@ -64,25 +64,19 @@ def test_authorize_returns_url_with_state(client: TestClient, github_mock):
     assert body["state"]
     assert body["expires_in"] == int(settings.OAUTH_STATE_TTL_SECONDS)
 
-    query = dict(
-        urllib.parse.parse_qsl(urllib.parse.urlparse(body["authorize_url"]).query)
-    )
+    query = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(body["authorize_url"]).query))
     assert query["state"] == body["state"]
     assert query["client_id"] == "test-client-id"
     assert query["redirect_uri"] == "http://frontend.test/oauth/callback/github"
 
 
-def test_callback_redirect_carries_ticket_but_never_a_jwt(
-    db, github_mock, client: TestClient
-):
+def test_callback_redirect_carries_ticket_but_never_a_jwt(db, github_mock, client: TestClient):
     """回调 302 的 Location 中只有 ticket / status / client_type，绝不含 JWT。"""
     user = make_user(db, email="bound@example.com", password="Bound-Pass-1")
     make_identity(db, user, provider="github", provider_uid="9001")
     github_mock.user_response = (200, github_profile(uid=9001))
 
-    authz = client.get(
-        "/api/auth/oauth/github/authorize", params={"intent": "login"}
-    ).json()
+    authz = client.get("/api/auth/oauth/github/authorize", params={"intent": "login"}).json()
     resp = client.get(
         "/api/auth/oauth/github/callback",
         params={"code": "good-code", "state": authz["state"]},
@@ -101,6 +95,7 @@ def test_callback_redirect_carries_ticket_but_never_a_jwt(
 
 
 # ══════════════════ 3. identities 列表 ══════════════════
+
 
 def test_identities_lists_bound_providers(db, github_mock, client: TestClient):
     """已登录用户可以看到自己已绑定的身份，以及当前可用的 provider。"""
@@ -126,9 +121,7 @@ def test_identities_only_shows_own_bindings(db, github_mock, client: TestClient)
     assert resp.status_code == 200, resp.text
     identities = resp.json()["identities"]
     assert len(identities) == 1
-    assert identities[0]["id"] == db.query(OAuthIdentity).filter(
-        OAuthIdentity.user_id == me.id
-    ).one().id
+    assert identities[0]["id"] == db.query(OAuthIdentity).filter(OAuthIdentity.user_id == me.id).one().id
 
 
 def test_identities_requires_authentication(client: TestClient):
@@ -138,6 +131,7 @@ def test_identities_requires_authentication(client: TestClient):
 
 # ══════════════════ 4. unbind → 可重新绑定 ══════════════════
 
+
 def test_unbind_removes_identity_and_rebind_works(db, github_mock, client: TestClient):
     """解绑删除绑定关系，且之后可以用同一三方身份重新绑定回来。"""
     user = make_user(db, email="rebind@example.com", password="Rebind-Pass-1")
@@ -145,9 +139,7 @@ def test_unbind_removes_identity_and_rebind_works(db, github_mock, client: TestC
     identity_id = identity.id
 
     # 解绑
-    resp = client.delete(
-        f"/api/auth/oauth/identities/{identity_id}", headers=auth_headers(user)
-    )
+    resp = client.delete(f"/api/auth/oauth/identities/{identity_id}", headers=auth_headers(user))
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "UNBOUND"
     assert db.query(OAuthIdentity).count() == 0
@@ -182,13 +174,12 @@ def test_unbind_removes_identity_and_rebind_works(db, github_mock, client: TestC
 def test_unbind_unknown_identity_returns_404(db, github_mock, client: TestClient):
     """解绑不存在的身份 → 404（不泄漏资源存在性）。"""
     user = make_user(db, email="me@example.com", password="Me-Pass-1")
-    resp = client.delete(
-        "/api/auth/oauth/identities/does-not-exist", headers=auth_headers(user)
-    )
+    resp = client.delete("/api/auth/oauth/identities/does-not-exist", headers=auth_headers(user))
     assert resp.status_code == 404
 
 
 # ══════════════════ 5. /me 的 bound_providers ══════════════════
+
 
 def test_me_returns_bound_providers(db, github_mock, full_client: TestClient):
     """``/api/auth/me`` 返回已绑定的 provider 名列表（前端设置页据此渲染）。"""
@@ -214,27 +205,20 @@ def test_me_bound_providers_updates_after_unbind(db, github_mock, full_client: T
     user = make_user(db, email="me@example.com", password="Me-Pass-1")
     identity = make_identity(db, user, provider="github", provider_uid="9001")
 
-    assert full_client.get("/api/auth/me", headers=auth_headers(user)).json()[
-        "bound_providers"
-    ] == ["github"]
+    assert full_client.get("/api/auth/me", headers=auth_headers(user)).json()["bound_providers"] == ["github"]
 
-    unbind = full_client.delete(
-        f"/api/auth/oauth/identities/{identity.id}", headers=auth_headers(user)
-    )
+    unbind = full_client.delete(f"/api/auth/oauth/identities/{identity.id}", headers=auth_headers(user))
     assert unbind.status_code == 200, unbind.text
 
-    assert full_client.get("/api/auth/me", headers=auth_headers(user)).json()[
-        "bound_providers"
-    ] == []
+    assert full_client.get("/api/auth/me", headers=auth_headers(user)).json()["bound_providers"] == []
 
 
 # ══════════════════ 6. 端到端：路径 C 注册后即可用 JWT 访问受保护端点 ══════════════════
 
+
 def test_end_to_end_register_then_use_token_on_me(db, github_mock, full_client: TestClient):
     """路径 C 建号签发的 token 能直接访问 ``/api/auth/me``，且立即体现绑定关系。"""
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7300, email="e2e@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7300, email="e2e@example.com"))
     assert params["status"] == "REGISTER_REQUIRED"
 
     registered = full_client.post(

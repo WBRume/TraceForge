@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
+from app.agents.adapters.claude_code.models import model_catalog
+from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
+from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.contract import AgentRunRequest
 from app.agents.model_selection import apply_task_selection, validate_selection
-from app.agents.adapters.claude_code.models import model_catalog
-from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
-from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
-from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 
 
 def test_model_preference_keeps_task_backend_and_other_metadata():
@@ -35,9 +35,14 @@ def test_claude_reads_current_and_project_models(tmp_path, monkeypatch):
     project = tmp_path / "project"
     (project / ".claude").mkdir(parents=True)
     (home / "settings.json").write_text(json.dumps({"model": "sonnet"}))
-    (project / ".claude/settings.local.json").write_text(json.dumps({
-        "model": "custom-model", "availableModels": ["custom-model", "opus"],
-    }))
+    (project / ".claude/settings.local.json").write_text(
+        json.dumps(
+            {
+                "model": "custom-model",
+                "availableModels": ["custom-model", "opus"],
+            }
+        )
+    )
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "managed"))
     monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
@@ -51,10 +56,13 @@ def test_claude_reads_current_and_project_models(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_claude_passes_model_on_resume():
     adapter = ClaudeCodeAdapter()
-    adapter._bridge = SimpleNamespace(start_session=AsyncMock(), wait=AsyncMock(),
-                                     last_termination=None, session_id="existing", process=None)
-    await adapter.run(AgentRunRequest(run_id="r", prompt="continue", project_path=".",
-                                     session_id="existing", model="custom-model"), AsyncMock())
+    adapter._bridge = SimpleNamespace(
+        start_session=AsyncMock(), wait=AsyncMock(), last_termination=None, session_id="existing", process=None
+    )
+    await adapter.run(
+        AgentRunRequest(run_id="r", prompt="continue", project_path=".", session_id="existing", model="custom-model"),
+        AsyncMock(),
+    )
     args = adapter._bridge.start_session.call_args.kwargs
     assert args["model"] == "custom-model" and args["session_id"] == "existing"
 
@@ -62,25 +70,34 @@ async def test_claude_passes_model_on_resume():
 @pytest.mark.asyncio
 async def test_opencode_catalog_and_switch_use_full_provider_identity():
     seen = []
+
     def handler(request):
         seen.append(request)
         if request.url.path == "/api/model":
             assert request.url.params["location[directory]"] == "/work/project"
-            return httpx.Response(200, json={"data": [
-                {"providerID": "one", "id": "shared", "name": "Shared", "enabled": True},
-                {"providerID": "two", "id": "shared", "enabled": True},
-                {"providerID": "three", "id": "hidden", "enabled": False},
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"providerID": "one", "id": "shared", "name": "Shared", "enabled": True},
+                        {"providerID": "two", "id": "shared", "enabled": True},
+                        {"providerID": "three", "id": "hidden", "enabled": False},
+                    ]
+                },
+            )
         if request.url.path == "/api/session/existing" and request.method == "GET":
             return httpx.Response(200, json={"data": {"model": {"providerID": "two", "id": "shared"}}})
         return httpx.Response(200, json={"data": {"id": "message"}})
+
     adapter = OpenCodeAdapter("http://agent")
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
         result = await adapter.model_catalog(project_path="/work/project", session_id="existing")
         assert result["default_model"] == "two/shared"
         assert [x["value"] for x in result["options"]] == ["one/shared", "two/shared"]
-        await adapter._send_prompt("existing", AgentRunRequest(run_id="r", prompt="hello", project_path=".", model="two/shared"))
+        await adapter._send_prompt(
+            "existing", AgentRunRequest(run_id="r", prompt="hello", project_path=".", model="two/shared")
+        )
         switch, prompt = seen[-2:]
         assert switch.url.path.endswith("/model") and prompt.url.path.endswith("/prompt")
         assert json.loads(switch.content) == {"model": {"providerID": "two", "id": "shared"}}
@@ -93,12 +110,16 @@ async def test_opencode_catalog_and_switch_use_full_provider_identity():
 async def test_dsh_catalog_default_and_switch_before_prompt(session_id):
     adapter = DshServerAdapter("http://agent")
     seen = []
+
     async def rpc(method, payload):
         seen.append((method, payload))
         if method == "session.modelCatalog":
-            return {"default": {"provider": "private", "model": "m"},
-                    "groups": [{"id": "private", "name": "Private", "models": [{"id": "m", "name": "Model"}]}]}
+            return {
+                "default": {"provider": "private", "model": "m"},
+                "groups": [{"id": "private", "name": "Private", "models": [{"id": "m", "name": "Model"}]}],
+            }
         return {"sessionId": "new"}
+
     adapter._rpc = rpc
     adapter._ensure_client = AsyncMock()
     adapter._ensure_event_protocol = AsyncMock()
@@ -106,8 +127,12 @@ async def test_dsh_catalog_default_and_switch_before_prompt(session_id):
     result = await adapter.model_catalog()
     assert result["default_model"] == "private/m"
     assert result["options"][0]["value"] == "private/m"
-    await adapter.run(AgentRunRequest(run_id="r", prompt="hello", project_path=".", session_id=session_id,
-                                     model="private/model/path"), AsyncMock())
+    await adapter.run(
+        AgentRunRequest(
+            run_id="r", prompt="hello", project_path=".", session_id=session_id, model="private/model/path"
+        ),
+        AsyncMock(),
+    )
     select = next(i for i, item in enumerate(seen) if item[0] == "session.selectModel")
     prompt = next(i for i, item in enumerate(seen) if item[0] == "session.prompt")
     assert select < prompt
@@ -115,23 +140,34 @@ async def test_dsh_catalog_default_and_switch_before_prompt(session_id):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("agent_model,config_model,expected", [
-    ({"providerID": "p", "id": "agent"}, "p/config", "p/agent"),
-    (None, "p/config", "p/config"),
-    (None, {"providerID": "p", "model": "config"}, "p/config"),
-    (None, None, "p/newest"),
-])
+@pytest.mark.parametrize(
+    "agent_model,config_model,expected",
+    [
+        ({"providerID": "p", "id": "agent"}, "p/config", "p/agent"),
+        (None, "p/config", "p/config"),
+        (None, {"providerID": "p", "model": "config"}, "p/config"),
+        (None, None, "p/newest"),
+    ],
+)
 async def test_opencode_new_task_default_precedence(agent_model, config_model, expected):
     def handler(request):
         if request.url.path == "/api/model":
-            return httpx.Response(200, json={"data": [
-                {"providerID": "p", "id": "config", "time": {"released": 1}},
-                {"providerID": "p", "id": "agent", "time": {"released": 2}},
-                {"providerID": "p", "id": "newest", "time": {"released": 3}},
-            ]})
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {"providerID": "p", "id": "config", "time": {"released": 1}},
+                        {"providerID": "p", "id": "agent", "time": {"released": 2}},
+                        {"providerID": "p", "id": "newest", "time": {"released": 3}},
+                    ]
+                },
+            )
         if request.url.path == "/api/config":
-            return httpx.Response(200, json=[{"type": "document", "info": {"model": config_model, "default_agent": "custom"}}])
+            return httpx.Response(
+                200, json=[{"type": "document", "info": {"model": config_model, "default_agent": "custom"}}]
+            )
         return httpx.Response(200, json={"data": [{"id": "custom", "model": agent_model}]})
+
     adapter = OpenCodeAdapter("http://agent")
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
@@ -165,7 +201,9 @@ async def test_opencode_first_catalog_waits_for_location_initialization(scenario
             yield b'data: {"type":"catalog.updated","location":{"directory":"/other"},"data":{}}\n\n'
             assert reads == 2
             ready = True
-            yield ("data: " + json.dumps({"type": "catalog.updated", "location": location, "data": {}}) + "\n\n").encode()
+            yield (
+                "data: " + json.dumps({"type": "catalog.updated", "location": location, "data": {}}) + "\n\n"
+            ).encode()
 
         async def aclose(self):
             nonlocal closed

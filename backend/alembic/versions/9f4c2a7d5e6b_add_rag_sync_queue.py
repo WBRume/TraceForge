@@ -11,17 +11,17 @@ Create Date: 2026-08-26 12:00:00.000000
   （自动 RAG 摄入已停用，全部改为「待下载」语义）
 """
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Sequence, Union
 
 import sqlalchemy as sa
+
 from alembic import op
 
-
 revision: str = "9f4c2a7d5e6b"
-down_revision: Union[str, None] = "f2a1b3c4d5e6"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "f2a1b3c4d5e6"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -43,9 +43,7 @@ def upgrade() -> None:
 
     # 历史数据迁移：既有 outbox 行归入当日首个 RUNNING 队列，状态统一为 QUEUED
     conn = op.get_bind()
-    existing_count = conn.execute(
-        sa.text("SELECT COUNT(*) FROM sdd_rag_outbox")
-    ).scalar() or 0
+    existing_count = conn.execute(sa.text("SELECT COUNT(*) FROM sdd_rag_outbox")).scalar() or 0
     if existing_count:
         now = datetime.utcnow()
         queue_id = f"legacy-{now.strftime('%Y%m%d%H%M%S')}"

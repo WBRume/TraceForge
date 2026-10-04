@@ -6,16 +6,16 @@ Revises: 5cc3d4e5f6a7
 Create Date: 2026-08-14 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "5dd4e5f6a7b8"
-down_revision: Union[str, None] = "5cc3d4e5f6a7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "5cc3d4e5f6a7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _dialect_name() -> str:
@@ -34,9 +34,7 @@ def _drop_fk(table: str, column: str) -> None:
         {"t": table, "c": column},
     ).fetchone()
     if row and row[0]:
-        connection.exec_driver_sql(
-            "ALTER TABLE " + table + " DROP FOREIGN KEY " + str(row[0])
-        )
+        connection.exec_driver_sql("ALTER TABLE " + table + " DROP FOREIGN KEY " + str(row[0]))
 
 
 def upgrade() -> None:
@@ -166,7 +164,9 @@ def upgrade() -> None:
             server_default="BRANCH",
         ),
     )
-    op.add_column("mgmt_project_release_repos", sa.Column("ref_name", sa.String(255), nullable=False, server_default=""))
+    op.add_column(
+        "mgmt_project_release_repos", sa.Column("ref_name", sa.String(255), nullable=False, server_default="")
+    )
 
     # 8. Project custom repo associations switch from branch to tag/branch.
     op.drop_column("mgmt_project_repos", "branch_name")
@@ -215,7 +215,9 @@ def downgrade() -> None:
     op.create_table(
         "mgmt_repo_refs",
         sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("repository_id", sa.String(36), sa.ForeignKey("mgmt_repositories.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "repository_id", sa.String(36), sa.ForeignKey("mgmt_repositories.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("ref_type", sa.Enum("BRANCH", "TAG", name="reporeftype"), nullable=False),
         sa.Column("ref_name", sa.String(255), nullable=False),
         sa.Column("ref_sha", sa.String(64), nullable=True),
@@ -232,7 +234,12 @@ def downgrade() -> None:
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("product_id", sa.String(36), sa.ForeignKey("mgmt_products.id", ondelete="CASCADE"), nullable=False),
         sa.Column("version_no", sa.String(50), nullable=False),
-        sa.Column("status", sa.Enum("PLANNED", "ACTIVE", "EOL", name="productversionstatus"), nullable=False, server_default="PLANNED"),
+        sa.Column(
+            "status",
+            sa.Enum("PLANNED", "ACTIVE", "EOL", name="productversionstatus"),
+            nullable=False,
+            server_default="PLANNED",
+        ),
         sa.Column("release_date", sa.DateTime(), nullable=True),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
@@ -243,8 +250,15 @@ def downgrade() -> None:
     op.create_table(
         "mgmt_product_version_repos",
         sa.Column("id", sa.String(36), primary_key=True),
-        sa.Column("product_version_id", sa.String(36), sa.ForeignKey("mgmt_product_versions.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("repository_id", sa.String(36), sa.ForeignKey("mgmt_repositories.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "product_version_id",
+            sa.String(36),
+            sa.ForeignKey("mgmt_product_versions.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
+        sa.Column(
+            "repository_id", sa.String(36), sa.ForeignKey("mgmt_repositories.id", ondelete="CASCADE"), nullable=False
+        ),
         sa.Column("branch_name", sa.String(255), nullable=False),
         sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
@@ -255,12 +269,22 @@ def downgrade() -> None:
         sa.Column("id", sa.String(36), primary_key=True),
         sa.Column("project_id", sa.String(36), sa.ForeignKey("mgmt_projects.id", ondelete="CASCADE"), nullable=False),
         sa.Column("product_id", sa.String(36), sa.ForeignKey("mgmt_products.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("product_version_id", sa.String(36), sa.ForeignKey("mgmt_product_versions.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "product_version_id",
+            sa.String(36),
+            sa.ForeignKey("mgmt_product_versions.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
         sa.Column("created_by", sa.String(36), sa.ForeignKey("users.id", ondelete="SET NULL"), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("project_id", "product_id", name="uq_mgmt_project_product_deps_project_product"),
     )
     op.add_column(
         "mgmt_project_releases",
-        sa.Column("product_version_id", sa.String(36), sa.ForeignKey("mgmt_product_versions.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "product_version_id",
+            sa.String(36),
+            sa.ForeignKey("mgmt_product_versions.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
     )

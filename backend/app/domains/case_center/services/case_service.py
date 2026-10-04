@@ -5,15 +5,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Tuple
 
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.logging import audit_log, get_logger
 from app.domains.auth.models.user import User, Workspace
 from app.domains.case_center.models.case import (
-    CaseCategory,
-    CasePriority,
     CaseReviewAction,
     CaseStatus,
     SddCase,
@@ -24,10 +21,10 @@ from app.domains.case_center.schemas.case import (
     CaseDraftCreateRequest,
     CaseUpdateRequest,
 )
+from app.domains.rag.services import outbox_service as rag_outbox_service
 from app.domains.task.models.task import SddTask, TaskType
 from app.domains.workspace.models.workspace_repository import SddWorkspaceRepository
 from app.domains.workspace.services import workspace_service
-from app.domains.rag.services import outbox_service as rag_outbox_service
 
 logger = get_logger(__name__, category="case")
 
@@ -42,7 +39,7 @@ _EDITABLE_STATUSES = {CaseStatus.DRAFT.value, CaseStatus.REJECTED.value}
 _TERMINAL_EDIT_STATUSES = {CaseStatus.APPROVED.value, CaseStatus.TECHNICALLY_VERIFIED.value}
 
 
-def _clean(value: Optional[str]) -> Optional[str]:
+def _clean(value: str | None) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
 
@@ -59,12 +56,18 @@ def _case_query(db: Session):
 
 def serialize_case(case: SddCase) -> dict:
     from sqlalchemy.orm import object_session
+
     from app.domains.diagnosis_playbook.models import CasePlaybookLink
-    has_playbook = getattr(case, '_has_playbook', None)
+
+    has_playbook = getattr(case, "_has_playbook", None)
     session = object_session(case)
     if has_playbook is None and session is not None:
-        has_playbook = session.query(CasePlaybookLink.id).filter(
-            CasePlaybookLink.case_id == case.id, CasePlaybookLink.spec_id.isnot(None)).first() is not None
+        has_playbook = (
+            session.query(CasePlaybookLink.id)
+            .filter(CasePlaybookLink.case_id == case.id, CasePlaybookLink.spec_id.isnot(None))
+            .first()
+            is not None
+        )
     records = []
     for record in case.review_records or []:
         reviewer_name = None
@@ -180,11 +183,11 @@ def serialize_case(case: SddCase) -> dict:
 def _apply_case_filters(
     query,
     *,
-    keyword: Optional[str] = None,
-    category: Optional[str] = None,
-    status: Optional[str] = None,
-    priority: Optional[str] = None,
-    source_task_id: Optional[str] = None,
+    keyword: str | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
+    source_task_id: str | None = None,
 ):
     if source_task_id:
         query = query.filter(SddCase.source_task_id == source_task_id)
@@ -207,7 +210,7 @@ def _apply_case_filters(
     return query
 
 
-def _paginate_cases(query, page: int, page_size: int) -> Tuple[List[SddCase], int]:
+def _paginate_cases(query, page: int, page_size: int) -> tuple[list[SddCase], int]:
     total = query.count()
     items = (
         query.order_by(SddCase.updated_at.desc(), SddCase.created_at.desc())
@@ -216,8 +219,13 @@ def _paginate_cases(query, page: int, page_size: int) -> Tuple[List[SddCase], in
         .all()
     )
     from app.domains.diagnosis_playbook.models import CasePlaybookLink
-    promoted = {row[0] for row in query.session.query(CasePlaybookLink.case_id).filter(
-        CasePlaybookLink.case_id.in_([item.id for item in items]), CasePlaybookLink.spec_id.isnot(None)).distinct()}
+
+    promoted = {
+        row[0]
+        for row in query.session.query(CasePlaybookLink.case_id)
+        .filter(CasePlaybookLink.case_id.in_([item.id for item in items]), CasePlaybookLink.spec_id.isnot(None))
+        .distinct()
+    }
     for item in items:
         item._has_playbook = item.id in promoted
     return items, total
@@ -227,14 +235,14 @@ def list_cases(
     db: Session,
     workspace_id: str,
     *,
-    keyword: Optional[str] = None,
-    category: Optional[str] = None,
-    status: Optional[str] = None,
-    priority: Optional[str] = None,
-    source_task_id: Optional[str] = None,
+    keyword: str | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
+    source_task_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> Tuple[List[SddCase], int]:
+) -> tuple[list[SddCase], int]:
     query = _apply_case_filters(
         _case_query(db).filter(SddCase.workspace_id == workspace_id),
         keyword=keyword,
@@ -248,15 +256,15 @@ def list_cases(
 
 def list_cases_in_workspaces(
     db: Session,
-    workspace_ids: List[str],
+    workspace_ids: list[str],
     *,
-    keyword: Optional[str] = None,
-    category: Optional[str] = None,
-    status: Optional[str] = None,
-    priority: Optional[str] = None,
+    keyword: str | None = None,
+    category: str | None = None,
+    status: str | None = None,
+    priority: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> Tuple[List[SddCase], int]:
+) -> tuple[list[SddCase], int]:
     if not workspace_ids:
         return [], 0
     query = _apply_case_filters(
@@ -269,12 +277,8 @@ def list_cases_in_workspaces(
     return _paginate_cases(query, page, page_size)
 
 
-def get_case(db: Session, case_id: str, workspace_id: str) -> Optional[SddCase]:
-    return (
-        _case_query(db)
-        .filter(SddCase.id == case_id, SddCase.workspace_id == workspace_id)
-        .first()
-    )
+def get_case(db: Session, case_id: str, workspace_id: str) -> SddCase | None:
+    return _case_query(db).filter(SddCase.id == case_id, SddCase.workspace_id == workspace_id).first()
 
 
 def _require_case(db: Session, case_id: str, workspace_id: str) -> SddCase:
@@ -460,7 +464,7 @@ def review_case(
     reviewer: User,
     *,
     conclusion: str,
-    comment: Optional[str],
+    comment: str | None,
 ) -> SddCase:
     case = _require_case(db, case_id, workspace_id)
     if case.status != CaseStatus.IN_REVIEW.value:
@@ -535,7 +539,7 @@ def resubmit_case(
     return _require_case(db, case.id, workspace_id)
 
 
-def _format_call_chain(items) -> Optional[str]:
+def _format_call_chain(items) -> str | None:
     """调用链路 → 可读文本。"""
     lines = []
     for node in items or []:
@@ -555,7 +559,7 @@ def _format_call_chain(items) -> Optional[str]:
     return "调用链路:\n" + "\n".join(lines) if lines else None
 
 
-def _format_code_context_items(items) -> Optional[str]:
+def _format_code_context_items(items) -> str | None:
     """相关代码上下文条目 → 可读文本。"""
     lines = []
     for item in items or []:
@@ -580,7 +584,7 @@ def _format_code_context_items(items) -> Optional[str]:
     return "相关代码上下文:\n" + "\n".join(lines) if lines else None
 
 
-def _workspace_product_prefill(db: Session, workspace_id: str) -> Tuple[Optional[str], Optional[str]]:
+def _workspace_product_prefill(db: Session, workspace_id: str) -> tuple[str | None, str | None]:
     from app.domains.auth.models.user import Workspace
     from app.domains.management.models.management import (
         SddManagementProject,
@@ -620,11 +624,7 @@ def create_case_draft_from_task(
     # Shared task-level association boundary with automatic technical projection.
     db.query(SddTask).filter(SddTask.id == task.id).with_for_update().one()
 
-    existing = (
-        db.query(SddCase)
-        .filter(SddCase.workspace_id == workspace_id, SddCase.source_task_id == task.id)
-        .first()
-    )
+    existing = db.query(SddCase).filter(SddCase.workspace_id == workspace_id, SddCase.source_task_id == task.id).first()
     if existing:
         raise CaseError(
             f"Case already exists for this task: {existing.id}",
@@ -700,19 +700,13 @@ def create_case_draft_from_task(
             "fix_code": diagnosis_result.fix_code,
             "confidence": int(diagnosis_result.confidence or 0),
             "similar_cases": (
-                diagnosis_result.similar_cases_json
-                if isinstance(diagnosis_result.similar_cases_json, list)
-                else []
+                diagnosis_result.similar_cases_json if isinstance(diagnosis_result.similar_cases_json, list) else []
             ),
             "call_chain": (
-                diagnosis_result.call_chain_json
-                if isinstance(diagnosis_result.call_chain_json, list)
-                else []
+                diagnosis_result.call_chain_json if isinstance(diagnosis_result.call_chain_json, list) else []
             ),
             "code_context": (
-                diagnosis_result.code_context_json
-                if isinstance(diagnosis_result.code_context_json, list)
-                else []
+                diagnosis_result.code_context_json if isinstance(diagnosis_result.code_context_json, list) else []
             ),
         }
 
@@ -735,10 +729,6 @@ def create_case_draft_from_task(
     return case
 
 
-def get_workspace_repo_slugs(db: Session, workspace_id: str) -> List[str]:
-    rows = (
-        db.query(SddWorkspaceRepository.repo_name)
-        .filter(SddWorkspaceRepository.workspace_id == workspace_id)
-        .all()
-    )
+def get_workspace_repo_slugs(db: Session, workspace_id: str) -> list[str]:
+    rows = db.query(SddWorkspaceRepository.repo_name).filter(SddWorkspaceRepository.workspace_id == workspace_id).all()
     return [row[0] for row in rows if row[0]]

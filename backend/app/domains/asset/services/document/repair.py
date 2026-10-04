@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import List
 
 from sqlalchemy.orm import Session
 
@@ -29,7 +28,7 @@ def repair_docx_version_if_needed(db: Session, asset: SddAsset, version: SddAsse
         return False
 
     markdown = version.normalized_markdown or ""
-    blocks: List = list(version.blocks_json or []) if isinstance(version.blocks_json, list) else []
+    blocks: list = list(version.blocks_json or []) if isinstance(version.blocks_json, list) else []
     render = version.render_json or {}
     render_format = str(render.get("format") or "").strip().lower()
     has_docx_comment_payload = isinstance(render.get("docx_comments"), list)

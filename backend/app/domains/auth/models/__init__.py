@@ -4,18 +4,7 @@
 新增 OAuth 模型在此导出，供 alembic autogenerate 与 late import 注册使用。
 """
 
-from app.domains.auth.models.user import (
-    User,
-    Workspace,
-    WorkspaceMember,
-    WorkspacePermission,
-    WorkspaceRole,
-    generate_uuid,
-)
 from app.domains.auth.models.oauth import (
-    OAuthIdentity,
-    OAuthState,
-    OAuthTicket,
     CLIENT_TYPE_DESKTOP,
     CLIENT_TYPE_WEB,
     INTENT_BIND,
@@ -27,6 +16,17 @@ from app.domains.auth.models.oauth import (
     TICKET_STATUS_LOGIN_OK,
     TICKET_STATUS_REGISTER_REQUIRED,
     TICKET_STATUSES,
+    OAuthIdentity,
+    OAuthState,
+    OAuthTicket,
+)
+from app.domains.auth.models.user import (
+    User,
+    Workspace,
+    WorkspaceMember,
+    WorkspacePermission,
+    WorkspaceRole,
+    generate_uuid,
 )
 
 __all__ = [

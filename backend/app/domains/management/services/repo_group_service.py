@@ -2,8 +2,6 @@
 Repository group service: a plain tree grouping repositories.
 """
 
-from typing import Dict, List, Optional
-
 from sqlalchemy.orm import Session
 
 from app.domains.management.models.management import (
@@ -18,7 +16,7 @@ class RepoGroupServiceError(ValueError):
         self.status_code = status_code
 
 
-def get_group(db: Session, group_id: str) -> Optional[SddManagementRepoGroup]:
+def get_group(db: Session, group_id: str) -> SddManagementRepoGroup | None:
     return db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.id == group_id).first()
 
 
@@ -26,7 +24,7 @@ def create_group(
     db: Session,
     *,
     name: str,
-    parent_id: Optional[str] = None,
+    parent_id: str | None = None,
     order_index: int = 0,
 ) -> SddManagementRepoGroup:
     normalized_name = str(name or "").strip()
@@ -51,9 +49,9 @@ def update_group(
     db: Session,
     group: SddManagementRepoGroup,
     *,
-    name: Optional[str] = None,
-    parent_id: Optional[str] = None,
-    order_index: Optional[int] = None,
+    name: str | None = None,
+    parent_id: str | None = None,
+    order_index: int | None = None,
 ) -> SddManagementRepoGroup:
     if name is not None:
         normalized_name = str(name).strip()
@@ -84,16 +82,8 @@ def update_group(
 
 
 def delete_group(db: Session, group: SddManagementRepoGroup) -> None:
-    repo_count = (
-        db.query(SddManagementRepository)
-        .filter(SddManagementRepository.group_id == group.id)
-        .count()
-    )
-    child_count = (
-        db.query(SddManagementRepoGroup)
-        .filter(SddManagementRepoGroup.parent_id == group.id)
-        .count()
-    )
+    repo_count = db.query(SddManagementRepository).filter(SddManagementRepository.group_id == group.id).count()
+    child_count = db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.parent_id == group.id).count()
     if repo_count > 0 or child_count > 0:
         raise RepoGroupServiceError(
             "Cannot delete a group that still contains repositories or subgroups",
@@ -103,14 +93,14 @@ def delete_group(db: Session, group: SddManagementRepoGroup) -> None:
     db.commit()
 
 
-def build_repo_group_tree(db: Session) -> List[Dict[str, object]]:
+def build_repo_group_tree(db: Session) -> list[dict[str, object]]:
     groups = (
         db.query(SddManagementRepoGroup)
         .order_by(SddManagementRepoGroup.order_index.asc(), SddManagementRepoGroup.name.asc())
         .all()
     )
     repos = db.query(SddManagementRepository).order_by(SddManagementRepository.name.asc()).all()
-    repos_by_group: Dict[str, List[Dict[str, object]]] = {}
+    repos_by_group: dict[str, list[dict[str, object]]] = {}
     for repo in repos:
         key = str(repo.group_id or "")
         repos_by_group.setdefault(key, []).append(
@@ -122,8 +112,8 @@ def build_repo_group_tree(db: Session) -> List[Dict[str, object]]:
             }
         )
 
-    payloads_by_id: Dict[str, Dict[str, object]] = {}
-    roots: List[Dict[str, object]] = []
+    payloads_by_id: dict[str, dict[str, object]] = {}
+    roots: list[dict[str, object]] = []
     for group in groups:
         payload = {
             "id": group.id,

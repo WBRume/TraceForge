@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sqlalchemy.orm import Session
 
+from app.domains.asset.services import decision_service
 from app.domains.workspace_asset.models.workspace_asset import (
     DecisionStatus,
     SddDecision,
@@ -16,7 +15,6 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     DecisionCreateRequest,
     DecisionUpdateRequest,
 )
-from app.domains.asset.services import decision_service
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
@@ -40,7 +38,7 @@ def create_decision(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: DecisionCreateRequest,
 ) -> str:
     task = get_task_or_error(db, workspace_id, task_id)
@@ -111,34 +109,7 @@ def create_decision(
     return created_id
 
 
-def update_decision(
-    db: Session,
-    workspace_id: str,
-    task_id: str,
-    decision_id: str,
-    actor_id: Optional[str],
-    payload: DecisionUpdateRequest,
-) -> None:
-    decision = (
-        db.query(SddDecision)
-        .filter(SddDecision.workspace_id == workspace_id, SddDecision.task_id == task_id, SddDecision.id == decision_id)
-        .first()
-    )
-    if not decision:
-        raise WorkspaceAssetError("Decision not found for this Task.", status_code=404)
-    ensure_task_not_baselined(decision.task)
-    before = decision_response(decision).model_dump(mode="json")
-    if payload_has_field(payload, "requirement_id"):
-        ensure_requirement(db, workspace_id, payload.requirement_id)
-        decision.requirement_id = payload.requirement_id
-    if payload_has_field(payload, "human_delta_id"):
-        ensure_human_delta(db, workspace_id, task_id, payload.human_delta_id)
-        decision.human_delta_id = payload.human_delta_id
-    if payload_has_field(payload, "delta_region_id"):
-        decision.delta_region_id = payload.delta_region_id
-    if payload_has_field(payload, "source_evidence_id"):
-        ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
-        decision.source_evidence_id = payload.source_evidence_id
+def _update_decision_source(db, workspace_id, task_id, decision, payload):
     if payload_has_field(payload, "source_type") and payload.source_type is not None:
         decision.source_type = decision_service.normalize_source_type(payload.source_type)
     if payload_has_field(payload, "source_chat_message_id"):
@@ -168,6 +139,38 @@ def update_decision(
         )
     except decision_service.DecisionSourceError as exc:
         raise WorkspaceAssetError(str(exc), status_code=exc.status_code) from exc
+
+
+def update_decision(
+    db: Session,
+    workspace_id: str,
+    task_id: str,
+    decision_id: str,
+    actor_id: str | None,
+    payload: DecisionUpdateRequest,
+) -> None:
+    decision = (
+        db.query(SddDecision)
+        .filter(SddDecision.workspace_id == workspace_id, SddDecision.task_id == task_id, SddDecision.id == decision_id)
+        .first()
+    )
+    if not decision:
+        raise WorkspaceAssetError("Decision not found for this Task.", status_code=404)
+    ensure_task_not_baselined(decision.task)
+    before = decision_response(decision).model_dump(mode="json")
+    if payload_has_field(payload, "requirement_id"):
+        ensure_requirement(db, workspace_id, payload.requirement_id)
+        decision.requirement_id = payload.requirement_id
+    if payload_has_field(payload, "human_delta_id"):
+        ensure_human_delta(db, workspace_id, task_id, payload.human_delta_id)
+        decision.human_delta_id = payload.human_delta_id
+    if payload_has_field(payload, "delta_region_id"):
+        decision.delta_region_id = payload.delta_region_id
+    if payload_has_field(payload, "source_evidence_id"):
+        ensure_evidence(db, workspace_id, task_id, payload.source_evidence_id)
+        decision.source_evidence_id = payload.source_evidence_id
+    _update_decision_source(db, workspace_id, task_id, decision, payload)
+
     if payload_has_field(payload, "status") and payload.status is not None:
         decision.status = normalize_enum(DecisionStatus, payload.status, DecisionStatus.PROPOSED, "Decision status")
     if payload_has_field(payload, "title"):

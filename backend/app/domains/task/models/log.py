@@ -4,10 +4,9 @@
 
 from enum import Enum as PyEnum
 
-from sqlalchemy import (
-    BigInteger, Column, DateTime, Enum, ForeignKey, Index, String, Text, func
-)
+from sqlalchemy import BigInteger, Column, DateTime, Enum, ForeignKey, Index, String, Text, func
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 

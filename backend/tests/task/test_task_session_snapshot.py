@@ -5,7 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-
+from pathlib import Path
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -51,7 +51,7 @@ class TaskSessionSnapshotTest(unittest.TestCase):
             index_path = _git(repo, "rev-parse", "--git-path", "index").strip()
             if not os.path.isabs(index_path):
                 index_path = os.path.join(repo, index_path)
-            expected_index = hashlib.sha256(open(index_path, "rb").read()).hexdigest()
+            expected_index = hashlib.sha256(Path(index_path).read_bytes()).hexdigest()
 
             checkpoint_root = os.path.join(tmp, "checkpoint")
             os.makedirs(checkpoint_root)
@@ -70,17 +70,21 @@ class TaskSessionSnapshotTest(unittest.TestCase):
                 os.path.join(checkpoint_root, "current-worktree"),
             )
 
-            self.assertEqual(open(os.path.join(repo, "tracked.txt"), encoding="utf-8").read(), "tracked-before\n")
-            self.assertEqual(open(os.path.join(repo, "staged.txt"), encoding="utf-8").read(), "staged-before-but-staged-change\n")
-            self.assertEqual(open(os.path.join(repo, "untracked.txt"), encoding="utf-8").read(), "untracked-before\n")
-            self.assertEqual(open(os.path.join(repo, "ignored.txt"), encoding="utf-8").read(), "ignored-before\n")
+            self.assertEqual(Path(os.path.join(repo, "tracked.txt")).read_text(encoding="utf-8"), "tracked-before\n")
+            self.assertEqual(
+                Path(os.path.join(repo, "staged.txt")).read_text(encoding="utf-8"), "staged-before-but-staged-change\n"
+            )
+            self.assertEqual(
+                Path(os.path.join(repo, "untracked.txt")).read_text(encoding="utf-8"), "untracked-before\n"
+            )
+            self.assertEqual(Path(os.path.join(repo, "ignored.txt")).read_text(encoding="utf-8"), "ignored-before\n")
             self.assertFalse(os.path.exists(os.path.join(repo, "extra.txt")))
             self.assertEqual(_git(repo, "rev-parse", "HEAD").strip(), expected_head)
-            restored_index = hashlib.sha256(open(index_path, "rb").read()).hexdigest()
+            restored_index = hashlib.sha256(Path(index_path).read_bytes()).hexdigest()
             self.assertEqual(restored_index, expected_index)
             self.assertEqual(_git(repo, "status", "--porcelain=v2", "--untracked-files=all"), expected_status)
 
-            manifest = json.load(open(os.path.join(checkpoint_root, "worktree.json"), encoding="utf-8"))
+            manifest = json.loads(Path(os.path.join(checkpoint_root, "worktree.json")).read_text(encoding="utf-8"))
             self.assertNotIn("must-disappear", json.dumps(manifest))
 
     def test_unborn_head_checkpoint_round_trip(self):
@@ -110,7 +114,7 @@ class TaskSessionSnapshotTest(unittest.TestCase):
                 os.path.join(checkpoint_root, "current-worktree"),
             )
 
-            self.assertEqual(open(os.path.join(repo, "untracked.txt"), encoding="utf-8").read(), "before\n")
+            self.assertEqual(Path(os.path.join(repo, "untracked.txt")).read_text(encoding="utf-8"), "before\n")
             self.assertFalse(os.path.exists(os.path.join(repo, "committed.txt")))
             verify = subprocess.run(
                 ["git", "rev-parse", "--verify", "HEAD"],
@@ -190,7 +194,7 @@ class TaskSessionSnapshotTest(unittest.TestCase):
                 self._write(store, "session-1.jsonl", '{"secret":"PARTIAL_MUTATION"}\n')
 
                 snapshots._restore_provider_backup_sync(checkpoint)
-                restored = open(session_path, encoding="utf-8").read()
+                restored = Path(session_path).read_text(encoding="utf-8")
                 self.assertNotIn("PARTIAL_MUTATION", restored)
                 self.assertIn("CURRENT_STATE", restored)
         finally:
@@ -231,19 +235,19 @@ class TaskSessionSnapshotTest(unittest.TestCase):
                 new_id = snapshots._fork_dsh_session_sync(original_id, cwd)
                 self.assertIsNotNone(new_id)
                 new_path, _suffix = session_files.locate_session_log(root, str(new_id))
-                lines = open(new_path, encoding="utf-8").read().splitlines()
+                lines = Path(new_path).read_text(encoding="utf-8").splitlines()
                 header = json.loads(lines[0])
                 self.assertEqual(header["id"], new_id)
                 self.assertEqual(os.path.abspath(header["cwd"]), os.path.abspath(cwd))
                 self.assertIn("prefix-only", lines[1])
                 self.assertEqual(
-                    open(os.path.join(os.path.dirname(new_path), "attachment.sidecar"), encoding="utf-8").read(),
+                    Path(os.path.join(os.path.dirname(new_path), "attachment.sidecar")).read_text(encoding="utf-8"),
                     "sidecar-bytes",
                 )
                 self.assertTrue(os.path.isfile(source))
 
                 snapshots._cleanup_dsh_session_sync(str(new_id))
-                with self.assertRaises(Exception):
+                with self.assertRaises(session_files.SessionLogNotFoundError):
                     session_files.locate_session_log(root, str(new_id))
         finally:
             snapshots.settings.DSH_SESSION_ROOT = old_setting

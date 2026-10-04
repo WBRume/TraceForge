@@ -2,11 +2,12 @@
 API MOCK Mock Case Service.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.domains.api_mock.models.api_mock import ApiMockRuleMode, SddApiMockEndpoint, SddApiMockProject, SddApiMockRule
+
 from .openapi_normalizer import _clone_json
 
 
@@ -16,7 +17,7 @@ def clone_mock_cases_from_source(
     *,
     previous_source_id: str,
     new_source_id: str,
-    endpoint_overrides: Dict[str, Tuple[str, str]],
+    endpoint_overrides: dict[str, tuple[str, str]],
     updated_by: str,
 ) -> None:
     from .source_version_service import _endpoint_key, build_endpoint_lookup
@@ -98,7 +99,7 @@ def list_mock_cases_for_endpoint(
     db: Session,
     project: SddApiMockProject,
     endpoint_id: str,
-) -> List[SddApiMockRule]:
+) -> list[SddApiMockRule]:
     return (
         db.query(SddApiMockRule)
         .filter(
@@ -114,7 +115,7 @@ def list_mock_cases_for_endpoint(
     )
 
 
-def get_mock_case(db: Session, project: SddApiMockProject, mock_case_id: str) -> Optional[SddApiMockRule]:
+def get_mock_case(db: Session, project: SddApiMockProject, mock_case_id: str) -> SddApiMockRule | None:
     return (
         db.query(SddApiMockRule)
         .filter(
@@ -129,7 +130,7 @@ def _normalize_mock_case_defaults(
     db: Session,
     project_id: str,
     endpoint_id: str,
-    default_case_id: Optional[str],
+    default_case_id: str | None,
 ) -> None:
     query = db.query(SddApiMockRule).filter(
         SddApiMockRule.project_id == project_id,
@@ -160,22 +161,23 @@ def create_mock_case(
     endpoint_id: str,
     updater_id: str,
     name: str,
-    description: Optional[str],
+    description: str | None,
     is_default: bool,
-    sort_order: Optional[int],
+    sort_order: int | None,
     mode: ApiMockRuleMode,
-    request_path_params_json: Optional[Dict[str, Any]],
-    request_query_json: Optional[Dict[str, Any]],
-    request_body_json: Optional[Any],
+    request_path_params_json: dict[str, Any] | None,
+    request_query_json: dict[str, Any] | None,
+    request_body_json: Any | None,
     status_code: int,
     enabled: bool,
     delay_ms: int,
-    static_body_json: Optional[Dict[str, Any]],
-    mockjs_template: Optional[str],
-    headers_json: Optional[Dict[str, Any]],
-    cookies_json: Optional[List[Dict[str, Any]]],
+    static_body_json: dict[str, Any] | None,
+    mockjs_template: str | None,
+    headers_json: dict[str, Any] | None,
+    cookies_json: list[dict[str, Any]] | None,
 ) -> SddApiMockRule:
     from .endpoint_service import get_endpoint
+
     endpoint = get_endpoint(db, project, endpoint_id)
     if not endpoint:
         raise ValueError("Endpoint not found")
@@ -218,22 +220,22 @@ def update_mock_case(
     *,
     mock_case_id: str,
     updater_id: str,
-    row_version: Optional[int],
+    row_version: int | None,
     name: str,
-    description: Optional[str],
+    description: str | None,
     is_default: bool,
-    sort_order: Optional[int],
+    sort_order: int | None,
     mode: ApiMockRuleMode,
-    request_path_params_json: Optional[Dict[str, Any]],
-    request_query_json: Optional[Dict[str, Any]],
-    request_body_json: Optional[Any],
+    request_path_params_json: dict[str, Any] | None,
+    request_query_json: dict[str, Any] | None,
+    request_body_json: Any | None,
     status_code: int,
     enabled: bool,
     delay_ms: int,
-    static_body_json: Optional[Dict[str, Any]],
-    mockjs_template: Optional[str],
-    headers_json: Optional[Dict[str, Any]],
-    cookies_json: Optional[List[Dict[str, Any]]],
+    static_body_json: dict[str, Any] | None,
+    mockjs_template: str | None,
+    headers_json: dict[str, Any] | None,
+    cookies_json: list[dict[str, Any]] | None,
 ) -> SddApiMockRule:
     rule = get_mock_case(db, project, mock_case_id)
     if not rule:

@@ -1,11 +1,12 @@
 """Record skill review scores and rating summaries."""
 
 from __future__ import annotations
-from typing import List, Optional, Tuple
+
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
-from app.domains.skill.models.skill import SddSkill, SkillDimension, SddSkillExpertRating
+
 from app.domains.auth.models.user import User
+from app.domains.skill.models.skill import SddSkill, SddSkillExpertRating, SkillDimension
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
 from app.domains.skill.services.packages import versions as skill_packages_versions
 
@@ -15,7 +16,7 @@ def get_skill_rating_summary(
     workspace_id: str,
     skill: SddSkill,
     user_id: str,
-) -> Tuple[Optional[float], int, Optional[int], Optional[str]]:
+) -> tuple[float | None, int, int | None, str | None]:
     if skill.dimension == SkillDimension.GLOBAL:
         rating_scope_filters = [SddSkillExpertRating.skill_id == skill.id]
         my_rating_scope_filters = [
@@ -33,13 +34,10 @@ def get_skill_rating_summary(
             SddSkillExpertRating.expert_user_id == user_id,
         ]
 
-    rating_query = (
-        db.query(
-            func.avg(SddSkillExpertRating.score).label("avg_score"),
-            func.count(SddSkillExpertRating.id).label("rating_count"),
-        )
-        .filter(*rating_scope_filters)
-    )
+    rating_query = db.query(
+        func.avg(SddSkillExpertRating.score).label("avg_score"),
+        func.count(SddSkillExpertRating.id).label("rating_count"),
+    ).filter(*rating_scope_filters)
     avg_score, rating_count = rating_query.first() or (None, 0)
 
     my_rating = (
@@ -61,10 +59,9 @@ def list_skill_ratings(
     db: Session,
     workspace_id: str,
     skill: SddSkill,
-) -> List[SddSkillExpertRating]:
-    query = (
-        db.query(SddSkillExpertRating)
-        .options(joinedload(SddSkillExpertRating.expert), joinedload(SddSkillExpertRating.version))
+) -> list[SddSkillExpertRating]:
+    query = db.query(SddSkillExpertRating).options(
+        joinedload(SddSkillExpertRating.expert), joinedload(SddSkillExpertRating.version)
     )
     if skill.dimension == SkillDimension.GLOBAL:
         query = query.filter(SddSkillExpertRating.skill_id == skill.id)
@@ -83,7 +80,7 @@ def upsert_skill_rating(
     workspace_id: str,
     skill: SddSkill,
     score: int,
-    note: Optional[str],
+    note: str | None,
 ) -> SddSkillExpertRating:
     if not skill_catalog_policy.can_review_skill(db, user, workspace_id, skill):
         raise PermissionError("Only workspace experts can rate this skill")
@@ -92,16 +89,15 @@ def upsert_skill_rating(
     latest_version = skill_packages_versions.get_latest_skill_version(db, skill.id)
     version_id = latest_version.id if latest_version else None
 
-    rating_query = (
-        db.query(SddSkillExpertRating)
-        .filter(
-            SddSkillExpertRating.skill_id == skill.id,
-            SddSkillExpertRating.expert_user_id == user.id,
-        )
+    rating_query = db.query(SddSkillExpertRating).filter(
+        SddSkillExpertRating.skill_id == skill.id,
+        SddSkillExpertRating.expert_user_id == user.id,
     )
     if skill.dimension == SkillDimension.WORKSPACE:
         rating_query = rating_query.filter(SddSkillExpertRating.workspace_id == review_workspace_id)
-    rating = rating_query.order_by(SddSkillExpertRating.updated_at.desc(), SddSkillExpertRating.created_at.desc()).first()
+    rating = rating_query.order_by(
+        SddSkillExpertRating.updated_at.desc(), SddSkillExpertRating.created_at.desc()
+    ).first()
 
     if rating:
         rating.score = score

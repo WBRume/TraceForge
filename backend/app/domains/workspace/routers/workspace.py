@@ -4,7 +4,6 @@ Workspace API routes.
 
 import asyncio
 import time
-from typing import List
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -17,14 +16,15 @@ from app.core.distributed_lock import (
 from app.core.logging import audit_log, get_logger
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
-from app.domains.auth.models.user import User
 from app.domains.ai.schemas.ai_job import AiJobResponse
+from app.domains.ai.services.jobs import attempts as ai_job_attempts
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
+from app.domains.ai.services.jobs.store import get_job, serialize_job
 from app.domains.asset.schemas.asset import (
     WorkspaceAgentBackendResponse,
-    WorkspaceAgentBackendUpdate,
-    WorkspaceCreate,
     WorkspaceAgentBackendTestRequest,
     WorkspaceAgentBackendTestResponse,
+    WorkspaceAgentBackendUpdate,
     WorkspaceCreate,
     WorkspaceInviteLinkCreate,
     WorkspaceInviteLinkListResponse,
@@ -37,12 +37,10 @@ from app.domains.asset.schemas.asset import (
     WorkspacePreflight,
     WorkspaceResponse,
 )
+from app.domains.auth.models.user import User
 from app.domains.workflow.schemas.provision import ProvisionJobAcceptedResponse
-from app.domains.ai.services.jobs import attempts as ai_job_attempts
-from app.domains.ai.services.jobs import publishing as ai_job_publishing
-from app.domains.ai.services.jobs.store import get_job, serialize_job
-from app.domains.workspace.services import workspace_service
 from app.domains.workflow.services import provision_job_service
+from app.domains.workspace.services import workspace_service
 
 router = APIRouter(prefix="/workspaces", tags=["Workspaces"])
 logger = get_logger(__name__)
@@ -92,18 +90,14 @@ async def create_workspace(
             if not str(data.project_name or "").strip() or not str(data.product_name or "").strip():
                 raise ValueError("project_name and product_name are required")
             missing_branch = [
-                item.repository_id
-                for item in (data.repositories or [])
-                if not str(item.branch_name or "").strip()
+                item.repository_id for item in (data.repositories or []) if not str(item.branch_name or "").strip()
             ]
             if missing_branch:
                 raise ValueError("branch_name is required for every selected repository")
 
         # 工作区根目录配置：为空保持原有逻辑；非空时默认填充 根目录/workspace/工作区名称，
         # 并在受理阶段拒绝位于 根目录/workspace 之外的路径（快速失败返回 400）。
-        data.project_path = workspace_service.apply_workspace_root_dir_policy(
-            db, data.name, data.project_path
-        )
+        data.project_path = workspace_service.apply_workspace_root_dir_policy(db, data.name, data.project_path)
 
         job = provision_job_service.create_job(
             db,
@@ -154,7 +148,7 @@ async def create_workspace(
             data.git_repo_url,
             str(exc),
         )
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -174,7 +168,7 @@ async def create_workspace(
             data.project_path,
             data.git_repo_url,
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.post("/preflight")
@@ -184,12 +178,10 @@ def preflight_workspace(
     db: Session = Depends(get_db),
 ):
     """创建工作区前的冲突预检：重名 / 目标目录已被其他工作区引用（仅供参考，不阻断创建）。"""
-    return workspace_service.preflight_workspace_conflicts(
-        db, name=data.name, project_path=data.project_path
-    )
+    return workspace_service.preflight_workspace_conflicts(db, name=data.name, project_path=data.project_path)
 
 
-@router.get("", response_model=List[WorkspaceResponse])
+@router.get("", response_model=list[WorkspaceResponse])
 def get_workspaces(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -203,7 +195,8 @@ def list_agent_backends(
     db: Session = Depends(get_db),
 ):
     """可选 agent backend 列表 + 全局默认值（未指定工作区上下文）。"""
-    from app.agents.selection import default_backend_name, list_agent_backends as list_backends
+    from app.agents.selection import default_backend_name
+    from app.agents.selection import list_agent_backends as list_backends
 
     return WorkspaceAgentBackendResponse(
         agent_backend=None,
@@ -234,9 +227,11 @@ def get_workspace_agent_backends(
     _ensure_workspace_member(db, ws_id, current_user.id)
     from app.agents.selection import (
         default_backend_name,
-        list_agent_backends as list_backends,
         normalize_backend_name,
         resolve_workspace_backend,
+    )
+    from app.agents.selection import (
+        list_agent_backends as list_backends,
     )
 
     ws = workspace_service.get_workspace(db, ws_id, current_user)
@@ -313,11 +308,13 @@ def update_workspace_agent_backend(
 ):
     _ensure_member_manager(db, ws_id, current_user.id)
     from app.agents.selection import (
+        SELECTABLE_AGENT_BACKENDS,
         default_backend_name,
-        list_agent_backends as list_backends,
         normalize_backend_name,
         resolve_workspace_backend,
-        SELECTABLE_AGENT_BACKENDS,
+    )
+    from app.agents.selection import (
+        list_agent_backends as list_backends,
     )
 
     ws = workspace_service.get_workspace(db, ws_id, current_user)
@@ -381,7 +378,7 @@ async def delete_workspace(
             current_user.id,
             str(exc),
         )
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 409)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 409)), detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -398,7 +395,7 @@ async def delete_workspace(
             ws_id,
             current_user.id,
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not success:
         raise HTTPException(status_code=404, detail="Workspace not found")
     audit_log(
@@ -430,6 +427,7 @@ async def cancel_ai_job(
     current_user: User = Depends(get_current_user),
 ):
     try:
+
         def cancel_sync(db: Session):
             _ensure_workspace_member(db, ws_id, current_user.id)
             job = get_job(db, job_id=job_id)
@@ -446,7 +444,7 @@ async def cancel_ai_job(
 
         payload = await run_db_txn(cancel_sync)
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     await ai_job_publishing.publish_job(str(payload["id"]))
     return AiJobResponse(**payload)
@@ -523,7 +521,7 @@ def add_workspace_member(
             member_email=data.user_email,
             reason=str(exc),
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.put("/{ws_id}/members/{member_id}", response_model=WorkspaceMemberResponse)
@@ -570,7 +568,7 @@ def update_workspace_member(
             operation="edit_member",
             reason=str(exc),
         )
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except PermissionError as exc:
         audit_log(
             action="update_workspace_member",
@@ -582,7 +580,7 @@ def update_workspace_member(
             operation="edit_member",
             reason=str(exc),
         )
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.delete("/{ws_id}/members/{member_id}", response_model=dict)
@@ -607,7 +605,7 @@ def remove_workspace_member(
             operation="remove_member",
             reason=str(exc),
         )
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
         audit_log(
             action="update_workspace_member",
@@ -619,7 +617,7 @@ def remove_workspace_member(
             operation="remove_member",
             reason=str(exc),
         )
-        raise HTTPException(status_code=403, detail=str(exc))
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     audit_log(
         action="update_workspace_member",
@@ -654,7 +652,7 @@ def create_workspace_invite_link(
             max_uses=data.max_uses,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     audit_log(
         action="create_workspace_invite_link",
@@ -717,9 +715,7 @@ def revoke_workspace_invite_link(
         workspace_id=link.workspace_id,
         token=link.token,
         role=link.role,
-        permissions=workspace_service.permissions_to_flags(
-            workspace_service.default_permissions_for_role(link.role)
-        ),
+        permissions=workspace_service.permissions_to_flags(workspace_service.default_permissions_for_role(link.role)),
         is_expert=bool(link.is_expert),
         max_uses=link.max_uses,
         used_count=int(link.used_count or 0),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,7 @@ from app.core.logging import get_logger
 from app.domains.asset.models.asset import SddAsset, SddAssetResolutionProposal, SddAssetThread, SddAssetVersion
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.context_token import ContextTokenCategory
+from app.domains.task.services import context_token_service
 from app.domains.workspace_asset.models.workspace_asset import DecisionSourceType, SddDecision, SddTaskFinalSummary
 from app.domains.workspace_asset.schemas.workspace_asset import (
     ChatMessageDecisionCreateRequest,
@@ -17,8 +18,6 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     DecisionResponse,
     DecisionSourceResponse,
 )
-from app.domains.task.services import context_token_service
-
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -33,14 +32,14 @@ def enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value or "")
 
 
-def clean_optional(value: Optional[str], *, limit: Optional[int] = None) -> Optional[str]:
+def clean_optional(value: str | None, *, limit: int | None = None) -> str | None:
     normalized = str(value or "").strip()
     if not normalized:
         return None
     return normalized[:limit] if limit else normalized
 
 
-def normalize_source_type(value: Optional[str]) -> DecisionSourceType:
+def normalize_source_type(value: str | None) -> DecisionSourceType:
     raw = str(value or DecisionSourceType.TASK_DETAIL_BACKFILL.value).strip().upper()
     try:
         return DecisionSourceType(raw)
@@ -69,7 +68,7 @@ def decision_source_response(decision: SddDecision) -> DecisionSourceResponse:
     )
 
 
-def _ensure_chat_message(db: Session, workspace_id: str, task_id: str, message_id: Optional[str]) -> ChatMessage:
+def _ensure_chat_message(db: Session, workspace_id: str, task_id: str, message_id: str | None) -> ChatMessage:
     normalized = clean_optional(message_id)
     if not normalized:
         raise DecisionSourceError("Chat message source is required.", status_code=422)
@@ -90,7 +89,7 @@ def _ensure_chat_message(db: Session, workspace_id: str, task_id: str, message_i
     return message
 
 
-def _ensure_asset(db: Session, workspace_id: str, task_id: str, asset_id: Optional[str]) -> Optional[SddAsset]:
+def _ensure_asset(db: Session, workspace_id: str, task_id: str, asset_id: str | None) -> SddAsset | None:
     normalized = clean_optional(asset_id)
     if not normalized:
         return None
@@ -106,9 +105,9 @@ def _ensure_asset(db: Session, workspace_id: str, task_id: str, asset_id: Option
 
 def _ensure_asset_version(
     db: Session,
-    asset: Optional[SddAsset],
-    version_id: Optional[str],
-) -> Optional[SddAssetVersion]:
+    asset: SddAsset | None,
+    version_id: str | None,
+) -> SddAssetVersion | None:
     normalized = clean_optional(version_id)
     if not normalized:
         return None
@@ -125,8 +124,8 @@ def _ensure_asset_thread(
     db: Session,
     workspace_id: str,
     task_id: str,
-    thread_id: Optional[str],
-) -> Optional[SddAssetThread]:
+    thread_id: str | None,
+) -> SddAssetThread | None:
     normalized = clean_optional(thread_id)
     if not normalized:
         return None
@@ -146,9 +145,9 @@ def _ensure_asset_thread(
 
 def _ensure_resolution_proposal(
     db: Session,
-    thread: Optional[SddAssetThread],
-    proposal_id: Optional[str],
-) -> Optional[SddAssetResolutionProposal]:
+    thread: SddAssetThread | None,
+    proposal_id: str | None,
+) -> SddAssetResolutionProposal | None:
     normalized = clean_optional(proposal_id)
     if not normalized:
         return None
@@ -165,8 +164,8 @@ def _ensure_final_summary(
     db: Session,
     workspace_id: str,
     task_id: str,
-    summary_id: Optional[str],
-) -> Optional[SddTaskFinalSummary]:
+    summary_id: str | None,
+) -> SddTaskFinalSummary | None:
     normalized = clean_optional(summary_id)
     if not normalized:
         return None
@@ -190,12 +189,12 @@ def validate_decision_source(
     workspace_id: str,
     task_id: str,
     source_type: DecisionSourceType,
-    source_chat_message_id: Optional[str] = None,
-    source_asset_id: Optional[str] = None,
-    source_asset_version_id: Optional[str] = None,
-    source_asset_thread_id: Optional[str] = None,
-    source_resolution_proposal_id: Optional[str] = None,
-    source_final_summary_id: Optional[str] = None,
+    source_chat_message_id: str | None = None,
+    source_asset_id: str | None = None,
+    source_asset_version_id: str | None = None,
+    source_asset_thread_id: str | None = None,
+    source_resolution_proposal_id: str | None = None,
+    source_final_summary_id: str | None = None,
 ) -> None:
     if source_type == DecisionSourceType.CHAT_MESSAGE:
         _ensure_chat_message(db, workspace_id, task_id, source_chat_message_id)
@@ -267,7 +266,7 @@ def mark_chat_message_as_decision(
     workspace_id: str,
     task_id: str,
     message_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: ChatMessageDecisionCreateRequest,
 ) -> DecisionResponse:
     message = _ensure_chat_message(db, workspace_id, task_id, message_id)
@@ -282,7 +281,7 @@ def mark_chat_message_as_decision(
     )
     if existing:
         raise DecisionSourceError("This chat message is already marked as a Decision.", status_code=409)
-    metadata: Dict[str, Any] = {
+    metadata: dict[str, Any] = {
         "chat_message_role": enum_value(message.role),
         "chat_message_type": enum_value(message.message_type),
         "chat_message_created_at": message.created_at.isoformat() if message.created_at else None,

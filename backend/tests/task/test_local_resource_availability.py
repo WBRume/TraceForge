@@ -46,6 +46,7 @@ def test_server_task_does_not_probe(monkeypatch):
 @pytest.mark.asyncio
 async def test_each_observer_receives_initial_state_offline_and_recovery(monkeypatch):
     import asyncio
+
     from app.domains.websocket.ws import task_handler
     from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
 
@@ -58,15 +59,19 @@ async def test_each_observer_receives_initial_state_offline_and_recovery(monkeyp
         nonlocal sleep_calls
         sleep_calls += 1
         if sleep_calls % 4 == 0:
-            raise asyncio.CancelledError()
+            raise asyncio.CancelledError
 
     monkeypatch.setattr(task_handler, "run_db", run_sync)
     monkeypatch.setattr(task_handler.asyncio, "sleep", next_check)
     for user_id in ("creator", "observer"):
-        handler = TaskWebSocketHandler(Mock(), "task", TaskWebSocketUser(user_id, user_id, False), session_factory=Mock())
+        handler = TaskWebSocketHandler(
+            Mock(), "task", TaskWebSocketUser(user_id, user_id, False), session_factory=Mock()
+        )
         handler._outbound = Mock(dropped=False)
         states = iter(["online", "online", "offline", "online"])
-        monkeypatch.setattr(handler, "_local_resource_status_sync", lambda: {"task_id": "task", "status": next(states)})
+        monkeypatch.setattr(
+            handler, "_local_resource_status_sync", lambda *, states=states: {"task_id": "task", "status": next(states)}
+        )
         with pytest.raises(asyncio.CancelledError):
             await handler._monitor_local_resource()
         frames = [call.args[0] for call in handler._outbound.submit_json.call_args_list]

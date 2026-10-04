@@ -5,16 +5,16 @@ Revises: 9f1d2c3b4a5e
 Create Date: 2026-05-08 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "6a7b8c9d0e1f"
-down_revision: Union[str, None] = "9f1d2c3b4a5e"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "9f1d2c3b4a5e"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 requirement_import_batch_status_enum = sa.Enum(
@@ -137,10 +137,24 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_sdd_requirement_import_items_workspace_id"), "sdd_requirement_import_items", ["workspace_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_import_items_batch_id"), "sdd_requirement_import_items", ["batch_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_import_items_requirement_id"), "sdd_requirement_import_items", ["requirement_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_import_items_status"), "sdd_requirement_import_items", ["status"], unique=False)
+    op.create_index(
+        op.f("ix_sdd_requirement_import_items_workspace_id"),
+        "sdd_requirement_import_items",
+        ["workspace_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_import_items_batch_id"), "sdd_requirement_import_items", ["batch_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_import_items_requirement_id"),
+        "sdd_requirement_import_items",
+        ["requirement_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_import_items_status"), "sdd_requirement_import_items", ["status"], unique=False
+    )
 
     op.create_table(
         "sdd_requirement_audit_logs",
@@ -163,12 +177,30 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["workspace_id"], ["workspaces.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_sdd_requirement_audit_logs_workspace_id"), "sdd_requirement_audit_logs", ["workspace_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_audit_logs_requirement_id"), "sdd_requirement_audit_logs", ["requirement_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_audit_logs_import_batch_id"), "sdd_requirement_audit_logs", ["import_batch_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_audit_logs_task_id"), "sdd_requirement_audit_logs", ["task_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_audit_logs_actor_id"), "sdd_requirement_audit_logs", ["actor_id"], unique=False)
-    op.create_index(op.f("ix_sdd_requirement_audit_logs_action"), "sdd_requirement_audit_logs", ["action"], unique=False)
+    op.create_index(
+        op.f("ix_sdd_requirement_audit_logs_workspace_id"), "sdd_requirement_audit_logs", ["workspace_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_audit_logs_requirement_id"),
+        "sdd_requirement_audit_logs",
+        ["requirement_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_audit_logs_import_batch_id"),
+        "sdd_requirement_audit_logs",
+        ["import_batch_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_audit_logs_task_id"), "sdd_requirement_audit_logs", ["task_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_audit_logs_actor_id"), "sdd_requirement_audit_logs", ["actor_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_sdd_requirement_audit_logs_action"), "sdd_requirement_audit_logs", ["action"], unique=False
+    )
 
 
 def downgrade() -> None:

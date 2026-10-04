@@ -7,8 +7,15 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
 
+from app.agents import bind_agent_attempt, reset_agent_attempt
+from app.agents.contract import AgentAttemptContext
+from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
+from app.domains.ai.services.jobs import attempts as ai_attempts
+from app.domains.ai.services.jobs import fencing as ai_fencing
+from app.domains.ai.services.jobs import registry as ai_registry
+from app.domains.ai.services.jobs.executors import task_chat as ai_task_chat
+from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 from tests.ai.jobs.reliability_helpers import (
     _assert_no_ownership,
     _finalize,
@@ -17,15 +24,6 @@ from tests.ai.jobs.reliability_helpers import (
     _owned_running_job,
     _session_factory,
 )
-from app.agents import bind_agent_attempt, reset_agent_attempt
-from app.agents.contract import AgentAttemptContext
-from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
-from app.domains.ai.services.jobs import attempts as ai_attempts
-from app.domains.ai.services.jobs import fencing as ai_fencing
-from app.domains.ai.services.jobs import registry as ai_registry
-from app.domains.ai.services.jobs import reaper as ai_reaper
-from app.domains.ai.services.jobs.executors import task_chat as ai_task_chat
-from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
 
 def test_task_chat_success_clears_active_process_ownership(monkeypatch):

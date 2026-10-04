@@ -1,26 +1,28 @@
 """Atomically materialize published skills into server or local task runtimes."""
 
 from __future__ import annotations
-import os
+
 import json
+import os
 import shutil
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
+
 from sqlalchemy.orm import Session
+
 from app.domains.skill.models.skill import SddSkill
-from app.domains.task.models.task import SddTask
-from app.domains.skill.services.packages import git as git_service, storage as storage_service
+from app.domains.skill.services.packages import git as git_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 from app.domains.skill.services.runtime import layout as skill_runtime_layout
-
+from app.domains.task.models.task import SddTask
 
 TASK_SKILLS_MANIFEST = ".sdd-runtime-skills.json"
 
 
-def build_task_skill_folder_map(skills: List[SddSkill]) -> Dict[str, str]:
+def build_task_skill_folder_map(skills: list[SddSkill]) -> dict[str, str]:
     used_names: set[str] = set()
-    mapping: Dict[str, str] = {}
+    mapping: dict[str, str] = {}
     for skill in skills:
         base_name = storage_service.sanitize_name_for_folder(skill.name)
         folder_name = base_name
@@ -31,7 +33,7 @@ def build_task_skill_folder_map(skills: List[SddSkill]) -> Dict[str, str]:
     return mapping
 
 
-def _runtime_skill_manifest_item(skill: SddSkill, folder_name: str) -> Dict[str, object]:
+def _runtime_skill_manifest_item(skill: SddSkill, folder_name: str) -> dict[str, object]:
     return {
         "skill_id": skill.id,
         "name": skill.name,
@@ -52,12 +54,12 @@ def _runtime_manifest_path(target_dir: str) -> str:
     return os.path.join(target_dir, TASK_SKILLS_MANIFEST)
 
 
-def _read_runtime_manifest(target_dir: str) -> List[Dict[str, object]]:
+def _read_runtime_manifest(target_dir: str) -> list[dict[str, object]]:
     manifest_path = _runtime_manifest_path(target_dir)
     if not os.path.isfile(manifest_path):
         return []
     try:
-        with open(manifest_path, "r", encoding="utf-8") as file:
+        with open(manifest_path, encoding="utf-8") as file:
             payload = json.load(file)
     except Exception:
         return []
@@ -67,7 +69,7 @@ def _read_runtime_manifest(target_dir: str) -> List[Dict[str, object]]:
     return [item for item in items if isinstance(item, dict)]
 
 
-def _write_runtime_manifest(target_dir: str, items: List[Dict[str, object]]) -> None:
+def _write_runtime_manifest(target_dir: str, items: list[dict[str, object]]) -> None:
     manifest_path = _runtime_manifest_path(target_dir)
     os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
     with open(manifest_path, "w", encoding="utf-8", newline="\n") as file:
@@ -78,7 +80,7 @@ def _copy_runtime_dir_without_symlinks(source_dir: str, target_dir: str) -> None
     source_abs = os.path.abspath(source_dir)
     target_abs = os.path.abspath(target_dir)
     for walk_root, dir_names, file_names in os.walk(source_abs):
-        visible_dirs: List[str] = []
+        visible_dirs: list[str] = []
         for dir_name in dir_names:
             abs_dir = os.path.join(walk_root, dir_name)
             if os.path.islink(abs_dir):
@@ -106,11 +108,11 @@ def _preserve_existing_runtime_skill_dirs(
     target_dir: str,
     current_skill_ids: set[str],
     used_folders: set[str],
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     if not os.path.isdir(source_dir):
         return []
 
-    preserved: List[Dict[str, object]] = []
+    preserved: list[dict[str, object]] = []
     seen_folders = set(used_folders)
     manifest_items = _read_runtime_manifest(source_dir)
     for item in manifest_items:
@@ -196,10 +198,10 @@ def _copy_single_skill_package(skill: SddSkill, skill_target_dir: str) -> None:
 
 
 def _copy_skills_to_target(
-    skills: List[SddSkill],
+    skills: list[SddSkill],
     target_dir: str,
     *,
-    preserve_from_dir: Optional[str] = None,
+    preserve_from_dir: str | None = None,
     preserve_deleted_runtime_skills: bool = True,
 ) -> None:
     if os.path.exists(target_dir):
@@ -207,7 +209,7 @@ def _copy_skills_to_target(
     os.makedirs(target_dir, exist_ok=True)
 
     folder_map = build_task_skill_folder_map(skills)
-    manifest_items: List[Dict[str, object]] = []
+    manifest_items: list[dict[str, object]] = []
     for skill in skills:
         folder_name = folder_map.get(skill.id) or storage_service.sanitize_name_for_folder(skill.name)
         skill_target_dir = os.path.join(target_dir, folder_name)
@@ -228,7 +230,7 @@ def _copy_skills_to_target(
 
 
 def _replace_skills_atomically(
-    skills: List[SddSkill],
+    skills: list[SddSkill],
     target_dir: str,
     *,
     preserve_deleted_runtime_skills: bool = True,
@@ -267,28 +269,41 @@ def materialize_task_skills(
     task_id: str,
     *,
     preserve_deleted_runtime_skills: bool = True,
-) -> List[str]:
+) -> list[str]:
     task = db.query(SddTask).filter(SddTask.id == task_id).first()
     if not task:
         raise ValueError("Task not found")
 
-    from app.domains.local_resource.service import is_local, execute
+    from app.domains.local_resource.service import execute, is_local
+
     if is_local(task):
-        import tempfile
         import base64
         import hashlib
+        import tempfile
         from pathlib import Path
+
         with tempfile.TemporaryDirectory(prefix="tf-skills-") as staging:
             destination = Path(staging) / "skills"
-            _replace_skills_atomically(skill_runtime_bindings.get_task_skills(db, task_id), str(destination), preserve_deleted_runtime_skills=False)
+            _replace_skills_atomically(
+                skill_runtime_bindings.get_task_skills(db, task_id),
+                str(destination),
+                preserve_deleted_runtime_skills=False,
+            )
             rel_root = skill_runtime_layout.resolve_task_skills_rel_root(db, task).replace("\\", "/")
             files = []
             for path in destination.rglob("*"):
                 if path.is_file():
                     content = path.read_bytes()
-                    files.append({"path": rel_root + "/" + path.relative_to(destination).as_posix(),
-                                  "content": base64.b64encode(content).decode(), "sha256": hashlib.sha256(content).hexdigest()})
-            execute(db, task, "skills", {"action": "replace", "files": files, "preserve": preserve_deleted_runtime_skills})
+                    files.append(
+                        {
+                            "path": rel_root + "/" + path.relative_to(destination).as_posix(),
+                            "content": base64.b64encode(content).decode(),
+                            "sha256": hashlib.sha256(content).hexdigest(),
+                        }
+                    )
+            execute(
+                db, task, "skills", {"action": "replace", "files": files, "preserve": preserve_deleted_runtime_skills}
+            )
         return [rel_root]
 
     skills = skill_runtime_bindings.get_task_skills(db, task_id)

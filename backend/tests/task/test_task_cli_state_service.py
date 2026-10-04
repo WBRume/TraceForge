@@ -1,6 +1,6 @@
+import asyncio
 import os
 import sys
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -8,14 +8,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
+import app.domains.api_mock.models.api_mock  # noqa: E402
+import app.domains.task.models.test_result  # noqa: E402
+import app.domains.workflow.models.task_change  # noqa: E402
 import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
 from app.database import Base  # noqa: E402
 from app.domains.auth.models.user import User, Workspace  # noqa: E402
@@ -56,7 +55,7 @@ def _seed_bootstrap(db, *, status=TaskCliBootstrapStatus.PENDING):
     db.add_all([user, workspace, task, record])
     db.commit()
     db.refresh(record)
-    return record  # noqa: E402
+    return record
 
 
 def test_session_context_uses_cli_project_store_snapshot(tmp_path, monkeypatch):
@@ -121,9 +120,7 @@ def test_claude_project_store_uses_config_dir_override(tmp_path, monkeypatch):
 
     project_path = tmp_path / "workspace" / "base"
 
-    assert Path(service._claude_project_store_dir(str(project_path))).parent == (
-        claude_config / "projects"
-    )
+    assert Path(service._claude_project_store_dir(str(project_path))).parent == (claude_config / "projects")
 
 
 def test_resolve_bootstrap_spec_path_returns_original_doc_without_staging(tmp_path):
@@ -342,3 +339,50 @@ def test_run_bootstrap_for_job_rejects_changed_revision(monkeypatch):
                 expected_input_revision="spec-v1",
             )
         )
+
+
+def test_bootstrap_failure_preserves_confirmed_process_death(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    @asynccontextmanager
+    async def unlocked(*_args, **_kwargs):
+        yield
+
+    context = {
+        "spec_version_id": "spec-v1",
+        "task_spec_doc_path": str(tmp_path / "spec.md"),
+        "version_original_path": str(tmp_path / "spec.md"),
+        "baseline_dir": str(tmp_path),
+        "refresh_mode": "FULL",
+        "refresh_context": {},
+        "baseline_session_id": None,
+        "agent_backend": "opencode",
+        "workspace_id": "workspace-1",
+        "task_creator_id": "user-1",
+    }
+    bridge = SimpleNamespace(
+        start_session=AsyncMock(return_value="session-1"),
+        wait=AsyncMock(),
+        process=SimpleNamespace(returncode=1),
+        last_termination=SimpleNamespace(confirmed_dead=True),
+        is_running=lambda: False,
+    )
+    update = AsyncMock()
+    monkeypatch.setattr(service, "queue_bootstrap_jobs", unlocked)
+    monkeypatch.setattr(service, "lock_task_bootstrap", unlocked)
+    monkeypatch.setattr(service, "_get_bootstrap_lock", lambda _task_id: unlocked())
+    monkeypatch.setattr(service, "run_db", AsyncMock(return_value=context))
+    monkeypatch.setattr(service, "_prepare_bootstrap_spec", AsyncMock(return_value=context["task_spec_doc_path"]))
+    monkeypatch.setattr(service, "create_legacy_bridge", lambda *_args, **_kwargs: bridge)
+    monkeypatch.setattr(service, "_update_bootstrap_state", update)
+    monkeypatch.setattr(service, "_bootstrap_attempt_evidence", lambda: (False, None))
+
+    outcome = asyncio.run(service._run_bootstrap("task-1", expected_input_revision="spec-v1"))
+
+    assert outcome["status"] == TaskCliBootstrapStatus.FAILED.value
+    assert outcome["process_started"] is True
+    assert outcome["termination_confirmed_dead"] is True
+    assert "exited with code 1" in outcome["error_message"]
+    assert update.await_args.kwargs["status"] == TaskCliBootstrapStatus.FAILED

@@ -5,7 +5,7 @@ Provision job orchestration service.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -20,22 +20,18 @@ from app.core.distributed_lock import (
 from app.core.logging import audit_log, bind_log_context, get_logger
 from app.core.offload import run_git_job
 from app.database import SessionLocal
+from app.domains.auth.models.user import User, Workspace
+from app.domains.local_resource.client import ResourceError
+from app.domains.skill.services.packages import github as skill_packages_github
+from app.domains.task.services import git_worktree_service
+from app.domains.task.services.provisioning import resources as task_provisioning_resources
+from app.domains.task.services.provisioning.resources import ProvisionJobCancelled
 from app.domains.workflow.models.provision_job import (
     ProvisionJobStatus,
     ProvisionJobType,
     SddProvisionJob,
 )
-from app.domains.auth.models.user import User, Workspace
-
-
-from app.domains.local_resource.client import ResourceError
-
 from app.domains.workspace.services import workspace_service
-from app.domains.task.services import git_worktree_service
-
-from app.domains.skill.services.packages import github as skill_packages_github
-from app.domains.task.services.provisioning import resources as task_provisioning_resources
-from app.domains.task.services.provisioning.resources import ProvisionJobCancelled
 
 logger = get_logger(__name__, category="application")
 task_logger = get_logger(__name__, category="task_execution")
@@ -49,11 +45,11 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
-def get_job(db: Session, job_id: str) -> Optional[SddProvisionJob]:
+def get_job(db: Session, job_id: str) -> SddProvisionJob | None:
     return db.query(SddProvisionJob).filter(SddProvisionJob.id == str(job_id or "").strip()).first()
 
 
-def serialize_job(job: SddProvisionJob) -> Dict[str, Any]:
+def serialize_job(job: SddProvisionJob) -> dict[str, Any]:
     return {
         "job_id": job.id,
         "job_type": _enum_value(job.job_type),
@@ -75,7 +71,7 @@ def serialize_job(job: SddProvisionJob) -> Dict[str, Any]:
     }
 
 
-def serialize_accepted(job: SddProvisionJob) -> Dict[str, Any]:
+def serialize_accepted(job: SddProvisionJob) -> dict[str, Any]:
     payload = serialize_job(job)
     return {
         "job_id": payload["job_id"],
@@ -95,11 +91,11 @@ def create_job(
     *,
     job_type: ProvisionJobType,
     creator_id: str,
-    workspace_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    context_json: Optional[Dict[str, Any]] = None,
+    workspace_id: str | None = None,
+    task_id: str | None = None,
+    context_json: dict[str, Any] | None = None,
     stage: str = "QUEUED",
-    message: Optional[str] = None,
+    message: str | None = None,
 ) -> SddProvisionJob:
     job = SddProvisionJob(
         job_type=job_type,
@@ -123,13 +119,9 @@ def retry_job(
     *,
     source_job: SddProvisionJob,
     creator_id: str,
-    message: Optional[str] = None,
+    message: str | None = None,
 ) -> SddProvisionJob:
-    context_json = (
-        dict(source_job.context_json or {})
-        if isinstance(source_job.context_json, dict)
-        else {}
-    )
+    context_json = dict(source_job.context_json or {}) if isinstance(source_job.context_json, dict) else {}
     return create_job(
         db,
         job_type=source_job.job_type,
@@ -146,16 +138,16 @@ def _set_job_state(
     db: Session,
     job: SddProvisionJob,
     *,
-    status: Optional[ProvisionJobStatus] = None,
-    progress: Optional[int] = None,
-    stage: Optional[str] = None,
-    message: Optional[str] = None,
-    error_message: Optional[str] = None,
-    result_json: Optional[Dict[str, Any]] = None,
-    workspace_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    started_at: Optional[datetime] = None,
-    finished_at: Optional[datetime] = None,
+    status: ProvisionJobStatus | None = None,
+    progress: int | None = None,
+    stage: str | None = None,
+    message: str | None = None,
+    error_message: str | None = None,
+    result_json: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    task_id: str | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
 ) -> SddProvisionJob:
     if status is not None:
         job.status = status
@@ -182,7 +174,7 @@ def _set_job_state(
     return job
 
 
-def mark_running(job_id: str, *, stage: str, progress: int, message: Optional[str] = None) -> None:
+def mark_running(job_id: str, *, stage: str, progress: int, message: str | None = None) -> None:
     db = SessionLocal()
     try:
         job = get_job(db, job_id)
@@ -202,7 +194,7 @@ def mark_running(job_id: str, *, stage: str, progress: int, message: Optional[st
         db.close()
 
 
-def mark_progress(job_id: str, *, stage: str, progress: int, message: Optional[str] = None) -> None:
+def mark_progress(job_id: str, *, stage: str, progress: int, message: str | None = None) -> None:
     db = SessionLocal()
     try:
         job = get_job(db, job_id)
@@ -223,10 +215,10 @@ def mark_success(
     job_id: str,
     *,
     stage: str,
-    message: Optional[str],
-    result_json: Optional[Dict[str, Any]] = None,
-    workspace_id: Optional[str] = None,
-    task_id: Optional[str] = None,
+    message: str | None,
+    result_json: dict[str, Any] | None = None,
+    workspace_id: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     db = SessionLocal()
     try:
@@ -253,7 +245,7 @@ def mark_failed(
     job_id: str,
     *,
     stage: str,
-    message: Optional[str],
+    message: str | None,
     error_message: str,
 ) -> None:
     db = SessionLocal()
@@ -275,7 +267,7 @@ def mark_failed(
         db.close()
 
 
-def request_cancel(db: Session, job: SddProvisionJob, *, message: Optional[str] = None) -> bool:
+def request_cancel(db: Session, job: SddProvisionJob, *, message: str | None = None) -> bool:
     """标记任务创建 job 为“请求取消”。
 
     返回 True 表示标记成功（后台工作流会在下一个检查点终止并回滚）；
@@ -305,7 +297,7 @@ def is_cancel_requested(job_id: str) -> bool:
         db.close()
 
 
-def get_latest_active_job_for_task(db: Session, task_id: str) -> Optional[SddProvisionJob]:
+def get_latest_active_job_for_task(db: Session, task_id: str) -> SddProvisionJob | None:
     """按任务查找最新一个未终态的任务创建 job。"""
     return (
         db.query(SddProvisionJob)
@@ -319,7 +311,7 @@ def get_latest_active_job_for_task(db: Session, task_id: str) -> Optional[SddPro
     )
 
 
-def list_active_jobs_for_creator(db: Session, creator_id: str) -> List[SddProvisionJob]:
+def list_active_jobs_for_creator(db: Session, creator_id: str) -> list[SddProvisionJob]:
     """列出创建人名下所有未终态的任务创建 job（用于前端浮窗状态恢复）。"""
     return (
         db.query(SddProvisionJob)
@@ -333,7 +325,7 @@ def list_active_jobs_for_creator(db: Session, creator_id: str) -> List[SddProvis
     )
 
 
-def serialize_active_job(db: Session, job: SddProvisionJob) -> Dict[str, Any]:
+def serialize_active_job(db: Session, job: SddProvisionJob) -> dict[str, Any]:
     """序列化浮窗所需的 job 摘要（附带任务名，供跨工作区展示）。"""
     from app.domains.task.models.task import SddTask
 
@@ -352,7 +344,7 @@ def serialize_active_job(db: Session, job: SddProvisionJob) -> Dict[str, Any]:
     return payload
 
 
-def _get_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
+def _get_job_payload(job_id: str) -> dict[str, Any] | None:
     db = SessionLocal()
     try:
         job = get_job(db, job_id)
@@ -363,7 +355,7 @@ def _get_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
         db.close()
 
 
-def _create_workspace_sync(*, job_id: str, creator_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+def _create_workspace_sync(*, job_id: str, creator_id: str, context: dict[str, Any]) -> dict[str, Any]:
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == str(creator_id or "").strip()).first()
@@ -406,7 +398,7 @@ def _json_safe_value(value: Any) -> Any:
     return value
 
 
-def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:
+def _materialize_workspace_repos_sync(*, workspace_id: str) -> dict[str, Any]:
     import os as _os
 
     from app.domains.workspace.models.workspace_repository import (
@@ -425,7 +417,7 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:
             .order_by(SddWorkspaceRepository.created_at.asc())
             .all()
         )
-        results: Dict[str, Any] = {"repositories": []}
+        results: dict[str, Any] = {"repositories": []}
         for row in rows:
             try:
                 git_worktree_service.ensure_base_repository(row.repo_url, row.base_dir or "")
@@ -440,7 +432,12 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:
                 row.state = WorkspaceRepositoryState.FAILED
                 row.error_message = str(exc)
                 results["repositories"].append(
-                    {"repository_id": row.repository_id, "repo_name": row.repo_name, "state": "FAILED", "error": str(exc)}
+                    {
+                        "repository_id": row.repository_id,
+                        "repo_name": row.repo_name,
+                        "state": "FAILED",
+                        "error": str(exc),
+                    }
                 )
         db.commit()
         return results
@@ -448,7 +445,7 @@ def _materialize_workspace_repos_sync(*, workspace_id: str) -> Dict[str, Any]:
         db.close()
 
 
-def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> Dict[str, Any]:
+def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> dict[str, Any]:
     db = SessionLocal()
     try:
         cancel_check = (lambda: is_cancel_requested(job_id)) if job_id else None
@@ -457,10 +454,16 @@ def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> 
             workspace_id=workspace_id,
             task_id=task_id,
             cancel_check=cancel_check,
-            snapshot_progress=(lambda: mark_progress(
-                job_id, stage="INITIALIZING_SNAPSHOT", progress=80,
-                message="建立初始工作区快照",
-            )) if job_id else None,
+            snapshot_progress=(
+                lambda: mark_progress(
+                    job_id,
+                    stage="INITIALIZING_SNAPSHOT",
+                    progress=80,
+                    message="建立初始工作区快照",
+                )
+            )
+            if job_id
+            else None,
         )
         return {
             "workspace_id": task.workspace_id,
@@ -471,7 +474,7 @@ def _prepare_task_sync(*, workspace_id: str, task_id: str, job_id: str = "") -> 
         db.close()
 
 
-def _import_skill_sync(*, creator_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+def _import_skill_sync(*, creator_id: str, context: dict[str, Any]) -> dict[str, Any]:
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == str(creator_id or "").strip()).first()
@@ -552,9 +555,7 @@ def _workspace_uses_git(workspace_id: str) -> bool:
         if git_worktree_service.should_use_git_worktree(workspace.project_path, workspace.git_repo_url):
             return True
         repo_count = (
-            db.query(SddWorkspaceRepository)
-            .filter(SddWorkspaceRepository.workspace_id == workspace.id)
-            .count()
+            db.query(SddWorkspaceRepository).filter(SddWorkspaceRepository.workspace_id == workspace.id).count()
         )
         return repo_count > 0
     finally:
@@ -573,9 +574,7 @@ async def run_create_workspace_job(job_id: str) -> None:
     project_id = str(context.get("project_id") or "").strip()
     # 多仓库模式：关联管理项目，或独立模式（未关联项目但手动指定了仓库集合）。
     # 独立模式若不进入该分支，MATERIALIZE_REPOS 阶段会被跳过，仓库永远不会 clone。
-    context_repositories = (
-        context.get("repositories") if isinstance(context.get("repositories"), list) else None
-    )
+    context_repositories = context.get("repositories") if isinstance(context.get("repositories"), list) else None
     use_multi_repo = bool(project_id) or bool(context_repositories)
     use_repo_lock = bool(project_path and git_repo_url)
     # 独立模式（无 project_id）时按 project_path 隔离锁；不能落到全局常量“project:”上，
@@ -600,7 +599,9 @@ async def run_create_workspace_job(job_id: str) -> None:
                             git_repo_url=creation_lock_url,
                         ):
                             if use_multi_repo:
-                                mark_progress(job_id, stage="CREATING_WORKSPACE", progress=25, message="Creating workspace")
+                                mark_progress(
+                                    job_id, stage="CREATING_WORKSPACE", progress=25, message="Creating workspace"
+                                )
                                 result = await run_git_job(
                                     _create_workspace_sync,
                                     job_id=job_id,
@@ -619,7 +620,12 @@ async def run_create_workspace_job(job_id: str) -> None:
                                 )
                                 result["repository_materialization"] = repo_result
                             else:
-                                mark_progress(job_id, stage="CLONING_REPOSITORY", progress=30, message="Cloning workspace repository")
+                                mark_progress(
+                                    job_id,
+                                    stage="CLONING_REPOSITORY",
+                                    progress=30,
+                                    message="Cloning workspace repository",
+                                )
                                 result = await run_git_job(
                                     _create_workspace_sync,
                                     job_id=job_id,
@@ -728,9 +734,11 @@ async def run_create_task_job(job_id: str) -> None:
     workspace_id = str(payload.get("workspace_id") or "").strip()
     task_id = str(payload.get("task_id") or "").strip()
     use_repo_lock = _workspace_uses_git(workspace_id)
+
     # 排队等待期间也要响应取消：否则 job 会卡在队列里直到等待超时，
     # 用户点击取消没有任何效果（旧实现的“无法取消任务”）。
-    cancel_check = (lambda: is_cancel_requested(job_id))
+    def cancel_check():
+        return is_cancel_requested(job_id)
 
     with bind_log_context(job_id=job_id, workspace_id=workspace_id, task_id=task_id, user_id=creator_id):
         try:
@@ -744,10 +752,14 @@ async def run_create_task_job(job_id: str) -> None:
                 _ensure_not_cancelled(job_id)
                 mark_running(job_id, stage="PREPARING_TASK", progress=5, message="Task request accepted")
                 if use_repo_lock:
-                    mark_progress(job_id, stage="WAITING_TASK_QUEUE", progress=10, message="Waiting in create task queue")
+                    mark_progress(
+                        job_id, stage="WAITING_TASK_QUEUE", progress=10, message="Waiting in create task queue"
+                    )
                     async with queue_workspace_task_creation(workspace_id, cancel_check=cancel_check):
                         _ensure_not_cancelled(job_id)
-                        mark_progress(job_id, stage="WAITING_REPO_LOCK", progress=20, message="Waiting for repository lock")
+                        mark_progress(
+                            job_id, stage="WAITING_REPO_LOCK", progress=20, message="Waiting for repository lock"
+                        )
                         async with lock_workspace_repo(workspace_id):
                             _ensure_not_cancelled(job_id)
                             mark_progress(
@@ -840,7 +852,12 @@ async def run_create_task_job(job_id: str) -> None:
         except ResourceError as exc:
             # A timed-out resource command may still be executing. Keep the binding
             # and operation ID so verification can reconcile the same worktree.
-            mark_failed(job_id, stage="RESOURCE_UNAVAILABLE", message="本地资源暂不可用；在个人设置重新检测后恢复准备", error_message=str(exc))
+            mark_failed(
+                job_id,
+                stage="RESOURCE_UNAVAILABLE",
+                message="本地资源暂不可用；在个人设置重新检测后恢复准备",
+                error_message=str(exc),
+            )
         except Exception as exc:
             mark_failed(
                 job_id,

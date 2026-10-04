@@ -12,7 +12,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -21,15 +22,13 @@ from app.core.distributed_lock import LockAcquireTimeout, make_resource_busy_err
 from app.core.offload import run_db_txn_with_bind
 from app.domains.auth.models.user import WorkspacePermission
 from app.domains.task.models.task import TaskStatus
-
+from app.domains.task.services.task_records import queries as task_task_records_queries
 from app.domains.task.services.task_session_control_service import (
     BASELINED_LOCKED_MSG,
     TASK_RUNNING_MSG,
 )
 from app.domains.workspace.services import workspace_service
 from app.engine.session import get_engine
-
-from app.domains.task.services.task_records import queries as task_task_records_queries
 
 T = TypeVar("T")
 
@@ -55,12 +54,15 @@ def verify_workspace_permission(
     db: Session,
     permission: WorkspacePermission,
     detail: str,
-    *, task_id: str | None = None, operation: str = "execute",
+    *,
+    task_id: str | None = None,
+    operation: str = "execute",
 ) -> None:
     verify_workspace_access(ws_id, user_id, db)
     if task_id:
-        from app.domains.local_resource.service import is_local, require_operation
         from app.domains.local_resource.client import ResourceError
+        from app.domains.local_resource.service import is_local, require_operation
+
         task = get_task_or_404(db, task_id, ws_id)
         if is_local(task):
             try:

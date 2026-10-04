@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import subprocess
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 
 
 class SkillGitError(ValueError):
@@ -17,8 +16,8 @@ class SkillGitError(ValueError):
 @dataclass
 class CommitMeta:
     commit_sha: str
-    parent_commit_sha: Optional[str]
-    tree_sha: Optional[str]
+    parent_commit_sha: str | None
+    tree_sha: str | None
     changed_files_count: int
 
 
@@ -28,7 +27,7 @@ def normalize_git_path(path: str) -> str:
 
 def _run_git_raw(
     repo_path: str,
-    args: List[str],
+    args: list[str],
     *,
     decode_text: bool = True,
 ) -> subprocess.CompletedProcess:
@@ -54,7 +53,7 @@ def _run_git_raw(
         )
 
 
-def _run_git_checked(repo_path: str, args: List[str]) -> str:
+def _run_git_checked(repo_path: str, args: list[str]) -> str:
     result = _run_git_raw(repo_path, args, decode_text=True)
     if result.returncode != 0:
         stderr = (result.stderr or "").strip()
@@ -72,7 +71,7 @@ def ensure_repo_initialized(repo_path: str) -> None:
         _run_git_checked(repo_path, ["config", "user.email", "sdd-skill-bot@local"])
 
 
-def get_head_commit(repo_path: str) -> Optional[str]:
+def get_head_commit(repo_path: str) -> str | None:
     result = _run_git_raw(repo_path, ["rev-parse", "HEAD"], decode_text=True)
     if result.returncode != 0:
         return None
@@ -80,7 +79,7 @@ def get_head_commit(repo_path: str) -> Optional[str]:
     return value or None
 
 
-def get_tree_sha(repo_path: str, commit_sha: str) -> Optional[str]:
+def get_tree_sha(repo_path: str, commit_sha: str) -> str | None:
     if not commit_sha:
         return None
     result = _run_git_raw(repo_path, ["show", "-s", "--format=%T", commit_sha], decode_text=True)
@@ -101,7 +100,7 @@ def changed_files_count(repo_path: str) -> int:
     return len(lines)
 
 
-def _current_parent_sha(repo_path: str) -> Optional[str]:
+def _current_parent_sha(repo_path: str) -> str | None:
     return get_head_commit(repo_path)
 
 
@@ -109,7 +108,7 @@ def _changed_files_count_from_status(repo_path: str) -> int:
     return changed_files_count(repo_path)
 
 
-def commit_all(repo_path: str, message: str) -> Optional[CommitMeta]:
+def commit_all(repo_path: str, message: str) -> CommitMeta | None:
     changed_files = _changed_files_count_from_status(repo_path)
     if changed_files <= 0:
         return None
@@ -127,7 +126,7 @@ def commit_all(repo_path: str, message: str) -> Optional[CommitMeta]:
     )
 
 
-def list_files_at_ref(repo_path: str, ref: str) -> List[str]:
+def list_files_at_ref(repo_path: str, ref: str) -> list[str]:
     normalized_ref = (ref or "HEAD").strip() or "HEAD"
     output = _run_git_checked(repo_path, ["ls-tree", "-r", "--name-only", normalized_ref])
     return [normalize_git_path(line) for line in output.splitlines() if line.strip()]
@@ -146,12 +145,12 @@ def read_file_at_ref(repo_path: str, ref: str, path: str) -> bytes:
     return result.stdout or b""
 
 
-def diff_name_status(repo_path: str, from_ref: str, to_ref: str) -> List[Dict[str, str]]:
+def diff_name_status(repo_path: str, from_ref: str, to_ref: str) -> list[dict[str, str]]:
     output = _run_git_checked(
         repo_path,
         ["diff", "--name-status", "--find-renames", from_ref, to_ref],
     )
-    entries: List[Dict[str, str]] = []
+    entries: list[dict[str, str]] = []
     for raw in output.splitlines():
         line = raw.strip()
         if not line:
@@ -178,9 +177,9 @@ def diff_name_status(repo_path: str, from_ref: str, to_ref: str) -> List[Dict[st
     return entries
 
 
-def diff_numstat(repo_path: str, from_ref: str, to_ref: str) -> Dict[str, Tuple[Optional[int], Optional[int], bool]]:
+def diff_numstat(repo_path: str, from_ref: str, to_ref: str) -> dict[str, tuple[int | None, int | None, bool]]:
     output = _run_git_checked(repo_path, ["diff", "--numstat", from_ref, to_ref])
-    mapping: Dict[str, Tuple[Optional[int], Optional[int], bool]] = {}
+    mapping: dict[str, tuple[int | None, int | None, bool]] = {}
     for raw in output.splitlines():
         line = raw.strip()
         if not line:
@@ -202,7 +201,7 @@ def diff_text(repo_path: str, from_ref: str, to_ref: str, path: str) -> str:
     return _run_git_checked(repo_path, ["diff", from_ref, to_ref, "--", normalized_path])
 
 
-def restore_to_commit_and_commit(repo_path: str, target_commit_sha: str, message: str) -> Optional[CommitMeta]:
+def restore_to_commit_and_commit(repo_path: str, target_commit_sha: str, message: str) -> CommitMeta | None:
     if not target_commit_sha:
         raise SkillGitError("target commit is required")
     # Replace tracked file content with target commit snapshots.

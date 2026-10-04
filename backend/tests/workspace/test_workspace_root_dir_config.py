@@ -46,9 +46,7 @@ def test_workspace_root_dir_defaults_to_empty(db, monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "WORKSPACE_ROOT_DIR", "")
-    assert system_config_service.get_config_str(
-        db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR
-    ) == ""
+    assert system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR) == ""
     public = system_config_service.list_public_configs(db)
     assert public[system_config_service.CONFIG_WORKSPACE_ROOT_DIR] == ""
 
@@ -66,42 +64,27 @@ def test_workspace_root_dir_env_default_fallback(db, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "WORKSPACE_ROOT_DIR", env_value)
 
     # 未配置：回退 env 默认值
-    assert (
-        system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
-        == env_value
-    )
+    assert system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR) == env_value
     public = system_config_service.list_public_configs(db)
     assert public[system_config_service.CONFIG_WORKSPACE_ROOT_DIR] == env_value
 
     # 界面保存非空值：覆盖 env
     ui_override = str(tmp_path / "ui-override")
     _set_root_dir(db, ui_override)
-    assert (
-        system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
-        == ui_override
-    )
+    assert system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR) == ui_override
 
     # 界面清空：回退 env 默认值
     _set_root_dir(db, "")
-    assert (
-        system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
-        == env_value
-    )
+    assert system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR) == env_value
 
 
 def test_workspace_root_dir_roundtrip_and_clear(db, tmp_path):
     override = str(tmp_path / "sdd-root")
     _set_root_dir(db, override)
-    assert (
-        system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
-        == override
-    )
+    assert system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR) == override
     # 留空表示清空配置（回退 env 默认值），允许写入
     _set_root_dir(db, "")
-    assert (
-        system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR)
-        == ""
-    )
+    assert system_config_service.get_config_str(db, system_config_service.CONFIG_WORKSPACE_ROOT_DIR) == ""
 
 
 @pytest.mark.parametrize("value", ["relative/path", "D:\\", "/", "C:\\"])
@@ -138,9 +121,7 @@ def test_create_workspace_outside_base_rejected_when_root_dir_set(db, tmp_path, 
     _set_root_dir(db, str(tmp_path / "root"))
 
     with pytest.raises(git_worktree_service.GitWorktreeError):
-        workspace_service.create_workspace(
-            db, user, "WS", project_path=str(tmp_path / "outside" / "ws")
-        )
+        workspace_service.create_workspace(db, user, "WS", project_path=str(tmp_path / "outside" / "ws"))
     # 位于 base 内（含嵌套子目录）允许
     inside = os.path.join(str(tmp_path / "root"), "workspace", "team-a", "ws")
     workspace = workspace_service.create_workspace(db, user, "WS", project_path=inside)
@@ -183,12 +164,8 @@ def _build_config_app(db):
     def _override_db():
         yield db
 
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-        id="user-1", display_name="tester"
-    )
-    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(
-        id="admin-1", display_name="admin", is_admin=True
-    )
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-1", display_name="tester")
+    app.dependency_overrides[require_admin] = lambda: SimpleNamespace(id="admin-1", display_name="admin", is_admin=True)
     app.dependency_overrides[get_db] = _override_db
     return app
 
@@ -235,9 +212,7 @@ def _build_workspace_app(db):
     def _override_db():
         yield db
 
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-        id="user-1", display_name="tester"
-    )
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-1", display_name="tester")
     app.dependency_overrides[get_db] = _override_db
     return app
 
@@ -275,9 +250,7 @@ def test_create_workspace_api_rejects_path_outside_base(db, monkeypatch, tmp_pat
     _seed_user(db)
     _set_root_dir(db, str(tmp_path / "sdd-root"))
     app = _build_workspace_app(db)
-    monkeypatch.setattr(
-        workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job()
-    )
+    monkeypatch.setattr(workspace_router.provision_job_service, "create_job", lambda *a, **k: _fake_job())
 
     client = TestClient(app)
     resp = client.post(

@@ -1,13 +1,17 @@
 """Authenticated intranet transport; never interprets host paths locally."""
+
 from __future__ import annotations
+
 import hashlib
 import ipaddress
 import json
 import socket
 from urllib.parse import urlsplit
+
 import httpx
-from app.agents.http_transport import agent_ssl_context
 from cryptography.fernet import Fernet
+
+from app.agents.http_transport import agent_ssl_context
 from app.config import settings
 
 
@@ -25,16 +29,33 @@ def require_enabled():
 def validate_url(value):
     require_enabled()
     parsed = urlsplit(value)
-    if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
         raise ResourceError("服务地址必须是无凭据的 HTTP(S) 地址", "INVALID_RESOURCE_URL", 422)
     if parsed.path not in ("", "/"):
         raise ResourceError("服务地址不能包含路径", "INVALID_RESOURCE_URL", 422)
     try:
-        addresses = {ipaddress.ip_address(row[4][0]) for row in socket.getaddrinfo(parsed.hostname, parsed.port or 80, type=socket.SOCK_STREAM)}
-        networks = [ipaddress.ip_network(item.strip()) for item in settings.LOCAL_RESOURCES_ALLOWED_NETWORKS.split(",") if item.strip()]
+        addresses = {
+            ipaddress.ip_address(row[4][0])
+            for row in socket.getaddrinfo(parsed.hostname, parsed.port or 80, type=socket.SOCK_STREAM)
+        }
+        networks = [
+            ipaddress.ip_network(item.strip())
+            for item in settings.LOCAL_RESOURCES_ALLOWED_NETWORKS.split(",")
+            if item.strip()
+        ]
     except (ValueError, OSError) as exc:
         raise ResourceError("无法解析内网服务地址", "INVALID_RESOURCE_URL") from exc
-    if not addresses or any(ip.is_link_local or ip.is_multicast or ip.is_unspecified or not any(ip in net for net in networks) for ip in addresses):
+    if not addresses or any(
+        ip.is_link_local or ip.is_multicast or ip.is_unspecified or not any(ip in net for net in networks)
+        for ip in addresses
+    ):
         raise ResourceError("服务地址不在部署允许的内网范围内", "RESOURCE_NETWORK_FORBIDDEN", 403)
     return value.rstrip("/")
 
@@ -62,13 +83,23 @@ class ResourceClient:
     def request(self, method, path, body=None):
         # No proxy inheritance or redirects into another security boundary.
         try:
-            with httpx.Client(timeout=self.timeout, trust_env=False, verify=agent_ssl_context(), follow_redirects=False) as client:
-                response = client.request(method, self.url + path, json=body,
-                    headers={"Authorization": "Bearer " + self.credentials["host_token"]})
+            with httpx.Client(
+                timeout=self.timeout, trust_env=False, verify=agent_ssl_context(), follow_redirects=False
+            ) as client:
+                response = client.request(
+                    method,
+                    self.url + path,
+                    json=body,
+                    headers={"Authorization": "Bearer " + self.credentials["host_token"]},
+                )
             if response.status_code >= 300:
                 detail = response.json().get("detail", {})
                 message = detail.get("message", "资源服务请求失败") if isinstance(detail, dict) else str(detail)
-                code = detail.get("code", "RESOURCE_OPERATION_FAILED") if isinstance(detail, dict) else "RESOURCE_OPERATION_FAILED"
+                code = (
+                    detail.get("code", "RESOURCE_OPERATION_FAILED")
+                    if isinstance(detail, dict)
+                    else "RESOURCE_OPERATION_FAILED"
+                )
                 if "PATH_OUTSIDE_RESOURCE_ROOT" in message:
                     code = "PATH_OUTSIDE_RESOURCE_ROOT"
                 raise ResourceError(message, code)
@@ -89,8 +120,14 @@ class ResourceClient:
 
     def operation(self, task_id, kind, payload, operation_id=None):
         import uuid
-        body = {"task_id": task_id, "resource_id": self.profile["id"], "kind": kind,
-                "payload": payload, "operation_id": operation_id or str(uuid.uuid4())}
+
+        body = {
+            "task_id": task_id,
+            "resource_id": self.profile["id"],
+            "kind": kind,
+            "payload": payload,
+            "operation_id": operation_id or str(uuid.uuid4()),
+        }
         body["payload_hash"] = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         self.identity()
         return self.request("POST", "/v1/operations", body)["result"]

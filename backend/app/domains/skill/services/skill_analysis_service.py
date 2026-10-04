@@ -11,14 +11,16 @@ import shutil
 import tempfile
 import threading
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.background_tasks import retain_background_task
 from app.database import SessionLocal
-from app.engine.claude_bridge import create_cli_bridge
+from app.domains.auth.models.user import User
 from app.domains.skill.models.skill import (
     SddSkill,
     SddSkillAnalysis,
@@ -27,12 +29,10 @@ from app.domains.skill.models.skill import (
     SkillAnalysisStatus,
     SkillRiskLevel,
 )
-from app.domains.auth.models.user import User
-
-from app.domains.skill.services.packages import git as git_service, storage as storage_service
-
+from app.domains.skill.services.packages import git as git_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
-
+from app.engine.claude_bridge import create_cli_bridge
 
 LARGE_FILE_BYTES = 1024 * 1024
 SEMANTIC_TIMEOUT_SECONDS = 240
@@ -42,7 +42,7 @@ SCRIPT_EXTS = {".py", ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".js", ".t
 CONFIG_EXTS = {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env"}
 CONFIG_NAMES = {"package.json", "requirements.txt", "pyproject.toml", "poetry.lock", "pnpm-lock.yaml", "yarn.lock"}
 
-RISK_DETAIL_TEMPLATES: Dict[str, Dict[str, str]] = {
+RISK_DETAIL_TEMPLATES: dict[str, dict[str, str]] = {
     "SHELL_COMMAND": {
         "label": "命令执行",
         "description": "该位置出现 shell、subprocess、exec 或 eval 类调用，可能在用户工作区执行本地命令。",
@@ -91,10 +91,7 @@ RISK_DETAIL_TEMPLATES: Dict[str, Dict[str, str]] = {
 }
 
 
-SEMANTIC_UNAVAILABLE_MESSAGE = (
-    "静态包摘要已完成；Claude AI 语义风险审阅未返回可用结果，"
-    "暂不展示需要语义确认的风险项。"
-)
+SEMANTIC_UNAVAILABLE_MESSAGE = "静态包摘要已完成；Claude AI 语义风险审阅未返回可用结果，暂不展示需要语义确认的风险项。"
 
 SEMANTIC_CONTRACT_FAILED_MESSAGE = "Claude AI 语义审阅输出不完整，未能生成可定位的具体风险项。"
 
@@ -118,7 +115,7 @@ def is_semantic_degraded_analysis(analysis: SddSkillAnalysis) -> bool:
     return "semantic review" in message or "claude" in error
 
 
-def serialize_analysis(analysis: SddSkillAnalysis) -> Dict[str, Any]:
+def serialize_analysis(analysis: SddSkillAnalysis) -> dict[str, Any]:
     semantic_degraded = is_semantic_degraded_analysis(analysis)
     risk_level = _enum_value(analysis.risk_level) or None
     risk_items = _dedupe_risks(analysis.risk_items_json or [])
@@ -137,18 +134,24 @@ def serialize_analysis(analysis: SddSkillAnalysis) -> Dict[str, Any]:
         "status": (
             SkillAnalysisStatus.FAILED.value
             if semantic_contract_failed
-            else SkillAnalysisStatus.SUCCESS.value if semantic_degraded else _enum_value(analysis.status)
+            else SkillAnalysisStatus.SUCCESS.value
+            if semantic_degraded
+            else _enum_value(analysis.status)
         ),
         "progress": int(analysis.progress or 0),
         "message": (
             SEMANTIC_CONTRACT_FAILED_MESSAGE
             if semantic_contract_failed
-            else SEMANTIC_UNAVAILABLE_MESSAGE if semantic_degraded else analysis.message
+            else SEMANTIC_UNAVAILABLE_MESSAGE
+            if semantic_degraded
+            else analysis.message
         ),
         "error_message": (
             f"Claude returned risk_level={risk_level} but no concrete risk_items; re-run Analysis."
             if semantic_contract_failed
-            else None if semantic_degraded else analysis.error_message
+            else None
+            if semantic_degraded
+            else analysis.error_message
         ),
         "risk_level": risk_level,
         "complexity": _enum_value(analysis.complexity) or None,
@@ -166,7 +169,7 @@ def serialize_analysis(analysis: SddSkillAnalysis) -> Dict[str, Any]:
     }
 
 
-def get_analysis(db: Session, *, workspace_id: str, skill_id: str, analysis_id: str) -> Optional[SddSkillAnalysis]:
+def get_analysis(db: Session, *, workspace_id: str, skill_id: str, analysis_id: str) -> SddSkillAnalysis | None:
     return (
         db.query(SddSkillAnalysis)
         .filter(
@@ -183,10 +186,10 @@ def get_latest_analysis(
     *,
     workspace_id: str,
     skill_id: str,
-    ref_kind: Optional[SkillAnalysisRefKind] = None,
-    version_id: Optional[str] = None,
-    commit_sha: Optional[str] = None,
-) -> Optional[SddSkillAnalysis]:
+    ref_kind: SkillAnalysisRefKind | None = None,
+    version_id: str | None = None,
+    commit_sha: str | None = None,
+) -> SddSkillAnalysis | None:
     query = db.query(SddSkillAnalysis).filter(
         SddSkillAnalysis.workspace_id == workspace_id,
         SddSkillAnalysis.skill_id == skill_id,
@@ -213,8 +216,8 @@ def get_latest_analysis_for_ref(
     workspace_id: str,
     skill: SddSkill,
     ref_kind: str,
-    version_id: Optional[str] = None,
-) -> Optional[SddSkillAnalysis]:
+    version_id: str | None = None,
+) -> SddSkillAnalysis | None:
     resolved_kind, version, commit_sha = _resolve_ref(db, skill, ref_kind=ref_kind, version_id=version_id)
     return get_latest_analysis(
         db,
@@ -231,8 +234,8 @@ def _resolve_ref(
     skill: SddSkill,
     *,
     ref_kind: str,
-    version_id: Optional[str],
-) -> Tuple[SkillAnalysisRefKind, Optional[SddSkillVersion], Optional[str]]:
+    version_id: str | None,
+) -> tuple[SkillAnalysisRefKind, SddSkillVersion | None, str | None]:
     normalized = str(ref_kind or SkillAnalysisRefKind.WORKTREE.value).strip().upper()
     if normalized not in {item.value for item in SkillAnalysisRefKind}:
         raise ValueError("Invalid analysis ref_kind")
@@ -262,7 +265,7 @@ def create_analysis_job(
     skill: SddSkill,
     workspace_id: str,
     ref_kind: str,
-    version_id: Optional[str] = None,
+    version_id: str | None = None,
 ) -> SddSkillAnalysis:
     resolved_kind, version, commit_sha = _resolve_ref(db, skill, ref_kind=ref_kind, version_id=version_id)
     analysis = SddSkillAnalysis(
@@ -303,7 +306,7 @@ def retry_analysis_job(db: Session, *, source: SddSkillAnalysis, user_id: str) -
 def schedule_analysis_job(analysis_id: str) -> None:
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(asyncio.to_thread(run_analysis_job, analysis_id))
+        retain_background_task(loop.create_task(asyncio.to_thread(run_analysis_job, analysis_id)))
     except RuntimeError:
         thread = threading.Thread(target=run_analysis_job, args=(analysis_id,), daemon=True)
         thread.start()
@@ -313,13 +316,13 @@ def _set_analysis_state(
     db: Session,
     analysis: SddSkillAnalysis,
     *,
-    status: Optional[SkillAnalysisStatus] = None,
-    progress: Optional[int] = None,
-    message: Optional[str] = None,
-    error_message: Optional[str] = None,
+    status: SkillAnalysisStatus | None = None,
+    progress: int | None = None,
+    message: str | None = None,
+    error_message: str | None = None,
     started: bool = False,
     finished: bool = False,
-    payload: Optional[Dict[str, Any]] = None,
+    payload: dict[str, Any] | None = None,
 ) -> None:
     if status is not None:
         analysis.status = status
@@ -336,7 +339,9 @@ def _set_analysis_state(
     if payload is not None:
         analysis.risk_level = SkillRiskLevel(payload["risk_level"]) if payload.get("risk_level") else None
         analysis.complexity = SkillRiskLevel(payload["complexity"]) if payload.get("complexity") else None
-        analysis.review_priority = SkillRiskLevel(payload["review_priority"]) if payload.get("review_priority") else None
+        analysis.review_priority = (
+            SkillRiskLevel(payload["review_priority"]) if payload.get("review_priority") else None
+        )
         analysis.file_stats_json = payload.get("file_stats") or {}
         analysis.file_type_distribution_json = payload.get("file_type_distribution") or {}
         analysis.key_files_json = payload.get("key_files") or []
@@ -406,7 +411,7 @@ def _read_file_bytes(path: str) -> bytes:
         return file.read()
 
 
-def _role_for_path(rel_path: str, is_binary: bool) -> Optional[str]:
+def _role_for_path(rel_path: str, is_binary: bool) -> str | None:
     lower = rel_path.lower()
     name = os.path.basename(lower)
     if lower == "skill.md":
@@ -453,7 +458,7 @@ def _truncate_text(value: Any, limit: int, *, collapse: bool = True) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def _risk_location(file_path: str, line_start: Optional[int] = None, line_end: Optional[int] = None) -> str:
+def _risk_location(file_path: str, line_start: int | None = None, line_end: int | None = None) -> str:
     if line_start and line_end and line_end != line_start:
         return f"{file_path}:{line_start}-{line_end}"
     if line_start:
@@ -461,7 +466,7 @@ def _risk_location(file_path: str, line_start: Optional[int] = None, line_end: O
     return file_path
 
 
-def _risk_id(item: Dict[str, Any]) -> str:
+def _risk_id(item: dict[str, Any]) -> str:
     basis = "|".join(
         [
             str(item.get("risk_type") or ""),
@@ -475,7 +480,7 @@ def _risk_id(item: Dict[str, Any]) -> str:
     return hashlib.sha1(basis.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
-def _risk_template(risk_type: str) -> Dict[str, str]:
+def _risk_template(risk_type: str) -> dict[str, str]:
     return RISK_DETAIL_TEMPLATES.get(risk_type, RISK_DETAIL_TEMPLATES["SEMANTIC_RISK"])
 
 
@@ -484,17 +489,17 @@ def _build_risk_item(
     risk_type: str,
     risk_level: str,
     file_path: str,
-    line_start: Optional[int] = None,
-    line_end: Optional[int] = None,
-    evidence_summary: Optional[str] = None,
-    matched_text: Optional[str] = None,
-    evidence_detail: Optional[str] = None,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    recommendation: Optional[str] = None,
+    line_start: int | None = None,
+    line_end: int | None = None,
+    evidence_summary: str | None = None,
+    matched_text: str | None = None,
+    evidence_detail: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    recommendation: str | None = None,
     source: str = "static-rule",
     confidence: float = 0.78,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     normalized_type = str(risk_type or "SEMANTIC_RISK").strip().upper() or "SEMANTIC_RISK"
     normalized_path = _safe_rel(file_path)
     normalized_line_start = _safe_int(line_start)
@@ -504,7 +509,11 @@ def _build_risk_item(
     matched = _truncate_text(matched_text, 500)
     summary = _truncate_text(
         evidence_summary
-        or (f"{location} 命中 {template['label']} 线索：{matched}" if matched else f"{location} 命中 {template['label']} 风险"),
+        or (
+            f"{location} 命中 {template['label']} 线索：{matched}"
+            if matched
+            else f"{location} 命中 {template['label']} 风险"
+        ),
         500,
     )
     item = {
@@ -532,10 +541,10 @@ def _build_risk_item(
     return item
 
 
-def deterministic_scan(package_root: str, skill: SddSkill) -> Dict[str, Any]:
+def deterministic_scan(package_root: str, skill: SddSkill) -> dict[str, Any]:
     file_type_counter: Counter[str] = Counter()
-    key_files: List[Dict[str, Any]] = []
-    risk_items: List[Dict[str, Any]] = []
+    key_files: list[dict[str, Any]] = []
+    risk_items: list[dict[str, Any]] = []
     total_files = 0
     markdown_files = 0
     script_files = 0
@@ -623,7 +632,7 @@ def deterministic_scan(package_root: str, skill: SddSkill) -> Dict[str, Any]:
     }
 
 
-def _normalize_risk_item(item: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_risk_item(item: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(item, dict):
         item = {}
     normalized = _build_risk_item(
@@ -646,9 +655,9 @@ def _normalize_risk_item(item: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def _dedupe_risks(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _dedupe_risks(items: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, int, int, str]] = set()
-    result: List[Dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
     for item in items:
         normalized = _normalize_risk_item(item)
         key = (
@@ -665,7 +674,7 @@ def _dedupe_risks(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return result[:300]
 
 
-def _has_valid_semantic_risk_item(semantic: Dict[str, Any]) -> bool:
+def _has_valid_semantic_risk_item(semantic: dict[str, Any]) -> bool:
     for item in semantic.get("risk_items") or []:
         if not isinstance(item, dict):
             continue
@@ -674,7 +683,7 @@ def _has_valid_semantic_risk_item(semantic: Dict[str, Any]) -> bool:
     return False
 
 
-def _semantic_contract_error(semantic: Dict[str, Any]) -> Optional[str]:
+def _semantic_contract_error(semantic: dict[str, Any]) -> str | None:
     semantic_level = _normalize_level(semantic.get("risk_level"), "LOW")
     if semantic_level in {"MEDIUM", "HIGH"} and not _has_valid_semantic_risk_item(semantic):
         return (
@@ -684,7 +693,7 @@ def _semantic_contract_error(semantic: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _derive_levels(stats: Dict[str, Any], risk_items: List[Dict[str, Any]]) -> Dict[str, str]:
+def _derive_levels(stats: dict[str, Any], risk_items: list[dict[str, Any]]) -> dict[str, str]:
     high_count = sum(1 for item in risk_items if str(item.get("risk_level")) == "HIGH")
     medium_count = sum(1 for item in risk_items if str(item.get("risk_level")) == "MEDIUM")
     script_count = int(stats.get("script_files") or 0)
@@ -713,10 +722,10 @@ def _derive_levels(stats: Dict[str, Any], risk_items: List[Dict[str, Any]]) -> D
 
 
 def _build_review_suggestions(
-    stats: Dict[str, Any],
-    risk_items: List[Dict[str, Any]],
-    key_files: List[Dict[str, Any]],
-) -> List[str]:
+    stats: dict[str, Any],
+    risk_items: list[dict[str, Any]],
+    key_files: list[dict[str, Any]],
+) -> list[str]:
     suggestions = [
         "检查 SKILL.md 的触发说明是否过宽",
         "确认 runtime skill 是否允许被临时修改",
@@ -733,7 +742,11 @@ def _build_review_suggestions(
         suggestions.append("检查是否存在网络请求及外部下载行为")
     if any(str(item.get("risk_type") or "") == "DANGEROUS_GIT" for item in risk_items):
         suggestions.append("检查是否包含 git reset、push、checkout 等危险 git 操作")
-    if any(str(item.get("role") or "") == "CONFIG" and os.path.basename(str(item.get("path") or "")).lower() == "package.json" for item in key_files):
+    if any(
+        str(item.get("role") or "") == "CONFIG"
+        and os.path.basename(str(item.get("path") or "")).lower() == "package.json"
+        for item in key_files
+    ):
         suggestions.append("检查 package.json scripts 是否会执行危险命令")
     return list(dict.fromkeys(suggestions))
 
@@ -752,17 +765,17 @@ def _semantic_prompt() -> str:
         "size if visible, references, and surrounding package context whether they are worth review; omit them when "
         "they are ordinary assets. "
         "Return JSON only with this shape: "
-        "{\"risk_level\":\"LOW|MEDIUM|HIGH\",\"complexity\":\"LOW|MEDIUM|HIGH\","
-        "\"review_priority\":\"LOW|MEDIUM|HIGH\",\"risk_items\":[{\"risk_type\":\"string\","
-        "\"risk_level\":\"LOW|MEDIUM|HIGH\",\"file_path\":\"relative/path\",\"line_start\":1,"
-        "\"line_end\":1,\"title\":\"specific reviewer-facing title\","
-        "\"description\":\"why this is risky in this Skill package\","
-        "\"evidence_summary\":\"specific concise evidence summary\","
-        "\"evidence_detail\":\"detailed evidence with relevant excerpt or context\","
-        "\"matched_text\":\"exact relevant excerpt when available\","
-        "\"recommendation\":\"specific review or mitigation action\","
-        "\"source\":\"claude\",\"confidence\":0.0}],"
-        "\"review_suggestions\":[\"short checklist item\"]}. "
+        '{"risk_level":"LOW|MEDIUM|HIGH","complexity":"LOW|MEDIUM|HIGH",'
+        '"review_priority":"LOW|MEDIUM|HIGH","risk_items":[{"risk_type":"string",'
+        '"risk_level":"LOW|MEDIUM|HIGH","file_path":"relative/path","line_start":1,'
+        '"line_end":1,"title":"specific reviewer-facing title",'
+        '"description":"why this is risky in this Skill package",'
+        '"evidence_summary":"specific concise evidence summary",'
+        '"evidence_detail":"detailed evidence with relevant excerpt or context",'
+        '"matched_text":"exact relevant excerpt when available",'
+        '"recommendation":"specific review or mitigation action",'
+        '"source":"claude","confidence":0.0}],'
+        '"review_suggestions":["short checklist item"]}. '
         "Risk titles and evidence_summary must be concrete and must mention the observed behavior, not only the risk type. "
         "Never return MEDIUM or HIGH risk_level with an empty risk_items array; if the package deserves MEDIUM or HIGH, "
         "include at least one concrete risk item with file_path and evidence_detail. "
@@ -787,7 +800,7 @@ def _semantic_retry_prompt(previous_error: str) -> str:
     )
 
 
-def _json_from_text(text: str) -> Dict[str, Any]:
+def _json_from_text(text: str) -> dict[str, Any]:
     candidate = str(text or "").strip()
     if not candidate:
         raise ValueError("Claude returned empty analysis")
@@ -807,7 +820,7 @@ def _json_from_text(text: str) -> Dict[str, Any]:
         pass
 
     decoder = json.JSONDecoder()
-    parsed_candidates: List[Dict[str, Any]] = []
+    parsed_candidates: list[dict[str, Any]] = []
     for match in re.finditer(r"\{", candidate):
         try:
             parsed, _ = decoder.raw_decode(candidate[match.start() :])
@@ -825,7 +838,7 @@ def _normalize_level(value: Any, fallback: str) -> str:
     return text if text in {"LOW", "MEDIUM", "HIGH"} else fallback
 
 
-def _merge_semantic_result(base: Dict[str, Any], semantic: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_semantic_result(base: dict[str, Any], semantic: dict[str, Any]) -> dict[str, Any]:
     contract_error = _semantic_contract_error(semantic)
     if contract_error:
         raise SemanticAnalysisContractError(contract_error)
@@ -834,7 +847,7 @@ def _merge_semantic_result(base: Dict[str, Any], semantic: Dict[str, Any]) -> Di
     merged["risk_level"] = _max_level(base.get("risk_level"), semantic_risk_level)
     merged["complexity"] = _max_level(base.get("complexity"), semantic.get("complexity"))
     merged["review_priority"] = _max_level(base.get("review_priority"), semantic.get("review_priority"))
-    semantic_risks: List[Dict[str, Any]] = []
+    semantic_risks: list[dict[str, Any]] = []
     for item in semantic.get("risk_items") or []:
         if not isinstance(item, dict):
             continue
@@ -864,7 +877,7 @@ def _merge_semantic_result(base: Dict[str, Any], semantic: Dict[str, Any]) -> Di
     return merged
 
 
-def _safe_int(value: Any) -> Optional[int]:
+def _safe_int(value: Any) -> int | None:
     try:
         number = int(value)
     except Exception:
@@ -887,16 +900,16 @@ def _max_level(left: Any, right: Any) -> str:
     return left_text if order[left_text] >= order[right_text] else right_text
 
 
-async def _run_claude_semantic_analysis(package_root: str, *, prompt: Optional[str] = None) -> Dict[str, Any]:
+async def _run_claude_semantic_analysis(package_root: str, *, prompt: str | None = None) -> dict[str, Any]:
     bridge = create_cli_bridge(cli_path=settings.CLAUDE_CLI_PATH)
-    texts: List[str] = []
+    texts: list[str] = []
 
-    async def _event_callback(event: Dict[str, Any]) -> None:
+    async def _event_callback(event: dict[str, Any]) -> None:
         event_type = str(event.get("type") or "").lower()
         if event_type == "assistant":
             message = event.get("message")
             blocks = message.get("content", []) if isinstance(message, dict) else []
-            for block in (blocks if isinstance(blocks, list) else []):
+            for block in blocks if isinstance(blocks, list) else []:
                 if isinstance(block, dict) and str(block.get("type") or "").lower() == "text":
                     text = str(block.get("text") or "").strip()
                     if text:
@@ -927,13 +940,15 @@ async def _run_claude_semantic_analysis(package_root: str, *, prompt: Optional[s
         process = getattr(bridge, "process", None)
         return_code = getattr(process, "returncode", None)
         if return_code not in {None, 0}:
-            raise ValueError(f"Claude semantic review exited with code {return_code} and did not return valid JSON") from exc
+            raise ValueError(
+                f"Claude semantic review exited with code {return_code} and did not return valid JSON"
+            ) from exc
         raise
 
 
 def run_analysis_job(analysis_id: str) -> None:
     db = SessionLocal()
-    tmp_root: Optional[str] = None
+    tmp_root: str | None = None
     try:
         analysis = db.query(SddSkillAnalysis).filter(SddSkillAnalysis.id == analysis_id).first()
         if not analysis:

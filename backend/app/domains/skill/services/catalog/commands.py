@@ -1,14 +1,16 @@
 """Apply authorized catalog edits and coordinate package directory changes."""
 
 from __future__ import annotations
+
 import os
 import shutil
-from typing import Optional
+
 from sqlalchemy.orm import Session
-from app.domains.skill.models.skill import SddSkill, SkillDimension
+
 from app.domains.auth.models.user import User
-from app.domains.skill.services.packages import storage as storage_service
+from app.domains.skill.models.skill import SddSkill, SkillDimension
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import storage as storage_service
 
 
 def update_skill_metadata(
@@ -17,12 +19,12 @@ def update_skill_metadata(
     skill: SddSkill,
     *,
     context_workspace_id: str,
-    name: Optional[str],
-    description: Optional[str],
-    dimension_value: Optional[str],
-    workspace_id: Optional[str],
-    entry_file_path: Optional[str],
-    manifest_path: Optional[str],
+    name: str | None,
+    description: str | None,
+    dimension_value: str | None,
+    workspace_id: str | None,
+    entry_file_path: str | None,
+    manifest_path: str | None,
 ) -> SddSkill:
     if not skill_catalog_policy.can_manage_skill(db, skill, user):
         raise PermissionError("No permission to modify this skill")
@@ -49,8 +51,16 @@ def update_skill_metadata(
     )
 
     # Validate the entire command before changing either the database or disk.
-    normalized_entry = storage_service.normalize_relative_path(entry_file_path) if entry_file_path is not None else skill.entry_file_path
-    normalized_manifest = skill_catalog_policy._normalize_manifest_path(manifest_path) if manifest_path is not None else skill.manifest_path
+    normalized_entry = (
+        storage_service.normalize_relative_path(entry_file_path)
+        if entry_file_path is not None
+        else skill.entry_file_path
+    )
+    normalized_manifest = (
+        skill_catalog_policy._normalize_manifest_path(manifest_path)
+        if manifest_path is not None
+        else skill.manifest_path
+    )
     moved = False
     if old_package_path != new_package_path:
         old_abs = storage_service.package_abs_path_from_relative(old_package_path)

@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.config import settings
 from app.core.redis_client import get_redis_client
@@ -22,7 +22,7 @@ class ChatMessageClaim:
     key: str
     client_message_id: str
     content_hash: str
-    existing: Optional[Dict[str, Any]] = None
+    existing: dict[str, Any] | None = None
 
     @property
     def claimed(self) -> bool:
@@ -53,11 +53,11 @@ def _claim_key(task_id: str, user_id: str, client_message_id: str) -> str:
     return f"{prefix}:chat-message-idempotency:{digest}"
 
 
-def _encode(payload: Dict[str, Any]) -> bytes:
+def _encode(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
 
 
-def _decode(raw: Any) -> Optional[Dict[str, Any]]:
+def _decode(raw: Any) -> dict[str, Any] | None:
     if raw is None:
         return None
     if isinstance(raw, bytes):
@@ -141,7 +141,7 @@ async def claim_message(
     )
 
 
-async def get_message_claim_by_key(key: str) -> Optional[Dict[str, Any]]:
+async def get_message_claim_by_key(key: str) -> dict[str, Any] | None:
     try:
         client = await get_redis_client()
         raw = await client.get(str(key or ""))
@@ -154,7 +154,7 @@ async def mark_message_done(
     claim: ChatMessageClaim,
     *,
     chat_message_id: str,
-    ai_job_id: Optional[str] = None,
+    ai_job_id: str | None = None,
 ) -> None:
     existing = dict(claim.existing or {})
     existing.update(

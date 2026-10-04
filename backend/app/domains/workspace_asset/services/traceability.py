@@ -6,7 +6,7 @@ evidence_missing > in_progress > spec_covered > missing）只在本模块定义�
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -36,7 +36,7 @@ from app.domains.workspace_asset.services.common.primitives import (
 )
 
 
-def _evidence_registry_items(evidence_items: List[SddEvidence]) -> List[Dict[str, Any]]:
+def _evidence_registry_items(evidence_items: list[SddEvidence]) -> list[dict[str, Any]]:
     from app.domains.workspace_asset.services.common.process_presenters import external_evidence_ref
 
     return [
@@ -53,7 +53,7 @@ def _evidence_registry_items(evidence_items: List[SddEvidence]) -> List[Dict[str
     ]
 
 
-def _human_delta_dashboard_items(deltas: List[SddHumanDelta]) -> List[Dict[str, Any]]:
+def _human_delta_dashboard_items(deltas: list[SddHumanDelta]) -> list[dict[str, Any]]:
     return [
         {
             "id": item.id,
@@ -70,13 +70,13 @@ def _human_delta_dashboard_items(deltas: List[SddHumanDelta]) -> List[Dict[str, 
     ]
 
 
-def _task_assets(task: Optional[SddTask], asset_type: AssetType) -> List[SddAsset]:
+def _task_assets(task: SddTask | None, asset_type: AssetType) -> list[SddAsset]:
     if not task:
         return []
     return [item for item in (task.assets or []) if enum_value(item.asset_type) == asset_type.value]
 
 
-def _has_rejected_review(task: Optional[SddTask]) -> bool:
+def _has_rejected_review(task: SddTask | None) -> bool:
     if not task:
         return False
     rejected_values = {"reject", "rejected", "request_changes", "changes_requested"}
@@ -94,11 +94,11 @@ def _has_rejected_review(task: Optional[SddTask]) -> bool:
 
 def matrix_coverage_status(
     *,
-    task: Optional[SddTask],
-    specs: List[SddAsset],
-    plans: List[SddAsset],
-    plan_nodes: List[SddPlanNode],
-    evidence_items: List[SddEvidence],
+    task: SddTask | None,
+    specs: list[SddAsset],
+    plans: list[SddAsset],
+    plan_nodes: list[SddPlanNode],
+    evidence_items: list[SddEvidence],
 ) -> tuple[str, str]:
     if not task:
         return "missing", "Requirement is not linked to a Task yet."
@@ -130,7 +130,7 @@ def matrix_coverage_status(
 
 def _coverage_matrix_row(
     requirement: SddRequirement,
-    link: Optional[SddTaskRequirement],
+    link: SddTaskRequirement | None,
 ) -> SpecCoverageMatrixItem:
     task = link.task if link else None
     specs = _task_assets(task, AssetType.SPEC)
@@ -139,10 +139,12 @@ def _coverage_matrix_row(
     ai_runs = list(task.ai_jobs or []) if task else []
     reviews = list(task.human_reviews or []) if task else []
     deltas = list(task.human_deltas or []) if task else []
-    evidence_items = dedupe_by_id([
-        *(requirement.evidence_items or []),
-        *((task.evidence_items or []) if task else []),
-    ])
+    evidence_items = dedupe_by_id(
+        [
+            *(requirement.evidence_items or []),
+            *((task.evidence_items or []) if task else []),
+        ]
+    )
     decisions = list(task.decisions or []) if task else []
     clarifications = list(task.clarifications or []) if task else []
     coverage_status_value, coverage_reason = matrix_coverage_status(
@@ -182,8 +184,8 @@ def _coverage_matrix_row(
     )
 
 
-def _coverage_matrix_items(requirements: List[SddRequirement]) -> List[Dict[str, Any]]:
-    rows: List[SpecCoverageMatrixItem] = []
+def _coverage_matrix_items(requirements: list[SddRequirement]) -> list[dict[str, Any]]:
+    rows: list[SpecCoverageMatrixItem] = []
     for requirement in requirements:
         links = list(requirement.task_links or [])
         if not links:
@@ -198,15 +200,11 @@ def get_traceability(db: Session, workspace_id: str) -> WorkspaceAssetsTraceabil
         db.query(SddRequirement)
         .options(
             selectinload(SddRequirement.evidence_items),
-            selectinload(SddRequirement.task_links)
-            .selectinload(SddTaskRequirement.task)
-            .selectinload(SddTask.assets),
+            selectinload(SddRequirement.task_links).selectinload(SddTaskRequirement.task).selectinload(SddTask.assets),
             selectinload(SddRequirement.task_links)
             .selectinload(SddTaskRequirement.task)
             .selectinload(SddTask.plan_nodes),
-            selectinload(SddRequirement.task_links)
-            .selectinload(SddTaskRequirement.task)
-            .selectinload(SddTask.ai_jobs),
+            selectinload(SddRequirement.task_links).selectinload(SddTaskRequirement.task).selectinload(SddTask.ai_jobs),
             selectinload(SddRequirement.task_links)
             .selectinload(SddTaskRequirement.task)
             .selectinload(SddTask.human_reviews),

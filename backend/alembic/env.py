@@ -1,91 +1,50 @@
-from logging.config import fileConfig
-
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
-from alembic import context
+import os
 
 # ----------------- Custom Code -----------------
 import sys
-import os
+from importlib import import_module
+from logging.config import fileConfig
+
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.config import settings
 from app.database import Base
 
 # 显式导入所有模型表以便 Alembic 能够发现它们
-from app.models.user import User, Workspace, WorkspaceMember
-from app.models.task import SddTask, SddPlanNode
-from app.models.log import SddExecutionLog
-from app.models.test_result import SddTestResult
-from app.models.asset import (
-    SddAsset,
-    SddAssetVersion,
-    SddAssetThread,
-    SddAssetThreadMessage,
-    SddAssetResolutionProposal,
-)
-from app.models.metric import SddDashboardMetric
-from app.models.chat import ChatMessage
-from app.models.skill import (
-    SddSkill,
-    SddTaskSkill,
-    SddSkillVersion,
-    SddSkillExpertRating,
-    SddSkillReviewComment,
-)
-from app.models.api_mock import (
-    SddApiMockProject,
-    SddApiMockSourceVersion,
-    SddApiMockEndpoint,
-    SddApiMockEntity,
-    SddApiMockRule,
-    SddApiMockCollabEvent,
-    SddApiMockJob,
-)
-from app.models.task_cli_bootstrap import SddTaskCliBootstrap
-from app.models.ai_job import SddAiJob
-from app.models.provision_job import SddProvisionJob
-from app.models.task_change import (
-    SddTaskChangeProposal,
-    SddTaskChangeProposalFile,
-    SddTaskVerificationRun,
-    SddTaskConflictReport,
-)
-from app.models.workspace_asset import (
-    SddAiOutput,
-    SddClarification,
-    SddDecision,
-    SddEvidence,
-    SddHumanDelta,
-    SddHumanReview,
-    SddKnowledgeAsset,
-    SddRequirement,
-    SddRequirementAuditLog,
-    SddRequirementImportBatch,
-    SddRequirementImportItem,
-    SddTaskRequirement,
-)
-from app.models.management import (
-    SddManagementProduct,
-    SddManagementProductVersion,
-    SddManagementProductVersionRepo,
-    SddManagementRepoGroup,
-    SddManagementRepository,
-    SddManagementProject,
-    SddManagementProjectProduct,
-    SddManagementProjectRelease,
-    SddManagementProjectReleaseRepo,
-)
-from app.models.workspace_repository import SddWorkspaceRepository
-from app.models.task_repository import SddTaskRepository
-from app.models.session_turn import TaskSessionTurn, TaskSessionOperation
-from app.models.system_config import SystemConfig
-from app.domains.diagnosis_playbook import models as playbook_models
-from app.domains.notification.models import task_awareness as task_awareness_models
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
+
+# Import modules explicitly so all mapped tables remain registered for migrations.
+for model_module in (
+    "app.domains.diagnosis_playbook.models",
+    "app.domains.notification.models.task_awareness",
+    "app.models.ai_job",
+    "app.models.api_mock",
+    "app.models.asset",
+    "app.models.chat",
+    "app.models.log",
+    "app.models.management",
+    "app.models.metric",
+    "app.models.provision_job",
+    "app.models.session_turn",
+    "app.models.skill",
+    "app.models.system_config",
+    "app.models.task",
+    "app.models.task_change",
+    "app.models.task_cli_bootstrap",
+    "app.models.task_repository",
+    "app.models.test_result",
+    "app.models.user",
+    "app.models.workspace_asset",
+    "app.models.workspace_repository",
+):
+    import_module(model_module)
+
 config = context.config
 
 # Overwrite sqlalchemy.url dynamically
@@ -140,9 +99,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

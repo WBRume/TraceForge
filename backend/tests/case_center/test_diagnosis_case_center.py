@@ -3,32 +3,20 @@
 覆盖：任务类型创建/过滤、定位结果、一键转案例、案例生命周期状态机、检索与权限。
 """
 
-import os
-import sys
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.auth.models.user import (  # noqa: E402
+from app.domains.auth.models.user import (
     User,
     WorkspaceMember,
     WorkspaceRole,
 )
-from app.domains.task.models.task import SddTask, TaskStatus, TaskType  # noqa: E402
-from app.domains.task.routers import task as task_router  # noqa: E402
-from app.domains.case_center.routers import case as case_center_router  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
-
+from app.domains.case_center.routers import case as case_center_router
+from app.domains.task.models.task import SddTask, TaskStatus, TaskType
+from app.domains.task.routers import task as task_router
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
 from app.domains.task.services.task_records.queries import list_tasks
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 def _build_app(SessionLocal, user):
@@ -59,7 +47,6 @@ def _seed_diagnosis_task(db, workspace_id="ws-diag", task_id="task-diag"):
 
 
 def test_create_diagnosis_task_via_service_and_filter():
-
 
     engine, SessionLocal = _build_db()
     try:
@@ -139,9 +126,7 @@ def test_diagnosis_result_upsert_and_validation():
                 "similar_cases": [
                     {"title": "连接池耗尽排查", "similarity": "高", "summary": "同类超时", "reference": "case-1"}
                 ],
-                "call_chain": [
-                    {"seq": 1, "module": "Gateway", "function": "handleRequest", "description": "入口"}
-                ],
+                "call_chain": [{"seq": 1, "module": "Gateway", "function": "handleRequest", "description": "入口"}],
                 "confidence": 85,
             },
         )
@@ -214,9 +199,7 @@ def test_case_lifecycle_full_flow():
                     code_context_json=[
                         {"file_path": "src/Service.java", "start_line": 10, "end_line": 20, "note": "入口调用"}
                     ],
-                    similar_cases_json=[
-                        {"title": "历史空指针案例", "similarity": "高", "reference": "case-9"}
-                    ],
+                    similar_cases_json=[{"title": "历史空指针案例", "similarity": "高", "reference": "case-9"}],
                     call_chain_json=[
                         {"seq": 1, "module": "Controller", "function": "handle", "description": "请求入口"}
                     ],
@@ -243,7 +226,11 @@ def test_case_lifecycle_full_flow():
         assert case["source_task_phenomenon"] == "接口偶发超时"
         assert case["root_cause"] == "空指针异常"
         assert case["solution"] == "判空处理\n\n修复代码:\nif (obj != null) { obj.run(); }"
-        assert case["analysis_process"] and "堆栈证据" in case["analysis_process"] and "调用链路:" not in case["analysis_process"]
+        assert (
+            case["analysis_process"]
+            and "堆栈证据" in case["analysis_process"]
+            and "调用链路:" not in case["analysis_process"]
+        )
         assert case["code_context"] and "相关代码上下文:" in case["code_context"]
         assert case["diagnosis_detail"]["summary"] == "空指针导致接口偶发超时"
         assert case["diagnosis_detail"]["evidence_chain"] == "堆栈证据"

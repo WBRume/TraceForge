@@ -3,12 +3,14 @@ WebSocket 消息 Pydantic Schemas
 支持 log / status / hitl_request / chat_message / thinking / tool_use 等类型
 """
 
+from typing import Any
+
 from pydantic import BaseModel
-from typing import Optional, Any, List
 
 
 class WSMessage(BaseModel):
     """WebSocket 下行消息基类"""
+
     type: str  # log | status | hitl_request | chat_message | thinking | tool_use | result | plan_update
     payload: Any
 
@@ -16,7 +18,7 @@ class WSMessage(BaseModel):
 # ── 日志 ──
 class WSLogPayload(BaseModel):
     task_id: str
-    phase: Optional[str] = None
+    phase: str | None = None
     log_type: str = "STDOUT"
     content: str
 
@@ -25,12 +27,12 @@ class WSLogPayload(BaseModel):
 class WSStatusPayload(BaseModel):
     task_id: str
     status: str  # INIT / RUNNING / DONE / FAILED
-    sub_task: Optional[str] = None
+    sub_task: str | None = None
     message: str
-    job_id: Optional[str] = None
-    model: Optional[str] = None
-    duration_ms: Optional[int] = None
-    cost_usd: Optional[float] = None
+    job_id: str | None = None
+    model: str | None = None
+    duration_ms: int | None = None
+    cost_usd: float | None = None
 
 
 # ── HITL 请求 ──
@@ -38,16 +40,16 @@ class WSHitlRequest(BaseModel):
     task_id: str
     hitl_type: str  # boolean | select | text
     prompt: str
-    job_id: Optional[str] = None
-    options: Optional[List[str]] = None
-    context: Optional[str] = None
+    job_id: str | None = None
+    options: list[str] | None = None
+    context: str | None = None
 
 
 # ── HITL 回复 ──
 class WSHitlResponse(BaseModel):
     task_id: str
     response: str
-    job_id: Optional[str] = None
+    job_id: str | None = None
 
 
 # ── Chat 消息 ──
@@ -56,22 +58,22 @@ class WSChatPayload(BaseModel):
     role: str  # user | assistant | system
     content: str
     message_type: str = "text"
-    metadata: Optional[dict] = None
-    id: Optional[str] = None
-    client_message_id: Optional[str] = None
-    creator_id: Optional[str] = None
-    creator_display_name: Optional[str] = None
-    creator_is_workspace_expert: Optional[bool] = None
-    creator_avatar_url: Optional[str] = None
-    creator_avatar_svg: Optional[str] = None
-    created_at: Optional[str] = None
-    session_turn_id: Optional[str] = None
-    session_generation: Optional[int] = None
-    can_undo: Optional[bool] = None
+    metadata: dict | None = None
+    id: str | None = None
+    client_message_id: str | None = None
+    creator_id: str | None = None
+    creator_display_name: str | None = None
+    creator_is_workspace_expert: bool | None = None
+    creator_avatar_url: str | None = None
+    creator_avatar_svg: str | None = None
+    created_at: str | None = None
+    session_turn_id: str | None = None
+    session_generation: int | None = None
+    can_undo: bool | None = None
     # 共享内容版本（阅读条目身份）：不是任何个人进度；旧帧/临时气泡缺失时
     # 客户端先不确认，合并缺失 ID 后经 reading-items 补取
-    reading_item_key: Optional[str] = None
-    reading_change_seq: Optional[str] = None
+    reading_item_key: str | None = None
+    reading_change_seq: str | None = None
 
 
 # ── AI 思考过程 ──
@@ -82,7 +84,7 @@ class WSThinkingPayload(BaseModel):
     task_id: str
     content: str
     sequence: int = 0
-    delta: Optional[str] = None
+    delta: str | None = None
     final: bool = False
 
 
@@ -91,7 +93,7 @@ class WSToolUsePayload(BaseModel):
     task_id: str
     tool_name: str
     tool_input: Any = None
-    tool_use_id: Optional[str] = None
+    tool_use_id: str | None = None
 
 
 # ── 工具结果 ──
@@ -107,6 +109,6 @@ class WSResultPayload(BaseModel):
     task_id: str
     success: bool
     result: str = ""
-    job_id: Optional[str] = None
-    duration_ms: Optional[int] = None
-    cost_usd: Optional[float] = None
+    job_id: str | None = None
+    duration_ms: int | None = None
+    cost_usd: float | None = None

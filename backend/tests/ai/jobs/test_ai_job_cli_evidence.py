@@ -39,7 +39,7 @@ class _StubBridge:
         # 获得首次轮询机会（Python 3.12+ 的 wait_for 不再为协程创建 task）。
         await asyncio.sleep(0)
         if self.raise_timeout:
-            raise asyncio.TimeoutError()
+            raise asyncio.TimeoutError
         if self.error_result:
             self._events = [{"type": "result", "is_error": True, "result": "provider down"}]
         self.last_termination = self.termination
@@ -134,9 +134,7 @@ def test_run_cli_single_turn_provider_error_confirmed_dead_raises_typed(monkeypa
 
     class _ErrorResultBridge(_StubBridge):
         def __init__(self):
-            super().__init__(
-                termination=TerminationResult(confirmed_dead=True, root_return_code=0)
-            )
+            super().__init__(termination=TerminationResult(confirmed_dead=True, root_return_code=0))
             self._event_callback = None
 
         async def start_session(self, **kwargs):
@@ -163,30 +161,38 @@ def test_run_cli_single_turn_provider_error_confirmed_dead_raises_typed(monkeypa
     asyncio.run(_run())
 
 
-@pytest.mark.parametrize('text', [
-    '```json\n{"steps": ["检查请求超时后重试", "验证 timeout 幂等行为"]}\n```',
-    '连接超时应检查网络；timed out 不代表业务未执行。',
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        '```json\n{"steps": ["检查请求超时后重试", "验证 timeout 幂等行为"]}\n```',
+        "连接超时应检查网络；timed out 不代表业务未执行。",
+    ],
+)
 def test_successful_diagnostic_text_is_not_a_provider_error(monkeypatch, text):
     from app.agents.supervision import TerminationResult
 
     class SuccessBridge(_StubBridge):
         async def start_session(self, **kwargs):
-            self.callback = kwargs['event_callback']
+            self.callback = kwargs["event_callback"]
             return await super().start_session(**kwargs)
 
         async def wait(self):
-            await self.callback({'type': 'assistant', 'message': {
-                'content': [{'type': 'text', 'text': text}],
-            }})
-            await self.callback({'type': 'result', 'is_error': False, 'result': text})
+            await self.callback(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": text}],
+                    },
+                }
+            )
+            await self.callback({"type": "result", "is_error": False, "result": text})
             self._running = False
             return self.termination
 
     bridge = SuccessBridge(termination=TerminationResult(confirmed_dead=True, root_return_code=0))
-    monkeypatch.setattr('app.engine.claude_bridge.create_cli_bridge', lambda: bridge)
-    result = asyncio.run(ai_provider_turn.run_cli_single_turn('diagnose', '.', max_attempts=2))
-    assert result['text'] == text
+    monkeypatch.setattr("app.engine.claude_bridge.create_cli_bridge", lambda: bridge)
+    result = asyncio.run(ai_provider_turn.run_cli_single_turn("diagnose", ".", max_attempts=2))
+    assert result["text"] == text
     assert bridge.start_calls == 1
 
 
@@ -265,3 +271,44 @@ def test_run_cli_single_turn_records_evidence_in_runtime_state(monkeypatch):
             agents_pkg.reset_agent_attempt_runtime(token)
 
     asyncio.run(_run())
+
+
+def test_retry_does_not_collect_late_events_from_previous_call(monkeypatch):
+    import app.agents as agents_pkg
+    from app.agents.supervision import TerminationResult
+
+    callbacks = []
+
+    class RetryBridge(_StubBridge):
+        async def start_session(self, **kwargs):
+            callbacks.append(kwargs["event_callback"])
+            return await super().start_session(**kwargs)
+
+        async def wait(self):
+            self._running = False
+            if len(callbacks) == 1:
+                await callbacks[0]({"type": "result", "is_error": True, "result": "retryable failure"})
+            else:
+                await callbacks[1]({"type": "result", "is_error": False, "result": "fresh result"})
+                await callbacks[0](
+                    {"type": "assistant", "message": {"content": [{"type": "text", "text": "late old text"}]}}
+                )
+                await callbacks[0]({"type": "result", "is_error": True, "result": "late old failure"})
+            return self.termination
+
+    monkeypatch.setattr(
+        "app.engine.claude_bridge.create_cli_bridge",
+        lambda: RetryBridge(termination=TerminationResult(confirmed_dead=True, root_return_code=0)),
+    )
+
+    async def run():
+        runtime = agents_pkg.AgentAttemptRuntimeState()
+        token = agents_pkg.bind_agent_attempt_runtime(runtime)
+        try:
+            result = await ai_provider_turn.run_cli_single_turn("hi", ".", max_attempts=2)
+            assert result["text"] == "fresh result"
+            assert len(callbacks) == 2
+        finally:
+            agents_pkg.reset_agent_attempt_runtime(token)
+
+    asyncio.run(run())

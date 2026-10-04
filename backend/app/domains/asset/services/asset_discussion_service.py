@@ -5,17 +5,16 @@ Asset discussion threads/messages service.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.domains.asset.models.asset import (
     AssetThreadMessageRole,
     AssetThreadStatus,
     SddAsset,
-    SddAssetThreadAnchorMapping,
     SddAssetThread,
+    SddAssetThreadAnchorMapping,
     SddAssetThreadMessage,
     SddAssetVersion,
 )
@@ -25,8 +24,8 @@ def list_threads(
     db: Session,
     *,
     asset_id: str,
-    version_id: Optional[str] = None,
-) -> List[SddAssetThread]:
+    version_id: str | None = None,
+) -> list[SddAssetThread]:
     query = (
         db.query(SddAssetThread)
         .options(
@@ -55,7 +54,7 @@ def _extract_block_text(block: Any) -> str:
             return merged
     cells = block.get("cells")
     if isinstance(cells, list):
-        chunks: List[str] = []
+        chunks: list[str] = []
         for row in cells:
             if not isinstance(row, list):
                 continue
@@ -74,7 +73,7 @@ def get_thread_anchor_mapping(
     *,
     thread_id: str,
     version_id: str,
-) -> Optional[SddAssetThreadAnchorMapping]:
+) -> SddAssetThreadAnchorMapping | None:
     return (
         db.query(SddAssetThreadAnchorMapping)
         .filter(
@@ -91,18 +90,14 @@ def upsert_thread_anchor_mapping(
     thread: SddAssetThread,
     version_id: str,
     block_id: str,
-    selected_text: Optional[str] = None,
-    char_start: Optional[int] = None,
-    char_end: Optional[int] = None,
-    actor_user_id: Optional[str] = None,
+    selected_text: str | None = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
+    actor_user_id: str | None = None,
 ) -> SddAssetThreadAnchorMapping:
     resolved_block_id = str(block_id or "").strip() or str(thread.block_id or "").strip()
     if not resolved_block_id:
-        version = (
-            db.query(SddAssetVersion)
-            .filter(SddAssetVersion.id == version_id)
-            .first()
-        )
+        version = db.query(SddAssetVersion).filter(SddAssetVersion.id == version_id).first()
         blocks = list(getattr(version, "blocks_json", []) or [])
         for item in blocks:
             if not isinstance(item, dict):
@@ -142,8 +137,8 @@ def resolve_thread_anchor_for_version(
     db: Session,
     *,
     thread: SddAssetThread,
-    context_version: Optional[SddAssetVersion],
-) -> Dict[str, Any]:
+    context_version: SddAssetVersion | None,
+) -> dict[str, Any]:
     anchor = {
         "block_id": str(thread.block_id or "").strip(),
         "selected_text": str(thread.selected_text or "").strip() or None,
@@ -207,11 +202,9 @@ def list_thread_markers(
     *,
     asset_id: str,
     version_id: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     context_version = (
-        db.query(SddAssetVersion)
-        .filter(SddAssetVersion.id == version_id, SddAssetVersion.asset_id == asset_id)
-        .first()
+        db.query(SddAssetVersion).filter(SddAssetVersion.id == version_id, SddAssetVersion.asset_id == asset_id).first()
     )
     rows = (
         db.query(SddAssetThread)
@@ -220,7 +213,7 @@ def list_thread_markers(
         .order_by(SddAssetThread.created_at.asc())
         .all()
     )
-    markers: List[Dict[str, Any]] = []
+    markers: list[dict[str, Any]] = []
     for row in rows:
         anchor_eval = resolve_thread_anchor_for_version(
             db,
@@ -255,7 +248,7 @@ def get_thread(
     *,
     asset_id: str,
     thread_id: str,
-) -> Optional[SddAssetThread]:
+) -> SddAssetThread | None:
     return (
         db.query(SddAssetThread)
         .options(
@@ -280,9 +273,9 @@ def create_thread(
     creator_id: str,
     block_id: str,
     body: str,
-    selected_text: Optional[str] = None,
-    char_start: Optional[int] = None,
-    char_end: Optional[int] = None,
+    selected_text: str | None = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
 ) -> SddAssetThread:
     normalized_body = (body or "").strip()
     if not block_id.strip():
@@ -324,8 +317,8 @@ def add_thread_message(
     thread: SddAssetThread,
     role: AssetThreadMessageRole,
     content: str,
-    creator_id: Optional[str] = None,
-    metadata_json: Optional[Dict[str, Any]] = None,
+    creator_id: str | None = None,
+    metadata_json: dict[str, Any] | None = None,
 ) -> SddAssetThreadMessage:
     if thread.status in {AssetThreadStatus.RESOLVED, AssetThreadStatus.CLOSED}:
         raise ValueError("Thread is not open for new messages")
@@ -349,8 +342,8 @@ def set_thread_status(
     *,
     thread: SddAssetThread,
     status: AssetThreadStatus,
-    actor_user_id: Optional[str] = None,
-    resolved_version_id: Optional[str] = None,
+    actor_user_id: str | None = None,
+    resolved_version_id: str | None = None,
 ) -> SddAssetThread:
     thread.status = status
     if status in {AssetThreadStatus.RESOLVED, AssetThreadStatus.CLOSED}:
@@ -371,8 +364,8 @@ def set_thread_close_hint(
     *,
     thread: SddAssetThread,
     state: str,
-    reason: Optional[str] = None,
-    version_id: Optional[str] = None,
+    reason: str | None = None,
+    version_id: str | None = None,
 ) -> SddAssetThread:
     normalized_state = str(state or "none").strip().lower()
     if normalized_state not in {"none", "pending", "no_close_needed"}:
@@ -384,7 +377,7 @@ def set_thread_close_hint(
     return thread
 
 
-def get_block_by_id(version: SddAssetVersion, block_id: str) -> Optional[Dict[str, Any]]:
+def get_block_by_id(version: SddAssetVersion, block_id: str) -> dict[str, Any] | None:
     blocks = version.blocks_json or []
     if not isinstance(blocks, list):
         return None
@@ -394,7 +387,7 @@ def get_block_by_id(version: SddAssetVersion, block_id: str) -> Optional[Dict[st
     return None
 
 
-def get_block_context(version: SddAssetVersion, block_id: str, window: int = 1) -> Dict[str, Any]:
+def get_block_context(version: SddAssetVersion, block_id: str, window: int = 1) -> dict[str, Any]:
     blocks = version.blocks_json or []
     if not isinstance(blocks, list):
         return {"selected": None, "neighbors": []}
@@ -414,7 +407,7 @@ def get_block_context(version: SddAssetVersion, block_id: str, window: int = 1) 
     return {"selected": selected, "neighbors": neighbors}
 
 
-def _coerce_optional_int(value: Any) -> Optional[int]:
+def _coerce_optional_int(value: Any) -> int | None:
     try:
         if value is None:
             return None
@@ -428,7 +421,7 @@ def sync_docx_comments_to_threads(
     *,
     asset: SddAsset,
     version: SddAssetVersion,
-    actor_user_id: Optional[str] = None,
+    actor_user_id: str | None = None,
 ) -> int:
     render_json = version.render_json or {}
     raw_comments = render_json.get("docx_comments")

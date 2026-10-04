@@ -1,23 +1,24 @@
 """Independent oracle negatives plus explicitly opted-in real MySQL coverage."""
-from copy import deepcopy
-from dataclasses import asdict
+
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import time
 import uuid
+from copy import deepcopy
+
 import pytest
 import yaml
+
 from app.domains.diagnosis_playbook.contracts import ExecutionEnvelope, PlaybookError, digest
-from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import MysqlBundle, ROOT
+from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import ROOT, MysqlBundle
 from app.runtime.evidence_runner.bundles.mysql_deadlock.files import freeze_tree, tree_manifest
-from app.runtime.evidence_runner.bundles.mysql_deadlock.programs.tf_mysql import oracle, controller
+from app.runtime.evidence_runner.bundles.mysql_deadlock.programs.tf_mysql import controller, oracle
 from app.runtime.evidence_runner.registry import RunnerBundle
 from app.runtime.evidence_runner.supervisor import EvidenceRunner
 
-FIXED = '''def transfer(tx, source_id, target_id, amount):
+FIXED = """def transfer(tx, source_id, target_id, amount):
     if source_id == target_id:
         raise ValueError("same_account")
     if amount <= 0:
@@ -27,26 +28,42 @@ FIXED = '''def transfer(tx, source_id, target_id, amount):
         raise ValueError("insufficient_funds")
     tx.set_balance(source_id, rows[source_id] - amount)
     tx.set_balance(target_id, rows[target_id] + amount)
-'''
+"""
 
 
 def successful_batch():
-    return {"requested_count": 1, "requests": [{"completed": True, "exit_code": 0, "committed": True,
-        "outcome": "success", "errors": [], "locks": [1, 2], "acquired": [1, 2],
-        "reads": {"1": 1000, "2": 1000},
-        "operations": [{"account_id": 1, "balance": 999}, {"account_id": 2, "balance": 1001}],
-        "request": {"source_id": 1, "target_id": 2, "amount": 1}}], "balances": {"1": 999, "2": 1001}}
+    return {
+        "requested_count": 1,
+        "requests": [
+            {
+                "completed": True,
+                "exit_code": 0,
+                "committed": True,
+                "outcome": "success",
+                "errors": [],
+                "locks": [1, 2],
+                "acquired": [1, 2],
+                "reads": {"1": 1000, "2": 1000},
+                "operations": [{"account_id": 1, "balance": 999}, {"account_id": 2, "balance": 1001}],
+                "request": {"source_id": 1, "target_id": 2, "amount": 1},
+            }
+        ],
+        "balances": {"1": 999, "2": 1001},
+    }
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda b: b.update(requests=[]),
-    lambda b: b.update(balances={"1": 1000, "2": 1000}),
-    lambda b: b["requests"][0].update(acquired=[], operations=[]),
-    lambda b: b["requests"][0].update(harness_error="import failed"),
-    lambda b: b["requests"][0].update(errors=[1205]),
-    lambda b: b["requests"][0].update(committed=False),
-    lambda b: b.update(requested_count=2),
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda b: b.update(requests=[]),
+        lambda b: b.update(balances={"1": 1000, "2": 1000}),
+        lambda b: b["requests"][0].update(acquired=[], operations=[]),
+        lambda b: b["requests"][0].update(harness_error="import failed"),
+        lambda b: b["requests"][0].update(errors=[1205]),
+        lambda b: b["requests"][0].update(committed=False),
+        lambda b: b.update(requested_count=2),
+    ],
+)
 def test_oracle_rejects_deleted_requests_noop_patch_and_harness_errors(mutation):
     value = successful_batch()
     assert oracle.target_passed(value)
@@ -96,13 +113,22 @@ def test_patch_freezing_keeps_baseline_and_rejects_protected_files(tmp_path):
         freeze_tree(frozen, patch, original, {"transfer.py": "fixed"})
 
 
-@pytest.mark.skipif(os.environ.get("TRACEFORGE_MYSQL_PLAYBOOK_LIVE") != "1", reason="explicit real MySQL fixture opt-in required")
+@pytest.mark.skipif(
+    os.environ.get("TRACEFORGE_MYSQL_PLAYBOOK_LIVE") != "1", reason="explicit real MySQL fixture opt-in required"
+)
 @pytest.mark.asyncio
 async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_path, monkeypatch):
     """Create two uniquely named test schemas; never migrate/reset application DB."""
-    from app.config import settings
     import pymysql
-    connection = dict(host=settings.DB_HOST, port=settings.DB_PORT, user=settings.DB_USER, password=settings.DB_PASSWORD)
+
+    from app.config import settings
+
+    connection = {
+        "host": settings.DB_HOST,
+        "port": settings.DB_PORT,
+        "user": settings.DB_USER,
+        "password": settings.DB_PASSWORD,
+    }
     schema_names = ["tf_playbook_test_" + uuid.uuid4().hex for _ in range(2)]
     observation_db, fixture_db = schema_names
     with pymysql.connect(**connection, autocommit=True) as admin:
@@ -119,45 +145,140 @@ async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_pa
             incident = controller.batch(observation, source, "transfer:transfer", requests, retain=True, delay=0.2)
             assert oracle.target_failed(incident), json.dumps(incident, ensure_ascii=False)
             sample_path = tmp_path / "incident.json"
-            sample_path.write_text(json.dumps({"error_code": 1213, "table": incident["table"], "captured_at": time.time(),
-                "connection_ids": [r["connection_id"] for r in incident["requests"]]}), encoding="utf-8")
+            sample_path.write_text(
+                json.dumps(
+                    {
+                        "error_code": 1213,
+                        "table": incident["table"],
+                        "captured_at": time.time(),
+                        "connection_ids": [r["connection_id"] for r in incident["requests"]],
+                    }
+                ),
+                encoding="utf-8",
+            )
             monkeypatch.setenv("TF_TEST_MYSQL_SECRET", settings.DB_PASSWORD)
             conn_ref = {k: connection[k] for k in ("host", "port", "user")}
-            config = {"work_root": str(tmp_path / "runs"), "environments": {"test": {
-                "workspace_ids": ["workspace"], "target_operation": "transfer:transfer",
-                "source_snapshot": {"ref": "snapshot", "path": str(source), "digest": digest(tree_manifest(source))},
-                "observation_connection": {**conn_ref, "ref": "observation", "database": observation_db, "table": incident["table"], "password_env": "TF_TEST_MYSQL_SECRET"},
-                "fixture_template": {**conn_ref, "ref": "fixture", "database": fixture_db, "password_env": "TF_TEST_MYSQL_SECRET"},
-                "observed_error_sample": {"ref": "incident", "path": str(sample_path), "digest": "sha256:" + hashlib.sha256(sample_path.read_bytes()).hexdigest()}}}}
+            config = {
+                "work_root": str(tmp_path / "runs"),
+                "environments": {
+                    "test": {
+                        "workspace_ids": ["workspace"],
+                        "target_operation": "transfer:transfer",
+                        "source_snapshot": {
+                            "ref": "snapshot",
+                            "path": str(source),
+                            "digest": digest(tree_manifest(source)),
+                        },
+                        "observation_connection": {
+                            **conn_ref,
+                            "ref": "observation",
+                            "database": observation_db,
+                            "table": incident["table"],
+                            "password_env": "TF_TEST_MYSQL_SECRET",
+                        },
+                        "fixture_template": {
+                            **conn_ref,
+                            "ref": "fixture",
+                            "database": fixture_db,
+                            "password_env": "TF_TEST_MYSQL_SECRET",
+                        },
+                        "observed_error_sample": {
+                            "ref": "incident",
+                            "path": str(sample_path),
+                            "digest": "sha256:" + hashlib.sha256(sample_path.read_bytes()).hexdigest(),
+                        },
+                    }
+                },
+            }
             implementation = MysqlBundle(config)
-            spec = yaml.safe_load((ROOT.parents[3] / "domains/diagnosis_playbook/examples/mysql-transfer-deadlock.yaml").read_text(encoding="utf-8"))
-            bundle = RunnerBundle("test", implementation.bundle_digest, __import__('sys').executable, str(ROOT / "programs"),
-                tuple(tuple(s["verification"]["command"]["argv"]) for s in spec["stages"]), implementation.probe, implementation.collect, implementation.child_environment,
-                cleanup=implementation.cleanup)
-            data = {"environment_ref": "test", "policy_epoch": 1, "hypotheses": [
-                {"id": "lock_order", "state": "QUEUED", "discriminator_script": "builtin:mysql-deadlock/lock_order"},
-                {"id": "pool_wait", "state": "QUEUED", "discriminator_script": "builtin:mysql-deadlock/pool_wait"}]}
-            inputs = {"source_snapshot": "snapshot", "observation_connection": "observation", "fixture_template": "fixture",
-                      "observed_error_sample": "incident", "target_operation": "transfer:transfer", "parallel_clients": 16}
+            spec = yaml.safe_load(
+                (ROOT.parents[3] / "domains/diagnosis_playbook/examples/mysql-transfer-deadlock.yaml").read_text(
+                    encoding="utf-8"
+                )
+            )
+            bundle = RunnerBundle(
+                "test",
+                implementation.bundle_digest,
+                __import__("sys").executable,
+                str(ROOT / "programs"),
+                tuple(tuple(s["verification"]["command"]["argv"]) for s in spec["stages"]),
+                implementation.probe,
+                implementation.collect,
+                implementation.child_environment,
+                cleanup=implementation.cleanup,
+            )
+            data = {
+                "environment_ref": "test",
+                "policy_epoch": 1,
+                "hypotheses": [
+                    {
+                        "id": "lock_order",
+                        "state": "QUEUED",
+                        "discriminator_script": "builtin:mysql-deadlock/lock_order",
+                    },
+                    {"id": "pool_wait", "state": "QUEUED", "discriminator_script": "builtin:mysql-deadlock/pool_wait"},
+                ],
+            }
+            inputs = {
+                "source_snapshot": "snapshot",
+                "observation_connection": "observation",
+                "fixture_template": "fixture",
+                "observed_error_sample": "incident",
+                "target_operation": "transfer:transfer",
+                "parallel_clients": 16,
+            }
             runner = EvidenceRunner(tmp_path / "evidence")
-            async def emit(*_): pass
-            async def cancelled(): return False
+
+            async def emit(*_):
+                pass
+
+            async def cancelled():
+                return False
+
             receipts = []
             run_id = str(uuid.uuid4())
             for index, stage in enumerate(spec["stages"]):
                 data["active_scope"] = {"state": "SETTLED", "step_id": stage["id"], "run_epoch": 1}
                 if stage["phase"] == "PATCH":
                     data["patch_candidate"] = {"run_epoch": 1, "files": {"transfer.py": FIXED}}
-                context = {"id": run_id, "workspace_id": "workspace", "run_epoch": 1, "state_version": index + 1,
-                           "active_step": stage["id"], "phase": stage["phase"], "internal": data}
+                context = {
+                    "id": run_id,
+                    "workspace_id": "workspace",
+                    "run_epoch": 1,
+                    "state_version": index + 1,
+                    "active_step": stage["id"],
+                    "phase": stage["phase"],
+                    "internal": data,
+                }
                 environment = implementation.probe(context, inputs)
                 bound = environment["bindings"]
-                argv = tuple(bound[a[8:-1]] if a.startswith("${bound.") else a for a in stage["verification"]["command"]["argv"])
-                envelope = ExecutionEnvelope(str(uuid.uuid4()), run_id, 1, stage["id"], str(uuid.uuid4()), "main", digest(stage),
-                    environment["environment_digest"], environment["source_snapshot_digest"], 1, bundle.digest, argv, bound["scratch"], 90, "ADVISORY_GUARD")
+                argv = tuple(
+                    bound[a[8:-1]] if a.startswith("${bound.") else a for a in stage["verification"]["command"]["argv"]
+                )
+                envelope = ExecutionEnvelope(
+                    str(uuid.uuid4()),
+                    run_id,
+                    1,
+                    stage["id"],
+                    str(uuid.uuid4()),
+                    "main",
+                    digest(stage),
+                    environment["environment_digest"],
+                    environment["source_snapshot_digest"],
+                    1,
+                    bundle.digest,
+                    argv,
+                    bound["scratch"],
+                    90,
+                    "ADVISORY_GUARD",
+                )
                 receipt = await runner.execute(envelope, bundle, emit=emit, cancelled=cancelled)
                 from app.domains.diagnosis_playbook.compiler import evaluate
-                assert receipt["exit_code"] in stage["verification"]["expectExitCodes"], (receipt, (runner.directory(envelope.execution_id) / "stderr").read_text())
+
+                assert receipt["exit_code"] in stage["verification"]["expectExitCodes"], (
+                    receipt,
+                    (runner.directory(envelope.execution_id) / "stderr").read_text(),
+                )
                 assert evaluate(stage["verification"]["passWhen"], receipt["facts"]), receipt
                 assert receipt["termination"] == "CONFIRMED"
                 receipts.append(receipt)
@@ -170,13 +291,15 @@ async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_pa
             from dataclasses import replace
             from types import SimpleNamespace
             from unittest.mock import AsyncMock
-            from app.agents.contract import AgentEvent, AgentRunResult
+
             from app.agents import selection
-            from app.domains.diagnosis_playbook import execution_profile, service, tool_server, worker
-            from app.domains.diagnosis_playbook.models import PlaybookRun, CasePlaybookLink
+            from app.agents.contract import AgentEvent, AgentRunResult
+            from app.domains.diagnosis_playbook import execution_profile, service, worker
+            from app.domains.diagnosis_playbook.models import CasePlaybookLink, PlaybookRun
             from app.runtime.evidence_runner.registry import registry
             from tests.diagnosis_playbook.test_runtime import Backend
             from tests.workspace_asset.test_workspace_asset_boundary import _seed_workspace
+
             user, workspace, task = _seed_workspace(db)
             task.task_type, task.agent_backend = "DIAGNOSIS", "claude-code"
             config["environments"]["test"]["workspace_ids"].append(workspace.id)
@@ -184,13 +307,26 @@ async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_pa
             # Refresh the observed incident: comparison experiments have since
             # replaced MySQL's latest-deadlock record.
             fresh = controller.batch(observation, source, "transfer:transfer", requests, retain=True, delay=0.2)
-            sample_path.write_text(json.dumps({"error_code": 1213, "table": fresh["table"], "captured_at": time.time(),
-                "connection_ids": [r["connection_id"] for r in fresh["requests"]]}), encoding="utf-8")
+            sample_path.write_text(
+                json.dumps(
+                    {
+                        "error_code": 1213,
+                        "table": fresh["table"],
+                        "captured_at": time.time(),
+                        "connection_ids": [r["connection_id"] for r in fresh["requests"]],
+                    }
+                ),
+                encoding="utf-8",
+            )
             declaration = implementation.environments["test"]
             declaration["observation_connection"]["table"] = fresh["table"]
-            declaration["observed_error_sample"]["digest"] = "sha256:" + hashlib.sha256(sample_path.read_bytes()).hexdigest()
+            declaration["observed_error_sample"]["digest"] = (
+                "sha256:" + hashlib.sha256(sample_path.read_bytes()).hexdigest()
+            )
             monkeypatch.setattr(settings, "DIAGNOSIS_PLAYBOOK_WORKER_ENABLED", True)
-            monkeypatch.setitem(registry._bundles, spec["execution"]["bundle"], replace(bundle, uri=spec["execution"]["bundle"]))
+            monkeypatch.setitem(
+                registry._bundles, spec["execution"]["bundle"], replace(bundle, uri=spec["execution"]["bundle"])
+            )
             row = service.register_spec(db, workspace.id, spec)
             snapshot = service.attach(db, task, row.id, inputs, "live-worker", user.id, "test", advisory_ack=True)
             db.commit()
@@ -204,6 +340,7 @@ async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_pa
                 except BaseException:
                     db.rollback()
                     raise
+
             monkeypatch.setattr(worker, "run_db_txn", transaction)
             monkeypatch.setattr(execution_profile, "run_db_txn", transaction)
             manager = SimpleNamespace(send_message_to_room=AsyncMock())
@@ -212,19 +349,40 @@ async def test_real_mysql_controller_and_supervised_four_stage_bundle(db, tmp_pa
 
             class FixtureModel(Backend):
                 async def run(self, request, on_event):
-                    await on_event(AgentEvent(type="session_started", provider="claude-code", payload={"provider_session_id": "fixture-model-session"}))
+                    await on_event(
+                        AgentEvent(
+                            type="session_started",
+                            provider="claude-code",
+                            payload={"provider_session_id": "fixture-model-session"},
+                        )
+                    )
                     run = db.get(PlaybookRun, run_id)
                     assert request.provider_options["execution_policy"]["mcp_config"] == {}
                     proposals = []
                     if run.phase == "HYPOTHESIZE" and not run.data_json["active_scope"].get("hypothesis_id"):
-                        args = {"hypotheses": [{"id": key, "claim": key, "predictions": ["expected physical result"], "falsifiers": ["contradictory physical result"],
-                            "discriminator_script": "builtin:mysql-deadlock/" + key} for key in ("lock_order", "pool_wait")]}
+                        args = {
+                            "hypotheses": [
+                                {
+                                    "id": key,
+                                    "claim": key,
+                                    "predictions": ["expected physical result"],
+                                    "falsifiers": ["contradictory physical result"],
+                                    "discriminator_script": "builtin:mysql-deadlock/" + key,
+                                }
+                                for key in ("lock_order", "pool_wait")
+                            ]
+                        }
                         proposals.append({"name": "propose_hypotheses", "arguments": args})
                     elif run.phase == "PATCH":
                         proposals.append({"name": "propose_patch", "arguments": {"files": {"transfer.py": FIXED}}})
                     db.commit()
-                    return AgentRunResult(success=True, session_id="fixture-model-session", termination_confirmed_dead=True,
-                        result_text="```traceforge-playbook\n" + json.dumps({"proposals": proposals}) + "\n```")
+                    return AgentRunResult(
+                        success=True,
+                        session_id="fixture-model-session",
+                        termination_confirmed_dead=True,
+                        result_text="```traceforge-playbook\n" + json.dumps({"proposals": proposals}) + "\n```",
+                    )
+
             monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda *_: FixtureModel())
             dispatcher = worker.PlaybookWorker(tmp_path / "worker-evidence")
             for _ in range(12):

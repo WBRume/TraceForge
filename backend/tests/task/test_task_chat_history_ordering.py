@@ -1,6 +1,4 @@
 import json
-import os
-import sys
 from datetime import datetime, timedelta
 
 import pytest
@@ -8,25 +6,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.ai.models.ai_job  # noqa: F401,E402
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.provision_job  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
-import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
-from app.database import Base  # noqa: E402
-from app.domains.auth.models.user import User, Workspace  # noqa: E402
-from app.domains.task.models.task import SddTask  # noqa: E402
-from app.domains.task.models.chat import ChatMessage, MessageType  # noqa: E402
-from app.domains.task.models.log import LogType, SddExecutionLog  # noqa: E402
-from app.domains.task.schemas.diagnosis import DiagnosisResultPayload  # noqa: E402
-from app.domains.task.services import diagnosis_result_service  # noqa: E402
-
+import app.domains.ai.models.ai_job
+import app.domains.api_mock.models.api_mock
+import app.domains.task.models.test_result
+import app.domains.workflow.models.provision_job
+import app.domains.workflow.models.task_change
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.database import Base
+from app.domains.auth.models.user import User, Workspace
+from app.domains.task.models.chat import ChatMessage, MessageType
+from app.domains.task.models.log import LogType, SddExecutionLog
+from app.domains.task.models.task import SddTask
+from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
+from app.domains.task.services import diagnosis_result_service
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
 
@@ -79,9 +71,7 @@ def test_task_history_keeps_streamed_bubbles_in_insertion_order(db_session):
 
     # Simulate the real streaming case: every chunk lands within the same second.
     same_time = datetime.utcnow()
-    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
-        {"created_at": same_time}
-    )
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update({"created_at": same_time})
     db.commit()
 
     history = task_conversation_history.get_task_history(db, task.id, task.workspace_id)
@@ -108,9 +98,7 @@ def test_task_history_pagination_returns_latest_page_first(db_session):
 
     # 同一秒写入，确保分页依据 order_index 而不是 created_at 秒级精度
     same_time = datetime.utcnow()
-    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
-        {"created_at": same_time}
-    )
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update({"created_at": same_time})
     db.commit()
 
     page1 = task_conversation_history.get_task_history(db, task.id, task.workspace_id, page=1, page_size=50)
@@ -135,42 +123,48 @@ def test_task_history_limits_terminal_logs_and_excludes_provider_noise(db_sessio
     base_time = datetime.utcnow()
 
     for index in range(8):
-        db.add(SddExecutionLog(
-            id=f"log-{index}",
-            task_id=task.id,
-            workspace_id=task.workspace_id,
-            creator_id=task.creator_id,
-            log_type=LogType.STDOUT,
-            content=json.dumps({
-                "tool_name": "read_file",
-                "tool_input": {"path": f"file-{index}.py"},
-                "tool_use_id": f"call-{index}",
-            }),
-            event_order=index + 1,
-            created_at=base_time + timedelta(milliseconds=index),
-        ))
-    db.add_all([
-        SddExecutionLog(
-            id="debug-log",
-            task_id=task.id,
-            workspace_id=task.workspace_id,
-            creator_id=task.creator_id,
-            log_type=LogType.STDOUT,
-            content='[opencode:session.status] {"type": "busy"}',
-            event_order=100,
-            created_at=base_time + timedelta(seconds=1),
-        ),
-        SddExecutionLog(
-            id="assistant-copy",
-            task_id=task.id,
-            workspace_id=task.workspace_id,
-            creator_id=task.creator_id,
-            log_type=LogType.STDOUT,
-            content="duplicate assistant response",
-            event_order=101,
-            created_at=base_time + timedelta(seconds=2),
-        ),
-    ])
+        db.add(
+            SddExecutionLog(
+                id=f"log-{index}",
+                task_id=task.id,
+                workspace_id=task.workspace_id,
+                creator_id=task.creator_id,
+                log_type=LogType.STDOUT,
+                content=json.dumps(
+                    {
+                        "tool_name": "read_file",
+                        "tool_input": {"path": f"file-{index}.py"},
+                        "tool_use_id": f"call-{index}",
+                    }
+                ),
+                event_order=index + 1,
+                created_at=base_time + timedelta(milliseconds=index),
+            )
+        )
+    db.add_all(
+        [
+            SddExecutionLog(
+                id="debug-log",
+                task_id=task.id,
+                workspace_id=task.workspace_id,
+                creator_id=task.creator_id,
+                log_type=LogType.STDOUT,
+                content='[opencode:session.status] {"type": "busy"}',
+                event_order=100,
+                created_at=base_time + timedelta(seconds=1),
+            ),
+            SddExecutionLog(
+                id="assistant-copy",
+                task_id=task.id,
+                workspace_id=task.workspace_id,
+                creator_id=task.creator_id,
+                log_type=LogType.STDOUT,
+                content="duplicate assistant response",
+                event_order=101,
+                created_at=base_time + timedelta(seconds=2),
+            ),
+        ]
+    )
     db.commit()
 
     history = task_conversation_history.get_task_history(
@@ -217,9 +211,7 @@ def test_diagnosis_result_card_comes_after_last_assistant_bubble(db_session):
 
     # 把所有消息压到同一秒，复现真实流式回复场景
     same_time = datetime.utcnow()
-    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
-        {"created_at": same_time}
-    )
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update({"created_at": same_time})
     db.commit()
 
     history = task_conversation_history.get_task_history(db, task.id, task.workspace_id)
@@ -274,9 +266,7 @@ def test_diagnosis_result_card_moves_to_end_when_updated_again(db_session):
     )
 
     same_time = datetime.utcnow()
-    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update(
-        {"created_at": same_time}
-    )
+    db.query(ChatMessage).filter(ChatMessage.task_id == task.id).update({"created_at": same_time})
     db.commit()
 
     history = task_conversation_history.get_task_history(db, task.id, task.workspace_id)

@@ -6,6 +6,7 @@
     python -m app.domains.task.reading_cli status
     python -m app.domains.task.reading_cli cleanup-receipts --batch-size 500
 """
+
 from __future__ import annotations
 
 import argparse
@@ -14,9 +15,13 @@ import json
 import pkgutil
 import sys
 
+from app import domains as _domains
+from app.database import SessionLocal
+from app.domains.task.models.task import SddTask
+from app.domains.task.services import reading_backfill_service
+
 # 全量模型注册（与生产 app 全量加载等价）：User 等跨域 relationship
 # 依赖全部 mapper 注册完成后才能解析，缺步会 InvalidRequestError。
-from app import domains as _domains
 
 for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
     try:
@@ -26,10 +31,6 @@ for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
     if hasattr(_models_pkg, "__path__"):
         for _, _mod, _ in pkgutil.walk_packages(_models_pkg.__path__, prefix=f"app.domains.{_name}.models."):
             importlib.import_module(_mod)
-
-from app.database import SessionLocal
-from app.domains.task.models.task import SddTask
-from app.domains.task.services import reading_backfill_service
 
 
 def _open_session():
@@ -51,9 +52,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
                 if task_row is not None and task_row[0]:
                     ready_or_skipped += 1
                     continue
-                result = reading_backfill_service.backfill_task_batch(
-                    session, task_id=task_id, batch_size=batch_size
-                )
+                result = reading_backfill_service.backfill_task_batch(session, task_id=task_id, batch_size=batch_size)
                 session.commit()
                 if result.get("blocked"):
                     print(

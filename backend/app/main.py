@@ -6,98 +6,122 @@ FastAPI 主入口
 import asyncio
 import json
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from jose import JWTError
 
 from app.config import settings
-from app.domains.search import router as search_router
-from app.core.offload import run_db, shutdown_offload_executors
-from app.core.redis_client import close_redis_client
 from app.core.logging import (
     bind_log_context,
     bind_task_context,
     get_logger,
     setup_logging,
 )
-
-setup_logging()
-logger = get_logger(__name__)
-api_mock_logger = get_logger(__name__, category="api_mock")
-
+from app.core.offload import run_db, shutdown_offload_executors
+from app.core.redis_client import close_redis_client
 from app.database import SessionLocal
+from app.domains.ai.routers import agent, queue
+from app.domains.ai.services.jobs import workers as ai_job_workers
 from app.domains.api_mock.models.api_mock import ApiMockCollabEventType, SddApiMockProject
-from app.domains.task.models.task import SddTask
-from app.domains.auth.models.user import User, WorkspaceMember
-from app.domains.asset.models.asset import SddAsset
-from app.middleware.logging_middleware import LoggingMiddleware
-from app.domains.ai.routers import agent
-from app.domains.auth.routers import auth, oauth
-from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
-from app.domains.workspace.routers import workspace
-from app.domains.workspace.routers import invite_join
-from app.domains.task.routers import task
-from app.domains.task.routers import public_session_shares
-from app.domains.dashboard.routers import dashboard
-
-from app.domains.asset.routers import assets as asset_assets
-from app.domains.asset.routers import upload
-from app.domains.skill.routers import skill
 from app.domains.api_mock.routers import api_mock
-from app.domains.workflow.routers import provision
-from app.domains.ai.routers import queue
-from app.domains.workspace_asset.routers import workspace_asset
-from app.domains.task.routers import task_closeout
+from app.domains.api_mock.services import api_mock_service
+from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
+from app.domains.asset.models.asset import SddAsset
+from app.domains.asset.routers import assets as asset_assets
+from app.domains.asset.routers import decision, upload
+from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
+from app.domains.auth.errors import OAuthAPIError, oauth_api_error_handler
+from app.domains.auth.models.user import User, WorkspaceMember
+from app.domains.auth.routers import auth, oauth
+from app.domains.auth.services import auth_service
 from app.domains.case_center.routers import case as case_center_router
+from app.domains.dashboard.routers import dashboard
 from app.domains.diagnosis_playbook.router import (
-    router as diagnosis_playbook_router,
     global_router as diagnosis_playbook_global_router,
 )
+from app.domains.diagnosis_playbook.router import (
+    router as diagnosis_playbook_router,
+)
 from app.domains.diagnosis_playbook.tool_server import router as playbook_tool_router
-from app.domains.asset.routers import decision
+from app.domains.local_resource.client import ResourceError
+from app.domains.local_resource.router import router as local_resource_router
 from app.domains.management.routers import (
     products_router,
     projects_router,
-    repositories_router,
     repo_groups_router,
+    repositories_router,
 )
-from app.domains.ai.services.jobs import attempts as ai_job_attempts
-from app.domains.ai.services.jobs import workers as ai_job_workers
-from app.engine.session import shutdown_active_engines
-from app.domains.api_mock.services import api_mock_service
-from app.domains.auth.services import auth_service
+from app.domains.notification.routers import notification as notification_router
+from app.domains.notification.routers.task_awareness import router as task_awareness_router
+from app.domains.notification.ws.notification_manager import notification_ws_manager
+from app.domains.rag.routers import outbox as rag_outbox_router
+from app.domains.search import router as search_router
+from app.domains.skill.routers import skill
 from app.domains.system_config.routers import system_config
-from app.domains.websocket.ws.manager import manager
+from app.domains.task.models.task import SddTask
+from app.domains.task.routers import public_session_shares, task, task_closeout
+from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
 from app.domains.websocket.ws.connection import (
     ConnectionEvicted,
     receive_json_until_evicted,
     receive_text_until_evicted,
 )
+from app.domains.websocket.ws.manager import manager
 from app.domains.websocket.ws.task_handler import TaskWebSocketHandler, TaskWebSocketUser
-from app.domains.notification.routers import notification as notification_router
-from app.domains.notification.ws.notification_manager import notification_ws_manager
-from app.domains.task.services import pre_input_worker as pre_input_deadline_worker
-from app.domains.task.services import task_cli_state_service
-from app.domains.api_mock.ws.api_mock_manager import api_mock_ws_manager
-from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
-from app.domains.rag.routers import outbox as rag_outbox_router
+from app.domains.workflow.routers import provision
+from app.domains.workspace.routers import invite_join, workspace
+from app.domains.workspace_asset.routers import workspace_asset
+from app.engine.session import shutdown_active_engines
+from app.middleware.logging_middleware import LoggingMiddleware
+
+setup_logging()
+logger = get_logger(__name__)
+api_mock_logger = get_logger(__name__, category="api_mock")
+
+
+async def _shutdown_websocket_hubs():
+    try:
+        await api_mock_ws_manager.shutdown()
+    except Exception:
+        logger.warning("Failed to shutdown API MOCK redis listener")
+    for ws_manager, label in (
+        (manager, "task"),
+        (notification_ws_manager, "notification"),
+        (asset_discussion_ws_manager, "asset discussion"),
+    ):
+        try:
+            await ws_manager.shutdown()
+        except Exception:
+            logger.warning("Failed to shutdown %s websocket hubs", label)
+    try:
+        from app.domains.websocket.ws.public_share_manager import public_share_ws_manager
+
+        await public_share_ws_manager.shutdown()
+    except Exception:
+        logger.warning("Failed to shutdown public share websocket hubs")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _pre_input_worker_task
     app.state.ai_runtime_ready = False
     from app.runtime.evidence_runner.registry import load_configured_bundles
+
     load_configured_bundles(settings.DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES)
     if settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE:
         from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import install
+
         install(settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE)
     playbook_worker_task = None
     if settings.DIAGNOSIS_PLAYBOOK_WORKER_ENABLED:
         from app.domains.diagnosis_playbook.worker import PlaybookWorker
+
         playbook_worker_task = asyncio.create_task(PlaybookWorker(settings.DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT).run())
     await search_router.start(app)
     from app.domains.notification.services.task_awareness_worker import run_worker as run_task_awareness_worker
+
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
     recovered_queue_count = await ai_job_workers.start_runtime_workers()
     task_awareness_worker = asyncio.create_task(run_task_awareness_worker())
@@ -127,25 +151,8 @@ async def lifespan(app: FastAPI):
             await shutdown_active_engines()
         except Exception:
             logger.exception("Failed to shutdown active workflow engines")
-        try:
-            await api_mock_ws_manager.shutdown()
-        except Exception:
-            logger.warning("Failed to shutdown API MOCK redis listener")
-        for ws_manager, label in (
-            (manager, "task"),
-            (notification_ws_manager, "notification"),
-            (asset_discussion_ws_manager, "asset discussion"),
-        ):
-            try:
-                await ws_manager.shutdown()
-            except Exception:
-                logger.warning("Failed to shutdown %s websocket hubs", label)
-        try:
-            from app.domains.websocket.ws.public_share_manager import public_share_ws_manager
+        await _shutdown_websocket_hubs()
 
-            await public_share_ws_manager.shutdown()
-        except Exception:
-            logger.warning("Failed to shutdown public share websocket hubs")
         await search_router.stop(app)
         try:
             await close_redis_client()
@@ -153,9 +160,7 @@ async def lifespan(app: FastAPI):
             logger.warning("Failed to close redis client on shutdown")
         try:
             # 在线程中执行有限等待的 executor 关闭，避免阻塞事件循环
-            await asyncio.get_running_loop().run_in_executor(
-                None, shutdown_offload_executors, True
-            )
+            await asyncio.get_running_loop().run_in_executor(None, shutdown_offload_executors, True)
         except Exception:
             logger.warning("Failed to shutdown offload executors")
 
@@ -213,7 +218,7 @@ app.include_router(queue.router, prefix="/api")
 app.include_router(workspace_asset.router, prefix="/api")
 app.include_router(workspace_asset.global_router, prefix="/api")
 app.include_router(notification_router.router, prefix="/api")
-from app.domains.notification.routers.task_awareness import router as task_awareness_router
+
 app.include_router(task_awareness_router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
 app.include_router(products_router, prefix="/api")
@@ -539,7 +544,11 @@ async def api_mock_websocket_endpoint(websocket: WebSocket, project_id: str):
                 if user_id != "anonymous":
                     await run_db(
                         _persist_api_mock_collab_event,
-                        project_id, user_id, event_enum, endpoint_id, normalized_payload,
+                        project_id,
+                        user_id,
+                        event_enum,
+                        endpoint_id,
+                        normalized_payload,
                     )
 
                 await api_mock_ws_manager.broadcast(
@@ -663,11 +672,7 @@ def readiness_check():
     worker_health = ai_job_workers.runtime_worker_health()
     containment = ai_job_workers.process_containment_readiness()
     runtime_ready = bool(getattr(app.state, "ai_runtime_ready", False))
-    ready = (
-        runtime_ready
-        and bool(worker_health.get("healthy", False))
-        and bool(containment.get("ok", True))
-    )
+    ready = runtime_ready and bool(worker_health.get("healthy", False)) and bool(containment.get("ok", True))
     status = "ready" if ready else ("degraded" if runtime_ready else "starting")
     return JSONResponse(
         status_code=200 if ready else 503,
@@ -680,15 +685,16 @@ def readiness_check():
         },
     )
 
-from app.domains.local_resource.router import router as local_resource_router
-from app.domains.local_resource.client import ResourceError
 
 app.include_router(local_resource_router, prefix="/api")
+
 
 @app.exception_handler(ResourceError)
 async def local_resource_error_handler(request, exc):
     return JSONResponse(status_code=exc.status_code, content={"detail": {"code": exc.code, "message": str(exc)}})
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

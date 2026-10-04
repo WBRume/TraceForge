@@ -8,15 +8,8 @@ runtime 证据穿越外层失败、identity-aware 状态机与并发隔离。
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from tests.ai.jobs.reliability_helpers import (
-    _assert_no_ownership,
-    _finalize,
-    _job,
-    _owned_running_job,
-    _session_factory,
-)
 from app.agents import bind_agent_attempt, reset_agent_attempt, reset_agent_attempt_runtime
 from app.agents.contract import AgentAttemptContext, AgentAttemptRuntimeState, AgentProcessIdentity
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
@@ -28,6 +21,13 @@ from app.domains.ai.services.jobs import registry as ai_registry
 from app.domains.ai.services.jobs import store as ai_store
 from app.domains.ai.services.jobs.executors import task_chat as ai_task_chat
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+from tests.ai.jobs.reliability_helpers import (
+    _assert_no_ownership,
+    _finalize,
+    _job,
+    _owned_running_job,
+    _session_factory,
+)
 
 
 def test_finalize_on_clean_interrupted_row_is_noop(monkeypatch):
@@ -233,10 +233,7 @@ def test_dirty_interrupted_with_ownership_is_reaped(monkeypatch):
     patch_ai_job_db(monkeypatch, factory)
 
     rows = ai_reaper.list_reclaimable_jobs_sync()
-    assert any(
-        row["job_id"] == "reliability-job" and row["reason"] == "INTERRUPTED_OWNERSHIP_LEAK"
-        for row in rows
-    )
+    assert any(row["job_id"] == "reliability-job" and row["reason"] == "INTERRUPTED_OWNERSHIP_LEAK" for row in rows)
 
     adopted = ai_reaper.adopt_reclaimable_job_sync(
         "reliability-job", "run-legacy", "run-legacy", "INTERRUPTED_OWNERSHIP_LEAK"
@@ -464,7 +461,7 @@ def test_concurrent_jobs_runtime_evidence_not_shared():
     token = agents_pkg.bind_agent_attempt_runtime(second)
     state = agents_pkg.current_agent_attempt_runtime()
     try:
-        assert state is not second or True
+        assert state is second
         assert state.process_started is False
         assert state.termination_confirmed_dead is False
         assert first.termination_confirmed_dead is True

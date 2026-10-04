@@ -33,7 +33,6 @@ import secrets
 import urllib.parse
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 import httpx
 from fastapi import HTTPException
@@ -86,6 +85,7 @@ def _utcnow() -> datetime:
 
 # ══════════════════ 服务层结果载体（router 层转为 response schema） ══════════════════
 
+
 @dataclass(frozen=True)
 class AuthorizeResult:
     authorize_url: str
@@ -103,18 +103,18 @@ class CallbackResult:
 @dataclass(frozen=True)
 class ResolveResult:
     status: str
-    provider: Optional[str] = None
-    email_masked: Optional[str] = None
-    suggested_email: Optional[str] = None
-    suggested_display_name: Optional[str] = None
-    suggested_avatar_url: Optional[str] = None
-    email_verified: Optional[bool] = None
-    provider_display_name: Optional[str] = None
-    reason: Optional[str] = None
-    bound_at: Optional[datetime] = None
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    token_type: Optional[str] = None
+    provider: str | None = None
+    email_masked: str | None = None
+    suggested_email: str | None = None
+    suggested_display_name: str | None = None
+    suggested_avatar_url: str | None = None
+    email_verified: bool | None = None
+    provider_display_name: str | None = None
+    reason: str | None = None
+    bound_at: datetime | None = None
+    access_token: str | None = None
+    refresh_token: str | None = None
+    token_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,8 @@ class BindResult:
 
 # ══════════════════ 内部工具 ══════════════════
 
-def mask_email(email: Optional[str]) -> str:
+
+def mask_email(email: str | None) -> str:
     """脱敏邮箱：``zhangsan@example.com`` → ``z***@example.com``。
 
     🔴 ``resolve`` 是未认证端点，只允许返回脱敏结果（AC-S7 / NFR-S7）。
@@ -142,9 +143,7 @@ def _cleanup_expired(db: Session, *, include_states: bool, include_tickets: bool
     """
     now = _utcnow()
     if include_states:
-        db.query(OAuthState).filter(OAuthState.expires_at < now).delete(
-            synchronize_session=False
-        )
+        db.query(OAuthState).filter(OAuthState.expires_at < now).delete(synchronize_session=False)
     if include_tickets:
         db.query(OAuthTicket).filter(
             OAuthTicket.expires_at < now,
@@ -167,11 +166,15 @@ def _load_profile(ticket_row: OAuthTicket) -> OAuthProfile:
 
 def _raise_if_provider_uid_locked(db: Session, ticket_row: OAuthTicket, now: datetime) -> None:
     """E-18：对该 ``provider_uid`` 的 15 分钟冷却（跨 ticket 生效）→ 423。"""
-    locked_until = db.query(func.max(OAuthTicket.locked_until)).filter(
-        OAuthTicket.provider_uid == ticket_row.provider_uid,
-        OAuthTicket.locked_until.isnot(None),
-        OAuthTicket.locked_until > now,
-    ).scalar()
+    locked_until = (
+        db.query(func.max(OAuthTicket.locked_until))
+        .filter(
+            OAuthTicket.provider_uid == ticket_row.provider_uid,
+            OAuthTicket.locked_until.isnot(None),
+            OAuthTicket.locked_until > now,
+        )
+        .scalar()
+    )
     if locked_until is not None:
         retry_after = max(1, int((locked_until - now).total_seconds()))
         raise OAuthTicketLockedError(retry_after=retry_after)
@@ -181,22 +184,22 @@ def _get_valid_ticket(db: Session, ticket_value: str) -> OAuthTicket:
     """按 ticket 取行并做存在性 / 过期 / 冷却校验（消费前的公共前置）。"""
     row = db.query(OAuthTicket).filter(OAuthTicket.ticket == ticket_value).first()
     if row is None:
-        raise OAuthTicketInvalidError()
+        raise OAuthTicketInvalidError
     now = _utcnow()
     if row.expires_at <= now:
-        raise OAuthTicketExpiredError()
+        raise OAuthTicketExpiredError
     _raise_if_provider_uid_locked(db, row, now)
     return row
 
 
 def _frontend_redirect(
     *,
-    base: Optional[str],
-    ticket: Optional[str] = None,
-    status: Optional[str] = None,
-    client_type: Optional[str] = None,
-    provider: Optional[str] = None,
-    error: Optional[str] = None,
+    base: str | None,
+    ticket: str | None = None,
+    status: str | None = None,
+    client_type: str | None = None,
+    provider: str | None = None,
+    error: str | None = None,
 ) -> str:
     """构造回调 302 目标。
 
@@ -220,9 +223,9 @@ def _frontend_redirect(
 
 def _audit_oauth_callback_failed(
     *,
-    provider: Optional[str],
+    provider: str | None,
     reason: str,
-    resource_id: Optional[str] = None,
+    resource_id: str | None = None,
 ) -> None:
     """§4.6 ``oauth_callback/failed``：state_invalid 为疑似 CSRF（WARN 语义），
     upstream_error 为三方故障（ERROR 语义）；audit_log 统一 info 落盘，
@@ -240,15 +243,16 @@ def _audit_oauth_callback_failed(
 
 # ══════════════════ authorize：发起授权（建一次性 state） ══════════════════
 
+
 def build_authorize_url(
     db: Session,
     *,
     provider: str,
     intent: str,
     client_type: str,
-    user_id: Optional[str],
-    redirect_after: Optional[str] = None,
-    loopback_port: Optional[int] = None,
+    user_id: str | None,
+    redirect_after: str | None = None,
+    loopback_port: int | None = None,
 ) -> AuthorizeResult:
     """创建一次性 state 并返回三方授权 URL（§2.3 接口 2）。
 
@@ -286,13 +290,14 @@ def build_authorize_url(
 
 # ══════════════════ callback：state 校验 → 换 token → 三路判定 → 建 ticket ══════════════════
 
+
 def handle_callback(
     db: Session,
     *,
     provider: str,
-    code: Optional[str],
-    state: Optional[str],
-    error: Optional[str],
+    code: str | None,
+    state: str | None,
+    error: str | None,
 ) -> CallbackResult:
     """三方回调核心（§2.3 接口 3 / §3.1）。
 
@@ -306,34 +311,24 @@ def handle_callback(
     if error:
         reason = "access_denied" if error == "access_denied" else "provider_unavailable"
         _audit_oauth_callback_failed(provider=provider, reason=reason)
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error=reason, provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error=reason, provider=provider))
 
     if not state or not code:
         _audit_oauth_callback_failed(provider=provider, reason="state_invalid")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider))
 
     # ── 2. 校验 state：存在 / 未使用 / 未过期 / provider 匹配 ──
     state_row = db.query(OAuthState).filter(OAuthState.state == state).first()
     now = _utcnow()
     if state_row is None:
         _audit_oauth_callback_failed(provider=provider, reason="state_invalid")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider))
     if state_row.expires_at <= now:
         _audit_oauth_callback_failed(provider=provider, reason="state_expired")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="state_expired", provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="state_expired", provider=provider))
     if state_row.provider != provider:
         _audit_oauth_callback_failed(provider=provider, reason="state_invalid")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider))
 
     # ── 3. 原子标记 used_at（一次性；rowcount=0 即重放，E-4d）──
     rowcount = (
@@ -344,9 +339,7 @@ def handle_callback(
     db.commit()
     if rowcount == 0:
         _audit_oauth_callback_failed(provider=provider, reason="state_invalid")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider))
 
     # ── 4. 换 token → 拉 profile（🔴 token 只存在于局部变量，用后即弃）──
     try:
@@ -356,25 +349,17 @@ def handle_callback(
     except OAuthCodeInvalidError:
         # E-4c：code 失效 / 重复使用，与上游 502 区分
         _audit_oauth_callback_failed(provider=provider, reason="code_invalid")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="code_invalid", provider=provider)
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="code_invalid", provider=provider))
     except (OAuthUpstreamError, httpx.HTTPError):
         # E-9：三方超时 / 5xx / 网络异常；严禁透传三方原始错误（NFR-U2）
         _audit_oauth_callback_failed(provider=provider, reason="upstream_error")
         return CallbackResult(
-            redirect_url=_frontend_redirect(
-                base=None, error="provider_unavailable", provider=provider
-            )
+            redirect_url=_frontend_redirect(base=None, error="provider_unavailable", provider=provider)
         )
     except OAuthAPIError:
         # provider 未注册 / 未配置 → provider_disabled（authorize 阶段理论上已拦截）
         _audit_oauth_callback_failed(provider=provider, reason="provider_disabled")
-        return CallbackResult(
-            redirect_url=_frontend_redirect(
-                base=None, error="provider_disabled", provider=provider
-            )
-        )
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="provider_disabled", provider=provider))
     # 🔴 此处 access_token 已无引用，生命周期终止；profile 中不含任何 token 字段
 
     # ── 5. 三路判定（§2.4）+ 建 ticket + 302 ──
@@ -383,18 +368,12 @@ def handle_callback(
             db, provider=provider, profile=profile, state_user_id=state_row.user_id
         )
     else:
-        status, ticket_user_id, normalized_email = _decide_login_outcome(
-            db, provider=provider, profile=profile
-        )
+        status, ticket_user_id, normalized_email = _decide_login_outcome(db, provider=provider, profile=profile)
 
     if status is None:
         # 加绑场景发起者已不存在（脏数据）：按 state 异常处理
-        _audit_oauth_callback_failed(
-            provider=provider, reason="state_invalid", resource_id=state_row.user_id
-        )
-        return CallbackResult(
-            redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider)
-        )
+        _audit_oauth_callback_failed(provider=provider, reason="state_invalid", resource_id=state_row.user_id)
+        return CallbackResult(redirect_url=_frontend_redirect(base=None, error="state_invalid", provider=provider))
 
     ticket_value = secrets.token_urlsafe(32)
     db.add(
@@ -413,9 +392,7 @@ def handle_callback(
     )
     db.commit()
 
-    redirect_base = (
-        state_row.redirect_uri if state_row.client_type == "desktop" else None
-    )
+    redirect_base = state_row.redirect_uri if state_row.client_type == "desktop" else None
     return CallbackResult(
         redirect_url=_frontend_redirect(
             base=redirect_base,
@@ -428,7 +405,7 @@ def handle_callback(
 
 def _decide_login_outcome(
     db: Session, *, provider: str, profile: OAuthProfile
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None, str | None]:
     """登录意图的三路判定（§2.4 分支 1~3）。返回 ``(status, user_id, normalized_email)``。
 
     🔴 红线：账号归属唯一依据 ``(provider, provider_uid)``；三方 email 只用于
@@ -477,8 +454,8 @@ def _decide_login_outcome(
 
 
 def _decide_bind_outcome(
-    db: Session, *, provider: str, profile: OAuthProfile, state_user_id: Optional[str]
-) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    db: Session, *, provider: str, profile: OAuthProfile, state_user_id: str | None
+) -> tuple[str | None, str | None, str | None]:
     """加绑意图的判定（§2.4 分支 4）。返回 ``(status, user_id, normalized_email)``。
 
     🔴 红线条款 4：加绑场景**不触发路径 B**——用户已持有有效 token，
@@ -523,6 +500,7 @@ def _decide_bind_outcome(
 
 
 # ══════════════════ resolve：幂等读（不消费 ticket） ══════════════════
+
 
 def resolve_ticket(db: Session, ticket: str) -> ResolveResult:
     """兑现 ticket 的前置状态（§2.3 接口 4）。
@@ -584,10 +562,11 @@ def resolve_ticket(db: Session, ticket: str) -> ResolveResult:
         return ResolveResult(status=row.status, provider=row.provider)
 
     # 未知状态：按无效 ticket 处理
-    raise OAuthTicketInvalidError()
+    raise OAuthTicketInvalidError
 
 
 # ══════════════════ ticket 原子消费（🔴 必须单条 UPDATE + rowcount） ══════════════════
+
 
 def _consume_ticket(db: Session, ticket_value: str) -> OAuthTicket:
     """原子抢占式消费。返回 ticket 对象；抢不到则抛异常。
@@ -609,7 +588,7 @@ def _consume_ticket(db: Session, ticket_value: str) -> OAuthTicket:
         .update({OAuthTicket.consumed_at: now}, synchronize_session=False)
     )
     if rowcount == 0:
-        raise OAuthTicketInvalidError()
+        raise OAuthTicketInvalidError
     db.commit()
     return db.query(OAuthTicket).filter(OAuthTicket.ticket == ticket_value).one()
 
@@ -622,9 +601,8 @@ def _release_ticket(db: Session, ticket_row: OAuthTicket) -> None:
 
 # ══════════════════ 绑定写入（含 IntegrityError → 409 / 幂等兜底） ══════════════════
 
-def _create_identity(
-    db: Session, user: User, ticket_row: OAuthTicket, profile: OAuthProfile
-) -> OAuthIdentity:
+
+def _create_identity(db: Session, user: User, ticket_row: OAuthTicket, profile: OAuthProfile) -> OAuthIdentity:
     """创建绑定，依赖 DB ``UNIQUE(provider, provider_uid)`` 兜底（E-13）。
 
     - IntegrityError 后回滚重查：若身份已属于同一用户 → 幂等成功；
@@ -638,14 +616,12 @@ def _create_identity(
         provider_display_name=profile.display_name,
         provider_avatar_url=profile.avatar_url,
         email_verified=profile.email_verified,
-        raw_profile_json=(
-            json.dumps(profile.raw, ensure_ascii=False, default=str) if profile.raw else None
-        ),
+        raw_profile_json=(json.dumps(profile.raw, ensure_ascii=False, default=str) if profile.raw else None),
     )
     db.add(identity)
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as caught_error:
         db.rollback()
         existing = (
             db.query(OAuthIdentity)
@@ -666,7 +642,7 @@ def _create_identity(
             provider_uid=profile.provider_uid,
             reason="identity_bound_to_other_user",
         )
-        raise OAuthIdentityConflictError()
+        raise OAuthIdentityConflictError from caught_error
     db.refresh(identity)
     return identity
 
@@ -684,9 +660,7 @@ def _register_password_failure(db: Session, ticket_row: OAuthTicket) -> None:
     max_attempts = int(settings.OAUTH_BIND_MAX_ATTEMPTS)
     resource_id = ticket_row.user_id or ticket_row.provider_uid
     if ticket_row.failed_attempts >= max_attempts:
-        ticket_row.locked_until = now + timedelta(
-            seconds=int(settings.OAUTH_BIND_COOLDOWN_SECONDS)
-        )
+        ticket_row.locked_until = now + timedelta(seconds=int(settings.OAUTH_BIND_COOLDOWN_SECONDS))
         ticket_row.consumed_at = now  # 作废 ticket
         db.commit()
         audit_log(
@@ -713,6 +687,7 @@ def _register_password_failure(db: Session, ticket_row: OAuthTicket) -> None:
 
 # ══════════════════ 路径 B 终态：confirm_bind（🔴 安全红线核心） ══════════════════
 
+
 def confirm_bind(db: Session, ticket: str, password: str) -> TokenResponse:
     """路径 B 确认绑定（§2.3 接口 6 / §3.3）。
 
@@ -734,7 +709,7 @@ def confirm_bind(db: Session, ticket: str, password: str) -> TokenResponse:
     # 原子抢占消费：防并发双花（C-4）；失败（重放/过期）→ 404
     claimed = _consume_ticket(db, ticket)
 
-    user: Optional[User] = None
+    user: User | None = None
     if claimed.user_id:
         user = db.get(User, claimed.user_id)
     if user is None and claimed.normalized_email:
@@ -743,9 +718,9 @@ def confirm_bind(db: Session, ticket: str, password: str) -> TokenResponse:
     try:
         # 🔴 账号不存在与密码错误：同一异常类 → 同码同文案，响应体逐字节一致
         if user is None:
-            raise OAuthPasswordInvalidError()
+            raise OAuthPasswordInvalidError
         if not auth_service.verify_password(password, user.hashed_password):
-            raise OAuthPasswordInvalidError()
+            raise OAuthPasswordInvalidError
     except OAuthPasswordInvalidError:
         # E-18：失败计数 / 锁定；未达阈值时释放占用以便重试
         _register_password_failure(db, claimed)
@@ -766,7 +741,8 @@ def confirm_bind(db: Session, ticket: str, password: str) -> TokenResponse:
 
 # ══════════════════ 加绑终态：bind_identity（已登录态 / 管理员二次确认） ══════════════════
 
-def bind_identity(db: Session, ticket: str, password: Optional[str]) -> BindResult:
+
+def bind_identity(db: Session, ticket: str, password: str | None) -> BindResult:
     """加绑终态（§2.3 接口 5 / §3.5）。
 
     - 普通用户（``LOGIN_OK`` + intent=bind）：无需密码（拍板 #8）。
@@ -799,17 +775,17 @@ def bind_identity(db: Session, ticket: str, password: Optional[str]) -> BindResu
         # 脏数据兜底：按可绑定状态继续
         claimed.status = TICKET_STATUS_LOGIN_OK
 
-    user: Optional[User] = db.get(User, claimed.user_id) if claimed.user_id else None
+    user: User | None = db.get(User, claimed.user_id) if claimed.user_id else None
 
     if claimed.status == TICKET_STATUS_CONFIRM_REQUIRED:
         # 🔴 管理员加绑：必须二次密码确认，无任何绕过路径
         if not password:
-            raise OAuthPasswordRequiredError()
+            raise OAuthPasswordRequiredError
         if user is None or not auth_service.verify_password(password, user.hashed_password):
-            raise OAuthPasswordInvalidError()
+            raise OAuthPasswordInvalidError
     elif claimed.status == TICKET_STATUS_LOGIN_OK:
         if user is None:
-            raise OAuthTicketInvalidError()
+            raise OAuthTicketInvalidError
     else:
         # BIND_REQUIRED / REGISTER_REQUIRED / BIND_CONFLICT 等状态不可用于加绑
         raise OAuthAPIError(
@@ -836,9 +812,8 @@ def bind_identity(db: Session, ticket: str, password: Optional[str]) -> BindResu
 
 # ══════════════════ 路径 C 终态：complete_register（手填优先） ══════════════════
 
-def complete_register(
-    db: Session, ticket: str, email: str, password: str, display_name: str
-) -> TokenResponse:
+
+def complete_register(db: Session, ticket: str, email: str, password: str, display_name: str) -> TokenResponse:
     """路径 C 补全注册（§2.3 接口 7 / §3.4）。
 
     🔴 手填优先（拍板 #6 / E-1）：以用户手填 ``email`` 建号；
@@ -861,7 +836,7 @@ def complete_register(
 
     # E-1b：唯一性前置校验失败 → 409 且不消费 ticket（用户可换邮箱重试）
     if db.query(User.id).filter(User.email == normalized).first() is not None:
-        raise OAuthEmailTakenError()
+        raise OAuthEmailTakenError
 
     claimed = _consume_ticket(db, ticket)
 
@@ -886,21 +861,17 @@ def complete_register(
                 provider_display_name=profile.display_name,
                 provider_avatar_url=profile.avatar_url,
                 email_verified=profile.email_verified,
-                raw_profile_json=(
-                    json.dumps(profile.raw, ensure_ascii=False, default=str)
-                    if profile.raw
-                    else None
-                ),
+                raw_profile_json=(json.dumps(profile.raw, ensure_ascii=False, default=str) if profile.raw else None),
             )
         )
         db.commit()
-    except IntegrityError:
+    except IntegrityError as caught_error_:
         # E-13：并发下唯一约束兜底（同邮箱并发注册 / 身份被并发绑定）
         db.rollback()
         _release_ticket(db, claimed)  # 释放占用，允许重试
         if db.query(User.id).filter(User.email == normalized).first() is not None:
-            raise OAuthEmailTakenError()
-        raise OAuthIdentityConflictError()
+            raise OAuthEmailTakenError from caught_error_
+        raise OAuthIdentityConflictError from caught_error_
 
     db.refresh(user)
     audit_log(
@@ -916,14 +887,10 @@ def complete_register(
 
 # ══════════════════ 身份列表与解绑 ══════════════════
 
+
 def list_identities(db: Session, user: User) -> list[OAuthIdentity]:
     """当前用户已绑定身份（设置页展示）。"""
-    return (
-        db.query(OAuthIdentity)
-        .filter(OAuthIdentity.user_id == user.id)
-        .order_by(OAuthIdentity.created_at)
-        .all()
-    )
+    return db.query(OAuthIdentity).filter(OAuthIdentity.user_id == user.id).order_by(OAuthIdentity.created_at).all()
 
 
 def unbind_identity(db: Session, user: User, identity_id: str) -> None:
@@ -933,11 +900,7 @@ def unbind_identity(db: Session, user: User, identity_id: str) -> None:
     - E-6b 防御：账号无密码（脏数据）→ 400 + WARN 审计。
     - E-6：允许解绑最后一个身份（D-3 保证密码恒存在）。
     """
-    identity = (
-        db.query(OAuthIdentity)
-        .filter(OAuthIdentity.id == identity_id, OAuthIdentity.user_id == user.id)
-        .first()
-    )
+    identity = db.query(OAuthIdentity).filter(OAuthIdentity.id == identity_id, OAuthIdentity.user_id == user.id).first()
     if identity is None:
         raise HTTPException(status_code=404, detail="绑定关系不存在")
     if not (user.hashed_password or "").strip():
@@ -949,7 +912,7 @@ def unbind_identity(db: Session, user: User, identity_id: str) -> None:
             username=user.email,
             reason="no_password",
         )
-        raise OAuthNoPasswordError()
+        raise OAuthNoPasswordError
     provider = identity.provider
     db.delete(identity)
     db.commit()

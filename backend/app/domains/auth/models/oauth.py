@@ -36,12 +36,12 @@ def generate_uuid() -> str:
 
 
 # ── ticket status 常量（回调三路判定结果，String(30) 存储，大写蛇形）──
-TICKET_STATUS_LOGIN_OK = "LOGIN_OK"                      # 路径 A：身份已存在
-TICKET_STATUS_BIND_REQUIRED = "BIND_REQUIRED"            # 路径 B：email 已注册，需验密码 🔴
-TICKET_STATUS_REGISTER_REQUIRED = "REGISTER_REQUIRED"    # 路径 C：email 未注册，补全注册
-TICKET_STATUS_CONFIRM_REQUIRED = "CONFIRM_REQUIRED"      # 加绑 + 管理员账号，需二次密码确认
-TICKET_STATUS_ALREADY_BOUND = "ALREADY_BOUND"            # 加绑幂等（身份已绑当前用户）
-TICKET_STATUS_BIND_CONFLICT = "BIND_CONFLICT"            # 加绑冲突（身份已绑其他账号）
+TICKET_STATUS_LOGIN_OK = "LOGIN_OK"  # 路径 A：身份已存在
+TICKET_STATUS_BIND_REQUIRED = "BIND_REQUIRED"  # 路径 B：email 已注册，需验密码 🔴
+TICKET_STATUS_REGISTER_REQUIRED = "REGISTER_REQUIRED"  # 路径 C：email 未注册，补全注册
+TICKET_STATUS_CONFIRM_REQUIRED = "CONFIRM_REQUIRED"  # 加绑 + 管理员账号，需二次密码确认
+TICKET_STATUS_ALREADY_BOUND = "ALREADY_BOUND"  # 加绑幂等（身份已绑当前用户）
+TICKET_STATUS_BIND_CONFLICT = "BIND_CONFLICT"  # 加绑冲突（身份已绑其他账号）
 
 TICKET_STATUSES = (
     TICKET_STATUS_LOGIN_OK,
@@ -149,9 +149,7 @@ class OAuthTicket(Base):
     """
 
     __tablename__ = "oauth_tickets"
-    __table_args__ = (
-        UniqueConstraint("ticket", name="uq_oauth_tickets_ticket"),
-    )
+    __table_args__ = (UniqueConstraint("ticket", name="uq_oauth_tickets_ticket"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     # UNIQUE(uq_oauth_tickets_ticket) 本身即唯一索引，不再叠加普通索引（避免 MySQL 冗余索引）

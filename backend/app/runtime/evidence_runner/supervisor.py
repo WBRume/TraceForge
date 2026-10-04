@@ -3,14 +3,16 @@
 Local evidence files alone are not an isolation boundary. Only a certified bundle
 probe may authorize execution, and collectors run outside the tested process.
 """
+
 import asyncio
-from dataclasses import asdict
-import json
 import hashlib
+import json
 import os
-from pathlib import Path
 import time
 import uuid
+from dataclasses import asdict
+from pathlib import Path
+
 from app.agents.supervision.supervisor import ProcessSupervisor
 from app.domains.diagnosis_playbook.contracts import PlaybookError, digest
 
@@ -46,7 +48,11 @@ class EvidenceRunner:
             raise PlaybookError("RECEIPT_DIGEST_MISMATCH", status=409)
         for artifact in receipt.get("artifacts", []):
             path = directory / artifact["name"]
-            if not path.resolve().is_relative_to(directory.resolve()) or not path.is_file() or self._file_digest(path) != artifact["digest"]:
+            if (
+                not path.resolve().is_relative_to(directory.resolve())
+                or not path.is_file()
+                or self._file_digest(path) != artifact["digest"]
+            ):
                 raise PlaybookError("SEALED_ARTIFACT_CHANGED", status=409)
         return receipt
 
@@ -70,6 +76,7 @@ class EvidenceRunner:
         or target-pass claim can be inferred from an empty directory.
         """
         from datetime import datetime
+
         directory = self.directory(envelope.execution_id)
         identity_path = directory / "process.json"
         if not identity_path.is_file():
@@ -78,8 +85,13 @@ class EvidenceRunner:
         intent = json.loads((directory / "intent.json").read_text(encoding="utf-8"))
         if digest(intent) != digest(asdict(envelope)):
             raise PlaybookError("EXECUTION_ID_CONFLICT", status=409)
-        stopped = await self.supervisor.stop_persisted(identity["pid"], datetime.fromisoformat(identity["started_at"]),
-            "playbook_owner_lost", process_group_id=identity.get("process_group_id"), run_token=envelope.execution_id)
+        stopped = await self.supervisor.stop_persisted(
+            identity["pid"],
+            datetime.fromisoformat(identity["started_at"]),
+            "playbook_owner_lost",
+            process_group_id=identity.get("process_group_id"),
+            run_token=envelope.execution_id,
+        )
         if stopped.confirmed_dead is not True:
             raise PlaybookError("TERMINATION_UNKNOWN", status=409)
         # A concurrent owner may have sealed the authoritative result meanwhile.
@@ -96,15 +108,66 @@ class EvidenceRunner:
             path = directory / name
             if path.is_file():
                 artifacts.append({"name": name, "digest": self._file_digest(path), "size": path.stat().st_size})
-        receipt = {**asdict(envelope), "envelope_digest": digest(asdict(envelope)),
-            "runner_identity": self.identity, "exit_code": -1, "termination": "CONFIRMED",
-            "timed_out": False, "cancelled": True, "facts": {"runner.interrupted": True},
-            "artifacts": artifacts, "sealed_at": time.time(), "cleanup_confirmed": cleanup_confirmed}
+        receipt = {
+            **asdict(envelope),
+            "envelope_digest": digest(asdict(envelope)),
+            "runner_identity": self.identity,
+            "exit_code": -1,
+            "termination": "CONFIRMED",
+            "timed_out": False,
+            "cancelled": True,
+            "facts": {"runner.interrupted": True},
+            "artifacts": artifacts,
+            "sealed_at": time.time(),
+            "cleanup_confirmed": cleanup_confirmed,
+        }
         receipt["receipt_digest"] = digest(receipt)
         try:
             self._seal(directory / "receipt.json", receipt)
         except FileExistsError:
             return self.inspect(envelope)
+        return receipt
+
+    async def _seal_completed_execution(
+        self, envelope, bundle, directory, process, timed_out, cancel_requested, started
+    ):
+        try:
+            facts, artifacts = await asyncio.to_thread(bundle.collect, envelope, directory)
+        except Exception as exc:
+            # The process is confirmed dead. Preserve an ERROR receipt so
+            # an invalid/truncated report cannot strand recovery forever.
+            facts, artifacts = {"runner.collector_error": type(exc).__name__}, []
+        cleanup_confirmed = True
+        if bundle.cleanup:
+            try:
+                await asyncio.to_thread(bundle.cleanup, envelope)
+            except Exception as exc:
+                cleanup_confirmed = False
+                facts["runner.cleanup_error"] = type(exc).__name__
+        sealed_artifacts = []
+        from app.domains.diagnosis_playbook.compiler import safe_relative
+
+        for name in dict.fromkeys(["stdout", "stderr", *artifacts]):
+            path = directory / name
+            if not safe_relative(name) or not path.resolve(strict=True).is_relative_to(directory.resolve()):
+                raise PlaybookError("ARTIFACT_PATH_ESCAPE")
+            sealed_artifacts.append({"name": name, "digest": self._file_digest(path), "size": path.stat().st_size})
+        receipt = {
+            **asdict(envelope),
+            "envelope_digest": digest(asdict(envelope)),
+            "runner_identity": self.identity,
+            "exit_code": process.returncode,
+            "termination": "CONFIRMED",
+            "timed_out": timed_out,
+            "cancelled": cancel_requested,
+            "facts": facts,
+            "artifacts": sealed_artifacts,
+            "sealed_at": time.time(),
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "cleanup_confirmed": cleanup_confirmed,
+        }
+        receipt["receipt_digest"] = digest(receipt)
+        self._seal(directory / "receipt.json", receipt)
         return receipt
 
     async def execute(self, envelope, bundle, *, emit, cancelled):
@@ -124,15 +187,26 @@ class EvidenceRunner:
         try:
             if str(Path(envelope.cwd).resolve(strict=True)) != envelope.cwd:
                 raise PlaybookError("EXECUTION_PATH_CHANGED", status=409)
-            child_environment = await asyncio.to_thread(bundle.child_environment, envelope) if bundle.child_environment else {}
+            child_environment = (
+                await asyncio.to_thread(bundle.child_environment, envelope) if bundle.child_environment else {}
+            )
         except Exception as exc:
             # No process creation has been attempted. This is an authoritative
             # preparation failure, unlike a lost post-spawn attach callback.
-            receipt = {**asdict(envelope), "envelope_digest": digest(asdict(envelope)),
-                "runner_identity": self.identity, "exit_code": -1, "termination": "CONFIRMED",
-                "timed_out": False, "cancelled": False, "process_started": False,
-                "facts": {"runner.preparation_error": type(exc).__name__}, "artifacts": [],
-                "sealed_at": time.time(), "cleanup_confirmed": True}
+            receipt = {
+                **asdict(envelope),
+                "envelope_digest": digest(asdict(envelope)),
+                "runner_identity": self.identity,
+                "exit_code": -1,
+                "termination": "CONFIRMED",
+                "timed_out": False,
+                "cancelled": False,
+                "process_started": False,
+                "facts": {"runner.preparation_error": type(exc).__name__},
+                "artifacts": [],
+                "sealed_at": time.time(),
+                "cleanup_confirmed": True,
+            }
             receipt["receipt_digest"] = digest(receipt)
             self._seal(directory / "receipt.json", receipt)
             return receipt
@@ -140,16 +214,32 @@ class EvidenceRunner:
             # Bundle code/root is isolated from source and cwd, and the executable
             # is resolved by server configuration, never the task's PATH.
             async def attached(identity):
-                self._seal(directory / "process.json", {"pid": identity.pid, "started_at": identity.started_at.isoformat(),
-                                                        "process_group_id": identity.process_group_id, "containment_id": identity.containment_id})
+                self._seal(
+                    directory / "process.json",
+                    {
+                        "pid": identity.pid,
+                        "started_at": identity.started_at.isoformat(),
+                        "process_group_id": identity.process_group_id,
+                        "containment_id": identity.containment_id,
+                    },
+                )
                 return True
+
             managed = await self.supervisor.spawn(
-                [bundle.executable, *envelope.argv[1:]], cwd=envelope.cwd,
-                run_token=envelope.execution_id, worker_boot_id=self.identity,
+                [bundle.executable, *envelope.argv[1:]],
+                cwd=envelope.cwd,
+                run_token=envelope.execution_id,
+                worker_boot_id=self.identity,
                 on_process_started=attached,
-                env={"PATH": str(Path(bundle.executable).parent), "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-                     "PYTHONPATH": bundle.root, "PYTHONNOUSERSITE": "1", "PYTHONSAFEPATH": "1",
-                     "PYTHONDONTWRITEBYTECODE": "1", **child_environment},
+                env={
+                    "PATH": str(Path(bundle.executable).parent),
+                    "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                    "PYTHONPATH": bundle.root,
+                    "PYTHONNOUSERSITE": "1",
+                    "PYTHONSAFEPATH": "1",
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                    **child_environment,
+                },
             )
             process = managed.process
             if process.stdin:
@@ -163,7 +253,10 @@ class EvidenceRunner:
                     output.flush()
                     os.fsync(output.fileno())
 
-            pumps = [asyncio.create_task(pump(process.stdout, "stdout")), asyncio.create_task(pump(process.stderr, "stderr"))]
+            pumps = [
+                asyncio.create_task(pump(process.stdout, "stdout")),
+                asyncio.create_task(pump(process.stderr, "stderr")),
+            ]
             try:
                 while process.returncode is None:
                     elapsed = time.monotonic() - started
@@ -182,34 +275,10 @@ class EvidenceRunner:
                 if not stopped.confirmed_dead:
                     raise PlaybookError("TERMINATION_UNKNOWN", status=409)
                 self.supervisor.forget(managed)
-            try:
-                facts, artifacts = await asyncio.to_thread(bundle.collect, envelope, directory)
-            except Exception as exc:
-                # The process is confirmed dead. Preserve an ERROR receipt so
-                # an invalid/truncated report cannot strand recovery forever.
-                facts, artifacts = {"runner.collector_error": type(exc).__name__}, []
-            cleanup_confirmed = True
-            if bundle.cleanup:
-                try:
-                    await asyncio.to_thread(bundle.cleanup, envelope)
-                except Exception as exc:
-                    cleanup_confirmed = False
-                    facts["runner.cleanup_error"] = type(exc).__name__
-            sealed_artifacts = []
-            from app.domains.diagnosis_playbook.compiler import safe_relative
-            for name in dict.fromkeys(["stdout", "stderr", *artifacts]):
-                path = directory / name
-                if not safe_relative(name) or not path.resolve(strict=True).is_relative_to(directory.resolve()):
-                    raise PlaybookError("ARTIFACT_PATH_ESCAPE")
-                sealed_artifacts.append({"name": name, "digest": self._file_digest(path), "size": path.stat().st_size})
-            receipt = {**asdict(envelope), "envelope_digest": digest(asdict(envelope)),
-                       "runner_identity": self.identity, "exit_code": process.returncode,
-                       "termination": "CONFIRMED", "timed_out": timed_out, "cancelled": cancel_requested,
-                       "facts": facts, "artifacts": sealed_artifacts, "sealed_at": time.time(),
-                       "duration_seconds": round(time.monotonic() - started, 3), "cleanup_confirmed": cleanup_confirmed}
-            receipt["receipt_digest"] = digest(receipt)
-            self._seal(directory / "receipt.json", receipt)
-            return receipt
+            return await self._seal_completed_execution(
+                envelope, bundle, directory, process, timed_out, cancel_requested, started
+            )
+
         except BaseException:
             # Keep intent/process journal to make retry return UNKNOWN. Never delete it.
             if managed is not None:

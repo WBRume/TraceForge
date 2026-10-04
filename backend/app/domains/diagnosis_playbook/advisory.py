@@ -1,4 +1,5 @@
 """Soft protocol: ordinary agent output is a proposal, never a verification receipt."""
+
 import json
 import re
 
@@ -20,7 +21,9 @@ def prompt_contract(phase, branch):
     if branch:
         text += "只评估 branch_hypothesis，不得替换其他假说，可提交该分支的实验候选。"
     elif phase == "HYPOTHESIZE":
-        text += "必须提交 propose_hypotheses，arguments 满足以下结构：" + json.dumps(HYPOTHESIS_SCHEMA, ensure_ascii=False)
+        text += "必须提交 propose_hypotheses，arguments 满足以下结构：" + json.dumps(
+            HYPOTHESIS_SCHEMA, ensure_ascii=False
+        )
         text += "如果上下文含 registered_discriminators，请为每个假说选择不同的已注册引用。"
     if phase == "PATCH":
         text += "补丁使用 propose_patch 提交 files（相对路径到完整文件内容），不得直接改写源码基线。"
@@ -47,8 +50,12 @@ def accept_result(db, run, text):
     if not isinstance(proposals, list) or len(proposals) > 4:
         raise PlaybookError("ADVISORY_RESULT_INVALID")
     for index, proposal in enumerate(proposals):
-        if not isinstance(proposal, dict) or set(proposal) != {"name", "arguments"} or proposal["name"] not in (
-            "propose_hypotheses", "propose_experiment", "propose_patch"
+        if (
+            not isinstance(proposal, dict)
+            or set(proposal) != {"name", "arguments"}
+            or proposal["name"] not in ("propose_hypotheses", "propose_experiment", "propose_patch")
         ):
             raise PlaybookError("ADVISORY_PROPOSAL_NOT_ALLOWED")
-        submit_proposal(db, run, run.data_json["active_scope"], proposal["name"], proposal["arguments"], f"advisory:{index}")
+        submit_proposal(
+            db, run, run.data_json["active_scope"], proposal["name"], proposal["arguments"], f"advisory:{index}"
+        )

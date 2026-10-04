@@ -1,5 +1,3 @@
-import os
-import sys
 from contextlib import contextmanager
 from datetime import datetime
 
@@ -9,17 +7,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.database import Base  # noqa: E402
-
-# Import all model modules so SQLAlchemy mappers initialize correctly
-import app.domains.api_mock.models.api_mock  # noqa: F401
+import app.domains.api_mock.models.api_mock
 import app.domains.task.models.test_result  # noqa: F401
-
+from app.database import Base
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.asset.models.asset import AssetType, SddAsset
 from app.domains.auth.models.user import (
@@ -58,12 +48,14 @@ from app.domains.workspace_asset.models.workspace_asset import (
     TaskRequirementRelationType,
 )
 from app.domains.workspace_asset.routers import workspace_asset as workspace_asset_router
-from app.domains.workspace_asset.services.overview import list_knowledge_assets  # noqa: E402
-from app.domains.workspace_asset.services.requirements.queries import list_requirements  # noqa: E402
-from app.domains.workspace_asset.services.tasks.detail import get_task_detail  # noqa: E402
-from app.domains.workspace_asset.services.tasks.presenters import task_summary  # noqa: E402
-from app.domains.workspace_asset.services.traceability import get_traceability  # noqa: E402
+from app.domains.workspace_asset.services.overview import list_knowledge_assets
+from app.domains.workspace_asset.services.requirements.queries import list_requirements
+from app.domains.workspace_asset.services.tasks.detail import get_task_detail
 from app.domains.workspace_asset.services.tasks.list_query import list_tasks
+from app.domains.workspace_asset.services.tasks.presenters import task_summary
+from app.domains.workspace_asset.services.traceability import get_traceability
+
+# Import all model modules so SQLAlchemy mappers initialize correctly
 
 
 def _build_db():
@@ -222,7 +214,9 @@ def test_workspace_asset_models_express_minimum_domain_boundaries():
                 status=KnowledgeAssetStatus.DRAFT,
                 title="Checkout validation pattern",
             )
-            db.add_all([requirement, link, spec_asset, plan_asset, ai_job, ai_output, review, delta, evidence, knowledge])
+            db.add_all(
+                [requirement, link, spec_asset, plan_asset, ai_job, ai_output, review, delta, evidence, knowledge]
+            )
             db.commit()
 
             detail = get_task_detail(db, workspace.id, task.id)
@@ -499,18 +493,20 @@ def test_spec_coverage_matrix_derives_conservative_statuses():
                 source_ref="manual-confirmation-1",
                 confirmed_at=datetime.utcnow(),
             )
-            db.add_all([
-                *requirements,
-                *tasks,
-                *links,
-                spec_asset,
-                plan_asset,
-                delta,
-                clarification,
-                decision,
-                ordinary_evidence,
-                human_confirmation,
-            ])
+            db.add_all(
+                [
+                    *requirements,
+                    *tasks,
+                    *links,
+                    spec_asset,
+                    plan_asset,
+                    delta,
+                    clarification,
+                    decision,
+                    ordinary_evidence,
+                    human_confirmation,
+                ]
+            )
             db.commit()
 
             traceability = get_traceability(db, workspace.id)
@@ -566,6 +562,7 @@ def test_workspace_asset_read_only_api_returns_real_empty_boundaries():
     finally:
         engine.dispose()
 
+
 def test_workspace_asset_tasks_pagination_and_filtering():
     engine, SessionLocal = _build_db()
     try:
@@ -579,7 +576,7 @@ def test_workspace_asset_tasks_pagination_and_filtering():
                     name=f"Filterable task {i}",
                     project_path="G:/repo",
                     status=TaskStatus.DONE if i % 2 == 0 else TaskStatus.PLANNING,
-                    current_phase="CODING" if i % 2 == 0 else "TESTING"
+                    current_phase="CODING" if i % 2 == 0 else "TESTING",
                 )
                 for i in range(5)
             ]
@@ -609,52 +606,125 @@ def _seed_stats_fixtures(db, workspace, user):
     """task-a: 2 需求 + 未确认证据（缺证据）；task-b: 1 需求 + 已确认证据；
     task-c / seed 任务：无需求关联（不应计入 evidence_missing）。"""
     tasks = [
-        SddTask(id=f"task-{k}", workspace_id=workspace.id, creator_id=user.id,
-                name=f"Task {k.upper()}", project_path="G:/repo", status=TaskStatus.CODING)
+        SddTask(
+            id=f"task-{k}",
+            workspace_id=workspace.id,
+            creator_id=user.id,
+            name=f"Task {k.upper()}",
+            project_path="G:/repo",
+            status=TaskStatus.CODING,
+        )
         for k in ("a", "b", "c")
     ]
     db.add_all(tasks)
     db.flush()
 
-    db.add_all([
-        SddRequirement(
-            id=f"req-{i}", workspace_id=workspace.id, created_by_id=user.id,
-            title=f"Requirement {i}", status=RequirementStatus.ACTIVE,
-            source_kind="manual", source_ref=f"REQ-{i}",
-        )
-        for i in range(3)
-    ])
-    db.add_all([
-        SddTaskRequirement(id="link-a1", workspace_id=workspace.id, requirement_id="req-0",
-                           task_id="task-a", relation_type=TaskRequirementRelationType.COVERS,
-                           created_by_id=user.id),
-        SddTaskRequirement(id="link-a2", workspace_id=workspace.id, requirement_id="req-1",
-                           task_id="task-a", relation_type=TaskRequirementRelationType.COVERS,
-                           created_by_id=user.id),
-        SddTaskRequirement(id="link-b1", workspace_id=workspace.id, requirement_id="req-2",
-                           task_id="task-b", relation_type=TaskRequirementRelationType.COVERS,
-                           created_by_id=user.id),
-    ])
-    db.add_all([
-        SddEvidence(id="ev-a", workspace_id=workspace.id, task_id="task-a",
-                    status=EvidenceStatus.UNCONFIRMED, evidence_type=EvidenceType.CODE,
-                    source_type=EvidenceSourceType.OTHER),
-        SddEvidence(id="ev-b", workspace_id=workspace.id, task_id="task-b",
-                    status=EvidenceStatus.CONFIRMED, evidence_type=EvidenceType.CODE,
-                    source_type=EvidenceSourceType.OTHER),
-    ])
-    db.add_all([
-        SddAsset(id="spec-a1", workspace_id=workspace.id, task_id="task-a",
-                 creator_id=user.id, asset_type=AssetType.SPEC, name="spec1"),
-        SddAsset(id="spec-a2", workspace_id=workspace.id, task_id="task-a",
-                 creator_id=user.id, asset_type=AssetType.SPEC, name="spec2"),
-        SddAsset(id="plan-a1", workspace_id=workspace.id, task_id="task-a",
-                 creator_id=user.id, asset_type=AssetType.PLAN, name="plan1"),
-        SddPlanNode(id="pn-a1", workspace_id=workspace.id, task_id="task-a",
-                    creator_id=user.id, title="node1", status=PlanNodeStatus.PENDING),
-        SddPlanNode(id="pn-a2", workspace_id=workspace.id, task_id="task-a",
-                    creator_id=user.id, title="node2", status=PlanNodeStatus.PENDING),
-    ])
+    db.add_all(
+        [
+            SddRequirement(
+                id=f"req-{i}",
+                workspace_id=workspace.id,
+                created_by_id=user.id,
+                title=f"Requirement {i}",
+                status=RequirementStatus.ACTIVE,
+                source_kind="manual",
+                source_ref=f"REQ-{i}",
+            )
+            for i in range(3)
+        ]
+    )
+    db.add_all(
+        [
+            SddTaskRequirement(
+                id="link-a1",
+                workspace_id=workspace.id,
+                requirement_id="req-0",
+                task_id="task-a",
+                relation_type=TaskRequirementRelationType.COVERS,
+                created_by_id=user.id,
+            ),
+            SddTaskRequirement(
+                id="link-a2",
+                workspace_id=workspace.id,
+                requirement_id="req-1",
+                task_id="task-a",
+                relation_type=TaskRequirementRelationType.COVERS,
+                created_by_id=user.id,
+            ),
+            SddTaskRequirement(
+                id="link-b1",
+                workspace_id=workspace.id,
+                requirement_id="req-2",
+                task_id="task-b",
+                relation_type=TaskRequirementRelationType.COVERS,
+                created_by_id=user.id,
+            ),
+        ]
+    )
+    db.add_all(
+        [
+            SddEvidence(
+                id="ev-a",
+                workspace_id=workspace.id,
+                task_id="task-a",
+                status=EvidenceStatus.UNCONFIRMED,
+                evidence_type=EvidenceType.CODE,
+                source_type=EvidenceSourceType.OTHER,
+            ),
+            SddEvidence(
+                id="ev-b",
+                workspace_id=workspace.id,
+                task_id="task-b",
+                status=EvidenceStatus.CONFIRMED,
+                evidence_type=EvidenceType.CODE,
+                source_type=EvidenceSourceType.OTHER,
+            ),
+        ]
+    )
+    db.add_all(
+        [
+            SddAsset(
+                id="spec-a1",
+                workspace_id=workspace.id,
+                task_id="task-a",
+                creator_id=user.id,
+                asset_type=AssetType.SPEC,
+                name="spec1",
+            ),
+            SddAsset(
+                id="spec-a2",
+                workspace_id=workspace.id,
+                task_id="task-a",
+                creator_id=user.id,
+                asset_type=AssetType.SPEC,
+                name="spec2",
+            ),
+            SddAsset(
+                id="plan-a1",
+                workspace_id=workspace.id,
+                task_id="task-a",
+                creator_id=user.id,
+                asset_type=AssetType.PLAN,
+                name="plan1",
+            ),
+            SddPlanNode(
+                id="pn-a1",
+                workspace_id=workspace.id,
+                task_id="task-a",
+                creator_id=user.id,
+                title="node1",
+                status=PlanNodeStatus.PENDING,
+            ),
+            SddPlanNode(
+                id="pn-a2",
+                workspace_id=workspace.id,
+                task_id="task-a",
+                creator_id=user.id,
+                title="node2",
+                status=PlanNodeStatus.PENDING,
+            ),
+        ]
+    )
     db.commit()
 
 
@@ -706,10 +776,8 @@ def test_workspace_asset_tasks_requirement_count_sort_in_sql():
             assert by_req.total == 1 and by_req.items[0].id == "task-b"
 
             # 分页取段：按 requirement_count 降序取第 2 页（page_size=2）
-            page2 = list_tasks(db, workspace.id, sort_by="requirement_count",
-                               sort_order="desc", page=2, page_size=2)
+            page2 = list_tasks(db, workspace.id, sort_by="requirement_count", sort_order="desc", page=2, page_size=2)
             assert page2.total == 4
             assert [item.id for item in page2.items] == ["task-seed", "task-c"]
     finally:
         engine.dispose()
-

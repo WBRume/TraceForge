@@ -9,7 +9,8 @@ import contextvars
 import logging
 import os
 import sys
-from typing import Any, Dict, Iterator, Optional
+from collections.abc import Iterator
+from typing import Any
 
 from loguru import logger as _loguru_logger
 
@@ -30,14 +31,14 @@ KNOWN_CONTEXT_KEYS = (
     "duration_ms",
 )
 
-_LOG_CONTEXT: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+_LOG_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "sdd_log_context",
     default=None,
 )
 _LOGGING_READY = False
 
 
-def _coerce_category(value: Optional[str]) -> str:
+def _coerce_category(value: str | None) -> str:
     text = str(value or "").strip().lower()
     return text or DEFAULT_CATEGORY
 
@@ -49,15 +50,15 @@ def _normalize_level_name(raw_level: str) -> str:
     return "INFO"
 
 
-def _current_context() -> Dict[str, Any]:
+def _current_context() -> dict[str, Any]:
     value = _LOG_CONTEXT.get()
     if isinstance(value, dict):
         return dict(value)
     return {}
 
 
-def _clean_fields(values: Dict[str, Any]) -> Dict[str, Any]:
-    cleaned: Dict[str, Any] = {}
+def _clean_fields(values: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
     for key, value in values.items():
         if value is None:
             continue
@@ -82,13 +83,13 @@ def bind_log_context(**values: Any) -> Iterator[None]:
 
 def bind_request_context(
     *,
-    request_id: Optional[str] = None,
-    user_id: Optional[str] = None,
-    workspace_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    client_ip: Optional[str] = None,
-    method: Optional[str] = None,
-    path: Optional[str] = None,
+    request_id: str | None = None,
+    user_id: str | None = None,
+    workspace_id: str | None = None,
+    task_id: str | None = None,
+    client_ip: str | None = None,
+    method: str | None = None,
+    path: str | None = None,
 ) -> contextlib.AbstractContextManager[None]:
     return bind_log_context(
         request_id=request_id,
@@ -103,9 +104,9 @@ def bind_request_context(
 
 def bind_task_context(
     *,
-    task_id: Optional[str] = None,
-    workspace_id: Optional[str] = None,
-    user_id: Optional[str] = None,
+    task_id: str | None = None,
+    workspace_id: str | None = None,
+    user_id: str | None = None,
 ) -> contextlib.AbstractContextManager[None]:
     return bind_log_context(
         task_id=task_id,
@@ -116,12 +117,12 @@ def bind_task_context(
 
 def bind_ai_context(
     *,
-    job_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    model: Optional[str] = None,
-    round: Optional[int] = None,
-    event_type: Optional[str] = None,
+    job_id: str | None = None,
+    task_id: str | None = None,
+    session_id: str | None = None,
+    model: str | None = None,
+    round: int | None = None,
+    event_type: str | None = None,
 ) -> contextlib.AbstractContextManager[None]:
     return bind_log_context(
         job_id=job_id,
@@ -135,11 +136,11 @@ def bind_ai_context(
 
 def bind_audit_context(
     *,
-    user_id: Optional[str] = None,
-    workspace_id: Optional[str] = None,
-    action: Optional[str] = None,
-    resource_type: Optional[str] = None,
-    resource_id: Optional[str] = None,
+    user_id: str | None = None,
+    workspace_id: str | None = None,
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
 ) -> contextlib.AbstractContextManager[None]:
     return bind_log_context(
         user_id=user_id,
@@ -150,7 +151,7 @@ def bind_audit_context(
     )
 
 
-def _record_patcher(record: Dict[str, Any]) -> None:
+def _record_patcher(record: dict[str, Any]) -> None:
     extra = record["extra"]
     context = _current_context()
     for key, value in context.items():
@@ -161,7 +162,7 @@ def _record_patcher(record: Dict[str, Any]) -> None:
         extra.setdefault(key, "-")
 
 
-def get_logger(name: Optional[str] = None, category: str = DEFAULT_CATEGORY):
+def get_logger(name: str | None = None, category: str = DEFAULT_CATEGORY):
     bound = _loguru_logger.bind(category=_coerce_category(category))
     if name:
         bound = bound.bind(logger_name=name)
@@ -173,11 +174,11 @@ def _category_filter(expected: str):
     return lambda record: _coerce_category(record["extra"].get("category")) == category
 
 
-def _error_filter(record: Dict[str, Any]) -> bool:
+def _error_filter(record: dict[str, Any]) -> bool:
     return int(record["level"].no) >= logging.ERROR
 
 
-def _debug_filter(record: Dict[str, Any]) -> bool:
+def _debug_filter(record: dict[str, Any]) -> bool:
     return record["level"].name == "DEBUG"
 
 
@@ -185,13 +186,11 @@ def _is_safe_extra_value(value: Any) -> bool:
     """仅放行可序列化的标量值，避免把 uvicorn websocket/app 等对象带进 loguru enqueue 队列。"""
     if value is None:
         return True
-    if isinstance(value, (str, int, float, bool)):
-        return True
-    return False
+    return bool(isinstance(value, (str, int, float, bool)))
 
 
 class _InterceptHandler(logging.Handler):
-    def __init__(self, *, category: Optional[str] = None):
+    def __init__(self, *, category: str | None = None):
         super().__init__()
         self._category = _coerce_category(category) if category else None
 
@@ -269,7 +268,7 @@ def _configure_stdlib_logging() -> None:
         std_logger.setLevel(logging.WARNING)
 
 
-def _ensure_log_paths() -> Dict[str, str]:
+def _ensure_log_paths() -> dict[str, str]:
     log_root = os.path.abspath(str(settings.LOG_DIR or "").strip() or "logs")
     paths = {
         "app": os.path.join(log_root, "app", "sdd_app.log"),
@@ -413,7 +412,7 @@ def audit_log(
     action: str,
     outcome: str,
     resource_type: str,
-    resource_id: Optional[str] = None,
+    resource_id: str | None = None,
     **extra: Any,
 ) -> None:
     payload = {

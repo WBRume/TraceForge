@@ -3,21 +3,15 @@
 import asyncio
 import json
 import os
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-FIXTURES_DIR = Path(__file__).parent / "../fixtures" / "agent_events"
-
 from app.agents import AgentEvent, AgentRunRequest
-from app.agents.adapters.claude_code.event_mapper import map_claude_event
 from app.agents.adapters.claude_code.claude_code_adapter import ClaudeCodeAdapter
+from app.agents.adapters.claude_code.event_mapper import map_claude_event
 from app.agents.adapters.dsh.event_mapper import map_dsh_event
 from app.agents.adapters.mock.mock_adapter import MockAdapter
 from app.agents.adapters.opencode.event_mapper import map_opencode_event
@@ -26,23 +20,13 @@ from app.agents.registry import create_agent_backend
 from app.agents.supervision import TerminationResult
 from app.config import settings
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
     provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
+)
+from app.domains.ai.services.jobs import (
     reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
 )
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
-)
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+
+FIXTURES_DIR = Path(__file__).parent / "../fixtures" / "agent_events"
 
 
 class MockAdapterTest(unittest.IsolatedAsyncioTestCase):
@@ -83,9 +67,7 @@ class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def _start_with_never_ready_callback(self, *, cancel_call=True):
         adapter = ClaudeCodeAdapter()
         bridge = MagicMock()
-        bridge.cancel = AsyncMock(
-            return_value=TerminationResult(confirmed_dead=True, root_return_code=None)
-        )
+        bridge.cancel = AsyncMock(return_value=TerminationResult(confirmed_dead=True, root_return_code=None))
         bridge.is_running.return_value = True
         adapter._bridge = bridge
         captured = {}
@@ -98,9 +80,11 @@ class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
         async def on_started(_identity):
             return active[0]
 
-        with patch("app.agents.run_logging.run_agent_backend_with_logging", new=fake_run), \
-             patch.object(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 0.01), \
-             patch.object(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 0.01):
+        with (
+            patch("app.agents.run_logging.run_agent_backend_with_logging", new=fake_run),
+            patch.object(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 0.01),
+            patch.object(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 0.01),
+        ):
             with self.assertRaises(asyncio.TimeoutError):
                 await adapter.start_session(
                     prompt="hello",
@@ -120,17 +104,17 @@ class ClaudeStartupLifecycleTest(unittest.IsolatedAsyncioTestCase):
     async def test_start_callback_cancellation_cleans_process_tree(self):
         adapter = ClaudeCodeAdapter()
         bridge = MagicMock()
-        bridge.cancel = AsyncMock(
-            return_value=TerminationResult(confirmed_dead=True, root_return_code=None)
-        )
+        bridge.cancel = AsyncMock(return_value=TerminationResult(confirmed_dead=True, root_return_code=None))
         bridge.is_running.return_value = True
         adapter._bridge = bridge
 
         async def fake_run(_backend, _request, _sink):
             await asyncio.sleep(60)
 
-        with patch("app.agents.run_logging.run_agent_backend_with_logging", new=fake_run), \
-             patch.object(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 0.01):
+        with (
+            patch("app.agents.run_logging.run_agent_backend_with_logging", new=fake_run),
+            patch.object(settings, "AGENT_TERMINATION_TIMEOUT_SECONDS", 0.01),
+        ):
             task = asyncio.create_task(
                 adapter.start_session(
                     prompt="hello",
@@ -197,32 +181,36 @@ class ClaudeEventMapperTest(unittest.TestCase):
         self.assertEqual(events[0].payload["provider_session_id"], "s-1")
 
     def test_maps_assistant_blocks(self):
-        events = map_claude_event({
-            "type": "assistant",
-            "message": {
-                "content": [
-                    {"type": "thinking", "thinking": "think..."},
-                    {"type": "text", "text": "hello"},
-                    {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"cmd": "ls"}},
-                ]
-            },
-        })
+        events = map_claude_event(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "thinking", "thinking": "think..."},
+                        {"type": "text", "text": "hello"},
+                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"cmd": "ls"}},
+                    ]
+                },
+            }
+        )
         types = [e.type for e in events]
         self.assertIn("thinking", types)
         self.assertIn("text", types)
         self.assertIn("tool_use", types)
 
     def test_maps_result_with_usage(self):
-        events = map_claude_event({
-            "type": "result",
-            "subtype": "success",
-            "is_error": False,
-            "result": "done",
-            "session_id": "s-1",
-            "duration_ms": 10,
-            "total_cost_usd": 0.001,
-            "usage": {"input_tokens": 1, "output_tokens": 2},
-        })
+        events = map_claude_event(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": "done",
+                "session_id": "s-1",
+                "duration_ms": 10,
+                "total_cost_usd": 0.001,
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+            }
+        )
         self.assertTrue(any(e.type == "result" for e in events))
         result_event = next(e for e in events if e.type == "result")
         self.assertEqual(result_event.payload["finish_reason"], "completed")
@@ -233,22 +221,26 @@ class ClaudeEventMapperTest(unittest.TestCase):
         self.assertTrue(any(e.type == "error" for e in events))
 
     def test_drops_thinking_token_progress_events(self):
-        events = map_claude_event({
-            "type": "system",
-            "subtype": "thinking_tokens",
-            "estimated_tokens": 3,
-            "estimated_tokens_delta": 1,
-            "session_id": "s-1",
-        })
+        events = map_claude_event(
+            {
+                "type": "system",
+                "subtype": "thinking_tokens",
+                "estimated_tokens": 3,
+                "estimated_tokens_delta": 1,
+                "session_id": "s-1",
+            }
+        )
         self.assertEqual(events, [])
 
     def test_downgrades_hook_events_to_debug_logs(self):
-        events = map_claude_event({
-            "type": "system",
-            "subtype": "hook_started",
-            "hook_name": "SessionStart:startup",
-            "session_id": "s-1",
-        })
+        events = map_claude_event(
+            {
+                "type": "system",
+                "subtype": "hook_started",
+                "hook_name": "SessionStart:startup",
+                "session_id": "s-1",
+            }
+        )
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].type, "log")
         self.assertEqual(events[0].payload["level"], "debug")
@@ -291,22 +283,26 @@ class ClaudeEventMapperFixtureTest(unittest.TestCase):
 
 class OpenCodeEventMapperTest(unittest.TestCase):
     def test_maps_text_and_step_result(self):
-        events = map_opencode_event({
-            "type": "session.text.ended",
-            "data": {"sessionID": "ses-1", "text": "hello"},
-        })
+        events = map_opencode_event(
+            {
+                "type": "session.text.ended",
+                "data": {"sessionID": "ses-1", "text": "hello"},
+            }
+        )
         self.assertTrue(any(e.type == "text" for e in events))
         self.assertEqual(next(e for e in events if e.type == "text").payload["text"], "hello")
 
-        step_events = map_opencode_event({
-            "type": "session.step.ended",
-            "data": {
-                "sessionID": "ses-1",
-                "finish": "stop",
-                "cost": 0,
-                "tokens": {"input": 10, "output": 2, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-            },
-        })
+        step_events = map_opencode_event(
+            {
+                "type": "session.step.ended",
+                "data": {
+                    "sessionID": "ses-1",
+                    "finish": "stop",
+                    "cost": 0,
+                    "tokens": {"input": 10, "output": 2, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                },
+            }
+        )
         self.assertTrue(any(e.type == "result" for e in step_events))
         result = next(e for e in step_events if e.type == "result")
         self.assertEqual(result.payload["finish_reason"], "completed")
@@ -314,47 +310,55 @@ class OpenCodeEventMapperTest(unittest.TestCase):
         self.assertTrue(any(e.type == "usage" for e in step_events))
 
     def test_maps_tool_events(self):
-        use_events = map_opencode_event({
-            "type": "session.tool.called",
-            "data": {"sessionID": "ses-1", "callID": "call-1", "tool": "read", "input": {"path": "."}},
-        })
+        use_events = map_opencode_event(
+            {
+                "type": "session.tool.called",
+                "data": {"sessionID": "ses-1", "callID": "call-1", "tool": "read", "input": {"path": "."}},
+            }
+        )
         self.assertTrue(any(e.type == "tool_use" for e in use_events))
         tool_use = next(e for e in use_events if e.type == "tool_use")
         self.assertEqual(tool_use.payload["tool_use_id"], "call-1")
 
-        result_events = map_opencode_event({
-            "type": "session.tool.success",
-            "data": {
-                "sessionID": "ses-1",
-                "callID": "call-1",
-                "structured": {"entries": [{"path": "a", "type": "file"}]},
-                "content": [],
-            },
-        })
+        result_events = map_opencode_event(
+            {
+                "type": "session.tool.success",
+                "data": {
+                    "sessionID": "ses-1",
+                    "callID": "call-1",
+                    "structured": {"entries": [{"path": "a", "type": "file"}]},
+                    "content": [],
+                },
+            }
+        )
         self.assertTrue(any(e.type == "tool_result" for e in result_events))
         tool_result = next(e for e in result_events if e.type == "tool_result")
         self.assertIn("a", tool_result.payload["output"])
 
     def test_maps_permission_to_ask_user(self):
-        events = map_opencode_event({
-            "type": "permission.v2.asked",
-            "data": {"id": "per-1", "sessionID": "ses-1", "action": "write", "resources": ["/tmp/x"]},
-        })
+        events = map_opencode_event(
+            {
+                "type": "permission.v2.asked",
+                "data": {"id": "per-1", "sessionID": "ses-1", "action": "write", "resources": ["/tmp/x"]},
+            }
+        )
         self.assertTrue(any(e.type == "ask_user" for e in events))
         ask = next(e for e in events if e.type == "ask_user")
         self.assertEqual(ask.payload["ask_user_id"], "per-1")
         self.assertTrue(ask.payload["permission_request"])
 
     def test_maps_step_failed_to_error(self):
-        events = map_opencode_event({
-            "type": "session.step.failed",
-            "data": {
-                "sessionID": "ses-1",
-                "error": {"message": "boom"},
-                "cost": 0,
-                "tokens": {"input": 1, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
-            },
-        })
+        events = map_opencode_event(
+            {
+                "type": "session.step.failed",
+                "data": {
+                    "sessionID": "ses-1",
+                    "error": {"message": "boom"},
+                    "cost": 0,
+                    "tokens": {"input": 1, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                },
+            }
+        )
         self.assertTrue(any(e.type == "error" for e in events))
         error = next(e for e in events if e.type == "error")
         self.assertEqual(error.payload["finish_reason"], "error")
@@ -368,7 +372,7 @@ class OpenCodeUndoApiTest(unittest.IsolatedAsyncioTestCase):
         def handler(request: httpx.Request) -> httpx.Response:
             calls.append((request.method, str(request.url), request.content and json.loads(request.content)))
             path = request.url.path
-            if path.endswith("/revert/stage") or path.endswith("/revert/commit"):
+            if path.endswith(("/revert/stage", "/revert/commit")):
                 return httpx.Response(204)
             if path.endswith("/api/session/s1/message"):
                 return httpx.Response(200, json={"data": [{"id": "m-before"}], "cursor": {}})
@@ -389,7 +393,6 @@ class OpenCodeUndoApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1][0:2], ("POST", "http://provider/api/session/s1/revert/commit"))
 
 
-
 class OpenCodeEventMapperFixtureTest(unittest.TestCase):
     def test_server_events_fixture(self):
         with (FIXTURES_DIR / "opencode_server_events.json").open("r", encoding="utf-8") as fp:
@@ -407,37 +410,49 @@ class OpenCodeEventMapperFixtureTest(unittest.TestCase):
 
 class DSHEventMapperTest(unittest.TestCase):
     def test_maps_usage_tool_and_text(self):
-        usage_events = map_dsh_event({
-            "type": "assistant/chunk",
-            "data": {"turn": 1, "step": 1, "chunk": {"type": "usage", "usage": {"inputTokens": 3, "outputTokens": 4}}},
-        })
+        usage_events = map_dsh_event(
+            {
+                "type": "assistant/chunk",
+                "data": {
+                    "turn": 1,
+                    "step": 1,
+                    "chunk": {"type": "usage", "usage": {"inputTokens": 3, "outputTokens": 4}},
+                },
+            }
+        )
         self.assertTrue(any(e.type == "usage" for e in usage_events))
         usage = next(e for e in usage_events if e.type == "usage")
         self.assertEqual(usage.payload["input_tokens"], 3)
 
-        tool_events = map_dsh_event({
-            "type": "tool/call",
-            "data": {"turn": 1, "step": 1, "callId": "call-1", "name": "read_file", "arguments": "{\"path\": \"a\"}"},
-        })
+        tool_events = map_dsh_event(
+            {
+                "type": "tool/call",
+                "data": {"turn": 1, "step": 1, "callId": "call-1", "name": "read_file", "arguments": '{"path": "a"}'},
+            }
+        )
         self.assertTrue(any(e.type == "tool_use" for e in tool_events))
         tool_use = next(e for e in tool_events if e.type == "tool_use")
         self.assertEqual(tool_use.payload["tool_input"], {"path": "a"})
 
-        text_events = map_dsh_event({
-            "type": "assistant/message",
-            "data": {
-                "message": {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
-                "usage": {"inputTokens": 1, "outputTokens": 2},
-            },
-        })
+        text_events = map_dsh_event(
+            {
+                "type": "assistant/message",
+                "data": {
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+                    "usage": {"inputTokens": 1, "outputTokens": 2},
+                },
+            }
+        )
         self.assertTrue(any(e.type == "text" for e in text_events))
         self.assertTrue(any(e.type == "usage" for e in text_events))
 
     def test_maps_turn_end_to_result(self):
-        events = map_dsh_event({
-            "type": "turn/end",
-            "data": {"turn": 1, "reason": {"kind": "completed"}},
-        })
+        events = map_dsh_event(
+            {
+                "type": "turn/end",
+                "data": {"turn": 1, "reason": {"kind": "completed"}},
+            }
+        )
         self.assertTrue(any(e.type == "result" for e in events))
         result = next(e for e in events if e.type == "result")
         self.assertEqual(result.payload["finish_reason"], "completed")
@@ -490,6 +505,7 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
             async def _gen():
                 for line in self.lines:
                     yield line
+
             return _gen()
 
         async def __aenter__(self):
@@ -505,31 +521,41 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
         async def post(self, url: str, json: dict | None = None, **kwargs):
             if url.endswith("/api/session"):
                 return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "ses_test"}})
-            self.prompt_id = json['id']
+            self.prompt_id = json["id"]
             return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": self.prompt_id}})
 
         async def get(self, url: str, params: dict | None = None, **kwargs):
             if url.endswith("/message"):
-                return OpenCodeAdapterRunTest._FakeResponse(200,
-                    {'data': [{'id':self.prompt_id,'type':'user'}, {'id':'reply', 'finish': 'stop',
-                               'cost': 0,
-                               'tokens': {'input': 1,
-                                          'output': 1,
-                                          'reasoning': 0,
-                                          'cache': {'read': 0, 'write': 0}},
-                               'type': 'assistant',
-                      'time': {'completed': 123}, 'content': [{'type': 'text', 'text': 'ok'}]},
-                      {'type': 'idle', 'outcome': 'succeeded'}], 'cursor': {}}
+                return OpenCodeAdapterRunTest._FakeResponse(
+                    200,
+                    {
+                        "data": [
+                            {"id": self.prompt_id, "type": "user"},
+                            {
+                                "id": "reply",
+                                "finish": "stop",
+                                "cost": 0,
+                                "tokens": {"input": 1, "output": 1, "reasoning": 0, "cache": {"read": 0, "write": 0}},
+                                "type": "assistant",
+                                "time": {"completed": 123},
+                                "content": [{"type": "text", "text": "ok"}],
+                            },
+                            {"type": "idle", "outcome": "succeeded"},
+                        ],
+                        "cursor": {},
+                    },
                 )
             return OpenCodeAdapterRunTest._FakeResponse(200, {})
 
         def stream(self, method: str, url: str, **kwargs):
-            return OpenCodeAdapterRunTest._FakeStream([
-                'data: {"type":"server.connected","data":{}}',
-                'data: {"id":"e1","type":"session.text.ended","data":{"sessionID":"ses_test","assistantMessageID":"reply","textID":"text-0","text":"ok"}}',
-                'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
-                'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
-            ])
+            return OpenCodeAdapterRunTest._FakeStream(
+                [
+                    'data: {"type":"server.connected","data":{}}',
+                    'data: {"id":"e1","type":"session.text.ended","data":{"sessionID":"ses_test","assistantMessageID":"reply","textID":"text-0","text":"ok"}}',
+                    'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
+                    'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
+                ]
+            )
 
     async def test_run_creates_session_streams_events_and_returns_result(self):
         import app.agents.adapters.opencode.opencode_adapter as opencode_mod
@@ -574,39 +600,55 @@ class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
         async def post(self, url: str, json: dict | None = None, **kwargs):
             if url.endswith("/api/session"):
                 return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "ses_test"}})
-            self.prompt_id = json['id']
+            self.prompt_id = json["id"]
             return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": self.prompt_id}})
 
         async def get(self, url: str, params: dict | None = None, **kwargs):
             if url.endswith("/message"):
-                return OpenCodeAdapterRunTest._FakeResponse(200,
-                    {'data': [{'id':self.prompt_id,'type':'user'}, {'id':'reply', 'finish': 'stop',
-                               'cost': 0,
-                               'tokens': {'input': 10,
-                                          'output': 2,
-                                          'reasoning': 3,
-                                          'cache': {'read': 0, 'write': 0}},
-                               'type': 'assistant',
-                      'time': {'completed': 123}, 'content': [{'type': 'text', 'text': 'done'},
-                                {'type': 'reasoning', 'text': 'thinking here'},
-                                {'type': 'tool',
-                                 'id': 'call-1',
-                                 'name': 'read',
-                                 'state': {'status': 'completed',
-                                           'input': {'path': 'a'},
-                                           'structured': {'entries': [{'path': 'a'}]},
-                                           'content': [{'type': 'text', 'text': 'file content'}]}}]},
-                      {'type': 'idle', 'outcome': 'succeeded'}], 'cursor': {}}
+                return OpenCodeAdapterRunTest._FakeResponse(
+                    200,
+                    {
+                        "data": [
+                            {"id": self.prompt_id, "type": "user"},
+                            {
+                                "id": "reply",
+                                "finish": "stop",
+                                "cost": 0,
+                                "tokens": {"input": 10, "output": 2, "reasoning": 3, "cache": {"read": 0, "write": 0}},
+                                "type": "assistant",
+                                "time": {"completed": 123},
+                                "content": [
+                                    {"type": "text", "text": "done"},
+                                    {"type": "reasoning", "text": "thinking here"},
+                                    {
+                                        "type": "tool",
+                                        "id": "call-1",
+                                        "name": "read",
+                                        "state": {
+                                            "status": "completed",
+                                            "input": {"path": "a"},
+                                            "structured": {"entries": [{"path": "a"}]},
+                                            "content": [{"type": "text", "text": "file content"}],
+                                        },
+                                    },
+                                ],
+                            },
+                            {"type": "idle", "outcome": "succeeded"},
+                        ],
+                        "cursor": {},
+                    },
                 )
             return OpenCodeAdapterRunTest._FakeResponse(200, {})
 
         def stream(self, method: str, url: str, **kwargs):
             # 只回放终态 step.ended，不提供 reasoning/tool SSE，验证 fallback
-            return OpenCodeAdapterRunTest._FakeStream([
-                'data: {"type":"server.connected","data":{}}',
-                'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":0,"write":0}}}}',
-                'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
-            ])
+            return OpenCodeAdapterRunTest._FakeStream(
+                [
+                    'data: {"type":"server.connected","data":{}}',
+                    'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":10,"output":2,"reasoning":3,"cache":{"read":0,"write":0}}}}',
+                    'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
+                ]
+            )
 
     async def test_run_falls_back_to_final_message_for_missing_events(self):
         import app.agents.adapters.opencode.opencode_adapter as opencode_mod
@@ -728,9 +770,7 @@ class PersistedSessionStopContractTest(unittest.IsolatedAsyncioTestCase):
             result = await adapter.cancel_persisted_session("persisted-session-1")
 
         self.assertTrue(result.stop_acknowledged)
-        rpc.assert_awaited_once_with(
-            "session.cancel", {"sessionId": "persisted-session-1"}
-        )
+        rpc.assert_awaited_once_with("session.cancel", {"sessionId": "persisted-session-1"})
 
     async def test_dsh_persisted_cancel_requires_explicit_session_id(self):
         from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter

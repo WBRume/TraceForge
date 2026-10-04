@@ -9,7 +9,6 @@ import unittest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -62,7 +61,7 @@ class LoggingSystemTest(unittest.TestCase):
         path = os.path.join(settings.LOG_DIR, *parts)
         if not os.path.exists(path):
             return ""
-        with open(path, "r", encoding="utf-8") as file:
+        with open(path, encoding="utf-8") as file:
             return file.read()
 
     def _read_json_lines(self, *parts: str) -> list[dict]:
@@ -70,7 +69,7 @@ class LoggingSystemTest(unittest.TestCase):
         if not os.path.exists(path):
             return []
         rows: list[dict] = []
-        with open(path, "r", encoding="utf-8") as file:
+        with open(path, encoding="utf-8") as file:
             for raw in file:
                 line = raw.strip()
                 if not line:
@@ -124,6 +123,7 @@ class LoggingSystemTest(unittest.TestCase):
                 method="GET",
                 path="/ctx",
             ):
+
                 async def _child() -> None:
                     get_logger("tests.context").info("child_ctx_message")
 

@@ -5,16 +5,16 @@ Revises: d4e5f6a7b8c9
 Create Date: 2026-08-14 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "5aa1b2c3d4e5"
-down_revision: Union[str, None] = "d4e5f6a7b8c9"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "d4e5f6a7b8c9"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _enum(name: str, *values: str) -> sa.Enum:
@@ -157,7 +157,9 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("product_version_id", "repository_id", name="uq_mgmt_product_version_repos_version_repo"),
     )
-    op.create_index("ix_mgmt_product_version_repos_product_version_id", "mgmt_product_version_repos", ["product_version_id"])
+    op.create_index(
+        "ix_mgmt_product_version_repos_product_version_id", "mgmt_product_version_repos", ["product_version_id"]
+    )
     op.create_index("ix_mgmt_product_version_repos_repository_id", "mgmt_product_version_repos", ["repository_id"])
 
     op.create_table(
@@ -254,7 +256,9 @@ def upgrade() -> None:
     )
     op.create_index("ix_mgmt_project_product_deps_project_id", "mgmt_project_product_deps", ["project_id"])
     op.create_index("ix_mgmt_project_product_deps_product_id", "mgmt_project_product_deps", ["product_id"])
-    op.create_index("ix_mgmt_project_product_deps_product_version_id", "mgmt_project_product_deps", ["product_version_id"])
+    op.create_index(
+        "ix_mgmt_project_product_deps_product_version_id", "mgmt_project_product_deps", ["product_version_id"]
+    )
 
     op.create_table(
         "mgmt_project_repos",

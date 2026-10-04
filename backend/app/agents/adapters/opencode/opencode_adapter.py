@@ -8,29 +8,30 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
-from app.agents.http_transport import agent_ssl_context
 
+from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.contract import (
     AgentBackend,
     AgentCapabilities,
     AgentEventSink,
     AgentRunRequest,
     AgentRunResult,
+    AgentStopResult,
     TokenUsage,
 )
-from app.agents.activity_watchdog import AgentActivityWatchdog
 from app.agents.errors import AgentError, AgentExecutionDetached, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
+from app.agents.http_transport import agent_ssl_context
 
 
 class OpenCodeAdapter(AgentBackend):
     def get_runtime_control(self):
         from app.agents.runtime_control import runtime_control_for
+
         return runtime_control_for(self)
 
     name = "opencode"
@@ -47,17 +48,19 @@ class OpenCodeAdapter(AgentBackend):
         execution_kind="REMOTE_SESSION",
     )
 
-    def __init__(self, server_url: str = "http://127.0.0.1:4097", *, username: str = "opencode", password: str = "") -> None:
+    def __init__(
+        self, server_url: str = "http://127.0.0.1:4097", *, username: str = "opencode", password: str = ""
+    ) -> None:
         self.server_url = server_url.rstrip("/")
         self._auth = (username, password) if password else None
-        self._client: Optional[httpx.AsyncClient] = None
+        self._client: httpx.AsyncClient | None = None
         self._running = False
-        self._run_id: Optional[str] = None
-        self._session_id: Optional[str] = None
+        self._run_id: str | None = None
+        self._session_id: str | None = None
         self._interrupted = False
         self._message_ids: set[str] = set()
-        self._user_message_id: Optional[str] = None
-        self._watchdog: Optional[AgentActivityWatchdog] = None
+        self._user_message_id: str | None = None
+        self._watchdog: AgentActivityWatchdog | None = None
         self._pending_asks: set[str] = set()
         self._execution_checkpoint: dict[str, Any] = {}
 
@@ -65,7 +68,8 @@ class OpenCodeAdapter(AgentBackend):
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0),
-                trust_env=False, verify=agent_ssl_context(),
+                trust_env=False,
+                verify=agent_ssl_context(),
                 auth=self._auth,
             )
         return self._client
@@ -95,17 +99,13 @@ class OpenCodeAdapter(AgentBackend):
                 f"(HTTP {response.status_code}); check OPENCODE_SERVER_USERNAME/OPENCODE_SERVER_PASSWORD"
             )
         if response.status_code != 200 or not self._is_json_response(response):
-            raise AgentError(
-                f"OpenCode /api/info returned an unexpected response (HTTP {response.status_code})"
-            )
+            raise AgentError(f"OpenCode /api/info returned an unexpected response (HTTP {response.status_code})")
         try:
             version = str(response.json().get("version", ""))
         except Exception as exc:
             raise AgentError("OpenCode /api/info returned invalid JSON") from exc
         if not version.startswith("2."):
-            raise AgentError(
-                f"OpenCode 2.x is required (server reported version {version or 'unknown'})"
-            )
+            raise AgentError(f"OpenCode 2.x is required (server reported version {version or 'unknown'})")
         return f"OpenCode server is reachable at {self.server_url} (HTTP {response.status_code})"
 
     async def _create_session(self, request: AgentRunRequest) -> str:
@@ -117,9 +117,7 @@ class OpenCodeAdapter(AgentBackend):
             body["model"] = self._model_ref(request.model)
         response = await client.post(f"{self.server_url}/api/session", json=body)
         if response.status_code != 200:
-            raise AgentError(
-                f"OpenCode create session failed: HTTP {response.status_code} {response.text[:300]}"
-            )
+            raise AgentError(f"OpenCode create session failed: HTTP {response.status_code} {response.text[:300]}")
         data = response.json().get("data")
         session_id = data.get("id") if isinstance(data, dict) else None
         if not session_id:
@@ -152,8 +150,7 @@ class OpenCodeAdapter(AgentBackend):
                         kind = event.get("type")
                         event_location = event.get("location") or {}
                         same_location = location and all(
-                            event_location.get(key) == location.get(key)
-                            for key in ("directory", "workspaceID")
+                            event_location.get(key) == location.get(key) for key in ("directory", "workspaceID")
                         )
                         if kind == "server.connected":
                             # Subscribe before re-reading so an update between
@@ -173,12 +170,16 @@ class OpenCodeAdapter(AgentBackend):
 
     async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
         from app.agents.model_selection import model_option
+
         client = await self._ensure_client()
         params = {"location[directory]": project_path} if project_path else {}
         models = await self._available_models(params)
         models.sort(key=lambda m: (m.get("time") or {}).get("released", 0), reverse=True)
-        options = [model_option(f"{m['providerID']}/{m['id']}", f"{m.get('name') or m['id']} · {m['providerID']}")
-                   for m in models if m.get("enabled", True)]
+        options = [
+            model_option(f"{m['providerID']}/{m['id']}", f"{m.get('name') or m['id']} · {m['providerID']}")
+            for m in models
+            if m.get("enabled", True)
+        ]
         default = None
         session_agent = None
         if session_id:
@@ -206,7 +207,9 @@ class OpenCodeAdapter(AgentBackend):
                         default = f"{selected['providerID']}/{model_id}"
             response = await client.get(f"{self.server_url}/api/agent", params=params)
             self._check_response(response, "default agent model")
-            active_agent = next((item for item in response.json()["data"] if item["id"] == (session_agent or agent)), {})
+            active_agent = next(
+                (item for item in response.json()["data"] if item["id"] == (session_agent or agent)), {}
+            )
             selected = active_agent.get("model") or {}
             if selected.get("id") and selected.get("providerID"):
                 default = f"{selected['providerID']}/{selected['id']}"
@@ -226,15 +229,17 @@ class OpenCodeAdapter(AgentBackend):
             # 改为注入只读约束前缀（与 dsh adapter 的做法一致）。
             prompt_text = (
                 "[只读会话约束] 只能分析、读取和总结；禁止创建、修改、删除文件，"
-                "禁止执行会改变项目或外部系统状态的命令。\n\n"
-                + prompt_text
+                "禁止执行会改变项目或外部系统状态的命令。\n\n" + prompt_text
             )
         policy = request.provider_options.get("execution_policy")
-        if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
-            if request.provider_options.get("dedicated_backend_host") is not True:
-                raise AgentError("SOP_DEDICATED_BACKEND_HOST_REQUIRED")
+        if (policy is not None and policy.get("enforcement") != "ADVISORY_GUARD") and request.provider_options.get(
+            "dedicated_backend_host"
+        ) is not True:
+            raise AgentError("SOP_DEDICATED_BACKEND_HOST_REQUIRED")
         if request.model:
-            response = await client.post(self._session_url(session_id, "/model"), json={"model": self._model_ref(request.model)})
+            response = await client.post(
+                self._session_url(session_id, "/model"), json={"model": self._model_ref(request.model)}
+            )
             self._check_response(response, "switch model")
         if normalized_mode == "plan":
             response = await client.post(self._session_url(session_id, "/agent"), json={"agent": "plan"})
@@ -242,21 +247,34 @@ class OpenCodeAdapter(AgentBackend):
         if policy is not None and policy.get("enforcement") != "ADVISORY_GUARD":
             # Runtime MCP credentials remain restricted to a dedicated host.
             location = {"location[directory]": request.project_path} if request.project_path else {}
-            configured = await client.put(f"{self.server_url}/api/experimental/mcp/traceforge_playbook", params=location, json={
-                "config": {"type": "remote", "url": policy["mcp_config"]["url"],
-                           "headers": policy["mcp_config"]["headers"], "oauth": False, "codemode": False},
-            })
+            configured = await client.put(
+                f"{self.server_url}/api/experimental/mcp/traceforge_playbook",
+                params=location,
+                json={
+                    "config": {
+                        "type": "remote",
+                        "url": policy["mcp_config"]["url"],
+                        "headers": policy["mcp_config"]["headers"],
+                        "oauth": False,
+                        "codemode": False,
+                    },
+                },
+            )
             self._check_response(configured, "configure MCP")
             listed = await client.get(f"{self.server_url}/api/mcp", params=location)
             self._check_response(listed, "MCP status")
-            if not any(item.get("name") == "traceforge_playbook" and item.get("status", {}).get("status") == "connected"
-                       for item in listed.json().get("data", [])):
+            if not any(
+                item.get("name") == "traceforge_playbook" and item.get("status", {}).get("status") == "connected"
+                for item in listed.json().get("data", [])
+            ):
                 raise AgentError("SOP_MCP_NOT_CONNECTED")
             allowed = ["read_source", "propose_hypotheses", "propose_experiment"]
             if policy["tier"] == "WORKSPACE_WRITE":
                 allowed.append("propose_patch")
             permissions = [{"action": "*", "resource": "*", "effect": "deny"}]
-            permissions.extend({"action": f"traceforge_playbook_{tool}", "resource": "*", "effect": "allow"} for tool in allowed)
+            permissions.extend(
+                {"action": f"traceforge_playbook_{tool}", "resource": "*", "effect": "allow"} for tool in allowed
+            )
             configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
             self._check_response(configured, "session permissions")
         body = {"text": prompt_text}
@@ -291,19 +309,32 @@ class OpenCodeAdapter(AgentBackend):
         # Do not return an earlier turn when the current prompt produced no answer.
         if self._user_message_id:
             from .execution import turn_messages
+
             messages = turn_messages(messages, self._user_message_id)
-        assistants = [item for item in messages if item.get("type") == "assistant" and item.get("agent") not in {"title", "summary"}]
+        assistants = [
+            item
+            for item in messages
+            if item.get("type") == "assistant" and item.get("agent") not in {"title", "summary"}
+        ]
         if not assistants:
             return {}
         last = assistants[-1]
         content = [part for item in assistants for part in item.get("content", []) if isinstance(part, dict)]
-        return {**last, "text": "\n".join(str(part.get("text", "")) for part in last.get("content", []) if part.get("type") == "text"), "content": content}
+        return {
+            **last,
+            "text": "\n".join(
+                str(part.get("text", "")) for part in last.get("content", []) if part.get("type") == "text"
+            ),
+            "content": content,
+        }
 
     async def revert_message(self, session_id: str, message_id: str, part_id: str | None = None) -> bool:
         if part_id:
             raise AgentError("OpenCode v2 revert requires a whole-message boundary")
         client = await self._ensure_client()
-        response = await client.post(self._session_url(session_id, "/revert/stage"), json={"messageID": message_id, "files": False})
+        response = await client.post(
+            self._session_url(session_id, "/revert/stage"), json={"messageID": message_id, "files": False}
+        )
         self._check_response(response, "stage revert")
         response = await client.post(self._session_url(session_id, "/revert/commit"))
         self._check_response(response, "commit revert")
@@ -318,7 +349,11 @@ class OpenCodeAdapter(AgentBackend):
             response = await client.get(self._session_url(session_id, "/message"), params=params)
             self._check_response(response, "list messages")
             data = response.json()
-            if not isinstance(data, dict) or not isinstance(data.get("data"), list) or not isinstance(data.get("cursor"), dict):
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("data"), list)
+                or not isinstance(data.get("cursor"), dict)
+            ):
                 raise AgentError("OpenCode v2 message listing returned an invalid page")
             messages.extend(item for item in data["data"] if isinstance(item, dict))
             cursor = data["cursor"].get("next")
@@ -343,7 +378,7 @@ class OpenCodeAdapter(AgentBackend):
             await asyncio.sleep(0.1)
         raise AgentError("OpenCode session did not become idle before undo")
 
-    def _to_token_usage(self, tokens: Optional[dict[str, Any]]) -> Optional[TokenUsage]:
+    def _to_token_usage(self, tokens: dict[str, Any] | None) -> TokenUsage | None:
         if not isinstance(tokens, dict):
             return None
         cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
@@ -365,7 +400,7 @@ class OpenCodeAdapter(AgentBackend):
         )
 
     @staticmethod
-    def _normalize_finish_reason(finish: Optional[str]) -> Optional[str]:
+    def _normalize_finish_reason(finish: str | None) -> str | None:
         if not finish:
             return None
         return {
@@ -381,6 +416,33 @@ class OpenCodeAdapter(AgentBackend):
     @staticmethod
     def _text(value: Any) -> str:
         return str(value or "").strip()
+
+    async def _emit_final_tool_results(self, content, on_event: AgentEventSink) -> None:
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool":
+                continue
+            state = block.get("state") if isinstance(block.get("state"), dict) else {}
+            status = self._text(state.get("status"))
+            if status not in ("completed", "error"):
+                continue
+            output = self._tool_state_output_text(state)
+            if status == "error" and state.get("error") is not None:
+                error_text = state.get("error")
+                if isinstance(error_text, dict):
+                    error_text = error_text.get("message") or error_text.get("name") or str(error_text)
+                output = f"{output}\n{self._text(error_text)}".strip()
+            await on_event(
+                AgentEvent(
+                    type="tool_result",
+                    payload={
+                        "tool_use_id": self._text(block.get("id")),
+                        "output": output,
+                        "is_error": status == "error",
+                    },
+                    provider="opencode",
+                    raw=block,
+                )
+            )
 
     async def _emit_missing_final_events(
         self,
@@ -404,64 +466,48 @@ class OpenCodeAdapter(AgentBackend):
                     continue
                 text = self._text(block.get("text"))
                 if text:
-                    await on_event(AgentEvent(
-                        type="thinking",
-                        payload={"text": text},
-                        provider="opencode",
-                        raw=block,
-                    ))
+                    await on_event(
+                        AgentEvent(
+                            type="thinking",
+                            payload={"text": text},
+                            provider="opencode",
+                            raw=block,
+                        )
+                    )
 
         if "tool_use" not in seen_types:
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool":
                     continue
                 state = block.get("state") if isinstance(block.get("state"), dict) else {}
-                await on_event(AgentEvent(
-                    type="tool_use",
-                    payload={
-                        "tool_use_id": self._text(block.get("id")),
-                        "tool_name": self._text(block.get("name") or block.get("tool")) or "unknown",
-                        "tool_input": state.get("input", {}),
-                    },
-                    provider="opencode",
-                    raw=block,
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="tool_use",
+                        payload={
+                            "tool_use_id": self._text(block.get("id")),
+                            "tool_name": self._text(block.get("name") or block.get("tool")) or "unknown",
+                            "tool_input": state.get("input", {}),
+                        },
+                        provider="opencode",
+                        raw=block,
+                    )
+                )
 
         if "tool_result" not in seen_types:
-            for block in content:
-                if not isinstance(block, dict) or block.get("type") != "tool":
-                    continue
-                state = block.get("state") if isinstance(block.get("state"), dict) else {}
-                status = self._text(state.get("status"))
-                if status not in ("completed", "error"):
-                    continue
-                output = self._tool_state_output_text(state)
-                if status == "error" and state.get("error") is not None:
-                    error_text = state.get("error")
-                    if isinstance(error_text, dict):
-                        error_text = error_text.get("message") or error_text.get("name") or str(error_text)
-                    output = f"{output}\n{self._text(error_text)}".strip()
-                await on_event(AgentEvent(
-                    type="tool_result",
-                    payload={
-                        "tool_use_id": self._text(block.get("id")),
-                        "output": output,
-                        "is_error": status == "error",
-                    },
-                    provider="opencode",
-                    raw=block,
-                ))
+            await self._emit_final_tool_results(content, on_event)
 
         if "usage" not in seen_types:
             usage = self._to_token_usage(final.get("tokens"))
             if usage is not None:
                 payload = {k: v for k, v in usage.__dict__.items() if k != "raw"}
-                await on_event(AgentEvent(
-                    type="usage",
-                    payload=payload,
-                    provider="opencode",
-                    raw=final.get("tokens") or {},
-                ))
+                await on_event(
+                    AgentEvent(
+                        type="usage",
+                        payload=payload,
+                        provider="opencode",
+                        raw=final.get("tokens") or {},
+                    )
+                )
 
     @staticmethod
     def _tool_state_output_text(state: dict[str, Any]) -> str:
@@ -503,17 +549,69 @@ class OpenCodeAdapter(AgentBackend):
             return str(state)
 
     async def _consume_sse(
-        self, session_id: str, request: AgentRunRequest, on_event: AgentEventSink,
+        self,
+        session_id: str,
+        request: AgentRunRequest,
+        on_event: AgentEventSink,
     ) -> tuple[dict[str, Any], set[str]]:
         from .execution import ExecutionMonitor
+
         monitor = getattr(self, "_execution_monitor", None)
         if monitor is None:
             monitor = ExecutionMonitor(self, session_id, request, on_event)
             self._execution_monitor = monitor
         return await monitor.run()
 
-    async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
-        await self._ensure_client()
+    async def _emit_run_result(self, consumed, seen_types, session_id, request, started_at, _tracked_event):
+        finish_reason = consumed.get("finish_reason")
+        success = bool(consumed.get("success"))
+        final = await self._fetch_final_message(session_id)
+        await self._emit_missing_final_events(
+            final,
+            seen_types,
+            _tracked_event,
+        )
+        if not finish_reason:
+            finish_reason = self._normalize_finish_reason(final.get("finish")) or ("completed" if success else "error")
+        if self._interrupted:
+            finish_reason = "interrupted"
+
+        await _tracked_event(
+            AgentEvent(
+                type="result",
+                payload={
+                    "success": success,
+                    "result": final.get("text", ""),
+                    "finish_reason": finish_reason,
+                    "session_id": session_id,
+                    "usage": (self._to_token_usage(final.get("tokens")) or {}).__dict__
+                    if self._to_token_usage(final.get("tokens"))
+                    else {},
+                    "cost_usd": final.get("cost"),
+                },
+                provider="opencode",
+            )
+        )
+
+        return AgentRunResult(
+            run_id=request.run_id,
+            session_id=session_id,
+            success=success,
+            finish_reason=finish_reason,
+            result_text=final.get("text", ""),
+            usage=self._to_token_usage(final.get("tokens")),
+            cost_usd=final.get("cost"),
+            duration_ms=int((time.monotonic() - started_at) * 1000),
+            return_code=None,
+            raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
+            metadata={
+                "provider_message_ids": sorted(self._message_ids),
+                "provider_user_message_id": self._user_message_id,
+                "provider_assistant_message_id": final.get("id"),
+            },
+        )
+
+    def _reset_run_state(self, request: AgentRunRequest) -> None:
         self._running = True
         self._run_id = request.run_id
         self._interrupted = False
@@ -522,12 +620,20 @@ class OpenCodeAdapter(AgentBackend):
         self._pending_asks.clear()
         self._execution_checkpoint = dict(request.execution_checkpoint)
         self._execution_monitor = None
+
+    async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
+        await self._ensure_client()
+        self._reset_run_state(request)
+
         started_at = time.monotonic()
         watchdog = AgentActivityWatchdog(
             startup_timeout_seconds=request.startup_timeout_seconds,
             idle_timeout_seconds=request.idle_timeout_seconds,
-            hard_timeout_seconds=(float(request.execution_checkpoint["deadline"]) - time.time()
-                                  if request.execution_checkpoint else request.timeout_seconds),
+            hard_timeout_seconds=(
+                float(request.execution_checkpoint["deadline"]) - time.time()
+                if request.execution_checkpoint
+                else request.timeout_seconds
+            ),
         )
         self._watchdog = watchdog
 
@@ -537,6 +643,7 @@ class OpenCodeAdapter(AgentBackend):
                 self._pending_asks.add(str(event.payload["ask_user_id"]))
                 watchdog.pause_idle()
             await on_event(event)
+
         session_id = request.session_id or ""
         try:
             if request.session_id:
@@ -545,20 +652,23 @@ class OpenCodeAdapter(AgentBackend):
                 session_id = await self._create_session(request)
             self._session_id = session_id
 
-            await _tracked_event(AgentEvent(
-                type="session_started",
-                payload={
-                    "provider_session_id": session_id,
-                    "provider": "opencode",
-                    "model": request.model,
-                    "directory": request.project_path,
-                },
-                provider="opencode",
-            ))
+            await _tracked_event(
+                AgentEvent(
+                    type="session_started",
+                    payload={
+                        "provider_session_id": session_id,
+                        "provider": "opencode",
+                        "model": request.model,
+                        "directory": request.project_path,
+                    },
+                    provider="opencode",
+                )
+            )
 
             consumed, seen_types = None, set()
             if request.execution_checkpoint.get("phase") in {"submitting", "submitted"}:
                 from .execution import ExecutionMonitor
+
                 self._execution_monitor = ExecutionMonitor(self, session_id, request, _tracked_event)
                 # An execution may have finished while this backend was down,
                 # even if its original deadline has now passed.
@@ -567,9 +677,7 @@ class OpenCodeAdapter(AgentBackend):
                 seen_types = self._execution_monitor.seen_types
             try:
                 if consumed is None:
-                    consumed, seen_types = await watchdog.wait(
-                        self._consume_sse(session_id, request, _tracked_event)
-                    )
+                    consumed, seen_types = await watchdog.wait(self._consume_sse(session_id, request, _tracked_event))
             except AgentTimeoutError:
                 monitor = self._execution_monitor
                 if monitor and monitor.checkpoint["phase"] in {"submitting", "submitted"}:
@@ -587,54 +695,20 @@ class OpenCodeAdapter(AgentBackend):
                         self._execution_checkpoint.update(stopping)
                     stop = await self.interrupt(session_id=session_id)
                     from app.agents.contract import record_attempt_remote_stop
+
                     record_attempt_remote_stop(stop)
                     raise
 
-            finish_reason = consumed.get("finish_reason")
-            success = bool(consumed.get("success"))
-            final = await self._fetch_final_message(session_id)
-            await self._emit_missing_final_events(
-                final, seen_types, _tracked_event,
-            )
-            if not finish_reason:
-                finish_reason = self._normalize_finish_reason(final.get("finish")) or ("completed" if success else "error")
-            if self._interrupted:
-                finish_reason = "interrupted"
+            return await self._emit_run_result(consumed, seen_types, session_id, request, started_at, _tracked_event)
 
-            await _tracked_event(AgentEvent(
-                type="result",
-                payload={
-                    "success": success,
-                    "result": final.get("text", ""),
-                    "finish_reason": finish_reason,
-                    "session_id": session_id,
-                    "usage": (self._to_token_usage(final.get("tokens")) or {}).__dict__ if self._to_token_usage(final.get("tokens")) else {},
-                    "cost_usd": final.get("cost"),
-                },
-                provider="opencode",
-            ))
-
-            return AgentRunResult(
-                run_id=request.run_id,
-                session_id=session_id,
-                success=success,
-                finish_reason=finish_reason,
-                result_text=final.get("text", ""),
-                usage=self._to_token_usage(final.get("tokens")),
-                cost_usd=final.get("cost"),
-                duration_ms=int((time.monotonic() - started_at) * 1000),
-                return_code=None,
-                raw_trace=json.dumps(consumed, ensure_ascii=False, default=str),
-                metadata={
-                    "provider_message_ids": sorted(self._message_ids),
-                    "provider_user_message_id": self._user_message_id,
-                    "provider_assistant_message_id": final.get("id"),
-                },
-            )
         except Exception as exc:
             if isinstance(exc, AgentExecutionDetached) and not request.on_execution_checkpoint:
                 raise AgentError(str(exc)) from exc
-            if self._execution_checkpoint and request.on_execution_checkpoint and not isinstance(exc, (AgentExecutionDetached, AgentTimeoutError)):
+            if (
+                self._execution_checkpoint
+                and request.on_execution_checkpoint
+                and not isinstance(exc, (AgentExecutionDetached, AgentTimeoutError))
+            ):
                 raise AgentExecutionDetached(f"OpenCode observation detached: {exc}") from exc
             if isinstance(exc, AgentError):
                 raise
@@ -645,7 +719,7 @@ class OpenCodeAdapter(AgentBackend):
             self._watchdog = None
             self._pending_asks.clear()
 
-    async def _abort_session(self, sid: str) -> "AgentStopResult":
+    async def _abort_session(self, sid: str) -> AgentStopResult:
         """Interrupt the v2 worker and verify quiescence before acknowledging stop."""
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
@@ -671,8 +745,12 @@ class OpenCodeAdapter(AgentBackend):
                 try:
                     await self.wait_until_idle(sid)
                 except (AgentError, httpx.HTTPError, ValueError) as exc:
-                    return AgentStopResult(execution_kind=EXECUTION_KIND_REMOTE_SESSION, stop_acknowledged=False,
-                                           failure_code="REMOTE_STOP_UNCONFIRMED", error_message=str(exc))
+                    return AgentStopResult(
+                        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+                        stop_acknowledged=False,
+                        failure_code="REMOTE_STOP_UNCONFIRMED",
+                        error_message=str(exc),
+                    )
                 return AgentStopResult(execution_kind=EXECUTION_KIND_REMOTE_SESSION, stop_acknowledged=True)
         return AgentStopResult(
             execution_kind=EXECUTION_KIND_REMOTE_SESSION,
@@ -681,9 +759,7 @@ class OpenCodeAdapter(AgentBackend):
             error_message=f"OpenCode abort returned HTTP {response.status_code}",
         )
 
-    async def interrupt(
-        self, run_id: str | None = None, *, session_id: str | None = None
-    ) -> "AgentStopResult":
+    async def interrupt(self, run_id: str | None = None, *, session_id: str | None = None) -> AgentStopResult:
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
         sid = session_id or self._session_id
@@ -697,7 +773,7 @@ class OpenCodeAdapter(AgentBackend):
         self._interrupted = True
         return await self._abort_session(sid)
 
-    async def cancel(self, run_id: str | None = None) -> "AgentStopResult":
+    async def cancel(self, run_id: str | None = None) -> AgentStopResult:
         from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AgentStopResult
 
         sid = self._session_id
@@ -712,7 +788,7 @@ class OpenCodeAdapter(AgentBackend):
             )
         return await self._abort_session(sid)
 
-    async def cancel_persisted_session(self, session_id: str) -> "AgentStopResult":
+    async def cancel_persisted_session(self, session_id: str) -> AgentStopResult:
         """Reaper durable stop：目标必须是显式传入的持久化 session id。
 
         禁止回退到 ``self._session_id``（reaper 每次新建 adapter，内存
@@ -747,7 +823,7 @@ class OpenCodeAdapter(AgentBackend):
         if not sid or not ask_user_id:
             raise AgentError("OpenCode HITL reply requires active session and ask_user_id")
         client = await self._ensure_client()
-        if ask_user_id.startswith("per") or ask_user_id.startswith("permission"):
+        if ask_user_id.startswith(("per", "permission")):
             reply = "reject" if response.strip().lower() in {"reject", "n", "no", "false"} else "once"
             url = self._session_url(sid, f"/permission/{ask_user_id}/reply")
             body = {"decision": reply}

@@ -1,6 +1,7 @@
 """Shared immutable TLS configuration for internal Agent HTTP clients."""
-from functools import lru_cache
+
 import ssl
+from functools import lru_cache
 
 import certifi
 

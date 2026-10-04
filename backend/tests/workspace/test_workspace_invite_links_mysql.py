@@ -49,9 +49,7 @@ def _mysql_reachable() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(
-    not _mysql_reachable(), reason="MySQL instance unreachable"
-)
+pytestmark = pytest.mark.skipif(not _mysql_reachable(), reason="MySQL instance unreachable")
 
 
 def _server_url() -> str:
@@ -73,16 +71,9 @@ def mysql_engine():
     admin = create_engine(_server_url(), connect_args={"connect_timeout": 5})
     with admin.connect() as conn:
         conn.execute(text(f"DROP DATABASE IF EXISTS {TEST_SCHEMA}"))
-        conn.execute(
-            text(
-                f"CREATE DATABASE {TEST_SCHEMA} "
-                "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-            )
-        )
+        conn.execute(text(f"CREATE DATABASE {TEST_SCHEMA} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"))
         conn.commit()
-    engine = create_engine(
-        _schema_url(), pool_pre_ping=True, pool_size=8, max_overflow=8
-    )
+    engine = create_engine(_schema_url(), pool_pre_ping=True, pool_size=8, max_overflow=8)
     Base.metadata.create_all(engine)
     try:
         yield engine
@@ -148,13 +139,10 @@ def _run_concurrently(worker_count: int, target):
         start.wait(timeout=10)
         try:
             results[index] = ("ok", target(index))
-        except Exception as exc:  # noqa: BLE001 - 并发结果按异常类型断言
+        except Exception as exc:
             results[index] = ("err", exc)
 
-    threads = [
-        threading.Thread(target=runner, args=(i,), daemon=True)
-        for i in range(worker_count)
-    ]
+    threads = [threading.Thread(target=runner, args=(i,), daemon=True) for i in range(worker_count)]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -176,9 +164,7 @@ def test_concurrent_accept_single_use_link_exactly_one_wins(clean_tables):
     def accept(index):
         user_id = "user-a" if index == 0 else "user-b"
         with factory() as db:
-            member, link, already = ws.accept_invite_in_txn(
-                db, "tok-1", db.get(User, user_id).id
-            )
+            member, link, already = ws.accept_invite_in_txn(db, "tok-1", db.get(User, user_id).id)
             db.commit()
             return member.user_id, link.used_count, already
 
@@ -208,9 +194,7 @@ def test_same_user_concurrent_accept_via_two_links_is_idempotent(clean_tables):
     def accept(index):
         token = "tok-l1" if index == 0 else "tok-l2"
         with factory() as db:
-            member, link, already = ws.accept_invite_in_txn(
-                db, token, db.get(User, "user-a").id
-            )
+            member, link, already = ws.accept_invite_in_txn(db, token, db.get(User, "user-a").id)
             db.commit()
             return member.user_id, token, already
 
@@ -252,9 +236,7 @@ def test_revoke_before_accept_rejects_late_locker(clean_tables):
     def accept(index):
         with factory() as db:
             try:
-                member, _, already = ws.accept_invite_in_txn(
-                    db, "tok-r1", db.get(User, "user-a").id
-                )
+                member, _, already = ws.accept_invite_in_txn(db, "tok-r1", db.get(User, "user-a").id)
                 db.commit()
                 outcome["result"] = ("ok", already)
             except ValueError as exc:
@@ -282,9 +264,7 @@ def test_accept_before_revoke_keeps_completed_claim(clean_tables):
         link = _create_link(db, "tok-r2", max_uses=5)
 
     with factory() as db:
-        member, _, already = ws.accept_invite_in_txn(
-            db, "tok-r2", db.get(User, "user-a").id
-        )
+        member, _, already = ws.accept_invite_in_txn(db, "tok-r2", db.get(User, "user-a").id)
         db.commit()
     assert already is False
 
@@ -315,9 +295,7 @@ def test_link_expires_while_lock_is_held_rejects_after_acquire(clean_tables):
     def accept(index):
         with factory() as db:
             try:
-                member, _, already = ws.accept_invite_in_txn(
-                    db, "tok-x", db.get(User, "user-a").id
-                )
+                member, _, already = ws.accept_invite_in_txn(db, "tok-x", db.get(User, "user-a").id)
                 db.commit()
                 outcome["result"] = ("ok", already)
             except ValueError as exc:
@@ -353,9 +331,7 @@ def test_failure_injection_before_commit_rolls_back_member_and_count(clean_table
 
     with pytest.raises(RuntimeError, match="injected before commit"):
         with factory() as db:
-            member, link, already = ws.accept_invite_in_txn(
-                db, "tok-f", db.get(User, "user-a").id
-            )
+            member, link, already = ws.accept_invite_in_txn(db, "tok-f", db.get(User, "user-a").id)
             assert already is False
             assert member.id is not None
             raise RuntimeError("injected before commit")
@@ -367,15 +343,11 @@ def test_failure_injection_before_commit_rolls_back_member_and_count(clean_table
 
     # 注入失败后链接仍可用：正常领取成功且只扣一次；同用户重试幂等不扣次数。
     with factory() as db:
-        member, _, already = ws.accept_invite_in_txn(
-            db, "tok-f", db.get(User, "user-b").id
-        )
+        member, _, already = ws.accept_invite_in_txn(db, "tok-f", db.get(User, "user-b").id)
         db.commit()
     assert already is False
     with factory() as db:
-        member_again, _, already_again = ws.accept_invite_in_txn(
-            db, "tok-f", db.get(User, "user-b").id
-        )
+        member_again, _, already_again = ws.accept_invite_in_txn(db, "tok-f", db.get(User, "user-b").id)
         db.commit()
     assert already_again is True and member_again.id == member.id
     with factory() as db:

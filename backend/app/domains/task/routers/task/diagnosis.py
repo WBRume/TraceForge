@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
@@ -113,7 +111,8 @@ async def upload_task_diagnosis_doc(
                 raise HTTPException(status_code=413, detail="Diagnosis document is too large (max 20MB)")
             async with lock_task(task_id):
                 return await run_route_db_txn(
-                    db, db_bind,
+                    db,
+                    db_bind,
                     lambda session: _create_diagnosis_doc_sync(
                         db=session,
                         ws_id=ws_id,
@@ -129,10 +128,10 @@ async def upload_task_diagnosis_doc(
             raise
         except Exception as exc:
             logger.exception(f"Failed to upload diagnosis doc for task {task_id}: {exc}")
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/{task_id}/diagnosis-result", response_model=Optional[DiagnosisResultResponse])
+@router.get("/{task_id}/diagnosis-result", response_model=DiagnosisResultResponse | None)
 def get_diagnosis_result(
     ws_id: str,
     task_id: str,
@@ -188,7 +187,7 @@ def upsert_diagnosis_result(
 def create_case_draft_from_task(
     ws_id: str,
     task_id: str,
-    data: CaseDraftCreateRequest = Body(default=CaseDraftCreateRequest()),
+    data: CaseDraftCreateRequest = Body(default_factory=CaseDraftCreateRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -210,7 +209,7 @@ def create_case_draft_from_task(
             data=data,
         )
     except case_service.CaseError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     member = workspace_service.get_workspace_member(db, ws_id, current_user.id)
     payload = case_service.serialize_case(case)
     payload["my_can_manage"] = True

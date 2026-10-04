@@ -2,15 +2,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.domains.auth.models.user import Workspace
-from app.domains.task.models.task import SddTask, TaskStatus, SddTaskFollower
+from app.domains.task.models.task import SddTask, SddTaskFollower, TaskStatus
 from app.domains.task.routers.task import crud
 from app.domains.task.schemas.task import TaskResponse
-
-from app.domains.workspace_asset.models.workspace_asset import SddRequirement, SddTaskRequirement, SddRequirementAuditLog
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _build_app, _seed_workspace, _session
-
 from app.domains.task.services.provisioning import creation as task_provisioning_creation
 from app.domains.task.services.task_workspace import repositories as task_task_workspace_repositories
+from app.domains.workspace_asset.models.workspace_asset import (
+    SddRequirement,
+    SddRequirementAuditLog,
+    SddTaskRequirement,
+)
+from tests.workspace_asset.test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session
 
 
 @pytest.fixture
@@ -18,12 +20,14 @@ def seeded():
     engine, sessions = _build_db()
     with _session(sessions) as db:
         user, workspace, task = _seed_workspace(db)
-        db.add_all([
-            SddRequirement(id="req-101", workspace_id=workspace.id, title="Payments", source_ref="REQ-101"),
-            SddRequirement(id="req-102", workspace_id=workspace.id, title="Delivery"),
-            Workspace(id="other-workspace", name="Other", owner_id=user.id),
-            SddRequirement(id="foreign-req", workspace_id="other-workspace", title="Private"),
-        ])
+        db.add_all(
+            [
+                SddRequirement(id="req-101", workspace_id=workspace.id, title="Payments", source_ref="REQ-101"),
+                SddRequirement(id="req-102", workspace_id=workspace.id, title="Delivery"),
+                Workspace(id="other-workspace", name="Other", owner_id=user.id),
+                SddRequirement(id="foreign-req", workspace_id="other-workspace", title="Private"),
+            ]
+        )
         db.commit()
     yield sessions, user, workspace, task
     engine.dispose()
@@ -32,7 +36,9 @@ def seeded():
 def test_creation_binds_requirement_and_audit_in_one_transaction(seeded):
     sessions, user, workspace, _ = seeded
     with _session(sessions) as db:
-        task = task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Implement", requirement_id="req-101")
+        task = task_provisioning_creation.create_task_record_for_provision(
+            db, user, workspace.id, "Implement", requirement_id="req-101"
+        )
         assert task.status == TaskStatus.PROVISIONING
         assert db.query(SddTaskRequirement).filter_by(task_id=task.id, requirement_id="req-101").count() == 1
         assert db.query(SddRequirementAuditLog).filter_by(task_id=task.id).one().after_json["task_id"] == task.id
@@ -43,7 +49,9 @@ def test_diagnosis_creation_cannot_link_requirement_before_closeout(seeded):
     sessions, user, workspace, _ = seeded
     with _session(sessions) as db:
         with pytest.raises(ValueError, match="when completed"):
-            task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Diagnose", task_type="DIAGNOSIS", requirement_id="req-101")
+            task_provisioning_creation.create_task_record_for_provision(
+                db, user, workspace.id, "Diagnose", task_type="DIAGNOSIS", requirement_id="req-101"
+            )
         assert db.query(SddTaskRequirement).count() == 0
 
 
@@ -53,7 +61,9 @@ def test_task_create_api_accepts_requirement_and_detail_exposes_binding(seeded, 
     app = _build_app(sessions, user)
     app.include_router(crud.router, prefix="/api")
     client = TestClient(app)
-    response = client.post(f"/api/workspaces/{workspace.id}/tasks", json={"name":"Deliver requirement", "requirement_id":"req-101"})
+    response = client.post(
+        f"/api/workspaces/{workspace.id}/tasks", json={"name": "Deliver requirement", "requirement_id": "req-101"}
+    )
     assert response.status_code == 202
     task_id = response.json()["task_id"]
     detail = client.get(f"/api/workspaces/{workspace.id}/tasks/{task_id}").json()
@@ -68,14 +78,18 @@ def test_wrong_workspace_rejected_and_later_failure_rolls_back_binding(seeded, m
     with _session(sessions) as db:
         for requirement_id in ["foreign-req", "missing"]:
             with pytest.raises(ValueError, match="Requirement not found"):
-                task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Invalid", requirement_id=requirement_id)
+                task_provisioning_creation.create_task_record_for_provision(
+                    db, user, workspace.id, "Invalid", requirement_id=requirement_id
+                )
 
         def fail(*args, **kwargs):
             raise ValueError("repository snapshot failed")
 
         monkeypatch.setattr(task_task_workspace_repositories, "snapshot_workspace_repositories_into_task", fail)
         with pytest.raises(ValueError, match="snapshot failed"):
-            task_provisioning_creation.create_task_record_for_provision(db, user, workspace.id, "Rollback", requirement_id="req-101")
+            task_provisioning_creation.create_task_record_for_provision(
+                db, user, workspace.id, "Rollback", requirement_id="req-101"
+            )
         assert db.query(SddTask).count() == 1
         assert db.query(SddTaskRequirement).count() == 0
         assert db.query(SddRequirementAuditLog).count() == 0
@@ -84,9 +98,16 @@ def test_wrong_workspace_rejected_and_later_failure_rolls_back_binding(seeded, m
 def test_hierarchical_picker_and_creation_reject_parent_but_inherit_child_content(seeded, monkeypatch):
     sessions, user, workspace, _ = seeded
     with _session(sessions) as db:
-        db.add(SddRequirement(id="child", workspace_id=workspace.id, parent_requirement_id="req-101",
-                              title="Validate payment", body="# Payment specification\nReject invalid payments.",
-                              source_metadata_json={"task_prompt": "Implement payment validation"}))
+        db.add(
+            SddRequirement(
+                id="child",
+                workspace_id=workspace.id,
+                parent_requirement_id="req-101",
+                title="Validate payment",
+                body="# Payment specification\nReject invalid payments.",
+                source_metadata_json={"task_prompt": "Implement payment validation"},
+            )
+        )
         db.commit()
     run_job = []
     monkeypatch.setattr(crud.provision_job_service, "run_create_task_job", lambda job_id: run_job.append(job_id))
@@ -98,11 +119,20 @@ def test_hierarchical_picker_and_creation_reject_parent_but_inherit_child_conten
     assert {item["id"] for item in roots} == {"req-101", "req-102"}
     parent = next(item for item in roots if item["id"] == "req-101")
     assert parent["child_count"] == 1 and parent["can_link_task"] is False
-    children = client.get(f"{assets}/requirement-options", params={"scope": "children", "parent_id": "req-101"}).json()["items"]
+    children = client.get(f"{assets}/requirement-options", params={"scope": "children", "parent_id": "req-101"}).json()[
+        "items"
+    ]
     assert children[0]["id"] == "child" and children[0]["parent_title"] == "Payments"
     assert children[0]["can_link_task"] is True
-    assert client.get(f"{assets}/requirement-options", params={"scope": "children", "parent_id": "foreign-req"}).json()["total"] == 0
-    response = client.post(f"/api/workspaces/{workspace.id}/tasks", json={"name": "Invalid parent", "requirement_id": "req-101"})
+    assert (
+        client.get(f"{assets}/requirement-options", params={"scope": "children", "parent_id": "foreign-req"}).json()[
+            "total"
+        ]
+        == 0
+    )
+    response = client.post(
+        f"/api/workspaces/{workspace.id}/tasks", json={"name": "Invalid parent", "requirement_id": "req-101"}
+    )
     assert response.status_code == 400
     assert not run_job
     with _session(sessions) as db:
@@ -111,24 +141,38 @@ def test_hierarchical_picker_and_creation_reject_parent_but_inherit_child_conten
     detail = client.get(f"{assets}/requirements/child").json()["requirement"]
     assert detail["body"] == "# Payment specification\nReject invalid payments."
     assert detail["source_metadata"]["task_prompt"] == "Implement payment validation"
-    response = client.post(f"/api/workspaces/{workspace.id}/tasks", json={"name": detail["title"], "description": detail["source_metadata"]["task_prompt"], "requirement_id": "child"})
+    response = client.post(
+        f"/api/workspaces/{workspace.id}/tasks",
+        json={
+            "name": detail["title"],
+            "description": detail["source_metadata"]["task_prompt"],
+            "requirement_id": "child",
+        },
+    )
     assert response.status_code == 202
     with _session(sessions) as db:
-        assert db.query(SddTask).filter_by(id=response.json()["task_id"]).one().description == "Implement payment validation"
-        assert db.query(SddTaskRequirement).filter_by(task_id=response.json()["task_id"]).one().requirement_id == "child"
+        assert (
+            db.query(SddTask).filter_by(id=response.json()["task_id"]).one().description
+            == "Implement payment validation"
+        )
+        assert (
+            db.query(SddTaskRequirement).filter_by(task_id=response.json()["task_id"]).one().requirement_id == "child"
+        )
 
 
 def test_views_use_real_links_and_current_user_favorites_with_sql_pagination(seeded):
     sessions, user, workspace, task = seeded
     with _session(sessions) as db:
-        db.add_all([
-            SddTask(id="solo", workspace_id=workspace.id, creator_id=user.id, name="Solo"),
-            SddTask(id="linked", workspace_id=workspace.id, creator_id=user.id, name="Linked"),
-            SddTaskRequirement(workspace_id=workspace.id, task_id=task.id, requirement_id="req-101"),
-            SddTaskRequirement(workspace_id=workspace.id, task_id=task.id, requirement_id="req-102"),
-            SddTaskRequirement(workspace_id=workspace.id, task_id="linked", requirement_id="req-101"),
-            SddTaskFollower(workspace_id=workspace.id, task_id=task.id, user_id=user.id),
-        ])
+        db.add_all(
+            [
+                SddTask(id="solo", workspace_id=workspace.id, creator_id=user.id, name="Solo"),
+                SddTask(id="linked", workspace_id=workspace.id, creator_id=user.id, name="Linked"),
+                SddTaskRequirement(workspace_id=workspace.id, task_id=task.id, requirement_id="req-101"),
+                SddTaskRequirement(workspace_id=workspace.id, task_id=task.id, requirement_id="req-102"),
+                SddTaskRequirement(workspace_id=workspace.id, task_id="linked", requirement_id="req-101"),
+                SddTaskFollower(workspace_id=workspace.id, task_id=task.id, user_id=user.id),
+            ]
+        )
         db.commit()
     app = _build_app(sessions, user)
     app.include_router(crud.router, prefix="/api")
@@ -154,7 +198,14 @@ def test_views_use_real_links_and_current_user_favorites_with_sql_pagination(see
 def test_picker_searches_100_plus_requirements_without_loading_asset_trees(seeded):
     sessions, user, workspace, _ = seeded
     with _session(sessions) as db:
-        db.add_all([SddRequirement(id=f"history-{i}", workspace_id=workspace.id, title=f"History {i}", source_ref=f"REQ-{i + 1000}") for i in range(120)])
+        db.add_all(
+            [
+                SddRequirement(
+                    id=f"history-{i}", workspace_id=workspace.id, title=f"History {i}", source_ref=f"REQ-{i + 1000}"
+                )
+                for i in range(120)
+            ]
+        )
         db.commit()
     client = TestClient(_build_app(sessions, user))
     base = f"/api/workspaces/{workspace.id}/workspace-assets/requirement-options"
@@ -163,7 +214,16 @@ def test_picker_searches_100_plus_requirements_without_loading_asset_trees(seede
     assert first["total"] == 122
     assert len(first["items"]) == len(second["items"]) == 40
     assert not ({item["id"] for item in first["items"]} & {item["id"] for item in second["items"]})
-    assert set(first["items"][0]) == {"id", "title", "status", "source_ref", "parent_requirement_id", "parent_title", "child_count", "can_link_task"}
+    assert set(first["items"][0]) == {
+        "id",
+        "title",
+        "status",
+        "source_ref",
+        "parent_requirement_id",
+        "parent_title",
+        "child_count",
+        "can_link_task",
+    }
     assert client.get(base, params={"q": "REQ-1119"}).json()["items"][0]["id"] == "history-119"
     assert client.get(base, params={"q": "history-119"}).json()["total"] == 1
     assert client.get(base, params={"ids": "req-101,foreign-req"}).json()["total"] == 1

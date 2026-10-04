@@ -58,14 +58,14 @@ class FileLineGateTests(unittest.TestCase):
                     self.assertIn("需要重构", result.stderr)
 
     def test_reports_tracked_and_new_files_and_honors_ignore_rules(self):
-        (self.repository / ".gitignore").write_text(
-            "backend/ignored/\nbackend/tracked_ignored.py\n", encoding="utf-8"
-        )
+        (self.repository / ".gitignore").write_text("backend/ignored/\nbackend/tracked_ignored.py\n", encoding="utf-8")
         oversized = b"\n" * 1501
         self.write_source("tracked_ignored.py", oversized)
         subprocess.run(
             ["git", "add", "-f", "backend/tracked_ignored.py"],
-            cwd=self.repository, check=True, capture_output=True,
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
         )
         self.write_source("新的模块 with spaces.py", oversized)
         self.write_source("ignored/dependency.py", oversized)
@@ -85,7 +85,9 @@ class FileLineGateTests(unittest.TestCase):
         path = self.write_source("deleted.py", b"\n" * 1501)
         subprocess.run(
             ["git", "add", "backend/deleted.py"],
-            cwd=self.repository, check=True, capture_output=True,
+            cwd=self.repository,
+            check=True,
+            capture_output=True,
         )
         path.unlink()
         result = self.run_gate()
@@ -102,7 +104,9 @@ class FileLineGateTests(unittest.TestCase):
             checker = Path(directory) / "check_file_lines.py"
             shutil.copyfile(CHECKER, checker)
             result = subprocess.run(
-                [sys.executable, str(checker)], cwd=directory, capture_output=True,
+                [sys.executable, str(checker)],
+                cwd=directory,
+                capture_output=True,
             )
         self.assertEqual(result.returncode, 1)
 

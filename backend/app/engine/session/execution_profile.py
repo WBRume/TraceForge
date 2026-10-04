@@ -1,8 +1,10 @@
 """Neutral opt-in execution boundaries; legacy requests are passed unchanged."""
-from dataclasses import dataclass
+
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Protocol
+
 from app.agents.contract import AgentRunRequest, AgentRunResult
 
 
@@ -41,11 +43,12 @@ class LegacyExecutionProfile:
 async def run_profiled_turn(engine, prompt):
     """One shared provider entry; correctness hooks intentionally propagate errors.
 
-The profile owns scope persistence and presentation. It cannot accidentally call
-the main task's result/status projection through a best-effort legacy hook.
-"""
+    The profile owns scope persistence and presentation. It cannot accidentally call
+    the main task's result/status projection through a best-effort legacy hook.
+    """
     from app.agents.run_logging import run_agent_backend_with_logging
     from app.engine.session.registry import register_engine, unregister_engine
+
     profile = engine.execution_profile
     engine._run_task = asyncio.current_task()
     engine.running = True

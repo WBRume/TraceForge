@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -43,7 +41,7 @@ from app.domains.workspace_asset.services.requirements.queries import (
 
 
 def normalize_requirement_status(
-    value: Optional[str], *, default: RequirementStatus = RequirementStatus.DRAFT
+    value: str | None, *, default: RequirementStatus = RequirementStatus.DRAFT
 ) -> RequirementStatus:
     raw = str(value or default.value).strip().upper()
     try:
@@ -52,20 +50,18 @@ def normalize_requirement_status(
         raise WorkspaceAssetError(f"Unsupported requirement status: {value}", status_code=422) from exc
 
 
-def _normalize_relation_type(value: Optional[str]) -> TaskRequirementRelationType:
+def _normalize_relation_type(value: str | None) -> TaskRequirementRelationType:
     raw = str(value or TaskRequirementRelationType.RELATES_TO.value).strip().upper()
     try:
         return TaskRequirementRelationType(raw)
     except ValueError as exc:
-        raise WorkspaceAssetError(
-            f"Unsupported requirement-task relation type: {value}", status_code=422
-        ) from exc
+        raise WorkspaceAssetError(f"Unsupported requirement-task relation type: {value}", status_code=422) from exc
 
 
 def create_requirement(
     db: Session,
     workspace_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: RequirementCreateRequest,
 ) -> RequirementDetailResponse:
     title = clean_optional(payload.title, limit=300)
@@ -93,7 +89,9 @@ def create_requirement(
         source_ref=clean_optional(payload.source_ref, limit=300),
         source_metadata_json={
             **(json_dict(payload.source_metadata) or {}),
-            "task_prompt": clean_optional(payload.task_prompt or (payload.source_metadata or {}).get("task_prompt") or payload.body),
+            "task_prompt": clean_optional(
+                payload.task_prompt or (payload.source_metadata or {}).get("task_prompt") or payload.body
+            ),
         },
     )
     db.add(requirement)
@@ -119,9 +117,9 @@ def update_requirement(
     db: Session,
     workspace_id: str,
     requirement_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: RequirementUpdateRequest,
-) -> Optional[RequirementDetailResponse]:
+) -> RequirementDetailResponse | None:
     requirement = get_requirement(db, workspace_id, requirement_id)
     if not requirement:
         return None
@@ -149,14 +147,18 @@ def update_requirement(
     if payload_has_field(payload, "source_metadata"):
         requirement.source_metadata_json = json_dict(payload.source_metadata)
     if payload_has_field(payload, "task_prompt"):
-        requirement.source_metadata_json = {**(requirement.source_metadata_json or {}), "task_prompt": clean_optional(payload.task_prompt)}
+        requirement.source_metadata_json = {
+            **(requirement.source_metadata_json or {}),
+            "task_prompt": clean_optional(payload.task_prompt),
+        }
 
     db.flush()
     after = requirement_snapshot(requirement)
     if before != after:
         action = (
             RequirementAuditAction.STATUS_CHANGED
-            if before.get("status") != after.get("status") and {k: v for k, v in before.items() if k != "status"} == {k: v for k, v in after.items() if k != "status"}
+            if before.get("status") != after.get("status")
+            and {k: v for k, v in before.items() if k != "status"} == {k: v for k, v in after.items() if k != "status"}
             else RequirementAuditAction.UPDATED
         )
         add_requirement_audit(
@@ -178,9 +180,9 @@ def link_requirement_task(
     db: Session,
     workspace_id: str,
     requirement_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: RequirementTaskLinkRequest,
-) -> Optional[RequirementDetailResponse]:
+) -> RequirementDetailResponse | None:
     requirement = get_requirement(db, workspace_id, requirement_id)
     if not requirement:
         return None
@@ -233,9 +235,9 @@ def unlink_requirement_task(
     workspace_id: str,
     requirement_id: str,
     task_id: str,
-    actor_id: Optional[str],
-    change_reason: Optional[str] = None,
-) -> Optional[RequirementDetailResponse]:
+    actor_id: str | None,
+    change_reason: str | None = None,
+) -> RequirementDetailResponse | None:
     requirement = get_requirement(db, workspace_id, requirement_id)
     if not requirement:
         return None

@@ -11,16 +11,16 @@ SHARE_TASK_SESSION 的默认角色映射（存量成员 permissions_json
 缺省回退 DEFAULT_ROLE_PERMISSIONS，无需回填数据）。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "b8d2f4a6c1e9"
-down_revision: Union[str, None] = "a9c4f2d1b7e3"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "a9c4f2d1b7e3"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -99,21 +99,26 @@ def upgrade() -> None:
         sa.Column("client_submission_id", sa.String(128), nullable=False),
         sa.Column(
             "status",
-            sa.Enum("PENDING", "ADOPTED", "DISMISSED", name="tasksharesuggestionstatus",
-                    values_callable=lambda obj: [e.value for e in obj]),
+            sa.Enum(
+                "PENDING",
+                "ADOPTED",
+                "DISMISSED",
+                name="tasksharesuggestionstatus",
+                values_callable=lambda obj: [e.value for e in obj],
+            ),
             nullable=False,
         ),
         sa.Column("version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), onupdate=sa.func.now()),
         sa.Column("adopted_at", sa.DateTime(), nullable=True),
-        sa.UniqueConstraint(
-            "share_id", "visitor_id", "client_submission_id", name="uq_task_share_suggestion_idem"
-        ),
+        sa.UniqueConstraint("share_id", "visitor_id", "client_submission_id", name="uq_task_share_suggestion_idem"),
     )
     op.create_index("ix_sdd_task_share_suggestions_share_id", "sdd_task_share_suggestions", ["share_id"])
     op.create_index("ix_sdd_task_share_suggestions_task_id", "sdd_task_share_suggestions", ["task_id"])
-    op.create_index("ix_sdd_task_share_suggestions_recipient_user_id", "sdd_task_share_suggestions", ["recipient_user_id"])
+    op.create_index(
+        "ix_sdd_task_share_suggestions_recipient_user_id", "sdd_task_share_suggestions", ["recipient_user_id"]
+    )
     op.create_index("ix_sdd_task_share_suggestions_status", "sdd_task_share_suggestions", ["status"])
     op.create_index(
         "ix_task_share_suggestions_recipient_task_status",

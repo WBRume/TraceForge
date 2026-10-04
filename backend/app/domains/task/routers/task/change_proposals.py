@@ -37,9 +37,7 @@ from app.engine.session import get_engine
 router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 
 
-def _load_change_proposal_context_sync(
-    db: Session, *, ws_id: str, task_id: str
-) -> dict:
+def _load_change_proposal_context_sync(db: Session, *, ws_id: str, task_id: str) -> dict:
     task = get_task_or_404(db, task_id, ws_id)
     ensure_task_not_baselined(task)
     return {"task_id": task.id}
@@ -75,7 +73,7 @@ def _create_task_change_proposal_sync(
 async def create_task_change_proposal(
     ws_id: str,
     task_id: str,
-    data: ChangeProposalCreateRequest = Body(default=ChangeProposalCreateRequest()),
+    data: ChangeProposalCreateRequest = Body(default_factory=ChangeProposalCreateRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -89,7 +87,8 @@ async def create_task_change_proposal(
             session,
             WorkspacePermission.MANAGE_TASK_STATUS,
             "No permission to create change proposals",
-            task_id=task_id, operation="generate_patch",
+            task_id=task_id,
+            operation="generate_patch",
         ),
     )
     # Permission checks are complete; no dependency Session is allowed to
@@ -103,7 +102,8 @@ async def create_task_change_proposal(
                     try:
                         async with lock_task(task_id):
                             state = await run_route_db_txn(
-                                db, db_bind,
+                                db,
+                                db_bind,
                                 lambda session: _load_change_proposal_context_sync(
                                     db=session, ws_id=ws_id, task_id=task_id
                                 ),
@@ -112,7 +112,8 @@ async def create_task_change_proposal(
                             if engine and engine.running:
                                 raise HTTPException(status_code=409, detail=TASK_RUNNING_MSG)
                             proposal = await run_route_db_txn(
-                                db, db_bind,
+                                db,
+                                db_bind,
                                 lambda session: _create_task_change_proposal_sync(
                                     db=session,
                                     ws_id=ws_id,
@@ -148,4 +149,4 @@ async def create_task_change_proposal(
             workspace_id=ws_id,
             reason=str(exc),
         )
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc

@@ -3,7 +3,6 @@
 """
 
 from datetime import datetime
-from typing import Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -11,8 +10,8 @@ from pydantic import BaseModel, Field
 class SystemConfigItem(BaseModel):
     key: str
     value: str
-    description: Optional[str] = None
-    updated_at: Optional[datetime] = None
+    description: str | None = None
+    updated_at: datetime | None = None
 
 
 class SystemConfigListResponse(BaseModel):
@@ -21,4 +20,4 @@ class SystemConfigListResponse(BaseModel):
 
 class SystemConfigUpdate(BaseModel):
     # bool：开关型配置；str：字符串型配置（如工作区根目录，空字符串表示清空配置）
-    value: Union[bool, str]
+    value: bool | str

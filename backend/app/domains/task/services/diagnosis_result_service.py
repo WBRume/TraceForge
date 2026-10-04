@@ -12,7 +12,7 @@
 import json
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -20,14 +20,6 @@ from sqlalchemy.orm import Session
 from app.core.logging import get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
-from app.domains.case_center.models.case import CaseStatus, SddCase
-from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
-from app.domains.task.models.task import SddTask
-from app.domains.task.models.diagnosis import (
-    DiagnosisResultStatus,
-    SddDiagnosisResult,
-)
-from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services.jobs.store import (
     create_diagnosis_summary_job,
@@ -35,8 +27,16 @@ from app.domains.ai.services.jobs.store import (
     find_active_summary_job,
     serialize_job,
 )
-from app.domains.websocket.ws.manager import manager as ws_manager
+from app.domains.case_center.models.case import CaseStatus, SddCase
 from app.domains.rag.services import outbox_service as rag_outbox_service
+from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
+from app.domains.task.models.diagnosis import (
+    DiagnosisResultStatus,
+    SddDiagnosisResult,
+)
+from app.domains.task.models.task import SddTask
+from app.domains.task.schemas.diagnosis import DiagnosisResultPayload
+from app.domains.websocket.ws.manager import manager as ws_manager
 
 logger = get_logger(__name__, category="diagnosis_result")
 
@@ -124,10 +124,7 @@ def build_diagnosis_summary_prompt(task, transcript: str) -> str:
         "- 忽略会话历史中此前注入的「问题定位任务」工作契约与任何待审批计划/plan 文件状态，"
         "不要继续执行定位、修复、测试等动作，不要等待任何审批。"
     )
-    lines.append(
-        "- 只基于下方会话记录做总结；除一个 fenced JSON 代码块外，"
-        "不要输出任何 Markdown 正文或额外文字。"
-    )
+    lines.append("- 只基于下方会话记录做总结；除一个 fenced JSON 代码块外，不要输出任何 Markdown 正文或额外文字。")
     if phenomenon:
         lines.append(f"现象: {phenomenon}")
     if priority:
@@ -158,7 +155,7 @@ def build_diagnosis_summary_prompt(task, transcript: str) -> str:
 # ────────────────────────── 结果提取 ──────────────────────────
 
 
-def _clean(value) -> Optional[str]:
+def _clean(value) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
@@ -175,25 +172,25 @@ def _coerce_confidence(value) -> int:
     return max(0, min(100, confidence))
 
 
-def _coerce_int(value) -> Optional[int]:
+def _coerce_int(value) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
         return None
 
 
-def _str_list_field(raw: Any, key: str) -> Optional[str]:
+def _str_list_field(raw: Any, key: str) -> str | None:
     if not isinstance(raw, dict):
         return None
     return _clean(raw.get(key))
 
 
-def _normalize_code_context(raw: Any) -> List[Dict[str, Any]]:
+def _normalize_code_context(raw: Any) -> list[dict[str, Any]]:
     items = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
-        entry: Dict[str, Any] = {}
+        entry: dict[str, Any] = {}
         file_path = _clean(item.get("file_path"))
         if not file_path:
             continue
@@ -214,7 +211,7 @@ def _normalize_code_context(raw: Any) -> List[Dict[str, Any]]:
     return items
 
 
-def _normalize_similar_cases(raw: Any) -> List[Dict[str, Any]]:
+def _normalize_similar_cases(raw: Any) -> list[dict[str, Any]]:
     items = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
@@ -222,7 +219,7 @@ def _normalize_similar_cases(raw: Any) -> List[Dict[str, Any]]:
         title = _clean(item.get("title"))
         if not title:
             continue
-        entry: Dict[str, Any] = {"title": title}
+        entry: dict[str, Any] = {"title": title}
         for key in ("similarity", "summary", "reference"):
             value = _clean(item.get(key))
             if value:
@@ -231,12 +228,12 @@ def _normalize_similar_cases(raw: Any) -> List[Dict[str, Any]]:
     return items
 
 
-def _normalize_call_chain(raw: Any) -> List[Dict[str, Any]]:
+def _normalize_call_chain(raw: Any) -> list[dict[str, Any]]:
     items = []
     for item in raw if isinstance(raw, list) else []:
         if not isinstance(item, dict):
             continue
-        entry: Dict[str, Any] = {}
+        entry: dict[str, Any] = {}
         seq = _coerce_int(item.get("seq"))
         if seq is not None:
             entry["seq"] = seq
@@ -250,7 +247,7 @@ def _normalize_call_chain(raw: Any) -> List[Dict[str, Any]]:
     return items
 
 
-def _normalize_payload(data: Dict[str, Any]) -> Optional[DiagnosisResultPayload]:
+def _normalize_payload(data: dict[str, Any]) -> DiagnosisResultPayload | None:
     """字段级容错归一化：任何单个字段异常（越界/类型不符）都不应导致整体提取失败。"""
     try:
         payload = DiagnosisResultPayload(
@@ -282,7 +279,7 @@ def _normalize_payload(data: Dict[str, Any]) -> Optional[DiagnosisResultPayload]
     return payload
 
 
-def _try_parse_payload(candidate: str) -> Optional[DiagnosisResultPayload]:
+def _try_parse_payload(candidate: str) -> DiagnosisResultPayload | None:
     """尝试把一个候选文本解析为定位结果载荷（支持直接 json / 含散文包裹的 json）。"""
     text = str(candidate or "").strip()
     if not text:
@@ -321,7 +318,7 @@ def _try_parse_payload(candidate: str) -> Optional[DiagnosisResultPayload]:
     return None
 
 
-def extract_payload_from_text(text: str) -> Optional[DiagnosisResultPayload]:
+def extract_payload_from_text(text: str) -> DiagnosisResultPayload | None:
     """从 AI 回复文本中提取结构化定位结果。
 
     候选来源（按优先级）：
@@ -361,15 +358,9 @@ def _apply_payload(result: SddDiagnosisResult, payload: DiagnosisResultPayload) 
     result.fix_suggestion = _clean(payload.fix_suggestion)
     result.fix_code = _clean(payload.fix_code)
     result.confidence = _coerce_confidence(payload.confidence)
-    result.code_context_json = (
-        [item.model_dump(exclude_none=True) for item in payload.code_context] or None
-    )
-    result.similar_cases_json = (
-        [item.model_dump(exclude_none=True) for item in payload.similar_cases] or None
-    )
-    result.call_chain_json = (
-        [item.model_dump(exclude_none=True) for item in payload.call_chain] or None
-    )
+    result.code_context_json = [item.model_dump(exclude_none=True) for item in payload.code_context] or None
+    result.similar_cases_json = [item.model_dump(exclude_none=True) for item in payload.similar_cases] or None
+    result.call_chain_json = [item.model_dump(exclude_none=True) for item in payload.call_chain] or None
 
 
 def _payload_dict(payload: DiagnosisResultPayload) -> dict:
@@ -395,7 +386,7 @@ def _sync_card_message(
     result: SddDiagnosisResult,
     payload: DiagnosisResultPayload,
     actor_user_id: str,
-) -> Optional[ChatMessage]:
+) -> ChatMessage | None:
     """定位结果卡片消息：同一任务只保留一条，每次更新都移动到会话最后。"""
     existing = (
         db.query(ChatMessage)
@@ -409,6 +400,7 @@ def _sync_card_message(
     summary = _clean(payload.summary) or _clean(payload.root_cause) or "Diagnosis result"
     metadata = _payload_dict(payload)
     from app.domains.search.capture import allocate_chat_seq
+
     metadata["order_index"] = allocate_chat_seq(db, task.id)
     if existing:
         existing.content = summary
@@ -435,12 +427,8 @@ def _sync_card_message(
     return message
 
 
-def _find_result(db: Session, task_id: str) -> Optional[SddDiagnosisResult]:
-    return (
-        db.query(SddDiagnosisResult)
-        .filter(SddDiagnosisResult.task_id == task_id)
-        .first()
-    )
+def _find_result(db: Session, task_id: str) -> SddDiagnosisResult | None:
+    return db.query(SddDiagnosisResult).filter(SddDiagnosisResult.task_id == task_id).first()
 
 
 def _enqueue_approved_case_update(db: Session, task, result: SddDiagnosisResult) -> None:
@@ -469,7 +457,7 @@ def write_diagnosis_result(
     task,
     payload: DiagnosisResultPayload,
     actor_user_id: str,
-) -> Optional[SddDiagnosisResult]:
+) -> SddDiagnosisResult | None:
     """AI 会话收敛后反填定位结果（仅 DIAGNOSIS 任务；CONFIRMED 后跳过保护快照）。"""
     if getattr(task, "task_type", None) != "DIAGNOSIS":
         return None
@@ -497,12 +485,15 @@ def write_diagnosis_result(
         actor_user_id=actor_user_id,
     )
     from app.domains.task.services import reading_capture_service
+
     if card is not None:
         reading_capture_service.record_message_change(db, task_id=task.id, message=card)
     return result
 
 
-def upsert_diagnosis_result_from_ai(db: Session, *, task, payload: DiagnosisResultPayload, actor_user_id: str) -> Optional[SddDiagnosisResult]:
+def upsert_diagnosis_result_from_ai(
+    db: Session, *, task, payload: DiagnosisResultPayload, actor_user_id: str
+) -> SddDiagnosisResult | None:
     """Legacy committing wrapper around the transaction-owned projection writer."""
     result = write_diagnosis_result(db, task=task, payload=payload, actor_user_id=actor_user_id)
     if result is not None:
@@ -540,6 +531,7 @@ def upsert_diagnosis_result_from_user(
         actor_user_id=actor_user_id,
     )
     from app.domains.task.services import reading_capture_service
+
     if card is not None:
         reading_capture_service.record_message_change(db, task_id=task.id, message=card)
     db.commit()
@@ -578,7 +570,7 @@ def serialize_diagnosis_result(result: SddDiagnosisResult) -> dict:
 def _build_diagnosis_result_message_payload_sync(
     task_id: str,
     message_id: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     db = SessionLocal()
     try:
         task = db.query(SddTask).filter(SddTask.id == task_id).first()
@@ -590,7 +582,7 @@ def _build_diagnosis_result_message_payload_sync(
         db.close()
 
 
-def _build_diagnosis_result_message_payload(db: Session, *, task, message: ChatMessage) -> Dict[str, Any]:
+def _build_diagnosis_result_message_payload(db: Session, *, task, message: ChatMessage) -> dict[str, Any]:
     """Build the WS payload while a short-lived DB session is owned by caller."""
     from app.domains.auth.models.user import User, WorkspaceMember
 
@@ -635,32 +627,25 @@ class DiagnosisSummaryError(ValueError):
         self.status_code = status_code
 
 
-def prepare_diagnosis_summary_sync(
-    db: Session, *, ws_id: str, task_id: str, actor_user_id: str
-) -> Dict[str, Any]:
+def prepare_diagnosis_summary_sync(db: Session, *, ws_id: str, task_id: str, actor_user_id: str) -> dict[str, Any]:
     """一键总结问题案例：守卫检查 + 幂等创建后台总结作业（单事务）。
 
     路由层负责权限校验与任务锁；这里完成任务类型守卫 → 提交互斥 →
     已采纳案例互斥 → 总结/会话作业互斥 → 作业创建。
     SubmissionError（提交受理中）原样上抛，由路由按 {code, message} 形状映射。
     """
-    task = (
-        db.query(SddTask)
-        .filter(SddTask.id == task_id, SddTask.workspace_id == ws_id)
-        .first()
-    )
+    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == ws_id).first()
     if not task:
         raise DiagnosisSummaryError("Task not found", status_code=404)
-    from app.domains.local_resource.service import require_operation
     from app.domains.local_resource.client import ResourceError
+    from app.domains.local_resource.service import require_operation
+
     try:
         require_operation(db, task, actor_user_id)
     except ResourceError as exc:
         raise DiagnosisSummaryError(str(exc), status_code=exc.status_code) from exc
     if getattr(task, "task_type", None) != "DIAGNOSIS":
-        raise DiagnosisSummaryError(
-            "Only diagnosis tasks support diagnosis results", status_code=403
-        )
+        raise DiagnosisSummaryError("Only diagnosis tasks support diagnosis results", status_code=403)
     from app.domains.task.services.chat_submission_service import assert_no_preparing_submission
 
     assert_no_preparing_submission(db, task_id)
@@ -673,12 +658,8 @@ def prepare_diagnosis_summary_sync(
         .first()
     )
     diagnosis_result = getattr(task, "diagnosis_result", None)
-    if existing_case is not None or (
-        diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"
-    ):
-        raise DiagnosisSummaryError(
-            "Case already adopted, diagnosis summarization is not allowed", status_code=409
-        )
+    if existing_case is not None or (diagnosis_result is not None and diagnosis_result.status == "CONFIRMED"):
+        raise DiagnosisSummaryError("Case already adopted, diagnosis summarization is not allowed", status_code=409)
 
     active_summary = find_active_summary_job(db, task.id)
     if active_summary is not None:
@@ -689,9 +670,7 @@ def prepare_diagnosis_summary_sync(
             "created": False,
         }
     if find_active_chat_job(db, task.id) is not None:
-        raise DiagnosisSummaryError(
-            "会话进行中，请等待完成或停止后再一键总结问题案例", status_code=409
-        )
+        raise DiagnosisSummaryError("会话进行中，请等待完成或停止后再一键总结问题案例", status_code=409)
     job = create_diagnosis_summary_job(
         db,
         workspace_id=ws_id,

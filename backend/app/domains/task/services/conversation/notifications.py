@@ -1,9 +1,10 @@
 """Follower notification policy for persisted conversation messages."""
 
 from sqlalchemy.orm import Session
+
 from app.core.logging import get_logger
-from app.domains.task.models.task import SddTask, SddTaskFollower
 from app.domains.task.models.chat import ChatMessage, MessageRole
+from app.domains.task.models.task import SddTask, SddTaskFollower
 
 logger = get_logger(__name__, category="task_execution")
 
@@ -29,21 +30,25 @@ def notify_followers(db: Session, message: ChatMessage) -> None:
         task_name = str(follower_rows[0][1] or "任务") if follower_rows else "任务"
         follower_ids = [str(row[0]) for row in follower_rows]
         if follower_ids:
-            from app.domains.notification.services.notification_service import create_notifications
             from app.domains.notification.models.notification import SddUserNotification
+            from app.domains.notification.services.notification_service import create_notifications
 
             # Streaming providers may persist several assistant text chunks for one
             # reply. Keep one unread notification per follower/task until it is
             # consumed, so following a task does not turn into notification spam.
-            existing_rows = db.query(
-                SddUserNotification.recipient_user_id,
-                SddUserNotification.payload_json,
-            ).filter(
-                SddUserNotification.workspace_id == message.workspace_id,
-                SddUserNotification.type == "task_message",
-                SddUserNotification.read_at.is_(None),
-                SddUserNotification.recipient_user_id.in_(follower_ids),
-            ).all()
+            existing_rows = (
+                db.query(
+                    SddUserNotification.recipient_user_id,
+                    SddUserNotification.payload_json,
+                )
+                .filter(
+                    SddUserNotification.workspace_id == message.workspace_id,
+                    SddUserNotification.type == "task_message",
+                    SddUserNotification.read_at.is_(None),
+                    SddUserNotification.recipient_user_id.in_(follower_ids),
+                )
+                .all()
+            )
             already_notified = {
                 str(recipient_id)
                 for recipient_id, payload in existing_rows

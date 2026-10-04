@@ -1,12 +1,12 @@
-import os
 import asyncio
+import os
 import sys
 import unittest
-from unittest import mock
 from types import SimpleNamespace
+from unittest import mock
 
-from redis.exceptions import AuthenticationError, LockNotOwnedError, TimeoutError as RedisTimeoutError
-
+from redis.exceptions import AuthenticationError, LockNotOwnedError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
@@ -38,9 +38,11 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
     async def test_redis_renews_while_owner_is_working(self):
         fake_lock = _FakeRedisLock()
         renewed = asyncio.Event()
+
         async def extend(*args, **kwargs):
             renewed.set()
             return True
+
         fake_lock.extend = mock.AsyncMock(side_effect=extend)
         client = mock.Mock()
         client.lock.return_value = fake_lock
@@ -70,7 +72,7 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(dl, "get_redis_client", new=mock.AsyncMock(return_value=client)):
             with self.assertRaises(asyncio.CancelledError):
                 async with dl.RedisLockProvider().lock(resource_type="task", resource_id="cancel"):
-                    raise asyncio.CancelledError()
+                    raise asyncio.CancelledError
         self.assertEqual(fake_lock.release_calls, 1)
 
     def setUp(self) -> None:
@@ -103,7 +105,9 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
         settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK = True
         dl._PROVIDER = None
 
-        with mock.patch("app.core.distributed_lock.ping_redis_client", new=mock.AsyncMock(side_effect=RuntimeError("redis down"))):
+        with mock.patch(
+            "app.core.distributed_lock.ping_redis_client", new=mock.AsyncMock(side_effect=RuntimeError("redis down"))
+        ):
             provider = await dl.get_lock_provider()
         self.assertIsInstance(provider, dl.LocalLockProvider)
 
@@ -112,7 +116,9 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
         settings.DISTRIBUTED_LOCK_ALLOW_LOCAL_FALLBACK = False
         dl._PROVIDER = None
 
-        with mock.patch("app.core.distributed_lock.ping_redis_client", new=mock.AsyncMock(side_effect=RuntimeError("redis down"))):
+        with mock.patch(
+            "app.core.distributed_lock.ping_redis_client", new=mock.AsyncMock(side_effect=RuntimeError("redis down"))
+        ):
             with self.assertRaises(RuntimeError):
                 await dl.get_lock_provider()
 
@@ -166,8 +172,7 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
             async with dl.RedisLockProvider().lock(resource_type="task", resource_id="retry"):
                 pass
         self.assertEqual(lock.acquire.await_count, 2)
-        self.assertEqual(lock.acquire.call_args_list[0].kwargs["token"],
-                         lock.acquire.call_args_list[1].kwargs["token"])
+        self.assertEqual(lock.acquire.call_args_list[0].kwargs["token"], lock.acquire.call_args_list[1].kwargs["token"])
         self.assertEqual(lock.release_calls, 1)
 
     async def test_lost_set_response_recovers_lease_without_second_set(self):
@@ -225,8 +230,10 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_hanging_acquire_respects_overall_deadline(self):
         lock = _FakeRedisLock()
+
         async def hang(**kwargs):
             await asyncio.Event().wait()
+
         lock.acquire = mock.AsyncMock(side_effect=hang)
         client = mock.Mock()
         client.lock.return_value = lock
@@ -234,7 +241,9 @@ class DistributedLockTest(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(dl.LockAcquireTimeout):
                 async with asyncio.timeout(0.5):
                     async with dl.RedisLockProvider().lock(
-                        resource_type="task", resource_id="hang", blocking_timeout=0.03,
+                        resource_type="task",
+                        resource_id="hang",
+                        blocking_timeout=0.03,
                     ):
                         self.fail("deadline must prevent entry")
         self.assertEqual(lock.release_calls, 1)

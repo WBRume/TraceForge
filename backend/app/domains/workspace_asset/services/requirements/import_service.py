@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -38,6 +38,7 @@ from app.domains.workspace_asset.services.requirements.presenters import (
     import_batch_response,
     requirement_snapshot,
 )
+from app.domains.workspace_asset.services.requirements.preview.job_service import get_import_batch
 from app.domains.workspace_asset.services.requirements.queries import (
     get_requirement,
     get_requirement_detail,
@@ -49,7 +50,6 @@ from app.domains.workspace_asset.services.requirements.segmentation import (
     parse_requirement_document,
 )
 from app.domains.workspace_asset.services.requirements.writes import normalize_requirement_status
-from app.domains.workspace_asset.services.requirements.preview.job_service import get_import_batch
 
 
 def _ensure_batch_open(batch: SddRequirementImportBatch, message: str) -> None:
@@ -60,15 +60,15 @@ def _ensure_batch_open(batch: SddRequirementImportBatch, message: str) -> None:
 def create_requirement_direct_import(
     db: Session,
     workspace_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     *,
     file_name: str,
     raw: bytes,
-    source_kind: Optional[str] = None,
-    source_uri: Optional[str] = None,
-    source_ref: Optional[str] = None,
-    change_reason: Optional[str] = None,
-    task_prompt: Optional[str] = None,
+    source_kind: str | None = None,
+    source_uri: str | None = None,
+    source_ref: str | None = None,
+    change_reason: str | None = None,
+    task_prompt: str | None = None,
 ) -> RequirementDetailResponse:
     """上传文档不经 AI preview，直接按文档标题创建一条 Requirement。"""
     parsed = parse_requirement_document(file_name, raw)
@@ -84,10 +84,14 @@ def create_requirement_direct_import(
         source_kind=clean_optional(source_kind, limit=80) or "document",
         source_uri=clean_optional(source_uri, limit=1000),
         source_ref=clean_optional(source_ref, limit=300),
-        source_metadata_json=document_metadata(parsed, extra={
-            "created_from": "direct_import", "source_filename": file_name,
-            "task_prompt": clean_optional(task_prompt) or markdown,
-        }),
+        source_metadata_json=document_metadata(
+            parsed,
+            extra={
+                "created_from": "direct_import",
+                "source_filename": file_name,
+                "task_prompt": clean_optional(task_prompt) or markdown,
+            },
+        ),
     )
     db.add(requirement)
     db.flush()
@@ -111,13 +115,17 @@ def create_requirement_direct_import(
 def _import_item_values(
     item,
     override,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     title = clean_optional((override.title if override and override.title is not None else item.title), limit=300)
     if not title:
         item.status = RequirementImportItemStatus.SKIPPED
         return None
     body = override.body if override and override.body is not None else item.body
-    criteria = override.acceptance_criteria if override and override.acceptance_criteria is not None else item.acceptance_criteria_json
+    criteria = (
+        override.acceptance_criteria
+        if override and override.acceptance_criteria is not None
+        else item.acceptance_criteria_json
+    )
     priority = override.priority if override and override.priority is not None else item.priority
     # import confirm 的 override 带 status；split 的 override 没有（恒为 DRAFT）。
     status_value = getattr(override, "status", None) or "DRAFT"
@@ -140,13 +148,13 @@ def _create_requirement_from_values(
     db: Session,
     *,
     workspace_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     batch: SddRequirementImportBatch,
-    values: Dict[str, Any],
-    item_metadata: Dict[str, Any],
-    parent: Optional[SddRequirement],
+    values: dict[str, Any],
+    item_metadata: dict[str, Any],
+    parent: SddRequirement | None,
     created_from: str,
-    change_reason: Optional[str],
+    change_reason: str | None,
 ) -> SddRequirement:
     requirement = SddRequirement(
         workspace_id=workspace_id,
@@ -184,7 +192,9 @@ def _create_requirement_from_values(
         action=RequirementAuditAction.CREATED,
         after=requirement_snapshot(requirement),
         reason=change_reason,
-        source_metadata={"created_from": created_from, "parent_requirement_id": parent.id} if parent else {"created_from": created_from},
+        source_metadata={"created_from": created_from, "parent_requirement_id": parent.id}
+        if parent
+        else {"created_from": created_from},
     )
     return requirement
 
@@ -193,9 +203,9 @@ def confirm_requirement_import(
     db: Session,
     workspace_id: str,
     batch_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: RequirementImportConfirmRequest,
-) -> Optional[RequirementImportBatchResponse]:
+) -> RequirementImportBatchResponse | None:
     """把 import preview 批次确认落库：多条建父+子树，单条直建。"""
     batch = get_import_batch(db, workspace_id, batch_id)
     if not batch:
@@ -216,7 +226,9 @@ def confirm_requirement_import(
 
     created_count = 0
     if len(selected_values) > 1:
-        parent_title = direct_import_title(batch.source_filename or "Imported Requirement", batch.normalized_markdown or "")
+        parent_title = direct_import_title(
+            batch.source_filename or "Imported Requirement", batch.normalized_markdown or ""
+        )
         parent = SddRequirement(
             workspace_id=workspace_id,
             created_by_id=actor_id,
@@ -302,7 +314,7 @@ def save_requirement_split_draft(
     workspace_id: str,
     batch_id: str,
     payload: RequirementSplitDraftPayload,
-) -> Optional[RequirementImportBatchResponse]:
+) -> RequirementImportBatchResponse | None:
     """把拆分评审页的未提交编辑覆盖保存为批次草稿。
 
     草稿是 AI 原始预览之上的编辑态覆盖层：批次 items 保持 AI 原始输出不变，
@@ -322,7 +334,7 @@ def clear_requirement_split_draft(
     db: Session,
     workspace_id: str,
     batch_id: str,
-) -> Optional[RequirementImportBatchResponse]:
+) -> RequirementImportBatchResponse | None:
     """删除拆分评审页草稿（评审页「取消」语义）：删除后重新拆分会发起新的 AI 预览。"""
     batch = get_import_batch(db, workspace_id, batch_id)
     if not batch:
@@ -337,7 +349,7 @@ def find_requirement_split_draft(
     db: Session,
     workspace_id: str,
     requirement_id: str,
-) -> Optional[RequirementImportBatchResponse]:
+) -> RequirementImportBatchResponse | None:
     """「拆分」入口草稿回绑：该需求最近一个带未提交草稿的 PREVIEW 拆分批次。"""
     batch = (
         db.query(SddRequirementImportBatch)
@@ -359,9 +371,9 @@ def confirm_requirement_split(
     db: Session,
     workspace_id: str,
     requirement_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: RequirementSplitRequest,
-) -> Optional[RequirementImportBatchResponse]:
+) -> RequirementImportBatchResponse | None:
     """把 split preview 批次确认为父 Requirement 下的子 Requirement。"""
     parent = get_requirement(db, workspace_id, requirement_id)
     if not parent:

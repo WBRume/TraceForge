@@ -10,7 +10,7 @@ RAG 标准文档构建器。
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from app.domains.case_center.models.case import CaseCategory, SddCase
 from app.domains.rag.schemas import RagChunk, RagDocument, RagVisibility
@@ -109,7 +109,7 @@ def _code_context_items_text(code_context: Any) -> str:
 def _diagnosis_analysis_text(diagnosis_result: Any) -> str:
     if diagnosis_result is None:
         return ""
-    parts: List[str] = []
+    parts: list[str] = []
     evidence = _text(getattr(diagnosis_result, "evidence_chain", None))
     if evidence:
         parts.append(evidence)
@@ -125,7 +125,7 @@ def _diagnosis_analysis_text(diagnosis_result: Any) -> str:
 def _diagnosis_solution_text(diagnosis_result: Any) -> str:
     if diagnosis_result is None:
         return ""
-    parts: List[str] = []
+    parts: list[str] = []
     suggestion = _text(getattr(diagnosis_result, "fix_suggestion", None))
     if suggestion:
         parts.append(suggestion)
@@ -174,15 +174,20 @@ def _build_content(case: SddCase, diagnosis_result: Any = None) -> str:
             code_context = "\n\n".join(part for part in [code_context, ctx] if part)
     detail = _diagnosis_detail(diagnosis_result, case)
 
-    sections: List[tuple[str, str]] = [
+    sections: list[tuple[str, str]] = [
         ("问题描述", _problem_description(case)),
-        ("产品/版本/局点", " / ".join(
-            part for part in [
-                _text(case.product_name),
-                _text(case.product_version),
-                _text(case.site_name),
-            ] if part
-        )),
+        (
+            "产品/版本/局点",
+            " / ".join(
+                part
+                for part in [
+                    _text(case.product_name),
+                    _text(case.product_version),
+                    _text(case.site_name),
+                ]
+                if part
+            ),
+        ),
         ("分析过程", analysis),
         ("根因", root_cause),
         ("解决方案", solution),
@@ -197,12 +202,15 @@ def _build_content(case: SddCase, diagnosis_result: Any = None) -> str:
     return "\n\n".join(parts)
 
 
-def _build_chunks(case: SddCase, diagnosis_result: Any = None) -> List[RagChunk]:
-    chunks: List[RagChunk] = []
+def _build_chunks(case: SddCase, diagnosis_result: Any = None) -> list[RagChunk]:
+    chunks: list[RagChunk] = []
     root_cause = _text(getattr(diagnosis_result, "root_cause", None) or case.root_cause)
-    sections: List[tuple[str, str]] = [
+    sections: list[tuple[str, str]] = [
         ("问题描述", _problem_description(case)),
-        ("分析过程", _text(case.analysis_process) if diagnosis_result is None else _diagnosis_analysis_text(diagnosis_result)),
+        (
+            "分析过程",
+            _text(case.analysis_process) if diagnosis_result is None else _diagnosis_analysis_text(diagnosis_result),
+        ),
         ("根因", root_cause),
         ("解决方案", _text(case.solution) if diagnosis_result is None else _diagnosis_solution_text(diagnosis_result)),
         ("代码上下文", _text(case.code_context)),
@@ -227,11 +235,9 @@ def build_case_document(
     diagnosis_result: Any = None,
 ) -> RagDocument:
     visibility = (
-        RagVisibility.PUBLIC.value
-        if case.category == CaseCategory.PUBLIC.value
-        else RagVisibility.WORKSPACE.value
+        RagVisibility.PUBLIC.value if case.category == CaseCategory.PUBLIC.value else RagVisibility.WORKSPACE.value
     )
-    metadata: Dict[str, Any] = {
+    metadata: dict[str, Any] = {
         "case_id": case.id,
         "archive_origin": getattr(case, "archive_origin", "MANUAL"),
         "verification_status": "TECHNICALLY_VERIFIED" if case.status == "TECHNICALLY_VERIFIED" else None,

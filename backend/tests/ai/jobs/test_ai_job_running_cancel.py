@@ -13,6 +13,24 @@ from datetime import datetime
 
 import pytest
 
+from app.agents.contract import (
+    EXECUTION_KIND_LOCAL_PROCESS,
+    AgentAttemptRuntimeState,
+    bind_agent_attempt,
+    bind_agent_attempt_runtime,
+    reset_agent_attempt,
+    reset_agent_attempt_runtime,
+)
+from app.agents.supervision import process_supervisor
+from app.core.offload import run_db_txn
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services import ai_job_convergence_service as convergence
+from app.domains.ai.services.jobs import attempts as ai_attempts
+from app.domains.ai.services.jobs import executors as ai_executors
+from app.domains.ai.services.jobs import publishing as ai_publishing
+from app.domains.ai.services.jobs import queue_runner as ai_queue_runner
+from app.domains.ai.services.jobs import registry as ai_registry
+from app.domains.websocket.ws.manager import manager as task_ws_manager
 from tests.ai.jobs.ai_job_test_utils import (
     _identity,
     _job,
@@ -23,25 +41,6 @@ from tests.ai.jobs.ai_job_test_utils import (
     _terminate_request,
     patch_ai_job_db,
 )
-from app.agents.contract import (
-    EXECUTION_KIND_LOCAL_PROCESS,
-    AgentAttemptRuntimeState,
-    bind_agent_attempt,
-    bind_agent_attempt_runtime,
-    reset_agent_attempt,
-    reset_agent_attempt_runtime,
-)
-from app.core.offload import run_db_txn
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
-from app.domains.ai.services import ai_job_convergence_service as convergence
-from app.domains.ai.services.jobs import attempts as ai_attempts
-from app.domains.ai.services.jobs import executors as ai_executors
-from app.domains.ai.services.jobs import publishing as ai_publishing
-from app.domains.ai.services.jobs import queue_runner as ai_queue_runner
-from app.domains.ai.services.jobs import registry as ai_registry
-from app.agents.supervision import process_supervisor
-from app.domains.websocket.ws.manager import manager as task_ws_manager
-
 
 # ────────────────────── 14.2 运行中取消 ──────────────────────
 
@@ -77,7 +76,10 @@ def test_interrupt_mode_converges_resumable_interrupted(monkeypatch):
 
     row = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
     evidence = ai_attempts.termination_evidence_for_row(
-        row, confirmed_dead=True, failure_code="USER_INTERRUPT", reason="pause for edits",
+        row,
+        confirmed_dead=True,
+        failure_code="USER_INTERRUPT",
+        reason="pause for edits",
     )
     payload = ai_attempts.converge_termination_sync(
         "convergence-job",
@@ -106,7 +108,10 @@ def test_cancel_mode_still_converges_cancelled(monkeypatch):
 
     row = db.query(SddAiJob).filter(SddAiJob.id == "convergence-job").first()
     evidence = ai_attempts.termination_evidence_for_row(
-        row, confirmed_dead=True, failure_code="CANCEL_REQUESTED", reason="USER_CANCEL",
+        row,
+        confirmed_dead=True,
+        failure_code="CANCEL_REQUESTED",
+        reason="USER_CANCEL",
     )
     payload = ai_attempts.converge_termination_sync(
         "convergence-job",
@@ -155,7 +160,10 @@ def test_requirement_preview_user_cancel_converges_cancelled_never_retried(monke
 
     row = db.query(SddAiJob).filter(SddAiJob.id == "preview-cancel-job").first()
     evidence = ai_attempts.termination_evidence_for_row(
-        row, confirmed_dead=True, failure_code="CANCEL_REQUESTED", reason="USER_CANCEL",
+        row,
+        confirmed_dead=True,
+        failure_code="CANCEL_REQUESTED",
+        reason="USER_CANCEL",
     )
     payload = ai_attempts.converge_termination_sync(
         "preview-cancel-job",
@@ -181,7 +189,10 @@ def test_requirement_preview_crash_still_retries_before_max_attempts(monkeypatch
 
     row = db.query(SddAiJob).filter(SddAiJob.id == "preview-cancel-job").first()
     evidence = ai_attempts.termination_evidence_for_row(
-        row, confirmed_dead=True, failure_code="LEASE_EXPIRED", reason="LEASE_EXPIRED",
+        row,
+        confirmed_dead=True,
+        failure_code="LEASE_EXPIRED",
+        reason="LEASE_EXPIRED",
     )
     payload = ai_attempts.converge_termination_sync(
         "preview-cancel-job",

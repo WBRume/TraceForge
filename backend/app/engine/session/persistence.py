@@ -8,7 +8,8 @@ fence 复核（job 未撤销/revision 未变），过期批次直接丢弃。
 
 import asyncio
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -51,7 +52,7 @@ class BatchFlusher:
         self._interval_getter = interval_getter
         self._max_consecutive_failures = max_consecutive_failures
         self._drain_max_rounds = drain_max_rounds
-        self._flush_task: Optional[asyncio.Task] = None
+        self._flush_task: asyncio.Task | None = None
         self._draining = False
         self._consecutive_failures = 0
 
@@ -164,7 +165,7 @@ class ExecutionLogBatcher(BatchFlusher):
             drain_max_rounds=EXECUTION_LOG_DRAIN_MAX_ROUNDS,
         )
         self._owner = owner
-        self._buffer: List[Tuple[str, LogType, int]] = []
+        self._buffer: list[tuple[str, LogType, int]] = []
         self._order = time.time_ns()
 
     def queue(self, content: str, log_type: LogType = LogType.STDOUT) -> None:
@@ -192,14 +193,14 @@ class ExecutionLogBatcher(BatchFlusher):
     def _pending_count(self) -> int:
         return len(self._buffer)
 
-    def _collect(self) -> List[Tuple[str, LogType, int]]:
+    def _collect(self) -> list[tuple[str, LogType, int]]:
         batch, self._buffer = self._buffer, []
         return batch
 
-    async def _persist(self, batch: List[Tuple[str, LogType, int]]) -> None:
+    async def _persist(self, batch: list[tuple[str, LogType, int]]) -> None:
         await run_db(self._persist_sync, batch)
 
-    def _persist_sync(self, entries: List[Tuple[str, LogType, int]]) -> None:
+    def _persist_sync(self, entries: list[tuple[str, LogType, int]]) -> None:
         """Persist one execution-log batch in a single transaction (线程内执行).
 
         失败抛出由骨架负责回填重试（见 _requeue）。
@@ -213,18 +214,20 @@ class ExecutionLogBatcher(BatchFlusher):
             gate = self._owner.gate
             if gate is not None and not gate.fence_sync(db):
                 return
-            db.add_all([
-                SddExecutionLog(
-                    task_id=self._owner.task_id,
-                    workspace_id=self._owner.ws_id,
-                    creator_id=self._owner.user_id,
-                    log_type=log_type,
-                    content=content[:EXECUTION_LOG_CONTENT_LIMIT],
-                    event_order=event_order,
-                    session_turn_id=self._owner.session_turn_id,
-                )
-                for content, log_type, event_order in entries
-            ])
+            db.add_all(
+                [
+                    SddExecutionLog(
+                        task_id=self._owner.task_id,
+                        workspace_id=self._owner.ws_id,
+                        creator_id=self._owner.user_id,
+                        log_type=log_type,
+                        content=content[:EXECUTION_LOG_CONTENT_LIMIT],
+                        event_order=event_order,
+                        session_turn_id=self._owner.session_turn_id,
+                    )
+                    for content, log_type, event_order in entries
+                ]
+            )
             db.commit()
         except Exception:
             db.rollback()
@@ -232,7 +235,7 @@ class ExecutionLogBatcher(BatchFlusher):
         finally:
             db.close()
 
-    def _requeue(self, batch: List[Tuple[str, LogType, int]]) -> None:
+    def _requeue(self, batch: list[tuple[str, LogType, int]]) -> None:
         """落库失败：回填缓冲保持顺序；连续失败达上限则丢弃最旧批次（防缓冲无限增长）。"""
         if self.register_failure(len(batch)):
             return
@@ -255,19 +258,16 @@ class ContextSegmentBatcher(BatchFlusher):
             drain_max_rounds=SEGMENT_DRAIN_MAX_ROUNDS,
         )
         self._owner = owner
-        self._buffer: List[Tuple[str, Dict[str, Any]]] = []
-        self._pending_snapshot: Dict[str, Any] = {}
-        self._thinking: Optional[Any] = None  # ThinkingStream，由引擎装配
+        self._buffer: list[tuple[str, dict[str, Any]]] = []
+        self._pending_snapshot: dict[str, Any] = {}
+        self._thinking: Any | None = None  # ThinkingStream，由引擎装配
         self._last_thinking_revision = -1
 
     def attach_thinking(self, thinking: Any) -> None:
         self._thinking = thinking
 
     def _thinking_pending(self) -> bool:
-        return (
-            self._thinking is not None
-            and self._thinking.revision != self._last_thinking_revision
-        )
+        return self._thinking is not None and self._thinking.revision != self._last_thinking_revision
 
     def mark_thinking_dirty(self) -> None:
         """thinking 内容已变化：打脏标记并调度窗口（flush 时读取合并内容）。"""
@@ -285,11 +285,11 @@ class ContextSegmentBatcher(BatchFlusher):
     def update_snapshot(
         self,
         *,
-        usage: Optional[Dict[str, Any]] = None,
-        model: Optional[str] = None,
-        status: Optional[str] = None,
-        duration_ms: Optional[int] = None,
-        total_cost_usd: Optional[float] = None,
+        usage: dict[str, Any] | None = None,
+        model: str | None = None,
+        status: str | None = None,
+        duration_ms: int | None = None,
+        total_cost_usd: float | None = None,
         raw_usage_json: Any = None,
     ) -> None:
         """瞬态 snapshot 更新：合并进内存 pending，随 segment 批量窗口一次落库。
@@ -324,29 +324,30 @@ class ContextSegmentBatcher(BatchFlusher):
         return len(self._buffer) >= int(getattr(settings, "SEGMENT_FLUSH_MAX_ITEMS", 50))
 
     def _pending_count(self) -> int:
-        return (
-            len(self._buffer)
-            + (1 if self._thinking_pending() else 0)
-            + (1 if self._pending_snapshot else 0)
-        )
+        return len(self._buffer) + (1 if self._thinking_pending() else 0) + (1 if self._pending_snapshot else 0)
 
-    def _collect(self) -> Tuple[List[Tuple[str, Dict[str, Any]]], Optional[Dict[str, Any]]]:
-        entries: List[Tuple[str, Dict[str, Any]]] = []
+    def _collect(self) -> tuple[list[tuple[str, dict[str, Any]]], dict[str, Any] | None]:
+        entries: list[tuple[str, dict[str, Any]]] = []
         if self._thinking_pending():
             self._last_thinking_revision = self._thinking.revision
             content = self._thinking.content
             if content.strip():
-                entries.append(("thinking", {
-                    "workspace_id": self._owner.ws_id,
-                    "task_id": self._owner.task_id,
-                    "ai_job_id": self._owner.current_job_id,
-                    "session_id": self._owner.session_id,
-                    "content": content,
-                }))
+                entries.append(
+                    (
+                        "thinking",
+                        {
+                            "workspace_id": self._owner.ws_id,
+                            "task_id": self._owner.task_id,
+                            "ai_job_id": self._owner.current_job_id,
+                            "session_id": self._owner.session_id,
+                            "content": content,
+                        },
+                    )
+                )
         if self._buffer:
             buffered, self._buffer = self._buffer, []
             entries.extend(buffered)
-        snapshot_update: Optional[Dict[str, Any]] = None
+        snapshot_update: dict[str, Any] | None = None
         if self._pending_snapshot:
             pending, self._pending_snapshot = self._pending_snapshot, {}
             snapshot_update = {
@@ -366,8 +367,8 @@ class ContextSegmentBatcher(BatchFlusher):
 
     def _persist_sync(
         self,
-        entries: List[Tuple[str, Dict[str, Any]]],
-        snapshot_update: Optional[Dict[str, Any]] = None,
+        entries: list[tuple[str, dict[str, Any]]],
+        snapshot_update: dict[str, Any] | None = None,
     ) -> None:
         """线程内执行：单事务写入一批 segment（可选顺带 snapshot 更新）。
 
@@ -381,7 +382,9 @@ class ContextSegmentBatcher(BatchFlusher):
             if gate is not None and not gate.fence_sync(db):
                 return
             context_token_service.record_segments_batch(
-                db, entries, snapshot_update=snapshot_update,
+                db,
+                entries,
+                snapshot_update=snapshot_update,
             )
         except Exception:
             db.rollback()
@@ -407,12 +410,12 @@ class ContextSegmentBatcher(BatchFlusher):
 # ─────────────── 任务状态 / 指标（off-loop 条件写入） ───────────────
 
 
-def update_task_status(owner, status: TaskStatus, error_msg: Optional[str] = None):
+def update_task_status(owner, status: TaskStatus, error_msg: str | None = None):
     """任务状态更新（off-loop，条件更新兜底 fence）。"""
     return run_db(_update_task_status_sync, owner, status, error_msg)
 
 
-def _update_task_status_sync(owner, status: TaskStatus, error_msg: Optional[str] = None):
+def _update_task_status_sync(owner, status: TaskStatus, error_msg: str | None = None):
     db = SessionLocal()
     try:
         gate = owner.gate
@@ -431,12 +434,12 @@ def _update_task_status_sync(owner, status: TaskStatus, error_msg: Optional[str]
         db.close()
 
 
-def update_task_metrics(owner, cost: Optional[float], duration: Optional[int], status: Optional[str] = None):
+def update_task_metrics(owner, cost: float | None, duration: int | None, status: str | None = None):
     """累加消耗并记录指标（off-loop）。"""
     return run_db(_update_task_metrics_sync, owner, cost, duration, status)
 
 
-def _update_task_metrics_sync(owner, cost: Optional[float], duration: Optional[int], status: Optional[str] = None):
+def _update_task_metrics_sync(owner, cost: float | None, duration: int | None, status: str | None = None):
     from app.domains.dashboard.models.metric import SddDashboardMetric
 
     db = SessionLocal()
@@ -455,24 +458,23 @@ def _update_task_metrics_sync(owner, cost: Optional[float], duration: Optional[i
         if cost:
             task.total_cost_usd += cost
             # 记录成本指标
-            task.dashboard_metrics.append(SddDashboardMetric(
-                workspace_id=owner.ws_id,
-                metric_type="COST", metric_value=cost
-            ))
+            task.dashboard_metrics.append(
+                SddDashboardMetric(workspace_id=owner.ws_id, metric_type="COST", metric_value=cost)
+            )
         if duration:
             task.total_duration_ms += duration
             # 记录耗时指标
-            task.dashboard_metrics.append(SddDashboardMetric(
-                workspace_id=owner.ws_id,
-                metric_type="DURATION", metric_value=duration
-            ))
+            task.dashboard_metrics.append(
+                SddDashboardMetric(workspace_id=owner.ws_id, metric_type="DURATION", metric_value=duration)
+            )
 
         if status:
             # 记录状态变更指标 (用于即使删了 Task 也保留统计)
-            task.dashboard_metrics.append(SddDashboardMetric(
-                workspace_id=owner.ws_id,
-                metric_type="TASK_RESULT", metric_value=1.0 if status == "DONE" else 0.0
-            ))
+            task.dashboard_metrics.append(
+                SddDashboardMetric(
+                    workspace_id=owner.ws_id, metric_type="TASK_RESULT", metric_value=1.0 if status == "DONE" else 0.0
+                )
+            )
 
         db.commit()
     except Exception as e:

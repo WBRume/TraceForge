@@ -1,6 +1,8 @@
 """Durable chat submissions separate from searchable conversation records."""
-from alembic import op
+
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "e6a718293b4c"
 down_revision = "d5f60718293a"
@@ -24,7 +26,9 @@ def upgrade():
         sa.Column("session_generation", sa.Integer(), nullable=False),
         sa.Column("session_revision", sa.Integer(), nullable=False),
         sa.Column("ai_job_id", sa.String(36), sa.ForeignKey("sdd_ai_jobs.id", ondelete="SET NULL"), nullable=True),
-        sa.Column("chat_message_id", sa.String(36), sa.ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True),
+        sa.Column(
+            "chat_message_id", sa.String(36), sa.ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True
+        ),
         sa.Column("error_message", sa.Text(), nullable=True),
         sa.Column("created_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),

@@ -2,6 +2,8 @@
 
 This is a demonstration target, not a claim about any TraceForge defect.
 """
+
+
 def transfer(tx, source_id, target_id, amount):
     if source_id == target_id:
         raise ValueError("same_account")

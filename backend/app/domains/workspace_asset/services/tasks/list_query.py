@@ -1,12 +1,12 @@
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.asset.models.asset import AssetType, SddAsset
-from app.domains.task.models.task import SddPlanNode, SddTask, SddTaskFollower
 from app.domains.task.models.chat import ChatMessage, MessageRole
 from app.domains.task.models.pre_input import SddTaskPreInput
+from app.domains.task.models.task import SddPlanNode, SddTask, SddTaskFollower
 from app.domains.workspace_asset.models.workspace_asset import (
     EvidenceStatus,
     HumanReviewStatus,
@@ -25,7 +25,7 @@ from app.domains.workspace_asset.services.common.primitives import enum_value
 from app.domains.workspace_asset.services.tasks.presenters import task_summary
 
 
-def _task_count_subqueries() -> Dict[str, Any]:
+def _task_count_subqueries() -> dict[str, Any]:
     """requirement_count / evidence_count 的相关标量子查询，供 SQL 排序使用。"""
     requirement_count = (
         select(func.count(SddTaskRequirement.id))
@@ -34,15 +34,12 @@ def _task_count_subqueries() -> Dict[str, Any]:
         .scalar_subquery()
     )
     evidence_count = (
-        select(func.count(SddEvidence.id))
-        .where(SddEvidence.task_id == SddTask.id)
-        .correlate(SddTask)
-        .scalar_subquery()
+        select(func.count(SddEvidence.id)).where(SddEvidence.task_id == SddTask.id).correlate(SddTask).scalar_subquery()
     )
     return {"requirement_count": requirement_count, "evidence_count": evidence_count}
 
 
-def _task_sort_expressions(sort_by: str) -> List[Any]:
+def _task_sort_expressions(sort_by: str) -> list[Any]:
     """排序白名单 -> SQL 表达式（与旧内存排序键等价）。"""
     count_sq = _task_count_subqueries()
     if sort_by == "name":
@@ -68,7 +65,7 @@ def _requirement_title_exists(pattern: str):
     )
 
 
-def _load_page_items(db: Session, page_ids: List[str]) -> List[SddTask]:
+def _load_page_items(db: Session, page_ids: list[str]) -> list[SddTask]:
     """按当前页 id 加载完整实体（含列表卡片所需的全部关联）。"""
     loaded = (
         db.query(SddTask)
@@ -91,12 +88,12 @@ def _load_page_items(db: Session, page_ids: List[str]) -> List[SddTask]:
 def _page_asset_counts(
     db: Session,
     workspace_id: str,
-    page_ids: List[str],
+    page_ids: list[str],
 ) -> tuple:
     """当前页任务的 spec / plan 资产与 plan 节点计数，2 条 GROUP BY 汇总。"""
-    spec_counts: Dict[str, int] = {}
-    plan_asset_counts: Dict[str, int] = {}
-    plan_node_counts: Dict[str, int] = {}
+    spec_counts: dict[str, int] = {}
+    plan_asset_counts: dict[str, int] = {}
+    plan_node_counts: dict[str, int] = {}
     if not page_ids:
         return spec_counts, plan_asset_counts, plan_node_counts
 
@@ -134,26 +131,31 @@ def list_tasks(
     db: Session,
     workspace_id: str,
     *,
-    q: Optional[str] = None,
-    requirement_q: Optional[str] = None,
-    status: Optional[str] = None,
-    current_phase: Optional[str] = None,
-    relation: Optional[str] = None,
-    current_user_id: Optional[str] = None,
+    q: str | None = None,
+    requirement_q: str | None = None,
+    status: str | None = None,
+    current_phase: str | None = None,
+    relation: str | None = None,
+    current_user_id: str | None = None,
     sort_by: str = "created_at",
     sort_order: str = "desc",
     page: int = 1,
     page_size: int = 50,
 ) -> WorkspaceAssetsTasksResponse:
-    sort_value = sort_by if sort_by in {
-        "created_at",
-        "updated_at",
-        "name",
-        "status",
-        "current_phase",
-        "requirement_count",
-        "evidence_count",
-    } else "created_at"
+    sort_value = (
+        sort_by
+        if sort_by
+        in {
+            "created_at",
+            "updated_at",
+            "name",
+            "status",
+            "current_phase",
+            "requirement_count",
+            "evidence_count",
+        }
+        else "created_at"
+    )
     page_value = max(1, int(page or 1))
     page_size_value = max(1, min(200, int(page_size or 50)))
 
@@ -181,11 +183,7 @@ def list_tasks(
     if current_phase:
         query = query.filter(SddTask.current_phase == current_phase)
 
-    normalized_relations = {
-        value.strip().lower()
-        for value in str(relation or "").split(",")
-        if value.strip()
-    }
+    normalized_relations = {value.strip().lower() for value in str(relation or "").split(",") if value.strip()}
     normalized_relations.discard("all")
     actor_id = str(current_user_id or "").strip()
     if normalized_relations and actor_id:
@@ -215,9 +213,11 @@ def list_tasks(
                 for task_id, mentioned_user_ids in db.query(
                     SddTaskPreInput.task_id,
                     SddTaskPreInput.mentioned_user_ids,
-                ).filter(
+                )
+                .filter(
                     SddTaskPreInput.workspace_id == workspace_id,
-                ).all()
+                )
+                .all()
                 if actor_id in {str(value) for value in (mentioned_user_ids or [])}
             }
             relation_filters.append(SddTask.id.in_(mentioned_task_ids))
@@ -226,21 +226,14 @@ def list_tasks(
 
     # 排序与分页下推 SQL，只取当前页的任务 id。
     reverse = sort_order != "asc"
-    order_by = [
-        expr.desc() if reverse else expr.asc()
-        for expr in _task_sort_expressions(sort_value)
-    ]
+    order_by = [expr.desc() if reverse else expr.asc() for expr in _task_sort_expressions(sort_value)]
     order_by.append(SddTask.id.desc() if reverse else SddTask.id.asc())
 
     total = query.with_entities(func.count(SddTask.id)).scalar() or 0
     offset = (page_value - 1) * page_size_value
     page_ids = [
         row[0]
-        for row in query.with_entities(SddTask.id)
-        .order_by(*order_by)
-        .offset(offset)
-        .limit(page_size_value)
-        .all()
+        for row in query.with_entities(SddTask.id).order_by(*order_by).offset(offset).limit(page_size_value).all()
     ]
     page_items = _load_page_items(db, page_ids) if page_ids else []
 
@@ -250,33 +243,35 @@ def list_tasks(
         .join(SddHumanReview, SddTask.id == SddHumanReview.task_id)
         .filter(
             SddTask.workspace_id == workspace_id,
-            SddHumanReview.status.in_([
-                HumanReviewStatus.OPEN,
-                HumanReviewStatus.IN_REVIEW,
-                HumanReviewStatus.NEED_CLARIFICATION,
-                HumanReviewStatus.NEED_EVIDENCE,
-                HumanReviewStatus.REJECTED,
-                HumanReviewStatus.REOPENED,
-            ])
+            SddHumanReview.status.in_(
+                [
+                    HumanReviewStatus.OPEN,
+                    HumanReviewStatus.IN_REVIEW,
+                    HumanReviewStatus.NEED_CLARIFICATION,
+                    HumanReviewStatus.NEED_EVIDENCE,
+                    HumanReviewStatus.REJECTED,
+                    HumanReviewStatus.REOPENED,
+                ]
+            ),
         )
-        .scalar() or 0
+        .scalar()
+        or 0
     )
 
     clarification_pending_count = (
         db.query(func.count(SddTask.id.distinct()))
         .join(SddClarification, SddTask.id == SddClarification.task_id)
-        .filter(
-            SddTask.workspace_id == workspace_id,
-            SddClarification.status.in_(["OPEN", "ANSWERED", "REJECTED"])
-        )
-        .scalar() or 0
+        .filter(SddTask.workspace_id == workspace_id, SddClarification.status.in_(["OPEN", "ANSWERED", "REJECTED"]))
+        .scalar()
+        or 0
     )
 
     human_delta_count = (
         db.query(func.count(SddTask.id.distinct()))
         .join(SddHumanDelta, SddTask.id == SddHumanDelta.task_id)
         .filter(SddTask.workspace_id == workspace_id)
-        .scalar() or 0
+        .scalar()
+        or 0
     )
 
     # “待补证据”= 有需求关联但没有任何已确认证据的任务数；
@@ -291,7 +286,8 @@ def list_tasks(
                 SddEvidence.status == EvidenceStatus.CONFIRMED,
             ),
         )
-        .scalar() or 0
+        .scalar()
+        or 0
     )
 
     stats = TaskListSummaryStats(
@@ -305,16 +301,16 @@ def list_tasks(
     if current_user_id and page_ids:
         following_ids = {
             str(task_id)
-            for (task_id,) in db.query(SddTaskFollower.task_id).filter(
+            for (task_id,) in db.query(SddTaskFollower.task_id)
+            .filter(
                 SddTaskFollower.workspace_id == workspace_id,
                 SddTaskFollower.user_id == str(current_user_id),
                 SddTaskFollower.task_id.in_(page_ids),
-            ).all()
+            )
+            .all()
         }
 
-    spec_counts, plan_asset_counts, plan_node_counts = _page_asset_counts(
-        db, workspace_id, page_ids
-    )
+    spec_counts, plan_asset_counts, plan_node_counts = _page_asset_counts(db, workspace_id, page_ids)
 
     return WorkspaceAssetsTasksResponse(
         workspace_id=workspace_id,

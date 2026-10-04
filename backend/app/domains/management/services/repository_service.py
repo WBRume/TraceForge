@@ -3,7 +3,6 @@ Repository registration service: CRUD and repo-group placement.
 """
 
 import re
-from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -37,15 +36,15 @@ def build_repo_slug(name: str) -> str:
     return normalized[:120] or "repo"
 
 
-def _collect_group_subtree_ids(db: Session, group_id: str) -> List[str]:
+def _collect_group_subtree_ids(db: Session, group_id: str) -> list[str]:
     """Return the given group id and all descendant group ids."""
     groups = db.query(SddManagementRepoGroup).all()
-    children_by_parent: Dict[str, List[str]] = {}
+    children_by_parent: dict[str, list[str]] = {}
     for group in groups:
         if group.parent_id:
             children_by_parent.setdefault(group.parent_id, []).append(group.id)
 
-    group_ids: List[str] = [group_id]
+    group_ids: list[str] = [group_id]
     visited = {group_id}
     stack = [group_id]
     while stack:
@@ -70,13 +69,15 @@ def _normalize_repo_type(value: str) -> RepositoryType:
         ) from exc
 
 
-def serialize_repository(repository: SddManagementRepository) -> Dict[str, object]:
+def serialize_repository(repository: SddManagementRepository) -> dict[str, object]:
     group = repository.group
     return {
         "id": repository.id,
         "name": repository.name,
         "git_url": repository.git_url,
-        "repo_type": repository.repo_type.value if hasattr(repository.repo_type, "value") else str(repository.repo_type),
+        "repo_type": repository.repo_type.value
+        if hasattr(repository.repo_type, "value")
+        else str(repository.repo_type),
         "default_branch": repository.default_branch,
         "group_id": repository.group_id,
         "group_name": group.name if group else None,
@@ -89,13 +90,13 @@ def serialize_repository(repository: SddManagementRepository) -> Dict[str, objec
 def list_repositories(
     db: Session,
     *,
-    keyword: Optional[str] = None,
-    repo_type: Optional[str] = None,
-    group_id: Optional[str] = None,
-    repository_id: Optional[str] = None,
+    keyword: str | None = None,
+    repo_type: str | None = None,
+    group_id: str | None = None,
+    repository_id: str | None = None,
     page: int = 1,
     page_size: int = 20,
-) -> Tuple[List[Dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], int]:
     query = db.query(SddManagementRepository)
     normalized_keyword = str(keyword or "").strip()
     if normalized_keyword:
@@ -124,7 +125,7 @@ def list_repositories(
     return [serialize_repository(repo) for repo in repositories], total
 
 
-def get_repository(db: Session, repository_id: str) -> Optional[SddManagementRepository]:
+def get_repository(db: Session, repository_id: str) -> SddManagementRepository | None:
     return db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
 
 
@@ -135,9 +136,9 @@ def create_repository(
     git_url: str,
     repo_type: str,
     default_branch: str = "main",
-    group_id: Optional[str] = None,
-    description: Optional[str] = None,
-    creator_id: Optional[str] = None,
+    group_id: str | None = None,
+    description: str | None = None,
+    creator_id: str | None = None,
 ) -> SddManagementRepository:
     normalized_name = str(name or "").strip()
     normalized_url = str(git_url or "").strip()
@@ -147,22 +148,14 @@ def create_repository(
         raise RepositoryServiceError("git_url is required", status_code=400)
 
     normalized_group_id = str(group_id or "").strip()
-    group = (
-        db.query(SddManagementRepoGroup)
-        .filter(SddManagementRepoGroup.id == normalized_group_id)
-        .first()
-    )
+    group = db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.id == normalized_group_id).first()
     if not group:
         raise RepositoryServiceError(
             "group_id is required and must reference an existing repository group",
             status_code=400,
         )
 
-    existing = (
-        db.query(SddManagementRepository)
-        .filter(SddManagementRepository.git_url == normalized_url)
-        .first()
-    )
+    existing = db.query(SddManagementRepository).filter(SddManagementRepository.git_url == normalized_url).first()
     if existing:
         raise RepositoryServiceError("A repository with this git_url already exists", status_code=409)
 
@@ -185,12 +178,12 @@ def update_repository(
     db: Session,
     repository: SddManagementRepository,
     *,
-    name: Optional[str] = None,
-    git_url: Optional[str] = None,
-    repo_type: Optional[str] = None,
-    default_branch: Optional[str] = None,
-    group_id: Optional[str] = None,
-    description: Optional[str] = None,
+    name: str | None = None,
+    git_url: str | None = None,
+    repo_type: str | None = None,
+    default_branch: str | None = None,
+    group_id: str | None = None,
+    description: str | None = None,
 ) -> SddManagementRepository:
     if name is not None:
         normalized_name = str(name).strip()
@@ -222,11 +215,7 @@ def update_repository(
                 "group_id cannot be empty; every repository must belong to a group",
                 status_code=400,
             )
-        group = (
-            db.query(SddManagementRepoGroup)
-            .filter(SddManagementRepoGroup.id == group_id)
-            .first()
-        )
+        group = db.query(SddManagementRepoGroup).filter(SddManagementRepoGroup.id == group_id).first()
         if not group:
             raise RepositoryServiceError("Repository group not found", status_code=404)
         repository.group_id = group.id
@@ -240,9 +229,9 @@ def update_repository(
 def _repository_reference_lines(
     db: Session,
     repository: SddManagementRepository,
-) -> List[str]:
+) -> list[str]:
     """Return human-readable references to a repository from products/projects."""
-    lines: List[str] = []
+    lines: list[str] = []
 
     base_refs = (
         db.query(SddManagementProductRepo, SddManagementProduct)
@@ -313,7 +302,7 @@ def delete_repository(db: Session, repository: SddManagementRepository) -> None:
 def move_repository_to_group(
     db: Session,
     repository: SddManagementRepository,
-    group_id: Optional[str],
+    group_id: str | None,
 ) -> SddManagementRepository:
     normalized_group_id = str(group_id or "").strip()
     if not normalized_group_id:
@@ -330,7 +319,7 @@ def move_repository_to_group(
     return repository
 
 
-def validate_repository_access(db: Session, git_url: str) -> Dict[str, object]:
+def validate_repository_access(db: Session, git_url: str) -> dict[str, object]:
     payload = git_ref_service.list_refs_for_picker(git_url)
     payload["branch_count"] = len(payload["branches"])
     payload["tag_count"] = len(payload["tags"])
@@ -342,7 +331,7 @@ def validate_repository_ref(
     repository: SddManagementRepository,
     ref_type: str,
     ref_name: str,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     git_ref_service.validate_ref_exists(repository.git_url, ref_type, ref_name)
     return {"repository_id": repository.id, "ref_type": str(ref_type).upper(), "ref_name": ref_name, "exists": True}
 

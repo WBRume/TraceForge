@@ -15,8 +15,6 @@
 """
 
 import asyncio
-import os
-import sys
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
@@ -24,40 +22,35 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
     attempts as ai_attempts,
-    constants as ai_constants,
+)
+from app.domains.ai.services.jobs import (
     executors as ai_executors,
-    publishing as ai_publishing,
+)
+from app.domains.ai.services.jobs import (
     provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
+)
+from app.domains.ai.services.jobs import (
+    publishing as ai_publishing,
+)
+from app.domains.ai.services.jobs import (
     store as ai_store,
-    workers as ai_workers,
 )
 from app.domains.ai.services.jobs.executors import (
     diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
+from app.domains.task.models.task import TaskStatus, TaskType
+from app.domains.task.routers import task as task_router
+from app.domains.task.services import (
+    diagnosis_result_service,
+    task_session_control_service,
+    task_session_service,
+)
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from app.domains.task.services import diagnosis_result_service
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.domains.task.models.task import TaskStatus, TaskType  # noqa: E402
-from app.domains.task.routers import task as task_router  # noqa: E402
-from app.domains.task.services import task_session_control_service  # noqa: E402
-from app.domains.task.services import task_session_service  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
 
 def _build_app(SessionLocal, user, monkeypatch):
@@ -67,9 +60,7 @@ def _build_app(SessionLocal, user, monkeypatch):
 
     # lock_task 由各子路由模块各自绑定，需逐模块替换
     for _module_name in ("crud", "session_runs", "session_control", "spec_docs", "change_proposals", "diagnosis"):
-        monkeypatch.setattr(
-            f"app.domains.task.routers.task.{_module_name}.lock_task", _fake_lock_task
-        )
+        monkeypatch.setattr(f"app.domains.task.routers.task.{_module_name}.lock_task", _fake_lock_task)
 
     def _override_db():
         db = SessionLocal()
@@ -150,9 +141,7 @@ def test_mark_task_chat_jobs_cancelled_keeps_cancel_event():
             # CLI 仍可能存活时只能进入 TERMINATING；确认进程树退出后
             # 才允许收敛为 CANCELLED。
             with _session(SessionLocal) as db:
-                assert db.query(SddAiJob).filter(SddAiJob.id == job_id).first().status == (
-                    AiJobStatus.TERMINATING
-                )
+                assert db.query(SddAiJob).filter(SddAiJob.id == job_id).first().status == (AiJobStatus.TERMINATING)
         finally:
             ai_runtime.clear_cancel(job_id)
     finally:
@@ -204,14 +193,12 @@ def test_diagnosis_summary_discards_result_when_cancel_event_set(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            _user, _workspace, _task, summary = _prepare_summary_job(
-                db, "ws-cancel-run", "task-cancel-run"
-            )
+            _user, _workspace, _task, summary = _prepare_summary_job(db, "ws-cancel-run", "task-cancel-run")
             summary_id = summary.id
         ai_runtime.request_cancel(summary_id)
 
         async def _fake_run(*_args, **_kwargs):
-            return {"text": "```json\n{\"summary\": \"x\"}\n```", "session_id": "s"}
+            return {"text": '```json\n{"summary": "x"}\n```', "session_id": "s"}
 
         calls = _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
         try:
@@ -228,15 +215,13 @@ def test_diagnosis_summary_discards_result_when_job_already_final(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            _user, _workspace, _task, summary = _prepare_summary_job(
-                db, "ws-cancel-db", "task-cancel-db"
-            )
+            _user, _workspace, _task, summary = _prepare_summary_job(db, "ws-cancel-db", "task-cancel-db")
             summary_id = summary.id
             summary.status = AiJobStatus.CANCELLED
             db.commit()
 
         async def _fake_run(*_args, **_kwargs):
-            return {"text": "```json\n{\"summary\": \"x\"}\n```", "session_id": "s"}
+            return {"text": '```json\n{"summary": "x"}\n```', "session_id": "s"}
 
         calls = _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
         asyncio.run(ai_diagnosis_summary.execute_diagnosis_summary_job(summary_id))
@@ -250,9 +235,7 @@ def test_diagnosis_summary_swallows_cancel_runtime_error(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            _user, _workspace, _task, summary = _prepare_summary_job(
-                db, "ws-cancel-err", "task-cancel-err"
-            )
+            _user, _workspace, _task, summary = _prepare_summary_job(db, "ws-cancel-err", "task-cancel-err")
             summary_id = summary.id
         ai_runtime.request_cancel(summary_id)
 
@@ -275,14 +258,12 @@ def test_execute_task_chat_job_clears_cancel_event_after_run(monkeypatch):
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            _user, _workspace, _task, summary = _prepare_summary_job(
-                db, "ws-cancel-fin", "task-cancel-fin"
-            )
+            _user, _workspace, _task, summary = _prepare_summary_job(db, "ws-cancel-fin", "task-cancel-fin")
             summary_id = summary.id
         ai_runtime.request_cancel(summary_id)
 
         async def _fake_run(*_args, **_kwargs):
-            return {"text": "```json\n{\"summary\": \"x\"}\n```", "session_id": "s"}
+            return {"text": '```json\n{"summary": "x"}\n```', "session_id": "s"}
 
         _patch_executor_common(monkeypatch, SessionLocal, run_impl=_fake_run)
         try:

@@ -4,52 +4,48 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.agents.supervision import process_supervisor
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
     publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
+)
+from app.domains.ai.services.jobs import (
     registry as ai_registry,
-    state as ai_state,
+)
+from app.domains.ai.services.jobs import (
     store as ai_store,
-    workers as ai_workers,
 )
 from app.domains.ai.services.jobs.executors import (
     diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
 )
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from app.domains.task.services import diagnosis_result_service
-from app.agents.supervision import process_supervisor
 from app.domains.auth.models.user import User, Workspace
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.search.capture import install_capture
+from app.domains.search.models import SearchDocumentState, SearchOutbox
+from app.domains.search.projection import build_search_projection
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.chat_submission import TaskChatSubmission
-from app.domains.task.models.task_event_outbox import TaskEventOutbox
 from app.domains.task.models.session_turn import TaskSessionTurn
-from app.domains.ai.models.ai_job import SddAiJob, AiJobStatus, AiJobChannel
-from app.domains.task.services import chat_submission_service as service, task_session_service
-from app.domains.search.capture import install_capture
-from app.domains.search.models import SearchOutbox, SearchDocumentState
-from app.domains.search.projection import build_search_projection
-
+from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task_event_outbox import TaskEventOutbox
+from app.domains.task.services import chat_submission_service as service
+from app.domains.task.services import diagnosis_result_service, task_session_service
 from app.domains.task.services.provisioning.creation import create_task_record_for_provision
+from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
 
 @pytest.fixture(autouse=True)
 def local_submission_locks(monkeypatch):
     from app.core import distributed_lock
+
     monkeypatch.setattr(distributed_lock, "_PROVIDER", distributed_lock.LocalLockProvider())
 
 
 @pytest.fixture
 def recovery_env(task_db, monkeypatch):
     from sqlalchemy.orm import sessionmaker
+
     from app.domains.websocket.ws.manager import manager
+
     factory = sessionmaker(bind=task_db.get_bind())
     monkeypatch.setattr("app.database.SessionLocal", factory)
     patch_ai_job_db(monkeypatch, factory)
@@ -79,6 +75,7 @@ async def test_send_releases_terminal_receipt_and_keeps_session(task_db, recover
 @pytest.mark.asyncio
 async def test_send_after_restart_reclaims_persisted_attempt(task_db, recovery_env, monkeypatch):
     from app.agents.supervision import TerminationResult
+
     scheduled = recovery_env
     row = accepted(task_db)
     job = execution(task_db, row)
@@ -100,6 +97,7 @@ async def test_send_after_restart_reclaims_persisted_attempt(task_db, recovery_e
 @pytest.mark.asyncio
 async def test_send_does_not_cancel_healthy_attempt(task_db, recovery_env, monkeypatch):
     from datetime import datetime, timedelta
+
     scheduled = recovery_env
     row = accepted(task_db)
     job = execution(task_db, row)
@@ -121,6 +119,7 @@ async def test_send_does_not_cancel_healthy_attempt(task_db, recovery_env, monke
 @pytest.mark.asyncio
 async def test_unconfirmed_process_remains_blocking_on_send(task_db, recovery_env, monkeypatch):
     from app.agents.supervision import TerminationResult
+
     scheduled = recovery_env
     row = accepted(task_db)
     job = execution(task_db, row)
@@ -157,7 +156,9 @@ async def test_duplicate_send_skips_recovery_and_conflicting_payload_is_rejected
 async def test_concurrent_sends_accept_only_one_new_receipt(task_db, recovery_env, same_id):
     results = await asyncio.gather(
         service.accept(task_id="t", actor_id="u", client_message_id="first", content="continue"),
-        service.accept(task_id="t", actor_id="u", client_message_id="first" if same_id else "second", content="continue"),
+        service.accept(
+            task_id="t", actor_id="u", client_message_id="first" if same_id else "second", content="continue"
+        ),
         return_exceptions=True,
     )
     assert task_db.query(TaskChatSubmission).count() == 1
@@ -170,12 +171,16 @@ async def test_concurrent_sends_accept_only_one_new_receipt(task_db, recovery_en
 @pytest.mark.asyncio
 async def test_recovered_send_creates_one_turn_using_existing_provider_session(task_db, recovery_env, monkeypatch):
     from app.domains.task.services import context_token_service
-    scheduled = recovery_env
+
     row = accepted(task_db)
     execution(task_db, row, AiJobStatus.FAILED)
     task_db.get(SddTask, "t").session_id = "preserved-session"
     task_db.commit()
-    monkeypatch.setattr(task_session_service.task_session_snapshot_service, "create_checkpoint", AsyncMock(return_value={"root": "/fake/checkpoint"}))
+    monkeypatch.setattr(
+        task_session_service.task_session_snapshot_service,
+        "create_checkpoint",
+        AsyncMock(return_value={"root": "/fake/checkpoint"}),
+    )
     monkeypatch.setattr(context_token_service, "seed_snapshot_for_job", lambda *args, **kwargs: None)
     enqueue = AsyncMock()
     monkeypatch.setattr(ai_publishing, "enqueue_task_chat_job", enqueue)
@@ -195,8 +200,19 @@ async def test_recovered_send_creates_one_turn_using_existing_provider_session(t
 def task_db(db):
     db.add(User(id="u", email="submission@test.local", hashed_password="x", display_name="User"))
     db.add(Workspace(id="w", name="Workspace", owner_id="u"))
-    db.add(SddTask(id="t", workspace_id="w", creator_id="u", name="Task", project_path="/tmp/task",
-                   status=TaskStatus.CODING, agent_backend="mock", session_generation=1, session_revision=0))
+    db.add(
+        SddTask(
+            id="t",
+            workspace_id="w",
+            creator_id="u",
+            name="Task",
+            project_path="/tmp/task",
+            status=TaskStatus.CODING,
+            agent_backend="mock",
+            session_generation=1,
+            session_revision=0,
+        )
+    )
     db.commit()
     return db
 
@@ -218,44 +234,67 @@ def test_model_selection_is_durable_and_part_of_idempotency(task_db):
     row = task_db.get(TaskChatSubmission, result["id"])
     assert row.metadata_json["agent_model"] == chosen
     assert task_db.get(SddTask, "t").task_meta_json == {"phenomenon": "slow", "agent_model": chosen}
-    assert service._existing_submission_sync(task_db, "t", "u", "model-send", "hello", {"agent_model": chosen})["id"] == row.id
+    assert (
+        service._existing_submission_sync(task_db, "t", "u", "model-send", "hello", {"agent_model": chosen})["id"]
+        == row.id
+    )
     with pytest.raises(service.SubmissionError, match="相同消息标识"):
-        service._existing_submission_sync(task_db, "t", "u", "model-send", "hello", {"agent_model": {**chosen, "model": "private/other"}})
+        service._existing_submission_sync(
+            task_db, "t", "u", "model-send", "hello", {"agent_model": {**chosen, "model": "private/other"}}
+        )
 
 
 def test_wrong_engine_model_is_rejected_before_acceptance(task_db):
     task_db.get(SddTask, "t").agent_backend = "claude-code"
     task_db.commit()
     with pytest.raises(service.SubmissionError) as exc:
-        service._accept_sync(task_db, "t", "u", "new", "hello", {"agent_model": {"backend": "dsh", "model": "private/m"}})
+        service._accept_sync(
+            task_db, "t", "u", "new", "hello", {"agent_model": {"backend": "dsh", "model": "private/m"}}
+        )
     assert exc.value.status_code == 422
     assert task_db.query(TaskChatSubmission).count() == 0
 
 
 def test_turn_freezes_model_for_execution_and_restart(task_db, monkeypatch):
-    from app.engine.session import turn_setup
     from app.domains.task.services import context_token_service
+    from app.engine.session import turn_setup
+
     task = task_db.get(SddTask, "t")
     task.agent_backend = "dsh"
     chosen = {"backend": "dsh", "model": "private/new-model"}
     monkeypatch.setattr(context_token_service, "seed_snapshot_for_job", lambda *a, **k: None)
-    result = task_session_service._persist_chat_turn_sync(task_db,
-        prepared={"task_id": "t", "workspace_id": "w", "generation": 1, "revision": 0,
-                  "provider": "dsh", "provider_session_id": "session", "actor_user_id": "u"},
-        content="hi", prompt="hi", context_json={"agent_model": chosen}, client_message_id="frozen")
+    result = task_session_service._persist_chat_turn_sync(
+        task_db,
+        prepared={
+            "task_id": "t",
+            "workspace_id": "w",
+            "generation": 1,
+            "revision": 0,
+            "provider": "dsh",
+            "provider_session_id": "session",
+            "actor_user_id": "u",
+        },
+        content="hi",
+        prompt="hi",
+        context_json={"agent_model": chosen},
+        client_message_id="frozen",
+    )
     task_db.commit()
     assert task_db.get(SddAiJob, result.job_id).context_json["agent_model"] == chosen
     task.task_meta_json = {"agent_model": {"backend": "dsh", "model": "private/later"}}
     task_db.commit()
     from sqlalchemy.orm import sessionmaker
+
     monkeypatch.setattr(turn_setup, "SessionLocal", sessionmaker(bind=task_db.get_bind()))
     assert turn_setup.task_model_sync("t", result.job_id) == "private/new-model"
 
 
 def test_model_catalogue_scope_uses_sticky_task_engine_and_checks_access(task_db):
     from fastapi import HTTPException
+
     from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task.models import catalogue_context
+
     task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     task_db.get(Workspace, "w").agent_backend = "opencode"
     task_db.get(SddTask, "t").agent_backend = "dsh"
@@ -270,18 +309,25 @@ def test_model_catalogue_scope_uses_sticky_task_engine_and_checks_access(task_db
 @pytest.mark.asyncio
 async def test_model_catalogue_failure_keeps_persisted_model(task_db, monkeypatch):
     from types import SimpleNamespace
+
     from app.agents.errors import AgentError
     from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task import models
+
     task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     task_db.get(SddTask, "t").agent_backend = "dsh"
     task_db.get(SddTask, "t").task_meta_json = {"agent_model": {"backend": "dsh", "model": "private/current"}}
     task_db.commit()
+
     async def txn(db, bind, body):
         return body(db)
+
     monkeypatch.setattr(models, "run_route_db_txn", txn)
-    monkeypatch.setattr(models, "create_agent_backend_by_name", lambda _: SimpleNamespace(
-        model_catalog=AsyncMock(side_effect=AgentError("offline"))))
+    monkeypatch.setattr(
+        models,
+        "create_agent_backend_by_name",
+        lambda _: SimpleNamespace(model_catalog=AsyncMock(side_effect=AgentError("offline"))),
+    )
     result = await models.get_agent_models("w", task_id="t", current_user=SimpleNamespace(id="u"), db=task_db)
     assert result["current_model"] == "private/current"
     assert result["options"] == [{"value": "private/current", "label": "private/current"}]
@@ -291,8 +337,10 @@ async def test_model_catalogue_failure_keeps_persisted_model(task_db, monkeypatc
 @pytest.mark.asyncio
 async def test_opencode_creation_and_chat_share_catalogue_but_keep_session_model(task_db, monkeypatch):
     from types import SimpleNamespace
+
     from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task import models
+
     task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     workspace = task_db.get(Workspace, "w")
     workspace.agent_backend = "opencode"
@@ -303,12 +351,19 @@ async def test_opencode_creation_and_chat_share_catalogue_but_keep_session_model
     task.session_id = "session"
     task.task_meta_json = {"agent_model": {"backend": "opencode", "model": "p/selected"}}
     task_db.commit()
+
     async def txn(db, bind, body):
         return body(db)
-    catalogue = AsyncMock(return_value={"options": [
-        {"value": "p/default", "label": "Default"},
-        {"value": "p/selected", "label": "Selected"},
-    ], "default_model": "p/default"})
+
+    catalogue = AsyncMock(
+        return_value={
+            "options": [
+                {"value": "p/default", "label": "Default"},
+                {"value": "p/selected", "label": "Selected"},
+            ],
+            "default_model": "p/default",
+        }
+    )
     monkeypatch.setattr(models, "run_route_db_txn", txn)
     monkeypatch.setattr(models, "create_agent_backend_by_name", lambda _: SimpleNamespace(model_catalog=catalogue))
     created = await models.get_agent_models("w", current_user=SimpleNamespace(id="u"), db=task_db)
@@ -324,15 +379,19 @@ async def test_opencode_creation_and_chat_share_catalogue_but_keep_session_model
 
 def test_local_opencode_catalogue_uses_bound_resource_workspace(task_db, monkeypatch):
     from types import SimpleNamespace
+
     from app.domains.auth.models.user import WorkspaceMember
     from app.domains.task.routers.task import models
+
     task_db.add(WorkspaceMember(workspace_id="w", user_id="u"))
     task_db.get(Workspace, "w").agent_backend = "opencode"
     task_db.get(SddTask, "t").agent_backend = "opencode"
     task_db.commit()
     config = {"backend": "opencode", "workspace_root": "/local/workspace"}
     monkeypatch.setattr(models.resources, "is_local", lambda _: True)
-    monkeypatch.setattr(models.resources, "binding", lambda *args: SimpleNamespace(receipt_json={"task_root": "/local/task"}))
+    monkeypatch.setattr(
+        models.resources, "binding", lambda *args: SimpleNamespace(receipt_json={"task_root": "/local/task"})
+    )
     monkeypatch.setattr(models.resources, "runtime_profile", lambda *args: config)
     monkeypatch.setattr(models.resources, "owned", lambda *args: object())
     monkeypatch.setattr(models.resources, "profile", lambda *args: config)
@@ -347,8 +406,15 @@ def test_create_task_persists_model_preference_without_losing_diagnosis_metadata
     task_db.get(Workspace, "w").agent_backend = "dsh"
     task_db.commit()
     chosen = {"backend": "dsh", "model": "private/new-task"}
-    task = create_task_record_for_provision(task_db, task_db.get(User, "u"), "w", "New diagnosis",
-                                          task_type="DIAGNOSIS", phenomenon="slow", agent_model=chosen)
+    task = create_task_record_for_provision(
+        task_db,
+        task_db.get(User, "u"),
+        "w",
+        "New diagnosis",
+        task_type="DIAGNOSIS",
+        phenomenon="slow",
+        agent_model=chosen,
+    )
     task_db.refresh(task)
     assert task.agent_backend == "dsh"
     assert task.task_meta_json["agent_model"] == chosen
@@ -356,19 +422,46 @@ def test_create_task_persists_model_preference_without_losing_diagnosis_metadata
 
 
 def execution(db, row, status=AiJobStatus.RUNNING):
-    job = SddAiJob(id="job", task_id="t", workspace_id="w", creator_id="u",
-        channel=AiJobChannel.TASK_CHAT, queue_key="TASK_CHAT:t", status=status, session_generation=1)
+    job = SddAiJob(
+        id="job",
+        task_id="t",
+        workspace_id="w",
+        creator_id="u",
+        channel=AiJobChannel.TASK_CHAT,
+        queue_key="TASK_CHAT:t",
+        status=status,
+        session_generation=1,
+    )
     db.add(job)
-    turn = TaskSessionTurn(id="turn", task_id="t", workspace_id="w", session_generation=1,
-        turn_index=1, session_revision=1, provider="mock", ai_job_id="job")
+    turn = TaskSessionTurn(
+        id="turn",
+        task_id="t",
+        workspace_id="w",
+        session_generation=1,
+        turn_index=1,
+        session_revision=1,
+        provider="mock",
+        ai_job_id="job",
+    )
     db.add(turn)
     db.flush()
     job.session_turn_id = turn.id
     row.ai_job_id, row.status = job.id, "EXECUTING"
     for role in ("user", "assistant"):
-        db.add(ChatMessage(id=role, task_id="t", workspace_id="w", creator_id="u", role=role,
-            content="private " + role, message_type="text", session_generation=1, session_turn_id=turn.id,
-            metadata_json={"submission_id": row.id, "knowledge_state": "pending"}))
+        db.add(
+            ChatMessage(
+                id=role,
+                task_id="t",
+                workspace_id="w",
+                creator_id="u",
+                role=role,
+                content="private " + role,
+                message_type="text",
+                session_generation=1,
+                session_turn_id=turn.id,
+                metadata_json={"submission_id": row.id, "knowledge_state": "pending"},
+            )
+        )
     row.chat_message_id = "user"
     db.commit()
     return job
@@ -414,6 +507,7 @@ def test_failed_execution_never_becomes_knowledge(task_db, status):
         assert build_search_projection(message, "message") is None
         assert task_db.get(SearchDocumentState, "message:" + message.id) is None
     from app.domains.ai.services.jobs.executors.diagnosis_summary import collect_diagnosis_transcript_sync
+
     assert collect_diagnosis_transcript_sync(task_db, "t") == ""
 
 
@@ -463,13 +557,16 @@ def test_lost_receipt_after_commit_cannot_mark_job_unsent(task_db):
 async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, monkeypatch):
     row = accepted(task_db)
     started, finish = asyncio.Event(), asyncio.Event()
+
     async def checkpoint(**kwargs):
         started.set()
         await finish.wait()
         raise RuntimeError("simulated snapshot failure")
+
     @asynccontextmanager
     async def lock(_):
         yield
+
     async def txn(body):
         try:
             result = body(task_db)
@@ -478,6 +575,7 @@ async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, 
         except BaseException:
             task_db.rollback()
             raise
+
     monkeypatch.setattr(service, "lock_task", lock)
     monkeypatch.setattr(service, "run_db", AsyncMock(return_value="t"))
     monkeypatch.setattr(service, "run_db_txn", txn)
@@ -499,9 +597,11 @@ async def test_slow_checkpoint_remains_visible_and_rejects_second_send(task_db, 
 @pytest.mark.parametrize("fail_after_job_flush", [False, True])
 async def test_real_turn_creation_commits_receipt_message_and_job_together(task_db, monkeypatch, fail_after_job_flush):
     from app.domains.task.services import context_token_service, task_session_snapshot_service
+
     install_capture()
     row = accepted(task_db)
     submission_id = row.id
+
     async def txn(body):
         try:
             result = body(task_db)
@@ -510,15 +610,20 @@ async def test_real_turn_creation_commits_receipt_message_and_job_together(task_
         except BaseException:
             task_db.rollback()
             raise
+
     monkeypatch.setattr(task_session_service, "run_db_txn", txn)
-    monkeypatch.setattr(task_session_snapshot_service, "create_checkpoint", AsyncMock(return_value={"root": "/fake/checkpoint"}))
+    monkeypatch.setattr(
+        task_session_snapshot_service, "create_checkpoint", AsyncMock(return_value={"root": "/fake/checkpoint"})
+    )
     monkeypatch.setattr(task_session_snapshot_service, "cleanup_checkpoint", AsyncMock())
     monkeypatch.setattr(context_token_service, "seed_snapshot_for_job", lambda *args, **kwargs: None)
     original = ai_store.create_task_chat_job
     if fail_after_job_flush:
+
         def fail(*args, **kwargs):
             original(*args, **kwargs)
             raise RuntimeError("between job flush and receipt update")
+
         monkeypatch.setattr(ai_store, "create_task_chat_job", fail)
     args = service._load_preparation(task_db, submission_id)
     if fail_after_job_flush:
@@ -537,7 +642,8 @@ async def test_real_turn_creation_commits_receipt_message_and_job_together(task_
 
 
 def test_pending_message_cannot_be_used_by_generic_decision_source(task_db):
-    from app.domains.asset.services.decision_service import _ensure_chat_message, DecisionSourceError
+    from app.domains.asset.services.decision_service import DecisionSourceError, _ensure_chat_message
+
     row = accepted(task_db)
     execution(task_db, row, AiJobStatus.FAILED)
     with pytest.raises(DecisionSourceError, match="本轮尚未成功"):
@@ -553,7 +659,7 @@ def test_every_state_change_queues_one_outbox_event(task_db):
     row.status = "EXECUTING"
     row.ai_job_id = None
     task_db.commit()
-    job = execution(task_db, row)
+    execution(task_db, row)
     service._transition(task_db, row, "SUCCEEDED")
     task_db.commit()
     assert row.status == "SUCCEEDED" and row.version == 2
@@ -580,12 +686,15 @@ def test_terminal_receipt_rejects_further_transitions(task_db):
 async def test_publisher_relays_outbox_and_backs_off(task_db, recovery_env, monkeypatch):
     from app.domains.task.services import task_event_publisher as publisher
     from app.domains.websocket.ws.manager import manager
+
     row = accepted(task_db)
     task_db.commit()
     sent = []
+
     async def record(task_id, message):
         sent.append((task_id, message.type, message.payload))
         return 1
+
     monkeypatch.setattr(manager, "send_message_to_room", record)
     published = await publisher.publish_once()
     assert published == 1
@@ -596,10 +705,12 @@ async def test_publisher_relays_outbox_and_backs_off(task_db, recovery_env, monk
     # A failed publish defers with backoff instead of dropping the event.
     row.status, row.active_task_id = "FAILED", None  # release the active slot
     task_db.commit()
-    row2 = accepted(task_db, "again")
+    accepted(task_db, "again")
     task_db.commit()
+
     async def boom(task_id, message):
         raise RuntimeError("room unavailable")
+
     monkeypatch.setattr(manager, "send_message_to_room", boom)
     published = await publisher.publish_once()
     assert published == 0
@@ -611,14 +722,17 @@ async def test_publisher_relays_outbox_and_backs_off(task_db, recovery_env, monk
 @pytest.mark.asyncio
 async def test_convergence_finalizes_receipt_in_same_transaction(task_db, monkeypatch):
     from app.domains.ai.services import ai_job_convergence_service as convergence
+
     row = accepted(task_db)
     execution(task_db, row)  # seeds EXECUTING directly, as the turn owner does
     task_db.commit()
     request = convergence.AttemptConvergenceRequest(
-        job_id="job", run_token="", worker_boot_id="",
-        requested_status=AiJobStatus.SUCCESS, reason="turn done",
-        evidence=convergence.resolve_attempt_evidence(
-            execution_kind="remote_session", fallback_dead=True),
+        job_id="job",
+        run_token="",
+        worker_boot_id="",
+        requested_status=AiJobStatus.SUCCESS,
+        reason="turn done",
+        evidence=convergence.resolve_attempt_evidence(execution_kind="remote_session", fallback_dead=True),
         intent=convergence.ConvergenceIntent.NORMAL_FINALIZE,
     )
     result = convergence.converge_job_attempt_sync(task_db, request)
@@ -638,8 +752,7 @@ def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):
     execution(task_db, row, AiJobStatus.FAILED)
     task_db.get(SddTask, "t").session_generation = 9  # receipt is from an old generation
     task_db.commit()
-    state = service.build_session_state(task_db, "t", actor_id="u",
-                                        client_message_ids=["ancient-key", "never-seen"])
+    state = service.build_session_state(task_db, "t", actor_id="u", client_message_ids=["ancient-key", "never-seen"])
     ids = {receipt["id"] for receipt in state["receipts"]}
     assert row.id in ids
     by_client = {receipt["client_message_id"]: receipt for receipt in state["receipts"]}
@@ -653,16 +766,22 @@ def test_session_state_resolves_unconfirmed_key_beyond_any_window(task_db):
 async def test_cancelled_snapshot_drains_worker_and_cleans_unpublished_checkpoint(monkeypatch):
     from app.core import offload
     from app.domains.task.services import task_session_snapshot_service as snapshots
+
     started, finish = asyncio.Event(), asyncio.Event()
+
     async def worker(*args):
         started.set()
         await finish.wait()
         return {"root": "/fake/unpublished"}
+
     cleanup = AsyncMock()
     monkeypatch.setattr(offload, "run_git_job", worker)
     monkeypatch.setattr(snapshots, "cleanup_checkpoint", cleanup)
-    task = asyncio.create_task(snapshots.create_checkpoint(
-        "/fake", [], "mock", None, workspace_id="w", workspace_name="W", task_id="t", task_name="T"))
+    task = asyncio.create_task(
+        snapshots.create_checkpoint(
+            "/fake", [], "mock", None, workspace_id="w", workspace_name="W", task_id="t", task_name="T"
+        )
+    )
     await started.wait()
     task.cancel()
     await asyncio.sleep(0)
@@ -676,9 +795,11 @@ async def test_cancelled_snapshot_drains_worker_and_cleans_unpublished_checkpoin
 def test_incremental_migration_round_trip_preserves_existing_data(monkeypatch):
     import importlib.util
     from pathlib import Path
+
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    from sqlalchemy import create_engine, text, inspect
+    from sqlalchemy import create_engine, inspect, text
+
     path = Path(__file__).parents[2] / "alembic/versions/e6a718293b4c_chat_submissions.py"
     spec = importlib.util.spec_from_file_location("submission_migration", path)
     migration = importlib.util.module_from_spec(spec)
@@ -703,9 +824,18 @@ def test_failed_turn_cannot_leak_into_summary_through_provider_fork(task_db, mon
     execution(task_db, row, AiJobStatus.FAILED)
     task = task_db.get(SddTask, "t")
     task.task_type, task.session_id = "DIAGNOSIS", "provider-with-failed-turn"
-    task_db.add(SddAiJob(id="summary", task_id="t", workspace_id="w", creator_id="u",
-        channel=AiJobChannel.TASK_CHAT, queue_key="summary:t", status=AiJobStatus.RUNNING,
-        context_json={"source_session_id": task.session_id}))
+    task_db.add(
+        SddAiJob(
+            id="summary",
+            task_id="t",
+            workspace_id="w",
+            creator_id="u",
+            channel=AiJobChannel.TASK_CHAT,
+            queue_key="summary:t",
+            status=AiJobStatus.RUNNING,
+            context_json={"source_session_id": task.session_id},
+        )
+    )
     task_db.commit()
     monkeypatch.setattr(ai_diagnosis_summary, "attempt_is_current_sync", lambda *args, **kwargs: True)
     monkeypatch.setattr(ai_diagnosis_summary, "_resolve_task_project_path", lambda task: "/fake")
@@ -721,9 +851,16 @@ def test_confirmation_reply_is_private_until_owning_turn_succeeds(task_db):
     parent = task_db.get(ChatMessage, "assistant")
     parent.metadata_json = {**parent.metadata_json, "confirmation": {"interaction_id": "question"}}
     task_db.commit()
-    reply = task_session_service._persist_confirmation_reply_sync(task_db, task_id="t", actor_user_id="u",
-        content="private answer", client_message_id="reply", interaction_id="question",
-        reply_to_message_id="assistant", confirmation_value="yes")
+    reply = task_session_service._persist_confirmation_reply_sync(
+        task_db,
+        task_id="t",
+        actor_user_id="u",
+        content="private answer",
+        client_message_id="reply",
+        interaction_id="question",
+        reply_to_message_id="assistant",
+        confirmation_value="yes",
+    )
     message = task_db.get(ChatMessage, reply.message_id)
     assert message.session_turn_id == "turn"
     assert build_search_projection(message, "message") is None
@@ -738,22 +875,28 @@ def test_http_acceptance_recovery_idempotency_and_access(task_db, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import sessionmaker
+
     from app.domains.auth.models.user import WorkspaceMember, WorkspaceRole
     from app.domains.task.routers import task as router
+
     task_db.add(WorkspaceMember(workspace_id="w", user_id="u", role=WorkspaceRole.DEVELOPER))
     task_db.commit()
     user = task_db.get(User, "u")
     factory = sessionmaker(bind=task_db.get_bind())
     monkeypatch.setattr("app.database.SessionLocal", factory)
     monkeypatch.setattr(service, "schedule", lambda receipt_id: None)
+
     async def no_wake():
         pass
+
     monkeypatch.setattr(service, "wake_event_publisher", no_wake)
     app = FastAPI()
     app.include_router(router.router, prefix="/api")
+
     def get_db():
         with factory() as db:
             yield db
+
     app.dependency_overrides[router.get_db] = get_db
     app.dependency_overrides[router.get_current_user] = lambda: user
     url = "/api/workspaces/w/tasks/t/chat-submissions"

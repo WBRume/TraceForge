@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 from contextlib import AsyncExitStack
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -17,9 +17,9 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.distributed_lock import LockAcquireTimeout, lock_task, make_resource_busy_error
 from app.dependencies import get_current_user, get_db
+from app.domains.auth.models.user import User
 from app.domains.task.models.task import SddTask
 from app.domains.workflow.models.task_change import SddTaskChangeProposal
-from app.domains.auth.models.user import User
 from app.domains.workflow.schemas.change_proposal import (
     AgentTaskListResponse,
     AgentTaskResponse,
@@ -103,7 +103,9 @@ def list_agent_tasks(
         page=page,
         page_size=page_size,
     )
-    return AgentTaskListResponse(items=[AgentTaskResponse(**item) for item in items], total=total, page=page, page_size=page_size)
+    return AgentTaskListResponse(
+        items=[AgentTaskResponse(**item) for item in items], total=total, page=page, page_size=page_size
+    )
 
 
 @router.get("/tasks/{task_id}", response_model=AgentTaskResponse)
@@ -116,7 +118,7 @@ def get_agent_task(
     return AgentTaskResponse(**change_proposal_service.serialize_agent_task(db, task))
 
 
-@router.get("/tasks/{task_id}/change-proposals/latest", response_model=Optional[ChangeProposalResponse])
+@router.get("/tasks/{task_id}/change-proposals/latest", response_model=ChangeProposalResponse | None)
 def get_latest_change_proposal(
     task_id: str,
     current_user: User = Depends(get_current_user),
@@ -163,7 +165,7 @@ def list_change_proposal_repo_patches(
             for repo_patch in repo_patches
         ]
     except change_proposal_service.ChangeProposalError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     return {"proposal_id": proposal.id, "items": items, "total": len(items)}
 
 
@@ -178,7 +180,7 @@ def download_change_proposal_patch(
         raw, filename = change_proposal_service.read_patch_file(db, proposal)
         change_proposal_service.mark_patch_downloaded(db, proposal)
     except change_proposal_service.ChangeProposalError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     safe_name = _safe_download_filename(filename)
     return Response(
         content=raw,
@@ -211,7 +213,7 @@ async def submit_apply_result(
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
     except change_proposal_service.ChangeProposalError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
 
 @router.post("/tasks/{task_id}/verification-runs", response_model=VerificationRunResponse, status_code=201)
@@ -244,7 +246,7 @@ async def create_verification_run(
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
     except change_proposal_service.ChangeProposalError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
 
 @router.post("/tasks/{task_id}/verification-runs/{run_id}/logs", response_model=VerificationRunResponse)
@@ -278,10 +280,10 @@ async def upload_verification_run_log(
     except LockAcquireTimeout as exc:
         _raise_task_lock_conflict(exc)
     except change_proposal_service.ChangeProposalError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
 
-def _json_or_none(raw: Optional[str]) -> Any:
+def _json_or_none(raw: str | None) -> Any:
     if raw is None or str(raw).strip() == "":
         return None
     try:
@@ -290,11 +292,11 @@ def _json_or_none(raw: Optional[str]) -> Any:
         return [str(raw)]
 
 
-async def _parse_conflict_request(request: Request) -> tuple[ConflictReportCreateRequest, Optional[str], Optional[bytes]]:
+async def _parse_conflict_request(request: Request) -> tuple[ConflictReportCreateRequest, str | None, bytes | None]:
     content_type = str(request.headers.get("content-type") or "").lower()
     if "multipart/form-data" in content_type:
         form = await request.form()
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "proposal_id": form.get("proposal_id"),
             "agent_id": form.get("agent_id"),
             "machine_name": form.get("machine_name"),
@@ -357,4 +359,4 @@ async def create_conflict_report(
                 report_file_content=file_content,
             )
     except change_proposal_service.ChangeProposalError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc

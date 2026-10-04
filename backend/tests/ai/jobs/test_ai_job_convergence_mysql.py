@@ -16,11 +16,11 @@ SQLite ``StaticPool`` 无法验证 ``SELECT ... FOR UPDATE``；本模块使用�
 
 from __future__ import annotations
 
+import importlib
 import os
-import sys
+import pkgutil
 import threading
 import time
-import unittest.mock as mock
 import uuid
 from datetime import datetime
 
@@ -28,14 +28,23 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import importlib  # noqa: E402
-import pkgutil  # noqa: E402
-
-from app import domains as _domains  # noqa: E402
+from app import domains as _domains
+from app.database import Base
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+from app.domains.ai.services.ai_job_convergence_service import (
+    AttemptConvergenceRequest,
+    AttemptFinalizerEvidence,
+    ConvergenceIntent,
+    converge_job_attempt_in_txn,
+)
+from app.domains.ai.services.jobs import (
+    attempts as ai_attempts,
+)
+from app.domains.ai.services.jobs import fencing as ai_fencing
+from app.domains.ai.services.jobs import (
+    registry as ai_registry,
+)
+from tests.ai.jobs.ai_job_test_utils import patched_ai_job_db
 
 for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
     try:
@@ -44,40 +53,9 @@ for _name in [n for _, n, _ in pkgutil.iter_modules(_domains.__path__)]:
         continue
     if not hasattr(_models_pkg, "__path__"):
         continue
-    for _, _mod, _ in pkgutil.walk_packages(
-        _models_pkg.__path__, prefix=f"app.domains.{_name}.models."
-    ):
+    for _, _mod, _ in pkgutil.walk_packages(_models_pkg.__path__, prefix=f"app.domains.{_name}.models."):
         importlib.import_module(_mod)
 
-from app.database import Base  # noqa: E402
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
-    executors as ai_executors,
-    publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
-)
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
-)
-from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from app.domains.ai.services.jobs import fencing as ai_fencing
-from tests.ai.jobs.ai_job_test_utils import patched_ai_job_db
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.domains.ai.services.ai_job_convergence_service import (  # noqa: E402
-    AttemptConvergenceRequest,
-    AttemptFinalizerEvidence,
-    ConvergenceIntent,
-    converge_job_attempt_in_txn,
-)
 
 MYSQL_TEST_URL = os.environ.get("TRACEFORGE_TEST_MYSQL_URL", "").strip()
 
@@ -169,12 +147,7 @@ def test_finalizer_locks_row_cancel_waits_then_idempotent(mysql_factory):
     seed_db.close()
 
     session_a = factory()
-    locked = (
-        session_a.query(SddAiJob)
-        .filter(SddAiJob.id == job_id)
-        .with_for_update()
-        .first()
-    )
+    locked = session_a.query(SddAiJob).filter(SddAiJob.id == job_id).with_for_update().first()
     assert locked.status == AiJobStatus.RUNNING
 
     def _cancel():

@@ -9,8 +9,6 @@ created.
 from __future__ import annotations
 
 import subprocess
-from typing import List, Optional, Tuple
-
 
 _GIT_TIMEOUT_SECONDS = 60
 
@@ -24,7 +22,7 @@ class GitRefAccessError(ValueError):
 def _run_ls_remote(
     git_url: str,
     *,
-    patterns: Optional[List[str]] = None,
+    patterns: list[str] | None = None,
     timeout: int = _GIT_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     from app.core.subprocess_runner import ProcessTimeoutError, run_git
@@ -41,9 +39,9 @@ def _run_ls_remote(
         raise GitRefAccessError(f"Git ls-remote timed out after {timeout}s: {git_url}", status_code=409) from exc
 
 
-def parse_ls_remote_output(output: str) -> List[Tuple[str, str, str]]:
+def parse_ls_remote_output(output: str) -> list[tuple[str, str, str]]:
     """Parse ls-remote output into [(ref_type, ref_name, sha), ...]."""
-    entries: List[Tuple[str, str, str]] = []
+    entries: list[tuple[str, str, str]] = []
     for raw in output.splitlines():
         line = raw.strip()
         if not line or line.startswith("From "):
@@ -56,9 +54,9 @@ def parse_ls_remote_output(output: str) -> List[Tuple[str, str, str]]:
         if ref == "HEAD":
             continue
         if ref.startswith("refs/heads/"):
-            entries.append(("BRANCH", ref[len("refs/heads/"):], sha))
+            entries.append(("BRANCH", ref[len("refs/heads/") :], sha))
         elif ref.startswith("refs/tags/"):
-            entries.append(("TAG", ref[len("refs/tags/"):], sha))
+            entries.append(("TAG", ref[len("refs/tags/") :], sha))
     return entries
 
 
@@ -66,7 +64,7 @@ def fetch_remote_refs(
     git_url: str,
     *,
     timeout: int = _GIT_TIMEOUT_SECONDS,
-) -> List[Tuple[str, str, str]]:
+) -> list[tuple[str, str, str]]:
     url = str(git_url or "").strip()
     if not url:
         raise GitRefAccessError("git_url is required", status_code=400)

@@ -3,6 +3,7 @@
 SSE is volatile. Only an idle message after our input proves its terminal state;
 the global session outcome may still belong to the previous input.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -11,13 +12,12 @@ import json
 import random
 import time
 import uuid
-from typing import Any
 
 import httpx
 
+from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id
 from app.agents.errors import AgentExecutionDetached, AgentTimeoutError
 from app.agents.events import AgentEvent
-from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id
 from app.config import settings
 from app.core.logging import get_logger
 
@@ -37,7 +37,7 @@ def turn_messages(messages: list[dict], prompt_id: str) -> list[dict]:
     if boundary is None:
         return []
     result = []
-    for row in messages[boundary + 1:]:
+    for row in messages[boundary + 1 :]:
         if row.get("type") == "user":
             break
         result.append(row)
@@ -85,8 +85,9 @@ class ExecutionMonitor:
         if phase == "submitted":
             return
         if time.time() >= self.checkpoint["deadline"]:
-            raise AgentTimeoutError("OpenCode execution deadline has expired", phase="hard",
-                                    limit_seconds=self.request.timeout_seconds)
+            raise AgentTimeoutError(
+                "OpenCode execution deadline has expired", phase="hard", limit_seconds=self.request.timeout_seconds
+            )
         if phase == "submitting":
             messages = await self.adapter.list_messages(self.session_id)
             inbox = await self.get_data(self.adapter._session_url(self.session_id, "/inbox"))
@@ -123,23 +124,41 @@ class ExecutionMonitor:
                 kind = part.get("type")
                 if kind == "text" and completed and part.get("text"):
                     text = str(part["text"])
-                    await self.emit(AgentEvent(type="text", payload={"text": text}, provider="opencode"),
-                                    message_key(self.session_id, mid, text))
+                    await self.emit(
+                        AgentEvent(type="text", payload={"text": text}, provider="opencode"),
+                        message_key(self.session_id, mid, text),
+                    )
                 elif kind == "tool":
                     tid = str(part.get("id") or "")
                     state = part.get("state") or {}
                     if state.get("status") == "streaming":
                         continue
-                    await self.emit(AgentEvent(type="tool_use", provider="opencode", payload={
-                        "tool_use_id": tid, "tool_name": part.get("name", "unknown"),
-                        "tool_input": state.get("input", {}),
-                    }), f"tool_use:{tid}")
+                    await self.emit(
+                        AgentEvent(
+                            type="tool_use",
+                            provider="opencode",
+                            payload={
+                                "tool_use_id": tid,
+                                "tool_name": part.get("name", "unknown"),
+                                "tool_input": state.get("input", {}),
+                            },
+                        ),
+                        f"tool_use:{tid}",
+                    )
                     if state.get("status") in {"completed", "error"}:
-                        await self.emit(AgentEvent(type="tool_result", provider="opencode", payload={
-                            "tool_use_id": tid, "output": self.adapter._tool_state_output_text(state),
-                            "is_error": state.get("status") == "error",
-                            "provider_replay": True,
-                        }), f"tool_result:{tid}")
+                        await self.emit(
+                            AgentEvent(
+                                type="tool_result",
+                                provider="opencode",
+                                payload={
+                                    "tool_use_id": tid,
+                                    "output": self.adapter._tool_state_output_text(state),
+                                    "is_error": state.get("status") == "error",
+                                    "provider_replay": True,
+                                },
+                            ),
+                            f"tool_result:{tid}",
+                        )
 
     async def restore_asks(self):
         pending = set()
@@ -165,8 +184,10 @@ class ExecutionMonitor:
         self.last_check = time.monotonic()
         if terminal and terminal.get("outcome") in {"succeeded", "failed", "interrupted"}:
             outcome = terminal["outcome"]
-            return {"success": outcome == "succeeded",
-                    "finish_reason": {"succeeded": "completed", "failed": "error"}.get(outcome, outcome)}
+            return {
+                "success": outcome == "succeeded",
+                "finish_reason": {"succeeded": "completed", "failed": "error"}.get(outcome, outcome),
+            }
         active = await self.get_data(self.adapter.server_url + "/api/session/active")
         inbox = await self.get_data(self.adapter._session_url(self.session_id, "/inbox"))
         admitted = any(row.get("id") == self.checkpoint["prompt_id"] for row in [*messages, *inbox])
@@ -185,8 +206,9 @@ class ExecutionMonitor:
     async def pump(self, queue):
         try:
             client = await self.adapter._ensure_client()
-            async with client.stream("GET", self.adapter.server_url + "/api/event",
-                                     timeout=httpx.Timeout(30, read=None)) as response:
+            async with client.stream(
+                "GET", self.adapter.server_url + "/api/event", timeout=httpx.Timeout(30, read=None)
+            ) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -240,6 +262,27 @@ class ExecutionMonitor:
             await self.emit(unified, key)
         return None
 
+    async def _observe_next_result(self, queue):
+        try:
+            async with asyncio.timeout(max(0.01, self.interval)):
+                event = await queue.get()
+        except TimeoutError:
+            event = None
+        if isinstance(event, Exception):
+            raise event
+        result = await self.handle_event(event) if event else None
+        if result:
+            return result
+        # Snapshot only on silence, reconnect, or a recovery request.
+        if self.checkpoint["phase"] == "submitted" and time.monotonic() - self.last_check >= self.interval:
+            if event is None or not self.watchdog or self.watchdog.quiet_seconds >= self.interval:
+                result = await self.reconcile()
+                if result:
+                    return result
+            else:
+                self.last_check = time.monotonic()
+        return None
+
     async def run(self):
         await self.save()
         failures = 0
@@ -249,33 +292,27 @@ class ExecutionMonitor:
             pump = asyncio.create_task(self.pump(queue))
             try:
                 while True:
-                    try:
-                        async with asyncio.timeout(max(0.01, self.interval)):
-                            event = await queue.get()
-                    except TimeoutError:
-                        event = None
-                    if isinstance(event, Exception):
-                        raise event
-                    result = await self.handle_event(event) if event else None
+                    result = await self._observe_next_result(queue)
                     if result:
                         return result, self.seen_types
-                    # Snapshot only on silence, reconnect, or a recovery request.
-                    if self.checkpoint["phase"] == "submitted" and time.monotonic() - self.last_check >= self.interval:
-                        if event is None or not self.watchdog or self.watchdog.quiet_seconds >= self.interval:
-                            result = await self.reconcile()
-                            if result:
-                                return result, self.seen_types
-                        else:
-                            self.last_check = time.monotonic()
+
                     if time.monotonic() - connected_at >= 30:
                         failures = 0
             except (StreamDisconnected, httpx.HTTPError, OSError) as exc:
-                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500 and exc.response.status_code not in {408, 409, 429}:
-                    raise AgentExecutionDetached(f"OpenCode observation requires attention: HTTP {exc.response.status_code}") from exc
+                if (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and exc.response.status_code < 500
+                    and exc.response.status_code not in {408, 409, 429}
+                ):
+                    raise AgentExecutionDetached(
+                        f"OpenCode observation requires attention: HTTP {exc.response.status_code}"
+                    ) from exc
                 self.restoring = True
                 if self.watchdog:
                     self.watchdog.pause_idle()  # Transport loss is not evidence of agent inactivity.
-                logger.warning("OpenCode observation reconnect: session={}, error={}", self.session_id, type(exc).__name__)
+                logger.warning(
+                    "OpenCode observation reconnect: session={}, error={}", self.session_id, type(exc).__name__
+                )
             finally:
                 pump.cancel()
                 await asyncio.gather(pump, return_exceptions=True)

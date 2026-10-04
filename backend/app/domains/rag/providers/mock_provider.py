@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from typing import Dict
 
 from app.domains.rag.providers.base import RagProvider
 from app.domains.rag.schemas import RagDocument
@@ -14,7 +13,7 @@ class MockRagProvider(RagProvider):
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self.upserted: Dict[str, RagDocument] = {}
+        self.upserted: dict[str, RagDocument] = {}
         self.deleted_keys: list[str] = []
 
     def upsert(self, document: RagDocument) -> bool:

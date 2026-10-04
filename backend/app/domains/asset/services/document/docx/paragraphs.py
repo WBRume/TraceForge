@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
-
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from app.domains.asset.services.document.docx.runs import (
     extract_run_style,
@@ -21,9 +20,9 @@ from app.domains.asset.services.document.docx.xml_utils import (
 )
 
 
-def extract_paragraph_meta(paragraph: ET.Element) -> Dict[str, Any]:
+def extract_paragraph_meta(paragraph: ET.Element) -> dict[str, Any]:
     """提取 pPr 段落属性（样式名、编号定义）。"""
-    meta: Dict[str, Any] = {}
+    meta: dict[str, Any] = {}
     p_pr = paragraph.find("./w:pPr", DOCX_NS_MAP)
     if p_pr is None:
         return meta
@@ -47,88 +46,94 @@ def extract_paragraph_meta(paragraph: ET.Element) -> Dict[str, Any]:
     return meta
 
 
-def parse_paragraph_content(
-    paragraph: ET.Element,
-    comments_by_id: Dict[str, Dict[str, Any]],
-) -> Dict[str, Any]:
-    """解析段落 → {text, runs, comment_anchors}，批注锚点以字符偏移表示。"""
-    runs: List[Dict[str, Any]] = []
-    comment_ranges: Dict[str, Dict[str, Any]] = {}
-    active_comment_ids: List[str] = []
-    cursor = 0
+class _ParagraphContent:
+    """Own text offsets and comment ranges during one paragraph traversal."""
 
-    def ensure_comment(comment_id: str) -> Dict[str, Any]:
-        if comment_id not in comment_ranges:
-            comment_ranges[comment_id] = {"char_start": None, "char_end": None}
-        return comment_ranges[comment_id]
+    def __init__(self) -> None:
+        self.runs: list[dict[str, Any]] = []
+        self.comment_ranges: dict[str, dict[str, Any]] = {}
+        self.active_comment_ids: list[str] = []
+        self.cursor = 0
 
-    def start_comment(comment_id: str) -> None:
+    def ensure_comment(self, comment_id: str) -> dict[str, Any]:
+        if comment_id not in self.comment_ranges:
+            self.comment_ranges[comment_id] = {"char_start": None, "char_end": None}
+        return self.comment_ranges[comment_id]
+
+    def start_comment(self, comment_id: str) -> None:
         if not comment_id:
             return
-        info = ensure_comment(comment_id)
+        info = self.ensure_comment(comment_id)
         if info["char_start"] is None:
-            info["char_start"] = cursor
-        if comment_id not in active_comment_ids:
-            active_comment_ids.append(comment_id)
+            info["char_start"] = self.cursor
+        if comment_id not in self.active_comment_ids:
+            self.active_comment_ids.append(comment_id)
 
-    def end_comment(comment_id: str) -> None:
+    def end_comment(self, comment_id: str) -> None:
         if not comment_id:
             return
-        info = ensure_comment(comment_id)
+        info = self.ensure_comment(comment_id)
         if info["char_start"] is None:
-            info["char_start"] = cursor
-        info["char_end"] = cursor
-        if comment_id in active_comment_ids:
-            active_comment_ids.remove(comment_id)
+            info["char_start"] = self.cursor
+        info["char_end"] = self.cursor
+        if comment_id in self.active_comment_ids:
+            self.active_comment_ids.remove(comment_id)
 
-    def append_text(text: str, style: Dict[str, Any]) -> None:
-        nonlocal cursor
+    def append_text(self, text: str, style: dict[str, Any]) -> None:
         if not text:
             return
         run = {"text": text}
         run.update(style)
-        runs.append(run)
-        next_cursor = cursor + len(text)
-        for comment_id in list(active_comment_ids):
-            info = ensure_comment(comment_id)
+        self.runs.append(run)
+        next_cursor = self.cursor + len(text)
+        for comment_id in list(self.active_comment_ids):
+            info = self.ensure_comment(comment_id)
             if info["char_start"] is None:
-                info["char_start"] = cursor
+                info["char_start"] = self.cursor
             info["char_end"] = next_cursor
-        cursor = next_cursor
+        self.cursor = next_cursor
 
-    def walk(node: ET.Element) -> None:
+    def walk(self, node: ET.Element) -> None:
         for child in list(node):
             lname = local_name(child.tag)
             if lname == "commentRangeStart":
-                start_comment(str(child.attrib.get(xml_attr("id"), "") or "").strip())
+                self.start_comment(str(child.attrib.get(xml_attr("id"), "") or "").strip())
                 continue
             if lname == "commentRangeEnd":
-                end_comment(str(child.attrib.get(xml_attr("id"), "") or "").strip())
+                self.end_comment(str(child.attrib.get(xml_attr("id"), "") or "").strip())
                 continue
             if lname == "r":
                 for ref in child.findall(".//w:commentReference", DOCX_NS_MAP):
                     ref_id = str(ref.attrib.get(xml_attr("id"), "") or "").strip()
                     if ref_id:
-                        info = ensure_comment(ref_id)
+                        info = self.ensure_comment(ref_id)
                         if info["char_start"] is None:
-                            info["char_start"] = cursor
-                        info["char_end"] = cursor
-                append_text(extract_run_text(child), extract_run_style(child))
+                            info["char_start"] = self.cursor
+                        info["char_end"] = self.cursor
+                self.append_text(extract_run_text(child), extract_run_style(child))
                 continue
             if lname in {"hyperlink", "smartTag", "sdt", "ins", "del", "fldSimple"}:
-                walk(child)
+                self.walk(child)
                 continue
             if lname == "instrText" and child.text:
-                append_text(child.text, {})
+                self.append_text(child.text, {})
 
-    walk(paragraph)
-    for comment_id in list(active_comment_ids):
-        end_comment(comment_id)
 
-    merged_runs = merge_adjacent_runs(runs)
+def parse_paragraph_content(
+    paragraph: ET.Element,
+    comments_by_id: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """解析段落 → {text, runs, comment_anchors}，批注锚点以字符偏移表示。"""
+
+    content = _ParagraphContent()
+    content.walk(paragraph)
+    for comment_id in list(content.active_comment_ids):
+        content.end_comment(comment_id)
+
+    merged_runs = merge_adjacent_runs(content.runs)
     text = render_runs_to_text(merged_runs)
-    anchors: List[Dict[str, Any]] = []
-    for comment_id, span in comment_ranges.items():
+    anchors: list[dict[str, Any]] = []
+    for comment_id, span in content.comment_ranges.items():
         start = span.get("char_start")
         end = span.get("char_end")
         if start is None and end is None:
@@ -151,11 +156,11 @@ def parse_paragraph_content(
     return {"text": text, "runs": merged_runs, "comment_anchors": anchors}
 
 
-def classify_paragraph_type(style_name: str, has_numbering: bool) -> Tuple[str, Dict[str, Any]]:
+def classify_paragraph_type(style_name: str, has_numbering: bool) -> tuple[str, dict[str, Any]]:
     """按样式名与编号状态判定段落块类型（heading/toc_entry/list_item/paragraph）。"""
     style = (style_name or "").strip()
     style_l = style.lower()
-    meta: Dict[str, Any] = {}
+    meta: dict[str, Any] = {}
     if style:
         meta["style"] = style
 

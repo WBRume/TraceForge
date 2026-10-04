@@ -25,7 +25,6 @@ from app.domains.asset.services.document.payload import (  # noqa: E402
     parse_document_payload,
 )
 
-
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 DOCX_NS_DECL = f'xmlns:w="{W_NS}"'
 
@@ -36,7 +35,7 @@ def _w(tag: str) -> str:
 
 def _run_xml(text: str, bold: bool = False) -> str:
     rpr = "<w:rPr><w:b/></w:rPr>" if bold else ""
-    return f"<w:r>{rpr}<w:t xml:space=\"preserve\">{text}</w:t></w:r>"
+    return f'<w:r>{rpr}<w:t xml:space="preserve">{text}</w:t></w:r>'
 
 
 def _para_xml(
@@ -66,16 +65,14 @@ def _para_xml(
 def _table_xml(rows) -> str:
     body = ""
     for row in rows:
-        cells = "".join(
-            f"<w:tc><w:p>{_run_xml(cell)}</w:p></w:tc>" for cell in row
-        )
+        cells = "".join(f"<w:tc><w:p>{_run_xml(cell)}</w:p></w:tc>" for cell in row)
         body += f"<w:tr>{cells}</w:tr>"
     return f"<w:tbl>{body}</w:tbl>"
 
 
 def _numbering_decimal_xml() -> str:
     return (
-        f'<w:numbering {DOCX_NS_DECL}>'
+        f"<w:numbering {DOCX_NS_DECL}>"
         '<w:abstractNum w:abstractNumId="0">'
         '<w:lvl w:ilvl="0">'
         '<w:start w:val="1"/>'
@@ -117,7 +114,7 @@ def _build_docx_zip(document_body: str, comments_xml: str = None, numbering_xml:
 
 
 def test_parse_markdown_dispatch():
-    raw = "# Title\n\nFirst paragraph.\n\n- item one\n- item two\n".encode("utf-8")
+    raw = b"# Title\n\nFirst paragraph.\n\n- item one\n- item two\n"
     payload = parse_document_payload("spec.md", raw)
     assert payload["source_ext"] == ".md"
     assert payload["source_mime"] == "text/markdown"
@@ -129,7 +126,7 @@ def test_parse_markdown_dispatch():
 
 
 def test_parse_txt_merges_wrapped_lines():
-    raw = "line one\nline two\n\nline three\n".encode("utf-8")
+    raw = b"line one\nline two\n\nline three\n"
     payload = parse_document_payload("notes.txt", raw)
     assert payload["source_ext"] == ".txt"
     texts = [block["text"] for block in payload["blocks_json"]]
@@ -209,7 +206,7 @@ def test_parse_docx_comments_anchor_offsets():
     assert comment["content"] == "please fix"
     assert comment["block_id"] == "blk-1"
     text = payload["blocks_json"][0]["text"]
-    assert text[comment["char_start"]:comment["char_end"]] == "this part"
+    assert text[comment["char_start"] : comment["char_end"]] == "this part"
 
 
 def test_parse_docx_table_block_and_markdown():

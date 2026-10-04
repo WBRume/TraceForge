@@ -1,14 +1,8 @@
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
-
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from app.domains.task.services import git_worktree_service
 
@@ -53,14 +47,16 @@ class GitWorktreeServiceTest(unittest.TestCase):
     def test_create_task_worktree_executes_expected_git_commands(self):
         repo_path = "C:/repo"
         task_path = "C:/repo/task-id"
-        with mock.patch.object(git_worktree_service, "is_git_repository", return_value=True), \
-            mock.patch.object(git_worktree_service, "ensure_workspace_repo_matches_remote"), \
-            mock.patch.object(git_worktree_service, "_branch_exists", return_value=False), \
-            mock.patch.object(git_worktree_service, "_remote_branch_exists", return_value=True), \
-            mock.patch.object(git_worktree_service, "resolve_workspace_base_branch", return_value="main"), \
-            mock.patch.object(git_worktree_service, "_run_git_checked") as run_checked, \
-            mock.patch("os.path.exists", return_value=False), \
-            mock.patch("os.makedirs"):
+        with (
+            mock.patch.object(git_worktree_service, "is_git_repository", return_value=True),
+            mock.patch.object(git_worktree_service, "ensure_workspace_repo_matches_remote"),
+            mock.patch.object(git_worktree_service, "_branch_exists", return_value=False),
+            mock.patch.object(git_worktree_service, "_remote_branch_exists", return_value=True),
+            mock.patch.object(git_worktree_service, "resolve_workspace_base_branch", return_value="main"),
+            mock.patch.object(git_worktree_service, "_run_git_checked") as run_checked,
+            mock.patch("os.path.exists", return_value=False),
+            mock.patch("os.makedirs"),
+        ):
             branch = git_worktree_service.create_task_worktree(
                 repo_path=repo_path,
                 task_id="task-id",

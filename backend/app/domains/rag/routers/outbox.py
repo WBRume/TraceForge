@@ -15,7 +15,6 @@ RAG 案例同步队列路由：批次管理 + 人工导出下载（队列按工�
 
 from __future__ import annotations
 
-from typing import List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -47,19 +46,15 @@ def _content_disposition(filename: str, fallback: str) -> str:
         filename.encode("latin-1")
     except UnicodeEncodeError:
         encoded = quote(filename, safe="")
-        return f'attachment; filename="{fallback}"; filename*=UTF-8\'\'{encoded}'
+        return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
     return f'attachment; filename="{filename}"'
 
 
-def _accessible_workspace_ids(db: Session, user: User) -> Optional[List[str]]:
+def _accessible_workspace_ids(db: Session, user: User) -> list[str] | None:
     """返回用户可访问工作区列表；平台管理员返回 None 表示全部。"""
     if bool(user.is_admin):
         return None
-    rows = (
-        db.query(WorkspaceMember.workspace_id)
-        .filter(WorkspaceMember.user_id == str(user.id or "").strip())
-        .all()
-    )
+    rows = db.query(WorkspaceMember.workspace_id).filter(WorkspaceMember.user_id == str(user.id or "").strip()).all()
     ids = {str(row[0]) for row in rows if row and row[0]}
     return sorted(ids)
 
@@ -67,8 +62,8 @@ def _accessible_workspace_ids(db: Session, user: User) -> Optional[List[str]]:
 def _resolve_accessible_workspace_ids(
     db: Session,
     user: User,
-    workspace_id: Optional[str],
-) -> Optional[List[str]]:
+    workspace_id: str | None,
+) -> list[str] | None:
     """管理员返回 None（不限）；普通用户返回可访问工作区列表；指定 workspace 时校验权限。"""
     accessible_ids = _accessible_workspace_ids(db, user)
     ws_id = str(workspace_id or "").strip()
@@ -134,8 +129,8 @@ def _require_queue(
 
 @router.get("", response_model=RagQueuePageResponse)
 def list_rag_queues(
-    workspace_id: Optional[str] = Query(default=None),
-    status: Optional[RagQueueStatus] = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+    status: RagQueueStatus | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
@@ -150,7 +145,7 @@ def list_rag_queues(
         page=page,
         page_size=page_size,
     )
-    items: List[RagQueueItem] = []
+    items: list[RagQueueItem] = []
     for queue in queues:
         case_count, exported_count = outbox_service._queue_counts(db, queue.id)
         items.append(
@@ -226,7 +221,7 @@ def export_rag_queue_zip(
     try:
         content = outbox_service.export_queue_zip(db, queue)
     except Exception as exc:  # pragma: no cover - 防御性保护
-        raise HTTPException(status_code=500, detail=f"Failed to package queue: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to package queue: {exc}") from exc
     return Response(
         content=content,
         media_type="application/zip",
@@ -280,9 +275,7 @@ def export_rag_queue_case_markdown(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Case document not found in queue")
-    if workspace_ids is not None and (
-        not row.workspace_id or row.workspace_id not in workspace_ids
-    ):
+    if workspace_ids is not None and (not row.workspace_id or row.workspace_id not in workspace_ids):
         raise HTTPException(
             status_code=403,
             detail="No permission to download this case document",
@@ -291,7 +284,7 @@ def export_rag_queue_case_markdown(
     try:
         content = outbox_service.build_single_case_markdown(db, row)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     filename = f"{outbox_service._safe_filename(row.title or row.doc_key, 'case')}.md"
     return Response(
         content=content,
@@ -325,9 +318,7 @@ def confirm_rag_queue_case_export(
     )
     if row is None:
         raise HTTPException(status_code=404, detail="Case document not found in queue")
-    if workspace_ids is not None and (
-        not row.workspace_id or row.workspace_id not in workspace_ids
-    ):
+    if workspace_ids is not None and (not row.workspace_id or row.workspace_id not in workspace_ids):
         raise HTTPException(
             status_code=403,
             detail="No permission to export this case document",

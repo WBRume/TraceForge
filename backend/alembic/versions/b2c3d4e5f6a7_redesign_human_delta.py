@@ -5,16 +5,18 @@ Revises: a8d3e4f5b6c7
 Create Date: 2026-05-14
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "b2c3d4e5f6a7"
-down_revision: Union[str, None] = "a8d3e4f5b6c7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "a8d3e4f5b6c7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _drop_fk_by_column(table: str, column: str) -> None:
@@ -103,9 +105,16 @@ def _add_column_safe(table: str, column) -> None:
             pass
 
 
-def _create_fk_safe(constraint_name: str, source_table: str, referent_table: str, local_cols: list, remote_cols: list, ondelete: str = None) -> None:
+def _create_fk_safe(
+    constraint_name: str,
+    source_table: str,
+    referent_table: str,
+    local_cols: list,
+    remote_cols: list,
+    ondelete: str = None,
+) -> None:
     """Create a FK constraint, dropping it first if it already exists (partial re-run safety)."""
-    bind = op.get_bind()
+    op.get_bind()
     try:
         op.drop_constraint(constraint_name, source_table, type_="foreignkey")
     except Exception:
@@ -145,9 +154,30 @@ def upgrade() -> None:
     _add_column_safe("sdd_human_deltas", sa.Column("deletions", sa.Integer(), nullable=True))
     _add_column_safe("sdd_human_deltas", sa.Column("comparison_summary", sa.Text(), nullable=True))
 
-    _create_fk_safe("fk_sdd_human_deltas_proposal_id", "sdd_human_deltas", "sdd_task_change_proposals", ["proposal_id"], ["id"], ondelete="SET NULL")
-    _create_fk_safe("fk_sdd_human_deltas_final_evidence_id", "sdd_human_deltas", "sdd_evidence", ["final_evidence_id"], ["id"], ondelete="SET NULL")
-    _create_fk_safe("fk_sdd_human_deltas_diff_asset_id", "sdd_human_deltas", "sdd_assets", ["diff_asset_id"], ["id"], ondelete="SET NULL")
+    _create_fk_safe(
+        "fk_sdd_human_deltas_proposal_id",
+        "sdd_human_deltas",
+        "sdd_task_change_proposals",
+        ["proposal_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    _create_fk_safe(
+        "fk_sdd_human_deltas_final_evidence_id",
+        "sdd_human_deltas",
+        "sdd_evidence",
+        ["final_evidence_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
+    _create_fk_safe(
+        "fk_sdd_human_deltas_diff_asset_id",
+        "sdd_human_deltas",
+        "sdd_assets",
+        ["diff_asset_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
     # MySQL auto-creates indexes for FKs; use safe helper to avoid errors
     _create_index_safe("ix_sdd_human_deltas_proposal_id", "sdd_human_deltas", ["proposal_id"])
     _create_index_safe("ix_sdd_human_deltas_final_evidence_id", "sdd_human_deltas", ["final_evidence_id"])
@@ -168,7 +198,9 @@ def downgrade() -> None:
 
     # --- sdd_evidence: restore human_delta_id ---
     _add_column_safe("sdd_evidence", sa.Column("human_delta_id", sa.String(length=36), nullable=True))
-    _create_fk_safe("sdd_evidence_ibfk_2", "sdd_evidence", "sdd_human_deltas", ["human_delta_id"], ["id"], ondelete="SET NULL")
+    _create_fk_safe(
+        "sdd_evidence_ibfk_2", "sdd_evidence", "sdd_human_deltas", ["human_delta_id"], ["id"], ondelete="SET NULL"
+    )
     _create_index_safe("ix_sdd_evidence_human_delta_id", "sdd_evidence", ["human_delta_id"])
 
     # --- sdd_human_deltas: drop new columns ---
@@ -212,8 +244,12 @@ def downgrade() -> None:
     _add_column_safe("sdd_human_deltas", sa.Column("title", sa.String(length=300), nullable=True))
     _add_column_safe("sdd_human_deltas", sa.Column("review_id", sa.String(length=36), nullable=True))
     _add_column_safe("sdd_human_deltas", sa.Column("ai_output_id", sa.String(length=36), nullable=True))
-    _create_fk_safe("sdd_human_deltas_ibfk_2", "sdd_human_deltas", "sdd_human_reviews", ["review_id"], ["id"], ondelete="SET NULL")
-    _create_fk_safe("sdd_human_deltas_ibfk_1", "sdd_human_deltas", "sdd_ai_outputs", ["ai_output_id"], ["id"], ondelete="SET NULL")
+    _create_fk_safe(
+        "sdd_human_deltas_ibfk_2", "sdd_human_deltas", "sdd_human_reviews", ["review_id"], ["id"], ondelete="SET NULL"
+    )
+    _create_fk_safe(
+        "sdd_human_deltas_ibfk_1", "sdd_human_deltas", "sdd_ai_outputs", ["ai_output_id"], ["id"], ondelete="SET NULL"
+    )
     # MySQL auto-creates indexes for FKs; use safe helper to avoid errors
     _create_index_safe("ix_sdd_human_deltas_review_id", "sdd_human_deltas", ["review_id"])
     _create_index_safe("ix_sdd_human_deltas_ai_output_id", "sdd_human_deltas", ["ai_output_id"])

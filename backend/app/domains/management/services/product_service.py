@@ -10,7 +10,6 @@ remote.
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -80,7 +79,7 @@ def _normalize_ref_type(value: str) -> RepoRefType:
         raise ProductServiceError("ref_type must be BRANCH or TAG", status_code=400) from exc
 
 
-def _serialize_binding(binding: SddManagementProductVersionRepo) -> Dict[str, object]:
+def _serialize_binding(binding: SddManagementProductVersionRepo) -> dict[str, object]:
     repo = binding.repository
     return {
         "id": binding.id,
@@ -97,7 +96,7 @@ def _serialize_binding(binding: SddManagementProductVersionRepo) -> Dict[str, ob
 def _binding_to_effective_dict(
     binding,
     source: str,
-) -> Dict[str, object]:
+) -> dict[str, object]:
     repo = binding.repository
     return {
         "id": binding.id,
@@ -113,13 +112,13 @@ def _binding_to_effective_dict(
     }
 
 
-def _serialize_effective_binding(item: Dict[str, object]) -> Dict[str, object]:
+def _serialize_effective_binding(item: dict[str, object]) -> dict[str, object]:
     return item
 
 
 def resolve_effective_version_bindings(
     version: SddManagementProductVersion,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     """Resolve the live repository set of a product version.
 
     For custom versions, the effective set is the baseline version's current
@@ -132,10 +131,8 @@ def resolve_effective_version_bindings(
     if baseline is None:
         return [_binding_to_effective_dict(binding, "custom") for binding in custom_bindings]
 
-    excluded_ids = {
-        item.repository_id for item in (version.baseline_exclusions or [])
-    }
-    result: Dict[str, Dict[str, object]] = {}
+    excluded_ids = {item.repository_id for item in (version.baseline_exclusions or [])}
+    result: dict[str, dict[str, object]] = {}
     for binding in baseline.repo_bindings or []:
         if binding.repository_id in excluded_ids:
             continue
@@ -146,7 +143,7 @@ def resolve_effective_version_bindings(
     return list(result.values())
 
 
-def _serialize_base_repo(binding: SddManagementProductRepo) -> Dict[str, object]:
+def _serialize_base_repo(binding: SddManagementProductRepo) -> dict[str, object]:
     repo = binding.repository
     return {
         "id": binding.id,
@@ -160,7 +157,7 @@ def _serialize_base_repo(binding: SddManagementProductRepo) -> Dict[str, object]
     }
 
 
-def _serialize_custom_version_ref(version: SddManagementProductVersion) -> Dict[str, object]:
+def _serialize_custom_version_ref(version: SddManagementProductVersion) -> dict[str, object]:
     product = version.product
     return {
         "id": version.id,
@@ -172,7 +169,7 @@ def _serialize_custom_version_ref(version: SddManagementProductVersion) -> Dict[
     }
 
 
-def _serialize_custom_product_ref(product: SddManagementProduct) -> Dict[str, object]:
+def _serialize_custom_product_ref(product: SddManagementProduct) -> dict[str, object]:
     latest = _latest_version(product)
     return {
         "id": product.id,
@@ -187,8 +184,8 @@ def serialize_version(
     version: SddManagementProductVersion,
     *,
     include_bindings: bool = False,
-) -> Dict[str, object]:
-    payload: Dict[str, object] = {
+) -> dict[str, object]:
+    payload: dict[str, object] = {
         "id": version.id,
         "product_id": version.product_id,
         "version_no": version.version_no,
@@ -198,34 +195,34 @@ def serialize_version(
         "baseline_product_version_id": version.baseline_product_version_id,
         "baseline_version_no": version.baseline_version.version_no if version.baseline_version else None,
         "baseline_product_id": version.baseline_version.product_id if version.baseline_version else None,
-        "baseline_product_code": version.baseline_version.product.code if version.baseline_version and version.baseline_version.product else None,
-        "baseline_product_name": version.baseline_version.product.name if version.baseline_version and version.baseline_version.product else None,
-        "custom_versions": [
-            _serialize_custom_version_ref(cv) for cv in (version.custom_versions or [])
-        ],
+        "baseline_product_code": version.baseline_version.product.code
+        if version.baseline_version and version.baseline_version.product
+        else None,
+        "baseline_product_name": version.baseline_version.product.name
+        if version.baseline_version and version.baseline_version.product
+        else None,
+        "custom_versions": [_serialize_custom_version_ref(cv) for cv in (version.custom_versions or [])],
         "created_at": version.created_at,
         "updated_at": version.updated_at,
     }
     if include_bindings:
-        payload["repo_bindings"] = [
-            _serialize_binding(binding) for binding in version.repo_bindings
-        ]
+        payload["repo_bindings"] = [_serialize_binding(binding) for binding in version.repo_bindings]
         payload["effective_repo_bindings"] = [
             _serialize_effective_binding(item) for item in resolve_effective_version_bindings(version)
         ]
     return payload
 
 
-def _latest_version(product: SddManagementProduct) -> Optional[SddManagementProductVersion]:
+def _latest_version(product: SddManagementProduct) -> SddManagementProductVersion | None:
     """Latest version of a product (by creation order)."""
     if not product.versions:
         return None
     return product.versions[-1]
 
 
-def serialize_product(product: SddManagementProduct, *, include_bindings: bool = False) -> Dict[str, object]:
+def serialize_product(product: SddManagementProduct, *, include_bindings: bool = False) -> dict[str, object]:
     latest = _latest_version(product)
-    payload: Dict[str, object] = {
+    payload: dict[str, object] = {
         "id": product.id,
         "name": product.name,
         "code": product.code,
@@ -234,34 +231,30 @@ def serialize_product(product: SddManagementProduct, *, include_bindings: bool =
         "release_date": latest.release_date if latest else product.release_date,
         "description": product.description,
         "status": product.status.value if hasattr(product.status, "value") else str(product.status),
-        "product_type": product.product_type.value if hasattr(product.product_type, "value") else str(product.product_type),
+        "product_type": product.product_type.value
+        if hasattr(product.product_type, "value")
+        else str(product.product_type),
         "baseline_product_id": product.baseline_product_id,
         "baseline_product_name": product.baseline_product.name if product.baseline_product else None,
         "created_at": product.created_at,
         "updated_at": product.updated_at,
     }
     if include_bindings:
-        payload["base_repos"] = [
-            _serialize_base_repo(binding) for binding in product.base_repos
-        ]
-        payload["versions"] = [
-            serialize_version(version, include_bindings=True) for version in product.versions
-        ]
-        payload["custom_products"] = [
-            _serialize_custom_product_ref(cp) for cp in (product.custom_products or [])
-        ]
+        payload["base_repos"] = [_serialize_base_repo(binding) for binding in product.base_repos]
+        payload["versions"] = [serialize_version(version, include_bindings=True) for version in product.versions]
+        payload["custom_products"] = [_serialize_custom_product_ref(cp) for cp in (product.custom_products or [])]
     return payload
 
 
 def list_products(
     db: Session,
     *,
-    keyword: Optional[str] = None,
-    status: Optional[str] = None,
+    keyword: str | None = None,
+    status: str | None = None,
     include_versions: bool = False,
     page: int = 1,
     page_size: int = 20,
-) -> Tuple[List[Dict[str, object]], int]:
+) -> tuple[list[dict[str, object]], int]:
     query = db.query(SddManagementProduct)
     normalized_keyword = str(keyword or "").strip()
     if normalized_keyword:
@@ -282,13 +275,14 @@ def list_products(
         joinedload(SddManagementProduct.base_repos).joinedload(SddManagementProductRepo.repository),
     ]
     if include_versions:
-        options.extend([
-            selectinload(SddManagementProduct.custom_products)
-            .selectinload(SddManagementProduct.versions),
-            joinedload(SddManagementProduct.versions)
-            .selectinload(SddManagementProductVersion.custom_versions)
-            .joinedload(SddManagementProductVersion.product),
-        ])
+        options.extend(
+            [
+                selectinload(SddManagementProduct.custom_products).selectinload(SddManagementProduct.versions),
+                joinedload(SddManagementProduct.versions)
+                .selectinload(SddManagementProductVersion.custom_versions)
+                .joinedload(SddManagementProductVersion.product),
+            ]
+        )
     products = (
         query.options(*options)
         .order_by(SddManagementProduct.created_at.desc())
@@ -296,19 +290,15 @@ def list_products(
         .limit(page_size)
         .all()
     )
-    return [
-        serialize_product(product, include_bindings=include_versions)
-        for product in products
-    ], total
+    return [serialize_product(product, include_bindings=include_versions) for product in products], total
 
 
-def get_product(db: Session, product_id: str) -> Optional[SddManagementProduct]:
+def get_product(db: Session, product_id: str) -> SddManagementProduct | None:
     return (
         db.query(SddManagementProduct)
         .options(
             joinedload(SddManagementProduct.baseline_product),
-            selectinload(SddManagementProduct.custom_products)
-            .selectinload(SddManagementProduct.versions),
+            selectinload(SddManagementProduct.custom_products).selectinload(SddManagementProduct.versions),
             joinedload(SddManagementProduct.versions)
             .selectinload(SddManagementProductVersion.custom_versions)
             .joinedload(SddManagementProductVersion.product),
@@ -325,7 +315,7 @@ def get_product(db: Session, product_id: str) -> Optional[SddManagementProduct]:
     )
 
 
-def serialize_product_detail(product: SddManagementProduct) -> Dict[str, object]:
+def serialize_product_detail(product: SddManagementProduct) -> dict[str, object]:
     return serialize_product(product, include_bindings=True)
 
 
@@ -333,16 +323,15 @@ def get_version(
     db: Session,
     product_id: str,
     version_id: str,
-) -> Optional[SddManagementProductVersion]:
+) -> SddManagementProductVersion | None:
     return (
         db.query(SddManagementProductVersion)
         .options(
-            joinedload(SddManagementProductVersion.repo_bindings)
-            .joinedload(SddManagementProductVersionRepo.repository),
-            joinedload(SddManagementProductVersion.baseline_version)
-            .joinedload(SddManagementProductVersion.product),
-            selectinload(SddManagementProductVersion.custom_versions)
-            .joinedload(SddManagementProductVersion.product),
+            joinedload(SddManagementProductVersion.repo_bindings).joinedload(
+                SddManagementProductVersionRepo.repository
+            ),
+            joinedload(SddManagementProductVersion.baseline_version).joinedload(SddManagementProductVersion.product),
+            selectinload(SddManagementProductVersion.custom_versions).joinedload(SddManagementProductVersion.product),
         )
         .filter(
             SddManagementProductVersion.id == version_id,
@@ -357,12 +346,12 @@ def create_product(
     *,
     name: str,
     code: str,
-    product_line: Optional[str] = None,
-    description: Optional[str] = None,
+    product_line: str | None = None,
+    description: str | None = None,
     status: str = "ACTIVE",
     product_type: str = "OOTB",
-    baseline_product_id: Optional[str] = None,
-    creator_id: Optional[str] = None,
+    baseline_product_id: str | None = None,
+    creator_id: str | None = None,
 ) -> SddManagementProduct:
     normalized_name = str(name or "").strip()
     normalized_code = str(code or "").strip()
@@ -380,10 +369,14 @@ def create_product(
                 "Custom product requires a baseline product",
                 status_code=400,
             )
-        baseline = db.query(SddManagementProduct).filter(
-            SddManagementProduct.id == baseline_product_id,
-            SddManagementProduct.product_type == ProductType.OOTB,
-        ).first()
+        baseline = (
+            db.query(SddManagementProduct)
+            .filter(
+                SddManagementProduct.id == baseline_product_id,
+                SddManagementProduct.product_type == ProductType.OOTB,
+            )
+            .first()
+        )
         if not baseline:
             raise ProductServiceError(
                 "Baseline product not found or it is not an OOTB product",
@@ -414,13 +407,13 @@ def update_product(
     db: Session,
     product: SddManagementProduct,
     *,
-    name: Optional[str] = None,
-    code: Optional[str] = None,
-    product_line: Optional[str] = None,
-    description: Optional[str] = None,
-    status: Optional[str] = None,
-    product_type: Optional[str] = None,
-    baseline_product_id: Optional[str] = None,
+    name: str | None = None,
+    code: str | None = None,
+    product_line: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    product_type: str | None = None,
+    baseline_product_id: str | None = None,
 ) -> SddManagementProduct:
     if name is not None:
         product.name = str(name).strip() or product.name
@@ -449,10 +442,14 @@ def update_product(
                     "Custom product requires a baseline product",
                     status_code=400,
                 )
-            baseline = db.query(SddManagementProduct).filter(
-                SddManagementProduct.id == new_baseline_id,
-                SddManagementProduct.product_type == ProductType.OOTB,
-            ).first()
+            baseline = (
+                db.query(SddManagementProduct)
+                .filter(
+                    SddManagementProduct.id == new_baseline_id,
+                    SddManagementProduct.product_type == ProductType.OOTB,
+                )
+                .first()
+            )
             if not baseline:
                 raise ProductServiceError(
                     "Baseline product not found or it is not an OOTB product",
@@ -475,7 +472,7 @@ def add_base_repo(
     product: SddManagementProduct,
     *,
     repository_id: str,
-    creator_id: Optional[str] = None,
+    creator_id: str | None = None,
 ) -> SddManagementProductRepo:
     repository = db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
     if not repository:
@@ -524,14 +521,12 @@ def remove_base_repo(
 def _product_reference_lines(
     db: Session,
     product: SddManagementProduct,
-) -> List[str]:
+) -> list[str]:
     """Return human-readable references to a product from projects/releases."""
-    lines: List[str] = []
+    lines: list[str] = []
 
     custom_products = (
-        db.query(SddManagementProduct)
-        .filter(SddManagementProduct.baseline_product_id == product.id)
-        .all()
+        db.query(SddManagementProduct).filter(SddManagementProduct.baseline_product_id == product.id).all()
     )
     for custom_product in custom_products:
         lines.append(f"custom product '{custom_product.name}'")
@@ -573,20 +568,21 @@ def delete_product(db: Session, product: SddManagementProduct) -> None:
 
 # ── Product versions ───────────────────────────────────────────────────────
 
+
 def create_version(
     db: Session,
     product: SddManagementProduct,
     *,
     version_no: str,
     status: str = "ACTIVE",
-    release_date: Optional[datetime] = None,
-    description: Optional[str] = None,
-    from_version_id: Optional[str] = None,
-    baseline_product_version_id: Optional[str] = None,
+    release_date: datetime | None = None,
+    description: str | None = None,
+    from_version_id: str | None = None,
+    baseline_product_version_id: str | None = None,
     inherit_product_repos: bool = False,
-    inherit_ref_type: Optional[str] = None,
-    inherit_ref_name: Optional[str] = None,
-    creator_id: Optional[str] = None,
+    inherit_ref_type: str | None = None,
+    inherit_ref_name: str | None = None,
+    creator_id: str | None = None,
 ) -> SddManagementProductVersion:
     normalized_no = str(version_no or "").strip()
     if not normalized_no:
@@ -709,10 +705,10 @@ def update_version(
     db: Session,
     version: SddManagementProductVersion,
     *,
-    version_no: Optional[str] = None,
-    status: Optional[str] = None,
-    release_date: Optional[datetime] = None,
-    description: Optional[str] = None,
+    version_no: str | None = None,
+    status: str | None = None,
+    release_date: datetime | None = None,
+    description: str | None = None,
 ) -> SddManagementProductVersion:
     if version_no is not None:
         normalized_no = str(version_no).strip()
@@ -743,14 +739,9 @@ def update_version(
 
 def delete_version(db: Session, version: SddManagementProductVersion) -> None:
     if version.custom_versions:
-        refs = "; ".join(
-            f"custom version '{cv.version_no}'" for cv in version.custom_versions
-        )
+        refs = "; ".join(f"custom version '{cv.version_no}'" for cv in version.custom_versions)
         raise ProductServiceError(
-            "Cannot delete baseline version '{version_no}' because it is still referenced by: {refs}".format(
-                version_no=version.version_no,
-                refs=refs,
-            ),
+            f"Cannot delete baseline version '{version.version_no}' because it is still referenced by: {refs}",
             status_code=409,
         )
     project_links = (
@@ -762,12 +753,8 @@ def delete_version(db: Session, version: SddManagementProductVersion) -> None:
     if project_links:
         refs = "; ".join(f"project '{project.name}'" for _, project in project_links)
         raise ProductServiceError(
-            "Cannot delete version '{version_no}' of product '{product_name}' because it is still "
-            "referenced by: {refs}".format(
-                version_no=version.version_no,
-                product_name=version.product.name if version.product else version.product_id,
-                refs=refs,
-            ),
+            f"Cannot delete version '{version.version_no}' of product '{version.product.name if version.product else version.product_id}' because it is still "
+            f"referenced by: {refs}",
             status_code=409,
         )
     db.delete(version)
@@ -781,7 +768,7 @@ def bind_version_repo(
     repository_id: str,
     ref_type: str,
     ref_name: str,
-    creator_id: Optional[str] = None,
+    creator_id: str | None = None,
 ) -> SddManagementProductVersionRepo:
     repository = db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
     if not repository:
@@ -879,9 +866,10 @@ def update_version_repo_ref(
     if not normalized_ref_name:
         raise ProductServiceError("ref_name is required", status_code=400)
 
-    repository = binding.repository or db.query(SddManagementRepository).filter(
-        SddManagementRepository.id == repository_id
-    ).first()
+    repository = (
+        binding.repository
+        or db.query(SddManagementRepository).filter(SddManagementRepository.id == repository_id).first()
+    )
     if not repository:
         raise ProductServiceError("Repository not found", status_code=404)
 
@@ -905,7 +893,7 @@ def update_version_repo_refs_batch(
     ref_type: str,
     ref_name: str,
     scope: str = "custom",
-) -> List[SddManagementProductVersionRepo]:
+) -> list[SddManagementProductVersionRepo]:
     normalized_scope = str(scope or "custom").strip().lower()
     if normalized_scope not in {"custom", "baseline"}:
         raise ProductServiceError("scope must be 'custom' or 'baseline'", status_code=400)
@@ -937,7 +925,7 @@ def update_version_repo_refs_batch(
             status_code=400,
         )
 
-    touched: List[SddManagementProductVersionRepo] = []
+    touched: list[SddManagementProductVersionRepo] = []
     for binding in bindings:
         repository = binding.repository
         if not repository:
@@ -962,7 +950,7 @@ def add_baseline_exclusion(
     version: SddManagementProductVersion,
     *,
     repository_id: str,
-    creator_id: Optional[str] = None,
+    creator_id: str | None = None,
 ) -> SddManagementProductVersionBaselineExclusion:
     if not version.baseline_product_version_id:
         raise ProductServiceError(

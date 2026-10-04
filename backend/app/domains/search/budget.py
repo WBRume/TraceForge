@@ -1,6 +1,8 @@
 """Shared, separate query/document rate budgets; no unbounded local fallback."""
+
 import asyncio
 import time
+
 from app.config import settings
 from app.core.redis_client import get_redis_client
 from app.domains.search.embedding import EmbeddingError

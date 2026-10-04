@@ -3,12 +3,13 @@
 Only domain operations cross the pipe. Database credentials and the oracle stay
 in the controller. stdout is reserved for the protocol; app prints go to stderr.
 """
+
 import contextlib
-import importlib.util
 import importlib
+import importlib.util
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 class Transaction:

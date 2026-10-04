@@ -3,7 +3,6 @@ import sys
 
 from fastapi.testclient import TestClient
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -35,7 +34,12 @@ from app.domains.workspace_asset.models.workspace_asset import (  # noqa: E402
     SddTaskRequirement,
     TaskRequirementRelationType,
 )
-from tests.workspace_asset.test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session  # noqa: E402
+from tests.workspace_asset.test_workspace_asset_boundary import (  # noqa: E402
+    _build_app,
+    _build_db,
+    _seed_workspace,
+    _session,
+)
 
 
 def _seed_done_task_with_requirement(db, workspace_id: str, task_id: str):
@@ -61,7 +65,9 @@ def _seed_done_task_with_requirement(db, workspace_id: str, task_id: str):
     return user, workspace, task, requirement
 
 
-def _create_human_confirmation_evidence(client: TestClient, workspace_id: str, task_id: str, requirement_id: str) -> str:
+def _create_human_confirmation_evidence(
+    client: TestClient, workspace_id: str, task_id: str, requirement_id: str
+) -> str:
     response = client.post(
         f"/api/workspaces/{workspace_id}/workspace-assets/tasks/{task_id}/evidence",
         json={
@@ -211,19 +217,21 @@ def _seed_preview_targets(db, workspace_id: str, task_id: str):
         source_type=EvidenceSourceType.HUMAN_CONFIRMATION,
         title="Other task evidence",
     )
-    db.add_all([
-        spec,
-        plan,
-        task_file,
-        diff_asset,
-        ai_job,
-        ai_output,
-        evidence,
-        delta,
-        decision,
-        other_task,
-        other_evidence,
-    ])
+    db.add_all(
+        [
+            spec,
+            plan,
+            task_file,
+            diff_asset,
+            ai_job,
+            ai_output,
+            evidence,
+            delta,
+            decision,
+            other_task,
+            other_evidence,
+        ]
+    )
     db.commit()
     return user, {
         "SPEC": spec.id,
@@ -352,7 +360,10 @@ def test_final_workflow_uses_multiple_review_items_and_message_driven_clarificat
         clarification_id = body["clarifications"][0]["id"]
         assert body["clarifications"][0]["source_review_id"] == review_id
         assert body["clarifications"][0]["status"] == "OPEN"
-        assert body["clarifications"][0]["question"] == "Evidence and delta review\n\nCheck final evidence against delivery expectations."
+        assert (
+            body["clarifications"][0]["question"]
+            == "Evidence and delta review\n\nCheck final evidence against delivery expectations."
+        )
         assert len(body["clarification_threads"][clarification_id]) == 1
 
         old_start = client.post(

@@ -5,6 +5,7 @@ RoomHub still owns per-connection replay/live hand-off after the event is in
 its journal.  Publishing never checks subscribers: an event must land in the
 journal so a later reconnect can replay it.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -50,7 +51,9 @@ def _pending_sync(db, now: datetime):
     )
     # Lease the page so a second API process cannot double-publish.
     token = str(uuid4())
-    lease_until = now + timedelta(seconds=max(5, int(getattr(settings, "TASK_EVENT_PUBLISH_INTERVAL_SECONDS", 2) or 2) * 4))
+    lease_until = now + timedelta(
+        seconds=max(5, int(getattr(settings, "TASK_EVENT_PUBLISH_INTERVAL_SECONDS", 2) or 2) * 4)
+    )
     for row in rows:
         row.status = "leasing"
         row.lease_token = token
@@ -76,16 +79,15 @@ def _finalize_sync(db, event_id: str, *, error_code: str | None, attempts: int) 
 def _reclaim_sync(db, now: datetime) -> int:
     """Return abandoned leases to pending and drop old published rows."""
     stale = (
-        db.query(TaskEventOutbox)
-        .filter(TaskEventOutbox.status == "leasing", TaskEventOutbox.lease_until < now)
-        .all()
+        db.query(TaskEventOutbox).filter(TaskEventOutbox.status == "leasing", TaskEventOutbox.lease_until < now).all()
     )
     for row in stale:
         row.status = "pending"
         row.lease_until = None
     cutoff = now - timedelta(hours=_RETENTION_HOURS)
     db.query(TaskEventOutbox).filter(
-        TaskEventOutbox.status == "published", TaskEventOutbox.finished_at < cutoff,
+        TaskEventOutbox.status == "published",
+        TaskEventOutbox.finished_at < cutoff,
     ).delete(synchronize_session=False)
     return len(stale)
 
@@ -109,7 +111,12 @@ async def publish_once() -> int:
             # subscribers still counts as success because the journal keeps it.
             await manager.send_message_to_room(
                 task_id,
-                WSMessage(type="share_suggestion_update" if payload.get("event_type") == "share_suggestion_update" else "chat_submission_update", payload=payload),
+                WSMessage(
+                    type="share_suggestion_update"
+                    if payload.get("event_type") == "share_suggestion_update"
+                    else "chat_submission_update",
+                    payload=payload,
+                ),
             )
             published += 1
             # 公开 READ 分享页的实时 nudge：正式消息事件（payload 含 message）
@@ -120,11 +127,16 @@ async def publish_once() -> int:
         except Exception as exc:
             logger.warning(
                 "Task event publish deferred: event_id={}, task_id={}, error={}",
-                event_id, task_id, exc,
+                event_id,
+                task_id,
+                exc,
             )
             error_code = type(exc).__name__
-        await run_db_txn(lambda db: _finalize_sync(
-            db, event_id, error_code=error_code, attempts=attempts))
+        await run_db_txn(
+            lambda db, *, attempts=attempts, error_code=error_code, event_id=event_id: _finalize_sync(
+                db, event_id, error_code=error_code, attempts=attempts
+            )
+        )
     return published
 
 

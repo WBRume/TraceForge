@@ -1,8 +1,16 @@
 """Project hydrated review records into transport-safe response values."""
 
 from __future__ import annotations
+
 from sqlalchemy.orm import Session
-from app.domains.asset.schemas.asset import AssetResolutionProposalResponse, AssetResponse, AssetThreadMessageResponse, AssetThreadResponse, AssetVersionResponse
+
+from app.domains.asset.schemas.asset import (
+    AssetResolutionProposalResponse,
+    AssetResponse,
+    AssetThreadMessageResponse,
+    AssetThreadResponse,
+    AssetVersionResponse,
+)
 from app.domains.asset.services import asset_discussion_service
 from app.domains.asset.services.document import serializer as document_serializer
 from app.domains.auth.services import auth_service
@@ -65,8 +73,8 @@ def _serialize_thread(thread) -> AssetThreadResponse:
     status = thread.status.value if hasattr(thread.status, "value") else str(thread.status)
     creator_display_name = thread.creator.display_name if thread.creator else None
     creator_avatar_svg = auth_service.resolve_user_avatar_svg(thread.creator) if thread.creator else None
-    messages = sorted(list(thread.messages or []), key=lambda item: item.created_at)
-    proposals = sorted(list(thread.proposals or []), key=lambda item: item.created_at, reverse=True)
+    messages = sorted(thread.messages or [], key=lambda item: item.created_at)
+    proposals = sorted(thread.proposals or [], key=lambda item: item.created_at, reverse=True)
     return AssetThreadResponse(
         id=thread.id,
         asset_id=thread.asset_id,

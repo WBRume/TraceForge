@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import os
 import time
+from contextlib import ExitStack
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from app.agents.contract import (
     AgentBackend,
@@ -64,7 +65,7 @@ def _usage_payload(usage: Any) -> dict[str, Any]:
     return {"raw": str(usage)}
 
 
-def _context_from_request(request: AgentRunRequest) -> dict[str, Optional[str]]:
+def _context_from_request(request: AgentRunRequest) -> dict[str, str | None]:
     meta = request.metadata if isinstance(request.metadata, dict) else {}
     env = request.env if isinstance(request.env, dict) else {}
     return {
@@ -81,9 +82,10 @@ class _AgentSessionTrace:
     def __init__(self, request: AgentRunRequest, backend_name: str) -> None:
         self._request = request
         self._backend_name = backend_name
+        self._files = ExitStack()
         self._fp: Any = None
-        self._path: Optional[str] = None
-        self._started_at: Optional[datetime] = None
+        self._path: str | None = None
+        self._started_at: datetime | None = None
         self._pending_lines: list[str] = []
 
     @staticmethod
@@ -94,7 +96,7 @@ class _AgentSessionTrace:
         return cleaned or fallback
 
     @property
-    def path(self) -> Optional[str]:
+    def path(self) -> str | None:
         return self._path
 
     def _trace_dir(self) -> str:
@@ -114,7 +116,7 @@ class _AgentSessionTrace:
         except Exception:
             pass
 
-    def open(self, session_id: Optional[str] = None) -> None:
+    def open(self, session_id: str | None = None) -> None:
         if self._fp is not None:
             return
         started_at = datetime.now()
@@ -132,7 +134,7 @@ class _AgentSessionTrace:
         trace_dir = self._trace_dir()
         trace_path = os.path.join(trace_dir, trace_name)
         try:
-            fp = open(trace_path, "w", encoding="utf-8")
+            fp = self._files.enter_context(open(trace_path, "w", encoding="utf-8"))  # noqa: SIM115  # ExitStack owns it until close().
         except Exception:
             return
         self._fp = fp
@@ -166,27 +168,7 @@ class _AgentSessionTrace:
             self._write(line)
         self._pending_lines.clear()
 
-    def event(self, event: AgentEvent) -> None:
-        payload = event.payload if isinstance(event.payload, dict) else {}
-        if not _visible_in_trace(event, payload):
-            return
-        if self._fp is None:
-            sid: Optional[str] = None
-            if event.type == "session_started":
-                sid = str(
-                    payload.get("provider_session_id") or self._request.session_id or ""
-                ).strip() or None
-            if event.type == "session_started" or self._request.session_id:
-                self.open(sid)
-            else:
-                # 新会话尚未拿到真实 session id 前先缓存事件行，
-                # 等 session_started 或最终结果再落盘，避免生成 new.log。
-                self._pending_lines.append(f"[{event.type}] {_safe_text(str(payload), 500)}")
-                return
-            self._flush_pending()
-        if self._fp is None:
-            return
-
+    def _format_event_line(self, event: AgentEvent, payload: dict[str, Any]) -> str:
         line = f"[{event.type}]"
         if event.type == "session_started":
             sid = str(payload.get("provider_session_id") or self._request.session_id or "")
@@ -228,6 +210,29 @@ class _AgentSessionTrace:
             line += f" error_length={len(error_text)}"
         else:
             line += f" {_safe_text(str(payload), 500)}"
+        return line
+
+    def event(self, event: AgentEvent) -> None:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        if not _visible_in_trace(event, payload):
+            return
+        if self._fp is None:
+            sid: str | None = None
+            if event.type == "session_started":
+                sid = str(payload.get("provider_session_id") or self._request.session_id or "").strip() or None
+            if event.type == "session_started" or self._request.session_id:
+                self.open(sid)
+            else:
+                # 新会话尚未拿到真实 session id 前先缓存事件行，
+                # 等 session_started 或最终结果再落盘，避免生成 new.log。
+                self._pending_lines.append(f"[{event.type}] {_safe_text(str(payload), 500)}")
+                return
+            self._flush_pending()
+        if self._fp is None:
+            return
+
+        line = self._format_event_line(event, payload)
+
         self._write(line)
 
     def finish(self, result: AgentRunResult) -> None:
@@ -259,7 +264,7 @@ class _AgentSessionTrace:
         self._write(f"error: {_safe_text(str(exc), _ERROR_LIMIT)}")
         self.close(reason="error")
 
-    def close(self, *, reason: str, return_code: Optional[int] = None) -> None:
+    def close(self, *, reason: str, return_code: int | None = None) -> None:
         if self._fp is None:
             return
         try:
@@ -272,7 +277,7 @@ class _AgentSessionTrace:
             self._write("=== END SESSION TRACE ===")
         finally:
             try:
-                self._fp.close()
+                self._files.close()
             except Exception:
                 pass
             self._fp = None
@@ -292,16 +297,19 @@ async def run_agent_backend_with_logging(
     started_at = time.monotonic()
     ctx = _context_from_request(request)
     trace = _AgentSessionTrace(request, backend.name)
-    with bind_task_context(
-        task_id=ctx["task_id"],
-        workspace_id=ctx["workspace_id"],
-        user_id=ctx["user_id"],
-    ), bind_ai_context(
-        job_id=ctx["job_id"],
-        task_id=ctx["task_id"],
-        session_id=request.session_id,
-        model=request.model,
-        event_type="agent_run",
+    with (
+        bind_task_context(
+            task_id=ctx["task_id"],
+            workspace_id=ctx["workspace_id"],
+            user_id=ctx["user_id"],
+        ),
+        bind_ai_context(
+            job_id=ctx["job_id"],
+            task_id=ctx["task_id"],
+            session_id=request.session_id,
+            model=request.model,
+            event_type="agent_run",
+        ),
     ):
         base_extra = {
             "backend": backend.name,
@@ -379,9 +387,9 @@ async def run_agent_backend_with_logging(
                 "run_id": request.run_id,
                 "session_id": result.session_id or request.session_id or "",
                 "finish_reason": result.finish_reason,
-                "duration_ms": result.duration_ms if result.duration_ms is not None else int(
-                    (time.monotonic() - started_at) * 1000
-                ),
+                "duration_ms": result.duration_ms
+                if result.duration_ms is not None
+                else int((time.monotonic() - started_at) * 1000),
                 "cost_usd": result.cost_usd,
                 "usage": _usage_payload(result.usage),
                 "result_length": len(_safe_text(result.result_text, _RESULT_LIMIT)),

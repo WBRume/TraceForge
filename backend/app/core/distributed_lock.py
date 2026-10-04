@@ -12,8 +12,9 @@ import re
 import time
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Dict, Optional
+from typing import Any
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -33,14 +34,10 @@ class LockAcquireTimeout(RuntimeError):
         resource_type: str,
         resource_id: str,
         backend: str,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> None:
         super().__init__(
-            message
-            or (
-                f"Failed to acquire lock for {resource_type}:{resource_id} "
-                f"(backend={backend}, key={lock_key})"
-            )
+            message or (f"Failed to acquire lock for {resource_type}:{resource_id} (backend={backend}, key={lock_key})")
         )
         self.lock_key = lock_key
         self.resource_type = resource_type
@@ -56,8 +53,8 @@ class ResourceBusyError(RuntimeError):
         *,
         resource_type: str,
         resource_id: str,
-        lock_key: Optional[str] = None,
-        backend: Optional[str] = None,
+        lock_key: str | None = None,
+        backend: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = 409
@@ -76,11 +73,9 @@ class QueueWaitCancelled(RuntimeError):
         lock_key: str,
         resource_type: str,
         resource_id: str,
-        message: Optional[str] = None,
+        message: str | None = None,
     ) -> None:
-        super().__init__(
-            message or f"Queue wait cancelled for {resource_type}:{resource_id}"
-        )
+        super().__init__(message or f"Queue wait cancelled for {resource_type}:{resource_id}")
         self.lock_key = lock_key
         self.resource_type = resource_type
         self.resource_id = resource_id
@@ -116,18 +111,18 @@ def _sanitize_lock_key(
     return f"{prefix}:{normalized_type}:{normalized_id}"
 
 
-def _resolve_ttl(ttl: Optional[int]) -> int:
+def _resolve_ttl(ttl: int | None) -> int:
     value = int(ttl or settings.DISTRIBUTED_LOCK_DEFAULT_TTL_SECONDS or 60)
     return max(1, value)
 
 
-def _resolve_blocking_timeout(blocking_timeout: Optional[float]) -> float:
+def _resolve_blocking_timeout(blocking_timeout: float | None) -> float:
     raw = settings.DISTRIBUTED_LOCK_BLOCKING_TIMEOUT_SECONDS
     value = float(raw if blocking_timeout is None else blocking_timeout)
     return max(0.01, value)
 
 
-def _resolve_sleep(sleep: Optional[float]) -> float:
+def _resolve_sleep(sleep: float | None) -> float:
     raw = settings.DISTRIBUTED_LOCK_SLEEP_SECONDS
     value = float(raw if sleep is None else sleep)
     return max(0.01, value)
@@ -137,9 +132,9 @@ def _build_context(
     *,
     resource_type: str,
     resource_id: str,
-    ttl: Optional[int],
-    blocking_timeout: Optional[float],
-    sleep: Optional[float],
+    ttl: int | None,
+    blocking_timeout: float | None,
+    sleep: float | None,
 ) -> LockContext:
     lock_key = _sanitize_lock_key(resource_type=resource_type, resource_id=resource_id)
     return LockContext(
@@ -182,7 +177,7 @@ def _queue_heartbeat_key(queue_key: str, token: bytes) -> str:
     return f"{queue_key}{_QUEUE_HEARTBEAT_SUFFIX}{token.decode('ascii', errors='ignore')}"
 
 
-def _resolve_queue_token_ttl(value: Optional[float] = None) -> float:
+def _resolve_queue_token_ttl(value: float | None = None) -> float:
     raw = settings.BACKGROUND_QUEUE_TOKEN_TTL_SECONDS if value is None else value
     return max(1.0, float(raw or 30.0))
 
@@ -238,9 +233,9 @@ class DistributedLockProvider(ABC):
         *,
         resource_type: str,
         resource_id: str,
-        ttl: Optional[int] = None,
-        blocking_timeout: Optional[float] = None,
-        sleep: Optional[float] = None,
+        ttl: int | None = None,
+        blocking_timeout: float | None = None,
+        sleep: float | None = None,
     ) -> AsyncIterator[LockContext]:
         raise NotImplementedError
 
@@ -254,11 +249,11 @@ class LocalLockProvider(DistributedLockProvider):
     backend_name = "local"
 
     def __init__(self) -> None:
-        self._locks: Dict[str, asyncio.Lock] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         # 每个 lock_key 的活跃持有/等待计数：等待者计入以保证"仍有人等待"时
         # 条目不被回收（否则新建锁对象会破坏互斥）；计数归零且锁未被持有时
         # 同步回收条目，避免锁表只增不减。单事件循环内判定点无 await 夹缝。
-        self._lock_refs: Dict[str, int] = {}
+        self._lock_refs: dict[str, int] = {}
 
     @contextlib.asynccontextmanager
     async def lock(
@@ -266,9 +261,9 @@ class LocalLockProvider(DistributedLockProvider):
         *,
         resource_type: str,
         resource_id: str,
-        ttl: Optional[int] = None,
-        blocking_timeout: Optional[float] = None,
-        sleep: Optional[float] = None,
+        ttl: int | None = None,
+        blocking_timeout: float | None = None,
+        sleep: float | None = None,
     ) -> AsyncIterator[LockContext]:
         context = _build_context(
             resource_type=resource_type,
@@ -320,12 +315,20 @@ class RedisLockProvider(DistributedLockProvider):
     backend_name = "redis"
 
     async def _release(
-        self, lock: Any, context: LockContext, *, timeout: float = 3.0,
+        self,
+        lock: Any,
+        context: LockContext,
+        *,
+        timeout: float = 3.0,
     ) -> None:
         from redis.exceptions import (
             AuthenticationError,
-            ConnectionError as RedisConnectionError,
             LockNotOwnedError,
+        )
+        from redis.exceptions import (
+            ConnectionError as RedisConnectionError,
+        )
+        from redis.exceptions import (
             TimeoutError as RedisTimeoutError,
         )
 
@@ -351,9 +354,11 @@ class RedisLockProvider(DistributedLockProvider):
                         raise
                     logger.warning(
                         "redis lock release retry: lock_key={}, attempt={}, error={}",
-                        context.lock_key, index + 1, str(exc),
+                        context.lock_key,
+                        index + 1,
+                        str(exc),
                     )
-                    await asyncio.sleep(random.uniform(0.05, 0.15) * (2 ** index))
+                    await asyncio.sleep(random.uniform(0.05, 0.15) * (2**index))
 
         # Bound socket calls and backoff together so cleanup cannot hang a
         # completed request. A permanent outage still falls back to the TTL.
@@ -362,8 +367,12 @@ class RedisLockProvider(DistributedLockProvider):
     async def _acquire(self, lock: Any, context: LockContext) -> bool:
         from redis.exceptions import (
             AuthenticationError,
-            ConnectionError as RedisConnectionError,
             LockNotOwnedError,
+        )
+        from redis.exceptions import (
+            ConnectionError as RedisConnectionError,
+        )
+        from redis.exceptions import (
             TimeoutError as RedisTimeoutError,
         )
 
@@ -393,10 +402,12 @@ class RedisLockProvider(DistributedLockProvider):
                 except (RedisConnectionError, RedisTimeoutError) as exc:
                     if index == 2:
                         raise
-                    delay = random.uniform(0.05, 0.15) * (2 ** index)
+                    delay = random.uniform(0.05, 0.15) * (2**index)
                     logger.warning(
                         "redis lock acquire retry: lock_key={}, attempt={}, error={}",
-                        context.lock_key, index + 1, str(exc),
+                        context.lock_key,
+                        index + 1,
+                        str(exc),
                     )
                     await asyncio.sleep(delay)
             return False
@@ -412,8 +423,7 @@ class RedisLockProvider(DistributedLockProvider):
                 try:
                     await self._release(lock, context, timeout=1.0)
                 except Exception as exc:
-                    logger.debug("redis uncertain lock cleanup failed: key={}, error={}",
-                                 context.lock_key, str(exc))
+                    logger.debug("redis uncertain lock cleanup failed: key={}, error={}", context.lock_key, str(exc))
             raise
 
     @contextlib.asynccontextmanager
@@ -422,9 +432,9 @@ class RedisLockProvider(DistributedLockProvider):
         *,
         resource_type: str,
         resource_id: str,
-        ttl: Optional[int] = None,
-        blocking_timeout: Optional[float] = None,
-        sleep: Optional[float] = None,
+        ttl: int | None = None,
+        blocking_timeout: float | None = None,
+        sleep: float | None = None,
     ) -> AsyncIterator[LockContext]:
         context = _build_context(
             resource_type=resource_type,
@@ -496,9 +506,13 @@ class RedisLockProvider(DistributedLockProvider):
                     raise
                 if owner is not None and hasattr(owner, "uncancel"):
                     owner.uncancel()
-                raise LockAcquireTimeout(lock_key=context.lock_key,
-                    resource_type=context.resource_type, resource_id=context.resource_id,
-                    backend=self.backend_name, message="Redis lock ownership lost") from None
+                raise LockAcquireTimeout(
+                    lock_key=context.lock_key,
+                    resource_type=context.resource_type,
+                    resource_id=context.resource_id,
+                    backend=self.backend_name,
+                    message="Redis lock ownership lost",
+                ) from None
         finally:
             renewal.cancel()
             await asyncio.gather(renewal, return_exceptions=True)
@@ -514,12 +528,12 @@ class RedisLockProvider(DistributedLockProvider):
                 )
 
 
-_PROVIDER: Optional[DistributedLockProvider] = None
+_PROVIDER: DistributedLockProvider | None = None
 _PROVIDER_LOCK = asyncio.Lock()
-_LOCAL_QUEUE_SLOTS: Dict[str, tuple[asyncio.Semaphore, int]] = {}
+_LOCAL_QUEUE_SLOTS: dict[str, tuple[asyncio.Semaphore, int]] = {}
 # 每个 queue key 的活跃引用计数：归零后回收信号量条目，避免按 key 缓存的
 # 信号量表只增不减（key 含 workspace/task id，会随业务无限增长）
-_LOCAL_QUEUE_SLOT_REFS: Dict[str, int] = {}
+_LOCAL_QUEUE_SLOT_REFS: dict[str, int] = {}
 _LOCAL_QUEUE_SLOTS_LOCK = asyncio.Lock()
 
 
@@ -564,9 +578,7 @@ async def _build_provider() -> DistributedLockProvider:
                     str(exc),
                 )
                 return LocalLockProvider()
-            raise RuntimeError(
-                "Redis lock backend unavailable and local fallback is disabled"
-            ) from exc
+            raise RuntimeError("Redis lock backend unavailable and local fallback is disabled") from exc
 
     message = f"Unsupported lock backend '{backend}'"
     if allow_local_fallback:
@@ -590,9 +602,9 @@ async def _lock_resource(
     *,
     resource_type: str,
     resource_id: str,
-    ttl: Optional[int],
-    blocking_timeout: Optional[float],
-    sleep: Optional[float],
+    ttl: int | None,
+    blocking_timeout: float | None,
+    sleep: float | None,
 ) -> AsyncIterator[LockContext]:
     provider = await get_lock_provider()
     async with provider.lock(
@@ -609,9 +621,9 @@ async def _lock_resource(
 async def lock_task(
     task_id: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="task",
@@ -627,9 +639,9 @@ async def lock_task(
 async def lock_skill(
     skill_id: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="skill",
@@ -645,9 +657,9 @@ async def lock_skill(
 async def lock_workspace_repo(
     workspace_id: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="workspace",
@@ -664,9 +676,9 @@ async def lock_workspace_repo_creation(
     *,
     project_path: str,
     git_repo_url: str,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="workspace",
@@ -682,9 +694,9 @@ async def lock_workspace_repo_creation(
 async def lock_ai_queue(
     queue_key: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="ai_queue",
@@ -700,9 +712,9 @@ async def lock_ai_queue(
 async def lock_api_mock_project(
     project_id: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="api_mock_project",
@@ -718,9 +730,9 @@ async def lock_api_mock_project(
 async def lock_task_bootstrap(
     task_id: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="task",
@@ -736,9 +748,9 @@ async def lock_task_bootstrap(
 async def lock_thread_workspace(
     thread_id: str,
     *,
-    ttl: Optional[int] = None,
-    blocking_timeout: Optional[float] = None,
-    sleep: Optional[float] = None,
+    ttl: int | None = None,
+    blocking_timeout: float | None = None,
+    sleep: float | None = None,
 ) -> AsyncIterator[LockContext]:
     async with _lock_resource(
         resource_type="thread",
@@ -767,25 +779,17 @@ def make_resource_busy_error(
 async def queue_workspace_task_creation(
     workspace_id: str,
     *,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> AsyncIterator[None]:
     timeout_sec = max(
         0.5,
-        float(
-            settings.TASK_CREATE_QUEUE_WAIT_TIMEOUT_SECONDS
-            if wait_timeout is None
-            else wait_timeout
-        ),
+        float(settings.TASK_CREATE_QUEUE_WAIT_TIMEOUT_SECONDS if wait_timeout is None else wait_timeout),
     )
     sleep_sec = max(
         0.01,
-        float(
-            settings.TASK_CREATE_QUEUE_POLL_INTERVAL_SECONDS
-            if poll_interval is None
-            else poll_interval
-        ),
+        float(settings.TASK_CREATE_QUEUE_POLL_INTERVAL_SECONDS if poll_interval is None else poll_interval),
     )
     queue_name = f"workspace:{str(workspace_id or '').strip()}:create_task"
     async with queue_background_job(
@@ -801,95 +805,45 @@ async def queue_workspace_task_creation(
 
 
 @contextlib.asynccontextmanager
-async def queue_background_job(
-    *,
-    queue_name: str,
-    max_concurrent: Optional[int] = None,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
-    resource_type: str = "background_queue",
-    resource_id: Optional[str] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
-) -> AsyncIterator[None]:
-    provider = await get_lock_provider()
-    limit = max(
-        1,
-        int(
-            settings.BACKGROUND_QUEUE_DEFAULT_MAX_CONCURRENT
-            if max_concurrent is None
-            else max_concurrent
-        ),
-    )
-    timeout_sec = max(
-        0.5,
-        float(
-            settings.BACKGROUND_QUEUE_WAIT_TIMEOUT_SECONDS
-            if wait_timeout is None
-            else wait_timeout
-        ),
-    )
-    sleep_sec = max(
-        0.01,
-        float(
-            settings.BACKGROUND_QUEUE_POLL_INTERVAL_SECONDS
-            if poll_interval is None
-            else poll_interval
-        ),
-    )
-    rid = str(resource_id or queue_name or "unknown").strip() or "unknown"
-    queue_key = _background_queue_key(queue_name)
-    # 取消检查有 DB 查询成本：等待期间最多每秒探测一次，避免空转打库。
-    cancel_poll_interval = max(1.0, sleep_sec)
-    next_cancel_poll_at = 0.0
+async def _local_background_queue(
+    queue_key, queue_name, limit, timeout_sec, sleep_sec, resource_type, rid, _raise_if_cancelled
+):
+    semaphore = await _get_local_queue_semaphore(queue_key, limit)
+    acquired = False
+    deadline = time.monotonic() + timeout_sec
+    try:
+        while True:
+            _raise_if_cancelled()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LockAcquireTimeout(
+                    lock_key=queue_key,
+                    resource_type=resource_type,
+                    resource_id=rid,
+                    backend="local",
+                    message=f"Timed out waiting in queue '{queue_name}'",
+                )
+            try:
+                await asyncio.wait_for(
+                    semaphore.acquire(),
+                    timeout=min(max(sleep_sec, 0.01), remaining),
+                )
+                acquired = True
+                break
+            except asyncio.TimeoutError:
+                continue
+        yield
+    finally:
+        if acquired:
+            semaphore.release()
+        await _release_local_queue_semaphore(queue_key)
+    return
 
-    def _raise_if_cancelled() -> None:
-        nonlocal next_cancel_poll_at
-        if cancel_check is None:
-            return
-        now = time.monotonic()
-        if now < next_cancel_poll_at:
-            return
-        next_cancel_poll_at = now + cancel_poll_interval
-        if cancel_check():
-            raise QueueWaitCancelled(
-                lock_key=queue_key,
-                resource_type=resource_type,
-                resource_id=rid,
-                message=f"Cancelled while waiting in queue '{queue_name}'",
-            )
 
-    if provider.backend_name != "redis":
-        semaphore = await _get_local_queue_semaphore(queue_key, limit)
-        acquired = False
-        deadline = time.monotonic() + timeout_sec
-        try:
-            while True:
-                _raise_if_cancelled()
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise LockAcquireTimeout(
-                        lock_key=queue_key,
-                        resource_type=resource_type,
-                        resource_id=rid,
-                        backend="local",
-                        message=f"Timed out waiting in queue '{queue_name}'",
-                    )
-                try:
-                    await asyncio.wait_for(
-                        semaphore.acquire(),
-                        timeout=min(max(sleep_sec, 0.01), remaining),
-                    )
-                    acquired = True
-                    break
-                except asyncio.TimeoutError:
-                    continue
-            yield
-        finally:
-            if acquired:
-                semaphore.release()
-            await _release_local_queue_semaphore(queue_key)
-        return
-
+@contextlib.asynccontextmanager
+async def _redis_background_queue(
+    queue_key, queue_name, limit, timeout_sec, sleep_sec, resource_type, rid, _raise_if_cancelled
+):
     token = uuid.uuid4().hex.encode("ascii")
     heartbeat_key = _queue_heartbeat_key(queue_key, token)
     heartbeat_ttl = _resolve_queue_token_ttl()
@@ -898,7 +852,7 @@ async def queue_background_job(
     client = await get_redis_client()
     reclaimed = asyncio.Event()
     stop_heartbeat = asyncio.Event()
-    heartbeat_task: Optional[asyncio.Task[None]] = None
+    heartbeat_task: asyncio.Task[None] | None = None
     re_push_count = 0
 
     async def _start_heartbeat() -> None:
@@ -986,13 +940,72 @@ async def queue_background_job(
 
 
 @contextlib.asynccontextmanager
+async def queue_background_job(
+    *,
+    queue_name: str,
+    max_concurrent: int | None = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
+    resource_type: str = "background_queue",
+    resource_id: str | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+) -> AsyncIterator[None]:
+    provider = await get_lock_provider()
+    limit = max(
+        1,
+        int(settings.BACKGROUND_QUEUE_DEFAULT_MAX_CONCURRENT if max_concurrent is None else max_concurrent),
+    )
+    timeout_sec = max(
+        0.5,
+        float(settings.BACKGROUND_QUEUE_WAIT_TIMEOUT_SECONDS if wait_timeout is None else wait_timeout),
+    )
+    sleep_sec = max(
+        0.01,
+        float(settings.BACKGROUND_QUEUE_POLL_INTERVAL_SECONDS if poll_interval is None else poll_interval),
+    )
+    rid = str(resource_id or queue_name or "unknown").strip() or "unknown"
+    queue_key = _background_queue_key(queue_name)
+    # 取消检查有 DB 查询成本：等待期间最多每秒探测一次，避免空转打库。
+    cancel_poll_interval = max(1.0, sleep_sec)
+    next_cancel_poll_at = 0.0
+
+    def _raise_if_cancelled() -> None:
+        nonlocal next_cancel_poll_at
+        if cancel_check is None:
+            return
+        now = time.monotonic()
+        if now < next_cancel_poll_at:
+            return
+        next_cancel_poll_at = now + cancel_poll_interval
+        if cancel_check():
+            raise QueueWaitCancelled(
+                lock_key=queue_key,
+                resource_type=resource_type,
+                resource_id=rid,
+                message=f"Cancelled while waiting in queue '{queue_name}'",
+            )
+
+    if provider.backend_name != "redis":
+        async with _local_background_queue(
+            queue_key, queue_name, limit, timeout_sec, sleep_sec, resource_type, rid, _raise_if_cancelled
+        ):
+            yield
+        return
+
+    async with _redis_background_queue(
+        queue_key, queue_name, limit, timeout_sec, sleep_sec, resource_type, rid, _raise_if_cancelled
+    ):
+        yield
+
+
+@contextlib.asynccontextmanager
 async def queue_provision_jobs(
     *,
     queue_tag: str,
-    max_concurrent: Optional[int] = None,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
-    cancel_check: Optional[Callable[[], bool]] = None,
+    max_concurrent: int | None = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> AsyncIterator[None]:
     normalized_tag = _normalize_component(str(queue_tag or "default").strip().lower())
     async with queue_background_job(
@@ -1011,9 +1024,9 @@ async def queue_provision_jobs(
 async def queue_api_mock_jobs(
     *,
     queue_tag: str,
-    max_concurrent: Optional[int] = None,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
+    max_concurrent: int | None = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
 ) -> AsyncIterator[None]:
     normalized_tag = _normalize_component(str(queue_tag or "default").strip().lower())
     async with queue_background_job(
@@ -1032,22 +1045,18 @@ async def queue_change_proposal_jobs(
     *,
     workspace_id: str,
     max_concurrent: int = 1,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
 ) -> AsyncIterator[None]:
     normalized_workspace = _normalize_component(str(workspace_id or "unknown").strip().lower())
     async with queue_background_job(
         queue_name=f"change_proposal:{normalized_workspace}",
         max_concurrent=max_concurrent,
         wait_timeout=(
-            settings.TASK_CHANGE_PROPOSAL_QUEUE_WAIT_TIMEOUT_SECONDS
-            if wait_timeout is None
-            else wait_timeout
+            settings.TASK_CHANGE_PROPOSAL_QUEUE_WAIT_TIMEOUT_SECONDS if wait_timeout is None else wait_timeout
         ),
         poll_interval=(
-            settings.TASK_CHANGE_PROPOSAL_QUEUE_POLL_INTERVAL_SECONDS
-            if poll_interval is None
-            else poll_interval
+            settings.TASK_CHANGE_PROPOSAL_QUEUE_POLL_INTERVAL_SECONDS if poll_interval is None else poll_interval
         ),
         resource_type="change_proposal_queue",
         resource_id=normalized_workspace,
@@ -1060,8 +1069,8 @@ async def queue_workspace_compare_jobs(
     *,
     workspace_id: str,
     max_concurrent: int = 1,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
 ) -> AsyncIterator[None]:
     """Serialize compare (git fetch + diff) operations per workspace."""
     normalized_workspace = _normalize_component(str(workspace_id or "unknown").strip().lower())
@@ -1069,14 +1078,10 @@ async def queue_workspace_compare_jobs(
         queue_name=f"workspace:{normalized_workspace}:compare",
         max_concurrent=max_concurrent,
         wait_timeout=(
-            settings.TASK_CHANGE_PROPOSAL_QUEUE_WAIT_TIMEOUT_SECONDS
-            if wait_timeout is None
-            else wait_timeout
+            settings.TASK_CHANGE_PROPOSAL_QUEUE_WAIT_TIMEOUT_SECONDS if wait_timeout is None else wait_timeout
         ),
         poll_interval=(
-            settings.TASK_CHANGE_PROPOSAL_QUEUE_POLL_INTERVAL_SECONDS
-            if poll_interval is None
-            else poll_interval
+            settings.TASK_CHANGE_PROPOSAL_QUEUE_POLL_INTERVAL_SECONDS if poll_interval is None else poll_interval
         ),
         resource_type="workspace_compare_queue",
         resource_id=normalized_workspace,
@@ -1088,9 +1093,9 @@ async def queue_workspace_compare_jobs(
 async def queue_bootstrap_jobs(
     *,
     queue_tag: str = "task_cli_bootstrap",
-    max_concurrent: Optional[int] = None,
-    wait_timeout: Optional[float] = None,
-    poll_interval: Optional[float] = None,
+    max_concurrent: int | None = None,
+    wait_timeout: float | None = None,
+    poll_interval: float | None = None,
 ) -> AsyncIterator[None]:
     normalized_tag = _normalize_component(str(queue_tag or "task_cli_bootstrap").strip().lower())
     async with queue_background_job(

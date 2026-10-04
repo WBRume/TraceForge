@@ -1,15 +1,18 @@
 """Validate review authorization, version mutability and discussion context."""
 
 from __future__ import annotations
-from typing import Any, Optional
+
+from typing import Any
+
 from sqlalchemy.orm import Session
+
 from app.domains.asset.models.asset import AssetResolutionProposalStatus, AssetThreadStatus, SddAssetResolutionProposal
-from app.domains.task.models.task import TaskStatus
-from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.asset.services import asset_discussion_service, asset_service
 from app.domains.asset.services.document import repository as document_repository
-from app.domains.workspace.services import workspace_service
 from app.domains.asset.services.review.errors import ReviewError
+from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.task.models.task import TaskStatus
+from app.domains.workspace.services import workspace_service
 
 
 def _verify_asset_access(ws_id: str, user: User, db: Session) -> None:
@@ -60,7 +63,7 @@ def _ensure_thread_open(thread) -> None:
     raise ReviewError(status_code=409, detail="Thread is not open")
 
 
-def _is_latest_context_version(asset, context_version_id: Optional[str]) -> bool:
+def _is_latest_context_version(asset, context_version_id: str | None) -> bool:
     active_id = str(asset.active_version_id or "").strip()
     context_id = str(context_version_id or "").strip()
     if not active_id or not context_id:
@@ -68,7 +71,7 @@ def _is_latest_context_version(asset, context_version_id: Optional[str]) -> bool
     return active_id == context_id
 
 
-def _ensure_latest_context_version_for_mutation(asset, context_version_id: Optional[str]) -> None:
+def _ensure_latest_context_version_for_mutation(asset, context_version_id: str | None) -> None:
     if _is_latest_context_version(asset, context_version_id):
         return
     raise ReviewError(
@@ -84,8 +87,8 @@ def _load_asset_thread_action_context_sync(
     asset_id: str,
     thread_id: str,
     user_id: str,
-    context_version_id: Optional[str] = None,
-    proposal_id: Optional[str] = None,
+    context_version_id: str | None = None,
+    proposal_id: str | None = None,
     ensure_open: bool = True,
     require_task: bool = True,
     require_latest_context: bool = True,

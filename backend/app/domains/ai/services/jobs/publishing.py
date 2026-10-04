@@ -7,28 +7,31 @@ ORPHANED/INTERRUPTED）只产生 ``*_update``；``*_done``/``*_failed`` 只允�
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.core.offload import run_db
 from app.database import SessionLocal
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.schemas.websocket import WSMessage
-from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.ai.services.jobs import constants
 from app.domains.ai.services.jobs.registry import runtime
 from app.domains.ai.services.jobs.store import serialize_job
+from app.domains.asset.ws.asset_discussion_manager import asset_discussion_ws_manager
 from app.domains.websocket.ws.manager import manager as task_ws_manager
 
 
-async def broadcast_job_payload(payload: Dict[str, Any]) -> None:
+async def broadcast_job_payload(payload: dict[str, Any]) -> None:
     """Broadcast one job payload."""
     status = str(payload.get("status") or "")
     final = status in {item.value for item in constants.FINAL_STATUSES}
     channel = str(payload.get("channel") or "")
-    if (payload.get('context_json') or {}).get('job_kind') == 'PLAYBOOK_PROMOTION':
+    if (payload.get("context_json") or {}).get("job_kind") == "PLAYBOOK_PROMOTION":
         from app.domains.notification.ws.notification_manager import notification_ws_manager
-        await notification_ws_manager.send_message_to_user(str(payload['creator_id']), {
-            'type': 'playbook_promotion_updated', 'job_id': payload['id'], 'workspace_id': payload['workspace_id']})
+
+        await notification_ws_manager.send_message_to_user(
+            str(payload["creator_id"]),
+            {"type": "playbook_promotion_updated", "job_id": payload["id"], "workspace_id": payload["workspace_id"]},
+        )
         return
     if channel == AiJobChannel.ASSET_THREAD.value:
         asset_id = str(payload.get("asset_id") or "")
@@ -89,7 +92,7 @@ async def broadcast_job_payload(payload: Dict[str, Any]) -> None:
             await notify_task_shares_history_changed(task_id)
 
 
-def _load_job_payload_sync(job_id: str) -> Optional[Dict[str, Any]]:
+def _load_job_payload_sync(job_id: str) -> dict[str, Any] | None:
     db = SessionLocal()
     try:
         job = db.query(SddAiJob).filter(SddAiJob.id == job_id).first()
@@ -107,7 +110,7 @@ async def publish_job_state(job_id: str) -> None:
     await broadcast_job_payload(payload)
 
 
-def reschedule_if_pending(payload: Dict[str, Any]) -> None:
+def reschedule_if_pending(payload: dict[str, Any]) -> None:
     """收敛结果把作业打回 PENDING（如重试入队）时立即唤醒对应队列 runner。"""
     if str(payload.get("status") or "") == AiJobStatus.PENDING.value:
         runtime.schedule_queue(str(payload.get("queue_key") or ""))
@@ -116,7 +119,7 @@ def reschedule_if_pending(payload: Dict[str, Any]) -> None:
 # ────────────────────────── 入队入口 ──────────────────────────
 
 
-def _load_enqueue_state_sync(job_id: str, expected_channel: Optional[AiJobChannel]) -> Optional[Dict[str, Any]]:
+def _load_enqueue_state_sync(job_id: str, expected_channel: AiJobChannel | None) -> dict[str, Any] | None:
     """入队前置查询（线程内执行，由 run_db 包装）。"""
     db = SessionLocal()
     try:
@@ -133,7 +136,7 @@ def _load_enqueue_state_sync(job_id: str, expected_channel: Optional[AiJobChanne
         db.close()
 
 
-async def enqueue_job(job_id: str, expected_channel: Optional[AiJobChannel] = None) -> Optional[Dict[str, Any]]:
+async def enqueue_job(job_id: str, expected_channel: AiJobChannel | None = None) -> dict[str, Any] | None:
     state = await run_db(_load_enqueue_state_sync, job_id, expected_channel)
     if state is None:
         return None
@@ -146,11 +149,11 @@ async def enqueue_job(job_id: str, expected_channel: Optional[AiJobChannel] = No
     return payload
 
 
-async def enqueue_asset_thread_job(job_id: str) -> Optional[Dict[str, Any]]:
+async def enqueue_asset_thread_job(job_id: str) -> dict[str, Any] | None:
     return await enqueue_job(job_id, expected_channel=AiJobChannel.ASSET_THREAD)
 
 
-async def enqueue_task_chat_job(job_id: str) -> Optional[Dict[str, Any]]:
+async def enqueue_task_chat_job(job_id: str) -> dict[str, Any] | None:
     return await enqueue_job(job_id, expected_channel=AiJobChannel.TASK_CHAT)
 
 
@@ -164,7 +167,7 @@ async def enqueue_task_baseline_job(
     workspace_id: str,
     task_id: str,
     creator_id: str,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     from app.core.distributed_lock import lock_ai_queue
     from app.core.offload import run_db_txn
     from app.domains.ai.services.jobs.store import create_task_baseline_job
@@ -175,11 +178,13 @@ async def enqueue_task_baseline_job(
     # reached, while the input revision in context makes the key explicit.
     async with lock_ai_queue(key):
         job_id = await run_db_txn(
-            lambda db: create_task_baseline_job(
-                db,
-                workspace_id=workspace_id,
-                task_id=task_id,
-                creator_id=creator_id,
-            ).id
+            lambda db: (
+                create_task_baseline_job(
+                    db,
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    creator_id=creator_id,
+                ).id
+            )
         )
     return await enqueue_job(job_id, expected_channel=AiJobChannel.TASK_CHAT)

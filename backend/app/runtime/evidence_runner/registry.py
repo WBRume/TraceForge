@@ -3,9 +3,11 @@
 A bundle supplies an independently implemented collector and environment probe.
 The probe must verify mount/guard/fixture identities; user input is not a receipt.
 """
+
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+
 from app.domains.diagnosis_playbook.contracts import PlaybookError
 
 
@@ -27,6 +29,7 @@ class RunnerBundle:
 
 def validate_stage(bundle, stage):
     from app.domains.diagnosis_playbook.contracts import digest
+
     if tuple(stage["verification"]["command"]["argv"]) not in bundle.commands:
         raise PlaybookError("COMMAND_NOT_IN_BUNDLE")
     if bundle.stage_contracts:
@@ -66,8 +69,11 @@ def load_configured_bundles(factories):
     """
     import importlib
     import re
+
     for reference in factories:
-        if not isinstance(reference, str) or not re.fullmatch(r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*:[a-zA-Z_]\w*", reference):
+        if not isinstance(reference, str) or not re.fullmatch(
+            r"[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*:[a-zA-Z_]\w*", reference
+        ):
             raise PlaybookError("INVALID_BUNDLE_FACTORY")
         module_name, factory_name = reference.split(":")
         bundles = getattr(importlib.import_module(module_name), factory_name)()

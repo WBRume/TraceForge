@@ -22,7 +22,9 @@ class _Socket:
         self.closed_codes.append(code)
 
 
-async def _complete_initial_sync(registry: ConnectionRegistry, room_key: str, socket: _Socket, connection: OutboundConnection) -> None:
+async def _complete_initial_sync(
+    registry: ConnectionRegistry, room_key: str, socket: _Socket, connection: OutboundConnection
+) -> None:
     await connection.wait_flushed()
     control = json.loads(socket.sent_texts[0])
     assert control["type"] == "resync_required"
@@ -119,7 +121,9 @@ class RoomJournalReplayTest(IsolatedAsyncioTestCase):
             self.registry.broadcast_text("task:expired", json.dumps({"type": "status", "payload": {"step": 1}}))
             self.registry.broadcast_text("task:expired", json.dumps({"type": "status", "payload": {"step": 2}}))
             await connection.wait_flushed()
-            first_frame = next(json.loads(frame) for frame in socket.sent_texts if json.loads(frame).get("type") == "event")
+            first_frame = next(
+                json.loads(frame) for frame in socket.sent_texts if json.loads(frame).get("type") == "event"
+            )
             journal = self.registry._hub_registry._hubs["task:expired"].journal
             self.assertEqual([event.sequence for event in journal.events], [2])
 

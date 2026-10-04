@@ -1,32 +1,42 @@
 import asyncio
+import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-import time
 
 import httpx
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import text
-from tests.task.test_task_chat_history_ordering import db_session, _seed_task
+
 from app.config import settings
 from app.domains.auth.models.user import User, WorkspaceMember
-from app.domains.task.models.chat import ChatMessage
-
-from app.domains.search.models import SearchDocumentState, SearchOutbox, SearchEmbeddingJob
-from app.domains.search.projection import build_search_projection, build_embedding_chunks, es_version
-from app.domains.search.es import search_body, scope_filters, bulk_write
-from app.domains.search.embedding import validate_vectors, EmbeddingError, embed, encrypt_key
-from app.domains.search.service import hydrate
 from app.domains.search.context import window
-from app.domains.search.worker import claim, finish, current_document
+from app.domains.search.embedding import EmbeddingError, embed, encrypt_key, validate_vectors
+from app.domains.search.es import bulk_write, scope_filters, search_body
+from app.domains.search.models import SearchDocumentState, SearchOutbox
+from app.domains.search.projection import build_embedding_chunks, build_search_projection, es_version
+from app.domains.search.service import hydrate
 from app.domains.search.sessions import sign, unsign
-
+from app.domains.search.worker import claim, current_document, finish
+from app.domains.task.models.chat import ChatMessage
 from app.domains.task.services.conversation import messages as task_conversation_messages
+from tests.task.test_task_chat_history_ordering import _seed_task
+from tests.task.test_task_chat_history_ordering import db_session as db_session
 
 
 def message(kind="text", **kw):
-    fields = dict(id="m", task_id="t", workspace_id="w", creator_id="u", role="assistant", content="连接池 run_db_txn camelCase C:/src/app.py\n尾部😀", message_type=kind, metadata_json={}, session_generation=0, created_at=datetime(2026, 1, 1))
+    fields = {
+        "id": "m",
+        "task_id": "t",
+        "workspace_id": "w",
+        "creator_id": "u",
+        "role": "assistant",
+        "content": "连接池 run_db_txn camelCase C:/src/app.py\n尾部😀",
+        "message_type": kind,
+        "metadata_json": {},
+        "session_generation": 0,
+        "created_at": datetime(2026, 1, 1),
+    }
     return SimpleNamespace(**(fields | kw))
 
 
@@ -39,7 +49,9 @@ def test_projection_keeps_tail_symbols_and_excludes_card_secrets():
     doc = build_search_projection(message(), "message")
     assert "尾部😀" in doc["content_text"]
     assert "run_db_txn" in doc["symbols"]
-    card = build_search_projection(message("diagnosis_result", metadata_json={"summary": "摘要", "api_key": "secret"}), "message")
+    card = build_search_projection(
+        message("diagnosis_result", metadata_json={"summary": "摘要", "api_key": "secret"}), "message"
+    )
     assert card["content_text"] == "摘要"
     assert "secret" not in str(card)
 
@@ -50,7 +62,7 @@ def test_chunks_cover_every_character_with_correct_offsets():
     reconstructed = chunks[0]["text"] + "".join(c["text"][160:] for c in chunks[1:])
     assert reconstructed == content
     assert chunks[-1]["end_char"] == len(content)
-    assert all(c["text"] == content[c["start_char"]:c["end_char"]] for c in chunks)
+    assert all(c["text"] == content[c["start_char"] : c["end_char"]] for c in chunks)
 
 
 @pytest.mark.parametrize("vector", [[0, 0], [1, float("nan")], [1, float("inf")], [True, 1], [1], "bad"])
@@ -60,23 +72,36 @@ def test_invalid_vectors_are_never_published(vector):
 
 
 def test_provider_index_reordering_and_duplicates():
-    assert validate_vectors({"data": [{"index": 1, "embedding": [0, 1]}, {"index": 0, "embedding": [1, 0]}]}, 2, 2) == [[1, 0], [0, 1]]
+    assert validate_vectors({"data": [{"index": 1, "embedding": [0, 1]}, {"index": 0, "embedding": [1, 0]}]}, 2, 2) == [
+        [1, 0],
+        [0, 1],
+    ]
     with pytest.raises(EmbeddingError):
         validate_vectors({"data": [{"index": 0, "embedding": [1, 0]}] * 2}, 2, 2)
 
 
 def test_exact_supplier_contract(monkeypatch):
     from cryptography.fernet import Fernet
+
     monkeypatch.setattr(settings, "SEARCH_CONFIG_ENCRYPTION_KEY", Fernet.generate_key().decode())
-    profile = dict(endpoint="https://api.siliconflow.cn/v1/embeddings", model_id="BAAI/bge-m3", dimension=1024, encrypted_api_key=encrypt_key("test-only"))
+    profile = {
+        "endpoint": "https://api.siliconflow.cn/v1/embeddings",
+        "model_id": "BAAI/bge-m3",
+        "dimension": 1024,
+        "encrypted_api_key": encrypt_key("test-only"),
+    }
+
     def respond(request):
         import json
+
         assert json.loads(request.content) == {"model": "BAAI/bge-m3", "input": ["测试"], "encoding_format": "float"}
         assert request.headers["Authorization"] == "Bearer test-only"
         return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0] * 1024}]})
+
     async def check():
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             assert len((await embed(client, profile, ["测试"]))[0]) == 1024
+
     asyncio.run(check())
 
 
@@ -85,7 +110,7 @@ def test_rrf_has_equal_acl_filters_and_no_sort_or_requery_cursor():
     body = search_body("连接池", filters, [1, 0], "profile-a")
     bm25 = search_body("连接池", filters)
     assert bm25["query"]["bool"]["filter"] == filters
-    assert body["knn"]["filter"][:len(filters)] == filters
+    assert body["knn"]["filter"][: len(filters)] == filters
     assert "retriever" not in body
     assert not {"sort", "search_after", "scroll"} & body.keys()
     assert scope_filters([])[1] == {"terms": {"workspace_id": []}}
@@ -94,8 +119,16 @@ def test_rrf_has_equal_acl_filters_and_no_sort_or_requery_cursor():
 def test_transaction_rollback_removes_source_state_and_outbox(db_session):
     db = db_session
     task = _seed_task(db)
-    msg = ChatMessage(id="rollback", task_id=task.id, workspace_id=task.workspace_id, creator_id=task.creator_id,
-        role="assistant", message_type="text", content="回滚", sort_seq=0)
+    msg = ChatMessage(
+        id="rollback",
+        task_id=task.id,
+        workspace_id=task.workspace_id,
+        creator_id=task.creator_id,
+        role="assistant",
+        message_type="text",
+        content="回滚",
+        sort_seq=0,
+    )
     db.add(msg)
     db.flush()
     assert db.get(SearchDocumentState, "message:rollback")
@@ -108,7 +141,9 @@ def test_transaction_rollback_removes_source_state_and_outbox(db_session):
 def test_new_message_version_update_and_tombstone(db_session):
     db = db_session
     task = _seed_task(db)
-    msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", "第一版")
+    msg = task_conversation_messages.save_chat_message(
+        db, task.id, task.workspace_id, task.creator_id, "assistant", "第一版"
+    )
     state = db.get(SearchDocumentState, "message:" + msg.id)
     assert state.source_version == 1
     msg.content = "第二版"
@@ -139,7 +174,12 @@ def test_acl_version_recheck_and_context(db_session, monkeypatch):
     task = _seed_task(db)
     db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
     db.commit()
-    messages = [task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "assistant", f"连接池 {i}") for i in range(7)]
+    messages = [
+        task_conversation_messages.save_chat_message(
+            db, task.id, task.workspace_id, task.creator_id, "assistant", f"连接池 {i}"
+        )
+        for i in range(7)
+    ]
     # SQLite CURRENT_TIMESTAMP omits fractions; explicit values match its bound DateTime representation.
     for msg in messages:
         msg.created_at = datetime(2026, 1, 1)
@@ -160,7 +200,7 @@ def test_acl_version_recheck_and_context(db_session, monkeypatch):
 
 def test_cursor_tampering_user_scope_expiration(monkeypatch):
     monkeypatch.setattr(settings, "SEARCH_CURSOR_SECRET", "test-only-signing-secret")
-    token = sign(dict(purpose="search", user="u", expires=time.time() + 60))
+    token = sign({"purpose": "search", "user": "u", "expires": time.time() + 60})
     assert unsign(token, "search", "u")["user"] == "u"
     for raw, user in ((token + "x", "u"), (token, "other")):
         with pytest.raises(HTTPException):
@@ -168,9 +208,11 @@ def test_cursor_tampering_user_scope_expiration(monkeypatch):
 
 
 def test_bulk_partial_failure_and_equal_version_identity():
-    doc = dict(entity_key="message:m", source_version=2, projection_hash="a", deleted=False)
-    client = SimpleNamespace(bulk=AsyncMock(return_value={"items": [{"index": {"status": 409}}]}),
-        get=AsyncMock(return_value={"_version": 4, "_source": doc | {"projection_hash": "different"}}))
+    doc = {"entity_key": "message:m", "source_version": 2, "projection_hash": "a", "deleted": False}
+    client = SimpleNamespace(
+        bulk=AsyncMock(return_value={"items": [{"index": {"status": 409}}]}),
+        get=AsyncMock(return_value={"_version": 4, "_source": doc | {"projection_hash": "different"}}),
+    )
     assert asyncio.run(bulk_write(client, "test", [doc]))["message:m"] == "SEARCH_VERSION_IDENTITY_MISMATCH"
     client.bulk.return_value = {"items": [{"index": {"status": 200}}, {"index": {"status": 429}}]}
     result = asyncio.run(bulk_write(client, "test", [doc, doc | {"entity_key": "message:n"}]))
@@ -179,7 +221,10 @@ def test_bulk_partial_failure_and_equal_version_identity():
 
 def test_python_rrf_one_based_ranks_deduplication_and_ties():
     from app.domains.search.rrf import fuse_rankings
-    hit = lambda key: {"_id": key, "_source": {"entity_key": key}}
+
+    def hit(key):
+        return {"_id": key, "_source": {"entity_key": key}}
+
     lexical = [hit("a"), hit("b"), hit("c")]
     semantic = [hit("b"), hit("d"), hit("a")]
     assert [h["_id"] for h in fuse_rankings(lexical, semantic)] == ["b", "a", "d", "c"]
@@ -190,11 +235,13 @@ def test_python_rrf_one_based_ranks_deduplication_and_ties():
 
 def test_profile_encryption_revision_rotation_and_space_change(db_session, monkeypatch):
     from cryptography.fernet import Fernet
-    from app.domains.search.router import save_profile, ProfileInput
+
     from app.domains.search.models import SearchEmbeddingProfile, SearchIndexTarget
+    from app.domains.search.router import ProfileInput, save_profile
+
     monkeypatch.setattr(settings, "SEARCH_CONFIG_ENCRYPTION_KEY", Fernet.generate_key().decode())
     db = db_session
-    body = dict(endpoint="https://api.siliconflow.cn/v1/embeddings", model_id="BAAI/bge-m3", api_key="test-secret")
+    body = {"endpoint": "https://api.siliconflow.cn/v1/embeddings", "model_id": "BAAI/bge-m3", "api_key": "test-secret"}
     first = save_profile(db, ProfileInput(**body))
     db.commit()
     assert "test-secret" not in str(first) and "encrypted_api_key" not in first
@@ -203,20 +250,26 @@ def test_profile_encryption_revision_rotation_and_space_change(db_session, monke
     stored.dimension, stored.fingerprint = 1024, "fixed-space"
     db.add(SearchIndexTarget(physical_index="traceforge-search-test", embedding_profile_id=stored.id, dimension=1024))
     db.commit()
-    rotated = save_profile(db, ProfileInput(**(body | dict(id=stored.id, revision=stored.revision, api_key="rotated-secret"))))
+    rotated = save_profile(
+        db, ProfileInput(**(body | {"id": stored.id, "revision": stored.revision, "api_key": "rotated-secret"}))
+    )
     assert rotated["id"] == first["id"]
     assert stored.fingerprint == "fixed-space"
     with pytest.raises(HTTPException):
-        save_profile(db, ProfileInput(**(body | dict(id=stored.id, revision=0))))
-    replacement = save_profile(db, ProfileInput(**(body | dict(id=stored.id, revision=stored.revision, model_id="different-model"))))
+        save_profile(db, ProfileInput(**(body | {"id": stored.id, "revision": 0})))
+    replacement = save_profile(
+        db, ProfileInput(**(body | {"id": stored.id, "revision": stored.revision, "model_id": "different-model"}))
+    )
     assert replacement["id"] != first["id"] and replacement["dimension"] is None
 
 
 def test_admin_configuration_cannot_be_read_by_member():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from app.dependencies import get_current_user
     from app.domains.search.router import router
+
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="member", is_admin=False)
@@ -226,7 +279,8 @@ def test_admin_configuration_cannot_be_read_by_member():
 
 def test_highlight_is_plain_text_and_bounded():
     from app.domains.search.service import highlight_segments
-    segments = highlight_segments('&lt;script&gt;alert(1)&lt;/script&gt;\ue000命中\ue001' + '尾' * 300)
+
+    segments = highlight_segments("&lt;script&gt;alert(1)&lt;/script&gt;\ue000命中\ue001" + "尾" * 300)
     assert sum(len(s["text"]) for s in segments) == 240
     assert any(s["match"] and s["text"] == "命中" for s in segments)
     assert segments[0]["text"].startswith("<script>")
@@ -234,10 +288,13 @@ def test_highlight_is_plain_text_and_bounded():
 
 def test_search_access_logs_strip_query_and_cursor():
     import logging
+
     from app.domains.search.router import SearchAccessFilter
+
     for path in ("/api/search?q=private&cursor=secret", "/api/workspaces/w/tasks/t/messages/m/context?cursor=secret"):
-        record = logging.LogRecord("uvicorn.access", logging.INFO, "", 0, "%s %s %s %s %s",
-            ("client", "GET", path, "1.1", 200), None)
+        record = logging.LogRecord(
+            "uvicorn.access", logging.INFO, "", 0, "%s %s %s %s %s", ("client", "GET", path, "1.1", 200), None
+        )
         assert SearchAccessFilter().filter(record)
         assert "?" not in record.args[2]
 
@@ -245,16 +302,28 @@ def test_search_access_logs_strip_query_and_cursor():
 def test_search_date_filter_accepts_mixed_timezone_formats():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from app.dependencies import get_current_user
     from app.domains.search.router import router
+
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="member")
     search = AsyncMock(return_value={"items": []})
     app.state.search_service = SimpleNamespace(search=search)
     with TestClient(app) as client:
-        assert client.get("/api/search", params={"q": "hello", "from": "2026-01-01", "to": "2026-01-02T00:00:00Z"}).status_code == 200
-        assert client.get("/api/search", params={"q": "hello", "from": "2026-01-02", "to": "2026-01-01T00:00:00Z"}).status_code == 422
+        assert (
+            client.get(
+                "/api/search", params={"q": "hello", "from": "2026-01-01", "to": "2026-01-02T00:00:00Z"}
+            ).status_code
+            == 200
+        )
+        assert (
+            client.get(
+                "/api/search", params={"q": "hello", "from": "2026-01-02", "to": "2026-01-01T00:00:00Z"}
+            ).status_code
+            == 422
+        )
 
 
 def test_hydrate_returns_creator_identity_for_user_messages(db_session):
@@ -262,7 +331,9 @@ def test_hydrate_returns_creator_identity_for_user_messages(db_session):
     task = _seed_task(db)
     db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
     db.commit()
-    msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
+    msg = task_conversation_messages.save_chat_message(
+        db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明"
+    )
     db.commit()
     doc = current_document(db, "message:" + msg.id)
     rows, consumed = hydrate(db, task.creator_id, [doc], 0, 20, "连接池", [task.workspace_id])
@@ -279,12 +350,17 @@ def test_hydrate_returns_creator_identity_for_user_messages(db_session):
 def test_hydrate_oversized_avatar_svg_is_omitted(db_session):
     db = db_session
     task = _seed_task(db)
-    oversized = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
-                 + '<rect x="0" y="0" width="1" height="1" fill="#0ea5e9"/>' * 120 + '</svg>')
+    oversized = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+        + '<rect x="0" y="0" width="1" height="1" fill="#0ea5e9"/>' * 120
+        + "</svg>"
+    )
     db.query(User).filter(User.id == task.creator_id).update({"avatar_svg": oversized})
     db.add(WorkspaceMember(workspace_id=task.workspace_id, user_id=task.creator_id, role="OWNER"))
     db.commit()
-    msg = task_conversation_messages.save_chat_message(db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明")
+    msg = task_conversation_messages.save_chat_message(
+        db, task.id, task.workspace_id, task.creator_id, "user", "连接池配置说明"
+    )
     db.commit()
     doc = current_document(db, "message:" + msg.id)
     rows, _ = hydrate(db, task.creator_id, [doc], 0, 20, "连接池", [task.workspace_id])

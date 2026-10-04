@@ -2,16 +2,15 @@
 API MOCK Project Service.
 """
 
-from typing import Optional
-
 from sqlalchemy.orm import Session
 
 from app.domains.api_mock.models.api_mock import SddApiMockProject
 from app.domains.task.models.task import SddTask
+
 from .utils import _ensure_temp_parent, _temp_workspace_path
 
 
-def _task_in_workspace(db: Session, workspace_id: str, task_id: str) -> Optional[SddTask]:
+def _task_in_workspace(db: Session, workspace_id: str, task_id: str) -> SddTask | None:
     return (
         db.query(SddTask)
         .filter(
@@ -22,7 +21,7 @@ def _task_in_workspace(db: Session, workspace_id: str, task_id: str) -> Optional
     )
 
 
-def get_project_by_task(db: Session, workspace_id: str, task_id: str) -> Optional[SddApiMockProject]:
+def get_project_by_task(db: Session, workspace_id: str, task_id: str) -> SddApiMockProject | None:
     return (
         db.query(SddApiMockProject)
         .filter(
@@ -33,7 +32,7 @@ def get_project_by_task(db: Session, workspace_id: str, task_id: str) -> Optiona
     )
 
 
-def get_project_by_id(db: Session, project_id: str) -> Optional[SddApiMockProject]:
+def get_project_by_id(db: Session, project_id: str) -> SddApiMockProject | None:
     return db.query(SddApiMockProject).filter(SddApiMockProject.id == project_id).first()
 
 
@@ -67,8 +66,8 @@ def update_project_settings(
     db: Session,
     project: SddApiMockProject,
     *,
-    proxy_enabled: Optional[bool] = None,
-    proxy_base_url: Optional[str] = None,
+    proxy_enabled: bool | None = None,
+    proxy_base_url: str | None = None,
 ) -> SddApiMockProject:
     if proxy_enabled is not None:
         project.proxy_enabled = bool(proxy_enabled)

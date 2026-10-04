@@ -1,4 +1,5 @@
 """Immutable, canonical contracts and typed failure semantics."""
+
 import hashlib
 import json
 from dataclasses import dataclass
@@ -6,14 +7,24 @@ from typing import Any
 
 
 def digest(value: Any) -> str:
-    return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()).hexdigest()
+    return (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+        ).hexdigest()
+    )
 
 
 class PlaybookError(ValueError):
     def __init__(self, code: str, *, status: int = 422, missing_facts=(), version=None):
         super().__init__(code)
         self.status = status
-        self.detail = {"code": code, "missing_facts": list(missing_facts), "recoverable": status == 409, "current_state_version": version}
+        self.detail = {
+            "code": code,
+            "missing_facts": list(missing_facts),
+            "recoverable": status == 409,
+            "current_state_version": version,
+        }
 
 
 @dataclass(frozen=True)

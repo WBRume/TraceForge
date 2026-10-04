@@ -10,42 +10,28 @@
 7. 访客提交不产生 ChatMessage / TaskChatSubmission / SddAiJob。
 """
 
-import os
-import sys
 from datetime import datetime, timedelta
 
 import pytest
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from app.database import Base
 from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import (
     User,
     Workspace,
     WorkspaceMember,
-    WorkspacePermission,
     WorkspaceRole,
 )
 from app.domains.task.models.chat import ChatMessage, MessageRole, MessageType
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.task.routers.task import session_shares as session_shares_router
 from app.domains.task.routers import public_session_shares as public_router
+from app.domains.task.routers.task import session_shares as session_shares_router
 from app.domains.task.services import (
-    session_share_service,
     share_suggestion_service,
 )
-
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _session
-
 
 # ── 测试应用装配 ──
 
@@ -79,34 +65,63 @@ def _seed(db, *, permissions_json="[]", role=WorkspaceRole.OWNER):
     owner = User(id="owner-1", email="owner@example.com", hashed_password="x", display_name="Owner")
     ws = Workspace(id="ws-1", name="WS", owner_id=owner.id, project_path="G:/repo")
     member = WorkspaceMember(
-        id="member-1", workspace_id=ws.id, user_id=owner.id,
-        role=role, permissions_json=permissions_json, is_expert=False,
+        id="member-1",
+        workspace_id=ws.id,
+        user_id=owner.id,
+        role=role,
+        permissions_json=permissions_json,
+        is_expert=False,
     )
     task = SddTask(
-        id="task-1", workspace_id=ws.id, creator_id=owner.id,
-        name="Share me", description="d", project_path="G:/repo",
-        status=TaskStatus.PLANNING, session_generation=1, session_revision=3,
+        id="task-1",
+        workspace_id=ws.id,
+        creator_id=owner.id,
+        name="Share me",
+        description="d",
+        project_path="G:/repo",
+        status=TaskStatus.PLANNING,
+        session_generation=1,
+        session_revision=3,
     )
     db.add_all([owner, ws, member, task])
 
     # 绑定代次（1）的消息：2 条 user / assistant；另加 1 条 NULL generation 旧消息
-    db.add_all([
-        ChatMessage(
-            id="m-1", task_id=task.id, workspace_id=ws.id, creator_id=owner.id,
-            role=MessageRole.USER, content="hello world", message_type=MessageType.TEXT,
-            session_generation=1, metadata_json={"client_message_id": "secret-cmid", "order_index": 1},
-        ),
-        ChatMessage(
-            id="m-2", task_id=task.id, workspace_id=ws.id, creator_id=owner.id,
-            role=MessageRole.ASSISTANT, content="hi there", message_type=MessageType.TEXT,
-            session_generation=1, metadata_json={"order_index": 2},
-        ),
-        ChatMessage(
-            id="m-old", task_id=task.id, workspace_id=ws.id, creator_id=owner.id,
-            role=MessageRole.USER, content="legacy pre-generation", message_type=MessageType.TEXT,
-            session_generation=None,
-        ),
-    ])
+    db.add_all(
+        [
+            ChatMessage(
+                id="m-1",
+                task_id=task.id,
+                workspace_id=ws.id,
+                creator_id=owner.id,
+                role=MessageRole.USER,
+                content="hello world",
+                message_type=MessageType.TEXT,
+                session_generation=1,
+                metadata_json={"client_message_id": "secret-cmid", "order_index": 1},
+            ),
+            ChatMessage(
+                id="m-2",
+                task_id=task.id,
+                workspace_id=ws.id,
+                creator_id=owner.id,
+                role=MessageRole.ASSISTANT,
+                content="hi there",
+                message_type=MessageType.TEXT,
+                session_generation=1,
+                metadata_json={"order_index": 2},
+            ),
+            ChatMessage(
+                id="m-old",
+                task_id=task.id,
+                workspace_id=ws.id,
+                creator_id=owner.id,
+                role=MessageRole.USER,
+                content="legacy pre-generation",
+                message_type=MessageType.TEXT,
+                session_generation=None,
+            ),
+        ]
+    )
     db.commit()
     return owner, ws, task
 
@@ -132,7 +147,6 @@ def owner_client(db_env):
     """以 owner-1 身份调用的 TestClient（依赖覆盖 current_user）。"""
     with _session(db_env) as db:
         owner, ws, task = _seed(db)
-        from app.domains.auth.services import auth_service
 
         # 直接用依赖覆盖而非真实 JWT，聚焦分享逻辑
         app = _build_app(db)
@@ -224,9 +238,7 @@ def test_exchange_read_share_anonymous_gets_read_only(owner_client):
 
 def test_exchange_input_share_always_input_only(owner_client):
     client, db, owner, task = owner_client
-    share_token = _create_share(
-        client, mode="INPUT", instruction="请帮我总结这个问题"
-    ).json()["share_token"]
+    share_token = _create_share(client, mode="INPUT", instruction="请帮我总结这个问题").json()["share_token"]
     res = _exchange(client, share_token)
     assert res.status_code == 200
     body = res.json()
@@ -292,9 +304,7 @@ def test_read_history_whitelist_projection(owner_client):
     share_token = _create_share(client, mode="READ").json()["share_token"]
     access_token = _exchange(client, share_token).json()["access_token"]
 
-    res = client.get(
-        "/api/public/session-shares/history", headers=_headers(access_token)
-    )
+    res = client.get("/api/public/session-shares/history", headers=_headers(access_token))
     assert res.status_code == 200, res.text
     body = res.json()
     ids = [m["message_id"] for m in body["messages"]]
@@ -304,7 +314,12 @@ def test_read_history_whitelist_projection(owner_client):
     for msg in body["messages"]:
         # 白名单字段之外不返回
         assert set(msg.keys()) == {
-            "message_id", "role", "content", "safe_message_type", "created_at", "safe_card_summary"
+            "message_id",
+            "role",
+            "content",
+            "safe_message_type",
+            "created_at",
+            "safe_card_summary",
         }
         assert "metadata" not in msg
     # metadata 内部字段（client_message_id）不泄漏
@@ -316,9 +331,7 @@ def test_input_access_cannot_read_history(owner_client):
     share_token = _create_share(client, mode="INPUT").json()["share_token"]
     access_token = _exchange(client, share_token).json()["access_token"]
 
-    res = client.get(
-        "/api/public/session-shares/history", headers=_headers(access_token)
-    )
+    res = client.get("/api/public/session-shares/history", headers=_headers(access_token))
     assert res.status_code == 403
     assert res.json()["detail"]["code"] == "SHARE_CAPABILITY_FORBIDDEN"
 
@@ -432,9 +445,7 @@ def test_recipient_lists_and_adopts_suggestion(owner_client):
     receipt = _submit(client, access_token, "请加上错误处理", "adopt-1", "小张").json()
     suggestion_id = receipt["submission_id"]
 
-    listing = client.get(
-        "/api/workspaces/ws-1/tasks/task-1/share-suggestions?status=PENDING"
-    )
+    listing = client.get("/api/workspaces/ws-1/tasks/task-1/share-suggestions?status=PENDING")
     assert listing.status_code == 200
     items = listing.json()["items"]
     assert len(items) == 1
@@ -588,8 +599,9 @@ def test_session_generation_change_invalidates_share(owner_client, db_env):
 
 def test_creator_losing_permission_kills_share(db_env):
     with _session(db_env) as db:
-        owner, ws, task = _seed(db, role=WorkspaceRole.DEVELOPER,
-                                permissions_json='["SHARE_TASK_SESSION", "START_TASK"]')
+        owner, ws, task = _seed(
+            db, role=WorkspaceRole.DEVELOPER, permissions_json='["SHARE_TASK_SESSION", "START_TASK"]'
+        )
         app = _build_app(db)
         app.dependency_overrides[get_current_user] = lambda: db.query(User).filter(User.id == "owner-1").one()
         client = TestClient(app)
@@ -689,9 +701,7 @@ def test_public_routes_survive_expire_on_commit(db_env):
             assert res_resolve.status_code == 200, res_resolve.text
 
             # history
-            res_history = client.get(
-                "/api/public/session-shares/history", headers=_headers(body["access_token"])
-            )
+            res_history = client.get("/api/public/session-shares/history", headers=_headers(body["access_token"]))
             assert res_history.status_code == 200, res_history.text
 
             # INPUT：exchange + submit 全链路
@@ -712,9 +722,7 @@ def test_history_cursor_pagination_and_stale_revision(owner_client, db_env):
     created = _create_share(client, mode="READ").json()
     access_token = _exchange(client, created["share_token"]).json()["access_token"]
 
-    page1 = client.get(
-        "/api/public/session-shares/history?page_size=1", headers=_headers(access_token)
-    ).json()
+    page1 = client.get("/api/public/session-shares/history?page_size=1", headers=_headers(access_token)).json()
     assert len(page1["messages"]) == 1
     assert page1["has_more"] is True
     assert page1["next_cursor"]
@@ -738,6 +746,7 @@ def test_history_cursor_pagination_and_stale_revision(owner_client, db_env):
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "SHARE_HISTORY_STALE"
 
+
 # ── 公开实时通道：WS nudge ──
 
 
@@ -753,30 +762,27 @@ def test_public_share_ws_nudge_flow(owner_client):
 
     from app.domains.websocket.ws.public_share_manager import (
         notify_task_shares_history_changed,
-        public_share_ws_manager,
     )
 
     # 无有效凭证 → 连接被拒绝
-    with pytest.raises(Exception):
-        with client.websocket_connect(
-            f"/ws/public/session-shares/{share_id}?access=invalid-token"
-        ):
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(f"/ws/public/session-shares/{share_id}?access=invalid-token"):
             pass
 
     # 有效凭证 → 连接成功；完成 resync 握手后收到 nudge
-    with client.websocket_connect(
-        f"/ws/public/session-shares/{share_id}?access={access_token}"
-    ) as ws:
+    with client.websocket_connect(f"/ws/public/session-shares/{share_id}?access={access_token}") as ws:
         import asyncio
 
         # 无游标连接：先收到 resync_required（页面已用 REST 建立快照）
         hello = ws.receive_json()
         assert hello["type"] == "resync_required"
-        ws.send_json({
-            "type": "resync_complete",
-            "epoch": hello["epoch"],
-            "barrier_sequence": hello["barrier_sequence"],
-        })
+        ws.send_json(
+            {
+                "type": "resync_complete",
+                "epoch": hello["epoch"],
+                "barrier_sequence": hello["barrier_sequence"],
+            }
+        )
 
         asyncio.run(notify_task_shares_history_changed("task-1"))
         # 握手回执（resync_ok）后即为业务 nudge

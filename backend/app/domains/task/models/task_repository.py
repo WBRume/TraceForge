@@ -36,9 +36,7 @@ def _enum_values(enum_class: type[PyEnum]) -> list[str]:
 
 class SddTaskRepository(Base):
     __tablename__ = "sdd_task_repositories"
-    __table_args__ = (
-        UniqueConstraint("task_id", "repository_id", name="uq_sdd_task_repositories_task_repo"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "repository_id", name="uq_sdd_task_repositories_task_repo"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(

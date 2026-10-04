@@ -10,8 +10,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 import httpx
 
 from app.core.logging import get_logger
@@ -41,7 +39,7 @@ class HttpRagProvider(RagProvider):
             headers=self._headers(),
         )
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"

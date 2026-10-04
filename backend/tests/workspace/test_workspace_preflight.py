@@ -5,20 +5,15 @@
 """
 
 import os
-import sys
 from types import SimpleNamespace
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_current_user, get_db  # noqa: E402
-from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole  # noqa: E402
-from app.domains.workspace.routers import workspace as workspace_router  # noqa: E402
-from app.domains.workspace.services import workspace_service  # noqa: E402
+from app.dependencies import get_current_user, get_db
+from app.domains.auth.models.user import User, Workspace, WorkspaceMember, WorkspaceRole
+from app.domains.workspace.routers import workspace as workspace_router
+from app.domains.workspace.services import workspace_service
 
 
 def _seed_workspace(db, ws_id: str, name: str, project_path: str | None, owner: User) -> Workspace:
@@ -60,38 +55,28 @@ def test_preflight_detects_path_overlap_both_directions(db, tmp_path):
     _seed_workspace(db, "ws-1", "WS A", existing, owner)
 
     # 相同路径
-    same = workspace_service.preflight_workspace_conflicts(
-        db, name="New WS", project_path=existing
-    )
+    same = workspace_service.preflight_workspace_conflicts(db, name="New WS", project_path=existing)
     assert same["path_conflict"] is True
     assert same["path_conflict_workspaces"][0]["name"] == "WS A"
 
     # 新路径位于已有工作区目录之下
     nested = os.path.join(existing, "sub")
-    nested_result = workspace_service.preflight_workspace_conflicts(
-        db, name="New WS", project_path=nested
-    )
+    nested_result = workspace_service.preflight_workspace_conflicts(db, name="New WS", project_path=nested)
     assert nested_result["path_conflict"] is True
 
     # 新路径包含已有工作区目录
     parent = str(tmp_path / "workspace")
-    parent_result = workspace_service.preflight_workspace_conflicts(
-        db, name="New WS", project_path=parent
-    )
+    parent_result = workspace_service.preflight_workspace_conflicts(db, name="New WS", project_path=parent)
     assert parent_result["path_conflict"] is True
 
     # 无重叠不报冲突
     unrelated = str(tmp_path / "elsewhere")
-    unrelated_result = workspace_service.preflight_workspace_conflicts(
-        db, name="New WS", project_path=unrelated
-    )
+    unrelated_result = workspace_service.preflight_workspace_conflicts(db, name="New WS", project_path=unrelated)
     assert unrelated_result["path_conflict"] is False
 
 
 def test_preflight_no_conflicts_when_empty(db):
-    result = workspace_service.preflight_workspace_conflicts(
-        db, name="Brand New WS", project_path=None
-    )
+    result = workspace_service.preflight_workspace_conflicts(db, name="Brand New WS", project_path=None)
     assert result["name_conflict"] is False
     assert result["path_conflict"] is False
     assert result["name_conflict_workspaces"] == []
@@ -114,9 +99,7 @@ def test_preflight_checks_all_users_workspaces_not_only_current(db, tmp_path):
 
     # 预检本身不感知任何“当前用户”：传入的 name/path 与 user_b 无任何关联，
     # 命中的是 user_a 的工作区
-    result = workspace_service.preflight_workspace_conflicts(
-        db, name="Shared Name", project_path=ws_path
-    )
+    result = workspace_service.preflight_workspace_conflicts(db, name="Shared Name", project_path=ws_path)
     assert result["name_conflict"] is True
     assert [row["name"] for row in result["name_conflict_workspaces"]] == ["Shared Name"]
     assert result["name_conflict_workspaces"][0]["owner_name"] == "User A"
@@ -153,9 +136,7 @@ def test_preflight_api_returns_conflicts(db, tmp_path):
     def _override_db():
         yield db
 
-    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
-        id="user-1", display_name="tester"
-    )
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="user-1", display_name="tester")
     app.dependency_overrides[get_db] = _override_db
 
     client = TestClient(app)

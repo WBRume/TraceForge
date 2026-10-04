@@ -2,9 +2,13 @@
 任务相关 Pydantic Schemas
 """
 
-from pydantic import BaseModel, Field, model_validator
-from typing import Any, Optional, List, Literal
 from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, model_validator
+
+from app.agents.model_selection import ModelSelection
+from app.domains.local_resource.schemas import TaskExecutionInput
 
 
 class TaskRepositoryBranchInput(BaseModel):
@@ -14,31 +18,27 @@ class TaskRepositoryBranchInput(BaseModel):
     branch_name: str = Field(..., min_length=1, max_length=255)
 
 
-from app.domains.local_resource.schemas import TaskExecutionInput
-from app.agents.model_selection import ModelSelection
-
-
 class TaskCreate(BaseModel):
-    requirement_id: Optional[str] = Field(default=None, min_length=1, max_length=36)
-    agent_model: Optional[ModelSelection] = None
+    requirement_id: str | None = Field(default=None, min_length=1, max_length=36)
+    agent_model: ModelSelection | None = None
     execution: TaskExecutionInput = Field(default_factory=TaskExecutionInput)
     name: str = Field(..., min_length=1, max_length=300)
-    description: Optional[str] = None
-    spec_doc_path: Optional[str] = None
+    description: str | None = None
+    spec_doc_path: str | None = None
     requirement_duration_hours: float = 0.0
-    skill_ids: List[str] = Field(default_factory=list)
-    diagnosis_playbook_spec_id: Optional[str] = Field(default=None, min_length=1, max_length=36)
+    skill_ids: list[str] = Field(default_factory=list)
+    diagnosis_playbook_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
     # 任务类型：DEVELOPMENT 研发态（默认） / DIAGNOSIS 问题定位
     task_type: Literal["DEVELOPMENT", "DIAGNOSIS"] = "DEVELOPMENT"
     # 问题定位任务专用：现象与优先级
-    phenomenon: Optional[str] = None
-    priority: Optional[str] = None
+    phenomenon: str | None = None
+    priority: str | None = None
     # 问题定位任务主开关：自动执行全流程（SOP 阶段自动推进）
     sop_auto_run: bool = False
     # 可选：按仓库覆盖会话使用的工作区分支
-    repository_branches: Optional[List[TaskRepositoryBranchInput]] = None
+    repository_branches: list[TaskRepositoryBranchInput] | None = None
     # 可选：仅为所选仓库子集创建 worktree（缺省/为空时默认使用工作区全部仓库）
-    repository_ids: Optional[List[str]] = None
+    repository_ids: list[str] | None = None
 
     @model_validator(mode="after")
     def _validate_diagnosis_phenomenon(self):
@@ -48,19 +48,19 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
+    name: str | None = None
+    description: str | None = None
 
 
 class PlanNodeResponse(BaseModel):
     id: str
     task_id: str
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     status: str
     order_index: int
-    children: List["PlanNodeResponse"] = []
+    children: list["PlanNodeResponse"] = []
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -70,7 +70,7 @@ class TaskRequirementSummary(BaseModel):
     id: str
     title: str
     status: str
-    source_ref: Optional[str] = None
+    source_ref: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -81,39 +81,39 @@ class TaskResponse(BaseModel):
     workspace_id: str
     creator_id: str
     task_type: str = "DEVELOPMENT"
-    task_meta_json: Optional[dict] = None
+    task_meta_json: dict | None = None
     name: str
-    description: Optional[str] = None
-    spec_doc_path: Optional[str] = None
-    project_path: Optional[str] = None
+    description: str | None = None
+    spec_doc_path: str | None = None
+    project_path: str | None = None
     execution_location: str = "SERVER"
-    local_resource_id: Optional[str] = None
-    git_repo_url: Optional[str] = None
+    local_resource_id: str | None = None
+    git_repo_url: str | None = None
     status: str
     retry_count: int
-    current_phase: Optional[str] = None
-    error_message: Optional[str] = None
-    session_id: Optional[str] = None
+    current_phase: str | None = None
+    error_message: str | None = None
+    session_id: str | None = None
     session_generation: int = 0
     session_revision: int = 0
-    interrupt_reason: Optional[str] = None
-    interrupted_by_id: Optional[str] = None
-    interrupted_at: Optional[datetime] = None
+    interrupt_reason: str | None = None
+    interrupted_by_id: str | None = None
+    interrupted_at: datetime | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
     requirement_duration_hours: float
     total_cost_usd: float
     total_duration_ms: int
-    skill_ids: List[str] = Field(default_factory=list)
-    creator_name: Optional[str] = None
+    skill_ids: list[str] = Field(default_factory=list)
+    creator_name: str | None = None
     is_following: bool = False
-    requirements: List[TaskRequirementSummary] = Field(default_factory=list)
+    requirements: list[TaskRequirementSummary] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
 
 class TaskListResponse(BaseModel):
-    items: List[TaskResponse]
+    items: list[TaskResponse]
     total: int
     page: int
     page_size: int
@@ -126,21 +126,22 @@ class TaskFollowResponse(BaseModel):
 
 class TaskStartRequest(BaseModel):
     """启动任务时的额外参数"""
-    prompt: Optional[str] = None
-    operator_context: Optional[dict] = None
+
+    prompt: str | None = None
+    operator_context: dict | None = None
     # 问题定位任务主开关：自动执行全流程（None = 保持任务现有偏好）
-    sop_auto_run: Optional[bool] = None
+    sop_auto_run: bool | None = None
 
 
 class TaskInterruptRequest(BaseModel):
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 class TaskResumeInterruptedRequest(BaseModel):
-    agent_model: Optional[ModelSelection] = None
-    prompt: Optional[str] = None
+    agent_model: ModelSelection | None = None
+    prompt: str | None = None
     confirm_continue: bool = False
-    client_message_id: Optional[str] = None
+    client_message_id: str | None = None
 
 
 class TaskUndoMessageRequest(BaseModel):
@@ -149,28 +150,29 @@ class TaskUndoMessageRequest(BaseModel):
 
 class InitializeRequest(BaseModel):
     """初始化任务时的参数"""
-    prompt: Optional[str] = None
-    reason: Optional[str] = None
-    skill_ids: Optional[List[str]] = None
-    keep_deleted_runtime_skills: Optional[bool] = True
+
+    prompt: str | None = None
+    reason: str | None = None
+    skill_ids: list[str] | None = None
+    keep_deleted_runtime_skills: bool | None = True
 
 
 class TaskRuntimeSkillUsage(BaseModel):
     is_used: bool = False
     used_count: int = 0
-    last_used_at: Optional[datetime] = None
-    usage_scope_start_at: Optional[datetime] = None
+    last_used_at: datetime | None = None
+    usage_scope_start_at: datetime | None = None
 
 
 class TaskRuntimeSkillItem(BaseModel):
     skill_id: str
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     dimension: str
     publish_state: str = "PUBLISHED"
     has_pending_changes: bool = False
     changed_files_count: int = 0
-    materialized_dir: Optional[str] = None
+    materialized_dir: str | None = None
     is_materialized: bool = False
     config_deleted: bool = False
     usage: TaskRuntimeSkillUsage = Field(default_factory=TaskRuntimeSkillUsage)
@@ -178,9 +180,9 @@ class TaskRuntimeSkillItem(BaseModel):
 
 class TaskRuntimeSkillsResponse(BaseModel):
     task_id: str
-    items: List[TaskRuntimeSkillItem] = Field(default_factory=list)
+    items: list[TaskRuntimeSkillItem] = Field(default_factory=list)
     total: int = 0
-    usage_scope_start_at: Optional[datetime] = None
+    usage_scope_start_at: datetime | None = None
 
 
 TaskSkillRuntimeEventType = Literal[
@@ -200,17 +202,17 @@ class TaskSkillRuntimeEventResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    skill_id: Optional[str] = None
-    ai_job_id: Optional[str] = None
-    tool_use_id: Optional[str] = None
+    skill_id: str | None = None
+    ai_job_id: str | None = None
+    tool_use_id: str | None = None
     event_type: TaskSkillRuntimeEventType
     evidence_level: TaskSkillRuntimeEvidenceLevel
-    materialized_dir: Optional[str] = None
-    matched_path: Optional[str] = None
-    relative_path: Optional[str] = None
-    tool_name: Optional[str] = None
-    tool_input_json: Optional[Any] = None
-    tool_result_preview: Optional[str] = None
+    materialized_dir: str | None = None
+    matched_path: str | None = None
+    relative_path: str | None = None
+    tool_name: str | None = None
+    tool_input_json: Any | None = None
+    tool_result_preview: str | None = None
     status: str
     confidence: float = 1.0
     created_at: datetime
@@ -220,8 +222,8 @@ class TaskSkillRuntimeEventResponse(BaseModel):
 
 class TaskSkillRuntimeEventsResponse(BaseModel):
     task_id: str
-    items: List[TaskSkillRuntimeEventResponse] = Field(default_factory=list)
-    grouped_by_skill: Optional[dict] = None
+    items: list[TaskSkillRuntimeEventResponse] = Field(default_factory=list)
+    grouped_by_skill: dict | None = None
     total: int = 0
 
 
@@ -229,21 +231,21 @@ class TaskSkillRuntimeFileNode(BaseModel):
     path: str
     name: str
     node_type: Literal["file", "directory"]
-    size: Optional[int] = None
-    children: List["TaskSkillRuntimeFileNode"] = Field(default_factory=list)
+    size: int | None = None
+    children: list["TaskSkillRuntimeFileNode"] = Field(default_factory=list)
 
 
 class TaskSkillRuntimeFileTreeResponse(BaseModel):
     task_id: str
     skill_id: str
-    nodes: List[TaskSkillRuntimeFileNode] = Field(default_factory=list)
+    nodes: list[TaskSkillRuntimeFileNode] = Field(default_factory=list)
 
 
 class TaskSkillRuntimeFileContentResponse(BaseModel):
     task_id: str
     skill_id: str
     path: str
-    content: Optional[str] = None
+    content: str | None = None
     is_binary: bool = False
     size: int = 0
 
@@ -256,18 +258,18 @@ class TaskSkillRuntimeFileWriteRequest(BaseModel):
 class TaskCliBootstrapResponse(BaseModel):
     task_id: str
     workspace_id: str
-    spec_asset_id: Optional[str] = None
-    spec_version_id: Optional[str] = None
+    spec_asset_id: str | None = None
+    spec_version_id: str | None = None
     status: str
     progress: int
-    message: Optional[str] = None
-    baseline_dir: Optional[str] = None
-    baseline_session_id: Optional[str] = None
-    error_message: Optional[str] = None
-    refresh_mode: Optional[str] = None
-    refresh_context_json: Optional[dict] = None
-    job_id: Optional[str] = None
-    updated_at: Optional[datetime] = None
+    message: str | None = None
+    baseline_dir: str | None = None
+    baseline_session_id: str | None = None
+    error_message: str | None = None
+    refresh_mode: str | None = None
+    refresh_context_json: dict | None = None
+    job_id: str | None = None
+    updated_at: datetime | None = None
 
 
 class SuperpowersDocEntry(BaseModel):
@@ -276,14 +278,14 @@ class SuperpowersDocEntry(BaseModel):
     section_path: str
     relative_path: str
     size: int
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
 
 class SuperpowersDocsListResponse(BaseModel):
     task_id: str
     root_relative_path: str
-    plans: List[SuperpowersDocEntry] = Field(default_factory=list)
-    specs: List[SuperpowersDocEntry] = Field(default_factory=list)
+    plans: list[SuperpowersDocEntry] = Field(default_factory=list)
+    specs: list[SuperpowersDocEntry] = Field(default_factory=list)
 
 
 class SuperpowersDocContentResponse(BaseModel):
@@ -293,13 +295,13 @@ class SuperpowersDocContentResponse(BaseModel):
     section_path: str
     relative_path: str
     content: str
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
 
 class SuperpowersDocSaveRequest(BaseModel):
     section: Literal["plans", "specs"]
-    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
-    path: Optional[str] = Field(default=None, min_length=1, max_length=1024)
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    path: str | None = Field(default=None, min_length=1, max_length=1024)
     content: str = ""
 
 

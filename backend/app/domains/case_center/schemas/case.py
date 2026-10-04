@@ -2,11 +2,10 @@
 案例知识中心 Pydantic Schemas
 """
 
-from typing import List, Literal, Optional
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
-
 
 CaseCategoryValue = Literal["PUBLIC", "PRODUCT", "SITE", "TEMPORARY"]
 CasePriorityValue = Literal["P0", "P1", "P2", "P3"]
@@ -15,30 +14,30 @@ CaseStatusValue = Literal["DRAFT", "PENDING_REVIEW", "IN_REVIEW", "APPROVED", "R
 
 class CaseCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
-    problem_description: Optional[str] = None
-    product_name: Optional[str] = Field(default=None, max_length=200)
-    product_version: Optional[str] = Field(default=None, max_length=100)
-    site_name: Optional[str] = Field(default=None, max_length=200)
-    code_context: Optional[str] = None
-    analysis_process: Optional[str] = None
-    root_cause: Optional[str] = None
-    solution: Optional[str] = None
+    problem_description: str | None = None
+    product_name: str | None = Field(default=None, max_length=200)
+    product_version: str | None = Field(default=None, max_length=100)
+    site_name: str | None = Field(default=None, max_length=200)
+    code_context: str | None = None
+    analysis_process: str | None = None
+    root_cause: str | None = None
+    solution: str | None = None
     category: CaseCategoryValue = "TEMPORARY"
     priority: CasePriorityValue = "P2"
 
 
 class CaseUpdateRequest(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1, max_length=300)
-    problem_description: Optional[str] = None
-    product_name: Optional[str] = Field(default=None, max_length=200)
-    product_version: Optional[str] = Field(default=None, max_length=100)
-    site_name: Optional[str] = Field(default=None, max_length=200)
-    code_context: Optional[str] = None
-    analysis_process: Optional[str] = None
-    root_cause: Optional[str] = None
-    solution: Optional[str] = None
-    category: Optional[CaseCategoryValue] = None
-    priority: Optional[CasePriorityValue] = None
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    problem_description: str | None = None
+    product_name: str | None = Field(default=None, max_length=200)
+    product_version: str | None = Field(default=None, max_length=100)
+    site_name: str | None = Field(default=None, max_length=200)
+    code_context: str | None = None
+    analysis_process: str | None = None
+    root_cause: str | None = None
+    solution: str | None = None
+    category: CaseCategoryValue | None = None
+    priority: CasePriorityValue | None = None
 
 
 class CaseDraftCreateRequest(BaseModel):
@@ -47,22 +46,22 @@ class CaseDraftCreateRequest(BaseModel):
     submit_for_review: bool = False  # True 时生成草稿后立即提交专家评审
     category: CaseCategoryValue = "TEMPORARY"
     priority: CasePriorityValue = "P2"
-    site_name: Optional[str] = Field(default=None, max_length=200)
-    product_name: Optional[str] = Field(default=None, max_length=200)
-    product_version: Optional[str] = Field(default=None, max_length=100)
+    site_name: str | None = Field(default=None, max_length=200)
+    product_name: str | None = Field(default=None, max_length=200)
+    product_version: str | None = Field(default=None, max_length=100)
 
 
 class CaseReviewRequest(BaseModel):
     conclusion: Literal["approve", "reject"]
-    comment: Optional[str] = Field(default=None, max_length=4000)
+    comment: str | None = Field(default=None, max_length=4000)
 
 
 class CaseReviewRecordResponse(BaseModel):
     id: str
     action: str
-    comment: Optional[str] = None
-    reviewer_id: Optional[str] = None
-    reviewer_name: Optional[str] = None
+    comment: str | None = None
+    reviewer_id: str | None = None
+    reviewer_name: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -72,44 +71,44 @@ class CaseResponse(BaseModel):
     archive_origin: str = "MANUAL"
     id: str
     workspace_id: str
-    workspace_name: Optional[str] = None
-    project_name: Optional[str] = None
-    project_products: List[dict] = Field(default_factory=list)
-    repositories: List[dict] = Field(default_factory=list)
+    workspace_name: str | None = None
+    project_name: str | None = None
+    project_products: list[dict] = Field(default_factory=list)
+    repositories: list[dict] = Field(default_factory=list)
     creator_id: str
-    source_task_id: Optional[str] = None
+    source_task_id: str | None = None
     title: str
-    problem_description: Optional[str] = None
-    product_name: Optional[str] = None
-    product_version: Optional[str] = None
-    site_name: Optional[str] = None
-    code_context: Optional[str] = None
-    analysis_process: Optional[str] = None
-    root_cause: Optional[str] = None
-    solution: Optional[str] = None
+    problem_description: str | None = None
+    product_name: str | None = None
+    product_version: str | None = None
+    site_name: str | None = None
+    code_context: str | None = None
+    analysis_process: str | None = None
+    root_cause: str | None = None
+    solution: str | None = None
     category: str
     priority: str
     status: str
     review_round: int = 1
-    diagnosis_detail: Optional[dict] = None
-    submitted_at: Optional[datetime] = None
-    reviewed_at: Optional[datetime] = None
-    rejected_comment: Optional[str] = None
+    diagnosis_detail: dict | None = None
+    submitted_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    rejected_comment: str | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
-    creator_name: Optional[str] = None
-    source_task_name: Optional[str] = None
-    source_task_phenomenon: Optional[str] = None
+    updated_at: datetime | None = None
+    creator_name: str | None = None
+    source_task_name: str | None = None
+    source_task_phenomenon: str | None = None
     my_can_manage: bool = False
     my_can_review: bool = False
     has_playbook: bool = False
-    review_records: List[CaseReviewRecordResponse] = Field(default_factory=list)
+    review_records: list[CaseReviewRecordResponse] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
 
 class CaseListResponse(BaseModel):
-    items: List[CaseResponse]
+    items: list[CaseResponse]
     total: int
     page: int
     page_size: int

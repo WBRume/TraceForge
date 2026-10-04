@@ -1,19 +1,21 @@
 """Apply document resolutions and decision records in the same database transaction."""
 
-from app.domains.asset.services.review.errors import ReviewError
+from sqlalchemy.orm import Session
+
 from app.domains.asset.models.asset import SddAssetResolutionProposal
-from app.domains.asset.schemas.asset import AssetManualEditBlockRequest
-from app.domains.asset.schemas.asset import AssetResolutionApplyRequest
+from app.domains.asset.schemas.asset import AssetManualEditBlockRequest, AssetResolutionApplyRequest
 from app.domains.asset.services import asset_discussion_service, asset_resolution_service, asset_service
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
+from app.domains.asset.services.review.errors import ReviewError
 from app.domains.workspace_asset.schemas.workspace_asset import DecisionCreateRequest
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.task_process import decision_writes
-from sqlalchemy.orm import Session
 
 
-def apply_resolution(db: Session, *, ws_id: str, asset_id: str, thread_id: str, data: AssetResolutionApplyRequest, user_id: str):
+def apply_resolution(
+    db: Session, *, ws_id: str, asset_id: str, thread_id: str, data: AssetResolutionApplyRequest, user_id: str
+):
     asset_review_policy._verify_expert_permission_by_id(ws_id, user_id, db)
     asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
@@ -47,7 +49,7 @@ def apply_resolution(db: Session, *, ws_id: str, asset_id: str, thread_id: str, 
             change_note=data.change_note,
         )
     except asset_resolution_service.ResolutionServiceError as exc:
-        raise ReviewError(status_code=exc.status_code, detail=str(exc))
+        raise ReviewError(status_code=exc.status_code, detail=str(exc)) from exc
 
     if data.decision:
         if not thread.task_id:
@@ -71,7 +73,9 @@ def apply_resolution(db: Session, *, ws_id: str, asset_id: str, thread_id: str, 
                     source_asset_thread_id=thread.id,
                     source_resolution_proposal_id=proposal.id,
                     source_metadata={
-                        "asset_type": asset.asset_type.value if hasattr(asset.asset_type, "value") else str(asset.asset_type),
+                        "asset_type": asset.asset_type.value
+                        if hasattr(asset.asset_type, "value")
+                        else str(asset.asset_type),
                         "asset_name": asset.name,
                         "thread_block_id": thread.block_id,
                         "resolution_applied": True,
@@ -96,7 +100,9 @@ def apply_resolution(db: Session, *, ws_id: str, asset_id: str, thread_id: str, 
     }
 
 
-def edit_document_block(db: Session, *, ws_id: str, asset_id: str, block_id: str, data: AssetManualEditBlockRequest, user_id: str):
+def edit_document_block(
+    db: Session, *, ws_id: str, asset_id: str, block_id: str, data: AssetManualEditBlockRequest, user_id: str
+):
     asset_review_policy._verify_expert_permission_by_id(ws_id, user_id, db)
     asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
@@ -114,7 +120,7 @@ def edit_document_block(db: Session, *, ws_id: str, asset_id: str, block_id: str
             change_note=data.change_note,
         )
     except asset_resolution_service.ResolutionServiceError as exc:
-        raise ReviewError(status_code=exc.status_code, detail=str(exc))
+        raise ReviewError(status_code=exc.status_code, detail=str(exc)) from exc
     db.commit()
     return {
         "asset_id": asset.id,

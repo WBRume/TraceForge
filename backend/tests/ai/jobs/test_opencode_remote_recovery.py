@@ -1,5 +1,5 @@
 """Recovery owns the existing job; cancellation and old writers stay fenced."""
-import asyncio
+
 import time
 from datetime import datetime
 from types import SimpleNamespace
@@ -7,15 +7,15 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from app.agents.errors import AgentExecutionDetached
 from app.agents.contract import AgentAttemptContext
+from app.agents.errors import AgentExecutionDetached
 from app.domains.ai.models.ai_job import AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import attempts, queue_runner, reaper, remote_recovery, store
-from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.ai.services.jobs.executors import JobExecutionOutcome
+from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, runtime
 from app.domains.task.models.task import SddTask, TaskStatus
 from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from tests.ai.jobs.reliability_helpers import _session_factory, _job
+from tests.ai.jobs.reliability_helpers import _job, _session_factory
 
 
 @pytest.fixture
@@ -28,14 +28,28 @@ def jobs(monkeypatch):
     monkeypatch.setattr(runtime, "detached_jobs", set())
     monkeypatch.setattr(runtime, "shutting_down", False)
     with factory() as db:
-        db.add(SddTask(id="task-1", workspace_id="ws-1", creator_id="user-1", name="Long task",
-                       status=TaskStatus.CODING, session_revision=0, session_generation=1))
+        db.add(
+            SddTask(
+                id="task-1",
+                workspace_id="ws-1",
+                creator_id="user-1",
+                name="Long task",
+                status=TaskStatus.CODING,
+                session_revision=0,
+                session_generation=1,
+            )
+        )
         job = _job(db, status=AiJobStatus.RUNNING, run_token="old-token", worker_boot_id="previous-boot")
         job.task_id, job.session_id = "task-1", "ses_original"
         job.session_revision, job.session_generation = 0, 1
         job.agent_backend, job.process_execution_kind = "opencode", "REMOTE_SESSION"
-        job.provider_execution_json = {"version": 1, "session_id": "ses_original", "prompt_id": "msg_original",
-                                       "deadline": time.time() + 15 * 3600, "phase": "submitted"}
+        job.provider_execution_json = {
+            "version": 1,
+            "session_id": "ses_original",
+            "prompt_id": "msg_original",
+            "deadline": time.time() + 15 * 3600,
+            "phase": "submitted",
+        }
         db.commit()
     return factory
 
@@ -47,9 +61,16 @@ def current(jobs):
 
 def previous_owner(jobs):
     row = current(jobs)
-    return AgentAttemptContext(job_id=row.id, task_id=row.task_id, queue_key=row.queue_key,
-                               run_token=row.run_token, worker_id="previous-worker", worker_boot_id=row.worker_boot_id,
-                               attempt_count=row.attempt_count, execution_kind="REMOTE_SESSION")
+    return AgentAttemptContext(
+        job_id=row.id,
+        task_id=row.task_id,
+        queue_key=row.queue_key,
+        run_token=row.run_token,
+        worker_id="previous-worker",
+        worker_boot_id=row.worker_boot_id,
+        attempt_count=row.attempt_count,
+        execution_kind="REMOTE_SESSION",
+    )
 
 
 def test_claim_existing_job_rotates_ownership_without_resetting_execution(jobs):
@@ -97,10 +118,14 @@ def test_persisted_stop_intent_closes_check_to_interrupt_takeover_race(jobs):
 def test_cancel_or_superseded_session_cannot_be_recovered(jobs, change):
     with jobs() as db:
         job, task = db.get(SddAiJob, "reliability-job"), db.get(SddTask, "task-1")
-        if change == "cancel": job.cancel_requested_at = datetime.utcnow()
-        if change == "revision": task.session_revision += 1
-        if change == "generation": task.session_generation += 1
-        if change == "terminal": job.status = AiJobStatus.SUCCESS
+        if change == "cancel":
+            job.cancel_requested_at = datetime.utcnow()
+        if change == "revision":
+            task.session_revision += 1
+        if change == "generation":
+            task.session_generation += 1
+        if change == "terminal":
+            job.status = AiJobStatus.SUCCESS
         db.commit()
     assert remote_recovery.claim_existing_sync("reliability-job", "old-token") is None
     assert not any(row["recoverable_remote"] for row in reaper.list_reclaimable_jobs_sync())
@@ -166,12 +191,26 @@ def test_old_heartbeat_cannot_cancel_successors_runner(jobs, monkeypatch):
 @pytest.mark.asyncio
 async def test_engine_shutdown_closes_observer_but_honors_explicit_interrupt(monkeypatch):
     from app.engine.session import registry
-    saved = {"version": 1, "session_id": "ses_test", "prompt_id": "msg_test",
-             "deadline": time.time() + 10, "phase": "submitted"}
-    continuing = SimpleNamespace(remote_execution_checkpoint=saved, _interrupt_requested=False,
-                                 cli=SimpleNamespace(close=AsyncMock()), stop=AsyncMock())
-    cancelled = SimpleNamespace(remote_execution_checkpoint=saved, _interrupt_requested=True,
-                                cli=SimpleNamespace(close=AsyncMock()), stop=AsyncMock())
+
+    saved = {
+        "version": 1,
+        "session_id": "ses_test",
+        "prompt_id": "msg_test",
+        "deadline": time.time() + 10,
+        "phase": "submitted",
+    }
+    continuing = SimpleNamespace(
+        remote_execution_checkpoint=saved,
+        _interrupt_requested=False,
+        cli=SimpleNamespace(close=AsyncMock()),
+        stop=AsyncMock(),
+    )
+    cancelled = SimpleNamespace(
+        remote_execution_checkpoint=saved,
+        _interrupt_requested=True,
+        cli=SimpleNamespace(close=AsyncMock()),
+        stop=AsyncMock(),
+    )
     monkeypatch.setattr(registry, "_active_engines", {"keep": continuing, "cancel": cancelled})
     monkeypatch.setattr(registry, "_idle_sweeper_task", None)
     await registry.shutdown_active_engines()
@@ -183,17 +222,26 @@ async def test_engine_shutdown_closes_observer_but_honors_explicit_interrupt(mon
 def test_checkpoint_migration_preserves_existing_rows_and_downgrades():
     import runpy
     from pathlib import Path
+
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
     from sqlalchemy import create_engine, inspect, text
-    migration = runpy.run_path(str(Path(__file__).resolve().parents[3] / "alembic/versions/f294bd81a0e3_provider_execution_checkpoint.py"))
+
+    migration = runpy.run_path(
+        str(Path(__file__).resolve().parents[3] / "alembic/versions/f294bd81a0e3_provider_execution_checkpoint.py")
+    )
     with create_engine("sqlite://").begin() as connection:
         connection.execute(text("CREATE TABLE sdd_ai_jobs (id TEXT PRIMARY KEY)"))
         connection.execute(text("INSERT INTO sdd_ai_jobs VALUES ('existing')"))
         with Operations.context(MigrationContext.configure(connection)):
             migration["upgrade"]()
-            assert "provider_execution_json" in {column["name"] for column in inspect(connection).get_columns("sdd_ai_jobs")}
-            assert connection.execute(text("SELECT id, provider_execution_json FROM sdd_ai_jobs")).one() == ("existing", None)
+            assert "provider_execution_json" in {
+                column["name"] for column in inspect(connection).get_columns("sdd_ai_jobs")
+            }
+            assert connection.execute(text("SELECT id, provider_execution_json FROM sdd_ai_jobs")).one() == (
+                "existing",
+                None,
+            )
             migration["downgrade"]()
         assert connection.execute(text("SELECT id FROM sdd_ai_jobs")).scalar() == "existing"
 
@@ -201,6 +249,7 @@ def test_checkpoint_migration_preserves_existing_rows_and_downgrades():
 @pytest.mark.asyncio
 async def test_recovered_provider_terminal_reaches_durable_job_finalizer(jobs, monkeypatch):
     import httpx
+
     from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
     from app.agents.contract import AgentRunRequest, bind_agent_attempt, reset_agent_attempt
     from app.domains.ai.services.jobs.executors import task_chat
@@ -214,12 +263,22 @@ async def test_recovered_provider_terminal_reaches_durable_job_finalizer(jobs, m
     def provider(request):
         calls.append((request.method, request.url.path))
         assert request.method == "GET" and request.url.path.endswith("/message")
-        return httpx.Response(200, json={"data": [
-            {"id": saved["prompt_id"], "type": "user"},
-            {"id": "msg_answer", "type": "assistant", "time": {"completed": 123},
-             "content": [{"type": "text", "text": "finished while backend was down"}]},
-            {"type": "idle", "outcome": "succeeded"},
-        ], "cursor": {}})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": saved["prompt_id"], "type": "user"},
+                    {
+                        "id": "msg_answer",
+                        "type": "assistant",
+                        "time": {"completed": 123},
+                        "content": [{"type": "text", "text": "finished while backend was down"}],
+                    },
+                    {"type": "idle", "outcome": "succeeded"},
+                ],
+                "cursor": {},
+            },
+        )
 
     async def save(value):
         remote_recovery.save_checkpoint_sync(owner, value)
@@ -229,10 +288,16 @@ async def test_recovered_provider_terminal_reaches_durable_job_finalizer(jobs, m
     monkeypatch.setattr(task_chat.publishing, "broadcast_job_payload", AsyncMock())
     monkeypatch.setattr(task_chat.publishing, "reschedule_if_pending", Mock())
     try:
-        result = await adapter.run(AgentRunRequest(session_id=saved["session_id"], execution_checkpoint=saved,
-                                                   on_execution_checkpoint=save), AsyncMock())
-        engine = SimpleNamespace(last_result=result, last_result_success=result.success,
-                                 last_result_text=result.result_text, session_id=result.session_id)
+        result = await adapter.run(
+            AgentRunRequest(session_id=saved["session_id"], execution_checkpoint=saved, on_execution_checkpoint=save),
+            AsyncMock(),
+        )
+        engine = SimpleNamespace(
+            last_result=result,
+            last_result_success=result.success,
+            last_result_text=result.result_text,
+            session_id=result.session_id,
+        )
         await task_chat.finalize_task_chat_job_from_engine(owner.job_id, engine)
         job = current(jobs)
         assert job.status == AiJobStatus.SUCCESS and job.finished_at is not None

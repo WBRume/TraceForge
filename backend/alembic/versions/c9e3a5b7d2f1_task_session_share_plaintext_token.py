@@ -8,16 +8,16 @@ sdd_task_session_shares 增加 token 明文列：与 workspace_invite_links
 对齐，分享列表可随时复制完整链接（产品要求）。哈希列保持为查找键。
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "c9e3a5b7d2f1"
-down_revision: Union[str, None] = "b8d2f4a6c1e9"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "b8d2f4a6c1e9"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

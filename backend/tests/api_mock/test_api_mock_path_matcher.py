@@ -1,12 +1,6 @@
-import os
-import sys
 import unittest
-from unittest import mock
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
+from app.domains.api_mock.models.api_mock import SddApiMockRule
 from app.domains.api_mock.services.api_mock.path_matcher import (
     _body_subset_match,
     _count_leaf_constraints,
@@ -15,7 +9,6 @@ from app.domains.api_mock.services.api_mock.path_matcher import (
     _normalize_path_for_compare,
 )
 from app.domains.api_mock.services.api_mock.preview_service import _case_matchers_satisfied
-from app.domains.api_mock.models.api_mock import SddApiMockRule
 
 
 class ApiMockPathMatcherTest(unittest.TestCase):
@@ -38,8 +31,7 @@ class ApiMockPathMatcherTest(unittest.TestCase):
         # Parameter match
         self.assertEqual(_match_path_template("/api/users/{id}", "/api/users/123"), {"id": "123"})
         self.assertEqual(
-            _match_path_template("/api/{type}/{id}/roles", "/api/users/45/roles"),
-            {"type": "users", "id": "45"}
+            _match_path_template("/api/{type}/{id}/roles", "/api/users/45/roles"), {"type": "users", "id": "45"}
         )
 
         # Parameter mismatch
@@ -59,7 +51,7 @@ class ApiMockPathMatcherTest(unittest.TestCase):
         # List
         self.assertTrue(_body_subset_match([1, 2], [1, 2]))
         self.assertFalse(_body_subset_match([1], [1, 2]))
-        
+
         # Deep list of dicts
         self.assertTrue(_body_subset_match([{"a": 1}], [{"a": 1, "b": 2}]))
         self.assertFalse(_body_subset_match([{"a": 1}], [{"a": 2}]))
@@ -78,27 +70,21 @@ class ApiMockPathMatcherTest(unittest.TestCase):
 
     def test_case_matchers_satisfied(self):
         rule = SddApiMockRule()
-        
+
         # No constraints
-        matched, specificity = _case_matchers_satisfied(
-            rule, path_params={}, query=None, body=None
-        )
+        matched, specificity = _case_matchers_satisfied(rule, path_params={}, query=None, body=None)
         self.assertFalse(matched)
         self.assertEqual(specificity, 0)
-        
+
         # Path parameter matching
         rule.request_path_params_json = {"id": "123"}
-        matched, specificity = _case_matchers_satisfied(
-            rule, path_params={"id": "123"}, query=None, body=None
-        )
+        matched, specificity = _case_matchers_satisfied(rule, path_params={"id": "123"}, query=None, body=None)
         self.assertTrue(matched)
         self.assertEqual(specificity, 1)
 
-        matched, _ = _case_matchers_satisfied(
-            rule, path_params={"id": "456"}, query=None, body=None
-        )
+        matched, _ = _case_matchers_satisfied(rule, path_params={"id": "456"}, query=None, body=None)
         self.assertFalse(matched)
-        
+
         # Query parameter matching
         rule.request_path_params_json = None
         rule.request_query_json = {"page": "1", "sort": "desc"}
@@ -108,9 +94,7 @@ class ApiMockPathMatcherTest(unittest.TestCase):
         self.assertTrue(matched)
         self.assertEqual(specificity, 2)
 
-        matched, _ = _case_matchers_satisfied(
-            rule, path_params={}, query={"page": "2"}, body=None
-        )
+        matched, _ = _case_matchers_satisfied(rule, path_params={}, query={"page": "2"}, body=None)
         self.assertFalse(matched)
 
         # Body matching

@@ -10,12 +10,14 @@
   协作预输入文档与初始化分隔线；THINKING 与隐藏控制数据不产生条目；
 - 指纹只覆盖 UI 实际展示字段，token 统计 / 内部 metadata 更新不变更版本。
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Dict, Iterable, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -53,14 +55,9 @@ def _enum_text(value: Any) -> str:
     return str(getattr(value, "value", value) or "")
 
 
-def lock_task_row(db: Session, task_id: str) -> Optional[SddTask]:
+def lock_task_row(db: Session, task_id: str) -> SddTask | None:
     """任务行锁（with_for_update）。调用方事务内重复加锁是安全的同事务重入。"""
-    return (
-        db.query(SddTask)
-        .filter(SddTask.id == task_id)
-        .with_for_update()
-        .first()
-    )
+    return db.query(SddTask).filter(SddTask.id == task_id).with_for_update().first()
 
 
 def allocate_change_seq(task: SddTask) -> int:
@@ -69,18 +66,18 @@ def allocate_change_seq(task: SddTask) -> int:
     return int(task.reading_change_seq)
 
 
-def _visible_surface(message: ChatMessage) -> Optional[Dict[str, Any]]:
+def _visible_surface(message: ChatMessage) -> dict[str, Any] | None:
     """UI 实际展示的可见内容面；不可见返回 None。"""
     message_type = _enum_text(message.message_type) or "text"
     if message_type in HIDDEN_MESSAGE_TYPES:
         return None
     metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
-    surface: Dict[str, Any] = {
+    surface: dict[str, Any] = {
         "role": _enum_text(message.role),
         "type": message_type,
         "content": str(message.content or ""),
     }
-    visible_meta: Dict[str, Any] = {}
+    visible_meta: dict[str, Any] = {}
     if message_type == "diagnosis_result":
         # 定位结果卡片：metadata 即卡片正文
         visible_meta = dict(metadata)
@@ -93,7 +90,7 @@ def _visible_surface(message: ChatMessage) -> Optional[Dict[str, Any]]:
     return surface
 
 
-def build_reading_projection(message: ChatMessage) -> Dict[str, Any]:
+def build_reading_projection(message: ChatMessage) -> dict[str, Any]:
     """从源消息构建阅读条目投影（指纹只覆盖可见字段）。"""
     surface = _visible_surface(message)
     if surface is None:
@@ -115,7 +112,7 @@ def build_reading_projection(message: ChatMessage) -> Dict[str, Any]:
     }
 
 
-def _identity_changed(item: TaskReadingItem, projection: Dict[str, Any]) -> bool:
+def _identity_changed(item: TaskReadingItem, projection: dict[str, Any]) -> bool:
     """角色/作者/分组/显示位置改变也属于可见版本变更。"""
     return (
         (item.role or None) != (projection.get("role") or None)
@@ -137,7 +134,7 @@ def _upsert_current_item(
     task: SddTask,
     *,
     item_key: str,
-    projection: Dict[str, Any],
+    projection: dict[str, Any],
     change_seq: int,
 ) -> TaskReadingItem:
     item = (
@@ -179,7 +176,7 @@ def func_now():
     return func.now()
 
 
-def record_message_change(db: Session, *, task_id: str, message: ChatMessage) -> Dict[str, Any]:
+def record_message_change(db: Session, *, task_id: str, message: ChatMessage) -> dict[str, Any]:
     """一条源消息的有效可见变更（新建 / 原地更新 / 可见性变化）。
 
     事务契约：调用方已（或将在同一事务内）提交源消息；本函数在任务行锁内
@@ -207,9 +204,7 @@ def record_message_change(db: Session, *, task_id: str, message: ChatMessage) ->
         )
         if needs_update:
             seq = allocate_change_seq(task)
-            item = _upsert_current_item(
-                db, task, item_key=item_key, projection=projection, change_seq=seq
-            )
+            item = _upsert_current_item(db, task, item_key=item_key, projection=projection, change_seq=seq)
     elif item is not None and item.active:
         # 来源由可见变不可见：原条目失效，不能只跳过新投影而留下旧条目
         seq = allocate_change_seq(task)

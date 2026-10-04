@@ -9,15 +9,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from tests.ai.jobs.ai_job_test_utils import (
-    _job,
-    _owned_job,
-    _session_factory,
-    _terminate_request,
-    patch_ai_job_db,
-)
 from app.agents.contract import (
     EXECUTION_KIND_LOCAL_PROCESS,
     EXECUTION_KIND_REMOTE_SESSION,
@@ -33,7 +24,13 @@ from app.domains.ai.services.ai_job_convergence_service import REMOTE_STOP_UNCON
 from app.domains.ai.services.jobs import attempts as ai_attempts
 from app.domains.ai.services.jobs import registry as ai_registry
 from app.domains.ai.services.jobs import store as ai_store
-
+from tests.ai.jobs.ai_job_test_utils import (
+    _job,
+    _owned_job,
+    _session_factory,
+    _terminate_request,
+    patch_ai_job_db,
+)
 
 # ────────────────────── 14.7 execution kind 端到端 ──────────────────────
 
@@ -171,13 +168,18 @@ def test_opencode_abort_success_returns_acknowledged():
 
     class _Resp:
         status_code = 200
-        def json(self): return {"interrupted": True}
+
+        def json(self):
+            return {"interrupted": True}
 
     class _Client:
         is_closed = False
+
         async def get(self, url):
             from types import SimpleNamespace
+
             return SimpleNamespace(status_code=200, json=lambda: {"data": {}})
+
         async def post(self, url, **kwargs):
             return _Resp()
 
@@ -200,9 +202,12 @@ def test_opencode_abort_rejected_status_returns_structured_nack():
 
     class _Client:
         is_closed = False
+
         async def get(self, url):
             from types import SimpleNamespace
+
             return SimpleNamespace(status_code=200, json=lambda: {"data": {}})
+
         async def post(self, url, **kwargs):
             return _Resp()
 
@@ -222,9 +227,12 @@ def test_opencode_abort_network_error_is_visible_not_swallowed():
 
     class _Client:
         is_closed = False
+
         async def get(self, url):
             from types import SimpleNamespace
+
             return SimpleNamespace(status_code=200, json=lambda: {"data": {}})
+
         async def post(self, url, **kwargs):
             raise OSError("connection reset")
 

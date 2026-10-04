@@ -3,7 +3,6 @@
 import ast
 from pathlib import Path
 
-
 APP = Path(__file__).resolve().parents[2] / "app"
 BOUNDARIES = (
     "domains/task/services/task_records",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from app.domains.asset.services.document import markdown_blocks
 from app.domains.asset.services.document.docx import parse_docx_payload
@@ -12,11 +12,11 @@ from app.domains.asset.services.document.docx import parse_docx_payload
 SUPPORTED_INLINE_REVIEW_EXTENSIONS = {".md", ".markdown", ".txt", ".docx"}
 
 
-def can_inline_review(ext: Optional[str]) -> bool:
+def can_inline_review(ext: str | None) -> bool:
     return (ext or "").lower() in SUPPORTED_INLINE_REVIEW_EXTENSIONS
 
 
-def guess_ext_and_mime(file_name: Optional[str]) -> Tuple[str, str]:
+def guess_ext_and_mime(file_name: str | None) -> tuple[str, str]:
     name = file_name or ""
     ext = os.path.splitext(name)[1].lower()
     mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -42,10 +42,10 @@ def decode_text_bytes(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
-def parse_document_payload(file_name: str, raw: bytes) -> Dict[str, Any]:
+def parse_document_payload(file_name: str, raw: bytes) -> dict[str, Any]:
     """任意上传文件 → {source_*, normalized_markdown, blocks_json, render_json}。"""
     ext, mime = guess_ext_and_mime(file_name)
-    render_json: Dict[str, Any]
+    render_json: dict[str, Any]
     if ext in {".md", ".markdown"}:
         markdown = decode_text_bytes(raw)
         blocks = markdown_blocks.markdown_to_blocks(markdown)

@@ -5,10 +5,9 @@ Read-only schemas for Workspace Assets.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
 
 ConnectionState = Literal["NOT_CONNECTED", "EMPTY", "AVAILABLE", "ERROR"]
 CoverageStatus = Literal["not_available", "waiting_evidence", "waiting_human_confirmation", "verified"]
@@ -74,36 +73,36 @@ class WorkspaceAssetConnectionStatus(BaseModel):
     key: str
     label: str
     state: ConnectionState
-    detail: Optional[str] = None
+    detail: str | None = None
 
 
 class WorkspaceAssetListState(BaseModel):
     empty: bool = True
-    message: Optional[str] = None
+    message: str | None = None
 
 
 class ExternalEvidenceRef(BaseModel):
     source_type: str
-    source_uri: Optional[str] = None
-    source_label: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_path: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
+    source_uri: str | None = None
+    source_label: str | None = None
+    source_ref: str | None = None
+    source_path: str | None = None
+    source_metadata: dict[str, Any] | None = None
 
 
 class RequirementOptionResponse(BaseModel):
     id: str
     title: str
     status: str
-    source_ref: Optional[str] = None
-    parent_requirement_id: Optional[str] = None
-    parent_title: Optional[str] = None
+    source_ref: str | None = None
+    parent_requirement_id: str | None = None
+    parent_title: str | None = None
     child_count: int = 0
     can_link_task: bool = True
 
 
 class RequirementOptionsResponse(BaseModel):
-    items: List[RequirementOptionResponse]
+    items: list[RequirementOptionResponse]
     total: int
     page: int
     page_size: int
@@ -114,12 +113,12 @@ class RequirementLinkedTaskResponse(BaseModel):
     task_id: str
     task_name: str
     task_status: str
-    current_phase: Optional[str] = None
-    creator_name: Optional[str] = None
+    current_phase: str | None = None
+    creator_name: str | None = None
     total_duration_ms: int = 0
     relation_type: str
     coverage_status: CoverageStatus = "not_available"
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
 
 
 class RequirementCoverageSummary(BaseModel):
@@ -132,136 +131,136 @@ class RequirementCoverageSummary(BaseModel):
 
 
 class RequirementSummary(BaseModel):
-    task_prompt: Optional[str] = None
+    task_prompt: str | None = None
     id: str
     workspace_id: str
     title: str
-    body: Optional[str] = None
+    body: str | None = None
     status: str
-    acceptance_criteria: List[str] = Field(default_factory=list)
-    priority: Optional[str] = None
-    parent_requirement_id: Optional[str] = None
-    parent_title: Optional[str] = None
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    priority: str | None = None
+    parent_requirement_id: str | None = None
+    parent_title: str | None = None
     child_count: int = 0
-    children: List["RequirementSummary"] = Field(default_factory=list)
+    children: list[RequirementSummary] = Field(default_factory=list)
     can_link_task: bool = True
-    import_batch_id: Optional[str] = None
-    source_kind: Optional[str] = None
-    source_uri: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
+    import_batch_id: str | None = None
+    source_kind: str | None = None
+    source_uri: str | None = None
+    source_ref: str | None = None
+    source_metadata: dict[str, Any] | None = None
     coverage_summary: RequirementCoverageSummary = Field(default_factory=RequirementCoverageSummary)
     change_history_count: int = 0
     related_task_count: int = 0
-    linked_tasks: List[RequirementLinkedTaskResponse] = Field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    linked_tasks: list[RequirementLinkedTaskResponse] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class RequirementAuditLogResponse(BaseModel):
     id: str
     workspace_id: str
-    requirement_id: Optional[str] = None
-    import_batch_id: Optional[str] = None
-    task_id: Optional[str] = None
-    actor_id: Optional[str] = None
+    requirement_id: str | None = None
+    import_batch_id: str | None = None
+    task_id: str | None = None
+    actor_id: str | None = None
     action: str
-    before: Optional[Dict[str, Any]] = None
-    after: Optional[Dict[str, Any]] = None
-    reason: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    reason: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
 
 
 class RequirementDetailResponse(BaseModel):
     requirement: RequirementSummary
-    linked_tasks: List[RequirementLinkedTaskResponse] = Field(default_factory=list)
-    children: List[RequirementSummary] = Field(default_factory=list)
-    audit_logs: List[RequirementAuditLogResponse] = Field(default_factory=list)
+    linked_tasks: list[RequirementLinkedTaskResponse] = Field(default_factory=list)
+    children: list[RequirementSummary] = Field(default_factory=list)
+    audit_logs: list[RequirementAuditLogResponse] = Field(default_factory=list)
 
 
 class RequirementCreateRequest(BaseModel):
-    task_prompt: Optional[str] = None
+    task_prompt: str | None = None
     title: str
-    body: Optional[str] = None
-    acceptance_criteria: List[str] = Field(default_factory=list)
-    priority: Optional[str] = None
-    parent_requirement_id: Optional[str] = None
+    body: str | None = None
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    priority: str | None = None
+    parent_requirement_id: str | None = None
     status: RequirementEditableStatus = "DRAFT"
-    source_kind: Optional[str] = None
-    source_uri: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    change_reason: Optional[str] = None
+    source_kind: str | None = None
+    source_uri: str | None = None
+    source_ref: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    change_reason: str | None = None
 
 
 class RequirementUpdateRequest(BaseModel):
-    task_prompt: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    acceptance_criteria: Optional[List[str]] = None
-    priority: Optional[str] = None
-    status: Optional[RequirementEditableStatus] = None
-    source_kind: Optional[str] = None
-    source_uri: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    change_reason: Optional[str] = None
+    task_prompt: str | None = None
+    title: str | None = None
+    body: str | None = None
+    acceptance_criteria: list[str] | None = None
+    priority: str | None = None
+    status: RequirementEditableStatus | None = None
+    source_kind: str | None = None
+    source_uri: str | None = None
+    source_ref: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    change_reason: str | None = None
 
 
 class RequirementTaskLinkRequest(BaseModel):
     task_id: str
     relation_type: str = "RELATES_TO"
-    change_reason: Optional[str] = None
+    change_reason: str | None = None
 
 
 class RequirementImportPreviewItem(BaseModel):
     id: str
     title: str
-    body: Optional[str] = None
-    acceptance_criteria: List[str] = Field(default_factory=list)
-    priority: Optional[str] = None
-    task_prompt: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
+    body: str | None = None
+    acceptance_criteria: list[str] = Field(default_factory=list)
+    priority: str | None = None
+    task_prompt: str | None = None
+    source_ref: str | None = None
+    source_metadata: dict[str, Any] | None = None
     order_index: int = 0
     status: str
-    requirement_id: Optional[str] = None
+    requirement_id: str | None = None
 
 
 class RequirementSplitDraftItem(BaseModel):
     item_id: str
     include: bool = True
-    title: Optional[str] = None
-    body: Optional[str] = None
-    acceptance_criteria: Optional[List[str]] = None
-    priority: Optional[str] = None
-    task_prompt: Optional[str] = None
+    title: str | None = None
+    body: str | None = None
+    acceptance_criteria: list[str] | None = None
+    priority: str | None = None
+    task_prompt: str | None = None
 
 
 class RequirementSplitDraftPayload(BaseModel):
     """拆分评审页未提交编辑的草稿结构：覆盖在批次原始 AI 预览之上的编辑态。"""
 
-    change_reason: Optional[str] = None
-    items: List[RequirementSplitDraftItem] = Field(default_factory=list)
+    change_reason: str | None = None
+    items: list[RequirementSplitDraftItem] = Field(default_factory=list)
 
 
 class RequirementImportBatchResponse(BaseModel):
     id: str
     workspace_id: str
-    source_kind: Optional[str] = None
-    source_filename: Optional[str] = None
-    source_uri: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
+    source_kind: str | None = None
+    source_filename: str | None = None
+    source_uri: str | None = None
+    source_ref: str | None = None
+    source_metadata: dict[str, Any] | None = None
     status: str
     item_count: int = 0
     confirmed_count: int = 0
-    normalized_markdown: Optional[str] = None
-    items: List[RequirementImportPreviewItem] = Field(default_factory=list)
-    draft: Optional[RequirementSplitDraftPayload] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    normalized_markdown: str | None = None
+    items: list[RequirementImportPreviewItem] = Field(default_factory=list)
+    draft: RequirementSplitDraftPayload | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class RequirementPreviewJobResponse(BaseModel):
@@ -269,51 +268,51 @@ class RequirementPreviewJobResponse(BaseModel):
     workspace_id: str
     status: str
     progress: int = 0
-    message: Optional[str] = None
-    error: Optional[str] = None
-    batch: Optional[RequirementImportBatchResponse] = None
+    message: str | None = None
+    error: str | None = None
+    batch: RequirementImportBatchResponse | None = None
     # 作业种类与关联对象（来自 context_json）：供前端浮窗区分拆分/导入并回跳
-    job_kind: Optional[str] = None
-    requirement_id: Optional[str] = None
-    requirement_title: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    job_kind: str | None = None
+    requirement_id: str | None = None
+    requirement_title: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class RequirementImportConfirmItem(BaseModel):
     item_id: str
     include: bool = True
-    title: Optional[str] = None
-    body: Optional[str] = None
-    acceptance_criteria: Optional[List[str]] = None
-    priority: Optional[str] = None
-    task_prompt: Optional[str] = None
+    title: str | None = None
+    body: str | None = None
+    acceptance_criteria: list[str] | None = None
+    priority: str | None = None
+    task_prompt: str | None = None
     status: RequirementEditableStatus = "DRAFT"
 
 
 class RequirementImportConfirmRequest(BaseModel):
-    items: List[RequirementImportConfirmItem] = Field(default_factory=list)
-    change_reason: Optional[str] = None
+    items: list[RequirementImportConfirmItem] = Field(default_factory=list)
+    change_reason: str | None = None
 
 
 class RequirementSplitPreviewRequest(BaseModel):
-    change_reason: Optional[str] = None
+    change_reason: str | None = None
 
 
 class RequirementSplitItemRequest(BaseModel):
     item_id: str
     include: bool = True
-    title: Optional[str] = None
-    body: Optional[str] = None
-    acceptance_criteria: Optional[List[str]] = None
-    priority: Optional[str] = None
-    task_prompt: Optional[str] = None
+    title: str | None = None
+    body: str | None = None
+    acceptance_criteria: list[str] | None = None
+    priority: str | None = None
+    task_prompt: str | None = None
 
 
 class RequirementSplitRequest(BaseModel):
     batch_id: str
-    items: List[RequirementSplitItemRequest] = Field(default_factory=list)
-    change_reason: Optional[str] = None
+    items: list[RequirementSplitItemRequest] = Field(default_factory=list)
+    change_reason: str | None = None
 
 
 class TaskRequirementLinkResponse(BaseModel):
@@ -321,8 +320,8 @@ class TaskRequirementLinkResponse(BaseModel):
     requirement_id: str
     task_id: str
     relation_type: str
-    requirement: Optional[RequirementSummary] = None
-    created_at: Optional[datetime] = None
+    requirement: RequirementSummary | None = None
+    created_at: datetime | None = None
 
 
 class TaskAssetSummary(BaseModel):
@@ -330,47 +329,47 @@ class TaskAssetSummary(BaseModel):
     asset_type: str
     title: str
     status: str
-    content_text: Optional[str] = None
-    content_json: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    content_text: str | None = None
+    content_json: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class PlanNodeAssetSummary(BaseModel):
     id: str
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     status: str
     order_index: int = 0
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class AiRunSummary(BaseModel):
     id: str
-    task_id: Optional[str] = None
+    task_id: str | None = None
     channel: str
     status: str
     progress: int = 0
-    message: Optional[str] = None
-    input_summary: Optional[str] = None
-    output_summary: Optional[str] = None
+    message: str | None = None
+    input_summary: str | None = None
+    output_summary: str | None = None
     adoption_status: str = "not_available"
-    created_at: Optional[datetime] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
 
 
 class AiOutputResponse(BaseModel):
     id: str
     workspace_id: str
-    task_id: Optional[str] = None
+    task_id: str | None = None
     ai_job_id: str
     output_type: str
-    title: Optional[str] = None
-    content_text: Optional[str] = None
-    content_json: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
+    title: str | None = None
+    content_text: str | None = None
+    content_json: dict[str, Any] | None = None
+    created_at: datetime | None = None
 
 
 class HumanReviewCommentResponse(BaseModel):
@@ -378,35 +377,35 @@ class HumanReviewCommentResponse(BaseModel):
     workspace_id: str
     task_id: str
     review_id: str
-    author_id: Optional[str] = None
-    comment_type: Optional[str] = None
+    author_id: str | None = None
+    comment_type: str | None = None
     body: str
-    required_change: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
+    required_change: dict[str, Any] | None = None
+    created_at: datetime | None = None
 
 
 class HumanReviewResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    reviewer_id: Optional[str] = None
+    reviewer_id: str | None = None
     status: str
-    outcome: Optional[str] = None
-    review_type: Optional[str] = None
-    review_scope: Optional[str] = None
-    priority: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    source_ref: Optional[Dict[str, Any]] = None
-    target_ref: Optional[Dict[str, Any]] = None
-    target_refs: List[Dict[str, Any]] = Field(default_factory=list)
-    derived_status: Optional[str] = None
-    due_date: Optional[datetime] = None
-    resolved_at: Optional[datetime] = None
-    linked_clarification_ids: List[str] = Field(default_factory=list)
-    comments: List[HumanReviewCommentResponse] = Field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    outcome: str | None = None
+    review_type: str | None = None
+    review_scope: str | None = None
+    priority: str | None = None
+    title: str | None = None
+    body: str | None = None
+    source_ref: dict[str, Any] | None = None
+    target_ref: dict[str, Any] | None = None
+    target_refs: list[dict[str, Any]] = Field(default_factory=list)
+    derived_status: str | None = None
+    due_date: datetime | None = None
+    resolved_at: datetime | None = None
+    linked_clarification_ids: list[str] = Field(default_factory=list)
+    comments: list[HumanReviewCommentResponse] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class ChangeProposalSummary(BaseModel):
@@ -422,17 +421,17 @@ class ChangeProposalSummary(BaseModel):
 class EvidenceSummary(BaseModel):
     id: str
     source_type: str
-    source_ref: Optional[str] = None
-    source_uri: Optional[str] = None
-    title: Optional[str] = None
+    source_ref: str | None = None
+    source_uri: str | None = None
+    title: str | None = None
 
 
 class DiffLineItem(BaseModel):
     type: Literal["add", "del", "context"]
     content: str
-    old_line_no: Optional[int] = None
-    new_line_no: Optional[int] = None
-    source: Optional[Literal["ai", "human", "both", "context"]] = None
+    old_line_no: int | None = None
+    new_line_no: int | None = None
+    source: Literal["ai", "human", "both", "context"] | None = None
 
 
 class DiffHunk(BaseModel):
@@ -440,78 +439,78 @@ class DiffHunk(BaseModel):
     old_count: int
     new_start: int
     new_count: int
-    lines: List[DiffLineItem] = []
+    lines: list[DiffLineItem] = []
 
 
 class HumanDeltaFileDiff(BaseModel):
     file_path: str
-    old_path: Optional[str] = None
-    new_path: Optional[str] = None
+    old_path: str | None = None
+    new_path: str | None = None
     change_type: str = "modified"
     insertions: int = 0
     deletions: int = 0
-    hunks: List[DiffHunk] = []
-    comparison_type: Optional[Literal["ai_only", "human_only", "common"]] = None
-    ai_change_type: Optional[str] = None
-    human_change_type: Optional[str] = None
+    hunks: list[DiffHunk] = []
+    comparison_type: Literal["ai_only", "human_only", "common"] | None = None
+    ai_change_type: str | None = None
+    human_change_type: str | None = None
     ai_insertions: int = 0
     ai_deletions: int = 0
     human_insertions: int = 0
     human_deletions: int = 0
-    ai_hunks: Optional[List[DiffHunk]] = None
-    human_hunks: Optional[List[DiffHunk]] = None
+    ai_hunks: list[DiffHunk] | None = None
+    human_hunks: list[DiffHunk] | None = None
 
 
 class HumanDeltaResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    proposal_id: Optional[str] = None
-    final_evidence_id: Optional[str] = None
+    proposal_id: str | None = None
+    final_evidence_id: str | None = None
     status: str
-    diff_asset_id: Optional[str] = None
-    changed_files_count: Optional[int] = None
-    insertions: Optional[int] = None
-    deletions: Optional[int] = None
-    comparison_summary: Optional[str] = None
-    change_category: Optional[str] = None
-    change_reason: Optional[str] = None
+    diff_asset_id: str | None = None
+    changed_files_count: int | None = None
+    insertions: int | None = None
+    deletions: int | None = None
+    comparison_summary: str | None = None
+    change_category: str | None = None
+    change_reason: str | None = None
     promote_candidate: bool = False
-    proposal_summary: Optional[ChangeProposalSummary] = None
-    final_evidence_summary: Optional[EvidenceSummary] = None
-    diff_text: Optional[str] = None
-    file_diffs: List[HumanDeltaFileDiff] = []
+    proposal_summary: ChangeProposalSummary | None = None
+    final_evidence_summary: EvidenceSummary | None = None
+    diff_text: str | None = None
+    file_diffs: list[HumanDeltaFileDiff] = []
     decision_count: int = 0
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class DeltaRegionResponse(BaseModel):
     id: str
     delta_id: str
     file_path: str
-    old_file_path: Optional[str] = None
+    old_file_path: str | None = None
     region_type: str
     region_source: str
-    ai_line_start: Optional[int] = None
-    ai_line_end: Optional[int] = None
-    human_line_start: Optional[int] = None
-    human_line_end: Optional[int] = None
+    ai_line_start: int | None = None
+    ai_line_end: int | None = None
+    human_line_start: int | None = None
+    human_line_end: int | None = None
     ai_insertions: int = 0
     ai_deletions: int = 0
     human_insertions: int = 0
     human_deletions: int = 0
-    summary: Optional[str] = None
-    decisions: List[DecisionLightResponse] = Field(default_factory=list)
-    created_at: Optional[datetime] = None
+    summary: str | None = None
+    decisions: list[DecisionLightResponse] = Field(default_factory=list)
+    created_at: datetime | None = None
 
 
 class PatchSnapshot(BaseModel):
     source_type: str
     source_id: str
     source_label: str
-    base_commit_sha: Optional[str] = None
-    head_commit_sha: Optional[str] = None
+    base_commit_sha: str | None = None
+    head_commit_sha: str | None = None
     changed_files_count: int = 0
     insertions: int = 0
     deletions: int = 0
@@ -522,138 +521,139 @@ class WorkbenchDeltaResponse(BaseModel):
     workspace_id: str
     task_id: str
     status: str
-    change_category: Optional[str] = None
-    change_reason: Optional[str] = None
+    change_category: str | None = None
+    change_reason: str | None = None
     promote_candidate: bool = False
-    ai_patch: Optional[PatchSnapshot] = None
-    human_patch: Optional[PatchSnapshot] = None
-    file_diffs: List[HumanDeltaFileDiff] = Field(default_factory=list)
-    delta_regions: List[DeltaRegionResponse] = Field(default_factory=list)
-    changed_files_count: Optional[int] = None
-    insertions: Optional[int] = None
-    deletions: Optional[int] = None
-    comparison_summary: Optional[str] = None
+    ai_patch: PatchSnapshot | None = None
+    human_patch: PatchSnapshot | None = None
+    file_diffs: list[HumanDeltaFileDiff] = Field(default_factory=list)
+    delta_regions: list[DeltaRegionResponse] = Field(default_factory=list)
+    changed_files_count: int | None = None
+    insertions: int | None = None
+    deletions: int | None = None
+    comparison_summary: str | None = None
     decision_count: int = 0
-    decisions: List[DecisionLightResponse] = Field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    decisions: list[DecisionLightResponse] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class EvidenceResponse(BaseModel):
     id: str
     workspace_id: str
-    requirement_id: Optional[str] = None
-    task_id: Optional[str] = None
-    ai_job_id: Optional[str] = None
-    human_review_id: Optional[str] = None
+    requirement_id: str | None = None
+    task_id: str | None = None
+    ai_job_id: str | None = None
+    human_review_id: str | None = None
     status: str
     evidence_type: str = "CODE"
     source: ExternalEvidenceRef
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    confirmed_by_id: Optional[str] = None
-    confirmed_at: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    title: str | None = None
+    summary: str | None = None
+    confirmed_by_id: str | None = None
+    confirmed_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class DecisionSourceResponse(BaseModel):
     source_type: DecisionSourceTypeValue
     label: str
-    chat_message_id: Optional[str] = None
-    asset_id: Optional[str] = None
-    asset_version_id: Optional[str] = None
-    asset_thread_id: Optional[str] = None
-    resolution_proposal_id: Optional[str] = None
-    final_summary_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+    chat_message_id: str | None = None
+    asset_id: str | None = None
+    asset_version_id: str | None = None
+    asset_thread_id: str | None = None
+    resolution_proposal_id: str | None = None
+    final_summary_id: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class DecisionResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    requirement_id: Optional[str] = None
-    human_delta_id: Optional[str] = None
-    delta_region_id: Optional[str] = None
+    requirement_id: str | None = None
+    human_delta_id: str | None = None
+    delta_region_id: str | None = None
     status: str
     title: str
-    body: Optional[str] = None
-    rationale: Optional[str] = None
-    impact_scope: Optional[str] = None
-    source_evidence_id: Optional[str] = None
+    body: str | None = None
+    rationale: str | None = None
+    impact_scope: str | None = None
+    source_evidence_id: str | None = None
     source_type: DecisionSourceTypeValue = "TASK_DETAIL_BACKFILL"
-    source_chat_message_id: Optional[str] = None
-    source_asset_id: Optional[str] = None
-    source_asset_version_id: Optional[str] = None
-    source_asset_thread_id: Optional[str] = None
-    source_resolution_proposal_id: Optional[str] = None
-    source_final_summary_id: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    delta_line_refs: Optional[List[Dict[str, Any]]] = None
-    source: Optional[DecisionSourceResponse] = None
-    decided_by_id: Optional[str] = None
+    source_chat_message_id: str | None = None
+    source_asset_id: str | None = None
+    source_asset_version_id: str | None = None
+    source_asset_thread_id: str | None = None
+    source_resolution_proposal_id: str | None = None
+    source_final_summary_id: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    delta_line_refs: list[dict[str, Any]] | None = None
+    source: DecisionSourceResponse | None = None
+    decided_by_id: str | None = None
     promote_candidate: bool = False
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
 
 class ClarificationResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    requirement_id: Optional[str] = None
+    requirement_id: str | None = None
     status: str
     blocking_level: str = "NON_BLOCKING"
     question: str
-    answer: Optional[str] = None
-    requester_id: Optional[str] = None
-    responder_id: Optional[str] = None
-    source_evidence_id: Optional[str] = None
-    source_review_id: Optional[str] = None
-    clarification_type: Optional[str] = None
-    target_ref: Optional[Dict[str, Any]] = None
-    urgency: Optional[str] = None
-    answered_at: Optional[datetime] = None
-    accepted_at: Optional[datetime] = None
+    answer: str | None = None
+    requester_id: str | None = None
+    responder_id: str | None = None
+    source_evidence_id: str | None = None
+    source_review_id: str | None = None
+    clarification_type: str | None = None
+    target_ref: dict[str, Any] | None = None
+    urgency: str | None = None
+    answered_at: datetime | None = None
+    accepted_at: datetime | None = None
     promote_candidate: bool = False
-    converted_requirement_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    converted_requirement_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskFinalSummaryResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    author_id: Optional[str] = None
+    author_id: str | None = None
     final_status: str
-    summary: Optional[str] = None
-    remaining_risk: Optional[str] = None
-    next_steps: Optional[str] = None
-    final_evidence_ids: List[str] = Field(default_factory=list)
-    review_checklist: Optional[Dict[str, Any]] = None
-    clarification_summary: Optional[Dict[str, Any]] = None
-    delta_summary: Optional[Dict[str, Any]] = None
-    decision_summary: Optional[Dict[str, Any]] = None
-    human_confirmation_review_id: Optional[str] = None
-    verified_at: Optional[datetime] = None
-    verified_by_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    summary: str | None = None
+    remaining_risk: str | None = None
+    next_steps: str | None = None
+    final_evidence_ids: list[str] = Field(default_factory=list)
+    review_checklist: dict[str, Any] | None = None
+    clarification_summary: dict[str, Any] | None = None
+    delta_summary: dict[str, Any] | None = None
+    decision_summary: dict[str, Any] | None = None
+    human_confirmation_review_id: str | None = None
+    verified_at: datetime | None = None
+    verified_by_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskProcessAuditLogResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    actor_id: Optional[str] = None
+    actor_id: str | None = None
     record_type: str
     record_id: str
     action: str
-    before: Optional[Dict[str, Any]] = None
-    after: Optional[Dict[str, Any]] = None
-    reason: Optional[str] = None
-    created_at: Optional[datetime] = None
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    reason: str | None = None
+    created_at: datetime | None = None
 
 
 class TaskFileItemResponse(BaseModel):
@@ -662,13 +662,13 @@ class TaskFileItemResponse(BaseModel):
     title: str
     status: str
     source_kind: str
-    source_id: Optional[str] = None
-    source_version_id: Optional[str] = None
-    source_path: Optional[str] = None
-    summary: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    source_id: str | None = None
+    source_version_id: str | None = None
+    source_path: str | None = None
+    summary: str | None = None
+    metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class KnowledgeAssetResponse(BaseModel):
@@ -677,27 +677,27 @@ class KnowledgeAssetResponse(BaseModel):
     asset_type: str
     status: str
     title: str
-    body: Optional[str] = None
-    source_task_id: Optional[str] = None
-    source_decision_id: Optional[str] = None
-    source_human_delta_id: Optional[str] = None
-    source_clarification_id: Optional[str] = None
-    source_review_id: Optional[str] = None
-    source_evidence_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    body: str | None = None
+    source_task_id: str | None = None
+    source_decision_id: str | None = None
+    source_human_delta_id: str | None = None
+    source_clarification_id: str | None = None
+    source_review_id: str | None = None
+    source_evidence_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskSummary(BaseModel):
     id: str
     execution_location: str = "SERVER"
     workspace_id: str
-    creator_id: Optional[str] = None
-    creator_display_name: Optional[str] = None
+    creator_id: str | None = None
+    creator_display_name: str | None = None
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     status: str
-    current_phase: Optional[str] = None
+    current_phase: str | None = None
     requirement_count: int = 0
     spec_count: int = 0
     plan_count: int = 0
@@ -709,10 +709,10 @@ class TaskSummary(BaseModel):
     clarification_count: int = 0
     coverage_status: CoverageStatus = "not_available"
     baseline_version: int = 0
-    baselined_at: Optional[datetime] = None
-    baselined_by_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    baselined_at: datetime | None = None
+    baselined_by_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
     is_following: bool = False
 
 
@@ -729,212 +729,212 @@ class TaskProcessSummary(BaseModel):
 
 class TaskDetailResponse(BaseModel):
     task: TaskSummary
-    requirement_links: List[TaskRequirementLinkResponse] = Field(default_factory=list)
-    task_files: List[TaskFileItemResponse] = Field(default_factory=list)
-    specs: List[TaskAssetSummary] = Field(default_factory=list)
-    plans: List[TaskAssetSummary] = Field(default_factory=list)
-    plan_nodes: List[PlanNodeAssetSummary] = Field(default_factory=list)
-    ai_runs: List[AiRunSummary] = Field(default_factory=list)
-    ai_outputs: List[AiOutputResponse] = Field(default_factory=list)
-    human_reviews: List[HumanReviewResponse] = Field(default_factory=list)
-    human_deltas: List[HumanDeltaResponse] = Field(default_factory=list)
-    evidence: List[EvidenceResponse] = Field(default_factory=list)
-    decisions: List[DecisionResponse] = Field(default_factory=list)
-    clarifications: List[ClarificationResponse] = Field(default_factory=list)
-    final_summary: Optional[TaskFinalSummaryResponse] = None
-    process_audit_logs: List[TaskProcessAuditLogResponse] = Field(default_factory=list)
+    requirement_links: list[TaskRequirementLinkResponse] = Field(default_factory=list)
+    task_files: list[TaskFileItemResponse] = Field(default_factory=list)
+    specs: list[TaskAssetSummary] = Field(default_factory=list)
+    plans: list[TaskAssetSummary] = Field(default_factory=list)
+    plan_nodes: list[PlanNodeAssetSummary] = Field(default_factory=list)
+    ai_runs: list[AiRunSummary] = Field(default_factory=list)
+    ai_outputs: list[AiOutputResponse] = Field(default_factory=list)
+    human_reviews: list[HumanReviewResponse] = Field(default_factory=list)
+    human_deltas: list[HumanDeltaResponse] = Field(default_factory=list)
+    evidence: list[EvidenceResponse] = Field(default_factory=list)
+    decisions: list[DecisionResponse] = Field(default_factory=list)
+    clarifications: list[ClarificationResponse] = Field(default_factory=list)
+    final_summary: TaskFinalSummaryResponse | None = None
+    process_audit_logs: list[TaskProcessAuditLogResponse] = Field(default_factory=list)
     process_summary: TaskProcessSummary = Field(default_factory=TaskProcessSummary)
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 class HumanReviewCreateRequest(BaseModel):
     outcome: HumanReviewOutcomeValue
     status: HumanReviewStatusValue = "OPEN"
-    review_type: Optional[str] = None
-    review_scope: Optional[str] = None
-    priority: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    source_ref: Optional[Dict[str, Any]] = None
-    target_ref: Optional[Dict[str, Any]] = None
-    target_refs: List[Dict[str, Any]] = Field(default_factory=list)
-    due_date: Optional[datetime] = None
-    change_reason: Optional[str] = None
+    review_type: str | None = None
+    review_scope: str | None = None
+    priority: str | None = None
+    title: str | None = None
+    body: str | None = None
+    source_ref: dict[str, Any] | None = None
+    target_ref: dict[str, Any] | None = None
+    target_refs: list[dict[str, Any]] = Field(default_factory=list)
+    due_date: datetime | None = None
+    change_reason: str | None = None
 
 
 class HumanReviewUpdateRequest(BaseModel):
-    outcome: Optional[HumanReviewOutcomeValue] = None
-    status: Optional[HumanReviewStatusValue] = None
-    review_type: Optional[str] = None
-    review_scope: Optional[str] = None
-    priority: Optional[str] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    source_ref: Optional[Dict[str, Any]] = None
-    target_ref: Optional[Dict[str, Any]] = None
-    target_refs: Optional[List[Dict[str, Any]]] = None
-    due_date: Optional[datetime] = None
-    change_reason: Optional[str] = None
+    outcome: HumanReviewOutcomeValue | None = None
+    status: HumanReviewStatusValue | None = None
+    review_type: str | None = None
+    review_scope: str | None = None
+    priority: str | None = None
+    title: str | None = None
+    body: str | None = None
+    source_ref: dict[str, Any] | None = None
+    target_ref: dict[str, Any] | None = None
+    target_refs: list[dict[str, Any]] | None = None
+    due_date: datetime | None = None
+    change_reason: str | None = None
 
 
 class HumanReviewCommentCreateRequest(BaseModel):
-    comment_type: Optional[str] = None
+    comment_type: str | None = None
     body: str
-    required_change: Optional[Dict[str, Any]] = None
-    change_reason: Optional[str] = None
+    required_change: dict[str, Any] | None = None
+    change_reason: str | None = None
 
 
 class HumanDeltaCreateRequest(BaseModel):
-    proposal_id: Optional[str] = None
-    final_evidence_id: Optional[str] = None
-    change_category: Optional[str] = None
-    change_reason: Optional[str] = None
+    proposal_id: str | None = None
+    final_evidence_id: str | None = None
+    change_category: str | None = None
+    change_reason: str | None = None
     promote_candidate: bool = False
-    audit_reason: Optional[str] = None
+    audit_reason: str | None = None
 
 
 class HumanDeltaUpdateRequest(BaseModel):
-    change_category: Optional[str] = None
-    change_reason: Optional[str] = None
-    promote_candidate: Optional[bool] = None
-    audit_reason: Optional[str] = None
+    change_category: str | None = None
+    change_reason: str | None = None
+    promote_candidate: bool | None = None
+    audit_reason: str | None = None
 
 
 class EvidenceCreateRequest(BaseModel):
-    requirement_id: Optional[str] = None
-    ai_job_id: Optional[str] = None
-    human_review_id: Optional[str] = None
+    requirement_id: str | None = None
+    ai_job_id: str | None = None
+    human_review_id: str | None = None
     status: EvidenceStatusValue = "UNCONFIRMED"
     evidence_type: EvidenceTypeValue = "CODE"
     source_type: EvidenceSourceTypeValue
-    source_uri: Optional[str] = None
-    source_label: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_path: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
+    source_uri: str | None = None
+    source_label: str | None = None
+    source_ref: str | None = None
+    source_path: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    title: str | None = None
+    summary: str | None = None
     confirmed: bool = False
-    change_reason: Optional[str] = None
+    change_reason: str | None = None
 
 
 class EvidenceUpdateRequest(BaseModel):
-    requirement_id: Optional[str] = None
-    ai_job_id: Optional[str] = None
-    human_review_id: Optional[str] = None
-    status: Optional[EvidenceStatusValue] = None
-    evidence_type: Optional[EvidenceTypeValue] = None
-    source_type: Optional[EvidenceSourceTypeValue] = None
-    source_uri: Optional[str] = None
-    source_label: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_path: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    confirmed: Optional[bool] = None
-    change_reason: Optional[str] = None
+    requirement_id: str | None = None
+    ai_job_id: str | None = None
+    human_review_id: str | None = None
+    status: EvidenceStatusValue | None = None
+    evidence_type: EvidenceTypeValue | None = None
+    source_type: EvidenceSourceTypeValue | None = None
+    source_uri: str | None = None
+    source_label: str | None = None
+    source_ref: str | None = None
+    source_path: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    title: str | None = None
+    summary: str | None = None
+    confirmed: bool | None = None
+    change_reason: str | None = None
 
 
 class DecisionCreateRequest(BaseModel):
-    requirement_id: Optional[str] = None
-    human_delta_id: Optional[str] = None
-    delta_region_id: Optional[str] = None
+    requirement_id: str | None = None
+    human_delta_id: str | None = None
+    delta_region_id: str | None = None
     status: DecisionStatusValue = "PROPOSED"
     title: str
-    body: Optional[str] = None
-    rationale: Optional[str] = None
-    impact_scope: Optional[str] = None
-    source_evidence_id: Optional[str] = None
+    body: str | None = None
+    rationale: str | None = None
+    impact_scope: str | None = None
+    source_evidence_id: str | None = None
     source_type: DecisionSourceTypeValue = "TASK_DETAIL_BACKFILL"
-    source_chat_message_id: Optional[str] = None
-    source_asset_id: Optional[str] = None
-    source_asset_version_id: Optional[str] = None
-    source_asset_thread_id: Optional[str] = None
-    source_resolution_proposal_id: Optional[str] = None
-    source_final_summary_id: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    delta_line_refs: Optional[List[Dict[str, Any]]] = None
+    source_chat_message_id: str | None = None
+    source_asset_id: str | None = None
+    source_asset_version_id: str | None = None
+    source_asset_thread_id: str | None = None
+    source_resolution_proposal_id: str | None = None
+    source_final_summary_id: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    delta_line_refs: list[dict[str, Any]] | None = None
     promote_candidate: bool = False
-    change_reason: Optional[str] = None
+    change_reason: str | None = None
 
 
 class DecisionUpdateRequest(BaseModel):
-    requirement_id: Optional[str] = None
-    human_delta_id: Optional[str] = None
-    delta_region_id: Optional[str] = None
-    status: Optional[DecisionStatusValue] = None
-    title: Optional[str] = None
-    body: Optional[str] = None
-    rationale: Optional[str] = None
-    impact_scope: Optional[str] = None
-    source_evidence_id: Optional[str] = None
-    source_type: Optional[DecisionSourceTypeValue] = None
-    source_chat_message_id: Optional[str] = None
-    source_asset_id: Optional[str] = None
-    source_asset_version_id: Optional[str] = None
-    source_asset_thread_id: Optional[str] = None
-    source_resolution_proposal_id: Optional[str] = None
-    source_final_summary_id: Optional[str] = None
-    source_metadata: Optional[Dict[str, Any]] = None
-    delta_line_refs: Optional[List[Dict[str, Any]]] = None
-    promote_candidate: Optional[bool] = None
-    change_reason: Optional[str] = None
+    requirement_id: str | None = None
+    human_delta_id: str | None = None
+    delta_region_id: str | None = None
+    status: DecisionStatusValue | None = None
+    title: str | None = None
+    body: str | None = None
+    rationale: str | None = None
+    impact_scope: str | None = None
+    source_evidence_id: str | None = None
+    source_type: DecisionSourceTypeValue | None = None
+    source_chat_message_id: str | None = None
+    source_asset_id: str | None = None
+    source_asset_version_id: str | None = None
+    source_asset_thread_id: str | None = None
+    source_resolution_proposal_id: str | None = None
+    source_final_summary_id: str | None = None
+    source_metadata: dict[str, Any] | None = None
+    delta_line_refs: list[dict[str, Any]] | None = None
+    promote_candidate: bool | None = None
+    change_reason: str | None = None
 
 
 class ChatMessageDecisionCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
-    body: Optional[str] = None
-    impact_scope: Optional[str] = Field(default=None, max_length=300)
-    requirement_id: Optional[str] = None
+    body: str | None = None
+    impact_scope: str | None = Field(default=None, max_length=300)
+    requirement_id: str | None = None
     promote_candidate: bool = False
-    change_reason: Optional[str] = None
+    change_reason: str | None = None
 
 
 class ClarificationCreateRequest(BaseModel):
-    requirement_id: Optional[str] = None
+    requirement_id: str | None = None
     status: ClarificationStatusValue = "OPEN"
     blocking_level: ClarificationBlockingLevelValue = "NON_BLOCKING"
     question: str
-    answer: Optional[str] = None
-    source_evidence_id: Optional[str] = None
-    source_review_id: Optional[str] = None
-    clarification_type: Optional[str] = None
-    target_ref: Optional[Dict[str, Any]] = None
-    urgency: Optional[str] = None
+    answer: str | None = None
+    source_evidence_id: str | None = None
+    source_review_id: str | None = None
+    clarification_type: str | None = None
+    target_ref: dict[str, Any] | None = None
+    urgency: str | None = None
     promote_candidate: bool = False
-    converted_requirement_id: Optional[str] = None
-    change_reason: Optional[str] = None
+    converted_requirement_id: str | None = None
+    change_reason: str | None = None
 
 
 class ClarificationUpdateRequest(BaseModel):
-    requirement_id: Optional[str] = None
-    status: Optional[ClarificationStatusValue] = None
-    blocking_level: Optional[ClarificationBlockingLevelValue] = None
-    question: Optional[str] = None
-    answer: Optional[str] = None
-    source_evidence_id: Optional[str] = None
-    source_review_id: Optional[str] = None
-    clarification_type: Optional[str] = None
-    target_ref: Optional[Dict[str, Any]] = None
-    urgency: Optional[str] = None
-    promote_candidate: Optional[bool] = None
-    converted_requirement_id: Optional[str] = None
-    change_reason: Optional[str] = None
+    requirement_id: str | None = None
+    status: ClarificationStatusValue | None = None
+    blocking_level: ClarificationBlockingLevelValue | None = None
+    question: str | None = None
+    answer: str | None = None
+    source_evidence_id: str | None = None
+    source_review_id: str | None = None
+    clarification_type: str | None = None
+    target_ref: dict[str, Any] | None = None
+    urgency: str | None = None
+    promote_candidate: bool | None = None
+    converted_requirement_id: str | None = None
+    change_reason: str | None = None
 
 
 class TaskFinalSummaryUpsertRequest(BaseModel):
     final_status: TaskFinalStatusValue = "PENDING"
-    summary: Optional[str] = None
-    remaining_risk: Optional[str] = None
-    next_steps: Optional[str] = None
-    final_evidence_ids: List[str] = Field(default_factory=list)
-    review_checklist: Optional[Dict[str, Any]] = None
-    clarification_summary: Optional[Dict[str, Any]] = None
-    delta_summary: Optional[Dict[str, Any]] = None
-    decision_summary: Optional[Dict[str, Any]] = None
-    human_confirmation_review_id: Optional[str] = None
-    change_reason: Optional[str] = None
+    summary: str | None = None
+    remaining_risk: str | None = None
+    next_steps: str | None = None
+    final_evidence_ids: list[str] = Field(default_factory=list)
+    review_checklist: dict[str, Any] | None = None
+    clarification_summary: dict[str, Any] | None = None
+    delta_summary: dict[str, Any] | None = None
+    decision_summary: dict[str, Any] | None = None
+    human_confirmation_review_id: str | None = None
+    change_reason: str | None = None
 
 
 class WorkspaceAssetsOverviewResponse(BaseModel):
@@ -945,18 +945,18 @@ class WorkspaceAssetsOverviewResponse(BaseModel):
     evidence_count: int = 0
     knowledge_asset_count: int = 0
     coverage_status: CoverageStatus = "not_available"
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 class WorkspaceAssetsRequirementsResponse(BaseModel):
     workspace_id: str
-    items: List[RequirementSummary] = Field(default_factory=list)
+    items: list[RequirementSummary] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
     scope: str = "tree"
     state: WorkspaceAssetListState = Field(default_factory=WorkspaceAssetListState)
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 class TaskListSummaryStats(BaseModel):
@@ -968,33 +968,33 @@ class TaskListSummaryStats(BaseModel):
 
 class WorkspaceAssetsTasksResponse(BaseModel):
     workspace_id: str
-    items: List[TaskSummary] = Field(default_factory=list)
+    items: list[TaskSummary] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
     stats: TaskListSummaryStats = Field(default_factory=TaskListSummaryStats)
     state: WorkspaceAssetListState = Field(default_factory=WorkspaceAssetListState)
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 class SpecCoverageMatrixTraceRefs(BaseModel):
-    spec_ids: List[str] = Field(default_factory=list)
-    plan_ids: List[str] = Field(default_factory=list)
-    ai_run_ids: List[str] = Field(default_factory=list)
-    human_review_ids: List[str] = Field(default_factory=list)
-    human_delta_ids: List[str] = Field(default_factory=list)
-    evidence_ids: List[str] = Field(default_factory=list)
-    decision_ids: List[str] = Field(default_factory=list)
-    clarification_ids: List[str] = Field(default_factory=list)
+    spec_ids: list[str] = Field(default_factory=list)
+    plan_ids: list[str] = Field(default_factory=list)
+    ai_run_ids: list[str] = Field(default_factory=list)
+    human_review_ids: list[str] = Field(default_factory=list)
+    human_delta_ids: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    decision_ids: list[str] = Field(default_factory=list)
+    clarification_ids: list[str] = Field(default_factory=list)
 
 
 class SpecCoverageMatrixItem(BaseModel):
     id: str
     requirement_id: str
     requirement_title: str
-    task_id: Optional[str] = None
-    task_name: Optional[str] = None
-    relation_type: Optional[str] = None
+    task_id: str | None = None
+    task_name: str | None = None
+    relation_type: str | None = None
     spec_status: str = "empty"
     plan_status: str = "empty"
     ai_run_status: str = "empty"
@@ -1010,23 +1010,23 @@ class TraceabilityViewResponse(BaseModel):
     key: Literal["spec_coverage_matrix", "evidence_registry", "human_delta_dashboard", "risk_board"]
     title: str
     view_type: str
-    items: List[Dict[str, Any]] = Field(default_factory=list)
+    items: list[dict[str, Any]] = Field(default_factory=list)
     total: int = 0
     state: WorkspaceAssetListState = Field(default_factory=WorkspaceAssetListState)
 
 
 class WorkspaceAssetsTraceabilityResponse(BaseModel):
     workspace_id: str
-    views: List[TraceabilityViewResponse] = Field(default_factory=list)
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    views: list[TraceabilityViewResponse] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 class WorkspaceAssetsKnowledgeResponse(BaseModel):
     workspace_id: str
-    items: List[KnowledgeAssetResponse] = Field(default_factory=list)
+    items: list[KnowledgeAssetResponse] = Field(default_factory=list)
     total: int = 0
     state: WorkspaceAssetListState = Field(default_factory=WorkspaceAssetListState)
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1038,9 +1038,9 @@ class TaskDetailSummaryResponse(BaseModel):
     """Lightweight task detail summary for initial page load. No sub-table entities."""
 
     task: TaskSummary
-    requirement_links: List[TaskRequirementLinkResponse] = Field(default_factory=list)
+    requirement_links: list[TaskRequirementLinkResponse] = Field(default_factory=list)
     process_summary: TaskProcessSummary = Field(default_factory=TaskProcessSummary)
-    connection_status: List[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
+    connection_status: list[WorkspaceAssetConnectionStatus] = Field(default_factory=list)
 
 
 class TaskFileItemLightResponse(BaseModel):
@@ -1051,16 +1051,16 @@ class TaskFileItemLightResponse(BaseModel):
     title: str
     status: str
     source_kind: str
-    source_id: Optional[str] = None
-    source_version_id: Optional[str] = None
-    source_path: Optional[str] = None
-    summary: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    source_id: str | None = None
+    source_version_id: str | None = None
+    source_path: str | None = None
+    summary: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskFilesSectionResponse(BaseModel):
-    items: List[TaskFileItemLightResponse] = Field(default_factory=list)
+    items: list[TaskFileItemLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -1072,23 +1072,23 @@ class HumanReviewLightResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    reviewer_id: Optional[str] = None
+    reviewer_id: str | None = None
     status: str
-    outcome: Optional[str] = None
-    review_type: Optional[str] = None
-    review_scope: Optional[str] = None
-    priority: Optional[str] = None
-    title: Optional[str] = None
-    due_date: Optional[datetime] = None
-    resolved_at: Optional[datetime] = None
-    linked_clarification_ids: List[str] = Field(default_factory=list)
+    outcome: str | None = None
+    review_type: str | None = None
+    review_scope: str | None = None
+    priority: str | None = None
+    title: str | None = None
+    due_date: datetime | None = None
+    resolved_at: datetime | None = None
+    linked_clarification_ids: list[str] = Field(default_factory=list)
     comment_count: int = 0
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskHumanReviewsSectionResponse(BaseModel):
-    items: List[HumanReviewLightResponse] = Field(default_factory=list)
+    items: list[HumanReviewLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -1100,26 +1100,26 @@ class HumanDeltaLightResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    proposal_id: Optional[str] = None
-    final_evidence_id: Optional[str] = None
+    proposal_id: str | None = None
+    final_evidence_id: str | None = None
     status: str
-    diff_asset_id: Optional[str] = None
-    changed_files_count: Optional[int] = None
-    insertions: Optional[int] = None
-    deletions: Optional[int] = None
-    comparison_summary: Optional[str] = None
-    change_category: Optional[str] = None
-    change_reason: Optional[str] = None
+    diff_asset_id: str | None = None
+    changed_files_count: int | None = None
+    insertions: int | None = None
+    deletions: int | None = None
+    comparison_summary: str | None = None
+    change_category: str | None = None
+    change_reason: str | None = None
     promote_candidate: bool = False
-    proposal_summary: Optional[ChangeProposalSummary] = None
-    final_evidence_summary: Optional[EvidenceSummary] = None
+    proposal_summary: ChangeProposalSummary | None = None
+    final_evidence_summary: EvidenceSummary | None = None
     decision_count: int = 0
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskHumanDeltasSectionResponse(BaseModel):
-    items: List[HumanDeltaLightResponse] = Field(default_factory=list)
+    items: list[HumanDeltaLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -1131,7 +1131,7 @@ class HumanDeltaSuggestionItem(BaseModel):
 
 
 class HumanDeltaSuggestionsResponse(BaseModel):
-    items: List[HumanDeltaSuggestionItem] = Field(default_factory=list)
+    items: list[HumanDeltaSuggestionItem] = Field(default_factory=list)
 
 
 class EvidenceLightResponse(BaseModel):
@@ -1139,27 +1139,27 @@ class EvidenceLightResponse(BaseModel):
 
     id: str
     workspace_id: str
-    requirement_id: Optional[str] = None
-    task_id: Optional[str] = None
-    ai_job_id: Optional[str] = None
-    human_review_id: Optional[str] = None
+    requirement_id: str | None = None
+    task_id: str | None = None
+    ai_job_id: str | None = None
+    human_review_id: str | None = None
     status: str
     evidence_type: str = "CODE"
     source_type: str
-    source_uri: Optional[str] = None
-    source_label: Optional[str] = None
-    source_ref: Optional[str] = None
-    source_path: Optional[str] = None
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    confirmed_by_id: Optional[str] = None
-    confirmed_at: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    source_uri: str | None = None
+    source_label: str | None = None
+    source_ref: str | None = None
+    source_path: str | None = None
+    title: str | None = None
+    summary: str | None = None
+    confirmed_by_id: str | None = None
+    confirmed_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskEvidenceSectionResponse(BaseModel):
-    items: List[EvidenceLightResponse] = Field(default_factory=list)
+    items: list[EvidenceLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -1171,24 +1171,24 @@ class DecisionLightResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    requirement_id: Optional[str] = None
-    human_delta_id: Optional[str] = None
-    delta_region_id: Optional[str] = None
+    requirement_id: str | None = None
+    human_delta_id: str | None = None
+    delta_region_id: str | None = None
     status: str
     title: str
-    impact_scope: Optional[str] = None
-    source_evidence_id: Optional[str] = None
+    impact_scope: str | None = None
+    source_evidence_id: str | None = None
     source_type: DecisionSourceTypeValue = "TASK_DETAIL_BACKFILL"
-    source: Optional[DecisionSourceResponse] = None
-    delta_line_refs: Optional[List[Dict[str, Any]]] = None
-    decided_by_id: Optional[str] = None
+    source: DecisionSourceResponse | None = None
+    delta_line_refs: list[dict[str, Any]] | None = None
+    decided_by_id: str | None = None
     promote_candidate: bool = False
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskDecisionsSectionResponse(BaseModel):
-    items: List[DecisionLightResponse] = Field(default_factory=list)
+    items: list[DecisionLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -1200,26 +1200,26 @@ class ClarificationLightResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    requirement_id: Optional[str] = None
+    requirement_id: str | None = None
     status: str
     blocking_level: str = "NON_BLOCKING"
     question: str
-    requester_id: Optional[str] = None
-    responder_id: Optional[str] = None
-    source_evidence_id: Optional[str] = None
-    source_review_id: Optional[str] = None
-    clarification_type: Optional[str] = None
-    urgency: Optional[str] = None
-    answered_at: Optional[datetime] = None
-    accepted_at: Optional[datetime] = None
+    requester_id: str | None = None
+    responder_id: str | None = None
+    source_evidence_id: str | None = None
+    source_review_id: str | None = None
+    clarification_type: str | None = None
+    urgency: str | None = None
+    answered_at: datetime | None = None
+    accepted_at: datetime | None = None
     promote_candidate: bool = False
-    converted_requirement_id: Optional[str] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    converted_requirement_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class TaskClarificationsSectionResponse(BaseModel):
-    items: List[ClarificationLightResponse] = Field(default_factory=list)
+    items: list[ClarificationLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -1231,16 +1231,16 @@ class TaskProcessAuditLogLightResponse(BaseModel):
     id: str
     workspace_id: str
     task_id: str
-    actor_id: Optional[str] = None
+    actor_id: str | None = None
     record_type: str
     record_id: str
     action: str
-    reason: Optional[str] = None
-    created_at: Optional[datetime] = None
+    reason: str | None = None
+    created_at: datetime | None = None
 
 
 class TaskProcessAuditSectionResponse(BaseModel):
-    items: List[TaskProcessAuditLogLightResponse] = Field(default_factory=list)
+    items: list[TaskProcessAuditLogLightResponse] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50

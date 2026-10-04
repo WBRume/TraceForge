@@ -1,11 +1,14 @@
 """Human-reviewed SOP state for advisory task sessions; never a physical receipt."""
-from copy import deepcopy
+
 import json
 import re
+from copy import deepcopy
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+
 from app.domains.task.models.task import SddTask
+
 from .contracts import PlaybookError, digest
 
 PHASES = ("PROBE", "HYPOTHESIZE", "REPRODUCE", "PATCH")
@@ -36,8 +39,11 @@ class Hypothesis(BaseModel):
 
 
 def supported(hypothesis):
-    return (hypothesis.get("verdict") == "SUPPORTED" and bool(hypothesis.get("evidence"))
-            and bool(str(hypothesis.get("verdict_reason") or "").strip()))
+    return (
+        hypothesis.get("verdict") == "SUPPORTED"
+        and bool(hypothesis.get("evidence"))
+        and bool(str(hypothesis.get("verdict_reason") or "").strip())
+    )
 
 
 class StageReport(BaseModel):
@@ -60,9 +66,17 @@ def snapshot(task):
         raise PlaybookError("GUIDE_NOT_BOUND", status=404)
     state = deepcopy(meta.get("diagnosis_sop") or {})
     if state.get("session_generation") != task.session_generation:
-        state = {"version": state.get("version", 0) + 1, "session_generation": task.session_generation,
-                 "active_phase": "PROBE", "completed": False, "reports": {}, "hypotheses": [],
-                 "confirmations": {}, "commands": {}, "error": None}
+        state = {
+            "version": state.get("version", 0) + 1,
+            "session_generation": task.session_generation,
+            "active_phase": "PROBE",
+            "completed": False,
+            "reports": {},
+            "hypotheses": [],
+            "confirmations": {},
+            "commands": {},
+            "error": None,
+        }
     # 主开关（新建任务/启动引擎时设置）：新会话以任务级偏好初始化自动执行
     state.setdefault("auto_run", bool(meta.get("sop_auto_run")))
     state.setdefault("auto_run_by", None)
@@ -71,6 +85,7 @@ def snapshot(task):
         hypothesis.setdefault("verdict", "UNTESTED")
         hypothesis.setdefault("verdict_reason", "")
     from .analysis_guide import methodology_binding
+
     return {"task_id": task.id, "guide": methodology_binding(guide), **state}
 
 
@@ -85,6 +100,30 @@ def save(task, state):
     return public(task)
 
 
+def _decide_hypothesis(state, request, user_id, action, phase):
+    if phase != "HYPOTHESIZE":
+        raise PlaybookError("HYPOTHESIS_STAGE_REQUIRED", status=409)
+    item = next((h for h in state["hypotheses"] if h["id"] == request.get("hypothesis_id")), None)
+    if not item:
+        raise PlaybookError("HYPOTHESIS_NOT_FOUND", status=404)
+    if action == "approve_hypothesis":
+        if not item["evidence"]:
+            raise PlaybookError("HYPOTHESIS_EVIDENCE_REQUIRED")
+        if not supported(item) or item["state"] == "EXCLUDED":
+            raise PlaybookError("HYPOTHESIS_NOT_SUPPORTED", status=409)
+        for hypothesis in state["hypotheses"]:
+            if hypothesis["state"] == "APPROVED":
+                hypothesis["state"] = "PROPOSED"
+    item.update(
+        state={
+            "approve_hypothesis": "APPROVED",
+            "exclude_hypothesis": "EXCLUDED",
+            "restore_hypothesis": "PROPOSED",
+        }[action],
+        decided_by=user_id,
+    )
+
+
 def command(db, task, request, user_id):
     db.refresh(task, with_for_update=True)
     state = snapshot(task)
@@ -96,10 +135,25 @@ def command(db, task, request, user_id):
         return public(task)
     if request["expected_version"] != state["version"]:
         raise PlaybookError("STATE_VERSION_CONFLICT", status=409)
-    from app.domains.ai.models.ai_job import SddAiJob, AiJobStatus, AiJobChannel
-    active_job = db.query(SddAiJob.id).filter(SddAiJob.task_id == task.id, SddAiJob.channel == AiJobChannel.TASK_CHAT,
-        SddAiJob.status.in_([AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL,
-                           AiJobStatus.TERMINATING, AiJobStatus.ORPHANED])).first()
+    from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
+
+    active_job = (
+        db.query(SddAiJob.id)
+        .filter(
+            SddAiJob.task_id == task.id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status.in_(
+                [
+                    AiJobStatus.PENDING,
+                    AiJobStatus.RUNNING,
+                    AiJobStatus.WAITING_HITL,
+                    AiJobStatus.TERMINATING,
+                    AiJobStatus.ORPHANED,
+                ]
+            ),
+        )
+        .first()
+    )
     if active_job and request["action"] not in {"enable_auto", "disable_auto"}:
         raise PlaybookError("AGENT_TURN_ACTIVE", status=409)
     if state["completed"]:
@@ -108,24 +162,16 @@ def command(db, task, request, user_id):
     if action in {"enable_auto", "disable_auto"}:
         state.update(auto_run=action == "enable_auto", auto_run_by=user_id, auto_pause_reason=None)
     elif action in {"approve_hypothesis", "exclude_hypothesis", "restore_hypothesis"}:
-        if phase != "HYPOTHESIZE":
-            raise PlaybookError("HYPOTHESIS_STAGE_REQUIRED", status=409)
-        item = next((h for h in state["hypotheses"] if h["id"] == request.get("hypothesis_id")), None)
-        if not item:
-            raise PlaybookError("HYPOTHESIS_NOT_FOUND", status=404)
-        if action == "approve_hypothesis":
-            if not item["evidence"]:
-                raise PlaybookError("HYPOTHESIS_EVIDENCE_REQUIRED")
-            if not supported(item) or item["state"] == "EXCLUDED":
-                raise PlaybookError("HYPOTHESIS_NOT_SUPPORTED", status=409)
-            for hypothesis in state["hypotheses"]:
-                if hypothesis["state"] == "APPROVED":
-                    hypothesis["state"] = "PROPOSED"
-        item.update(state={"approve_hypothesis": "APPROVED", "exclude_hypothesis": "EXCLUDED",
-                           "restore_hypothesis": "PROPOSED"}[action], decided_by=user_id)
+        _decide_hypothesis(state, request, user_id, action, phase)
     elif action == "advance":
         report = state["reports"].get(phase)
-        if state["error"] or not report or not report["ready_for_review"] or not report["evidence"] or report["outcome"] == "FAILED":
+        if (
+            state["error"]
+            or not report
+            or not report["ready_for_review"]
+            or not report["evidence"]
+            or report["outcome"] == "FAILED"
+        ):
             raise PlaybookError("STAGE_EVIDENCE_REQUIRED")
         if phase == "HYPOTHESIZE" and not any(h["state"] == "APPROVED" and supported(h) for h in state["hypotheses"]):
             raise PlaybookError("ROOT_CAUSE_CONFIRMATION_REQUIRED")
@@ -147,28 +193,37 @@ def turn_context(task):
         return None
     state = snapshot(task)
     # Control-only changes (e.g. disabling auto-run) must not discard an active report.
-    return {"session_generation": task.session_generation,
-            "session_revision": task.session_revision, "active_phase": state["active_phase"]}
+    return {
+        "session_generation": task.session_generation,
+        "session_revision": task.session_revision,
+        "active_phase": state["active_phase"],
+    }
 
 
 def prompt(task):
     from .analysis_guide import prompt_suffix
+
     state = public(task)
     schema = StageReport.model_json_schema()
-    return (prompt_suffix(task) + "\n本次 SOP 状态：\n" + json.dumps({k: v for k, v in state.items() if k != "guide"}, ensure_ascii=False)
+    return (
+        prompt_suffix(task)
+        + "\n本次 SOP 状态：\n"
+        + json.dumps({k: v for k, v in state.items() if k != "guide"}, ensure_ascii=False)
         + "\n只处理当前 active_phase，不自动跳阶段。按已确认的假说进行后续复现与修复。"
-          "回复末尾输出一个 ```traceforge-sop JSON 代码块，符合以下结构：\n" + json.dumps(schema, ensure_ascii=False)
+        "回复末尾输出一个 ```traceforge-sop JSON 代码块，符合以下结构：\n"
+        + json.dumps(schema, ensure_ascii=False)
         + "\nevidence 必须引用本次实际读到的文件、日志或执行输出；不得把历史案例作为本次验证证据。"
-          "未执行实验时 outcome=NOT_RUN；只有实际观察到目标现象/回归结果才使用 OBSERVED。"
-          "hypotheses 在假说阶段提交多个可证伪假说。ready_for_review 只表示材料完整，不代表阶段通过。"
-          "每个假说必须填写 verdict 和 verdict_reason：UNTESTED=尚未验证，SUPPORTED=本次证据支持，"
-          "REFUTED=本次证据已证伪，INCONCLUSIVE=执行后仍无法判定。除UNTESTED外必须附本次证据和判定理由。"
-          "falsifier 是证伪条件，不是已执行结果；实际判定必须写入verdict，不能只写在自然语言结论里。"
-          "不要用人工排除代替已证伪；root_cause_hypothesis_id只能指向SUPPORTED假说。"
-          "auto_run=true 时由服务端在回合成功结束后检查条件并衔接下一阶段，不依赖用户在线；"
-          "假说阶段用 root_cause_hypothesis_id 明确推荐一个有本次证据支持的根因，不能确定则留空。"
-          "不要把历史案例中等待人工确认的描述当作自动模式必须停下的指令。"
-          "每轮仍只处理 active_phase；缺少证据或执行失败必须如实报告，不得自行跳阶段。")
+        "未执行实验时 outcome=NOT_RUN；只有实际观察到目标现象/回归结果才使用 OBSERVED。"
+        "hypotheses 在假说阶段提交多个可证伪假说。ready_for_review 只表示材料完整，不代表阶段通过。"
+        "每个假说必须填写 verdict 和 verdict_reason：UNTESTED=尚未验证，SUPPORTED=本次证据支持，"
+        "REFUTED=本次证据已证伪，INCONCLUSIVE=执行后仍无法判定。除UNTESTED外必须附本次证据和判定理由。"
+        "falsifier 是证伪条件，不是已执行结果；实际判定必须写入verdict，不能只写在自然语言结论里。"
+        "不要用人工排除代替已证伪；root_cause_hypothesis_id只能指向SUPPORTED假说。"
+        "auto_run=true 时由服务端在回合成功结束后检查条件并衔接下一阶段，不依赖用户在线；"
+        "假说阶段用 root_cause_hypothesis_id 明确推荐一个有本次证据支持的根因，不能确定则留空。"
+        "不要把历史案例中等待人工确认的描述当作自动模式必须停下的指令。"
+        "每轮仍只处理 active_phase；缺少证据或执行失败必须如实报告，不得自行跳阶段。"
+    )
 
 
 def parse_report(text):
@@ -204,9 +259,23 @@ def accept_result(db, task_id, fence, text, job_id, streamed_text=""):
             previous = {h["id"]: h for h in state["hypotheses"]}
             if any(h.get("decided_by") and h["id"] not in ids for h in previous.values()):
                 raise ValueError("human decision removed")
-            state["hypotheses"] = [{**h, "state": "PROPOSED", **({"state": previous[h["id"]]["state"],
-                "decided_by": previous[h["id"]]["decided_by"]} if h["id"] in previous and previous[h["id"]].get("decided_by") and
-                all(previous[h["id"]].get(k) == h[k] for k in ("claim", "prediction", "falsifier", "evidence", "verdict", "verdict_reason")) else {})} for h in report["hypotheses"]]
+            state["hypotheses"] = [
+                {
+                    **h,
+                    "state": "PROPOSED",
+                    **(
+                        {"state": previous[h["id"]]["state"], "decided_by": previous[h["id"]]["decided_by"]}
+                        if h["id"] in previous
+                        and previous[h["id"]].get("decided_by")
+                        and all(
+                            previous[h["id"]].get(k) == h[k]
+                            for k in ("claim", "prediction", "falsifier", "evidence", "verdict", "verdict_reason")
+                        )
+                        else {}
+                    ),
+                }
+                for h in report["hypotheses"]
+            ]
         state["reports"][report["phase"]] = {**report, "job_id": job_id, "origin": "AGENT_OBSERVATION"}
         state.pop("next_submission", None)
         state["error"] = None
@@ -219,7 +288,10 @@ def accept_result(db, task_id, fence, text, job_id, streamed_text=""):
 async def publish(task_id, value):
     from app.domains.ai.schemas.websocket import WSMessage
     from app.domains.websocket.ws.manager import manager
-    await manager.send_message_to_room(task_id, WSMessage(type="playbook.guide_updated", payload={"task_id": task_id, "snapshot": value}))
+
+    await manager.send_message_to_room(
+        task_id, WSMessage(type="playbook.guide_updated", payload={"task_id": task_id, "snapshot": value})
+    )
 
 
 def invalidate_reverted_jobs(task, job_ids):
@@ -236,8 +308,14 @@ def invalidate_reverted_jobs(task, job_ids):
     if first <= PHASES.index("HYPOTHESIZE"):
         state["hypotheses"] = []
     state.pop("next_submission", None)
-    state.update(active_phase=PHASES[first], completed=False, commands={}, error=None,
-                 auto_run=False, auto_pause_reason="历史结果已撤回，自动执行已暂停。")
+    state.update(
+        active_phase=PHASES[first],
+        completed=False,
+        commands={},
+        error=None,
+        auto_run=False,
+        auto_pause_reason="历史结果已撤回，自动执行已暂停。",
+    )
     save(task, state)
 
 

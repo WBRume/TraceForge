@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.dependencies import get_current_user, get_db
 from app.domains.ai.schemas.websocket import WSMessage
 from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.task.models.session_share import TaskSessionShare
 from app.domains.task.routers.task.deps import (
     TASKS_ROUTE_PREFIX,
     get_db_bind,
@@ -19,7 +19,6 @@ from app.domains.task.routers.task.deps import (
     verify_workspace_access,
     verify_workspace_permission,
 )
-from app.domains.task.models.session_share import TaskSessionShare
 from app.domains.task.schemas.session_share import (
     SessionShareCreate,
     SessionShareCreated,
@@ -68,12 +67,16 @@ async def create_session_share(
     """创建分享链接。需要 SHARE_TASK_SESSION 权限；INPUT 模式还需要正常发送权限。"""
     if data.mode == "INPUT":
         verify_workspace_permission(
-            ws_id, current_user.id, db,
+            ws_id,
+            current_user.id,
+            db,
             WorkspacePermission.START_TASK,
             "No permission to send messages in this task",
         )
     verify_workspace_permission(
-        ws_id, current_user.id, db,
+        ws_id,
+        current_user.id,
+        db,
         WorkspacePermission.SHARE_TASK_SESSION,
         "No permission to share task sessions",
     )
@@ -111,7 +114,7 @@ async def create_session_share(
     except LockAcquireTimeout as exc:
         raise HTTPException(status_code=409, detail="Task is busy, please retry later") from exc
     except session_share_service.ShareError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
 
 @router.get("/{task_id}/session-shares", response_model=SessionShareListResponse)
@@ -143,19 +146,25 @@ async def revoke_session_share(
     置空（断开关联），避免 CASCADE 连带删除建议数据。
     """
     verify_workspace_access(ws_id, current_user.id, db)
-    task = get_task_or_404(db, task_id, ws_id)
+    get_task_or_404(db, task_id, ws_id)
 
-    share = db.query(TaskSessionShare).filter(
-        TaskSessionShare.id == share_id,
-        TaskSessionShare.task_id == task_id,
-    ).first()
+    share = (
+        db.query(TaskSessionShare)
+        .filter(
+            TaskSessionShare.id == share_id,
+            TaskSessionShare.task_id == task_id,
+        )
+        .first()
+    )
     if not share:
         raise HTTPException(status_code=404, detail="Share not found")
 
     is_creator = str(share.creator_id) == str(current_user.id)
     if not is_creator:
         verify_workspace_permission(
-            ws_id, current_user.id, db,
+            ws_id,
+            current_user.id,
+            db,
             WorkspacePermission.SHARE_TASK_SESSION,
             "No permission to revoke this share",
         )
@@ -164,9 +173,9 @@ async def revoke_session_share(
     db.close()
 
     def _txn(session: Session):
-        locked_share = session.query(TaskSessionShare).filter(
-            TaskSessionShare.id == share_id
-        ).with_for_update().one_or_none()
+        locked_share = (
+            session.query(TaskSessionShare).filter(TaskSessionShare.id == share_id).with_for_update().one_or_none()
+        )
         if locked_share is None:
             return None
         deleted = session_share_service.delete_share(session, locked_share)
@@ -179,7 +188,7 @@ async def revoke_session_share(
     except LockAcquireTimeout as exc:
         raise HTTPException(status_code=409, detail="Task is busy, please retry later") from exc
     except session_share_service.ShareError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     if deleted is None:
         raise HTTPException(status_code=404, detail="Share not found")
@@ -190,8 +199,8 @@ async def revoke_session_share(
 def list_share_suggestions(
     ws_id: str,
     task_id: str,
-    status: Optional[str] = Query(default=None, pattern="^(PENDING|ADOPTED|DISMISSED)$"),
-    cursor: Optional[str] = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(PENDING|ADOPTED|DISMISSED)$"),
+    cursor: str | None = Query(default=None),
     page_size: int = Query(default=50, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -210,7 +219,7 @@ def list_share_suggestions(
             page_size=page_size,
         )
     except share_suggestion_service.SuggestionError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message)
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     return ShareSuggestionListResponse(
         items=[ShareSuggestionItem(**share_suggestion_service.serialize_suggestion(row)) for row in rows],
@@ -237,10 +246,15 @@ async def patch_share_suggestion(
     def _txn(session: Session):
         from app.domains.task.models.session_share import TaskShareSuggestion
 
-        row = session.query(TaskShareSuggestion).filter(
-            TaskShareSuggestion.id == suggestion_id,
-            TaskShareSuggestion.task_id == task_id,
-        ).with_for_update().one_or_none()
+        row = (
+            session.query(TaskShareSuggestion)
+            .filter(
+                TaskShareSuggestion.id == suggestion_id,
+                TaskShareSuggestion.task_id == task_id,
+            )
+            .with_for_update()
+            .one_or_none()
+        )
         if row is None:
             raise HTTPException(status_code=404, detail="Suggestion not found")
         if str(row.recipient_user_id) != str(current_user.id):
@@ -268,10 +282,11 @@ async def patch_share_suggestion(
         raise HTTPException(
             status_code=exc.status_code,
             detail={"code": exc.code, "message": exc.message},
-        )
+        ) from exc
 
     # 同步发起人的其他会话窗口（同一任务房间）；内容仍由各自 REST 拉取
     from app.domains.websocket.ws.manager import manager as task_ws_manager
+
     await task_ws_manager.send_message_to_room(
         task_id,
         WSMessage(
@@ -286,20 +301,24 @@ async def patch_share_suggestion(
     return ShareSuggestionItem(**serialized)
 
 
-from pydantic import BaseModel, Field
-
-
 class MemberSuggestionInput(BaseModel):
     content: str = Field(min_length=1, max_length=20000)
     client_submission_id: str = Field(min_length=1, max_length=128)
 
 
 @router.post("/{task_id}/member-suggestions")
-async def submit_member_suggestion(ws_id: str, task_id: str, data: MemberSuggestionInput,
-                                   current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+async def submit_member_suggestion(
+    ws_id: str,
+    task_id: str,
+    data: MemberSuggestionInput,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     import uuid
+
     from app.domains.local_resource.service import is_local
     from app.domains.task.models.session_share import TaskShareSuggestion
+
     bind = get_db_bind(db)
     actor_id = current_user.id
     actor_name = current_user.display_name
@@ -311,8 +330,11 @@ async def submit_member_suggestion(ws_id: str, task_id: str, data: MemberSuggest
         if not is_local(task):
             raise HTTPException(409, "Only local resource tasks accept member suggestions")
         source_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"member:{task_id}:{task.session_generation}"))
-        row = session.query(TaskShareSuggestion).filter_by(share_id=source_id, visitor_id=actor_id,
-                                                          client_submission_id=data.client_submission_id).first()
+        row = (
+            session.query(TaskShareSuggestion)
+            .filter_by(share_id=source_id, visitor_id=actor_id, client_submission_id=data.client_submission_id)
+            .first()
+        )
         text = data.content.strip()
         if not text:
             raise HTTPException(422, "Input is empty")
@@ -320,17 +342,36 @@ async def submit_member_suggestion(ws_id: str, task_id: str, data: MemberSuggest
             if row.original_content != text:
                 raise HTTPException(409, "Submission ID reused with different content")
         else:
-            row = TaskShareSuggestion(share_id=source_id, source_kind="MEMBER", task_id=task_id,
-                session_generation=int(task.session_generation or 0), recipient_user_id=task.creator_id,
-                visitor_id=actor_id, sender_user_id=actor_id, display_name=actor_name, original_content=text,
-                client_submission_id=data.client_submission_id, version=1)
+            row = TaskShareSuggestion(
+                share_id=source_id,
+                source_kind="MEMBER",
+                task_id=task_id,
+                session_generation=int(task.session_generation or 0),
+                recipient_user_id=task.creator_id,
+                visitor_id=actor_id,
+                sender_user_id=actor_id,
+                display_name=actor_name,
+                original_content=text,
+                client_submission_id=data.client_submission_id,
+                version=1,
+            )
             session.add(row)
             session.flush()
             from app.domains.task.models.task_event_outbox import TaskEventOutbox
+
             event_id = str(uuid.uuid4())
-            session.add(TaskEventOutbox(event_id=event_id, task_id=task_id,
-                payload_json={"event_type": "share_suggestion_update", "event_id": event_id,
-                              "task_id": task_id, "recipient_user_id": task.creator_id}))
+            session.add(
+                TaskEventOutbox(
+                    event_id=event_id,
+                    task_id=task_id,
+                    payload_json={
+                        "event_type": "share_suggestion_update",
+                        "event_id": event_id,
+                        "task_id": task_id,
+                        "recipient_user_id": task.creator_id,
+                    },
+                )
+            )
         result = share_suggestion_service.serialize_receipt(row)
         result["recipient_user_id"] = task.creator_id
         session.commit()
@@ -339,5 +380,6 @@ async def submit_member_suggestion(ws_id: str, task_id: str, data: MemberSuggest
     async with lock_task(task_id):
         receipt = await run_route_db_txn(db, bind, submit)
     from app.domains.task.services.chat_submission_service import wake_event_publisher
+
     await wake_event_publisher()
     return receipt

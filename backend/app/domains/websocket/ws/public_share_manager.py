@@ -13,7 +13,6 @@ query 参数 access）每次连接校验分享状态、任务代次与发起人�
 from __future__ import annotations
 
 import json
-from typing import Dict, Optional, Set
 
 from fastapi import WebSocket
 
@@ -32,7 +31,7 @@ class PublicShareConnectionManager:
         return f"share:{share_id}"
 
     @property
-    def active_connections(self) -> Dict[str, Set[WebSocket]]:
+    def active_connections(self) -> dict[str, set[WebSocket]]:
         return {share_id: set(sockets) for share_id, sockets in self.registry.rooms.items()}
 
     def has_subscribers(self, share_id: str) -> bool:
@@ -43,7 +42,7 @@ class PublicShareConnectionManager:
         websocket: WebSocket,
         share_id: str,
         *,
-        client_id: Optional[str] = None,
+        client_id: str | None = None,
     ) -> OutboundConnection:
         await websocket.accept()
         connection = await self.registry.connect(
@@ -130,17 +129,14 @@ async def _active_read_share_ids(task_id: str) -> list[str]:
     def _query(session_factory) -> list[str]:
         db = session_factory()
         try:
-            rows = (
-                db.execute(
-                    sa_text(
-                        "SELECT id FROM sdd_task_session_shares "
-                        "WHERE task_id = :task_id AND mode = 'READ' AND revoked_at IS NULL "
-                        "AND expires_at > :now"
-                    ),
-                    {"task_id": task_id, "now": datetime.utcnow()},
-                )
-                .fetchall()
-            )
+            rows = db.execute(
+                sa_text(
+                    "SELECT id FROM sdd_task_session_shares "
+                    "WHERE task_id = :task_id AND mode = 'READ' AND revoked_at IS NULL "
+                    "AND expires_at > :now"
+                ),
+                {"task_id": task_id, "now": datetime.utcnow()},
+            ).fetchall()
             return [row[0] for row in rows]
         finally:
             db.close()

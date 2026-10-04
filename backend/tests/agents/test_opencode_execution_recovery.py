@@ -1,4 +1,5 @@
 """Fault injection for durable OpenCode observation; no model calls."""
+
 import asyncio
 import json
 import time
@@ -40,11 +41,18 @@ class Provider:
         if self.prompt_id:
             rows.append({"type": "user", "id": self.prompt_id})
         if self.done:
-            rows.extend([
-                {"id": "msg_answer", "type": "assistant", "time": {"completed": 123},
-                 "content": [{"type": "text", "text": "finished"}], "finish": "stop"},
-                {"id": "msg_idle", "type": "idle", "outcome": self.outcome},
-            ])
+            rows.extend(
+                [
+                    {
+                        "id": "msg_answer",
+                        "type": "assistant",
+                        "time": {"completed": 123},
+                        "content": [{"type": "text", "text": "finished"}],
+                        "finish": "stop",
+                    },
+                    {"id": "msg_idle", "type": "idle", "outcome": self.outcome},
+                ]
+            )
         return rows
 
     def handle(self, request):
@@ -90,8 +98,13 @@ class Provider:
 
 def checkpoint(provider, *, phase="submitted", remaining=100):
     provider.prompt_id = "msg_original"
-    return {"version": 1, "session_id": "ses_test", "prompt_id": provider.prompt_id,
-            "deadline": time.time() + remaining, "phase": phase}
+    return {
+        "version": 1,
+        "session_id": "ses_test",
+        "prompt_id": provider.prompt_id,
+        "deadline": time.time() + remaining,
+        "phase": phase,
+    }
 
 
 @pytest.fixture
@@ -102,15 +115,15 @@ def fast_reconcile(monkeypatch):
 async def execute(provider, **kwargs):
     adapter = OpenCodeAdapter("http://agent")
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(provider.handle))
-    adapter.interrupt = AsyncMock(return_value=AgentStopResult(
-        execution_kind="REMOTE_SESSION", stop_acknowledged=True))
+    adapter.interrupt = AsyncMock(return_value=AgentStopResult(execution_kind="REMOTE_SESSION", stop_acknowledged=True))
     events = []
 
     async def collect(event):
         events.append(event)
 
-    request = AgentRunRequest(prompt="work", session_id="ses_test", idle_timeout_seconds=0.05,
-                              timeout_seconds=5, **kwargs)
+    request = AgentRunRequest(
+        prompt="work", session_id="ses_test", idle_timeout_seconds=0.05, timeout_seconds=5, **kwargs
+    )
     try:
         result = await asyncio.wait_for(adapter.run(request, collect), 4)
         return result, events, adapter
@@ -237,12 +250,22 @@ async def test_snapshot_does_not_duplicate_text_already_delivered_by_sse():
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(provider.handle))
     events = []
 
-    async def collect(event): events.append(event)
+    async def collect(event):
+        events.append(event)
 
     monitor = ExecutionMonitor(adapter, "ses_test", AgentRunRequest(execution_checkpoint=checkpoint(provider)), collect)
     try:
-        await monitor.handle_event({"type": "session.text.ended", "data": {
-            "sessionID": "ses_test", "assistantMessageID": "msg_answer", "textID": "text-0", "text": "finished"}})
+        await monitor.handle_event(
+            {
+                "type": "session.text.ended",
+                "data": {
+                    "sessionID": "ses_test",
+                    "assistantMessageID": "msg_answer",
+                    "textID": "text-0",
+                    "text": "finished",
+                },
+            }
+        )
         assert (await monitor.reconcile())["success"]
         assert (await monitor.reconcile())["success"]
         assert len([e for e in events if e.type == "text"]) == 1
@@ -252,8 +275,11 @@ async def test_snapshot_does_not_duplicate_text_already_delivered_by_sse():
 
 def test_previous_idle_and_next_user_do_not_complete_our_input():
     assert turn_messages([{"type": "idle", "outcome": "succeeded"}], "msg_new") == []
-    rows = [{"id": "msg_new", "type": "user"}, {"id": "msg_other", "type": "user"},
-            {"type": "idle", "outcome": "succeeded"}]
+    rows = [
+        {"id": "msg_new", "type": "user"},
+        {"id": "msg_other", "type": "user"},
+        {"type": "idle", "outcome": "succeeded"},
+    ]
     assert turn_messages(rows, "msg_new") == []
 
 

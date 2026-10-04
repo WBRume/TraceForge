@@ -8,20 +8,16 @@ the human modification delta.
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import logging
 import os
 import re
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
-log = logging.getLogger(__name__)
-
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.domains.asset.models.asset import SddAsset, SddAssetVersion, AssetType
+from app.domains.asset.models.asset import AssetType, SddAsset, SddAssetVersion
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.task.models.task import SddTask
 from app.domains.workflow.models.task_change import (
@@ -32,9 +28,7 @@ from app.domains.workspace_asset.models.workspace_asset import (
     DeltaRegionSource,
     DeltaRegionType,
     EvidenceSourceType,
-    EvidenceStatus,
     HumanDeltaStatus,
-    SddDecision,
     SddDeltaRegion,
     SddEvidence,
     SddHumanDelta,
@@ -46,6 +40,8 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     EvidenceSummary,
     HumanDeltaSuggestionItem,
 )
+
+log = logging.getLogger(__name__)
 
 
 _GIT_TIMEOUT_SECONDS = 120
@@ -61,7 +57,8 @@ class HumanDeltaError(ValueError):
 # Git helpers
 # ---------------------------------------------------------------------------
 
-def _run_git(repo_path: str, args: List[str], *, check: bool = True) -> str:
+
+def _run_git(repo_path: str, args: list[str], *, check: bool = True) -> str:
     from app.core.subprocess_runner import ProcessTimeoutError, run_git
 
     abs_repo = os.path.abspath(repo_path)
@@ -69,21 +66,19 @@ def _run_git(repo_path: str, args: List[str], *, check: bool = True) -> str:
     log.info("_run_git: cwd=%s cmd=%s", abs_repo, " ".join(cmd))
     try:
         result = run_git(list(args), cwd=abs_repo, timeout_seconds=_GIT_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as caught_error:
         log.error("_run_git: timed out after %ds", _GIT_TIMEOUT_SECONDS)
-        raise HumanDeltaError("git command timed out")
-    except ProcessTimeoutError:
+        raise HumanDeltaError("git command timed out") from caught_error
+    except ProcessTimeoutError as caught_error_:
         log.error("_run_git: timed out after %ds", _GIT_TIMEOUT_SECONDS)
-        raise HumanDeltaError("git command timed out")
-    except FileNotFoundError:
+        raise HumanDeltaError("git command timed out") from caught_error_
+    except FileNotFoundError as caught_error__:
         log.error("_run_git: git not found in PATH")
-        raise HumanDeltaError("git is not installed or not in PATH")
+        raise HumanDeltaError("git is not installed or not in PATH") from caught_error__
     if check and result.returncode != 0:
         stderr = result.stderr.strip() or result.stdout.strip()
         log.error("_run_git: exit=%d stderr=%s", result.returncode, stderr[:500])
-        raise HumanDeltaError(
-            f"git {' '.join(args[:3])} failed (exit {result.returncode}): {stderr[:300]}"
-        )
+        raise HumanDeltaError(f"git {' '.join(args[:3])} failed (exit {result.returncode}): {stderr[:300]}")
     log.info("_run_git: exit=0 stdout=%d chars", len(result.stdout))
     return result.stdout
 
@@ -105,6 +100,7 @@ def _read_file_text(path: str, limit: int = 500_000) -> str:
 # ---------------------------------------------------------------------------
 # Summary builders
 # ---------------------------------------------------------------------------
+
 
 def _proposal_summary(proposal: SddTaskChangeProposal) -> ChangeProposalSummary:
     return ChangeProposalSummary(
@@ -132,11 +128,12 @@ def _evidence_summary(evidence: SddEvidence) -> EvidenceSummary:
 # Suggestion logic
 # ---------------------------------------------------------------------------
 
+
 def suggest_deltas(
     db: Session,
     workspace_id: str,
     task_id: str,
-) -> List[HumanDeltaSuggestionItem]:
+) -> list[HumanDeltaSuggestionItem]:
     """Find unpaired (ChangeProposal, Evidence) combinations for comparison."""
     # Find proposals that have a patch (any non-draft/non-rejected status)
     proposals = (
@@ -144,13 +141,15 @@ def suggest_deltas(
         .filter(
             SddTaskChangeProposal.workspace_id == workspace_id,
             SddTaskChangeProposal.task_id == task_id,
-            SddTaskChangeProposal.status.in_([
-                ChangeProposalStatus.GENERATED,
-                ChangeProposalStatus.DOWNLOADED,
-                ChangeProposalStatus.APPLIED,
-                ChangeProposalStatus.CONFLICT,
-                ChangeProposalStatus.VERIFIED,
-            ]),
+            SddTaskChangeProposal.status.in_(
+                [
+                    ChangeProposalStatus.GENERATED,
+                    ChangeProposalStatus.DOWNLOADED,
+                    ChangeProposalStatus.APPLIED,
+                    ChangeProposalStatus.CONFLICT,
+                    ChangeProposalStatus.VERIFIED,
+                ]
+            ),
         )
         .order_by(SddTaskChangeProposal.patch_set_no.desc())
         .all()
@@ -162,12 +161,14 @@ def suggest_deltas(
         .filter(
             SddEvidence.workspace_id == workspace_id,
             SddEvidence.task_id == task_id,
-            SddEvidence.source_type.in_([
-                EvidenceSourceType.COMMIT,
-                EvidenceSourceType.MR,
-                EvidenceSourceType.DIFF,
-                EvidenceSourceType.FILE_PATH,
-            ]),
+            SddEvidence.source_type.in_(
+                [
+                    EvidenceSourceType.COMMIT,
+                    EvidenceSourceType.MR,
+                    EvidenceSourceType.DIFF,
+                    EvidenceSourceType.FILE_PATH,
+                ]
+            ),
         )
         .all()
     )
@@ -192,10 +193,12 @@ def suggest_deltas(
     suggestions = []
     for evidence in evidence_list:
         if (latest_proposal.id, evidence.id) not in existing_pairs:
-            suggestions.append(HumanDeltaSuggestionItem(
-                proposal=_proposal_summary(latest_proposal),
-                evidence=_evidence_summary(evidence),
-            ))
+            suggestions.append(
+                HumanDeltaSuggestionItem(
+                    proposal=_proposal_summary(latest_proposal),
+                    evidence=_evidence_summary(evidence),
+                )
+            )
 
     return suggestions
 
@@ -204,18 +207,19 @@ def suggest_deltas(
 # Delta CRUD
 # ---------------------------------------------------------------------------
 
+
 def create_delta(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     proposal_id: str,
     final_evidence_id: str,
 ) -> str:
     """Create a new HumanDelta record linking a proposal and evidence."""
     _get_task_or_error(db, workspace_id, task_id)
-    proposal = _get_proposal_or_error(db, workspace_id, task_id, proposal_id)
-    evidence = _get_evidence_or_error(db, workspace_id, task_id, final_evidence_id)
+    _get_proposal_or_error(db, workspace_id, task_id, proposal_id)
+    _get_evidence_or_error(db, workspace_id, task_id, final_evidence_id)
 
     # Verify not duplicate
     existing = (
@@ -245,7 +249,9 @@ def create_delta(
     _add_audit(db, workspace_id, task_id, delta.id, actor_id, "CREATED", after=_delta_snapshot(delta))
     db.commit()
 
-    log.info("Delta %s created (proposal=%s, evidence=%s), starting auto-compare", delta.id, proposal_id, final_evidence_id)
+    log.info(
+        "Delta %s created (proposal=%s, evidence=%s), starting auto-compare", delta.id, proposal_id, final_evidence_id
+    )
 
     # Auto-compare: best-effort, don't fail creation
     try:
@@ -254,7 +260,7 @@ def create_delta(
     except HumanDeltaError as exc:
         log.warning("Delta %s auto-compare failed: %s", delta.id, exc)
         # Delta stays PENDING, user can retry
-    except Exception as exc:
+    except Exception:
         log.exception("Delta %s auto-compare unexpected error", delta.id)
 
     return delta.id
@@ -265,7 +271,7 @@ def compare_patches(
     workspace_id: str,
     task_id: str,
     delta_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
 ) -> None:
     """Generate comparison diff between AI patch and final patch."""
     delta = _get_delta_or_error(db, workspace_id, task_id, delta_id)
@@ -280,8 +286,14 @@ def compare_patches(
 
     log.info(
         "compare_patches delta=%s: proposal=%s (patch_asset_version=%s, base_commit=%s), evidence=%s (type=%s, ref=%s), task_path=%s",
-        delta.id, proposal.id, proposal.patch_asset_version_id, proposal.base_commit_sha,
-        evidence.id, evidence.source_type, evidence.source_ref, task.project_path,
+        delta.id,
+        proposal.id,
+        proposal.patch_asset_version_id,
+        proposal.base_commit_sha,
+        evidence.id,
+        evidence.source_type,
+        evidence.source_ref,
+        task.project_path,
     )
 
     # Mark as comparing
@@ -313,7 +325,9 @@ def compare_patches(
     # 3. Compute diff
     log.info("compare_patches delta=%s: step 3 - computing diff", delta.id)
     diff_text, file_diffs = _compute_delta_diff(ai_patch_text, final_patch_text)
-    log.info("compare_patches delta=%s: diff computed OK (%d chars, %d files)", delta.id, len(diff_text), len(file_diffs))
+    log.info(
+        "compare_patches delta=%s: diff computed OK (%d chars, %d files)", delta.id, len(diff_text), len(file_diffs)
+    )
 
     # 4. Store diff as asset
     diff_asset = _store_diff_asset(db, task, actor_id, delta, diff_text, file_diffs=file_diffs)
@@ -340,7 +354,13 @@ def compare_patches(
         db.add(region)
     log.info("compare_patches delta=%s: created %d delta regions", delta.id, len(region_data_list))
 
-    log.info("compare_patches delta=%s: DONE, files=%d ins=%d del=%d", delta.id, stats["files"], stats["insertions"], stats["deletions"])
+    log.info(
+        "compare_patches delta=%s: DONE, files=%d ins=%d del=%d",
+        delta.id,
+        stats["files"],
+        stats["insertions"],
+        stats["deletions"],
+    )
 
     _add_audit(db, workspace_id, task_id, delta.id, actor_id, "UPDATED", after=_delta_snapshot(delta))
     db.commit()
@@ -350,12 +370,9 @@ def compare_patches(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_task_or_error(db: Session, workspace_id: str, task_id: str) -> SddTask:
-    task = (
-        db.query(SddTask)
-        .filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id)
-        .first()
-    )
+    task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if not task:
         raise HumanDeltaError("Task not found", status_code=404)
     return task
@@ -442,7 +459,7 @@ def _read_ai_patch(db: Session, proposal: SddTaskChangeProposal) -> str:
     )
 
 
-def _ensure_commits_local(repo_path: str, sha_list: List[str]) -> None:
+def _ensure_commits_local(repo_path: str, sha_list: list[str]) -> None:
     """Check if SHAs exist locally, fetch from origin if any are missing."""
     missing = []
     for sha in sha_list:
@@ -459,11 +476,11 @@ def _ensure_commits_local(repo_path: str, sha_list: List[str]) -> None:
     for sha in missing:
         try:
             _run_git(repo_path, ["cat-file", "-e", sha], check=True)
-        except HumanDeltaError:
+        except HumanDeltaError as caught_error___:
             raise HumanDeltaError(
                 f"Commit {sha[:12]}... not found even after fetching from origin. "
                 "Ensure the commit has been pushed to the remote."
-            )
+            ) from caught_error___
     log.info("_ensure_commits_local: fetch succeeded, all SHAs now present")
 
 
@@ -512,8 +529,7 @@ def _get_final_patch(task: SddTask, proposal: SddTaskChangeProposal, evidence: S
         if ref and os.path.isfile(ref):
             return _read_file_text(ref)
         raise HumanDeltaError(
-            "DIFF evidence has no readable diff file. "
-            "Please ensure source_path or source_ref points to the diff file."
+            "DIFF evidence has no readable diff file. Please ensure source_path or source_ref points to the diff file."
         )
 
     if source_type == "FILE_PATH":
@@ -525,14 +541,12 @@ def _get_final_patch(task: SddTask, proposal: SddTaskChangeProposal, evidence: S
         file_paths = [p.strip() for p in str(evidence.source_ref or "").split(",") if p.strip()]
         if not file_paths:
             raise HumanDeltaError("FILE_PATH evidence has no file paths in source_ref")
-        return _run_git(repo_path, ["diff", base_sha, "--binary", "--find-renames", "--"] + file_paths)
+        return _run_git(repo_path, ["diff", base_sha, "--binary", "--find-renames", "--", *file_paths])
 
     raise HumanDeltaError(f"Unsupported evidence source_type: {source_type}")
 
 
-def _compute_delta_diff(
-    ai_patch_text: str, final_patch_text: str
-) -> Tuple[str, List[Dict[str, Any]]]:
+def _compute_delta_diff(ai_patch_text: str, final_patch_text: str) -> tuple[str, list[dict[str, Any]]]:
     """Compare AI patch and human patch at the file level.
 
     Returns (summary_text, file_diffs). Each file_diff dict contains:
@@ -543,12 +557,12 @@ def _compute_delta_diff(
     ai_files = _parse_patch_to_files(ai_patch_text)
     final_files = _parse_patch_to_files(final_patch_text)
 
-    ai_map: Dict[str, Dict[str, Any]] = {f["file_path"]: f for f in ai_files}
-    final_map: Dict[str, Dict[str, Any]] = {f["file_path"]: f for f in final_files}
+    ai_map: dict[str, dict[str, Any]] = {f["file_path"]: f for f in ai_files}
+    final_map: dict[str, dict[str, Any]] = {f["file_path"]: f for f in final_files}
 
     all_paths = sorted(set(ai_map) | set(final_map))
 
-    result: List[Dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
     summary_ai = 0
     summary_human = 0
     summary_common = 0
@@ -558,63 +572,67 @@ def _compute_delta_diff(
         final_fd = final_map.get(path)
 
         if ai_fd and not final_fd:
-            result.append({
-                "file_path": path,
-                "change_type": ai_fd["change_type"],
-                "comparison_type": "ai_only",
-                "ai_change_type": ai_fd["change_type"],
-                "human_change_type": None,
-                "ai_insertions": ai_fd["insertions"],
-                "ai_deletions": ai_fd["deletions"],
-                "human_insertions": 0,
-                "human_deletions": 0,
-                "insertions": ai_fd["insertions"],
-                "deletions": ai_fd["deletions"],
-                "hunks": ai_fd["hunks"],
-                "ai_hunks": ai_fd["hunks"],
-                "human_hunks": [],
-            })
+            result.append(
+                {
+                    "file_path": path,
+                    "change_type": ai_fd["change_type"],
+                    "comparison_type": "ai_only",
+                    "ai_change_type": ai_fd["change_type"],
+                    "human_change_type": None,
+                    "ai_insertions": ai_fd["insertions"],
+                    "ai_deletions": ai_fd["deletions"],
+                    "human_insertions": 0,
+                    "human_deletions": 0,
+                    "insertions": ai_fd["insertions"],
+                    "deletions": ai_fd["deletions"],
+                    "hunks": ai_fd["hunks"],
+                    "ai_hunks": ai_fd["hunks"],
+                    "human_hunks": [],
+                }
+            )
             summary_ai += 1
 
         elif final_fd and not ai_fd:
-            result.append({
-                "file_path": path,
-                "change_type": final_fd["change_type"],
-                "comparison_type": "human_only",
-                "ai_change_type": None,
-                "human_change_type": final_fd["change_type"],
-                "ai_insertions": 0,
-                "ai_deletions": 0,
-                "human_insertions": final_fd["insertions"],
-                "human_deletions": final_fd["deletions"],
-                "insertions": final_fd["insertions"],
-                "deletions": final_fd["deletions"],
-                "hunks": final_fd["hunks"],
-                "ai_hunks": [],
-                "human_hunks": final_fd["hunks"],
-            })
+            result.append(
+                {
+                    "file_path": path,
+                    "change_type": final_fd["change_type"],
+                    "comparison_type": "human_only",
+                    "ai_change_type": None,
+                    "human_change_type": final_fd["change_type"],
+                    "ai_insertions": 0,
+                    "ai_deletions": 0,
+                    "human_insertions": final_fd["insertions"],
+                    "human_deletions": final_fd["deletions"],
+                    "insertions": final_fd["insertions"],
+                    "deletions": final_fd["deletions"],
+                    "hunks": final_fd["hunks"],
+                    "ai_hunks": [],
+                    "human_hunks": final_fd["hunks"],
+                }
+            )
             summary_human += 1
 
         else:
-            merged_hunks, total_ins, total_del = _merge_common_file_hunks(
-                ai_fd["hunks"], final_fd["hunks"]
+            merged_hunks, total_ins, total_del = _merge_common_file_hunks(ai_fd["hunks"], final_fd["hunks"])
+            result.append(
+                {
+                    "file_path": path,
+                    "change_type": ai_fd["change_type"],
+                    "comparison_type": "common",
+                    "ai_change_type": ai_fd["change_type"],
+                    "human_change_type": final_fd["change_type"],
+                    "ai_insertions": ai_fd["insertions"],
+                    "ai_deletions": ai_fd["deletions"],
+                    "human_insertions": final_fd["insertions"],
+                    "human_deletions": final_fd["deletions"],
+                    "insertions": total_ins,
+                    "deletions": total_del,
+                    "hunks": merged_hunks,
+                    "ai_hunks": ai_fd["hunks"],
+                    "human_hunks": final_fd["hunks"],
+                }
             )
-            result.append({
-                "file_path": path,
-                "change_type": ai_fd["change_type"],
-                "comparison_type": "common",
-                "ai_change_type": ai_fd["change_type"],
-                "human_change_type": final_fd["change_type"],
-                "ai_insertions": ai_fd["insertions"],
-                "ai_deletions": ai_fd["deletions"],
-                "human_insertions": final_fd["insertions"],
-                "human_deletions": final_fd["deletions"],
-                "insertions": total_ins,
-                "deletions": total_del,
-                "hunks": merged_hunks,
-                "ai_hunks": ai_fd["hunks"],
-                "human_hunks": final_fd["hunks"],
-            })
             summary_common += 1
 
     parts = []
@@ -630,24 +648,24 @@ def _compute_delta_diff(
 
 
 def _merge_common_file_hunks(
-    ai_hunks: List[Dict[str, Any]],
-    final_hunks: List[Dict[str, Any]],
-) -> Tuple[List[Dict[str, Any]], int, int]:
+    ai_hunks: list[dict[str, Any]],
+    final_hunks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
     """Merge hunks from AI and human patches for the same file.
 
     Returns (merged_hunks, total_insertions, total_deletions).
     Each line gets a ``source`` field: "both", "ai", "human", or "context".
     """
-    ai_changes: set[Tuple[str, str]] = set()
-    ai_all_lines: List[Dict[str, Any]] = []
+    ai_changes: set[tuple[str, str]] = set()
+    ai_all_lines: list[dict[str, Any]] = []
     for hunk in ai_hunks:
         for line in hunk.get("lines", []):
             ai_all_lines.append(line)
             if line["type"] != "context":
                 ai_changes.add((line["type"], line["content"]))
 
-    final_only: List[Dict[str, Any]] = []
-    final_change_keys: set[Tuple[str, str]] = set()
+    final_only: list[dict[str, Any]] = []
+    final_change_keys: set[tuple[str, str]] = set()
     for hunk in final_hunks:
         for line in hunk.get("lines", []):
             if line["type"] != "context":
@@ -656,7 +674,7 @@ def _merge_common_file_hunks(
                 if key not in ai_changes:
                     final_only.append({**line, "source": "human"})
 
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     for line in ai_all_lines:
         if line["type"] == "context":
             merged.append({**line, "source": "context"})
@@ -667,8 +685,8 @@ def _merge_common_file_hunks(
 
     merged.extend(final_only)
 
-    total_ins = sum(1 for l in merged if l["type"] == "add")
-    total_del = sum(1 for l in merged if l["type"] == "del")
+    total_ins = sum(1 for line in merged if line["type"] == "add")
+    total_del = sum(1 for line in merged if line["type"] == "del")
 
     hunk = {
         "old_start": 1,
@@ -688,7 +706,7 @@ _FILE_FROM_RE = re.compile(r"^--- (.+)$")
 _FILE_TO_RE = re.compile(r"^\+\+\+ (.+)$")
 
 
-def _parse_patch_to_files(patch_text: str) -> List[Dict[str, Any]]:
+def _parse_patch_to_files(patch_text: str) -> list[dict[str, Any]]:
     """Parse unified diff text into per-file structured data.
 
     Handles both git-diff format (with ``diff --git`` headers) and plain
@@ -706,7 +724,7 @@ def _parse_patch_to_files(patch_text: str) -> List[Dict[str, Any]]:
     # ── Step 1: split into file segments ──────────────────────────────
     # A segment starts at a ``diff --git`` line, or at a ``---`` line
     # when there is no ``diff --git`` header.
-    segments: List[Tuple[int, int]] = []  # (start_idx, end_idx)
+    segments: list[tuple[int, int]] = []  # (start_idx, end_idx)
     has_git_headers = any(ln.startswith("diff --git") for ln in lines)
 
     if has_git_headers:
@@ -721,7 +739,7 @@ def _parse_patch_to_files(patch_text: str) -> List[Dict[str, Any]]:
             end = starts[j + 1] if j + 1 < len(starts) else len(lines)
             segments.append((start, end))
 
-    result: List[Dict[str, Any]] = []
+    result: list[dict[str, Any]] = []
 
     for seg_start, seg_end in segments:
         seg_lines = lines[seg_start:seg_end]
@@ -732,104 +750,46 @@ def _parse_patch_to_files(patch_text: str) -> List[Dict[str, Any]]:
     return result
 
 
-def _parse_single_file_segment(
-    seg_lines: List[str], has_git_headers: bool
-) -> Optional[Dict[str, Any]]:
-    """Parse one file segment into a structured dict."""
-    old_path: Optional[str] = None
-    new_path: Optional[str] = None
-    hunks: List[Dict[str, Any]] = []
-    current_hunk: Optional[Dict[str, Any]] = None
-    insertions = 0
-    deletions = 0
-
-    # Track line numbers within current hunk
-    old_line_no = 0
-    new_line_no = 0
-
-    for line in seg_lines:
-        # ── diff --git header ──
-        if line.startswith("diff --git"):
-            m = _DIFF_GIT_RE.match(line)
-            if m:
-                old_path = m.group(1)
-                new_path = m.group(2)
-            continue
-
-        # ── --- / +++ headers ──
-        if line.startswith("--- "):
-            m = _FILE_FROM_RE.match(line)
-            if m:
-                val = m.group(1)
-                if val == "/dev/null":
-                    old_path = "/dev/null"
-                elif not has_git_headers:
-                    old_path = val
-            continue
-        if line.startswith("+++ "):
-            m = _FILE_TO_RE.match(line)
-            if m:
-                val = m.group(1)
-                if val == "/dev/null":
-                    new_path = "/dev/null"
-                elif not has_git_headers:
-                    new_path = val
-            continue
-
-        # ── index / mode lines ──
-        if line.startswith("index ") or line.startswith("new file mode ") or line.startswith("deleted file mode "):
-            continue
-
-        # ── @@ hunk header ──
-        hunk_match = _HUNK_RE.match(line)
-        if hunk_match:
-            current_hunk = {
-                "old_start": int(hunk_match.group(1)),
-                "old_count": int(hunk_match.group(2) or "1"),
-                "new_start": int(hunk_match.group(3)),
-                "new_count": int(hunk_match.group(4) or "1"),
-                "lines": [],
+def _append_hunk_line(current_hunk, line, old_line_no, new_line_no, insertions, deletions):
+    if line.startswith("+"):
+        current_hunk["lines"].append(
+            {
+                "type": "add",
+                "content": line[1:],
+                "old_line_no": None,
+                "new_line_no": new_line_no,
             }
-            hunks.append(current_hunk)
-            old_line_no = current_hunk["old_start"]
-            new_line_no = current_hunk["new_start"]
-            continue
+        )
+        new_line_no += 1
+        insertions += 1
+    elif line.startswith("-"):
+        current_hunk["lines"].append(
+            {
+                "type": "del",
+                "content": line[1:],
+                "old_line_no": old_line_no,
+                "new_line_no": None,
+            }
+        )
+        old_line_no += 1
+        deletions += 1
+    else:
+        # context line (starts with space or is empty)
+        content = line[1:] if line.startswith(" ") else line
+        current_hunk["lines"].append(
+            {
+                "type": "context",
+                "content": content,
+                "old_line_no": old_line_no,
+                "new_line_no": new_line_no,
+            }
+        )
+        old_line_no += 1
+        new_line_no += 1
+    return old_line_no, new_line_no, insertions, deletions
 
-        # ── diff content lines ──
-        if current_hunk is not None:
-            if line.startswith("+"):
-                current_hunk["lines"].append({
-                    "type": "add",
-                    "content": line[1:],
-                    "old_line_no": None,
-                    "new_line_no": new_line_no,
-                })
-                new_line_no += 1
-                insertions += 1
-            elif line.startswith("-"):
-                current_hunk["lines"].append({
-                    "type": "del",
-                    "content": line[1:],
-                    "old_line_no": old_line_no,
-                    "new_line_no": None,
-                })
-                old_line_no += 1
-                deletions += 1
-            else:
-                # context line (starts with space or is empty)
-                content = line[1:] if line.startswith(" ") else line
-                current_hunk["lines"].append({
-                    "type": "context",
-                    "content": content,
-                    "old_line_no": old_line_no,
-                    "new_line_no": new_line_no,
-                })
-                old_line_no += 1
-                new_line_no += 1
 
-    if not old_path and not new_path:
-        return None
-
+def _file_diff_payload(old_path, new_path, hunks, insertions, deletions):
     # Determine file_path (prefer real path over /dev/null)
     if new_path and new_path != "/dev/null":
         file_path = new_path
@@ -859,7 +819,77 @@ def _parse_single_file_segment(
     }
 
 
-def _count_diff_stats(structured_diffs: List[Dict[str, Any]]) -> Dict[str, int]:
+def _file_header_path(line, pattern, has_git_headers, current_path):
+    match = pattern.match(line)
+    if match:
+        value = match.group(1)
+        if value == "/dev/null" or not has_git_headers:
+            return value
+    return current_path
+
+
+def _parse_single_file_segment(seg_lines: list[str], has_git_headers: bool) -> dict[str, Any] | None:
+    """Parse one file segment into a structured dict."""
+    old_path: str | None = None
+    new_path: str | None = None
+    hunks: list[dict[str, Any]] = []
+    current_hunk: dict[str, Any] | None = None
+    insertions = 0
+    deletions = 0
+
+    # Track line numbers within current hunk
+    old_line_no = 0
+    new_line_no = 0
+
+    for line in seg_lines:
+        # ── diff --git header ──
+        if line.startswith("diff --git"):
+            m = _DIFF_GIT_RE.match(line)
+            if m:
+                old_path = m.group(1)
+                new_path = m.group(2)
+            continue
+
+        # ── --- / +++ headers ──
+        if line.startswith("--- "):
+            old_path = _file_header_path(line, _FILE_FROM_RE, has_git_headers, old_path)
+            continue
+        if line.startswith("+++ "):
+            new_path = _file_header_path(line, _FILE_TO_RE, has_git_headers, new_path)
+            continue
+
+        # ── index / mode lines ──
+        if line.startswith(("index ", "new file mode ", "deleted file mode ")):
+            continue
+
+        # ── @@ hunk header ──
+        hunk_match = _HUNK_RE.match(line)
+        if hunk_match:
+            current_hunk = {
+                "old_start": int(hunk_match.group(1)),
+                "old_count": int(hunk_match.group(2) or "1"),
+                "new_start": int(hunk_match.group(3)),
+                "new_count": int(hunk_match.group(4) or "1"),
+                "lines": [],
+            }
+            hunks.append(current_hunk)
+            old_line_no = current_hunk["old_start"]
+            new_line_no = current_hunk["new_start"]
+            continue
+
+        # ── diff content lines ──
+        if current_hunk is not None:
+            old_line_no, new_line_no, insertions, deletions = _append_hunk_line(
+                current_hunk, line, old_line_no, new_line_no, insertions, deletions
+            )
+
+    if not old_path and not new_path:
+        return None
+
+    return _file_diff_payload(old_path, new_path, hunks, insertions, deletions)
+
+
+def _count_diff_stats(structured_diffs: list[dict[str, Any]]) -> dict[str, int]:
     """Count files, insertions, deletions from comparison diff data."""
     return {
         "files": len(structured_diffs),
@@ -874,39 +904,43 @@ def _delete_old_regions(db: Session, delta_id: str) -> None:
 
 
 def _compute_delta_regions(
-    file_diffs: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    file_diffs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Extract DeltaRegion data from structured file diffs."""
-    regions: List[Dict[str, Any]] = []
+    regions: list[dict[str, Any]] = []
     for file_diff in file_diffs:
         comparison_type = file_diff.get("comparison_type")
         change_type = file_diff.get("change_type", "modified")
 
         if comparison_type == "ai_only":
             region_type = _change_type_to_region_type(change_type)
-            regions.append({
-                "file_path": file_diff["file_path"],
-                "old_file_path": file_diff.get("old_path"),
-                "region_type": region_type,
-                "region_source": DeltaRegionSource.AI_ONLY,
-                "ai_insertions": file_diff.get("ai_insertions", file_diff.get("insertions", 0)),
-                "ai_deletions": file_diff.get("ai_deletions", file_diff.get("deletions", 0)),
-                "human_insertions": 0,
-                "human_deletions": 0,
-            })
+            regions.append(
+                {
+                    "file_path": file_diff["file_path"],
+                    "old_file_path": file_diff.get("old_path"),
+                    "region_type": region_type,
+                    "region_source": DeltaRegionSource.AI_ONLY,
+                    "ai_insertions": file_diff.get("ai_insertions", file_diff.get("insertions", 0)),
+                    "ai_deletions": file_diff.get("ai_deletions", file_diff.get("deletions", 0)),
+                    "human_insertions": 0,
+                    "human_deletions": 0,
+                }
+            )
 
         elif comparison_type == "human_only":
             region_type = _change_type_to_region_type(change_type)
-            regions.append({
-                "file_path": file_diff["file_path"],
-                "old_file_path": file_diff.get("old_path"),
-                "region_type": region_type,
-                "region_source": DeltaRegionSource.HUMAN_ONLY,
-                "ai_insertions": 0,
-                "ai_deletions": 0,
-                "human_insertions": file_diff.get("human_insertions", file_diff.get("insertions", 0)),
-                "human_deletions": file_diff.get("human_deletions", file_diff.get("deletions", 0)),
-            })
+            regions.append(
+                {
+                    "file_path": file_diff["file_path"],
+                    "old_file_path": file_diff.get("old_path"),
+                    "region_type": region_type,
+                    "region_source": DeltaRegionSource.HUMAN_ONLY,
+                    "ai_insertions": 0,
+                    "ai_deletions": 0,
+                    "human_insertions": file_diff.get("human_insertions", file_diff.get("insertions", 0)),
+                    "human_deletions": file_diff.get("human_deletions", file_diff.get("deletions", 0)),
+                }
+            )
 
         elif comparison_type == "common":
             regions.extend(_extract_common_file_regions(file_diff))
@@ -925,15 +959,58 @@ def _change_type_to_region_type(change_type: str) -> DeltaRegionType:
     return mapping.get(change_type, DeltaRegionType.HUNK_MODIFIED)
 
 
+def _append_common_region(
+    *, current_source, all_lines, block_start_idx, i, ai_ins, ai_del, human_ins, human_del, regions, file_diff
+):
+    if current_source is None or current_source == "context":
+        return
+    region_source = _source_to_region_source(current_source)
+    # Determine line ranges
+    ai_lines = [line for line in all_lines[block_start_idx:i] if line.get("source") in ("ai", "both")]
+    human_lines = [line for line in all_lines[block_start_idx:i] if line.get("source") in ("human", "both")]
+    ai_start = ai_lines[0].get("new_line_no") if ai_lines else None
+    ai_end = ai_lines[-1].get("new_line_no") if ai_lines else None
+    human_start = human_lines[0].get("new_line_no") if human_lines else None
+    human_end = human_lines[-1].get("new_line_no") if human_lines else None
+
+    summary_parts = []
+    if ai_ins:
+        summary_parts.append(f"AI +{ai_ins}")
+    if ai_del:
+        summary_parts.append(f"AI -{ai_del}")
+    if human_ins:
+        summary_parts.append(f"Human +{human_ins}")
+    if human_del:
+        summary_parts.append(f"Human -{human_del}")
+
+    regions.append(
+        {
+            "file_path": file_diff["file_path"],
+            "old_file_path": file_diff.get("old_path"),
+            "region_type": DeltaRegionType.HUNK_MODIFIED,
+            "region_source": region_source,
+            "ai_line_start": ai_start,
+            "ai_line_end": ai_end,
+            "human_line_start": human_start,
+            "human_line_end": human_end,
+            "ai_insertions": ai_ins,
+            "ai_deletions": ai_del,
+            "human_insertions": human_ins,
+            "human_deletions": human_del,
+            "summary": ", ".join(summary_parts) if summary_parts else None,
+        }
+    )
+
+
 def _extract_common_file_regions(
-    file_diff: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    file_diff: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Extract DeltaRegion data from a common file's merged hunks.
 
     Walks the merged hunk lines and groups consecutive lines by source
     into contiguous regions.
     """
-    regions: List[Dict[str, Any]] = []
+    regions: list[dict[str, Any]] = []
     hunks = file_diff.get("hunks", [])
     if not hunks:
         return regions
@@ -954,49 +1031,22 @@ def _extract_common_file_regions(
     human_ins = 0
     human_del = 0
 
-    def _flush_block():
-        if current_source is None or current_source == "context":
-            return
-        region_source = _source_to_region_source(current_source)
-        # Determine line ranges
-        ai_lines = [l for l in all_lines[block_start_idx:i] if l.get("source") in ("ai", "both")]
-        human_lines = [l for l in all_lines[block_start_idx:i] if l.get("source") in ("human", "both")]
-        ai_start = ai_lines[0].get("new_line_no") if ai_lines else None
-        ai_end = ai_lines[-1].get("new_line_no") if ai_lines else None
-        human_start = human_lines[0].get("new_line_no") if human_lines else None
-        human_end = human_lines[-1].get("new_line_no") if human_lines else None
-
-        summary_parts = []
-        if ai_ins:
-            summary_parts.append(f"AI +{ai_ins}")
-        if ai_del:
-            summary_parts.append(f"AI -{ai_del}")
-        if human_ins:
-            summary_parts.append(f"Human +{human_ins}")
-        if human_del:
-            summary_parts.append(f"Human -{human_del}")
-
-        regions.append({
-            "file_path": file_diff["file_path"],
-            "old_file_path": file_diff.get("old_path"),
-            "region_type": DeltaRegionType.HUNK_MODIFIED,
-            "region_source": region_source,
-            "ai_line_start": ai_start,
-            "ai_line_end": ai_end,
-            "human_line_start": human_start,
-            "human_line_end": human_end,
-            "ai_insertions": ai_ins,
-            "ai_deletions": ai_del,
-            "human_insertions": human_ins,
-            "human_deletions": human_del,
-            "summary": ", ".join(summary_parts) if summary_parts else None,
-        })
-
     for i, line in enumerate(all_lines):
         source = line.get("source", "context")
         if source != current_source:
             if current_source is not None:
-                _flush_block()
+                _append_common_region(
+                    current_source=current_source,
+                    all_lines=all_lines,
+                    block_start_idx=block_start_idx,
+                    i=i,
+                    ai_ins=ai_ins,
+                    ai_del=ai_del,
+                    human_ins=human_ins,
+                    human_del=human_del,
+                    regions=regions,
+                    file_diff=file_diff,
+                )
             block_start_idx = i
             current_source = source
             ai_ins = 0
@@ -1004,27 +1054,31 @@ def _extract_common_file_regions(
             human_ins = 0
             human_del = 0
 
-        if source == "ai":
+        if source in {"ai", "both"}:
             if line.get("type") == "add":
                 ai_ins += 1
             elif line.get("type") == "del":
                 ai_del += 1
-        elif source == "human":
+        if source in {"human", "both"}:
             if line.get("type") == "add":
                 human_ins += 1
             elif line.get("type") == "del":
-                human_del += 1
-        elif source == "both":
-            if line.get("type") == "add":
-                ai_ins += 1
-                human_ins += 1
-            elif line.get("type") == "del":
-                ai_del += 1
                 human_del += 1
 
     # Flush the last block
     if current_source is not None:
-        _flush_block()
+        _append_common_region(
+            current_source=current_source,
+            all_lines=all_lines,
+            block_start_idx=block_start_idx,
+            i=i,
+            ai_ins=ai_ins,
+            ai_del=ai_del,
+            human_ins=human_ins,
+            human_del=human_del,
+            regions=regions,
+            file_diff=file_diff,
+        )
 
     return regions
 
@@ -1042,14 +1096,14 @@ def _source_to_region_source(source: str) -> DeltaRegionSource:
 def _store_diff_asset(
     db: Session,
     task: SddTask,
-    actor_id: Optional[str],
+    actor_id: str | None,
     delta: SddHumanDelta,
     diff_text: str,
-    file_diffs: Optional[List[Dict[str, Any]]] = None,
+    file_diffs: list[dict[str, Any]] | None = None,
 ) -> SddAsset:
     """Store the comparison diff as an asset."""
     raw = diff_text.encode("utf-8")
-    content_json: Dict[str, Any] = {
+    content_json: dict[str, Any] = {
         "artifact_kind": "human_delta_diff",
         "delta_id": delta.id,
         "proposal_id": delta.proposal_id,
@@ -1092,13 +1146,14 @@ def _add_audit(
     workspace_id: str,
     task_id: str,
     record_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     action: str,
     *,
-    before: Optional[dict] = None,
-    after: Optional[dict] = None,
+    before: dict | None = None,
+    after: dict | None = None,
 ) -> None:
     from app.domains.workspace_asset.models.workspace_asset import SddTaskProcessAuditLog
+
     log = SddTaskProcessAuditLog(
         workspace_id=workspace_id,
         task_id=task_id,

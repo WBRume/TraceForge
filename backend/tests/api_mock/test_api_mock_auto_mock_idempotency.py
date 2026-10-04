@@ -1,23 +1,16 @@
 import asyncio
 import inspect
-import os
-import sys
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Iterator, Optional
 
 from fastapi import BackgroundTasks, HTTPException
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.domains.api_mock.models.api_mock import ApiMockJobStatus  # noqa: E402
+from app.domains.api_mock.models.api_mock import ApiMockJobStatus
 from app.domains.api_mock.routers import api_mock as api_mock_router
 
 
@@ -44,7 +37,7 @@ class _AutoMockRaceState:
         self._active_check_count = 0
         self.jobs = []
 
-    def get_active_job(self, _db, _project_id: str, *, endpoint_id: Optional[str] = None):
+    def get_active_job(self, _db, _project_id: str, *, endpoint_id: str | None = None):
         _ = endpoint_id
         with self._condition:
             if self.jobs:
@@ -64,7 +57,7 @@ class _AutoMockRaceState:
                 self._condition.notify_all()
             return active_job_at_query_start
 
-    def create_job(self, _db, project, *, creator_id: str, job_type: str, message: Optional[str] = None):
+    def create_job(self, _db, project, *, creator_id: str, job_type: str, message: str | None = None):
         job_no = len(self.jobs) + 1
         job = SimpleNamespace(
             id=f"job-{job_no}",
@@ -104,7 +97,9 @@ def test_start_auto_mock_concurrent_requests_create_single_job(monkeypatch):
     monkeypatch.setattr(api_mock_router.api_mock_service, "get_endpoint", lambda *args, **kwargs: endpoint)
     monkeypatch.setattr(api_mock_router.api_mock_service, "get_active_auto_mock_job", race_state.get_active_job)
     monkeypatch.setattr(api_mock_router.api_mock_service, "create_job", race_state.create_job)
-    monkeypatch.setattr(api_mock_router.api_mock_service, "set_auto_mock_job_target", lambda _db, _project_id, job, **_kwargs: job)
+    monkeypatch.setattr(
+        api_mock_router.api_mock_service, "set_auto_mock_job_target", lambda _db, _project_id, job, **_kwargs: job
+    )
     monkeypatch.setattr(api_mock_router.api_mock_service, "run_auto_mock_job_background", lambda *args, **kwargs: None)
     monkeypatch.setattr(api_mock_router, "lock_api_mock_project", _fake_project_lock, raising=False)
 

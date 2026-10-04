@@ -13,10 +13,8 @@ import base64
 import hashlib
 import html
 import re
-from typing import Optional
 from urllib.parse import unquote_to_bytes
 from xml.etree import ElementTree as ET
-
 
 SVG_MAX_LENGTH = 20_000
 
@@ -156,7 +154,7 @@ def _seed_digest(seed: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
-def _pick_palette(seed: str, base_color: Optional[str] = None) -> tuple[str, str, str]:
+def _pick_palette(seed: str, base_color: str | None = None) -> tuple[str, str, str]:
     if base_color:
         normalized = normalize_hex_color(base_color, fallback="#0ea5e9")
         return (normalized, "#0f172a", "#ffffff")
@@ -192,7 +190,7 @@ def build_default_avatar_svg(
     user_id: str,
     *,
     style: str = "classic",
-    base_color: Optional[str] = None,
+    base_color: str | None = None,
 ) -> str:
     initial = html.escape(_pick_initial(display_name, email, user_id))
     seed = f"{display_name}|{email}|{user_id}"
@@ -201,40 +199,40 @@ def build_default_avatar_svg(
 
     if style == "soft":
         return (
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" role=\"img\" aria-hidden=\"true\">"
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-hidden="true">'
             "<defs>"
-            f"<linearGradient id=\"{gradient_id}\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
-            f"<stop offset=\"0%\" stop-color=\"{start_color}\" stop-opacity=\"0.92\"/>"
-            f"<stop offset=\"100%\" stop-color=\"{end_color}\" stop-opacity=\"0.86\"/>"
+            f'<linearGradient id="{gradient_id}" x1="0" y1="0" x2="1" y2="1">'
+            f'<stop offset="0%" stop-color="{start_color}" stop-opacity="0.92"/>'
+            f'<stop offset="100%" stop-color="{end_color}" stop-opacity="0.86"/>'
             "</linearGradient>"
             "</defs>"
-            f"<rect x=\"2\" y=\"2\" width=\"60\" height=\"60\" rx=\"30\" fill=\"url(#{gradient_id})\"/>"
-            "<circle cx=\"32\" cy=\"32\" r=\"27\" fill=\"#ffffff\" fill-opacity=\"0.12\"/>"
-            f"<text x=\"32\" y=\"34\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"{text_color}\" font-size=\"28\" font-family=\"'Segoe UI', 'PingFang SC', sans-serif\" font-weight=\"700\">{initial}</text>"
+            f'<rect x="2" y="2" width="60" height="60" rx="30" fill="url(#{gradient_id})"/>'
+            '<circle cx="32" cy="32" r="27" fill="#ffffff" fill-opacity="0.12"/>'
+            f'<text x="32" y="34" text-anchor="middle" dominant-baseline="middle" fill="{text_color}" font-size="28" font-family="\'Segoe UI\', \'PingFang SC\', sans-serif" font-weight="700">{initial}</text>'
             "</svg>"
         )
 
     if style == "split":
         return (
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" role=\"img\" aria-hidden=\"true\">"
-            f"<rect x=\"0\" y=\"0\" width=\"32\" height=\"64\" fill=\"{start_color}\"/>"
-            f"<rect x=\"32\" y=\"0\" width=\"32\" height=\"64\" fill=\"{end_color}\"/>"
-            "<circle cx=\"32\" cy=\"32\" r=\"29\" fill=\"#ffffff\" fill-opacity=\"0.16\"/>"
-            f"<text x=\"32\" y=\"34\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"{text_color}\" font-size=\"28\" font-family=\"'Segoe UI', 'PingFang SC', sans-serif\" font-weight=\"700\">{initial}</text>"
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-hidden="true">'
+            f'<rect x="0" y="0" width="32" height="64" fill="{start_color}"/>'
+            f'<rect x="32" y="0" width="32" height="64" fill="{end_color}"/>'
+            '<circle cx="32" cy="32" r="29" fill="#ffffff" fill-opacity="0.16"/>'
+            f'<text x="32" y="34" text-anchor="middle" dominant-baseline="middle" fill="{text_color}" font-size="28" font-family="\'Segoe UI\', \'PingFang SC\', sans-serif" font-weight="700">{initial}</text>'
             "</svg>"
         )
 
     return (
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\" role=\"img\" aria-hidden=\"true\">"
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-hidden="true">'
         "<defs>"
-        f"<linearGradient id=\"{gradient_id}\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
-        f"<stop offset=\"0%\" stop-color=\"{start_color}\"/>"
-        f"<stop offset=\"100%\" stop-color=\"{end_color}\"/>"
+        f'<linearGradient id="{gradient_id}" x1="0" y1="0" x2="1" y2="1">'
+        f'<stop offset="0%" stop-color="{start_color}"/>'
+        f'<stop offset="100%" stop-color="{end_color}"/>'
         "</linearGradient>"
         "</defs>"
-        f"<rect x=\"0\" y=\"0\" width=\"64\" height=\"64\" rx=\"32\" fill=\"url(#{gradient_id})\"/>"
-        "<circle cx=\"32\" cy=\"32\" r=\"28\" fill=\"#ffffff\" fill-opacity=\"0.1\"/>"
-        f"<text x=\"32\" y=\"34\" text-anchor=\"middle\" dominant-baseline=\"middle\" fill=\"{text_color}\" font-size=\"28\" font-family=\"'Segoe UI', 'PingFang SC', sans-serif\" font-weight=\"700\">{initial}</text>"
+        f'<rect x="0" y="0" width="64" height="64" rx="32" fill="url(#{gradient_id})"/>'
+        '<circle cx="32" cy="32" r="28" fill="#ffffff" fill-opacity="0.1"/>'
+        f'<text x="32" y="34" text-anchor="middle" dominant-baseline="middle" fill="{text_color}" font-size="28" font-family="\'Segoe UI\', \'PingFang SC\', sans-serif" font-weight="700">{initial}</text>'
         "</svg>"
     )
 
@@ -274,7 +272,7 @@ def sanitize_avatar_svg(raw_svg: str) -> str:
     return sanitized
 
 
-def svg_from_data_url(data_url: str) -> Optional[str]:
+def svg_from_data_url(data_url: str) -> str | None:
     raw = (data_url or "").strip()
     if not raw.lower().startswith("data:image/svg+xml"):
         return None
@@ -296,8 +294,8 @@ def svg_from_data_url(data_url: str) -> Optional[str]:
 
 
 def resolve_avatar_svg(
-    avatar_svg: Optional[str],
-    avatar_url: Optional[str],
+    avatar_svg: str | None,
+    avatar_url: str | None,
     *,
     display_name: str,
     email: str,

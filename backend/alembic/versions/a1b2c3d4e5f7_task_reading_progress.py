@@ -5,17 +5,18 @@ Revises: e5c6f9a1b3d7
 Create Date: 2026-09-20
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "a1b2c3d4e5f7"
-down_revision: Union[str, None] = "e5c6f9a1b3d7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "e5c6f9a1b3d7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -53,8 +54,14 @@ def upgrade() -> None:
     )
     op.create_index("ix_task_reading_items_workspace_id", "task_reading_items", ["workspace_id"])
     op.create_index("ix_task_reading_items_active", "task_reading_items", ["task_id", "active", "change_seq"])
-    op.create_index("ix_task_reading_items_member", "task_reading_items", ["task_id", "role", "creator_id", "active", "change_seq"])
-    op.create_index("ix_task_reading_items_turn", "task_reading_items", ["task_id", "session_generation", "session_turn_id", "active", "change_seq"])
+    op.create_index(
+        "ix_task_reading_items_member", "task_reading_items", ["task_id", "role", "creator_id", "active", "change_seq"]
+    )
+    op.create_index(
+        "ix_task_reading_items_turn",
+        "task_reading_items",
+        ["task_id", "session_generation", "session_turn_id", "active", "change_seq"],
+    )
     op.create_index("ix_task_reading_items_message", "task_reading_items", ["task_id", "message_id"])
 
     op.create_table(

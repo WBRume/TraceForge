@@ -7,9 +7,9 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator, List
 from urllib.parse import urlparse
 
 import yaml
@@ -73,7 +73,7 @@ def _git_timeout_seconds() -> int:
     return max(1, int(getattr(settings, "SKILL_GITHUB_IMPORT_GIT_TIMEOUT_SECONDS", 240) or 240))
 
 
-def _run_git_checked(args: List[str], *, cwd: str | None = None) -> str:
+def _run_git_checked(args: list[str], *, cwd: str | None = None) -> str:
     from app.core.subprocess_runner import ProcessTimeoutError, run_git
 
     try:
@@ -170,6 +170,21 @@ def _repo_dir_has_skill_md(repo_root: str, relative_dir: str) -> bool:
     return _repo_path_exists(repo_root, f"{rel_dir}/SKILL.md")
 
 
+def _matching_git_directories(raw_dirs, target_name):
+    recursive_matches: list[str] = []
+    seen = set()
+    for line in raw_dirs.splitlines():
+        rel_dir = line.strip().replace("\\", "/").strip("/")
+        if not rel_dir:
+            continue
+        if rel_dir in seen:
+            continue
+        seen.add(rel_dir)
+        if rel_dir.split("/")[-1] == target_name:
+            recursive_matches.append(rel_dir)
+    return recursive_matches
+
+
 def _resolve_sparse_skill_subdir(
     repo_root: str,
     *,
@@ -183,7 +198,7 @@ def _resolve_sparse_skill_subdir(
         return normalized_subdir
 
     target_name = _normalize_skill_name(skill_name)
-    missing_skill_md_matches: List[str] = []
+    missing_skill_md_matches: list[str] = []
     preferred_candidates = [f"skills/{target_name}", target_name]
     for candidate in preferred_candidates:
         if _repo_dir_has_skill_md(repo_root, candidate):
@@ -196,19 +211,9 @@ def _resolve_sparse_skill_subdir(
     except GithubImportError as exc:
         raise GithubImportError("Failed to inspect GitHub repository tree") from exc
 
-    recursive_matches: List[str] = []
-    seen = set()
-    for line in raw_dirs.splitlines():
-        rel_dir = line.strip().replace("\\", "/").strip("/")
-        if not rel_dir:
-            continue
-        if rel_dir in seen:
-            continue
-        seen.add(rel_dir)
-        if rel_dir.split("/")[-1] == target_name:
-            recursive_matches.append(rel_dir)
+    recursive_matches = _matching_git_directories(raw_dirs, target_name)
 
-    valid_candidates: List[str] = []
+    valid_candidates: list[str] = []
     for item in recursive_matches:
         if item in preferred_candidates:
             continue
@@ -220,15 +225,11 @@ def _resolve_sparse_skill_subdir(
     if len(valid_candidates) == 1:
         return valid_candidates[0]
     if len(valid_candidates) > 1:
-        raise GithubImportError(
-            f"Multiple skill directories matched '{target_name}': {', '.join(valid_candidates)}"
-        )
+        raise GithubImportError(f"Multiple skill directories matched '{target_name}': {', '.join(valid_candidates)}")
 
     if missing_skill_md_matches:
-        rel_missing = sorted(list(dict.fromkeys(missing_skill_md_matches)))
-        raise GithubImportError(
-            f"Found matching directory but missing root SKILL.md: {', '.join(rel_missing)}"
-        )
+        rel_missing = sorted(dict.fromkeys(missing_skill_md_matches))
+        raise GithubImportError(f"Found matching directory but missing root SKILL.md: {', '.join(rel_missing)}")
 
     raise GithubImportError(f"Skill directory '{target_name}' not found in repository")
 
@@ -266,13 +267,30 @@ def _sparse_checkout_skill_dir(
     return relative_source
 
 
+def _matching_worktree_directories(repo_abs, target_name):
+    recursive_matches: list[str] = []
+    for walk_root, dir_names, _ in os.walk(repo_abs, topdown=True, followlinks=False):
+        filtered_dirs: list[str] = []
+        for dir_name in dir_names:
+            abs_dir = os.path.join(walk_root, dir_name)
+            if dir_name == ".git":
+                continue
+            if os.path.islink(abs_dir):
+                continue
+            filtered_dirs.append(dir_name)
+            if dir_name == target_name:
+                recursive_matches.append(os.path.abspath(abs_dir))
+        dir_names[:] = filtered_dirs
+    return recursive_matches
+
+
 def locate_skill_directory(repo_root: str, skill_name: str) -> str:
     repo_abs = os.path.abspath(str(repo_root or "").strip())
     if not repo_abs or not os.path.isdir(repo_abs):
         raise GithubImportError("Repository root does not exist")
 
     target_name = _normalize_skill_name(skill_name)
-    missing_skill_md_matches: List[str] = []
+    missing_skill_md_matches: list[str] = []
 
     preferred_candidates = [
         os.path.join(repo_abs, "skills", target_name),
@@ -285,21 +303,9 @@ def locate_skill_directory(repo_root: str, skill_name: str) -> str:
             return os.path.abspath(candidate)
         missing_skill_md_matches.append(os.path.abspath(candidate))
 
-    recursive_matches: List[str] = []
-    for walk_root, dir_names, _ in os.walk(repo_abs, topdown=True, followlinks=False):
-        filtered_dirs: List[str] = []
-        for dir_name in dir_names:
-            abs_dir = os.path.join(walk_root, dir_name)
-            if dir_name == ".git":
-                continue
-            if os.path.islink(abs_dir):
-                continue
-            filtered_dirs.append(dir_name)
-            if dir_name == target_name:
-                recursive_matches.append(os.path.abspath(abs_dir))
-        dir_names[:] = filtered_dirs
+    recursive_matches = _matching_worktree_directories(repo_abs, target_name)
 
-    unique_matches: List[str] = []
+    unique_matches: list[str] = []
     seen = set()
     for item in recursive_matches:
         if item in seen:
@@ -315,23 +321,13 @@ def locate_skill_directory(repo_root: str, skill_name: str) -> str:
     if len(valid_candidates) == 1:
         return valid_candidates[0]
     if len(valid_candidates) > 1:
-        relative_paths = [
-            os.path.relpath(item, repo_abs).replace("\\", "/")
-            for item in valid_candidates
-        ]
-        raise GithubImportError(
-            f"Multiple skill directories matched '{target_name}': {', '.join(relative_paths)}"
-        )
+        relative_paths = [os.path.relpath(item, repo_abs).replace("\\", "/") for item in valid_candidates]
+        raise GithubImportError(f"Multiple skill directories matched '{target_name}': {', '.join(relative_paths)}")
 
     if missing_skill_md_matches:
-        rel_missing = [
-            os.path.relpath(item, repo_abs).replace("\\", "/")
-            for item in missing_skill_md_matches
-        ]
-        rel_missing = sorted(list(dict.fromkeys(rel_missing)))
-        raise GithubImportError(
-            f"Found matching directory but missing root SKILL.md: {', '.join(rel_missing)}"
-        )
+        rel_missing = [os.path.relpath(item, repo_abs).replace("\\", "/") for item in missing_skill_md_matches]
+        rel_missing = sorted(dict.fromkeys(rel_missing))
+        raise GithubImportError(f"Found matching directory but missing root SKILL.md: {', '.join(rel_missing)}")
 
     raise GithubImportError(f"Skill directory '{target_name}' not found in repository")
 
@@ -368,7 +364,7 @@ def read_skill_description(skill_dir: str) -> str | None:
         return None
 
     try:
-        with open(markdown_path, "r", encoding="utf-8", errors="replace") as file:
+        with open(markdown_path, encoding="utf-8", errors="replace") as file:
             content = file.read()
     except Exception:
         return None

@@ -13,7 +13,6 @@
 - confidence       置信度 0-100
 """
 
-from typing import List, Optional
 from datetime import datetime
 
 from pydantic import BaseModel, Field
@@ -21,38 +20,38 @@ from pydantic import BaseModel, Field
 
 class DiagnosisCodeContextItem(BaseModel):
     file_path: str = ""
-    start_line: Optional[int] = None
-    end_line: Optional[int] = None
-    snippet: Optional[str] = None
-    note: Optional[str] = None
+    start_line: int | None = None
+    end_line: int | None = None
+    snippet: str | None = None
+    note: str | None = None
 
 
 class DiagnosisSimilarCaseItem(BaseModel):
     title: str = ""
-    similarity: Optional[str] = None   # 高/中/低
-    summary: Optional[str] = None
-    reference: Optional[str] = None    # 案例ID / 链接 / 关键词
+    similarity: str | None = None  # 高/中/低
+    summary: str | None = None
+    reference: str | None = None  # 案例ID / 链接 / 关键词
 
 
 class DiagnosisCallChainNode(BaseModel):
-    seq: Optional[int] = None
-    module: Optional[str] = None
-    function: Optional[str] = None
-    file_path: Optional[str] = None
-    description: Optional[str] = None
+    seq: int | None = None
+    module: str | None = None
+    function: str | None = None
+    file_path: str | None = None
+    description: str | None = None
 
 
 class DiagnosisResultPayload(BaseModel):
     """结构化定位结果载荷（AI 输出 JSON 块与用户编辑共用）。"""
 
-    summary: Optional[str] = None
-    root_cause: Optional[str] = None
-    evidence_chain: Optional[str] = None
-    fix_suggestion: Optional[str] = None
-    fix_code: Optional[str] = None
-    code_context: List[DiagnosisCodeContextItem] = Field(default_factory=list)
-    similar_cases: List[DiagnosisSimilarCaseItem] = Field(default_factory=list)
-    call_chain: List[DiagnosisCallChainNode] = Field(default_factory=list)
+    summary: str | None = None
+    root_cause: str | None = None
+    evidence_chain: str | None = None
+    fix_suggestion: str | None = None
+    fix_code: str | None = None
+    code_context: list[DiagnosisCodeContextItem] = Field(default_factory=list)
+    similar_cases: list[DiagnosisSimilarCaseItem] = Field(default_factory=list)
+    call_chain: list[DiagnosisCallChainNode] = Field(default_factory=list)
     confidence: int = Field(default=0, ge=0, le=100)
 
 
@@ -65,20 +64,20 @@ class DiagnosisResultResponse(BaseModel):
     task_id: str
     workspace_id: str
     created_by_id: str
-    summary: Optional[str] = None
-    root_cause: Optional[str] = None
-    evidence_chain: Optional[str] = None
-    fix_suggestion: Optional[str] = None
-    fix_code: Optional[str] = None
-    code_context: List[DiagnosisCodeContextItem] = Field(default_factory=list)
-    similar_cases: List[DiagnosisSimilarCaseItem] = Field(default_factory=list)
-    call_chain: List[DiagnosisCallChainNode] = Field(default_factory=list)
+    summary: str | None = None
+    root_cause: str | None = None
+    evidence_chain: str | None = None
+    fix_suggestion: str | None = None
+    fix_code: str | None = None
+    code_context: list[DiagnosisCodeContextItem] = Field(default_factory=list)
+    similar_cases: list[DiagnosisSimilarCaseItem] = Field(default_factory=list)
+    call_chain: list[DiagnosisCallChainNode] = Field(default_factory=list)
     confidence: int = 0
     status: str
     extracted_from_ai: bool = True
-    extracted_at: Optional[datetime] = None
-    source_chat_message_id: Optional[str] = None
+    extracted_at: datetime | None = None
+    source_chat_message_id: str | None = None
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}

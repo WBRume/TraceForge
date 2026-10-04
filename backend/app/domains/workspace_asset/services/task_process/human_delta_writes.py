@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sqlalchemy.orm import Session
 
+from app.domains.workflow.models.task_change import SddTaskChangeProposal
 from app.domains.workspace_asset.models.workspace_asset import (
     HumanReviewOutcome,
     HumanReviewStatus,
@@ -15,11 +14,11 @@ from app.domains.workspace_asset.models.workspace_asset import (
     TaskProcessRecordType,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import (
+    HumanDeltaCreateRequest,
+    HumanDeltaUpdateRequest,
     HumanReviewCommentCreateRequest,
     HumanReviewCreateRequest,
     HumanReviewUpdateRequest,
-    HumanDeltaCreateRequest,
-    HumanDeltaUpdateRequest,
 )
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import (
@@ -46,7 +45,7 @@ def create_human_review(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: HumanReviewCreateRequest,
 ) -> None:
     task = get_task_or_error(db, workspace_id, task_id)
@@ -87,7 +86,7 @@ def update_human_review(
     workspace_id: str,
     task_id: str,
     review_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: HumanReviewUpdateRequest,
 ) -> None:
     review = ensure_human_review(db, workspace_id, task_id, review_id)
@@ -135,7 +134,7 @@ def create_human_review_comment(
     workspace_id: str,
     task_id: str,
     review_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: HumanReviewCommentCreateRequest,
 ) -> None:
     ensure_human_review(db, workspace_id, task_id, review_id)
@@ -173,8 +172,8 @@ def _ensure_proposal(
     db: Session,
     workspace_id: str,
     task_id: str,
-    proposal_id: Optional[str],
-) -> Optional["SddTaskChangeProposal"]:
+    proposal_id: str | None,
+) -> SddTaskChangeProposal | None:
     from app.domains.workflow.models.task_change import SddTaskChangeProposal
 
     if not proposal_id:
@@ -197,7 +196,7 @@ def create_human_delta(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: HumanDeltaCreateRequest,
 ) -> str:
     from app.domains.workspace_asset.services.human_delta_compare_service import create_delta
@@ -219,7 +218,7 @@ def update_human_delta(
     workspace_id: str,
     task_id: str,
     delta_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: HumanDeltaUpdateRequest,
 ) -> None:
     delta = ensure_human_delta(db, workspace_id, task_id, delta_id)

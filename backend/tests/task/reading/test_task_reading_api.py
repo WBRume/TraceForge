@@ -1,24 +1,14 @@
 """REST 接口合同测试（第 8 节）：鉴权、错误码、幂等、载荷形状。"""
-import os
-import sys
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.database import Base  # noqa: E402  (模型注册见 conftest)
-from app.dependencies import get_current_user, get_db  # noqa: E402
-from app.domains.auth.models.user import User  # noqa: E402
-from app.domains.task.models.chat import ChatMessage  # noqa: E402
-from app.domains.task.routers.task import reading as reading_router  # noqa: E402
-
+from app.dependencies import get_current_user, get_db
+from app.domains.auth.models.user import User
+from app.domains.task.routers.task import reading as reading_router
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
-  # noqa: E402
 
 
 class _StubUser:
@@ -35,6 +25,7 @@ def api_env(seeded_db, monkeypatch):
 
     # 空的 SEARCH_CURSOR_SECRET 由服务自行处理；这里签发窗口令牌需要密钥
     from app.config import settings
+
     monkeypatch.setattr(settings, "SEARCH_CURSOR_SECRET", "test-secret-for-reading")
 
     test_app = FastAPI()
@@ -68,14 +59,21 @@ def test_get_progress_readonly_without_init(api_env):
     assert body["initialized"] is False
     # GET 不创建状态
     from app.domains.task.models.reading import TaskReadingState
+
     assert env["db"].query(TaskReadingState).count() == 0
 
 
 def test_receipts_and_progress_roundtrip(api_env):
     env, client = api_env
     session = _open_session(client, env)
-    m = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                       creator_id="user-a", role="assistant", content="ai")
+    m = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="ai",
+    )
     env["db"].commit()
     epoch = session["state"]["reading_epoch"]
     resp = client.post(
@@ -83,8 +81,12 @@ def test_receipts_and_progress_roundtrip(api_env):
         json={
             "reading_epoch": epoch,
             "items": [{"item_key": f"message:{m.id}", "change_seq": m and _seq(env, m)}],
-            "resume": {"message_id": m.id, "content_seq": _seq(env, m), "offset_ratio": 0.5,
-                       "expected_revision": session["state"]["resume"] or "0"},
+            "resume": {
+                "message_id": m.id,
+                "content_seq": _seq(env, m),
+                "offset_ratio": 0.5,
+                "expected_revision": session["state"]["resume"] or "0",
+            },
         },
     )
     assert resp.status_code == 200, resp.text
@@ -98,8 +100,13 @@ def test_receipts_and_progress_roundtrip(api_env):
 
 def _seq(env, message):
     from app.domains.task.models.reading import TaskReadingItem
-    item = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == env["task_id"], TaskReadingItem.message_id == message.id).first()
+
+    item = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == env["task_id"], TaskReadingItem.message_id == message.id)
+        .first()
+    )
     return str(int(item.change_seq))
 
 
@@ -116,8 +123,11 @@ def test_receipts_validation_rejects_unknown_fields_and_bad_ratio(api_env):
     # 非法 ratio
     resp = client.post(
         f"/api/workspaces/{env['ws_id']}/tasks/{env['task_id']}/reading-receipts",
-        json={"reading_epoch": epoch, "items": [],
-              "resume": {"message_id": "x", "content_seq": "1", "offset_ratio": 1.5, "expected_revision": "0"}},
+        json={
+            "reading_epoch": epoch,
+            "items": [],
+            "resume": {"message_id": "x", "content_seq": "1", "offset_ratio": 1.5, "expected_revision": "0"},
+        },
     )
     assert resp.status_code == 422
 
@@ -140,8 +150,14 @@ def test_reading_updates_endpoint_filters_and_pagination(api_env):
     # 先建基线（空任务 → frontier=0）
     _open_session(client, env)
     for i in range(3):
-        task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                       creator_id="user-a", role="assistant", content=f"ai {i}")
+        task_conversation_messages.save_chat_message(
+            env["db"],
+            task_id=env["task_id"],
+            workspace_id=env["ws_id"],
+            creator_id="user-a",
+            role="assistant",
+            content=f"ai {i}",
+        )
     env["db"].commit()
     # 再取新令牌：lower=0, upper=3
     session = _open_session(client, env)
@@ -175,14 +191,26 @@ def test_reading_updates_endpoint_filters_and_pagination(api_env):
 def test_reading_resume_endpoint_shape(api_env):
     env, client = api_env
     _open_session(client, env)
-    m = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                       creator_id="user-a", role="assistant", content="ai")
+    m = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="ai",
+    )
     env["db"].commit()
     from app.domains.task.services import reading_progress_service as rps
-    rps.submit_receipts(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"],
-                        epoch=1, raw_items=[],
-                        resume={"message_id": m.id, "content_seq": _seq(env, m), "offset_ratio": 0.2,
-                                "expected_revision": "0"})
+
+    rps.submit_receipts(
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[],
+        resume={"message_id": m.id, "content_seq": _seq(env, m), "offset_ratio": 0.2, "expected_revision": "0"},
+    )
     env["db"].commit()
     resp = client.get(f"/api/workspaces/{env['ws_id']}/tasks/{env['task_id']}/reading-resume")
     assert resp.status_code == 200
@@ -197,8 +225,14 @@ def test_reading_items_endpoint_batches(api_env):
     _open_session(client, env)
     ids = []
     for i in range(3):
-        m = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                           creator_id="user-a", role="assistant", content=f"a{i}")
+        m = task_conversation_messages.save_chat_message(
+            env["db"],
+            task_id=env["task_id"],
+            workspace_id=env["ws_id"],
+            creator_id="user-a",
+            role="assistant",
+            content=f"a{i}",
+        )
         ids.append(m.id)
     env["db"].commit()
     resp = client.get(
@@ -219,6 +253,7 @@ def test_workspace_access_enforced(api_env):
     env["db"].commit()
 
     from app.database import Base as _B  # noqa: F401
+
     test_app = FastAPI()
     test_app.include_router(reading_router.router, prefix="/api")
     test_app.dependency_overrides[get_db] = lambda: env["db"]

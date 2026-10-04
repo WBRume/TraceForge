@@ -1,6 +1,6 @@
 """Capture actual transitions inside the owning transaction; never perform I/O."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import inspect
@@ -53,8 +53,12 @@ def task_context(db, *, task_id, workspace_id, initiator_id):
     url = f"{settings.FRONTEND_BASE_URL.rstrip('/')}/workspaces/{workspace_id}/chat/{task_id}"
     return {
         "workspace": {"id": workspace_id, "name": workspace.name if workspace else ""},
-        "task": {"id": task_id, "title": task.name if task else "", "url": url,
-                 "session_generation": task.session_generation if task else None},
+        "task": {
+            "id": task_id,
+            "title": task.name if task else "",
+            "url": url,
+            "session_generation": task.session_generation if task else None,
+        },
         "initiator": {"id": initiator_id, "name": creator.display_name if creator else ""},
     }
 
@@ -66,9 +70,13 @@ def run_payload(db, job, *, summary=None):
     actor_id = job.interrupted_by_id if interrupted else None
     actor = db.get(User, actor_id) if actor_id else None
     actor_name = (actor.display_name if actor else None) or actor_id
-    details = summary or job.error_message or (
-        (job.interrupt_reason or job.terminal_reason) if interrupted else None
-    ) or job.message or ""
+    details = (
+        summary
+        or job.error_message
+        or ((job.interrupt_reason or job.terminal_reason) if interrupted else None)
+        or job.message
+        or ""
+    )
     if actor_id and state == "AI_RUN_ERROR":
         if value(job.status) in {"INTERRUPTED", "CANCELLED"}:
             prefix = f"任务被 {actor_name} 中断了"
@@ -78,13 +86,18 @@ def run_payload(db, job, *, summary=None):
             prefix = f"任务执行异常，中断操作人：{actor_name}"
         details = f"{prefix}。{details}" if details else prefix
     return {
-        "schema_version": 1, "event_type": state,
+        "schema_version": 1,
+        "event_type": state,
         **task_context(db, task_id=job.task_id, workspace_id=job.workspace_id, initiator_id=job.creator_id),
         "actor": {"id": actor_id, "name": actor_name} if actor_id else None,
-        "run": {"id": job.id, "version": int(job.awareness_version or 0),
-                "started_at": iso(job.started_at), "finished_at": iso(job.finished_at),
-                "client_message_id": context.get("client_message_id"),
-                "session_generation": job.session_generation},
+        "run": {
+            "id": job.id,
+            "version": int(job.awareness_version or 0),
+            "started_at": iso(job.started_at),
+            "finished_at": iso(job.finished_at),
+            "client_message_id": context.get("client_message_id"),
+            "session_generation": job.session_generation,
+        },
         "summary": str(details)[:500],
     }
 
@@ -106,11 +119,20 @@ def capture_job(db, job, *, allow_start=False, summary=None):
     event_id = str(uuid4())
     payload = run_payload(db, job, summary=summary)
     payload.update(event_id=event_id, occurred_at=iso(now))
-    db.add(TaskAwarenessEvent(
-        id=event_id, event_key=f"run:{job.id}:{job.awareness_version}", creator_id=job.creator_id,
-        workspace_id=job.workspace_id, task_id=job.task_id, job_id=job.id,
-        event_type=state, payload_json=payload, available_at=now, created_at=now,
-    ))
+    db.add(
+        TaskAwarenessEvent(
+            id=event_id,
+            event_key=f"run:{job.id}:{job.awareness_version}",
+            creator_id=job.creator_id,
+            workspace_id=job.workspace_id,
+            task_id=job.task_id,
+            job_id=job.id,
+            event_type=state,
+            payload_json=payload,
+            available_at=now,
+            created_at=now,
+        )
+    )
 
 
 def capture_flush(db):
@@ -135,7 +157,9 @@ def capture_flush(db):
             parent_confirmation = parent_meta.get("confirmation") or {}
             job = db.query(SddAiJob).filter(SddAiJob.id == parent_confirmation.get("job_id")).with_for_update().first()
             if job and job.awareness_state:
-                job.awareness_pending_json = [item for item in job.awareness_pending_json or [] if item != metadata["interaction_id"]]
+                job.awareness_pending_json = [
+                    item for item in job.awareness_pending_json or [] if item != metadata["interaction_id"]
+                ]
         if job:
             capture_job(db, job, summary=prompt)
     for job in list(db.dirty):
@@ -159,13 +183,30 @@ def capture_business(db, task, actor_id, event_type, summary=""):
     # A committed manual action is independent of any AI runtime or duration.
     now = datetime.utcnow()
     event_id = str(uuid4())
-    payload = {"schema_version": 1, "event_id": event_id, "event_type": event_type, "occurred_at": iso(now),
-               **task_context(db, task_id=task.id, workspace_id=task.workspace_id, initiator_id=actor_id),
-               "run": None, "summary": str(summary or "")[:500]}
+    payload = {
+        "schema_version": 1,
+        "event_id": event_id,
+        "event_type": event_type,
+        "occurred_at": iso(now),
+        **task_context(db, task_id=task.id, workspace_id=task.workspace_id, initiator_id=actor_id),
+        "run": None,
+        "summary": str(summary or "")[:500],
+    }
     payload["actor"] = payload["initiator"].copy()
-    db.add(TaskAwarenessEvent(id=event_id, event_key=event_key,
-                             creator_id=actor_id, workspace_id=task.workspace_id, task_id=task.id,
-                             job_id=None, event_type=event_type, payload_json=payload, available_at=now, created_at=now))
+    db.add(
+        TaskAwarenessEvent(
+            id=event_id,
+            event_key=event_key,
+            creator_id=actor_id,
+            workspace_id=task.workspace_id,
+            task_id=task.id,
+            job_id=None,
+            event_type=event_type,
+            payload_json=payload,
+            available_at=now,
+            created_at=now,
+        )
+    )
 
 
 def webhook_eligible(event, job, now=None):
@@ -176,8 +217,10 @@ def webhook_eligible(event, job, now=None):
         return False
     if event.event_type == "AI_RUN_ERROR":
         return True
-    if event.event_type == "AI_HITL_SUSPENDED" and (job.awareness_state != "AI_HITL_SUSPENDED"
-        or event.payload_json.get("run", {}).get("version") != job.awareness_version):
+    if event.event_type == "AI_HITL_SUSPENDED" and (
+        job.awareness_state != "AI_HITL_SUSPENDED"
+        or event.payload_json.get("run", {}).get("version") != job.awareness_version
+    ):
         return False
     ended = job.finished_at or now
     return (ended - job.started_at).total_seconds() >= LONG_RUN_SECONDS

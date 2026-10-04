@@ -1,11 +1,10 @@
 """Create workspace-local plan and specification documents."""
 
-from typing import Optional, List, Tuple
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 from app.domains.task.models.task import SddTask
 from app.domains.task.services.task_doc_scan import TASK_DOC_EXTENSIONS, plan_doc_root_label, plan_doc_root_parts
-
 
 SUPERPOWERS_DOC_SECTIONS = {"plans", "specs"}
 
@@ -17,7 +16,7 @@ def _normalize_superpowers_doc_section(section: str) -> str:
     return normalized
 
 
-def _normalize_superpowers_doc_section_path(*, name: Optional[str] = None, path: Optional[str] = None) -> str:
+def _normalize_superpowers_doc_section_path(*, name: str | None = None, path: str | None = None) -> str:
     raw = str(path or "").strip() or str(name or "").strip()
     if not raw:
         raise ValueError("Document path is required")
@@ -45,10 +44,10 @@ def _task_project_root(task: SddTask) -> Path:
     return Path(project_path).resolve()
 
 
-def _superpowers_docs_root_candidates(task: SddTask) -> List[Path]:
+def _superpowers_docs_root_candidates(task: SddTask) -> list[Path]:
     project_root = _task_project_root(task)
     seen: set[str] = set()
-    roots: List[Path] = []
+    roots: list[Path] = []
     for rel_parts in plan_doc_root_parts():
         root = (project_root.joinpath(*rel_parts)).resolve()
         key = str(root).lower()
@@ -71,17 +70,17 @@ def _resolve_superpowers_doc_path(
     task: SddTask,
     section: str,
     *,
-    name: Optional[str] = None,
-    path: Optional[str] = None,
+    name: str | None = None,
+    path: str | None = None,
     for_write: bool = False,
-) -> Tuple[Path, str]:
+) -> tuple[Path, str]:
     normalized_section = _normalize_superpowers_doc_section(section)
     normalized_section_path = _normalize_superpowers_doc_section_path(name=name, path=path)
     project_root = _task_project_root(task)
 
-    fallback_candidate: Optional[Path] = None
-    existing_parent_candidate: Optional[Path] = None
-    existing_section_candidate: Optional[Path] = None
+    fallback_candidate: Path | None = None
+    existing_parent_candidate: Path | None = None
+    existing_section_candidate: Path | None = None
 
     for root in _superpowers_docs_root_candidates(task):
         section_dir = (root / normalized_section).resolve()
@@ -130,11 +129,11 @@ def _serialize_superpowers_doc_entry(
     }
 
 
-def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]:
+def _list_superpowers_docs_in_section(task: SddTask, section: str) -> list[dict]:
     normalized_section = _normalize_superpowers_doc_section(section)
     project_root = _task_project_root(task)
     seen_paths: set[str] = set()
-    entries: List[dict] = []
+    entries: list[dict] = []
     for root in _superpowers_docs_root_candidates(task):
         section_dir = (root / normalized_section).resolve()
         if not section_dir.exists() or not section_dir.is_dir():
@@ -154,12 +153,14 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
             if rel_key in seen_paths:
                 continue
             seen_paths.add(rel_key)
-            entries.append(_serialize_superpowers_doc_entry(
-                project_root,
-                normalized_section,
-                section_dir,
-                resolved_child,
-            ))
+            entries.append(
+                _serialize_superpowers_doc_entry(
+                    project_root,
+                    normalized_section,
+                    section_dir,
+                    resolved_child,
+                )
+            )
 
     entries.sort(key=lambda item: item["section_path"].lower())
     return entries
@@ -167,6 +168,7 @@ def _list_superpowers_docs_in_section(task: SddTask, section: str) -> List[dict]
 
 def list_superpowers_docs(task: SddTask) -> dict:
     from app.domains.local_resource.service import is_local, task_operation
+
     if is_local(task):
         return task_operation(task.id, "documents", {"action": "list"})
     return {
@@ -180,10 +182,11 @@ def list_superpowers_docs(task: SddTask) -> dict:
 def read_superpowers_doc(
     task: SddTask,
     section: str,
-    name: Optional[str] = None,
-    path: Optional[str] = None,
+    name: str | None = None,
+    path: str | None = None,
 ) -> dict:
     from app.domains.local_resource.service import is_local, task_operation
+
     if is_local(task):
         return task_operation(task.id, "documents", {"action": "read", "section": section, "path": path or name})
     file_path, section_path = _resolve_superpowers_doc_path(
@@ -210,12 +213,15 @@ def save_superpowers_doc(
     task: SddTask,
     section: str,
     content: str,
-    name: Optional[str] = None,
-    path: Optional[str] = None,
+    name: str | None = None,
+    path: str | None = None,
 ) -> dict:
     from app.domains.local_resource.service import is_local, task_operation
+
     if is_local(task):
-        return task_operation(task.id, "documents", {"action": "save", "section": section, "path": path or name, "content": content})
+        return task_operation(
+            task.id, "documents", {"action": "save", "section": section, "path": path or name, "content": content}
+        )
     file_path, section_path = _resolve_superpowers_doc_path(
         task,
         section,

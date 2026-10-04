@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
@@ -12,12 +11,12 @@ from app.core.distributed_lock import LockAcquireTimeout, lock_task
 from app.core.logging import bind_task_context, get_logger
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, get_db
+from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.asset.schemas.asset import AssetResponse
 from app.domains.asset.services import asset_service
 from app.domains.asset.services.document import serializer as document_serializer
 from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.auth.models.user import User, WorkspacePermission
-from app.domains.ai.services.jobs import publishing as ai_job_publishing
 from app.domains.task.routers.task.deps import (
     TASKS_ROUTE_PREFIX,
     ensure_task_not_baselined,
@@ -33,7 +32,6 @@ from app.domains.task.schemas.task import (
     TaskCliBootstrapResponse,
 )
 from app.domains.task.services import task_cli_state_service
-
 from app.domains.task.services.task_workspace import documents as task_task_workspace_documents
 from app.domains.task.services.task_workspace import specification as task_task_workspace_specification
 
@@ -106,9 +104,7 @@ async def upload_task_spec(
                             spec_version_id=version_id,
                         )
                         bootstrap_status = (
-                            bootstrap.status.value
-                            if hasattr(bootstrap.status, "value")
-                            else str(bootstrap.status)
+                            bootstrap.status.value if hasattr(bootstrap.status, "value") else str(bootstrap.status)
                         )
                     else:
                         bootstrap_status = "DISABLED"
@@ -136,10 +132,10 @@ async def upload_task_spec(
         except HTTPException:
             raise
         except ValueError as exc:
-            raise HTTPException(status_code=415, detail=str(exc))
+            raise HTTPException(status_code=415, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception(f"Failed to upload spec for task {task_id}: {exc}")
-            raise HTTPException(status_code=500, detail=str(exc))
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/{task_id}/spec-bootstrap", response_model=TaskCliBootstrapResponse)
@@ -171,6 +167,7 @@ async def run_task_spec_bootstrap(
     """手动触发 spec 基线构建（PENDING/FAILED/STALE 可触发；RUNNING 幂等；READY 返回 409）。"""
     with bind_task_context(task_id=task_id, workspace_id=ws_id, user_id=current_user.id):
         try:
+
             def prepare_baseline_request(db: Session):
                 verify_workspace_permission(
                     ws_id,
@@ -196,10 +193,10 @@ async def run_task_spec_bootstrap(
                 return snapshot
 
             snapshot = await run_db_txn(prepare_baseline_request)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Specification baseline not initialized")
+        except KeyError as caught_error:
+            raise HTTPException(status_code=404, detail="Specification baseline not initialized") from caught_error
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         await task_cli_state_service.publish_bootstrap_snapshot(task_id)
         baseline_job = await ai_job_publishing.enqueue_task_baseline_job(
             workspace_id=ws_id,
@@ -224,7 +221,7 @@ def list_task_superpowers_docs(
     try:
         payload = task_task_workspace_documents.list_superpowers_docs(task)
     except ValueError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
     return SuperpowersDocsListResponse(**payload)
 
@@ -234,8 +231,8 @@ def get_task_superpowers_doc_content(
     ws_id: str,
     task_id: str,
     section: str = Query(...),
-    name: Optional[str] = Query(default=None),
-    path: Optional[str] = Query(default=None),
+    name: str | None = Query(default=None),
+    path: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -245,9 +242,9 @@ def get_task_superpowers_doc_content(
     try:
         payload = task_task_workspace_documents.read_superpowers_doc(task, section=section, name=name, path=path)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
 
     return SuperpowersDocContentResponse(**payload)
 
@@ -281,8 +278,8 @@ def save_task_superpowers_doc_content(
             path=body.path,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc))
+        raise HTTPException(status_code=int(getattr(exc, "status_code", 400)), detail=str(exc)) from exc
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save document: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to save document: {exc}") from exc
 
     return SuperpowersDocContentResponse(**payload)

@@ -5,16 +5,18 @@ API MOCK CLI Sync Service.
 import asyncio
 import json
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from functools import partial
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.agents.selection import create_legacy_bridge
-from app.config import settings
 from app.core.logging import get_logger
-from app.domains.api_mock.models.api_mock import ApiMockJobStatus, ApiMockSourceType, SddApiMockProject
+from app.domains.api_mock.models.api_mock import ApiMockSourceType, SddApiMockProject
 from app.engine.claude_bridge import create_cli_bridge
 from app.engine.claude_event_adapter import flatten_claude_event, format_claude_event_log_line
+
 from .constants import SYNC_MAX_FIX_ATTEMPTS
 from .job_service import (
     JobCancelledError,
@@ -50,10 +52,10 @@ def run_import_job_internal(
     project: SddApiMockProject,
     *,
     job_id: str,
-    source_name: Optional[str],
-    source_url: Optional[str],
-    raw_content: Optional[str],
-    clone_from_source_id: Optional[str] = None,
+    source_name: str | None,
+    source_url: str | None,
+    raw_content: str | None,
+    clone_from_source_id: str | None = None,
     creator_id: str,
 ) -> None:
     job = get_job(db, project.id, job_id)
@@ -65,7 +67,7 @@ def run_import_job_internal(
 
     try:
         _raise_if_cancel_requested(db, project.id, job, job_id)
-        
+
         content = (raw_content or "").strip()
         if not content and source_url:
             _set_job_progress(db, project.id, job, 24, "Downloading OpenAPI document")
@@ -83,7 +85,7 @@ def run_import_job_internal(
         _raise_if_cancel_requested(db, project.id, job, job_id)
         _set_job_progress(db, project.id, job, 80, "Saving source version")
 
-        final_content = serialize_document_content(content, normalized_oas)
+        serialize_document_content(content, normalized_oas)
         persist_source_version(
             db,
             project,
@@ -115,8 +117,6 @@ def run_import_job_internal(
         _set_job_failed(db, project.id, job, msg)
 
 
-
-
 async def _wait_bridge_terminated(bridge: Any) -> None:
     if hasattr(bridge, "wait"):
         await bridge.wait()
@@ -127,7 +127,7 @@ async def _wait_bridge_terminated(bridge: Any) -> None:
         await asyncio.sleep(0.2)
 
 
-def _extract_openapi_from_event_texts(result_texts: List[str], assistant_texts: List[str]) -> Dict[str, Any]:
+def _extract_openapi_from_event_texts(result_texts: list[str], assistant_texts: list[str]) -> dict[str, Any]:
     for candidate in result_texts:
         try:
             return _extract_json_from_text(candidate)
@@ -144,15 +144,19 @@ async def run_claude_session(
     temp_path: str,
     prompt: str,
     *,
-    on_output: Optional[Callable[[str], None]] = None,
-    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-    should_cancel: Optional[Callable[[], bool]] = None,
-) -> Tuple[List[str], List[str]]:
+    on_output: Callable[[str], None] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[list[str], list[str]]:
     bridge = create_cli_bridge(cli_path=cli_cmd)
     if on_output:
         on_output(f"Launching CLI: {cli_cmd}")
     return await _run_bridge_session(
-        bridge, temp_path, prompt, on_output=on_output, on_event=on_event,
+        bridge,
+        temp_path,
+        prompt,
+        on_output=on_output,
+        on_event=on_event,
         should_cancel=should_cancel,
     )
 
@@ -162,16 +166,61 @@ async def run_agent_session(
     temp_path: str,
     prompt: str,
     *,
-    on_output: Optional[Callable[[str], None]] = None,
-    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-    should_cancel: Optional[Callable[[], bool]] = None,
-) -> Tuple[List[str], List[str]]:
+    on_output: Callable[[str], None] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[list[str], list[str]]:
     """Run a fresh session using the workspace's unified Agent selection."""
     bridge = create_legacy_bridge(backend_name)
     return await _run_bridge_session(
-        bridge, temp_path, prompt, on_output=on_output, on_event=on_event,
+        bridge,
+        temp_path,
+        prompt,
+        on_output=on_output,
+        on_event=on_event,
         should_cancel=should_cancel,
     )
+
+
+def _raw_event_text_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value).strip()
+    return str(value).strip()
+
+
+async def _collect_bridge_event(event: dict[str, Any], *, assistant_texts, result_texts, on_event, on_output) -> None:
+    raw_type = str(event.get("type") or "").lower()
+    if raw_type == "assistant":
+        message = event.get("message")
+        blocks = message.get("content", []) if isinstance(message, dict) else []
+        if isinstance(blocks, list):
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                if str(block.get("type") or "").lower() != "text":
+                    continue
+                raw_text = _raw_event_text_value(block.get("text"))
+                if raw_text:
+                    assistant_texts.append(raw_text)
+    elif raw_type == "result":
+        raw_result = _raw_event_text_value(event.get("result"))
+        if raw_result:
+            result_texts.append(raw_result)
+
+    entries = flatten_claude_event(event)
+    for entry in entries:
+        if on_event:
+            on_event(entry)
+        log_line = format_claude_event_log_line(entry)
+        if log_line and on_output:
+            on_output(log_line)
 
 
 async def _run_bridge_session(
@@ -179,52 +228,21 @@ async def _run_bridge_session(
     temp_path: str,
     prompt: str,
     *,
-    on_output: Optional[Callable[[str], None]] = None,
-    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-    should_cancel: Optional[Callable[[], bool]] = None,
-) -> Tuple[List[str], List[str]]:
-    result_texts: List[str] = []
-    assistant_texts: List[str] = []
+    on_output: Callable[[str], None] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[list[str], list[str]]:
+    result_texts: list[str] = []
+    assistant_texts: list[str] = []
     cancelled = False
 
-    def _raw_event_text(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, str):
-            return value.strip()
-        if isinstance(value, (dict, list)):
-            try:
-                return json.dumps(value, ensure_ascii=False)
-            except Exception:
-                return str(value).strip()
-        return str(value).strip()
-
-    async def _event_callback(event: Dict[str, Any]) -> None:
-        raw_type = str(event.get("type") or "").lower()
-        if raw_type == "assistant":
-            message = event.get("message")
-            blocks = message.get("content", []) if isinstance(message, dict) else []
-            if isinstance(blocks, list):
-                for block in blocks:
-                    if not isinstance(block, dict):
-                        continue
-                    if str(block.get("type") or "").lower() != "text":
-                        continue
-                    raw_text = _raw_event_text(block.get("text"))
-                    if raw_text:
-                        assistant_texts.append(raw_text)
-        elif raw_type == "result":
-            raw_result = _raw_event_text(event.get("result"))
-            if raw_result:
-                result_texts.append(raw_result)
-
-        entries = flatten_claude_event(event)
-        for entry in entries:
-            if on_event:
-                on_event(entry)
-            log_line = format_claude_event_log_line(entry)
-            if log_line and on_output:
-                on_output(log_line)
+    _event_callback = partial(
+        _collect_bridge_event,
+        assistant_texts=assistant_texts,
+        result_texts=result_texts,
+        on_event=on_event,
+        on_output=on_output,
+    )
 
     async def _cancel_monitor() -> None:
         nonlocal cancelled
@@ -290,26 +308,69 @@ async def _analyze_with_claude_once(
     cli_cmd: str,
     temp_path: str,
     *,
-    on_output: Optional[Callable[[str], None]] = None,
-    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-    should_cancel: Optional[Callable[[], bool]] = None,
-) -> Dict[str, Any]:
+    on_output: Callable[[str], None] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> dict[str, Any]:
     result_texts, assistant_texts = await run_claude_session(
-        cli_cmd, temp_path, _analysis_prompt(),
-        on_output=on_output, on_event=on_event, should_cancel=should_cancel,
+        cli_cmd,
+        temp_path,
+        _analysis_prompt(),
+        on_output=on_output,
+        on_event=on_event,
+        should_cancel=should_cancel,
     )
     parsed = _extract_openapi_from_event_texts(result_texts, assistant_texts)
     from .openapi_normalizer import _normalize_openapi_document
+
     return _normalize_openapi_document(parsed)
+
+
+def _read_swagger_fragment(file_path, filename, cli_cmd, temp_path, on_output, on_event, should_cancel):
+    parsed_json = None
+    current_content = ""
+
+    for attempt in range(1, SYNC_MAX_FIX_ATTEMPTS + 1):
+        if should_cancel and should_cancel():
+            raise JobCancelledError("Job cancelled by user")
+
+        try:
+            with open(file_path, encoding="utf-8") as f:
+                current_content = f.read()
+            if not current_content.strip():
+                raise ValueError("File is empty.")
+            parsed_json = json.loads(current_content)
+            break
+        except Exception as e:
+            error_msg = str(e)
+            if on_output:
+                on_output(f"[{attempt}/{SYNC_MAX_FIX_ATTEMPTS}] Error parsing {filename}: {error_msg}")
+            if attempt >= SYNC_MAX_FIX_ATTEMPTS:
+                break
+
+            try:
+                asyncio.run(
+                    run_claude_session(
+                        cli_cmd,
+                        temp_path,
+                        _fix_json_prompt(current_content, os.path.join("swagger_parts", filename), error_msg),
+                        on_output=on_output,
+                        on_event=on_event,
+                        should_cancel=should_cancel,
+                    )
+                )
+            except Exception:
+                pass
+    return parsed_json
 
 
 def analyze_with_claude(
     temp_path: str,
     *,
-    on_output: Optional[Callable[[str], None]] = None,
-    on_event: Optional[Callable[[Dict[str, Any]], None]] = None,
-    should_cancel: Optional[Callable[[], bool]] = None,
-) -> Tuple[str, Dict[str, Any]]:
+    on_output: Callable[[str], None] | None = None,
+    on_event: Callable[[dict[str, Any]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> tuple[str, dict[str, Any]]:
     # Simple logic using retry
     cli_candidates = _api_mock_cli_candidates()
     if not cli_candidates:
@@ -321,8 +382,12 @@ def analyze_with_claude(
 
     asyncio.run(
         run_claude_session(
-            cli_cmd, temp_path, _analysis_prompt(),
-            on_output=on_output, on_event=on_event, should_cancel=should_cancel,
+            cli_cmd,
+            temp_path,
+            _analysis_prompt(),
+            on_output=on_output,
+            on_event=on_event,
+            should_cancel=should_cancel,
         )
     )
 
@@ -333,8 +398,8 @@ def analyze_with_claude(
     if not os.path.exists(swagger_parts_dir):
         raise RuntimeError("Claude failed to create 'swagger_parts/' directory. Check CLI output.")
 
-    merged_paths: Dict[str, Any] = {}
-    merged_schemas: Dict[str, Any] = {}
+    merged_paths: dict[str, Any] = {}
+    merged_schemas: dict[str, Any] = {}
 
     json_files = [f for f in os.listdir(swagger_parts_dir) if f.endswith(".json")]
     if not json_files:
@@ -342,36 +407,9 @@ def analyze_with_claude(
 
     for filename in json_files:
         file_path = os.path.join(swagger_parts_dir, filename)
-        parsed_json = None
-        current_content = ""
-
-        for attempt in range(1, SYNC_MAX_FIX_ATTEMPTS + 1):
-            if should_cancel and should_cancel():
-                raise JobCancelledError("Job cancelled by user")
-
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    current_content = f.read()
-                if not current_content.strip():
-                    raise ValueError("File is empty.")
-                parsed_json = json.loads(current_content)
-                break
-            except Exception as e:
-                error_msg = str(e)
-                if on_output:
-                    on_output(f"[{attempt}/{SYNC_MAX_FIX_ATTEMPTS}] Error parsing {filename}: {error_msg}")
-                if attempt >= SYNC_MAX_FIX_ATTEMPTS:
-                    break
-
-                try:
-                    asyncio.run(
-                        run_claude_session(
-                            cli_cmd, temp_path, _fix_json_prompt(current_content, os.path.join("swagger_parts", filename), error_msg),
-                            on_output=on_output, on_event=on_event, should_cancel=should_cancel,
-                        )
-                    )
-                except Exception:
-                    pass
+        parsed_json = _read_swagger_fragment(
+            file_path, filename, cli_cmd, temp_path, on_output, on_event, should_cancel
+        )
 
         if parsed_json is None or not isinstance(parsed_json, dict):
             continue
@@ -390,22 +428,17 @@ def analyze_with_claude(
 
     final_dict = {
         "openapi": "3.0.3",
-        "info": {
-            "title": "LLM Generated API",
-            "version": "1.0.0"
-        },
+        "info": {"title": "LLM Generated API", "version": "1.0.0"},
         "paths": merged_paths,
-        "components": {
-            "schemas": merged_schemas
-        }
+        "components": {"schemas": merged_schemas},
     }
 
     raw_yaml = _yaml.dump(final_dict, allow_unicode=True, sort_keys=False)
     normalized = normalize_oas_from_text(raw_yaml)
-    
+
     if on_output:
         on_output(f"Successfully merged {len(merged_paths)} paths and {len(merged_schemas)} schemas into valid YAML.")
-        
+
     return raw_yaml, normalized
 
 
@@ -414,7 +447,7 @@ def analyze_workspace_and_sync(
     project: SddApiMockProject,
     *,
     job_id: str,
-    clone_from_source_id: Optional[str] = None,
+    clone_from_source_id: str | None = None,
     creator_id: str,
 ) -> None:
     job = get_job(db, project.id, job_id)
@@ -426,6 +459,7 @@ def analyze_workspace_and_sync(
 
     try:
         from .job_service import _is_cancel_requested
+
         def _should_cancel() -> bool:
             return _is_cancel_requested(job_id)
 

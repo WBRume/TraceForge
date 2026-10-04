@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -29,7 +29,6 @@ from app.domains.task.models.session_share import (
 )
 from app.domains.task.models.task import SddTask
 from app.domains.workspace.services import workspace_service
-
 
 SHARE_STATUS_ACTIVE = "ACTIVE"
 SHARE_STATUS_EXPIRED = "EXPIRED"
@@ -82,8 +81,8 @@ def create_share(
     creator_id: str,
     mode: str,
     expires_in_days: int,
-    instruction_text: Optional[str],
-) -> Tuple[TaskSessionShare, str]:
+    instruction_text: str | None,
+) -> tuple[TaskSessionShare, str]:
     """创建分享链接；返回 (share, 原始令牌)。调用方负责 commit。"""
     if mode == TaskSessionShareMode.INPUT.value:
         clean_instruction = (instruction_text or "").strip() or None
@@ -124,7 +123,7 @@ def list_shares_for_creator(db: Session, task_id: str, creator_id: str) -> list[
     )
 
 
-def share_status(share: TaskSessionShare, task: Optional[SddTask], now: Optional[datetime] = None) -> str:
+def share_status(share: TaskSessionShare, task: SddTask | None, now: datetime | None = None) -> str:
     current = now or _utcnow()
     if share.revoked_at:
         return SHARE_STATUS_REVOKED
@@ -144,17 +143,10 @@ def delete_share(db: Session, share: TaskSessionShare) -> TaskSessionShare:
     """
     from app.domains.task.models.session_share import TaskShareAccess
 
-    locked = (
-        db.query(TaskSessionShare)
-        .filter(TaskSessionShare.id == share.id)
-        .with_for_update()
-        .one_or_none()
-    )
+    locked = db.query(TaskSessionShare).filter(TaskSessionShare.id == share.id).with_for_update().one_or_none()
     if locked is None:
         raise ShareError("Share not found", code="SHARE_NOT_FOUND", status_code=404)
-    db.query(TaskShareAccess).filter(TaskShareAccess.share_id == locked.id).delete(
-        synchronize_session=False
-    )
+    db.query(TaskShareAccess).filter(TaskShareAccess.share_id == locked.id).delete(synchronize_session=False)
     db.delete(locked)
     db.flush()
     return locked
@@ -163,7 +155,7 @@ def delete_share(db: Session, share: TaskSessionShare) -> TaskSessionShare:
 # ── 公开访问：exchange / resolve ──
 
 
-def _assert_share_usable(share: TaskSessionShare, task: Optional[SddTask]) -> None:
+def _assert_share_usable(share: TaskSessionShare, task: SddTask | None) -> None:
     """每次请求都验证：未撤销、未过期、任务存在且代次一致、发起人权限仍在。"""
     if share.revoked_at:
         raise ShareError("该分享链接已被撤销", code="SHARE_REVOKED", status_code=410)
@@ -189,12 +181,12 @@ def _assert_share_usable(share: TaskSessionShare, task: Optional[SddTask]) -> No
         raise ShareError("该分享链接已失效", code="SHARE_CREATOR_FORBIDDEN", status_code=410)
 
 
-def find_share_by_token(db: Session, token: str) -> Optional[TaskSessionShare]:
+def find_share_by_token(db: Session, token: str) -> TaskSessionShare | None:
     token_hash = hash_token(token)
     return db.query(TaskSessionShare).filter(TaskSessionShare.token_hash == token_hash).first()
 
 
-def issue_access(db: Session, share: TaskSessionShare, *, visitor_id: Optional[str] = None) -> Tuple[TaskShareAccess, str]:
+def issue_access(db: Session, share: TaskSessionShare, *, visitor_id: str | None = None) -> tuple[TaskShareAccess, str]:
     """签发短期访问凭证；续期时延续 visitor_id。调用方负责 commit。"""
     now = _utcnow()
     ttl = timedelta(seconds=max(60, int(settings.TASK_SHARE_ACCESS_TTL_SECONDS)))
@@ -220,7 +212,7 @@ def issue_access(db: Session, share: TaskSessionShare, *, visitor_id: Optional[s
     return access, access_token
 
 
-def find_access_by_token(db: Session, access_token: str) -> Optional[TaskShareAccess]:
+def find_access_by_token(db: Session, access_token: str) -> TaskShareAccess | None:
     access_hash = hash_token(access_token)
     return db.query(TaskShareAccess).filter(TaskShareAccess.access_token_hash == access_hash).first()
 
@@ -229,9 +221,9 @@ def resolve_share_view(
     db: Session,
     *,
     share: TaskSessionShare,
-    task: Optional[SddTask],
+    task: SddTask | None,
     optional_user: Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """解析访问视图：INPUT 永远 INPUT_ONLY；READ 在登录且有任务读取权限时跳正常会话。"""
     _assert_share_usable(share, task)
 
@@ -242,13 +234,14 @@ def resolve_share_view(
             "task_name": task.name if task else None,
         }
 
-    if optional_user is not None and task is not None:
-        if workspace_service.get_workspace_member(db, share.workspace_id, optional_user.id):
-            return {
-                "view_mode": _VIEW_MODE_NORMAL_REDIRECT,
-                # 服务端生成的站内目标，禁止接受任意 return_url
-                "redirect_path": f"/workspaces/{share.workspace_id}/chat/{share.task_id}",
-            }
+    if (optional_user is not None and task is not None) and workspace_service.get_workspace_member(
+        db, share.workspace_id, optional_user.id
+    ):
+        return {
+            "view_mode": _VIEW_MODE_NORMAL_REDIRECT,
+            # 服务端生成的站内目标，禁止接受任意 return_url
+            "redirect_path": f"/workspaces/{share.workspace_id}/chat/{share.task_id}",
+        }
 
     return {
         "view_mode": _VIEW_MODE_READ_ONLY,
@@ -261,7 +254,7 @@ def resolve_access_context(
     access_token: str,
     *,
     capability: str,
-) -> Tuple[TaskShareAccess, TaskSessionShare, SddTask]:
+) -> tuple[TaskShareAccess, TaskSessionShare, SddTask]:
     """由短期凭证重建 ShareAccessContext：每次请求校验分享与任务状态。"""
     access = find_access_by_token(db, access_token)
     if access is None:
@@ -285,12 +278,7 @@ def resolve_access_context(
 
 def cleanup_expired_accesses(db: Session, *, batch_limit: int = 500) -> int:
     """定期清理过期访问凭证；不触碰建议数据。"""
-    rows = (
-        db.query(TaskShareAccess)
-        .filter(TaskShareAccess.expires_at <= _utcnow())
-        .limit(batch_limit)
-        .all()
-    )
+    rows = db.query(TaskShareAccess).filter(TaskShareAccess.expires_at <= _utcnow()).limit(batch_limit).all()
     for row in rows:
         db.delete(row)
     if rows:

@@ -7,7 +7,7 @@
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -18,13 +18,13 @@ if TYPE_CHECKING:
 logger = get_logger(__name__, category="task_execution")
 
 # ── 全局引擎注册表：task_id -> TaskAgentEngine ──
-_active_engines: Dict[object, "TaskAgentEngine"] = {}
+_active_engines: dict[object, "TaskAgentEngine"] = {}
 
 # 空闲引擎收割：非 running 引擎超过 ENGINE_IDLE_TTL_SECONDS 后由周期任务摘除。
 # 正常结束后立即摘除（成功即删）；INTERRUPTED/WAITING_HITL 等可恢复态保留以便
 # 快速 resume，但用户不再回来时由本收割器兜底，避免注册表只增不减。
 ENGINE_IDLE_SWEEP_INTERVAL_SECONDS = 60.0
-_idle_sweeper_task: Optional[asyncio.Task] = None
+_idle_sweeper_task: asyncio.Task | None = None
 
 
 def _scope_key(task_id: str, scope_id: str = "main"):
@@ -101,13 +101,17 @@ async def shutdown_active_engines() -> None:
     _idle_sweeper_task = None
     engines = list(_active_engines.values())
     if engines:
+
         async def shutdown_engine(engine):
             from app.domains.ai.services.jobs.remote_recovery import valid_checkpoint
-            if (valid_checkpoint(getattr(engine, "remote_execution_checkpoint", None))
-                    and not getattr(engine, "_interrupt_requested", False)):
+
+            if valid_checkpoint(getattr(engine, "remote_execution_checkpoint", None)) and not getattr(
+                engine, "_interrupt_requested", False
+            ):
                 await engine.cli.close()
             else:
                 await engine.stop()
+
         await asyncio.gather(
             *(shutdown_engine(engine) for engine in engines),
             return_exceptions=True,

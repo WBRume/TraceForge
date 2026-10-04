@@ -37,7 +37,6 @@ from app.domains.auth.errors import (
 from app.domains.auth.models.oauth import OAuthIdentity, OAuthTicket
 from app.domains.auth.models.user import User
 from app.domains.auth.services import auth_service, oauth_service
-
 from tests.conftest import (
     github_profile,
     make_identity,
@@ -51,6 +50,7 @@ ATTACKER_UID = 4242
 
 
 # ══════════════════ 断言助手 ══════════════════
+
 
 def ticket_row(db: Session, ticket: str) -> OAuthTicket:
     """按 ticket 值取行（每次重查，避免 session 缓存导致的假通过）。"""
@@ -87,9 +87,8 @@ def assert_valid_access_token_for(token: str, user_id: str) -> None:
 # R1. 路径 A：身份已存在 → 直接登录
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r1_existing_identity_logs_in_directly_and_resolve_issues_jwt(
-    db, github_mock, client: TestClient
-):
+
+def test_r1_existing_identity_logs_in_directly_and_resolve_issues_jwt(db, github_mock, client: TestClient):
     """R1：已绑定身份的用户回调 → ticket intent=login/LOGIN_OK，resolve 换出可用 JWT。"""
     user = make_user(db, email="bound@example.com", password="Bound-Pass-1")
     make_identity(db, user, provider="github", provider_uid="9001")
@@ -124,9 +123,8 @@ def test_r1_existing_identity_logs_in_directly_and_resolve_issues_jwt(
 # R2. 路径 B 接管红线：错误密码
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r2_hijack_wrong_password_rejected_no_binding_ticket_released(
-    db, github_mock, client: TestClient
-):
+
+def test_r2_hijack_wrong_password_rejected_no_binding_ticket_released(db, github_mock, client: TestClient):
     """🔴 R2 账号接管红线。
 
     攻击者持有自己的 GitHub 账号（uid=4242），把三方 email 改成受害者邮箱。
@@ -137,13 +135,9 @@ def test_r2_hijack_wrong_password_rejected_no_binding_ticket_released(
     email_before = victim.email
     display_before = victim.display_name
 
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL)
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL))
     # 🔴 绝不允许判定为 LOGIN_OK（那就是自动合并 = 账号接管）
-    assert params["status"] == "BIND_REQUIRED", (
-        "邮箱已注册但身份未绑定时，必须走需验密码的路径 B"
-    )
+    assert params["status"] == "BIND_REQUIRED", "邮箱已注册但身份未绑定时，必须走需验密码的路径 B"
     ticket = params["ticket"]
     assert ticket_row(db, ticket).user_id == victim.id
 
@@ -187,16 +181,13 @@ def test_r2_hijack_wrong_password_rejected_no_binding_ticket_released(
 # R3. 路径 B 成功：正确密码
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r3_correct_password_binds_to_existing_user_without_creating_new_one(
-    db, github_mock, client: TestClient
-):
+
+def test_r3_correct_password_binds_to_existing_user_without_creating_new_one(db, github_mock, client: TestClient):
     """R3：正确密码 → 身份绑到既有账号、签发 JWT、不新建用户。"""
     victim = make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
     assert user_count(db) == 1
 
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL)
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL))
     assert params["status"] == "BIND_REQUIRED"
 
     resp = client.post(
@@ -224,18 +215,15 @@ def test_r3_correct_password_binds_to_existing_user_without_creating_new_one(
 # R4. 路径 C：全新邮箱
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r4_new_email_defers_user_creation_until_completion_register(
-    db, github_mock, client: TestClient
-):
+
+def test_r4_new_email_defers_user_creation_until_completion_register(db, github_mock, client: TestClient):
     """R4：全新邮箱 → REGISTER_REQUIRED 且**此刻不建号**；补全注册后建号+绑定+签发 JWT。
 
     同时守护"手填优先"：以用户手填邮箱建号，三方 email 只作 provider_email 快照。
     """
     assert user_count(db) == 0
 
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7001, email="fresh@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7001, email="fresh@example.com"))
     assert params["status"] == "REGISTER_REQUIRED"
     ticket = params["ticket"]
 
@@ -284,9 +272,8 @@ def test_r4_new_email_defers_user_creation_until_completion_register(
 # R5. 接管负向：拿不出密码就登不进受害者账号
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r5_actor_without_password_never_obtains_victim_session(
-    db, github_mock, client: TestClient, monkeypatch
-):
+
+def test_r5_actor_without_password_never_obtains_victim_session(db, github_mock, client: TestClient, monkeypatch):
     """🔴 R5：三方 email 命中已注册账号，但行为人拿不出密码 → 永远拿不到受害者会话。
 
     穷举所有可能的兑换姿势：resolve（多次）、bind/confirm（多次猜密码）、
@@ -296,9 +283,7 @@ def test_r5_actor_without_password_never_obtains_victim_session(
     victim = make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
     victim_id = victim.id
 
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL)
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL))
     assert params["status"] == "BIND_REQUIRED"
     ticket = params["ticket"]
 
@@ -337,14 +322,10 @@ def test_r5_actor_without_password_never_obtains_victim_session(
 
     # ④ 猜密码直到锁定 → 全部 401，最后 423
     for guess in ("guess-1", "guess-2", "guess-3"):
-        resp = client.post(
-            "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": guess}
-        )
+        resp = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": guess})
         assert resp.status_code == 401, resp.text
         collected.append(resp)
-    locked = client.post(
-        "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "guess-4"}
-    )
+    locked = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "guess-4"})
     assert locked.status_code == 423, locked.text
     assert locked.json()["code"] == ERR_OAUTH_TICKET_LOCKED
     collected.append(locked)
@@ -365,6 +346,7 @@ def test_r5_actor_without_password_never_obtains_victim_session(
 # ══════════════════════════════════════════════════════════════════════
 # R6. ticket 原子重放
 # ══════════════════════════════════════════════════════════════════════
+
 
 def test_r6_resolve_is_idempotent_read_by_design(db, github_mock, client: TestClient):
     """R6 前提说明：``/resolve`` 是**幂等读**，不消费 ticket。
@@ -387,9 +369,7 @@ def test_r6_resolve_is_idempotent_read_by_design(db, github_mock, client: TestCl
 def test_r6_bind_confirm_ticket_cannot_be_replayed(db, github_mock, client: TestClient):
     """🔴 R6a：路径 B 终态成功后，同一 ticket 重放必须失败，且不得产生第二条绑定。"""
     victim = make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL)
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=ATTACKER_UID, email=VICTIM_EMAIL))
     ticket = params["ticket"]
 
     first = client.post(
@@ -415,9 +395,7 @@ def test_r6_bind_confirm_ticket_cannot_be_replayed(db, github_mock, client: Test
 
 def test_r6_register_ticket_cannot_be_replayed(db, github_mock, client: TestClient):
     """🔴 R6b：路径 C 终态成功后重放必须失败，不得建出第二个账号。"""
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7002, email="fresh@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7002, email="fresh@example.com"))
     ticket = params["ticket"]
     payload = {
         "ticket": ticket,
@@ -425,16 +403,12 @@ def test_r6_register_ticket_cannot_be_replayed(db, github_mock, client: TestClie
         "display_name": "Fresh User",
     }
 
-    first = client.post(
-        "/api/auth/oauth/register", json={**payload, "email": "first@example.com"}
-    )
+    first = client.post("/api/auth/oauth/register", json={**payload, "email": "first@example.com"})
     assert first.status_code == 200, first.text
     assert user_count(db) == 1
 
     # 重放（换一个未注册邮箱，绕开唯一性前置校验，直抵原子消费判定）
-    replay = client.post(
-        "/api/auth/oauth/register", json={**payload, "email": "second@example.com"}
-    )
+    replay = client.post("/api/auth/oauth/register", json={**payload, "email": "second@example.com"})
     assert replay.status_code == 404, replay.text
     assert replay.json()["code"] == ERR_OAUTH_TICKET_INVALID
     assert_no_token_leaked(replay)
@@ -442,9 +416,7 @@ def test_r6_register_ticket_cannot_be_replayed(db, github_mock, client: TestClie
     assert identity_count(db) == 1
 
     # 重放（同邮箱）：被唯一性校验挡在消费之前，同样不产生副作用
-    replay_same = client.post(
-        "/api/auth/oauth/register", json={**payload, "email": "first@example.com"}
-    )
+    replay_same = client.post("/api/auth/oauth/register", json={**payload, "email": "first@example.com"})
     assert replay_same.status_code == 409, replay_same.text
     assert replay_same.json()["code"] == ERR_OAUTH_EMAIL_TAKEN
     assert user_count(db) == 1
@@ -497,9 +469,8 @@ def test_r6_consume_ticket_primitive_is_single_shot(db, github_mock):
 # R7. 密码错误 vs 账号不存在：逐字节一致
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r7_unknown_account_and_wrong_password_are_byte_identical(
-    db, github_mock, client: TestClient
-):
+
+def test_r7_unknown_account_and_wrong_password_are_byte_identical(db, github_mock, client: TestClient):
     """🔴 R7：两种失败的 HTTP 响应逐字节一致 → 无法用 OAuth 端点枚举邮箱。
 
     可达性说明：``BIND_REQUIRED`` 的前提就是邮箱已注册，所以"账号不存在"
@@ -508,12 +479,8 @@ def test_r7_unknown_account_and_wrong_password_are_byte_identical(
     """
     victim = make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
 
-    ticket_wrong_pwd = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5100, email=VICTIM_EMAIL)
-    )["ticket"]
-    ticket_no_user = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5101, email=VICTIM_EMAIL)
-    )["ticket"]
+    ticket_wrong_pwd = run_login_flow(db, github_mock, profile=github_profile(uid=5100, email=VICTIM_EMAIL))["ticket"]
+    ticket_no_user = run_login_flow(db, github_mock, profile=github_profile(uid=5101, email=VICTIM_EMAIL))["ticket"]
 
     # 场景 A：账号存在，密码错误
     resp_wrong_pwd = client.post(
@@ -535,12 +502,8 @@ def test_r7_unknown_account_and_wrong_password_are_byte_identical(
     assert resp_wrong_pwd.json()["code"] == ERR_OAUTH_PASSWORD_INVALID
     assert resp_no_user.json()["code"] == ERR_OAUTH_PASSWORD_INVALID
     assert resp_wrong_pwd.json()["detail"] == resp_no_user.json()["detail"]
-    assert resp_wrong_pwd.content == resp_no_user.content, (
-        "两种失败的响应体必须逐字节一致，否则可枚举邮箱"
-    )
-    assert resp_wrong_pwd.headers.get("content-type") == resp_no_user.headers.get(
-        "content-type"
-    )
+    assert resp_wrong_pwd.content == resp_no_user.content, "两种失败的响应体必须逐字节一致，否则可枚举邮箱"
+    assert resp_wrong_pwd.headers.get("content-type") == resp_no_user.headers.get("content-type")
     # 响应体中不得出现邮箱本身
     assert VICTIM_EMAIL not in resp_wrong_pwd.text
 
@@ -548,12 +511,8 @@ def test_r7_unknown_account_and_wrong_password_are_byte_identical(
 def test_r7_service_layer_raises_the_same_exception_for_both_cases(db, github_mock):
     """R7 补强：服务层对两种情形抛出同一异常类，且 code/message/status 完全相同。"""
     victim = make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
-    ticket_a = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5200, email=VICTIM_EMAIL)
-    )["ticket"]
-    ticket_b = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5201, email=VICTIM_EMAIL)
-    )["ticket"]
+    ticket_a = run_login_flow(db, github_mock, profile=github_profile(uid=5200, email=VICTIM_EMAIL))["ticket"]
+    ticket_b = run_login_flow(db, github_mock, profile=github_profile(uid=5201, email=VICTIM_EMAIL))["ticket"]
 
     with pytest.raises(OAuthPasswordInvalidError) as exc_wrong:
         oauth_service.confirm_bind(db, ticket_a, "Definitely-Wrong-1")
@@ -574,9 +533,8 @@ def test_r7_service_layer_raises_the_same_exception_for_both_cases(db, github_mo
 # R8. ticket 释放 / 锁定语义
 # ══════════════════════════════════════════════════════════════════════
 
-def test_r8_release_before_threshold_and_lock_at_threshold(
-    db, github_mock, client: TestClient, monkeypatch
-):
+
+def test_r8_release_before_threshold_and_lock_at_threshold(db, github_mock, client: TestClient, monkeypatch):
     """🔴 R8：未达阈值每次失败都释放 ticket（consumed_at=NULL）并递增 failed_attempts；
     达阈值后 ticket 保持消费 + 写入 locked_until，后续请求一律 423 不可重试。
 
@@ -586,9 +544,7 @@ def test_r8_release_before_threshold_and_lock_at_threshold(
     monkeypatch.setattr(settings, "OAUTH_BIND_MAX_ATTEMPTS", threshold)
 
     make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
-    ticket = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5300, email=VICTIM_EMAIL)
-    )["ticket"]
+    ticket = run_login_flow(db, github_mock, profile=github_profile(uid=5300, email=VICTIM_EMAIL))["ticket"]
 
     for attempt in range(1, threshold + 1):
         resp = client.post(
@@ -602,9 +558,7 @@ def test_r8_release_before_threshold_and_lock_at_threshold(
 
         if attempt < threshold:
             # 阈值前：释放占用，ticket 仍可用
-            assert row.consumed_at is None, (
-                f"第 {attempt} 次失败（未达阈值）应释放 ticket 占用"
-            )
+            assert row.consumed_at is None, f"第 {attempt} 次失败（未达阈值）应释放 ticket 占用"
             assert row.locked_until is None
             # 释放不是纸面语义：resolve 仍可读到 BIND_REQUIRED
             probe = client.post("/api/auth/oauth/resolve", json={"ticket": ticket})
@@ -635,17 +589,13 @@ def test_r8_release_before_threshold_and_lock_at_threshold(
     assert identity_count(db) == 0
 
 
-def test_r8_cooldown_applies_across_tickets_for_same_provider_uid(
-    db, github_mock, client: TestClient, monkeypatch
-):
+def test_r8_cooldown_applies_across_tickets_for_same_provider_uid(db, github_mock, client: TestClient, monkeypatch):
     """R8 补强：冷却按 provider_uid 生效（跨 ticket），换新 ticket 也不能绕过撞库限制。"""
     threshold = 2
     monkeypatch.setattr(settings, "OAUTH_BIND_MAX_ATTEMPTS", threshold)
     make_user(db, email=VICTIM_EMAIL, password=VICTIM_PASSWORD)
 
-    ticket_one = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5400, email=VICTIM_EMAIL)
-    )["ticket"]
+    ticket_one = run_login_flow(db, github_mock, profile=github_profile(uid=5400, email=VICTIM_EMAIL))["ticket"]
     for attempt in range(threshold):
         resp = client.post(
             "/api/auth/oauth/bind/confirm",
@@ -655,9 +605,7 @@ def test_r8_cooldown_applies_across_tickets_for_same_provider_uid(
     assert ticket_row(db, ticket_one).locked_until is not None
 
     # 同一 provider_uid 重新走一遍授权拿到全新 ticket
-    ticket_two = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5400, email=VICTIM_EMAIL)
-    )["ticket"]
+    ticket_two = run_login_flow(db, github_mock, profile=github_profile(uid=5400, email=VICTIM_EMAIL))["ticket"]
     assert ticket_two != ticket_one
 
     # 🔴 新 ticket 依然被冷却拦截，正确密码也不放行

@@ -9,28 +9,18 @@ delete_task 软删除归档测试
 """
 
 import os
-import shutil
-import sys
 import tempfile
 import unittest
 
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
-from app.database import Base  # noqa: E402
-from app.domains.auth.models.user import User, Workspace, WorkspaceRole  # noqa: E402
-from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
-  # noqa: E402
-from sqlalchemy import create_engine  # noqa: E402
-from sqlalchemy.orm import sessionmaker  # noqa: E402
-from sqlalchemy.pool import StaticPool  # noqa: E402
-from tests.workspace_asset.test_workspace_asset_boundary import _session  # noqa: E402
-
+from app.database import Base
+from app.domains.auth.models.user import User, Workspace
+from app.domains.task.models.task import SddTask, TaskStatus
 from app.domains.task.services.task_records import commands as task_task_records_commands
+from tests.workspace_asset.test_workspace_asset_boundary import _session
 
 
 class DeleteTaskTrashArchiveTest(unittest.TestCase):
@@ -48,9 +38,7 @@ class DeleteTaskTrashArchiveTest(unittest.TestCase):
     def _seed(self, *, task_id: str, task_name: str, task_path: str, git_repo_url: str = ""):
         with _session(self.SessionLocal) as db:
             user = User(id="user-1", email="user@example.com", hashed_password="x", display_name="User")
-            workspace = Workspace(
-                id="ws-1", name="Workspace", owner_id=user.id, project_path=self.workspace_root
-            )
+            workspace = Workspace(id="ws-1", name="Workspace", owner_id=user.id, project_path=self.workspace_root)
             task = SddTask(
                 id=task_id,
                 workspace_id="ws-1",

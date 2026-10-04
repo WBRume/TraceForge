@@ -7,7 +7,6 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -35,12 +34,12 @@ def _fake_db(job=None, task=None):
 
 
 def _armed_gate(**overrides) -> SessionGate:
-    kwargs = dict(
-        task_id="task-1",
-        job_id="job-1",
-        session_revision=3,
-        ttl_seconds=60.0,
-    )
+    kwargs = {
+        "task_id": "task-1",
+        "job_id": "job-1",
+        "session_revision": 3,
+        "ttl_seconds": 60.0,
+    }
     kwargs.update(overrides)
     return SessionGate(**kwargs)
 

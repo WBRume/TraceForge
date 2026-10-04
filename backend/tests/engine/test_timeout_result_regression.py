@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from app.engine.session import engine as engine_module
@@ -6,7 +7,10 @@ from tests.engine.test_workflow_segment_buffer import _engine
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("reason,is_error,expected", [("completed", False, "SUCCESS"), ("timeout", False, "INTERRUPTED"), ("error", True, "INTERRUPTED")])
+@pytest.mark.parametrize(
+    "reason,is_error,expected",
+    [("completed", False, "SUCCESS"), ("timeout", False, "INTERRUPTED"), ("error", True, "INTERRUPTED")],
+)
 async def test_diagnosis_timeout_words_do_not_override_provider_result(monkeypatch, reason, is_error, expected):
     engine = _engine()
     engine.is_current = lambda: True
@@ -19,7 +23,14 @@ async def test_diagnosis_timeout_words_do_not_override_provider_result(monkeypat
     update_status = AsyncMock()
     monkeypatch.setattr(engine_module, "update_task_status", update_status)
     monkeypatch.setattr(engine_module, "update_task_metrics", AsyncMock())
-    await engine._on_result({"result": "MySQL 1205 Lock wait timeout exceeded，请核对锁等待。", "duration_ms": 65520, "finish_reason": reason}, is_error=is_error)
+    await engine._on_result(
+        {
+            "result": "MySQL 1205 Lock wait timeout exceeded，请核对锁等待。",
+            "duration_ms": 65520,
+            "finish_reason": reason,
+        },
+        is_error=is_error,
+    )
     assert engine.segments.update_snapshot.call_args.kwargs["status"] == expected
     if expected == "SUCCESS":
         assert engine.last_result_success is True and engine.last_result_interrupted is False

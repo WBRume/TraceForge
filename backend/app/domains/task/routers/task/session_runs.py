@@ -6,8 +6,6 @@ task_session_control_service.start_task_session / initialize_task_session。
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -32,7 +30,7 @@ router = APIRouter(prefix=TASKS_ROUTE_PREFIX, tags=["Tasks"])
 async def start_task(
     ws_id: str,
     task_id: str,
-    start_req: Optional[TaskStartRequest] = None,
+    start_req: TaskStartRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -73,7 +71,7 @@ async def start_task(
 async def initialize_task(
     ws_id: str,
     task_id: str,
-    body: InitializeRequest = Body(default=InitializeRequest()),
+    body: InitializeRequest = Body(default_factory=InitializeRequest),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

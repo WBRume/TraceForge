@@ -1,10 +1,9 @@
 """Scoped checkpoint round trips, retention, and failure safety."""
 
 import json
-import os
-from pathlib import Path
 import subprocess
 import threading
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -109,7 +108,9 @@ def test_gc_preserves_other_turns_and_compensation_then_reclaims(tmp_path):
         store.collect(str(tmp_path))
     assert len(objects(tmp_path)) == 2
     # A later orchestration failure can restore the live pre-undo state.
-    snapshots._restore_worktree_sync(str(tmp_path / "turn-2/current-worktree"), str(task), str(tmp_path / "turn-2/current-recovery-worktree"))
+    snapshots._restore_worktree_sync(
+        str(tmp_path / "turn-2/current-worktree"), str(task), str(tmp_path / "turn-2/current-recovery-worktree")
+    )
     assert path.read_bytes() == b"two"
     snapshots._cleanup_checkpoint_sync(str(tmp_path / "turn-2"))
     assert not objects(tmp_path)

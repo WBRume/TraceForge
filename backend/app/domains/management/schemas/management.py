@@ -3,13 +3,12 @@ Management domain API schemas (restructured).
 """
 
 from datetime import datetime
-from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
 
 class PaginatedList(BaseModel):
-    items: List[dict] = Field(default_factory=list)
+    items: list[dict] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 20
@@ -17,14 +16,15 @@ class PaginatedList(BaseModel):
 
 # ── Products ──────────────────────────────────────────────────────────────
 
+
 class ProductCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     code: str = Field(..., min_length=1, max_length=100)
-    product_line: Optional[str] = Field(default=None, max_length=100)
-    description: Optional[str] = None
+    product_line: str | None = Field(default=None, max_length=100)
+    description: str | None = None
     status: str = "ACTIVE"
     product_type: str = "OOTB"
-    baseline_product_id: Optional[str] = None
+    baseline_product_id: str | None = None
 
     @field_validator("code")
     @classmethod
@@ -38,13 +38,13 @@ class ProductCreate(BaseModel):
 
 
 class ProductUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    code: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    product_line: Optional[str] = Field(default=None, max_length=100)
-    description: Optional[str] = None
-    status: Optional[str] = None
-    product_type: Optional[str] = None
-    baseline_product_id: Optional[str] = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    code: str | None = Field(default=None, min_length=1, max_length=100)
+    product_line: str | None = Field(default=None, max_length=100)
+    description: str | None = None
+    status: str | None = None
+    product_type: str | None = None
+    baseline_product_id: str | None = None
 
 
 class ProductRepoBindCreate(BaseModel):
@@ -61,13 +61,13 @@ class ProductRepoBindCreate(BaseModel):
 class ProductVersionCreate(BaseModel):
     version_no: str = Field(..., min_length=1, max_length=50)
     status: str = "ACTIVE"
-    release_date: Optional[datetime] = None
-    description: Optional[str] = None
-    from_version_id: Optional[str] = None
-    baseline_product_version_id: Optional[str] = None
+    release_date: datetime | None = None
+    description: str | None = None
+    from_version_id: str | None = None
+    baseline_product_version_id: str | None = None
     inherit_product_repos: bool = False
-    inherit_ref_type: Optional[str] = Field(default=None, pattern="^(BRANCH|TAG)$")
-    inherit_ref_name: Optional[str] = Field(default=None, max_length=255)
+    inherit_ref_type: str | None = Field(default=None, pattern="^(BRANCH|TAG)$")
+    inherit_ref_name: str | None = Field(default=None, max_length=255)
 
     @field_validator("version_no")
     @classmethod
@@ -80,10 +80,10 @@ class ProductBaseRepoBindCreate(BaseModel):
 
 
 class ProductVersionUpdate(BaseModel):
-    version_no: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    status: Optional[str] = None
-    release_date: Optional[datetime] = None
-    description: Optional[str] = None
+    version_no: str | None = Field(default=None, min_length=1, max_length=50)
+    status: str | None = None
+    release_date: datetime | None = None
+    description: str | None = None
 
 
 class ProductVersionRepoBindCreate(BaseModel):
@@ -128,12 +128,13 @@ class ProductVersionRepoRefBatchUpdate(BaseModel):
 
 # ── Projects ──────────────────────────────────────────────────────────────
 
+
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     code: str = Field(..., min_length=1, max_length=100)
-    customer: Optional[str] = Field(default=None, max_length=200)
-    organization: Optional[str] = Field(default=None, max_length=200)
-    description: Optional[str] = None
+    customer: str | None = Field(default=None, max_length=200)
+    organization: str | None = Field(default=None, max_length=200)
+    description: str | None = None
 
     @field_validator("code")
     @classmethod
@@ -142,11 +143,11 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    code: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    customer: Optional[str] = Field(default=None, max_length=200)
-    organization: Optional[str] = Field(default=None, max_length=200)
-    description: Optional[str] = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    code: str | None = Field(default=None, min_length=1, max_length=100)
+    customer: str | None = Field(default=None, max_length=200)
+    organization: str | None = Field(default=None, max_length=200)
+    description: str | None = None
 
 
 class LifecycleTransitionRequest(BaseModel):
@@ -155,7 +156,7 @@ class LifecycleTransitionRequest(BaseModel):
 
 class ProjectProductCreate(BaseModel):
     product_id: str = Field(..., min_length=1)
-    product_version_id: Optional[str] = None
+    product_version_id: str | None = None
 
 
 class ProjectProductVersionUpdate(BaseModel):
@@ -175,22 +176,23 @@ class ProjectReleaseCustomRepo(BaseModel):
 class ProjectReleaseCreate(BaseModel):
     release_no: str = Field(..., min_length=1, max_length=50)
     name: str = Field(..., min_length=1, max_length=200)
-    product_id: Optional[str] = None
+    product_id: str | None = None
     status: str = "DRAFT"
-    release_date: Optional[datetime] = None
-    notes: Optional[str] = None
-    custom_repos: List[ProjectReleaseCustomRepo] = Field(default_factory=list)
+    release_date: datetime | None = None
+    notes: str | None = None
+    custom_repos: list[ProjectReleaseCustomRepo] = Field(default_factory=list)
 
 
 class ProjectReleaseUpdate(BaseModel):
-    release_no: Optional[str] = Field(default=None, min_length=1, max_length=50)
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    status: Optional[str] = None
-    release_date: Optional[datetime] = None
-    notes: Optional[str] = None
+    release_no: str | None = Field(default=None, min_length=1, max_length=50)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    status: str | None = None
+    release_date: datetime | None = None
+    notes: str | None = None
 
 
 # ── Repositories / repo groups ────────────────────────────────────────────
+
 
 class RepositoryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
@@ -198,7 +200,7 @@ class RepositoryCreate(BaseModel):
     repo_type: str = "OOTB"
     default_branch: str = Field(default="main", min_length=1, max_length=120)
     group_id: str = Field(..., min_length=1)
-    description: Optional[str] = None
+    description: str | None = None
 
     @field_validator("git_url")
     @classmethod
@@ -207,12 +209,12 @@ class RepositoryCreate(BaseModel):
 
 
 class RepositoryUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
-    git_url: Optional[str] = Field(default=None, min_length=1, max_length=500)
-    repo_type: Optional[str] = None
-    default_branch: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    group_id: Optional[str] = None
-    description: Optional[str] = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    git_url: str | None = Field(default=None, min_length=1, max_length=500)
+    repo_type: str | None = None
+    default_branch: str | None = Field(default=None, min_length=1, max_length=120)
+    group_id: str | None = None
+    description: str | None = None
 
 
 class ValidateAccessRequest(BaseModel):
@@ -226,14 +228,14 @@ class ValidateRefRequest(BaseModel):
 
 class RepoGroupCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     order_index: int = 0
 
 
 class RepoGroupUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    parent_id: Optional[str] = None
-    order_index: Optional[int] = None
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    parent_id: str | None = None
+    order_index: int | None = None
 
 
 class RepoMoveRequest(BaseModel):

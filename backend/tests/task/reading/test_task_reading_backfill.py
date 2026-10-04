@@ -1,4 +1,5 @@
 """回填 / 核对 / 清理服务测试（第 12 节合同）。"""
+
 from datetime import datetime
 
 from app.domains.task.models.chat import ChatMessage
@@ -6,10 +7,8 @@ from app.domains.task.models.reading import TaskReadingItem
 from app.domains.task.models.task import SddTask
 from app.domains.task.services import reading_backfill_service as rbs
 from app.domains.task.services import reading_capture_service as rcs
-
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
-
 
 
 def _add_legacy_messages(env, count, *, with_sort_seq=True, task_id=None):
@@ -17,12 +16,18 @@ def _add_legacy_messages(env, count, *, with_sort_seq=True, task_id=None):
     target_task = task_id or env["task_id"]
     rows = []
     for i in range(count):
-        rows.append(ChatMessage(
-            task_id=target_task, workspace_id=env["ws_id"], creator_id="user-a",
-            role="user", content=f"legacy {i}", message_type="text",
-            sort_seq=i if with_sort_seq else None,
-            created_at=datetime(2025, 1, 1, 0, 0, i),
-        ))
+        rows.append(
+            ChatMessage(
+                task_id=target_task,
+                workspace_id=env["ws_id"],
+                creator_id="user-a",
+                role="user",
+                content=f"legacy {i}",
+                message_type="text",
+                sort_seq=i if with_sort_seq else None,
+                created_at=datetime(2025, 1, 1, 0, 0, i),
+            )
+        )
     db.add_all(rows)
     db.commit()
     return rows
@@ -30,9 +35,15 @@ def _add_legacy_messages(env, count, *, with_sort_seq=True, task_id=None):
 
 def _fresh_task(env, task_id="task-legacy"):
     task = SddTask(
-        id=task_id, workspace_id=env["ws_id"], creator_id="user-a", name="legacy",
-        project_path="G:/repo/legacy", status="PENDING",
-        reading_change_seq=0, reading_epoch=1, reading_ready=False,
+        id=task_id,
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        name="legacy",
+        project_path="G:/repo/legacy",
+        status="PENDING",
+        reading_change_seq=0,
+        reading_epoch=1,
+        reading_ready=False,
     )
     env["db"].add(task)
     env["db"].commit()
@@ -42,7 +53,7 @@ def _fresh_task(env, task_id="task-legacy"):
 def test_backfill_creates_items_for_history_without_sorting_changes(seeded_db):
     env = seeded_db
     _fresh_task(env)
-    rows = _add_legacy_messages(env, 5, task_id="task-legacy")
+    _add_legacy_messages(env, 5, task_id="task-legacy")
     result = rbs.backfill_task_batch(env["db"], task_id="task-legacy", batch_size=200)
     env["db"].commit()
     assert result["done"] is True and result["created"] == 5
@@ -70,8 +81,12 @@ def test_backfill_is_idempotent_and_never_overwrites_live_capture(seeded_db):
     result = rbs.backfill_task_batch(env["db"], task_id="task-legacy", batch_size=200)
     env["db"].commit()
     assert result["created"] == 0
-    item = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == "task-legacy", TaskReadingItem.message_id == message.id).first()
+    item = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == "task-legacy", TaskReadingItem.message_id == message.id)
+        .first()
+    )
     assert item.change_seq == 4  # 在线捕获保留
     assert item.content_fingerprint is not None
 
@@ -149,32 +164,57 @@ def test_live_capture_after_ready_does_not_conflict_with_backfill(seeded_db):
     env["db"].commit()
     assert verify["ok"]
     # ready 之后在线写入正常递增，不与回填序号冲突
-    m = task_conversation_messages.save_chat_message(env["db"], task_id="task-legacy", workspace_id=env["ws_id"],
-                                       creator_id="user-a", role="user", content="new live")
+    m = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id="task-legacy",
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="user",
+        content="new live",
+    )
     env["db"].commit()
-    item = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == "task-legacy", TaskReadingItem.message_id == m.id).first()
+    item = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == "task-legacy", TaskReadingItem.message_id == m.id)
+        .first()
+    )
     assert item is not None and item.active
-    seqs = [int(row.change_seq) for row in env["db"].query(TaskReadingItem.change_seq)
-            .filter(TaskReadingItem.task_id == "task-legacy").all()]
+    seqs = [
+        int(row.change_seq)
+        for row in env["db"].query(TaskReadingItem.change_seq).filter(TaskReadingItem.task_id == "task-legacy").all()
+    ]
     assert len(seqs) == len(set(seqs))
 
 
 def test_cleanup_receipts_removes_stale_epoch_and_covered(seeded_db):
     env = seeded_db
     from app.domains.task.models.reading import TaskReadingReceipt, TaskReadingState
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a")
+
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="assistant", content="a"
+    )
     env["db"].commit()
     state = TaskReadingState(
-        user_id="user-b", task_id=env["task_id"], workspace_id=env["ws_id"],
-        reading_epoch=1, baseline_seq=1, read_frontier_seq=1, state_revision=1, resume_revision=0,
+        user_id="user-b",
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        reading_epoch=1,
+        baseline_seq=1,
+        read_frontier_seq=1,
+        state_revision=1,
+        resume_revision=0,
     )
     env["db"].add(state)
-    env["db"].add(TaskReadingReceipt(
-        user_id="user-b", task_id=env["task_id"], reading_epoch=1,
-        item_key=f"message:{m1.id}", seen_change_seq=1,
-    ))
+    env["db"].add(
+        TaskReadingReceipt(
+            user_id="user-b",
+            task_id=env["task_id"],
+            reading_epoch=1,
+            item_key=f"message:{m1.id}",
+            seen_change_seq=1,
+        )
+    )
     env["db"].commit()
     # 清空历史 → epoch=2，epoch 1 的回执全部过期（含被前缀覆盖的）
     task_conversation_history.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])

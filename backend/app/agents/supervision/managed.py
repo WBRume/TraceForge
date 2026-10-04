@@ -24,16 +24,15 @@ import asyncio
 import os
 import signal
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Optional
 
 try:  # psutil is used for create-time and descendant verification.
     import psutil
 except ImportError:  # pragma: no cover - packaging/runtime guard
     psutil = None  # type: ignore[assignment]
 
-from app.core.logging import get_logger
 from app.agents.contract import AgentProcessIdentity
 from app.agents.supervision import lineage, tree, windows
 from app.agents.supervision.inspection import (
@@ -48,6 +47,7 @@ from app.agents.supervision.model import (
     ProcessWaitResult,
     TerminationResult,
 )
+from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="agent_process")
 
@@ -55,34 +55,34 @@ logger = get_logger(__name__, category="agent_process")
 @dataclass(eq=False)
 class ManagedAgentProcess:
     process: asyncio.subprocess.Process
-    run_token: Optional[str] = None
-    worker_boot_id: Optional[str] = None
+    run_token: str | None = None
+    worker_boot_id: str | None = None
     created_at: float = field(default_factory=time.time)
-    job_handle: Optional[int] = None
+    job_handle: int | None = None
     reader_tasks: list = field(default_factory=list)
     known_descendant_pids: set = field(default_factory=set)
     # P1（doc 审计 0c381413 §3.2）：最近一轮谱系扫描"无法检查"的候选 PID
     # （从未证明携带本 spawn token）。仅诊断；每轮以最新扫描替换，绝不
     # 累加过期候选，也绝不混入 known_descendant_pids。
     last_uninspected_candidates: tuple = field(default_factory=tuple)
-    monitor_task: Optional[asyncio.Task] = None
+    monitor_task: asyncio.Task | None = None
     stop_monitor: bool = False
     _closed: bool = False
-    process_start_time: Optional[float] = None
-    process_group_id: Optional[int] = None
-    containment_id: Optional[str] = None
+    process_start_time: float | None = None
+    process_group_id: int | None = None
+    containment_id: str | None = None
     # P0-3：本 spawn 专属谱系 token（uuid4，spawn 时注入子进程 env）。任何
     # 携带者都可证明属于本 spawn 的后代树；wait/close 的全树完成检查用它
     # 精确归属脱组后代，绝不误伤同 attempt 其他 managed 的进程。
-    spawn_token: Optional[str] = None
-    _identity: Optional[AgentProcessIdentity] = None
+    spawn_token: str | None = None
+    _identity: AgentProcessIdentity | None = None
     # 同一进程的终止操作必须串行化；已确认死亡的结果会被缓存，
     # 重复 close/interrupt 直接返回权威死亡证明（doc 4.4）。
     _termination_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # 同一进程同一时刻最多一个在飞树采样（doc §9.4 有界 gate）。
     _inspection_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    _last_termination: Optional[TerminationResult] = None
-    _monitor_wake: Optional[asyncio.Event] = None
+    _last_termination: TerminationResult | None = None
+    _monitor_wake: asyncio.Event | None = None
 
     @property
     def pid(self) -> int:
@@ -100,7 +100,7 @@ class ManagedAgentProcess:
         if self._monitor_wake is not None:
             self._monitor_wake.set()
 
-    def apply_snapshot(self, snapshot: Optional[ProcessTreeSnapshot]) -> None:
+    def apply_snapshot(self, snapshot: ProcessTreeSnapshot | None) -> None:
         """Merge one executor-produced tree sample into tracked descendants.
 
         合并规则（doc §5.4.3 + 审计 P0-3A）：
@@ -112,9 +112,7 @@ class ManagedAgentProcess:
         if snapshot is None or snapshot.state == ProcessProbeState.UNKNOWN:
             # An unknown sample must never erase known descendants.
             return
-        merged = set(snapshot.live_descendant_pids) | set(
-            getattr(snapshot, "unknown_descendant_pids", ()) or ()
-        )
+        merged = set(snapshot.live_descendant_pids) | set(getattr(snapshot, "unknown_descendant_pids", ()) or ())
         self.known_descendant_pids = merged
 
     async def inspect_tree(self) -> ProcessTreeSnapshot:
@@ -125,14 +123,12 @@ class ManagedAgentProcess:
         等待不会排队新的采样。
         """
         async with self._inspection_lock:
-            snapshot = await run_process_inspection(
-                tree.inspect_process_tree_snapshot, self
-            )
+            snapshot = await run_process_inspection(tree.inspect_process_tree_snapshot, self)
             self.apply_snapshot(snapshot)
             return snapshot
 
     @property
-    def process_started_at(self) -> Optional[float]:
+    def process_started_at(self) -> float | None:
         if self.process_start_time is not None:
             return self.process_start_time
         if psutil is None:
@@ -148,9 +144,7 @@ class ManagedAgentProcess:
         if self._identity is None:
             started = self.process_started_at or self.created_at
             group_id = self.process_group_id if os.name != "nt" else None
-            containment = self.containment_id or (
-                f"job:{self.job_handle:x}" if self.job_handle else None
-            )
+            containment = self.containment_id or (f"job:{self.job_handle:x}" if self.job_handle else None)
             self._identity = AgentProcessIdentity(
                 pid=self.pid,
                 started_at=datetime.fromtimestamp(started, tz=timezone.utc),
@@ -166,9 +160,7 @@ class ManagedAgentProcess:
         """等待根进程退出，并通过 inspect_tree() 获得三态树快照（doc §9.4）。"""
         if self.process.returncode is None:
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(self.process.wait()), timeout=max(0.01, timeout)
-                )
+                await asyncio.wait_for(asyncio.shield(self.process.wait()), timeout=max(0.01, timeout))
             except asyncio.TimeoutError:
                 return False
             except ProcessLookupError:
@@ -206,9 +198,8 @@ class ManagedAgentProcess:
 
     async def _force_kill(self, signals: list) -> None:
         if os.name == "nt":
-            if self.job_handle:
-                if windows.terminate_job(self.job_handle):
-                    signals.append("TERMINATE_JOB_OBJECT")
+            if self.job_handle and windows.terminate_job(self.job_handle):
+                signals.append("TERMINATE_JOB_OBJECT")
             await self._taskkill_tree(signals)
             for pid in list(self.known_descendant_pids):
                 await windows.taskkill_pid(pid)
@@ -223,11 +214,7 @@ class ManagedAgentProcess:
         return await self._terminate(reason=reason, graceful=False)
 
     async def close(self, reason: str = "close") -> TerminationResult:
-        if (
-            self._closed
-            and self._last_termination is not None
-            and self._last_termination.confirmed_dead
-        ):
+        if self._closed and self._last_termination is not None and self._last_termination.confirmed_dead:
             # Already-authoritative death proof for this identity: repeated
             # close calls must be idempotent and cheap.
             return self._last_termination
@@ -289,8 +276,8 @@ class ManagedAgentProcess:
         started = time.monotonic()
         signals: list = []
         tree_kill_used = False
-        error_code: Optional[str] = None
-        error_message: Optional[str] = None
+        error_code: str | None = None
+        error_message: str | None = None
         # 终止流程立即触发一次树采样，不必等待普通监控周期（doc §12.2）。
         self.request_immediate_inspection()
         try:
@@ -322,10 +309,7 @@ class ManagedAgentProcess:
                     error_code = "PROCESS_TREE_STILL_ALIVE"
                     error_message = f"Agent process tree did not exit after {reason}"
                 snapshot = await self.inspect_tree()
-            confirmed_dead = (
-                snapshot.state == ProcessProbeState.CONFIRMED_DEAD
-                and self.process.returncode is not None
-            )
+            confirmed_dead = snapshot.state == ProcessProbeState.CONFIRMED_DEAD and self.process.returncode is not None
             return await self._result(
                 signals,
                 tree_kill_used,
@@ -361,10 +345,10 @@ class ManagedAgentProcess:
         tree_kill_used: bool,
         started: float,
         *,
-        snapshot: Optional[ProcessTreeSnapshot] = None,
-        confirmed_dead: Optional[bool] = None,
-        error_code: Optional[str] = None,
-        error_message: Optional[str] = None,
+        snapshot: ProcessTreeSnapshot | None = None,
+        confirmed_dead: bool | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
     ) -> TerminationResult:
         """Build the termination result from local snapshot + lineage evidence.
 
@@ -379,7 +363,7 @@ class ManagedAgentProcess:
         if snapshot is None:
             snapshot = await self.inspect_tree()
         signal_list = list(signals)
-        lineage_result: Optional[lineage.SpawnLineageCleanup] = None
+        lineage_result: lineage.SpawnLineageCleanup | None = None
         if os.name != "nt" and psutil is not None and self.spawn_token:
             lineage_result = await self._cleanup_spawn_lineage(signal_list)
             # P1（doc 审计 0c381413 §3.2）：归属证据与扫描完整性分离。只有
@@ -399,7 +383,7 @@ class ManagedAgentProcess:
                 snapshot = await self.inspect_tree()
         # 本地快照三态。
         if snapshot.state == ProcessProbeState.CONFIRMED_DEAD:
-            local_dead: Optional[bool] = True
+            local_dead: bool | None = True
         elif snapshot.state == ProcessProbeState.LIVE:
             local_dead = False
         else:
@@ -412,9 +396,7 @@ class ManagedAgentProcess:
             if ProcessProbeState.LIVE in (snapshot.state, lineage_result.state):
                 confirmed_dead = False
                 if lineage_result.state == ProcessProbeState.LIVE:
-                    error_code = error_code or lineage_result.failure_code or (
-                        "TOKEN_PROCESS_STILL_ALIVE"
-                    )
+                    error_code = error_code or lineage_result.failure_code or ("TOKEN_PROCESS_STILL_ALIVE")
                     error_message = (
                         error_message
                         or lineage_result.error_message
@@ -422,11 +404,11 @@ class ManagedAgentProcess:
                     )
             elif ProcessProbeState.UNKNOWN in (snapshot.state, lineage_result.state):
                 confirmed_dead = None
-                error_code = error_code or lineage_result.failure_code or (
-                    DETACHED_DESCENDANTS_UNRESOLVED
-                )
-                error_message = error_message or lineage_result.error_message or (
-                    "Spawn-token containment unresolved after local tree termination"
+                error_code = error_code or lineage_result.failure_code or (DETACHED_DESCENDANTS_UNRESOLVED)
+                error_message = (
+                    error_message
+                    or lineage_result.error_message
+                    or ("Spawn-token containment unresolved after local tree termination")
                 )
             else:
                 # 全部必需来源明确死亡：干净的死亡证明，清除过期诊断。
@@ -451,9 +433,7 @@ class ManagedAgentProcess:
             error_message=error_message,
             remaining_pids=remaining,
             root_identity_matches=snapshot.root_identity_matches,
-            inspection_unknown_pids=(
-                tuple(lineage_result.unknown_pids) if lineage_result is not None else ()
-            ),
+            inspection_unknown_pids=(tuple(lineage_result.unknown_pids) if lineage_result is not None else ()),
         )
 
     async def wait(self) -> ProcessWaitResult:
@@ -477,7 +457,7 @@ class ManagedAgentProcess:
                 self.monitor_task = None
             await self._reap_readers(timeout=2.0)
 
-    async def __aenter__(self) -> "ManagedAgentProcess":
+    async def __aenter__(self) -> ManagedAgentProcess:
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -495,9 +475,7 @@ async def monitor_tree(managed: ManagedAgentProcess) -> None:
     try:
         while not managed.stop_monitor:
             try:
-                snapshot = await run_process_inspection(
-                    tree.inspect_process_tree_snapshot, managed
-                )
+                snapshot = await run_process_inspection(tree.inspect_process_tree_snapshot, managed)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -507,10 +485,7 @@ async def monitor_tree(managed: ManagedAgentProcess) -> None:
                     error_message="Periodic tree inspection raised an unexpected error",
                 )
             managed.apply_snapshot(snapshot)
-            if (
-                getattr(managed.process, "returncode", None) is not None
-                and not managed.known_descendant_pids
-            ):
+            if getattr(managed.process, "returncode", None) is not None and not managed.known_descendant_pids:
                 return
             wake = managed.monitor_wake_event
             try:

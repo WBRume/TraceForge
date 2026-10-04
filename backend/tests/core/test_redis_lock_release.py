@@ -7,8 +7,12 @@ import pytest
 from redis.asyncio import Redis
 from redis.exceptions import (
     AuthenticationError,
-    ConnectionError as RedisConnectionError,
     LockNotOwnedError,
+)
+from redis.exceptions import (
+    ConnectionError as RedisConnectionError,
+)
+from redis.exceptions import (
     TimeoutError as RedisTimeoutError,
 )
 
@@ -132,7 +136,9 @@ def test_hanging_release_has_an_overall_deadline(transport_factory):
     transport = transport_factory(["hang"])
 
     async def run():
-        context = dl._build_context(resource_type="task", resource_id="hang-release", ttl=120, blocking_timeout=1, sleep=0.01)
+        context = dl._build_context(
+            resource_type="task", resource_id="hang-release", ttl=120, blocking_timeout=1, sleep=0.01
+        )
         lock = transport.lock(name=context.lock_key, timeout=context.ttl, thread_local=False)
         assert await lock.acquire(token=b"owned-token")
         with pytest.raises(asyncio.TimeoutError):
@@ -149,7 +155,7 @@ def test_external_cancellation_still_releases_after_a_disconnect(transport_facto
     async def run():
         with pytest.raises(asyncio.CancelledError):
             async with dl.RedisLockProvider().lock(resource_type="task", resource_id="cancel-release"):
-                raise asyncio.CancelledError()
+                raise asyncio.CancelledError
 
     asyncio.run(run())
     assert transport.values == {}
@@ -160,7 +166,9 @@ def test_uncertain_acquire_cleanup_retries_with_original_token(transport_factory
     transport = transport_factory([RedisConnectionError("Connection lost")])
 
     async def run():
-        context = dl._build_context(resource_type="task", resource_id="uncertain-set", ttl=120, blocking_timeout=0.03, sleep=0.01)
+        context = dl._build_context(
+            resource_type="task", resource_id="uncertain-set", ttl=120, blocking_timeout=0.03, sleep=0.01
+        )
         lock = transport.lock(name=context.lock_key, timeout=context.ttl, thread_local=False)
 
         async def acquire_with_lost_response(token):

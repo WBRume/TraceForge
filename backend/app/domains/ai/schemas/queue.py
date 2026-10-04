@@ -5,10 +5,9 @@ Unified queue schemas for background jobs.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel
-
 
 QueueSourceValue = Literal["provision", "api_mock", "bootstrap", "skill_analysis"]
 QueueStatusValue = Literal["PENDING", "RUNNING", "SUCCESS", "FAILED"]
@@ -28,19 +27,19 @@ class QueueJobItem(BaseModel):
     job_type: str
     status: QueueStatusValue
     progress: int
-    stage: Optional[str] = None
-    message: Optional[str] = None
-    error_message: Optional[str] = None
-    workspace_id: Optional[str] = None
-    task_id: Optional[str] = None
+    stage: str | None = None
+    message: str | None = None
+    error_message: str | None = None
+    workspace_id: str | None = None
+    task_id: str | None = None
     creator_id: str
     created_at: datetime
-    updated_at: Optional[datetime] = None
-    target_path: Optional[str] = None
-    case_id: Optional[str] = None
-    doc_key: Optional[str] = None
-    version: Optional[int] = None
-    retry_count: Optional[int] = None
+    updated_at: datetime | None = None
+    target_path: str | None = None
+    case_id: str | None = None
+    doc_key: str | None = None
+    version: int | None = None
+    retry_count: int | None = None
     actions: QueueJobActions
 
 
@@ -56,37 +55,37 @@ class QueueJobActionResponse(BaseModel):
     action: QueueActionValue
     source: QueueSourceValue
     job_id: str
-    message: Optional[str] = None
-    new_job_id: Optional[str] = None
+    message: str | None = None
+    new_job_id: str | None = None
 
 
 class OrphanedJobItem(BaseModel):
     job_id: str
-    workspace_id: Optional[str] = None
-    task_id: Optional[str] = None
+    workspace_id: str | None = None
+    task_id: str | None = None
     queue_key: str
     status: str
     attempt_count: int
     max_attempts: int
-    worker_id: Optional[str] = None
-    worker_boot_id: Optional[str] = None
-    run_token: Optional[str] = None
-    process_pid: Optional[int] = None
-    process_started_at: Optional[datetime] = None
-    process_group_id: Optional[int] = None
-    first_failure_at: Optional[datetime] = None
-    orphaned_at: Optional[datetime] = None
-    last_reap_attempt_at: Optional[datetime] = None
-    last_reap_verified_at: Optional[datetime] = None
-    next_reap_at: Optional[datetime] = None
+    worker_id: str | None = None
+    worker_boot_id: str | None = None
+    run_token: str | None = None
+    process_pid: int | None = None
+    process_started_at: datetime | None = None
+    process_group_id: int | None = None
+    first_failure_at: datetime | None = None
+    orphaned_at: datetime | None = None
+    last_reap_attempt_at: datetime | None = None
+    last_reap_verified_at: datetime | None = None
+    next_reap_at: datetime | None = None
     reap_failure_count: int = 0
-    last_reap_error: Optional[str] = None
-    failure_code: Optional[str] = None
-    terminal_reason: Optional[str] = None
+    last_reap_error: str | None = None
+    failure_code: str | None = None
+    terminal_reason: str | None = None
     manual_intervention_required: bool = False
-    manual_intervention_operator_id: Optional[str] = None
-    manual_intervention_reason: Optional[str] = None
-    manual_intervention_evidence: Optional[str] = None
+    manual_intervention_operator_id: str | None = None
+    manual_intervention_reason: str | None = None
+    manual_intervention_evidence: str | None = None
 
 
 class OrphanedJobListResponse(BaseModel):

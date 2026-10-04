@@ -6,8 +6,6 @@ spec/plan/plan_node/AI run 的卡片摘要也集中在这里。
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 from sqlalchemy.orm import Session
 
 from app.domains.ai.models.ai_job import SddAiJob
@@ -96,7 +94,7 @@ def task_summary(
     task: SddTask,
     *,
     is_following: bool = False,
-    counts: Optional[Dict[str, int]] = None,
+    counts: dict[str, int] | None = None,
 ) -> TaskSummary:
     """构建 TaskSummary。
 

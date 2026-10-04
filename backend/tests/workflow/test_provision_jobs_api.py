@@ -1,20 +1,13 @@
-import os
-import sys
+from collections.abc import Iterator
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Iterator
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.domains.workflow.models.provision_job import ProvisionJobType  # noqa: E402
-from app.domains.workflow.routers import provision as provision_router
 from app.domains.skill.routers import skill as skill_router
+from app.domains.workflow.models.provision_job import ProvisionJobType
+from app.domains.workflow.routers import provision as provision_router
 from app.domains.workspace.routers import workspace as workspace_router
 
 

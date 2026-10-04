@@ -8,15 +8,15 @@ Skill models.
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     Column,
-    String,
     DateTime,
-    ForeignKey,
     Enum,
     Float,
+    ForeignKey,
     Integer,
-    Boolean,
-    JSON,
+    String,
     Text,
     UniqueConstraint,
     func,
@@ -112,9 +112,7 @@ class SddSkill(Base):
 
 class SddTaskSkill(Base):
     __tablename__ = "sdd_task_skills"
-    __table_args__ = (
-        UniqueConstraint("task_id", "skill_id", name="uq_sdd_task_skills_task_skill"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "skill_id", name="uq_sdd_task_skills_task_skill"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)

@@ -21,7 +21,7 @@ import io
 import re
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -53,7 +53,7 @@ def _fill_row_metadata(row: SddRagOutbox, document: RagDocument, case_id: str) -
     row.version = document.version
 
 
-def _same_document(payload: Optional[Dict[str, Any]], document: RagDocument) -> bool:
+def _same_document(payload: dict[str, Any] | None, document: RagDocument) -> bool:
     """版本无关的内容比较：只有内容、标题、元数据或 chunks 变化才认为发生变更。"""
     current = dict(payload or {})
     candidate = document.model_dump()
@@ -65,31 +65,22 @@ def _same_document(payload: Optional[Dict[str, Any]], document: RagDocument) -> 
 # ─────────────────────────── 队列生命周期 ───────────────────────────
 
 
-def _workspace_tag(workspace_id: Optional[str]) -> str:
+def _workspace_tag(workspace_id: str | None) -> str:
     """工作区在队列名中的短标识（取 id 前 8 位；空值使用 legacy）。"""
     return str(workspace_id or "legacy")[:8].lower()
 
 
-def _next_queue_name(db: Session, workspace_id: Optional[str]) -> str:
+def _next_queue_name(db: Session, workspace_id: str | None) -> str:
     """按工作区与日期生成队列名：RAG-{tag}-YYYYMMDD-###（当日自增）。"""
     stamp = _utcnow().strftime("%Y%m%d")
     prefix = f"RAG-{_workspace_tag(workspace_id)}-{stamp}-"
-    count = (
-        db.query(func.count(SddRagSyncQueue.id))
-        .filter(SddRagSyncQueue.name.like(f"{prefix}%"))
-        .scalar()
-        or 0
-    )
+    count = db.query(func.count(SddRagSyncQueue.id)).filter(SddRagSyncQueue.name.like(f"{prefix}%")).scalar() or 0
     return f"{prefix}{int(count) + 1:03d}"
 
 
-def get_or_create_running_queue(
-    db: Session, workspace_id: Optional[str] = None
-) -> SddRagSyncQueue:
+def get_or_create_running_queue(db: Session, workspace_id: str | None = None) -> SddRagSyncQueue:
     """获取指定工作区当前的 RUNNING 队列；不存在则新建（每工作区至多一个 RUNNING）。"""
-    query = db.query(SddRagSyncQueue).filter(
-        SddRagSyncQueue.status == RagQueueStatus.RUNNING.value
-    )
+    query = db.query(SddRagSyncQueue).filter(SddRagSyncQueue.status == RagQueueStatus.RUNNING.value)
     if workspace_id:
         query = query.filter(SddRagSyncQueue.workspace_id == workspace_id)
     else:
@@ -108,7 +99,7 @@ def get_or_create_running_queue(
     return queue
 
 
-def _queue_counts(db: Session, queue_id: str) -> Tuple[int, int]:
+def _queue_counts(db: Session, queue_id: str) -> tuple[int, int]:
     row = (
         db.query(
             func.count(SddRagOutbox.id),
@@ -136,7 +127,7 @@ def enqueue_case_published(
     case: SddCase,
     *,
     diagnosis_result: Any = None,
-) -> Optional[SddRagOutbox]:
+) -> SddRagOutbox | None:
     """审批通过后入队：追加到该案例工作区当前的 RUNNING 队列（无则自动新建）。
 
     队列按工作区隔离：每个工作区自己的 RUNNING/CONSUMED 与打包下载互不影响。
@@ -147,12 +138,8 @@ def enqueue_case_published(
       并移动到当前 RUNNING 队列重新等待下载（即使之前已导出）。
     """
     key = _doc_key(case.id)
-    workspace_id = document_workspace_id = str(case.workspace_id or "").strip() or None
-    existing = (
-        db.query(SddRagOutbox)
-        .filter(SddRagOutbox.doc_key == key)
-        .first()
-    )
+    workspace_id = str(case.workspace_id or "").strip() or None
+    existing = db.query(SddRagOutbox).filter(SddRagOutbox.doc_key == key).first()
     if existing is not None:
         current_version = int((existing.payload_json or {}).get("version", 1) or 1)
         probe_document = build_case_document(
@@ -210,11 +197,11 @@ def enqueue_case_published(
 def list_queues(
     db: Session,
     *,
-    workspace_ids: Optional[List[str]] = None,
-    status: Optional[str] = None,
+    workspace_ids: list[str] | None = None,
+    status: str | None = None,
     page: int = 1,
     page_size: int = 50,
-) -> Tuple[List[SddRagSyncQueue], int]:
+) -> tuple[list[SddRagSyncQueue], int]:
     """分页列出案例同步队列；队列按工作区归属过滤（workspace_ids=None 表示管理员不限制）。"""
     page_size = max(1, min(int(page_size or 50), 200))
     offset = max(0, (int(page or 1) - 1) * page_size)
@@ -225,23 +212,14 @@ def list_queues(
     if workspace_ids is not None:
         if not workspace_ids:
             return [], 0
-        query = query.filter(
-            SddRagSyncQueue.workspace_id.in_(list(workspace_ids))
-        )
-        count_query = count_query.filter(
-            SddRagSyncQueue.workspace_id.in_(list(workspace_ids))
-        )
+        query = query.filter(SddRagSyncQueue.workspace_id.in_(list(workspace_ids)))
+        count_query = count_query.filter(SddRagSyncQueue.workspace_id.in_(list(workspace_ids)))
     if status:
         query = query.filter(SddRagSyncQueue.status == status)
         count_query = count_query.filter(SddRagSyncQueue.status == status)
 
     total = int(count_query.scalar() or 0)
-    queues = (
-        query.order_by(SddRagSyncQueue.created_at.desc())
-        .offset(offset)
-        .limit(page_size)
-        .all()
-    )
+    queues = query.order_by(SddRagSyncQueue.created_at.desc()).offset(offset).limit(page_size).all()
     return queues, total
 
 
@@ -249,20 +227,13 @@ def get_queue(
     db: Session,
     *,
     queue_id: str,
-    workspace_ids: Optional[List[str]] = None,
-) -> Optional[SddRagSyncQueue]:
+    workspace_ids: list[str] | None = None,
+) -> SddRagSyncQueue | None:
     """取单个队列；non-admin 时校验队列归属工作区是否可访问。"""
-    queue = (
-        db.query(SddRagSyncQueue)
-        .filter(SddRagSyncQueue.id == str(queue_id or "").strip())
-        .first()
-    )
+    queue = db.query(SddRagSyncQueue).filter(SddRagSyncQueue.id == str(queue_id or "").strip()).first()
     if queue is None:
         return None
-    if (
-        workspace_ids is not None
-        and (not queue.workspace_id or queue.workspace_id not in workspace_ids)
-    ):
+    if workspace_ids is not None and (not queue.workspace_id or queue.workspace_id not in workspace_ids):
         return None
     return queue
 
@@ -271,40 +242,31 @@ def list_queue_cases(
     db: Session,
     *,
     queue_id: str,
-    workspace_ids: Optional[List[str]] = None,
+    workspace_ids: list[str] | None = None,
     page: int = 1,
     page_size: int = 50,
-) -> Tuple[List[SddRagOutbox], int]:
+) -> tuple[list[SddRagOutbox], int]:
     """分页列出队列内案例；workspace_ids 限制可下载的工作区。"""
     page_size = max(1, min(int(page_size or 50), 200))
     offset = max(0, (int(page or 1) - 1) * page_size)
 
     query = db.query(SddRagOutbox).filter(SddRagOutbox.queue_id == queue_id)
-    count_query = db.query(func.count(SddRagOutbox.id)).filter(
-        SddRagOutbox.queue_id == queue_id
-    )
+    count_query = db.query(func.count(SddRagOutbox.id)).filter(SddRagOutbox.queue_id == queue_id)
     if workspace_ids is not None:
         if not workspace_ids:
             return [], 0
         query = query.filter(SddRagOutbox.workspace_id.in_(list(workspace_ids)))
-        count_query = count_query.filter(
-            SddRagOutbox.workspace_id.in_(list(workspace_ids))
-        )
+        count_query = count_query.filter(SddRagOutbox.workspace_id.in_(list(workspace_ids)))
 
     total = int(count_query.scalar() or 0)
-    rows = (
-        query.order_by(SddRagOutbox.created_at.desc())
-        .offset(offset)
-        .limit(page_size)
-        .all()
-    )
+    rows = query.order_by(SddRagOutbox.created_at.desc()).offset(offset).limit(page_size).all()
     return rows, total
 
 
 # ─────────────────────────── 打包导出 ───────────────────────────
 
 
-def document_from_outbox(row: SddRagOutbox) -> Optional[RagDocument]:
+def document_from_outbox(row: SddRagOutbox) -> RagDocument | None:
     payload = row.payload_json or {}
     try:
         return RagDocument.model_validate(payload)
@@ -339,10 +301,10 @@ def _render_case_markdown(document: RagDocument, workspace_id: str) -> str:
     return "\n".join(front_matter_lines) + f"# {document.title}\n\n{document.content}\n"
 
 
-def build_zip_bytes(rows: List[SddRagOutbox]) -> bytes:
+def build_zip_bytes(rows: list[SddRagOutbox]) -> bytes:
     """将 outbox 中的案例 MD 文档打包为一个 ZIP（幂等：可重复生成）。"""
     buffer = io.BytesIO()
-    used_names: Dict[str, int] = {}
+    used_names: dict[str, int] = {}
     with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for row in rows:
             document = document_from_outbox(row)
@@ -370,10 +332,7 @@ def export_queue_zip(
     状态由确认接口在“文件已成功保存到本地”后调用 mark_queue_exported 完成。
     """
     rows = (
-        db.query(SddRagOutbox)
-        .filter(SddRagOutbox.queue_id == queue.id)
-        .order_by(SddRagOutbox.created_at.asc())
-        .all()
+        db.query(SddRagOutbox).filter(SddRagOutbox.queue_id == queue.id).order_by(SddRagOutbox.created_at.asc()).all()
     )
     return build_zip_bytes(rows)
 
@@ -392,10 +351,7 @@ def mark_queue_exported(
     queue.status = RagQueueStatus.CONSUMED.value
     queue.consumed_at = now
     rows = (
-        db.query(SddRagOutbox)
-        .filter(SddRagOutbox.queue_id == queue.id)
-        .order_by(SddRagOutbox.created_at.asc())
-        .all()
+        db.query(SddRagOutbox).filter(SddRagOutbox.queue_id == queue.id).order_by(SddRagOutbox.created_at.asc()).all()
     )
     for row in rows:
         row.status = RagOutboxStatus.EXPORTED.value

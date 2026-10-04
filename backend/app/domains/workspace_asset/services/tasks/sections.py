@@ -8,16 +8,16 @@ avoiding the full task relationship graph.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.asset.models.asset import AssetType, SddAsset
-from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.asset.services.decision_service import decision_source_response
+from app.domains.asset.services.document import versioning as document_versioning
 from app.domains.task.models.task import SddTask
-
+from app.domains.task.services.task_workspace import documents as task_task_workspace_documents
 from app.domains.workflow.models.task_change import (
     SddTaskChangeProposal,
     SddTaskChangeProposalFile,
@@ -48,9 +48,9 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     HumanDeltaLightResponse,
     HumanDeltaResponse,
     HumanReviewCommentResponse,
-    PatchSnapshot,
     HumanReviewLightResponse,
     HumanReviewResponse,
+    PatchSnapshot,
     TaskClarificationsSectionResponse,
     TaskDecisionsSectionResponse,
     TaskEvidenceSectionResponse,
@@ -66,17 +66,14 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     TaskProcessAuditSectionResponse,
     WorkbenchDeltaResponse,
 )
-
 from app.domains.workspace_asset.services.common.primitives import enum_value
-
-from app.domains.task.services.task_workspace import documents as task_task_workspace_documents
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _short_text(value: Any, limit: int = 280) -> Optional[str]:
+
+def _short_text(value: Any, limit: int = 280) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
@@ -95,6 +92,7 @@ def _paginated(query, page: int, page_size: int):
 # ---------------------------------------------------------------------------
 # Task File section
 # ---------------------------------------------------------------------------
+
 
 def _task_file_from_asset_light(asset: SddAsset) -> TaskFileItemLightResponse:
     return TaskFileItemLightResponse(
@@ -200,13 +198,17 @@ def get_task_files(
 
     specs = (
         db.query(SddAsset)
-        .filter(SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.SPEC)
+        .filter(
+            SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.SPEC
+        )
         .order_by(SddAsset.created_at.desc())
         .all()
     )
     plans = (
         db.query(SddAsset)
-        .filter(SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.PLAN)
+        .filter(
+            SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.PLAN
+        )
         .order_by(SddAsset.created_at.desc())
         .all()
     )
@@ -235,7 +237,7 @@ def get_task_files(
         .all()
     )
 
-    items: List[TaskFileItemLightResponse] = []
+    items: list[TaskFileItemLightResponse] = []
     items.extend(_task_file_from_asset_light(a) for a in [*specs, *plans])
     items.extend(_task_file_from_ai_output_light(o) for o in ai_outputs)
     items.extend(_task_file_from_change_proposal_light(p) for p in change_proposals)
@@ -252,16 +254,18 @@ def get_task_files(
                 if not rel_path or rel_path in existing_paths:
                     continue
                 existing_paths.add(rel_path)
-                items.append(TaskFileItemLightResponse(
-                    id=f"sp:{rel_path}",
-                    file_type=file_type,
-                    title=entry.get("name", rel_path),
-                    status="AVAILABLE",
-                    source_kind="superpowers_doc",
-                    source_path=rel_path,
-                    summary=None,
-                    created_at=entry.get("updated_at"),
-                ))
+                items.append(
+                    TaskFileItemLightResponse(
+                        id=f"sp:{rel_path}",
+                        file_type=file_type,
+                        title=entry.get("name", rel_path),
+                        status="AVAILABLE",
+                        source_kind="superpowers_doc",
+                        source_path=rel_path,
+                        summary=None,
+                        created_at=entry.get("updated_at"),
+                    )
+                )
     except Exception:
         pass
 
@@ -279,7 +283,7 @@ def get_task_file_detail(
     workspace_id: str,
     task_id: str,
     file_id: str,
-) -> Optional[TaskFileItemResponse]:
+) -> TaskFileItemResponse | None:
     """Load full task file item with metadata."""
     from app.domains.workspace_asset.services.common.process_presenters import (
         task_file_from_ai_output,
@@ -301,7 +305,9 @@ def get_task_file_detail(
         return task_file_from_asset(asset)
 
     # Check AI outputs
-    ai_output = db.query(SddAiOutput).filter(SddAiOutput.id == file_id, SddAiOutput.workspace_id == workspace_id).first()
+    ai_output = (
+        db.query(SddAiOutput).filter(SddAiOutput.id == file_id, SddAiOutput.workspace_id == workspace_id).first()
+    )
     if ai_output:
         return task_file_from_ai_output(ai_output)
 
@@ -316,11 +322,7 @@ def get_task_file_detail(
         return task_file_from_change_proposal(proposal)
 
     # Check change proposal files
-    change_file = (
-        db.query(SddTaskChangeProposalFile)
-        .filter(SddTaskChangeProposalFile.id == file_id)
-        .first()
-    )
+    change_file = db.query(SddTaskChangeProposalFile).filter(SddTaskChangeProposalFile.id == file_id).first()
     if change_file:
         return task_file_from_change_file(change_file)
 
@@ -350,7 +352,7 @@ def get_task_file_diff(
     workspace_id: str,
     task_id: str,
     file_id: str,
-) -> Optional[TaskFileDiffResponse]:
+) -> TaskFileDiffResponse | None:
     """Load full diff text for a patch file. Loads the patch asset content on demand."""
     task = db.query(SddTask).filter(SddTask.workspace_id == workspace_id, SddTask.id == task_id).first()
     if not task:
@@ -371,9 +373,7 @@ def get_task_file_diff(
     change_file = db.query(SddTaskChangeProposalFile).filter(SddTaskChangeProposalFile.id == file_id).first()
     if change_file:
         parent_proposal = (
-            db.query(SddTaskChangeProposal)
-            .filter(SddTaskChangeProposal.id == change_file.proposal_id)
-            .first()
+            db.query(SddTaskChangeProposal).filter(SddTaskChangeProposal.id == change_file.proposal_id).first()
         )
         if parent_proposal and parent_proposal.patch_asset_id:
             asset = db.query(SddAsset).filter(SddAsset.id == parent_proposal.patch_asset_id).first()
@@ -392,6 +392,7 @@ def get_task_file_diff(
 # Human Reviews section
 # ---------------------------------------------------------------------------
 
+
 def get_task_human_reviews(
     db: Session,
     workspace_id: str,
@@ -409,36 +410,36 @@ def get_task_human_reviews(
     result = []
     for review in items:
         comment_count = (
-            db.query(func.count(SddHumanReviewComment.id))
-            .filter(SddHumanReviewComment.review_id == review.id)
-            .scalar()
+            db.query(func.count(SddHumanReviewComment.id)).filter(SddHumanReviewComment.review_id == review.id).scalar()
             or 0
         )
-        result.append(HumanReviewLightResponse(
-            id=review.id,
-            workspace_id=review.workspace_id,
-            task_id=review.task_id,
-            reviewer_id=review.reviewer_id,
-        status=enum_value(review.status),
-        outcome=enum_value(review.outcome) if review.outcome else None,
-        review_type=review.review_type,
-        review_scope=review.review_scope,
-        priority=review.priority,
-        title=review.title,
-        due_date=review.due_date,
-        resolved_at=review.resolved_at,
-        linked_clarification_ids=[
-            link.clarification_id for link in (review.clarification_links or [])
-        ],
-        comment_count=comment_count,
-        created_at=review.created_at,
-        updated_at=review.updated_at,
-        ))
+        result.append(
+            HumanReviewLightResponse(
+                id=review.id,
+                workspace_id=review.workspace_id,
+                task_id=review.task_id,
+                reviewer_id=review.reviewer_id,
+                status=enum_value(review.status),
+                outcome=enum_value(review.outcome) if review.outcome else None,
+                review_type=review.review_type,
+                review_scope=review.review_scope,
+                priority=review.priority,
+                title=review.title,
+                due_date=review.due_date,
+                resolved_at=review.resolved_at,
+                linked_clarification_ids=[link.clarification_id for link in (review.clarification_links or [])],
+                comment_count=comment_count,
+                created_at=review.created_at,
+                updated_at=review.updated_at,
+            )
+        )
 
     return TaskHumanReviewsSectionResponse(items=result, total=total, page=page, page_size=page_size)
 
 
-def get_task_human_review_detail(db: Session, workspace_id: str, task_id: str, review_id: str) -> Optional[HumanReviewResponse]:
+def get_task_human_review_detail(
+    db: Session, workspace_id: str, task_id: str, review_id: str
+) -> HumanReviewResponse | None:
     review = (
         db.query(SddHumanReview)
         .options(selectinload(SddHumanReview.comments))
@@ -467,9 +468,7 @@ def get_task_human_review_detail(db: Session, workspace_id: str, task_id: str, r
         priority=review.priority,
         due_date=review.due_date,
         resolved_at=review.resolved_at,
-        linked_clarification_ids=[
-            link.clarification_id for link in (review.clarification_links or [])
-        ],
+        linked_clarification_ids=[link.clarification_id for link in (review.clarification_links or [])],
         comments=[
             HumanReviewCommentResponse(
                 id=c.id,
@@ -492,6 +491,7 @@ def get_task_human_review_detail(db: Session, workspace_id: str, task_id: str, r
 # ---------------------------------------------------------------------------
 # Human Deltas section
 # ---------------------------------------------------------------------------
+
 
 def get_task_human_deltas(
     db: Session,
@@ -517,32 +517,36 @@ def get_task_human_deltas(
         proposal_summary = _proposal_summary(delta.proposal) if delta.proposal else None
         evidence_summary = _evidence_summary(delta.final_evidence) if delta.final_evidence else None
         decision_count = len(delta.decisions or [])
-        result.append(HumanDeltaLightResponse(
-            id=delta.id,
-            workspace_id=delta.workspace_id,
-            task_id=delta.task_id,
-            proposal_id=delta.proposal_id,
-            final_evidence_id=delta.final_evidence_id,
-            status=enum_value(delta.status),
-            diff_asset_id=delta.diff_asset_id,
-            changed_files_count=delta.changed_files_count,
-            insertions=delta.insertions,
-            deletions=delta.deletions,
-            comparison_summary=delta.comparison_summary,
-            change_category=delta.change_category,
-            change_reason=delta.change_reason,
-            promote_candidate=bool(delta.promote_candidate),
-            proposal_summary=proposal_summary,
-            final_evidence_summary=evidence_summary,
-            decision_count=decision_count,
-            created_at=delta.created_at,
-            updated_at=delta.updated_at,
-        ))
+        result.append(
+            HumanDeltaLightResponse(
+                id=delta.id,
+                workspace_id=delta.workspace_id,
+                task_id=delta.task_id,
+                proposal_id=delta.proposal_id,
+                final_evidence_id=delta.final_evidence_id,
+                status=enum_value(delta.status),
+                diff_asset_id=delta.diff_asset_id,
+                changed_files_count=delta.changed_files_count,
+                insertions=delta.insertions,
+                deletions=delta.deletions,
+                comparison_summary=delta.comparison_summary,
+                change_category=delta.change_category,
+                change_reason=delta.change_reason,
+                promote_candidate=bool(delta.promote_candidate),
+                proposal_summary=proposal_summary,
+                final_evidence_summary=evidence_summary,
+                decision_count=decision_count,
+                created_at=delta.created_at,
+                updated_at=delta.updated_at,
+            )
+        )
 
     return TaskHumanDeltasSectionResponse(items=result, total=total, page=page, page_size=page_size)
 
 
-def get_task_human_delta_detail(db: Session, workspace_id: str, task_id: str, delta_id: str) -> Optional[HumanDeltaResponse]:
+def get_task_human_delta_detail(
+    db: Session, workspace_id: str, task_id: str, delta_id: str
+) -> HumanDeltaResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import human_delta_response
     from app.domains.workspace_asset.services.human_delta_compare_service import _parse_patch_to_files
 
@@ -566,7 +570,7 @@ def get_task_human_delta_detail(db: Session, workspace_id: str, task_id: str, de
         if asset:
             diff_text = asset.content_text
             # Read pre-computed structured diffs (with comparison_type, source, per-side stats)
-            content_json = getattr(asset, 'content_json', None)
+            content_json = getattr(asset, "content_json", None)
             if isinstance(content_json, dict) and content_json.get("file_diffs"):
                 file_diffs = content_json["file_diffs"]
             elif diff_text:
@@ -578,11 +582,9 @@ def get_task_human_delta_detail(db: Session, workspace_id: str, task_id: str, de
 
 def get_task_delta_workbench(
     db: Session, workspace_id: str, task_id: str, delta_id: str
-) -> Optional[WorkbenchDeltaResponse]:
+) -> WorkbenchDeltaResponse | None:
     """Load full workbench data for a delta: file_diffs, delta_regions, patch snapshots, decisions."""
     from app.domains.workspace_asset.services.human_delta_compare_service import (
-        _evidence_summary,
-        _proposal_summary,
         _parse_patch_to_files,
     )
 
@@ -600,7 +602,7 @@ def get_task_delta_workbench(
 
     # Load diff text and structured file diffs
     diff_text = None
-    file_diffs: List[Dict[str, Any]] = []
+    file_diffs: list[dict[str, Any]] = []
     if delta.diff_asset_id:
         asset = db.query(SddAsset).filter(SddAsset.id == delta.diff_asset_id).first()
         if asset:
@@ -620,12 +622,9 @@ def get_task_delta_workbench(
         .order_by(SddDeltaRegion.file_path, SddDeltaRegion.created_at)
         .all()
     )
-    region_responses: List[DeltaRegionResponse] = []
+    region_responses: list[DeltaRegionResponse] = []
     for region in regions:
-        region_decisions = [
-            _decision_light(d)
-            for d in (region.decisions or [])
-        ]
+        region_decisions = [_decision_light(d) for d in (region.decisions or [])]
         region_responses.append(
             DeltaRegionResponse(
                 id=region.id,
@@ -690,10 +689,7 @@ def get_task_delta_workbench(
         )
 
     # Load linked decisions
-    decisions = [
-        _decision_light(d)
-        for d in (delta.decisions or [])
-    ]
+    decisions = [_decision_light(d) for d in (delta.decisions or [])]
 
     return WorkbenchDeltaResponse(
         id=delta.id,
@@ -721,6 +717,7 @@ def get_task_delta_workbench(
 # ---------------------------------------------------------------------------
 # Evidence section
 # ---------------------------------------------------------------------------
+
 
 def _evidence_light(evidence: SddEvidence) -> EvidenceLightResponse:
     return EvidenceLightResponse(
@@ -767,7 +764,7 @@ def get_task_evidence(
     )
 
 
-def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evidence_id: str) -> Optional[EvidenceResponse]:
+def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evidence_id: str) -> EvidenceResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import evidence_response
 
     evidence = (
@@ -787,6 +784,7 @@ def get_task_evidence_detail(db: Session, workspace_id: str, task_id: str, evide
 # ---------------------------------------------------------------------------
 # Decisions section
 # ---------------------------------------------------------------------------
+
 
 def _decision_light(decision: SddDecision) -> DecisionLightResponse:
     return DecisionLightResponse(
@@ -831,7 +829,7 @@ def get_task_decisions(
     )
 
 
-def get_task_decision_detail(db: Session, workspace_id: str, task_id: str, decision_id: str) -> Optional[DecisionResponse]:
+def get_task_decision_detail(db: Session, workspace_id: str, task_id: str, decision_id: str) -> DecisionResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import decision_response
 
     decision = (
@@ -851,6 +849,7 @@ def get_task_decision_detail(db: Session, workspace_id: str, task_id: str, decis
 # ---------------------------------------------------------------------------
 # Clarifications section
 # ---------------------------------------------------------------------------
+
 
 def _clarification_light(clarification: SddClarification) -> ClarificationLightResponse:
     return ClarificationLightResponse(
@@ -897,7 +896,9 @@ def get_task_clarifications(
     )
 
 
-def get_task_clarification_detail(db: Session, workspace_id: str, task_id: str, clarification_id: str) -> Optional[ClarificationResponse]:
+def get_task_clarification_detail(
+    db: Session, workspace_id: str, task_id: str, clarification_id: str
+) -> ClarificationResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import clarification_response
 
     clarification = (
@@ -918,11 +919,12 @@ def get_task_clarification_detail(db: Session, workspace_id: str, task_id: str, 
 # Final Summary section
 # ---------------------------------------------------------------------------
 
+
 def get_task_final_summary(
     db: Session,
     workspace_id: str,
     task_id: str,
-) -> Optional[TaskFinalSummaryResponse]:
+) -> TaskFinalSummaryResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import final_summary_response
 
     summary = (
@@ -941,6 +943,7 @@ def get_task_final_summary(
 # ---------------------------------------------------------------------------
 # Process Audit section
 # ---------------------------------------------------------------------------
+
 
 def _audit_log_light(log: SddTaskProcessAuditLog) -> TaskProcessAuditLogLightResponse:
     return TaskProcessAuditLogLightResponse(
@@ -985,7 +988,7 @@ def get_task_process_audit_detail(
     workspace_id: str,
     task_id: str,
     log_id: str,
-) -> Optional[TaskProcessAuditLogResponse]:
+) -> TaskProcessAuditLogResponse | None:
     from app.domains.workspace_asset.services.common.process_presenters import process_audit_response
 
     log = (

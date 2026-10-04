@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from sqlalchemy.orm import Session, selectinload
 
 from app.domains.ai.models.ai_job import SddAiJob
@@ -23,6 +21,7 @@ from app.domains.workspace_asset.schemas.workspace_asset import (
     TaskDetailResponse,
     TaskProcessSummary,
 )
+from app.domains.workspace_asset.services.common.primitives import make_connection
 from app.domains.workspace_asset.services.common.process_presenters import (
     clarification_response,
     decision_response,
@@ -33,7 +32,6 @@ from app.domains.workspace_asset.services.common.process_presenters import (
     process_audit_response,
     task_file_items,
 )
-from app.domains.workspace_asset.services.common.primitives import make_connection
 from app.domains.workspace_asset.services.requirements.presenters import task_requirement_link
 from app.domains.workspace_asset.services.tasks.presenters import (
     ai_output_response,
@@ -44,7 +42,7 @@ from app.domains.workspace_asset.services.tasks.presenters import (
 )
 
 
-def get_task_detail(db: Session, workspace_id: str, task_id: str) -> Optional[TaskDetailResponse]:
+def get_task_detail(db: Session, workspace_id: str, task_id: str) -> TaskDetailResponse | None:
     task = (
         db.query(SddTask)
         .options(
@@ -70,13 +68,17 @@ def get_task_detail(db: Session, workspace_id: str, task_id: str) -> Optional[Ta
 
     specs = (
         db.query(SddAsset)
-        .filter(SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.SPEC)
+        .filter(
+            SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.SPEC
+        )
         .order_by(SddAsset.created_at.desc())
         .all()
     )
     plans = (
         db.query(SddAsset)
-        .filter(SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.PLAN)
+        .filter(
+            SddAsset.workspace_id == workspace_id, SddAsset.task_id == task_id, SddAsset.asset_type == AssetType.PLAN
+        )
         .order_by(SddAsset.created_at.desc())
         .all()
     )

@@ -12,17 +12,17 @@ Revises: 3a7d9f2b4c6e
 Create Date: 2026-08-16 00:00:00.000000
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 from uuid import uuid4
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "6f0d1c2e3a4b"
-down_revision: Union[str, None] = "3a7d9f2b4c6e"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "3a7d9f2b4c6e"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _dialect_name() -> str:
@@ -76,9 +76,7 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO mgmt_product_versions "
             "(id, product_id, version_no, status, release_date, created_by, created_at, updated_at) "
-            "SELECT "
-            + _uuid_sql()
-            + ", id, CASE WHEN version_no = '' THEN 'V1' ELSE version_no END, "
+            "SELECT " + _uuid_sql() + ", id, CASE WHEN version_no = '' THEN 'V1' ELSE version_no END, "
             "'ACTIVE', release_date, created_by, created_at, updated_at FROM mgmt_products"
         )
     )
@@ -131,9 +129,7 @@ def upgrade() -> None:
             sa.text(
                 "INSERT INTO mgmt_product_version_repos "
                 "(id, product_version_id, repository_id, ref_type, ref_name, created_by, created_at) "
-                "SELECT "
-                + _uuid_sql()
-                + ", v.id, r.repository_id, r.ref_type, r.ref_name, r.created_by, r.created_at "
+                "SELECT " + _uuid_sql() + ", v.id, r.repository_id, r.ref_type, r.ref_name, r.created_by, r.created_at "
                 "FROM mgmt_product_repos r "
                 "JOIN mgmt_product_versions v ON v.product_id = r.product_id "
                 "WHERE v.id = " + _first_version_subquery().format(col="r.product_id")
@@ -210,10 +206,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     if _dialect_name() == "mysql":
-        op.execute(
-            "ALTER TABLE mgmt_project_products "
-            "DROP FOREIGN KEY fk_mgmt_project_products_product_version"
-        )
+        op.execute("ALTER TABLE mgmt_project_products DROP FOREIGN KEY fk_mgmt_project_products_product_version")
     else:
         op.drop_constraint(
             "fk_mgmt_project_products_product_version",

@@ -3,12 +3,13 @@ API MOCK Auto Mock Service.
 """
 
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.agents.selection import resolve_workspace_backend
 from app.domains.api_mock.models.api_mock import ApiMockRuleMode, SddApiMockProject
+
 from .cli_sync_service import run_agent_session
 from .endpoint_service import get_endpoint
 from .job_service import (
@@ -48,7 +49,7 @@ Each object MUST have:
 """
 
 
-def _extract_auto_mock_cases_payload(result_texts: List[str], assistant_texts: List[str]) -> List[Dict[str, Any]]:
+def _extract_auto_mock_cases_payload(result_texts: list[str], assistant_texts: list[str]) -> list[dict[str, Any]]:
     for candidate in result_texts:
         try:
             val = _extract_json_from_text(candidate)
@@ -57,6 +58,7 @@ def _extract_auto_mock_cases_payload(result_texts: List[str], assistant_texts: L
         except Exception:
             try:
                 import json
+
                 val = json.loads(candidate)
                 if isinstance(val, list):
                     return val
@@ -72,6 +74,7 @@ def _extract_auto_mock_cases_payload(result_texts: List[str], assistant_texts: L
         except Exception:
             try:
                 import json
+
                 start = assistant_combined.find("[")
                 end = assistant_combined.rfind("]")
                 if start != -1 and end != -1 and end > start:
@@ -105,8 +108,8 @@ def auto_generate_mock_cases_for_endpoint(
     job_id: str,
     endpoint_id: str,
     creator_id: str,
-    instructions: Optional[str] = None,
-    file_matchers: Optional[List[str]] = None,
+    instructions: str | None = None,
+    file_matchers: list[str] | None = None,
     workspace_sync_needed: bool = True,
 ) -> None:
     job = get_job(db, project.id, job_id)
@@ -122,6 +125,7 @@ def auto_generate_mock_cases_for_endpoint(
     _append_job_log(db, project.id, job, f"Starting generation for {endpoint.method} {endpoint.path}")
 
     try:
+
         def _should_cancel() -> bool:
             return _is_cancel_requested(job_id)
 
@@ -169,6 +173,7 @@ def auto_generate_mock_cases_for_endpoint(
 
         created_count = 0
         from .mock_case_service import next_mock_case_sort_order
+
         next_order = next_mock_case_sort_order(db, project.id, endpoint_id)
 
         for item in cases_payload:
@@ -185,10 +190,12 @@ def auto_generate_mock_cases_for_endpoint(
             request_path_params_json = (
                 item.get("request_path_params_json") if isinstance(item.get("request_path_params_json"), dict) else None
             )
-            request_query_json = item.get("request_query_json") if isinstance(item.get("request_query_json"), dict) else None
+            request_query_json = (
+                item.get("request_query_json") if isinstance(item.get("request_query_json"), dict) else None
+            )
             request_body_json = _normalize_body_matcher(item.get("request_body_json"))
 
-            is_default = (not has_default and created_count == 0)
+            is_default = not has_default and created_count == 0
 
             create_mock_case(
                 db,

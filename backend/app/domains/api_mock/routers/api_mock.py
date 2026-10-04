@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import (
     APIRouter,
@@ -25,8 +25,12 @@ from sqlalchemy.orm import Session
 from app.core.distributed_lock import LockAcquireTimeout, lock_api_mock_project
 from app.core.logging import get_logger
 from app.dependencies import get_current_user, get_db
-from app.domains.api_mock.models.api_mock import ApiMockCollabEventType, ApiMockRuleMode, SddApiMockEndpoint, SddApiMockRule
-from app.domains.auth.models.user import User, WorkspacePermission
+from app.domains.api_mock.models.api_mock import (
+    ApiMockCollabEventType,
+    ApiMockRuleMode,
+    SddApiMockEndpoint,
+    SddApiMockRule,
+)
 from app.domains.api_mock.schemas.api_mock import (
     ApiMockActivateSourceRequest,
     ApiMockCollabEventCreate,
@@ -57,6 +61,7 @@ from app.domains.api_mock.schemas.api_mock import (
     ApiMockSyncStartResponse,
 )
 from app.domains.api_mock.services import api_mock_service
+from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.workspace.services import workspace_service
 
 router = APIRouter(prefix="/workspaces/{ws_id}/api-mock", tags=["API MOCK"])
@@ -112,7 +117,7 @@ def _get_or_create_project(db: Session, ws_id: str, task_id: str, user: User):
     try:
         return api_mock_service.ensure_project(db, ws_id, task_id, user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 def _get_project_by_id_or_404(db: Session, ws_id: str, project_id: str):
@@ -274,10 +279,10 @@ async def import_swagger(
     ws_id: str,
     task_id: str,
     background_tasks: BackgroundTasks,
-    source_name: Optional[str] = Form(default=None),
-    source_url: Optional[str] = Form(default=None),
-    raw_content: Optional[str] = Form(default=None),
-    file: Optional[UploadFile] = File(default=None),
+    source_name: str | None = Form(default=None),
+    source_url: str | None = Form(default=None),
+    raw_content: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -285,8 +290,10 @@ async def import_swagger(
     project = _get_or_create_project(db, ws_id, task_id, current_user)
     _raise_if_project_swagger_mutation_locked(db, project.id)
 
-    logger.info(f"Swagger import request - source_name: {source_name}, source_url: {source_url}, raw_content length: {len(raw_content) if raw_content else 0}, file: {file}")
-    
+    logger.info(
+        f"Swagger import request - source_name: {source_name}, source_url: {source_url}, raw_content length: {len(raw_content) if raw_content else 0}, file: {file}"
+    )
+
     body_content = (raw_content or "").strip()
     if file is not None:
         logger.info(f"File received: {file.filename}, size: {file.size if hasattr(file, 'size') else 'unknown'}")
@@ -348,7 +355,7 @@ def get_job(
 def list_jobs(
     ws_id: str,
     task_id: str,
-    job_type: Optional[str] = Query(default=None),
+    job_type: str | None = Query(default=None),
     active_only: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
@@ -382,7 +389,7 @@ def cancel_job(
     try:
         return api_mock_service.request_job_cancel(db, project.id, job_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/projects/{task_id}/source-versions", response_model=ApiMockSourceVersionListResponse)
@@ -427,7 +434,7 @@ def activate_source(
     try:
         source = api_mock_service.activate_source_version(db, project, data.source_version_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return ApiMockSourceVersionResponse(
         id=source.id,
@@ -453,13 +460,14 @@ def get_active_document(
     try:
         source = api_mock_service.get_active_document(db, project)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     content = ""
     if getattr(source, "storage_path", None):
         import os
+
         if os.path.exists(source.storage_path):
-            with open(source.storage_path, "r", encoding="utf-8") as f:
+            with open(source.storage_path, encoding="utf-8") as f:
                 content = f.read()
     if not content and getattr(source, "raw_content", None):
         content = source.raw_content
@@ -493,13 +501,14 @@ def save_active_document(
             creator_id=current_user.id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     content = ""
     if getattr(source, "storage_path", None):
         import os
+
         if os.path.exists(source.storage_path):
-            with open(source.storage_path, "r", encoding="utf-8") as f:
+            with open(source.storage_path, encoding="utf-8") as f:
                 content = f.read()
     if not content and getattr(source, "raw_content", None):
         content = source.raw_content
@@ -518,8 +527,8 @@ def save_active_document(
 def list_endpoints(
     ws_id: str,
     task_id: str,
-    source_version_id: Optional[str] = Query(default=None),
-    keyword: Optional[str] = Query(default=None),
+    source_version_id: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -565,7 +574,7 @@ def update_endpoint(
     except ValueError as exc:
         detail = str(exc)
         status_code = 409 if "updated by another user" in detail else 404
-        raise HTTPException(status_code=status_code, detail=detail)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return endpoint
 
 
@@ -573,16 +582,17 @@ def update_endpoint(
 def list_entities(
     ws_id: str,
     task_id: str,
-    source_version_id: Optional[str] = Query(default=None),
-    endpoint_id: Optional[str] = Query(default=None),
-    scope: Optional[str] = Query(default=None),
+    source_version_id: str | None = Query(default=None),
+    endpoint_id: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _require_view_permission(db, ws_id, current_user)
     project = _get_or_create_project(db, ws_id, task_id, current_user)
     items = api_mock_service.list_entities(
-        db, project,
+        db,
+        project,
         source_version_id=source_version_id,
         endpoint_id=endpoint_id,
         scope=scope,
@@ -606,7 +616,8 @@ def create_entity(
     _raise_if_project_swagger_mutation_locked(db, project.id)
     try:
         entity = api_mock_service.create_entity(
-            db, project,
+            db,
+            project,
             name=data.name,
             description=data.description,
             schema_json=data.schema_data,
@@ -614,7 +625,7 @@ def create_entity(
             endpoint_id=data.endpoint_id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return ApiMockEntityResponse.model_validate(entity)
 
 
@@ -632,7 +643,9 @@ def update_entity(
     _raise_if_project_swagger_mutation_locked(db, project.id)
     try:
         entity = api_mock_service.update_entity(
-            db, project, entity_id,
+            db,
+            project,
+            entity_id,
             row_version=data.row_version,
             name=data.name,
             description=data.description,
@@ -643,7 +656,7 @@ def update_entity(
     except ValueError as exc:
         detail = str(exc)
         status_code = 409 if "updated by another user" in detail else 404
-        raise HTTPException(status_code=status_code, detail=detail)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return ApiMockEntityResponse.model_validate(entity)
 
 
@@ -661,7 +674,7 @@ def delete_entity(
     try:
         api_mock_service.delete_entity(db, project, entity_id, updater_id=current_user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -784,7 +797,7 @@ def create_mock_case(
             cookies_json=data.cookies_json,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ApiMockMockCaseResponse.model_validate(mock_case)
 
 
@@ -827,7 +840,7 @@ def update_mock_case(
     except ValueError as exc:
         detail = str(exc)
         status_code = 409 if "updated by another user" in detail else 404
-        raise HTTPException(status_code=status_code, detail=detail)
+        raise HTTPException(status_code=status_code, detail=detail) from exc
     return ApiMockMockCaseResponse.model_validate(updated)
 
 
@@ -846,7 +859,7 @@ def delete_mock_case(
     try:
         api_mock_service.delete_mock_case(db, project, mock_case_id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"success": True}
 
 
@@ -885,7 +898,7 @@ def preview(
             return JSONResponse(status_code=422, content=error_payload)
         return result
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/projects/{task_id}/collab/events", response_model=ApiMockCollabEventListResponse)
@@ -925,7 +938,7 @@ def create_collab_event(
             payload=data.payload,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return event
 
 
@@ -971,7 +984,7 @@ async def mock_gateway(
 
     path = f"/{full_path}" if not full_path.startswith("/") else full_path
     query = dict(request.query_params)
-    headers: Dict[str, str] = {k: v for k, v in request.headers.items()}
+    headers: dict[str, str] = dict(request.headers.items())
     body = await _parse_gateway_body(request)
 
     result = api_mock_service.execute_gateway(
@@ -995,7 +1008,7 @@ async def mock_gateway(
             continue
         response.headers[key] = str(value)
 
-    for cookie in (result.get("cookies") or []):
+    for cookie in result.get("cookies") or []:
         if not isinstance(cookie, dict):
             continue
         name = cookie.get("name")

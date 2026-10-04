@@ -5,16 +5,18 @@ Revises: b2c3d4e5f6a7
 Create Date: 2026-05-16
 
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "c3d4e5f6a7b8"
-down_revision: Union[str, None] = "b2c3d4e5f6a7"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "b2c3d4e5f6a7"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _add_column_safe(table: str, column: sa.Column) -> None:
@@ -34,10 +36,14 @@ def _add_column_safe(table: str, column: sa.Column) -> None:
             pass
 
 
-def _create_fk_safe(constraint_name: str, source_table: str, referent_table: str, local_cols: list, remote_cols: list) -> None:
+def _create_fk_safe(
+    constraint_name: str, source_table: str, referent_table: str, local_cols: list, remote_cols: list
+) -> None:
     """Create a FK constraint, silently skipping if it already exists."""
     try:
-        op.create_foreign_key(constraint_name, source_table, referent_table, local_cols, remote_cols, ondelete="SET NULL")
+        op.create_foreign_key(
+            constraint_name, source_table, referent_table, local_cols, remote_cols, ondelete="SET NULL"
+        )
     except Exception as exc:
         if "Duplicate key name" in str(exc) or "1061" in str(exc) or "already exists" in str(exc).lower():
             return
@@ -67,8 +73,27 @@ def upgrade() -> None:
         sa.Column("delta_id", sa.String(36), sa.ForeignKey("sdd_human_deltas.id", ondelete="CASCADE"), nullable=False),
         sa.Column("file_path", sa.String(1000), nullable=False),
         sa.Column("old_file_path", sa.String(1000), nullable=True),
-        sa.Column("region_type", sa.Enum("FILE_ADDED", "FILE_DELETED", "FILE_RENAMED", "FILE_REWRITTEN", "HUNK_MODIFIED", "LINE_DIVERGED", name="deltaregiontype", create_constraint=False), nullable=False),
-        sa.Column("region_source", sa.Enum("AI_ONLY", "HUMAN_ONLY", "BOTH_SAME", "DIVERGED", name="deltaregionsource", create_constraint=False), nullable=False),
+        sa.Column(
+            "region_type",
+            sa.Enum(
+                "FILE_ADDED",
+                "FILE_DELETED",
+                "FILE_RENAMED",
+                "FILE_REWRITTEN",
+                "HUNK_MODIFIED",
+                "LINE_DIVERGED",
+                name="deltaregiontype",
+                create_constraint=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "region_source",
+            sa.Enum(
+                "AI_ONLY", "HUMAN_ONLY", "BOTH_SAME", "DIVERGED", name="deltaregionsource", create_constraint=False
+            ),
+            nullable=False,
+        ),
         sa.Column("ai_line_start", sa.Integer, nullable=True),
         sa.Column("ai_line_end", sa.Integer, nullable=True),
         sa.Column("human_line_start", sa.Integer, nullable=True),

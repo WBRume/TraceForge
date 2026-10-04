@@ -1,6 +1,8 @@
 """Persist remote execution checkpoints without changing existing job data."""
-from alembic import op
+
 import sqlalchemy as sa
+
+from alembic import op
 
 revision = "f294bd81a0e3"
 down_revision = "e184ac70f9d2"

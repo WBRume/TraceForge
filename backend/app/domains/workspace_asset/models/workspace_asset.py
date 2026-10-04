@@ -9,8 +9,8 @@ not modeled as a persisted source asset.
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Boolean,
     JSON,
+    Boolean,
     Column,
     DateTime,
     Enum,
@@ -385,9 +385,7 @@ class SddRequirementAuditLog(Base):
 
 class SddTaskRequirement(Base):
     __tablename__ = "sdd_task_requirements"
-    __table_args__ = (
-        UniqueConstraint("requirement_id", "task_id", name="uq_sdd_task_requirements_requirement_task"),
-    )
+    __table_args__ = (UniqueConstraint("requirement_id", "task_id", name="uq_sdd_task_requirements_requirement_task"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -507,14 +505,18 @@ class SddHumanReviewComment(Base):
 class SddReviewClarificationLink(Base):
     __tablename__ = "sdd_review_clarification_links"
     __table_args__ = (
-        UniqueConstraint("review_id", "clarification_id", name="uq_sdd_review_clarification_links_review_clarification"),
+        UniqueConstraint(
+            "review_id", "clarification_id", name="uq_sdd_review_clarification_links_review_clarification"
+        ),
     )
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
     review_id = Column(String(36), ForeignKey("sdd_human_reviews.id", ondelete="CASCADE"), nullable=False, index=True)
-    clarification_id = Column(String(36), ForeignKey("sdd_clarifications.id", ondelete="CASCADE"), nullable=False, index=True)
+    clarification_id = Column(
+        String(36), ForeignKey("sdd_clarifications.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     link_type = Column(String(80), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
@@ -531,8 +533,12 @@ class SddHumanDelta(Base):
     created_by_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
 
     # --- Core references ---
-    proposal_id = Column(String(36), ForeignKey("sdd_task_change_proposals.id", ondelete="SET NULL"), nullable=True, index=True)
-    final_evidence_id = Column(String(36), ForeignKey("sdd_evidence.id", ondelete="SET NULL"), nullable=True, index=True)
+    proposal_id = Column(
+        String(36), ForeignKey("sdd_task_change_proposals.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    final_evidence_id = Column(
+        String(36), ForeignKey("sdd_evidence.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     # --- Status ---
     status = Column(
@@ -666,12 +672,20 @@ class SddDecision(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    requirement_id = Column(String(36), ForeignKey("sdd_requirements.id", ondelete="SET NULL"), nullable=True, index=True)
-    human_delta_id = Column(String(36), ForeignKey("sdd_human_deltas.id", ondelete="SET NULL"), nullable=True, index=True)
-    delta_region_id = Column(String(36), ForeignKey("sdd_delta_regions.id", ondelete="SET NULL"), nullable=True, index=True)
+    requirement_id = Column(
+        String(36), ForeignKey("sdd_requirements.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    human_delta_id = Column(
+        String(36), ForeignKey("sdd_human_deltas.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    delta_region_id = Column(
+        String(36), ForeignKey("sdd_delta_regions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     decided_by_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     source_evidence_id = Column(String(36), ForeignKey("sdd_evidence.id", ondelete="SET NULL"), nullable=True)
-    source_chat_message_id = Column(String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_chat_message_id = Column(
+        String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     source_asset_id = Column(String(36), ForeignKey("sdd_assets.id", ondelete="SET NULL"), nullable=True, index=True)
     source_asset_version_id = Column(
         String(36),
@@ -729,7 +743,9 @@ class SddDecision(Base):
     source_asset = relationship("SddAsset", foreign_keys=[source_asset_id])
     source_asset_version = relationship("SddAssetVersion", foreign_keys=[source_asset_version_id])
     source_asset_thread = relationship("SddAssetThread", foreign_keys=[source_asset_thread_id])
-    source_resolution_proposal = relationship("SddAssetResolutionProposal", foreign_keys=[source_resolution_proposal_id])
+    source_resolution_proposal = relationship(
+        "SddAssetResolutionProposal", foreign_keys=[source_resolution_proposal_id]
+    )
     source_final_summary = relationship("SddTaskFinalSummary", foreign_keys=[source_final_summary_id])
 
 
@@ -739,11 +755,15 @@ class SddClarification(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    requirement_id = Column(String(36), ForeignKey("sdd_requirements.id", ondelete="SET NULL"), nullable=True, index=True)
+    requirement_id = Column(
+        String(36), ForeignKey("sdd_requirements.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     requester_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     responder_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     source_evidence_id = Column(String(36), ForeignKey("sdd_evidence.id", ondelete="SET NULL"), nullable=True)
-    source_review_id = Column(String(36), ForeignKey("sdd_human_reviews.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_review_id = Column(
+        String(36), ForeignKey("sdd_human_reviews.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     converted_requirement_id = Column(
         String(36),
         ForeignKey("sdd_requirements.id", ondelete="SET NULL"),
@@ -800,7 +820,9 @@ class SddClarificationThread(Base):
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    clarification_id = Column(String(36), ForeignKey("sdd_clarifications.id", ondelete="CASCADE"), nullable=False, index=True)
+    clarification_id = Column(
+        String(36), ForeignKey("sdd_clarifications.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     author_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     entry_type = Column(String(40), nullable=False, default="COMMENT")
     body = Column(Text, nullable=False)
@@ -813,9 +835,7 @@ class SddClarificationThread(Base):
 
 class SddTaskFinalSummary(Base):
     __tablename__ = "sdd_task_final_summaries"
-    __table_args__ = (
-        UniqueConstraint("task_id", name="uq_sdd_task_final_summaries_task"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", name="uq_sdd_task_final_summaries_task"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -853,14 +873,14 @@ class SddTaskFinalSummary(Base):
 
 class SddTaskBaseline(Base):
     __tablename__ = "sdd_task_baselines"
-    __table_args__ = (
-        UniqueConstraint("task_id", "version", name="uq_sdd_task_baselines_task_version"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "version", name="uq_sdd_task_baselines_task_version"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)
-    summary_id = Column(String(36), ForeignKey("sdd_task_final_summaries.id", ondelete="SET NULL"), nullable=True, index=True)
+    summary_id = Column(
+        String(36), ForeignKey("sdd_task_final_summaries.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     version = Column(Integer, nullable=False, default=1)
     snapshot_json = Column(JSON, nullable=True)
     baselined_by_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)

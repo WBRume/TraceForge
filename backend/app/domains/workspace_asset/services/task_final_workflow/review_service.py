@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -23,16 +23,15 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     ReviewDerivedStatus,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import ClarificationCreateRequest
-from app.domains.workspace_asset.services.task_final_workflow import baseline_service
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import clean_optional, enum_value
 from app.domains.workspace_asset.services.common.process_presenters import human_review_response
+from app.domains.workspace_asset.services.task_final_workflow import baseline_service
 from app.domains.workspace_asset.services.task_process.writes_support import (
     add_process_audit,
     ensure_human_review,
     get_task_or_error,
 )
-
 
 EXPERT_REVIEW_TYPE = "EXPERT_FINAL_REVIEW"
 DEFAULT_REVIEW_MARKER = "final_state_default"
@@ -47,21 +46,19 @@ WAITING_CLARIFICATION_STATUSES = {
 }
 
 
-def _review_clarifications(review: SddHumanReview) -> List[SddClarification]:
+def _review_clarifications(review: SddHumanReview) -> list[SddClarification]:
     linked = [
         link.clarification
         for link in (review.clarification_links or [])
         if getattr(link, "clarification", None) is not None
     ]
     source_linked = [
-        item
-        for item in (review.task.clarifications or [])
-        if item.source_review_id == review.id and item not in linked
+        item for item in (review.task.clarifications or []) if item.source_review_id == review.id and item not in linked
     ]
     return [*linked, *source_linked]
 
 
-def _blocking_clarifications(review: SddHumanReview) -> List[SddClarification]:
+def _blocking_clarifications(review: SddHumanReview) -> list[SddClarification]:
     return [
         item
         for item in _review_clarifications(review)
@@ -72,7 +69,7 @@ def _blocking_clarifications(review: SddHumanReview) -> List[SddClarification]:
 def derive_review_status(
     review: SddHumanReview,
     *,
-    task_is_baselined: Optional[bool] = None,
+    task_is_baselined: bool | None = None,
 ) -> ReviewDerivedStatus:
     """Derive final-workflow review status from linked blocking clarifications."""
     baselined = (
@@ -143,7 +140,7 @@ def _normalize_target_refs(refs: Iterable[FinalWorkflowReviewTargetRef]) -> list
     return normalized
 
 
-def _review_clarification_question(title: str, body: Optional[str]) -> str:
+def _review_clarification_question(title: str, body: str | None) -> str:
     normalized_body = clean_optional(body)
     if normalized_body:
         return f"{title}\n\n{normalized_body}"
@@ -170,8 +167,8 @@ def _evidence_target_refs(task: SddTask) -> list[dict]:
 def ensure_expert_review_for_task(
     db: Session,
     task: SddTask,
-    actor_id: Optional[str],
-) -> Optional[SddHumanReview]:
+    actor_id: str | None,
+) -> SddHumanReview | None:
     """Create only the default seed review; users can add more review items."""
     if enum_value(task.status) != TaskStatus.DONE.value:
         return None
@@ -216,7 +213,7 @@ def ensure_expert_review_for_task(
     )
     db.add(review)
     db.flush()
-    setattr(review, "_derived_status", derive_review_status(review))
+    review._derived_status = derive_review_status(review)
     add_process_audit(
         db,
         workspace_id=task.workspace_id,
@@ -235,7 +232,7 @@ def create_review(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: FinalWorkflowReviewUpsertRequest,
 ) -> SddHumanReview:
     task = get_task_or_error(db, workspace_id, task_id)
@@ -280,7 +277,7 @@ def create_review(
         ),
     )
     db.flush()
-    setattr(review, "_derived_status", derive_review_status(review))
+    review._derived_status = derive_review_status(review)
     add_process_audit(
         db,
         workspace_id=workspace_id,
@@ -301,7 +298,7 @@ def update_review(
     workspace_id: str,
     task_id: str,
     review_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: FinalWorkflowReviewUpsertRequest,
 ) -> SddHumanReview:
     review = ensure_human_review(db, workspace_id, task_id, review_id)
@@ -319,7 +316,7 @@ def update_review(
     review.target_ref_json = {"targets": _normalize_target_refs(payload.target_refs)}
     sync_review_status_from_clarifications(review)
     db.flush()
-    setattr(review, "_derived_status", derive_review_status(review))
+    review._derived_status = derive_review_status(review)
     add_process_audit(
         db,
         workspace_id=workspace_id,

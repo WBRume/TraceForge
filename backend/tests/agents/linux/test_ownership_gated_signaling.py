@@ -58,17 +58,15 @@ def alive(pid: int) -> bool:
 async def test_unknown_root_must_not_authorize_group_signal():
     """root 探测 UNKNOWN（非明确消失）：数字 PGID 不能凭组非空整组 killpg。"""
     unknown = persisted_mod.PersistedProcessSnapshot(state=ProcessProbeState.UNKNOWN)
-    live = persisted_mod.PersistedProcessSnapshot(
-        state=ProcessProbeState.LIVE, live_pids=(999991,)
-    )
+    live = persisted_mod.PersistedProcessSnapshot(state=ProcessProbeState.LIVE, live_pids=(999991,))
     dead = persisted_mod.PersistedProcessSnapshot(state=ProcessProbeState.CONFIRMED_DEAD)
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=unknown)), \
-         patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=live)), \
-         patch.object(reclaim_mod, "wait_group_gone", AsyncMock(return_value=dead)), \
-         patch.object(os, "killpg") as send:
-        result = await reclaim_mod.stop_persisted(
-            999991, datetime.now(timezone.utc), "audit", process_group_id=999991
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=unknown)),
+        patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=live)),
+        patch.object(reclaim_mod, "wait_group_gone", AsyncMock(return_value=dead)),
+        patch.object(os, "killpg") as send,
+    ):
+        result = await reclaim_mod.stop_persisted(999991, datetime.now(timezone.utc), "audit", process_group_id=999991)
     assert not send.called, send.call_args_list
     # root 未知是独立状态：不能被折叠成明确消失。
     assert result.confirmed_dead is None
@@ -80,14 +78,14 @@ async def test_verified_member_identity_must_be_compared_again_before_signal():
     # 初次归属验证看到旧身份；发送前该 PID 已被新进程复用。
     identities = [
         identity_mod.MemberIdentity(create_time=150.0),
-        identity_mod.MemberIdentity(
-            state=identity_mod.MemberBindingState.BOUND, create_time=300.0, pidfd=777
-        ),
+        identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.BOUND, create_time=300.0, pidfd=777),
         identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE),
     ]
-    with patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
-         patch.object(os, "close"):
+    with (
+        patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)),
+        patch.object(identity_mod, "signal_verified_member", return_value=True) as send,
+        patch.object(os, "close"),
+    ):
         snapshot = await reclaim_mod.stop_reused_group_members(
             (999992,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
@@ -102,11 +100,15 @@ async def test_verified_member_identity_must_be_compared_again_before_signal():
 @pytest.mark.asyncio
 async def test_unreadable_identity_before_signal_must_not_send():
     """发送前身份不可读（create time 无法读取）：绝不发送，保持未确认。"""
-    identities = [identity_mod.MemberIdentity(create_time=150.0),
-                  identity_mod.MemberIdentity(create_time=None),
-                  identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE)]
-    with patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(identity_mod, "signal_verified_member", return_value=True) as send:
+    identities = [
+        identity_mod.MemberIdentity(create_time=150.0),
+        identity_mod.MemberIdentity(create_time=None),
+        identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE),
+    ]
+    with (
+        patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)),
+        patch.object(identity_mod, "signal_verified_member", return_value=True) as send,
+    ):
         snapshot = await reclaim_mod.stop_reused_group_members(
             (999993,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
@@ -122,14 +124,14 @@ async def test_matching_identity_still_sends_after_recheck():
     """对照：发送前身份与原身份一致时仍允许单独发送（不过度收紧）。"""
     identities = [
         identity_mod.MemberIdentity(create_time=150.0),
-        identity_mod.MemberIdentity(
-            state=identity_mod.MemberBindingState.BOUND, create_time=150.0, pidfd=778
-        ),
+        identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.BOUND, create_time=150.0, pidfd=778),
         identity_mod.MemberIdentity(state=identity_mod.MemberBindingState.GONE),
     ]
-    with patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)), \
-         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
-         patch.object(os, "close"):
+    with (
+        patch.object(identity_mod, "probe_member_identity", AsyncMock(side_effect=identities)),
+        patch.object(identity_mod, "signal_verified_member", return_value=True) as send,
+        patch.object(os, "close"),
+    ):
         snapshot = await reclaim_mod.stop_reused_group_members(
             (999994,),
             old_root_started_at=datetime.fromtimestamp(100, timezone.utc),
@@ -147,12 +149,12 @@ async def test_matching_identity_still_sends_after_recheck():
 async def test_exact_token_does_not_authorize_killing_other_token_group_members():
     """同数字组内的其他 token/无 token 成员：精确命中绝不升级整组 SIGKILL。"""
     token = str(uuid.uuid4())
-    source = '''import os, subprocess, json, time
+    source = """import os, subprocess, json, time
 a = subprocess.Popen(["/bin/sleep", "120"], env={**os.environ, "TRACEFORGE_RUN_TOKEN": os.environ["AUDIT_TOKEN"]})
 b = subprocess.Popen(["/bin/sleep", "120"], env={**os.environ, "TRACEFORGE_RUN_TOKEN": "other-" + os.environ["AUDIT_TOKEN"]})
 print(json.dumps([a.pid, b.pid]), flush=True)
 time.sleep(120)
-'''
+"""
     parent = subprocess.Popen(
         [sys.executable, "-c", source],
         start_new_session=True,
@@ -164,8 +166,7 @@ time.sleep(120)
     try:
         children = json.loads(await asyncio.wait_for(asyncio.to_thread(parent.stdout.readline), 5))
         target, control = children
-        await reclaim_mod.stop_by_run_token_discovery(token, "audit",
-            not_before=datetime.now(timezone.utc))
+        await reclaim_mod.stop_by_run_token_discovery(token, "audit", not_before=datetime.now(timezone.utc))
         await asyncio.sleep(0.05)
         assert alive(control), (target, control, "other-token control was killed")
         assert not alive(target), (target, control, "exact-token target survived")
@@ -184,13 +185,21 @@ time.sleep(120)
 async def test_token_send_revalidates_identity_captured_at_scan():
     """扫描到发送之间 PID/身份改变：跳过发送（不盲杀复用后的新进程）。"""
     match = discovery_mod.DiscoveredTokenProcess(pid=999995, process_group_id=999995, create_time=100.0)
-    with patch.object(identity_mod, "probe_member_identity",
-                      AsyncMock(return_value=identity_mod.MemberIdentity(
-                          state=identity_mod.MemberBindingState.BOUND,
-                          create_time=900.0, pidfd=779))), \
-         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
-         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill, \
-         patch.object(os, "close"):
+    with (
+        patch.object(
+            identity_mod,
+            "probe_member_identity",
+            AsyncMock(
+                return_value=identity_mod.MemberIdentity(
+                    state=identity_mod.MemberBindingState.BOUND, create_time=900.0, pidfd=779
+                )
+            ),
+        ),
+        patch.object(identity_mod, "signal_verified_member", return_value=True) as send,
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill") as kill,
+        patch.object(os, "close"),
+    ):
         await discovery_mod.kill_token_matches((match,), [])
     assert not send.called and not killpg.called and not kill.called
 
@@ -199,12 +208,20 @@ async def test_token_send_revalidates_identity_captured_at_scan():
 async def test_token_send_with_matching_identity_still_kills():
     """对照：发送前身份与扫描身份一致时照常逐个发送（无整组信号）。"""
     match = discovery_mod.DiscoveredTokenProcess(pid=999996, process_group_id=999996, create_time=100.0)
-    with patch.object(identity_mod, "probe_member_identity",
-                      AsyncMock(return_value=identity_mod.MemberIdentity(
-                          state=identity_mod.MemberBindingState.BOUND,
-                          create_time=100.0, pidfd=780))), \
-         patch.object(identity_mod, "signal_verified_member", return_value=True) as send, \
-         patch.object(os, "killpg") as killpg, patch.object(os, "close"):
+    with (
+        patch.object(
+            identity_mod,
+            "probe_member_identity",
+            AsyncMock(
+                return_value=identity_mod.MemberIdentity(
+                    state=identity_mod.MemberBindingState.BOUND, create_time=100.0, pidfd=780
+                )
+            ),
+        ),
+        patch.object(identity_mod, "signal_verified_member", return_value=True) as send,
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "close"),
+    ):
         await discovery_mod.kill_token_matches((match,), [])
     assert send.called
     assert not killpg.called, "token 命中禁止升级整组 killpg"
@@ -224,17 +241,18 @@ async def test_managed_wait_must_not_forget_unsampled_detached_child():
         await gate.wait()
         await original_monitor(managed)
 
-    source = '''import subprocess
+    source = """import subprocess
 p = subprocess.Popen(["/bin/sleep", "120"], start_new_session=True,
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 print(p.pid, flush=True)
-'''
+"""
     child_pid = None
     managed = None
     try:
         with patch.object(spawn_mod, "monitor_tree", side_effect=delayed_monitor):
-            managed = await supervisor.spawn([sys.executable, "-c", source], cwd=os.getcwd(),
-                env=os.environ.copy(), run_token=str(uuid.uuid4()))
+            managed = await supervisor.spawn(
+                [sys.executable, "-c", source], cwd=os.getcwd(), env=os.environ.copy(), run_token=str(uuid.uuid4())
+            )
         child_pid = int(await asyncio.wait_for(managed.process.stdout.readline(), 5))
         await asyncio.wait_for(managed.process.wait(), 5)
         gate.set()
@@ -257,20 +275,25 @@ async def test_managed_wait_settles_detached_child_without_touching_sibling():
     """P0-3 收敛：wait 的最终检查只终止本 spawn 谱系后代；同 attempt 其他
     managed 的合法执行进程绝不误伤（per-spawn token 归属）。"""
     supervisor = ProcessSupervisor()
-    source = '''import subprocess
+    source = """import subprocess
 p = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True,
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 print(p.pid, flush=True)
-'''
+"""
     run_token = str(uuid.uuid4())
     detached_child = None
     managed = None
     sibling = None
     try:
-        sibling = await supervisor.spawn([sys.executable, "-c", "import time; time.sleep(60)"],
-            cwd=os.getcwd(), env=os.environ.copy(), run_token=run_token)
-        managed = await supervisor.spawn([sys.executable, "-c", source], cwd=os.getcwd(),
-            env=os.environ.copy(), run_token=run_token)
+        sibling = await supervisor.spawn(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            cwd=os.getcwd(),
+            env=os.environ.copy(),
+            run_token=run_token,
+        )
+        managed = await supervisor.spawn(
+            [sys.executable, "-c", source], cwd=os.getcwd(), env=os.environ.copy(), run_token=run_token
+        )
         detached_child = int(await asyncio.wait_for(managed.process.stdout.readline(), 5))
         await asyncio.wait_for(managed.process.wait(), 5)
         result = await asyncio.wait_for(managed.wait(), 15)

@@ -1,18 +1,12 @@
 import os
-import sys
 import tempfile
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 from app.domains.skill.services import skill_runtime_trace_service, task_skill_runtime_service
+from app.domains.skill.services.runtime import bindings as skill_runtime_bindings
 
 
 class TaskSkillRuntimeServiceTest(unittest.TestCase):

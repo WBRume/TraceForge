@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -27,14 +27,14 @@ def _create_version(
     asset: SddAsset,
     *,
     version_no: int,
-    base_version_id: Optional[str],
-    original_path: Optional[str],
-    original_ext: Optional[str],
-    original_mime: Optional[str],
-    normalized_markdown: Optional[str],
-    blocks_json: Optional[List[Dict[str, Any]]],
-    render_json: Optional[Dict[str, Any]],
-    change_note: Optional[str],
+    base_version_id: str | None,
+    original_path: str | None,
+    original_ext: str | None,
+    original_mime: str | None,
+    normalized_markdown: str | None,
+    blocks_json: list[dict[str, Any]] | None,
+    render_json: dict[str, Any] | None,
+    change_note: str | None,
     creator_id: str,
 ) -> SddAssetVersion:
     version = SddAssetVersion(
@@ -59,11 +59,11 @@ def _activate_version(
     asset: SddAsset,
     version: SddAssetVersion,
     *,
-    normalized_markdown: Optional[str],
+    normalized_markdown: str | None,
     block_count: int,
-    source_file_name: Optional[str] = None,
-    source_ext: Optional[str] = None,
-    source_mime: Optional[str] = None,
+    source_file_name: str | None = None,
+    source_ext: str | None = None,
+    source_mime: str | None = None,
 ) -> None:
     """激活版本：同步资产上的内容快照与来源元数据。"""
     asset.active_version_id = version.id
@@ -85,7 +85,7 @@ def _upsert_spec_asset(
     task: SddTask,
     creator_id: str,
     file_name: str,
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
 ) -> SddAsset:
     asset = asset_service.get_spec_asset_by_task(db, task.id)
     if asset:
@@ -117,8 +117,8 @@ def create_asset_version_from_upload(
     creator_id: str,
     file_name: str,
     file_content: bytes,
-    change_note: Optional[str] = None,
-) -> Tuple[SddAsset, SddAssetVersion]:
+    change_note: str | None = None,
+) -> tuple[SddAsset, SddAssetVersion]:
     payload = parse_document_payload(file_name, file_content)
     asset = _upsert_spec_asset(db, task, creator_id, file_name, payload)
     version_no = repository.next_version_no(db, asset.id)
@@ -156,8 +156,8 @@ def create_diagnosis_doc_asset_version(
     creator_id: str,
     file_name: str,
     file_content: bytes,
-    change_note: Optional[str] = None,
-) -> Tuple[SddAsset, SddAssetVersion, str]:
+    change_note: str | None = None,
+) -> tuple[SddAsset, SddAssetVersion, str]:
     """问题定位任务：上传需求/日志等辅助文档。
 
     - 按「任务 + 文件名」复用同一 DIAGNOSIS_DOC 资产（重复上传生成新版本）；
@@ -220,13 +220,13 @@ def create_asset_version_from_normalized_content(
     *,
     creator_id: str,
     normalized_markdown: str,
-    blocks_json: Optional[List[Dict[str, Any]]] = None,
-    change_note: Optional[str] = None,
-    base_version_id: Optional[str] = None,
-    output_ext: Optional[str] = None,
-    output_mime: Optional[str] = None,
-    output_file_bytes: Optional[bytes] = None,
-    output_file_name: Optional[str] = None,
+    blocks_json: list[dict[str, Any]] | None = None,
+    change_note: str | None = None,
+    base_version_id: str | None = None,
+    output_ext: str | None = None,
+    output_mime: str | None = None,
+    output_file_bytes: bytes | None = None,
+    output_file_name: str | None = None,
 ) -> SddAssetVersion:
     task = repository.task_for_asset(db, asset)
     version_no = repository.next_version_no(db, asset.id)
@@ -234,7 +234,7 @@ def create_asset_version_from_normalized_content(
     mime = output_mime or asset.source_mime or "text/markdown"
     effective_markdown = normalized_markdown
     blocks = blocks_json if blocks_json is not None else markdown_blocks.markdown_to_blocks(effective_markdown)
-    render_json: Dict[str, Any] = {"format": "markdown", "block_count": len(blocks)}
+    render_json: dict[str, Any] = {"format": "markdown", "block_count": len(blocks)}
     filename = output_file_name or (asset.source_file_name or f"spec-v{version_no}{ext}")
     file_name = storage.normalize_filename(filename, fallback_ext=ext or ".md")
     file_bytes = output_file_bytes
@@ -296,12 +296,12 @@ def create_task_asset_version_from_bytes(
     asset_name: str,
     file_name: str,
     file_content: bytes,
-    content_text: Optional[str] = None,
-    content_json: Optional[Dict[str, Any]] = None,
-    change_note: Optional[str] = None,
-    source_ext: Optional[str] = None,
-    source_mime: Optional[str] = None,
-) -> Tuple[SddAsset, SddAssetVersion]:
+    content_text: str | None = None,
+    content_json: dict[str, Any] | None = None,
+    change_note: str | None = None,
+    source_ext: str | None = None,
+    source_mime: str | None = None,
+) -> tuple[SddAsset, SddAssetVersion]:
     """产物类资产（diff/报告等）：不走文档解析，原样存字节。"""
     ext, guessed_mime = guess_ext_and_mime(file_name)
     effective_ext = source_ext if source_ext is not None else ext
@@ -345,7 +345,7 @@ def create_task_asset_version_from_bytes(
     return asset, version
 
 
-def ensure_spec_asset_backfilled(db: Session, task: SddTask) -> Optional[SddAsset]:
+def ensure_spec_asset_backfilled(db: Session, task: SddTask) -> SddAsset | None:
     """遗留任务兜底：从 task.spec_doc_path 懒回填 SPEC 资产/版本。"""
     existing = asset_service.get_spec_asset_by_task(db, task.id)
     if existing:
@@ -376,7 +376,7 @@ def ensure_spec_asset_backfilled(db: Session, task: SddTask) -> Optional[SddAsse
     return asset
 
 
-def ensure_asset_has_version(db: Session, asset: SddAsset) -> Optional[SddAssetVersion]:
+def ensure_asset_has_version(db: Session, asset: SddAsset) -> SddAssetVersion | None:
     """兜底保证资产存在可用版本（激活指针缺失/历史数据迁移）。"""
     if asset.active_version_id:
         active = repository.get_asset_version(db, asset.id, asset.active_version_id)

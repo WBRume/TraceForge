@@ -1,22 +1,16 @@
 import os
-import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.domains.skill.models.skill import SddSkill, SkillDimension  # noqa: E402
-  # noqa: E402
-from app.domains.skill.services.packages import git as git_service, github_source as github_import_service, storage as storage_service
-
+from app.domains.skill.models.skill import SddSkill, SkillDimension
 from app.domains.skill.services.catalog import policy as skill_catalog_policy
+from app.domains.skill.services.packages import git as git_service
 from app.domains.skill.services.packages import github as skill_packages_github
+from app.domains.skill.services.packages import github_source as github_import_service
+from app.domains.skill.services.packages import storage as storage_service
 from app.domains.skill.services.packages import versions as skill_packages_versions
 
 

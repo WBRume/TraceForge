@@ -1,15 +1,20 @@
 """Prepare a review document and project version-specific review capabilities."""
 
-from typing import Optional
 from sqlalchemy.orm import Session
+
+from app.domains.asset.schemas.asset import AssetDocumentCapabilities, AssetDocumentResponse, AssetThreadMarkerResponse
+from app.domains.asset.services import asset_discussion_service, asset_service
+from app.domains.asset.services.document import payload as document_payload
+from app.domains.asset.services.document import repair as document_repair
+from app.domains.asset.services.document import repository as document_repository
+from app.domains.asset.services.document import versioning as document_versioning
+from app.domains.asset.services.review import policy as asset_review_policy
+from app.domains.asset.services.review import serialization as asset_review_serialization
+from app.domains.asset.services.review.errors import ReviewError
 from app.domains.auth.models.user import User, WorkspacePermission
-from app.domains.asset.schemas.asset import AssetDocumentResponse, AssetDocumentCapabilities, AssetThreadMarkerResponse
-from app.domains.asset.services import asset_service, asset_discussion_service
-from app.domains.asset.services.document import payload as document_payload, repair as document_repair, repository as document_repository, versioning as document_versioning
 from app.domains.task.services import task_cli_state_service
 from app.domains.workspace.services import workspace_service
-from app.domains.asset.services.review import policy as asset_review_policy, serialization as asset_review_serialization
-from app.domains.asset.services.review.errors import ReviewError
+
 
 def ensure_active_version(db: Session, asset):
     before_active = asset.active_version_id
@@ -22,7 +27,9 @@ def ensure_active_version(db: Session, asset):
     return version
 
 
-def read_document(db: Session, *, ws_id: str, asset_id: str, version_id: Optional[str], current_user: User) -> AssetDocumentResponse:
+def read_document(
+    db: Session, *, ws_id: str, asset_id: str, version_id: str | None, current_user: User
+) -> AssetDocumentResponse:
     asset_review_policy._verify_asset_access(ws_id, current_user, db)
     asset = asset_service.get_asset_by_id(db, ws_id, asset_id)
     if not asset:
@@ -67,13 +74,12 @@ def read_document(db: Session, *, ws_id: str, asset_id: str, version_id: Optiona
     is_latest_context_version = asset_review_policy._is_latest_context_version(asset, selected_version_id)
     can_comment = can_view and is_latest_context_version
     can_apply_resolution = (
-        workspace_service.is_workspace_expert(db, ws_id, current_user.id)
-        and is_latest_context_version
+        workspace_service.is_workspace_expert(db, ws_id, current_user.id) and is_latest_context_version
     )
     inline_review_enabled = document_payload.can_inline_review(asset.source_ext)
     can_manual_edit = can_apply_resolution and inline_review_enabled
     ai_available = True
-    ai_unavailable_reason: Optional[str] = None
+    ai_unavailable_reason: str | None = None
     if not is_latest_context_version:
         ai_available = False
         ai_unavailable_reason = "historical_version_readonly"

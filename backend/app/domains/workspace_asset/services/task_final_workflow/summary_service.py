@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -18,13 +17,13 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     WorkflowFinalSummaryUpsertRequest,
 )
 from app.domains.workspace_asset.schemas.workspace_asset import TaskFinalSummaryUpsertRequest
-from app.domains.workspace_asset.services.task_final_workflow import baseline_service
 from app.domains.workspace_asset.services.common.primitives import (
     clean_optional,
     normalize_enum,
     normalize_list,
 )
 from app.domains.workspace_asset.services.common.process_presenters import final_summary_response
+from app.domains.workspace_asset.services.task_final_workflow import baseline_service
 from app.domains.workspace_asset.services.task_process.writes_support import (
     add_process_audit,
     ensure_evidence,
@@ -38,7 +37,7 @@ def draft_final_summary(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: FinalSummaryDraftRequest,
 ) -> str:
     task = get_task_or_error(db, workspace_id, task_id)
@@ -73,7 +72,9 @@ def draft_final_summary(
     )
 
 
-def _coerce_workflow_payload(payload: TaskFinalSummaryUpsertRequest | WorkflowFinalSummaryUpsertRequest) -> WorkflowFinalSummaryUpsertRequest:
+def _coerce_workflow_payload(
+    payload: TaskFinalSummaryUpsertRequest | WorkflowFinalSummaryUpsertRequest,
+) -> WorkflowFinalSummaryUpsertRequest:
     if isinstance(payload, WorkflowFinalSummaryUpsertRequest):
         return payload
     return WorkflowFinalSummaryUpsertRequest(
@@ -95,13 +96,15 @@ def upsert_final_summary(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: TaskFinalSummaryUpsertRequest | WorkflowFinalSummaryUpsertRequest,
 ) -> str:
     task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
     workflow_payload = _coerce_workflow_payload(payload)
-    status = normalize_enum(TaskFinalStatus, workflow_payload.final_status, TaskFinalStatus.PENDING, "Task final status")
+    status = normalize_enum(
+        TaskFinalStatus, workflow_payload.final_status, TaskFinalStatus.PENDING, "Task final status"
+    )
     for evidence_id in workflow_payload.final_evidence_ids:
         ensure_evidence(db, workspace_id, task_id, evidence_id)
     ensure_human_review(db, workspace_id, task_id, workflow_payload.human_confirmation_review_id)
@@ -117,7 +120,9 @@ def upsert_final_summary(
         task.final_summary = summary
         action = TaskProcessAuditAction.CREATED
     else:
-        action = TaskProcessAuditAction.FINALIZED if status == TaskFinalStatus.VERIFIED else TaskProcessAuditAction.UPDATED
+        action = (
+            TaskProcessAuditAction.FINALIZED if status == TaskFinalStatus.VERIFIED else TaskProcessAuditAction.UPDATED
+        )
 
     summary.author_id = actor_id
     summary.final_status = status
@@ -156,7 +161,7 @@ def upsert_final_summary(
     return summary_id
 
 
-def baseline_task(db: Session, workspace_id: str, task_id: str, actor_id: Optional[str]) -> str:
+def baseline_task(db: Session, workspace_id: str, task_id: str, actor_id: str | None) -> str:
     task = get_task_or_error(db, workspace_id, task_id)
     baseline_service.ensure_task_mutable(task)
     baseline = baseline_service.baseline_task(db, task, actor_id)

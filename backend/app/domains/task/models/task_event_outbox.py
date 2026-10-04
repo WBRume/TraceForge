@@ -1,5 +1,6 @@
 """Transactional task-event outbox; RoomHub only recovers published connections."""
-from sqlalchemy import BigInteger, Column, Index, Integer, JSON, String
+
+from sqlalchemy import JSON, BigInteger, Column, Index, Integer, String
 
 from app.database import Base
 from app.domains.search.models import QueueColumns

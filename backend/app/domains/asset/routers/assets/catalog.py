@@ -1,31 +1,28 @@
 """asset.routers.assets.catalog domain operations."""
 
 from __future__ import annotations
-from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+
 from app.dependencies import get_current_user, get_db
-from app.domains.auth.models.user import User
+from app.domains.asset.routers.assets.transport import ReviewRoute
 from app.domains.asset.schemas.asset import AssetListResponse, AssetResponse
 from app.domains.asset.services import asset_service
-
-from app.domains.asset.routers.assets.transport import ReviewRoute
 from app.domains.asset.services.review import policy as asset_review_policy
 from app.domains.asset.services.review import serialization as asset_review_serialization
-
-
+from app.domains.auth.models.user import User
 
 router = APIRouter(route_class=ReviewRoute)
-
 
 
 @router.get("", response_model=AssetListResponse)
 def search_assets(
     ws_id: str,
-    task_id: Optional[str] = Query(None),
-    asset_type: Optional[str] = Query(None),
-    keyword: Optional[str] = Query(None),
-    creator_id: Optional[str] = Query(None),
+    task_id: str | None = Query(None),
+    asset_type: str | None = Query(None),
+    keyword: str | None = Query(None),
+    creator_id: str | None = Query(None),
     include_unfinished_task_spec: bool = Query(False),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),

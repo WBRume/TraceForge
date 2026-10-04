@@ -8,28 +8,27 @@ workspace_asset task_process writes and does not mutate Traceability directly.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
 from app.domains.dashboard.models.metric import SddDashboardMetric
 from app.domains.task.models.task import SddTask, TaskStatus
-from app.domains.workspace_asset.models.workspace_asset import (
-    RequirementAuditAction,
-    SddRequirement,
-    SddTaskRequirement,
-)
-from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
 from app.domains.task.schemas.task_closeout import (
     CloseoutEvidenceAttachment,
     CompleteTaskCloseoutRequest,
     FailTaskCloseoutRequest,
     TaskCloseoutResponse,
 )
+from app.domains.workspace_asset.models.workspace_asset import (
+    RequirementAuditAction,
+    SddRequirement,
+    SddTaskRequirement,
+)
 from app.domains.workspace_asset.schemas.workspace_asset import (
     EvidenceCreateRequest,
     TaskFinalSummaryUpsertRequest,
 )
+from app.domains.workspace_asset.services.requirements.presenters import add_requirement_audit
 from app.domains.workspace_asset.services.task_final_workflow import summary_service
 from app.domains.workspace_asset.services.task_process import evidence_writes
 
@@ -40,12 +39,12 @@ class TaskCloseoutError(Exception):
         self.status_code = status_code
 
 
-def _clean(value: Optional[str]) -> Optional[str]:
+def _clean(value: str | None) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
 
 
-def _short(value: Optional[str], limit: int = 500) -> Optional[str]:
+def _short(value: str | None, limit: int = 500) -> str | None:
     cleaned = _clean(value)
     return cleaned[:limit] if cleaned else None
 
@@ -91,8 +90,8 @@ def _attachment_evidence(
     )
 
 
-def _complete_evidence_payloads(payload: CompleteTaskCloseoutRequest) -> List[EvidenceCreateRequest]:
-    evidence: List[EvidenceCreateRequest] = []
+def _complete_evidence_payloads(payload: CompleteTaskCloseoutRequest) -> list[EvidenceCreateRequest]:
+    evidence: list[EvidenceCreateRequest] = []
     commit_id = _clean(payload.commit_id)
     pr_url = _clean(payload.pr_url)
     local_ref = _clean(payload.local_ref)
@@ -147,7 +146,7 @@ def _complete_evidence_payloads(payload: CompleteTaskCloseoutRequest) -> List[Ev
     return evidence
 
 
-def _failure_evidence_payloads(payload: FailTaskCloseoutRequest) -> List[EvidenceCreateRequest]:
+def _failure_evidence_payloads(payload: FailTaskCloseoutRequest) -> list[EvidenceCreateRequest]:
     evidence = [
         _attachment_evidence(
             attachment,
@@ -187,32 +186,29 @@ def complete_task_closeout(
 ) -> TaskCloseoutResponse:
     task = _get_open_task(db, workspace_id, task_id)
     from app.domains.local_resource.service import require_operation
+
     require_operation(db, task, actor_id)
     evidence_payloads = _complete_evidence_payloads(payload)
 
     if payload.requirement_id:
-        requirement = (
-            db.query(SddRequirement)
-            .filter_by(id=payload.requirement_id, workspace_id=workspace_id)
-            .first()
-        )
+        requirement = db.query(SddRequirement).filter_by(id=payload.requirement_id, workspace_id=workspace_id).first()
         if not requirement:
             raise TaskCloseoutError("Requirement not found in this workspace", status_code=404)
         if db.query(SddRequirement.id).filter_by(parent_requirement_id=requirement.id).first():
             raise TaskCloseoutError("Parent Requirement has children; select a child Requirement", status_code=409)
         existing_link = (
-            db.query(SddTaskRequirement.id)
-            .filter_by(task_id=task_id, requirement_id=requirement.id)
-            .first()
+            db.query(SddTaskRequirement.id).filter_by(task_id=task_id, requirement_id=requirement.id).first()
         )
         if not existing_link:
             requirement.updated_at = datetime.now(timezone.utc)
-            db.add(SddTaskRequirement(
-                workspace_id=workspace_id,
-                task_id=task_id,
-                requirement_id=requirement.id,
-                created_by_id=actor_id,
-            ))
+            db.add(
+                SddTaskRequirement(
+                    workspace_id=workspace_id,
+                    task_id=task_id,
+                    requirement_id=requirement.id,
+                    created_by_id=actor_id,
+                )
+            )
             add_requirement_audit(
                 db,
                 workspace_id=workspace_id,
@@ -244,6 +240,7 @@ def complete_task_closeout(
         ),
     )
     from app.domains.notification.services.task_awareness import capture_business
+
     capture_business(db, task, actor_id, "TASK_COMPLETED", payload.completion_summary)
     _finalize_task(db, task, status=TaskStatus.DONE, message=payload.completion_summary, metric_value=1.0)
     from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
@@ -269,6 +266,7 @@ def fail_task_closeout(
 ) -> TaskCloseoutResponse:
     task = _get_open_task(db, workspace_id, task_id)
     from app.domains.local_resource.service import require_operation
+
     require_operation(db, task, actor_id)
     evidence_payloads = _failure_evidence_payloads(payload)
 
@@ -292,6 +290,7 @@ def fail_task_closeout(
         ),
     )
     from app.domains.notification.services.task_awareness import capture_business
+
     capture_business(db, task, actor_id, "TASK_FAILED", payload.failure_summary)
     _finalize_task(db, task, status=TaskStatus.FAILED, message=payload.failure_summary, metric_value=0.0)
     return TaskCloseoutResponse(

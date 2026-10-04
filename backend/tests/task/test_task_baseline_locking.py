@@ -4,7 +4,6 @@ from datetime import datetime
 
 from fastapi.testclient import TestClient
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
@@ -12,7 +11,7 @@ TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
-from app.domains.task.models.task import SddTask, TaskStatus  # noqa: E402
+from app.domains.task.models.task import TaskStatus  # noqa: E402
 from app.domains.workspace_asset.models.workspace_asset import (  # noqa: E402
     EvidenceSourceType,
     EvidenceStatus,
@@ -29,7 +28,12 @@ from app.domains.workspace_asset.models.workspace_asset import (  # noqa: E402
     TaskFinalStatus,
     TaskRequirementRelationType,
 )
-from tests.workspace_asset.test_workspace_asset_boundary import _build_app, _build_db, _seed_workspace, _session  # noqa: E402
+from tests.workspace_asset.test_workspace_asset_boundary import (  # noqa: E402
+    _build_app,
+    _build_db,
+    _seed_workspace,
+    _session,
+)
 
 
 def _seed_baselined_task(db, workspace_id: str, task_id: str):

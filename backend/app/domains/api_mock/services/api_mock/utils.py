@@ -8,9 +8,11 @@ import re
 import shutil
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Iterable, List
+from collections.abc import Iterable
+from typing import Any
 
 from app.config import settings
+
 from .constants import IGNORED_DIR_NAMES, IGNORED_FILE_SUFFIXES
 
 
@@ -40,8 +42,8 @@ def _copy_task_workspace(task_source_path: str, target_temp_path: str) -> None:
     if os.path.exists(target_temp_path):
         shutil.rmtree(target_temp_path, ignore_errors=True)
 
-    def _ignore_filter(current_dir: str, names: Iterable[str]) -> List[str]:
-        ignored: List[str] = []
+    def _ignore_filter(current_dir: str, names: Iterable[str]) -> list[str]:
+        ignored: list[str] = []
         for name in names:
             full_path = os.path.join(current_dir, name)
             if os.path.isdir(full_path) and name in IGNORED_DIR_NAMES:
@@ -56,7 +58,7 @@ def _copy_task_workspace(task_source_path: str, target_temp_path: str) -> None:
     shutil.copytree(task_source_path, target_temp_path, ignore=_ignore_filter, dirs_exist_ok=False)
 
 
-def _extract_json_from_text(text: str) -> Dict[str, Any]:
+def _extract_json_from_text(text: str) -> dict[str, Any]:
     cleaned = (text or "").strip()
     if not cleaned:
         raise ValueError("Empty analysis output")
@@ -93,13 +95,12 @@ def _read_text_from_url(url: str) -> str:
         return data.decode(charset, errors="ignore")
 
 
-def _api_mock_cli_candidates() -> List[str]:
+def _api_mock_cli_candidates() -> list[str]:
     configured_cli = (settings.CLAUDE_CLI_PATH or "").strip()
-    cli_candidates: List[str] = []
+    cli_candidates: list[str] = []
     if configured_cli:
         cli_candidates.append(configured_cli)
     for candidate in ("claude", "claude.exe"):
         if candidate not in cli_candidates:
             cli_candidates.append(candidate)
     return cli_candidates
-

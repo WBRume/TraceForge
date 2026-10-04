@@ -1,10 +1,10 @@
 """RAG Provider 工厂与协议。"""
 
 from app.config import settings
+from app.core.logging import get_logger
 from app.domains.rag.providers.base import RagProvider
 from app.domains.rag.providers.httpx_provider import HttpRagProvider
 from app.domains.rag.providers.mock_provider import MockRagProvider
-from app.core.logging import get_logger
 
 logger = get_logger(__name__, category="rag")
 

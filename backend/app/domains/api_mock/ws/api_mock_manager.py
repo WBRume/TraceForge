@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Set
-
 from fastapi import WebSocket
 
 from app.core.logging import get_logger
@@ -22,11 +20,11 @@ class ApiMockConnectionManager:
 
     # 兼容视图：project_id -> 活跃 WebSocket 集合（只读用途）
     @property
-    def active_connections(self) -> Dict[str, Set[WebSocket]]:
+    def active_connections(self) -> dict[str, set[WebSocket]]:
         return {key: set(sockets) for key, sockets in self.registry.rooms.items()}
 
     @property
-    def user_presence(self) -> Dict[str, Dict[WebSocket, str]]:
+    def user_presence(self) -> dict[str, dict[WebSocket, str]]:
         return {key: dict(users) for key, users in self.registry.presence.items()}
 
     async def connect(
@@ -35,9 +33,9 @@ class ApiMockConnectionManager:
         project_id: str,
         user_id: str,
         *,
-        client_id: Optional[str] = None,
-        epoch: Optional[str] = None,
-        last_sequence: Optional[int] = None,
+        client_id: str | None = None,
+        epoch: str | None = None,
+        last_sequence: int | None = None,
     ) -> OutboundConnection:
         await websocket.accept()
         connection = await self.registry.connect(
@@ -56,7 +54,7 @@ class ApiMockConnectionManager:
         self.registry.disconnect(self._room_key(project_id), websocket)
         logger.info(f"API MOCK WS disconnected: project={project_id}")
 
-    def online_users(self, project_id: str) -> List[str]:
+    def online_users(self, project_id: str) -> list[str]:
         return self.registry.online_users(self._room_key(project_id))
 
     async def _broadcast_local(self, project_id: str, payload: dict) -> None:

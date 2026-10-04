@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -34,7 +34,7 @@ def extract_block_text(block: Any) -> str:
             return merged
     cells = block.get("cells")
     if isinstance(cells, list):
-        chunks: List[str] = []
+        chunks: list[str] = []
         for row in cells:
             if not isinstance(row, list):
                 continue
@@ -52,10 +52,10 @@ def resolve_thread_anchor_text(
     thread: SddAssetThread,
     block: Any,
     *,
-    selected_text: Optional[str] = None,
-    char_start: Optional[int] = None,
-    char_end: Optional[int] = None,
-) -> Dict[str, str]:
+    selected_text: str | None = None,
+    char_start: int | None = None,
+    char_end: int | None = None,
+) -> dict[str, str]:
     block_text = extract_block_text(block).strip()
     selected_text = str(selected_text if selected_text is not None else thread.selected_text or "").strip()
     start_candidate = char_start if char_start is not None else thread.char_start
@@ -78,9 +78,9 @@ def resolve_thread_anchor_text(
     }
 
 
-def thread_history_lines(thread: SddAssetThread, limit: int = 18) -> List[str]:
-    messages = sorted(list(thread.messages or []), key=lambda item: item.created_at)
-    lines: List[str] = []
+def thread_history_lines(thread: SddAssetThread, limit: int = 18) -> list[str]:
+    messages = sorted(thread.messages or [], key=lambda item: item.created_at)
+    lines: list[str] = []
     for message in messages[-limit:]:
         role = as_status(message.role)
         if role == AssetThreadMessageRole.AI.value:
@@ -91,9 +91,9 @@ def thread_history_lines(thread: SddAssetThread, limit: int = 18) -> List[str]:
     return lines
 
 
-def proposal_discussion_lines(thread: SddAssetThread, limit: int = 28) -> List[str]:
-    messages = sorted(list(thread.messages or []), key=lambda item: item.created_at)
-    lines: List[str] = []
+def proposal_discussion_lines(thread: SddAssetThread, limit: int = 28) -> list[str]:
+    messages = sorted(thread.messages or [], key=lambda item: item.created_at)
+    lines: list[str] = []
     for message in messages:
         role = as_status(message.role)
         if role not in {AssetThreadMessageRole.USER.value, AssetThreadMessageRole.AI.value}:
@@ -108,8 +108,8 @@ def proposal_discussion_lines(thread: SddAssetThread, limit: int = 28) -> List[s
     return lines
 
 
-def proposal_source_message_ids(thread: SddAssetThread) -> List[str]:
-    messages = sorted(list(thread.messages or []), key=lambda item: item.created_at)
+def proposal_source_message_ids(thread: SddAssetThread) -> list[str]:
+    messages = sorted(thread.messages or [], key=lambda item: item.created_at)
     return [
         item.id
         for item in messages
@@ -122,7 +122,7 @@ def resolve_context_version(
     db: Session,
     *,
     thread: SddAssetThread,
-    requested_version_id: Optional[str],
+    requested_version_id: str | None,
 ):
     version_id = str(requested_version_id or "").strip()
     if version_id:
@@ -150,7 +150,7 @@ def resolve_context_version(
     return thread.version
 
 
-def normalize_relocated_anchor(raw: Any) -> Optional[Dict[str, Any]]:
+def normalize_relocated_anchor(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     block_id = str(raw.get("block_id") or "").strip()
@@ -175,7 +175,7 @@ def normalize_relocated_anchor(raw: Any) -> Optional[Dict[str, Any]]:
     }
 
 
-def serialize_proposal_for_ws(proposal: Any) -> Dict[str, Any]:
+def serialize_proposal_for_ws(proposal: Any) -> dict[str, Any]:
     status = proposal.status.value if hasattr(proposal.status, "value") else str(proposal.status)
     return {
         "id": proposal.id,
@@ -204,7 +204,7 @@ def clean_rewrite_text(raw: str) -> str:
     return text
 
 
-def parse_rewrite_payload(raw: str) -> Dict[str, str]:
+def parse_rewrite_payload(raw: str) -> dict[str, str]:
     text = str(raw or "").strip()
     if not text:
         return {"scope": "anchor", "anchor_text": ""}
@@ -235,18 +235,10 @@ def parse_rewrite_payload(raw: str) -> Dict[str, str]:
     scope = str(parsed.get("scope") or parsed.get("rewrite_scope") or "anchor").strip().lower()
     if scope == "document":
         markdown = str(
-            parsed.get("document_markdown")
-            or parsed.get("markdown")
-            or parsed.get("document")
-            or ""
+            parsed.get("document_markdown") or parsed.get("markdown") or parsed.get("document") or ""
         ).strip()
         if markdown:
             return {"scope": "document", "document_markdown": markdown}
 
-    anchor_text = str(
-        parsed.get("anchor_text")
-        or parsed.get("text")
-        or parsed.get("rewritten_text")
-        or ""
-    ).strip()
+    anchor_text = str(parsed.get("anchor_text") or parsed.get("text") or parsed.get("rewritten_text") or "").strip()
     return {"scope": "anchor", "anchor_text": clean_rewrite_text(anchor_text or text)}

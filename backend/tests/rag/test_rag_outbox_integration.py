@@ -25,10 +25,6 @@ TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if TEST_ROOT not in sys.path:
     sys.path.insert(0, TEST_ROOT)
 
-from app.domains.rag import models as rag_models  # noqa: E402
-from app.domains.rag.models import SddRagSyncQueue  # noqa: E402
-from app.domains.rag.schemas import RagOutboxStatus, RagQueueStatus  # noqa: E402
-from app.domains.rag.services import document_builder, outbox_service  # noqa: E402
 from app.domains.auth.models.user import (  # noqa: E402
     Workspace,
     WorkspaceMember,
@@ -39,6 +35,10 @@ from app.domains.case_center.models.case import (  # noqa: E402
     CaseStatus,
     SddCase,
 )
+from app.domains.rag import models as rag_models  # noqa: E402
+from app.domains.rag.models import SddRagSyncQueue  # noqa: E402
+from app.domains.rag.schemas import RagOutboxStatus, RagQueueStatus  # noqa: E402
+from app.domains.rag.services import document_builder, outbox_service  # noqa: E402
 from app.domains.task.models.diagnosis import (  # noqa: E402
     DiagnosisResultStatus,
 )
@@ -79,11 +79,7 @@ def _seed_approved_case(db, task, case_id="case-rag-1"):
 
 
 def _queues(db):
-    return (
-        db.query(SddRagSyncQueue)
-        .order_by(SddRagSyncQueue.created_at.asc())
-        .all()
-    )
+    return db.query(SddRagSyncQueue).order_by(SddRagSyncQueue.created_at.asc()).all()
 
 
 def test_approve_case_enqueues_into_workspace_running_queue():
@@ -256,11 +252,7 @@ def test_diagnosis_result_update_after_approval_enqueues_update():
             )
             assert result.status == DiagnosisResultStatus.DRAFT.value
 
-            rows = (
-                db.query(rag_models.SddRagOutbox)
-                .filter(rag_models.SddRagOutbox.doc_key == f"case:{case.id}")
-                .all()
-            )
+            rows = db.query(rag_models.SddRagOutbox).filter(rag_models.SddRagOutbox.doc_key == f"case:{case.id}").all()
             assert len(rows) == 1
             row = rows[0]
             assert row.payload_json["version"] == 2
@@ -307,9 +299,7 @@ def test_diagnosis_result_update_before_approval_does_not_enqueue():
 
 def _seed_second_workspace(db, user, ws_id="ws-rag-b", task_id="task-rag-b", name="Workspace B"):
     """第二个工作区复用同一用户（多工作区成员），避免 user email 唯一冲突。"""
-    ws_b = Workspace(
-        id=ws_id, name=name, owner_id=user.id, project_path="G:/repo"
-    )
+    ws_b = Workspace(id=ws_id, name=name, owner_id=user.id, project_path="G:/repo")
     member_b = WorkspaceMember(
         id=f"member-{ws_id}",
         workspace_id=ws_b.id,
@@ -339,9 +329,7 @@ def test_queues_are_isolated_by_workspace():
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            user, ws_a, task_a = _seed_diagnosis_task(
-                db, workspace_id="ws-rag-a", task_id="task-rag-a"
-            )
+            user, ws_a, task_a = _seed_diagnosis_task(db, workspace_id="ws-rag-a", task_id="task-rag-a")
             ws_b, task_b = _seed_second_workspace(db, user)
 
             case_a = _seed_approved_case(db, task_a, case_id="case-rag-ws-a")
@@ -397,25 +385,15 @@ def test_list_queues_and_cases_respect_workspace_scope():
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            user, ws_a, task_a = _seed_diagnosis_task(
-                db, workspace_id="ws-rag-a", task_id="task-rag-a"
-            )
+            user, ws_a, task_a = _seed_diagnosis_task(db, workspace_id="ws-rag-a", task_id="task-rag-a")
             ws_b, task_b = _seed_second_workspace(db, user)
 
             case_a = _seed_approved_case(db, task_a, case_id="case-rag-ws-a")
             case_b = _seed_approved_case(db, task_b, case_id="case-rag-ws-b")
             outbox_service.enqueue_case_published(db, case_a)
             outbox_service.enqueue_case_published(db, case_b)
-            queue_a = (
-                db.query(SddRagSyncQueue)
-                .filter(SddRagSyncQueue.workspace_id == "ws-rag-a")
-                .first()
-            )
-            queue_b = (
-                db.query(SddRagSyncQueue)
-                .filter(SddRagSyncQueue.workspace_id == "ws-rag-b")
-                .first()
-            )
+            queue_a = db.query(SddRagSyncQueue).filter(SddRagSyncQueue.workspace_id == "ws-rag-a").first()
+            queue_b = db.query(SddRagSyncQueue).filter(SddRagSyncQueue.workspace_id == "ws-rag-b").first()
 
             # 管理员（workspace_ids=None）：全部队列可见
             queues_admin, total_admin = outbox_service.list_queues(db, workspace_ids=None)
@@ -423,53 +401,24 @@ def test_list_queues_and_cases_respect_workspace_scope():
             assert {q.id for q in queues_admin} == {queue_a.id, queue_b.id}
 
             # 仅 ws-a 用户：只见 ws-a 的队列，案例清单只含 ws-a
-            queues_a, total_a = outbox_service.list_queues(
-                db, workspace_ids=["ws-rag-a"]
-            )
+            queues_a, total_a = outbox_service.list_queues(db, workspace_ids=["ws-rag-a"])
             assert total_a == 1
             assert queues_a[0].id == queue_a.id
-            cases_a, _ = outbox_service.list_queue_cases(
-                db, queue_id=queue_a.id, workspace_ids=["ws-rag-a"]
-            )
+            cases_a, _ = outbox_service.list_queue_cases(db, queue_id=queue_a.id, workspace_ids=["ws-rag-a"])
             assert {r.case_id for r in cases_a} == {"case-rag-ws-a"}
 
             # 无关工作区用户：不可见
-            queues_empty, total_empty = outbox_service.list_queues(
-                db, workspace_ids=["ws-unknown"]
-            )
+            queues_empty, total_empty = outbox_service.list_queues(db, workspace_ids=["ws-unknown"])
             assert total_empty == 0
             assert queues_empty == []
 
             # get_queue 权限校验（按队列归属）
-            assert (
-                outbox_service.get_queue(db, queue_id=queue_a.id, workspace_ids=None)
-                is not None
-            )
-            assert (
-                outbox_service.get_queue(
-                    db, queue_id=queue_a.id, workspace_ids=["ws-rag-a"]
-                )
-                is not None
-            )
-            assert (
-                outbox_service.get_queue(
-                    db, queue_id=queue_a.id, workspace_ids=["ws-rag-b"]
-                )
-                is None
-            )
-            assert (
-                outbox_service.get_queue(
-                    db, queue_id=queue_a.id, workspace_ids=["ws-unknown"]
-                )
-                is None
-            )
+            assert outbox_service.get_queue(db, queue_id=queue_a.id, workspace_ids=None) is not None
+            assert outbox_service.get_queue(db, queue_id=queue_a.id, workspace_ids=["ws-rag-a"]) is not None
+            assert outbox_service.get_queue(db, queue_id=queue_a.id, workspace_ids=["ws-rag-b"]) is None
+            assert outbox_service.get_queue(db, queue_id=queue_a.id, workspace_ids=["ws-unknown"]) is None
             # 未归属（legacy）队列对普通用户不可见，管理员可见
-            assert (
-                outbox_service.get_queue(
-                    db, queue_id=queue_b.id, workspace_ids=["ws-unknown"]
-                )
-                is None
-            )
+            assert outbox_service.get_queue(db, queue_id=queue_b.id, workspace_ids=["ws-unknown"]) is None
     finally:
         engine.dispose()
 
@@ -498,9 +447,7 @@ def test_build_zip_bytes_bundles_markdown_documents():
     engine, SessionLocal = _build_db()
     try:
         with _session(SessionLocal) as db:
-            user, workspace, task = _seed_diagnosis_task(
-                db, workspace_id="ws-rag-zip", task_id="task-rag-zip"
-            )
+            user, workspace, task = _seed_diagnosis_task(db, workspace_id="ws-rag-zip", task_id="task-rag-zip")
             case = _seed_approved_case(db, task)
             row = outbox_service.enqueue_case_published(db, case)
 
@@ -520,12 +467,12 @@ def test_ops_queue_sources_no_longer_include_rag():
     from app.domains.ai.services import queue_service
 
     assert "rag" not in queue_service.QUEUE_SOURCES
-    assert queue_service.QUEUE_SOURCES == {
+    assert {
         "provision",
         "api_mock",
         "bootstrap",
         "skill_analysis",
-    }
+    } == queue_service.QUEUE_SOURCES
 
 
 def test_content_disposition_ascii_filename_keeps_plain_header():
@@ -548,7 +495,7 @@ def test_content_disposition_non_ascii_filename_uses_rfc5987_filename_star():
     # 整体头仍须 latin-1 可编码（修复 500 UnicodeEncodeError 的核心断言）
     header.encode("latin-1")
 
-    assert header.startswith('attachment; filename="case.md"; filename*=UTF-8\'\'')
+    assert header.startswith("attachment; filename=\"case.md\"; filename*=UTF-8''")
     encoded = header.split("UTF-8''", 1)[1]
     assert "%" in encoded
     # percent 解码后可还原原始中文文件名

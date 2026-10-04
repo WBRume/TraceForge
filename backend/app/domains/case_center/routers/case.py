@@ -2,8 +2,6 @@
 案例知识中心 API routes.
 """
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -60,11 +58,11 @@ def _raise_case_error(exc: case_service.CaseError) -> None:
 @router.get("", response_model=CaseListResponse)
 def list_cases(
     ws_id: str,
-    keyword: Optional[str] = Query(default=None),
-    category: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(default=None),
-    priority: Optional[str] = Query(default=None),
-    source_task_id: Optional[str] = Query(default=None),
+    keyword: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    priority: str | None = Query(default=None),
+    source_task_id: str | None = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -96,11 +94,11 @@ def list_cases(
 
 @global_router.get("", response_model=CaseListResponse)
 def list_all_cases(
-    ws_id: Optional[str] = Query(default=None),
-    keyword: Optional[str] = Query(default=None),
-    category: Optional[str] = Query(default=None),
-    status: Optional[str] = Query(default=None),
-    priority: Optional[str] = Query(default=None),
+    ws_id: str | None = Query(default=None),
+    keyword: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    priority: str | None = Query(default=None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -129,7 +127,9 @@ def list_all_cases(
         payload = case_service.serialize_case(item)
         member = workspace_service.get_workspace_member(db, item.workspace_id, current_user.id)
         payload["my_can_manage"] = bool(
-            workspace_service.user_has_permission(db, item.workspace_id, current_user.id, WorkspacePermission.CREATE_TASK)
+            workspace_service.user_has_permission(
+                db, item.workspace_id, current_user.id, WorkspacePermission.CREATE_TASK
+            )
         )
         payload["my_can_review"] = bool(member and member.is_expert)
         serialized.append(payload)
@@ -239,7 +239,7 @@ def review_case(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    member = _verify_expert(ws_id, current_user, db)
+    _verify_expert(ws_id, current_user, db)
     try:
         case = case_service.review_case(
             db,

@@ -1,6 +1,5 @@
 import os
 import subprocess
-import sys
 import tempfile
 from contextlib import asynccontextmanager
 
@@ -10,22 +9,19 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-from app.config import settings  # noqa: E402
-from app.database import Base  # noqa: E402
+from app.config import settings
+from app.database import Base
+from app.domains.ai.routers import agent as agent_router
 from app.domains.auth.models.user import (
     User,
     Workspace,
     WorkspaceMember,
     WorkspaceRole,
 )
-from app.domains.task.models.task import SddTask
-from app.domains.task.models.task import TaskStatus  # noqa: E402
-from app.domains.ai.routers import agent as agent_router
+from app.domains.task.models.task import (
+    SddTask,
+    TaskStatus,
+)
 from app.domains.workflow.services import change_proposal_service
 
 

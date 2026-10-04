@@ -12,7 +12,12 @@ from sqlalchemy import or_
 from app.domains.ai.models.ai_job import SddAiJob
 from app.domains.auth.models.user import Workspace, WorkspaceMember
 from app.domains.notification.models.task_awareness import TaskAwarenessEvent, TaskWebhookDelivery, TaskWebhookEndpoint
-from app.domains.notification.services.task_awareness import BUSINESS_EVENTS, RUNTIME_EVENTS, LONG_RUN_SECONDS, webhook_eligible
+from app.domains.notification.services.task_awareness import (
+    BUSINESS_EVENTS,
+    LONG_RUN_SECONDS,
+    RUNTIME_EVENTS,
+    webhook_eligible,
+)
 
 MAX_ATTEMPTS = 3
 LEASE_SECONDS = 30
@@ -20,7 +25,14 @@ LEASE_SECONDS = 30
 
 def validate_url(url):
     parts = urlsplit(url)
-    if len(url) > 2048 or parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password or parts.fragment:
+    if (
+        len(url) > 2048
+        or parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username
+        or parts.password
+        or parts.fragment
+    ):
         raise ValueError("请输入有效的 HTTP(S) Webhook URL，不支持账号密码或片段")
     try:
         address = ip_address(parts.hostname)
@@ -29,7 +41,7 @@ def validate_url(url):
     if address and (address.is_link_local or address.is_unspecified or address.is_multicast):
         raise ValueError("该 Webhook 地址不可用")
     try:
-        parts.port
+        _ = parts.port  # Access validates the parsed port and may raise ValueError.
     except ValueError as exc:
         raise ValueError("Webhook 端口无效") from exc
     return url
@@ -46,7 +58,9 @@ async def _post_webhook(url, body, event_id):
     # HTTP status is the only acknowledgement; discard endpoint-specific bodies.
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(3.0), follow_redirects=False, trust_env=False) as client:
-            async with client.stream("POST", validate_url(url), json=body, headers={"X-TraceForge-Event-Id": event_id}) as response:
+            async with client.stream(
+                "POST", validate_url(url), json=body, headers={"X-TraceForge-Event-Id": event_id}
+            ) as response:
                 if not 200 <= response.status_code < 300:
                     return False, f"HTTP {response.status_code}"
         return True, None
@@ -60,9 +74,16 @@ def endpoint_authorized(db, endpoint, event):
     workspace = db.get(Workspace, event.workspace_id)
     if not workspace:
         return False
-    is_member = workspace.owner_id == event.creator_id or db.query(WorkspaceMember.id).filter(
-        WorkspaceMember.workspace_id == event.workspace_id, WorkspaceMember.user_id == event.creator_id).first() is not None
-    return is_member and (endpoint.user_id == event.creator_id if endpoint.user_id else endpoint.workspace_id == event.workspace_id)
+    is_member = (
+        workspace.owner_id == event.creator_id
+        or db.query(WorkspaceMember.id)
+        .filter(WorkspaceMember.workspace_id == event.workspace_id, WorkspaceMember.user_id == event.creator_id)
+        .first()
+        is not None
+    )
+    return is_member and (
+        endpoint.user_id == event.creator_id if endpoint.user_id else endpoint.workspace_id == event.workspace_id
+    )
 
 
 def prepare_deliveries(db, event, now):
@@ -73,13 +94,21 @@ def prepare_deliveries(db, event, now):
     pending_hitl = event.event_type == "AI_HITL_SUSPENDED" and job and job.awareness_state == "AI_HITL_SUSPENDED"
     if not webhook_eligible(event, job, now) and not pending_hitl:
         return
-    endpoints = db.query(TaskWebhookEndpoint).filter(or_(TaskWebhookEndpoint.user_id == event.creator_id,
-                                                       TaskWebhookEndpoint.workspace_id == event.workspace_id)).all()
+    endpoints = (
+        db.query(TaskWebhookEndpoint)
+        .filter(
+            or_(TaskWebhookEndpoint.user_id == event.creator_id, TaskWebhookEndpoint.workspace_id == event.workspace_id)
+        )
+        .all()
+    )
     for endpoint in endpoints:
         if not endpoint_authorized(db, endpoint, event) or endpoint.created_at > event.created_at:
             continue
-        existing = db.query(TaskWebhookDelivery.id).filter(TaskWebhookDelivery.event_id == event.id,
-                                                           TaskWebhookDelivery.endpoint_id == endpoint.id).first()
+        existing = (
+            db.query(TaskWebhookDelivery.id)
+            .filter(TaskWebhookDelivery.event_id == event.id, TaskWebhookDelivery.endpoint_id == endpoint.id)
+            .first()
+        )
         if existing:
             continue
         gate = job.started_at + timedelta(seconds=LONG_RUN_SECONDS) if pending_hitl else now
@@ -88,11 +117,15 @@ def prepare_deliveries(db, event, now):
 
 def claim_deliveries(db, *, location, user_id=None, limit=20):
     now = datetime.utcnow()
-    query = db.query(TaskWebhookDelivery).join(TaskWebhookEndpoint).filter(
-        TaskWebhookEndpoint.delivery_location == location,
-        TaskWebhookDelivery.status.in_(["PENDING", "SENDING"]),
-        TaskWebhookDelivery.available_at <= now,
-        or_(TaskWebhookDelivery.lease_expires_at.is_(None), TaskWebhookDelivery.lease_expires_at <= now),
+    query = (
+        db.query(TaskWebhookDelivery)
+        .join(TaskWebhookEndpoint)
+        .filter(
+            TaskWebhookEndpoint.delivery_location == location,
+            TaskWebhookDelivery.status.in_(["PENDING", "SENDING"]),
+            TaskWebhookDelivery.available_at <= now,
+            or_(TaskWebhookDelivery.lease_expires_at.is_(None), TaskWebhookDelivery.lease_expires_at <= now),
+        )
     )
     if user_id:
         query = query.filter(TaskWebhookEndpoint.user_id == user_id)
@@ -111,15 +144,29 @@ def claim_deliveries(db, *, location, user_id=None, limit=20):
         row.attempts += 1
         row.lease_token = str(uuid4())
         row.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
-        claimed.append({"id": row.id, "lease_token": row.lease_token, "url": endpoint.url,
-                        "body": event.payload_json, "event_id": event.id})
+        claimed.append(
+            {
+                "id": row.id,
+                "lease_token": row.lease_token,
+                "url": endpoint.url,
+                "body": event.payload_json,
+                "event_id": event.id,
+            }
+        )
     return claimed
 
 
 def finish_delivery(db, delivery_id, token, ok, error=None, *, user_id=None):
-    row = db.query(TaskWebhookDelivery).filter(TaskWebhookDelivery.id == delivery_id,
-                                              TaskWebhookDelivery.lease_token == token,
-                                              TaskWebhookDelivery.status == "SENDING").with_for_update().first()
+    row = (
+        db.query(TaskWebhookDelivery)
+        .filter(
+            TaskWebhookDelivery.id == delivery_id,
+            TaskWebhookDelivery.lease_token == token,
+            TaskWebhookDelivery.status == "SENDING",
+        )
+        .with_for_update()
+        .first()
+    )
     if not row:
         return False
     endpoint = db.get(TaskWebhookEndpoint, row.endpoint_id)

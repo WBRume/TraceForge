@@ -9,6 +9,7 @@ from app.domains.search import runtime, sqlite_index
 def isolated_bootstrap(monkeypatch):
     async def bootstrap(stop_event):
         await stop_event.wait()
+
     monkeypatch.setattr(sqlite_index, "bootstrap", bootstrap)
 
 

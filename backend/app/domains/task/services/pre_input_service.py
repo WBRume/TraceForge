@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import difflib
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
@@ -20,8 +20,7 @@ from app.core.logging import get_logger
 from app.core.offload import run_db, run_db_txn
 from app.domains.ai.schemas.websocket import WSChatPayload, WSMessage
 from app.domains.ai.services.jobs import publishing as ai_job_publishing
-from app.domains.auth.models.user import User
-from app.domains.auth.models.user import WorkspaceMember
+from app.domains.auth.models.user import User, WorkspaceMember
 from app.domains.notification.services import delivery
 from app.domains.task.models.chat import ChatMessage
 from app.domains.task.models.pre_input import (
@@ -31,9 +30,7 @@ from app.domains.task.models.pre_input import (
     SddTaskPreInputContribution,
 )
 from app.domains.task.models.task import SddTask, TaskStatus
-
-from app.domains.task.services import task_session_control_service
-from app.domains.task.services import task_session_service
+from app.domains.task.services import task_session_control_service, task_session_service
 from app.domains.websocket.ws.manager import manager as task_ws_manager
 
 logger = get_logger(__name__, category="task_execution")
@@ -65,7 +62,8 @@ class PreInputError(Exception):
 
 # ── 查询 ──
 
-def get_active_pre_input(db: Session, task_id: str) -> Optional[SddTaskPreInput]:
+
+def get_active_pre_input(db: Session, task_id: str) -> SddTaskPreInput | None:
     return (
         db.query(SddTaskPreInput)
         .filter(
@@ -77,26 +75,29 @@ def get_active_pre_input(db: Session, task_id: str) -> Optional[SddTaskPreInput]
     )
 
 
-def get_pre_input(db: Session, pre_input_id: str) -> Optional[SddTaskPreInput]:
+def get_pre_input(db: Session, pre_input_id: str) -> SddTaskPreInput | None:
     return db.query(SddTaskPreInput).filter(SddTaskPreInput.id == pre_input_id).first()
 
 
 # ── 成员信息 ──
 
-def _load_member_info(db: Session, workspace_id: str, user_ids: List[str]) -> Dict[str, dict]:
+
+def _load_member_info(db: Session, workspace_id: str, user_ids: list[str]) -> dict[str, dict]:
     ids = sorted({str(uid) for uid in user_ids if str(uid or "").strip()})
     if not ids:
         return {}
     users = {u.id: u for u in db.query(User).filter(User.id.in_(ids)).all()}
     experts = {
         m.user_id
-        for m in db.query(WorkspaceMember).filter(
+        for m in db.query(WorkspaceMember)
+        .filter(
             WorkspaceMember.workspace_id == workspace_id,
             WorkspaceMember.user_id.in_(ids),
             WorkspaceMember.is_expert.is_(True),
-        ).all()
+        )
+        .all()
     }
-    info: Dict[str, dict] = {}
+    info: dict[str, dict] = {}
     for uid in ids:
         user = users.get(uid)
         info[uid] = {
@@ -110,45 +111,43 @@ def _load_member_info(db: Session, workspace_id: str, user_ids: List[str]) -> Di
 
 
 def _member_ids(db: Session, workspace_id: str) -> set[str]:
-    return {
-        m.user_id
-        for m in db.query(WorkspaceMember).filter(WorkspaceMember.workspace_id == workspace_id).all()
-    }
+    return {m.user_id for m in db.query(WorkspaceMember).filter(WorkspaceMember.workspace_id == workspace_id).all()}
 
 
 def _normalize_edit_permission(value: Any) -> PreInputEditPermission:
     text = str(value or "").strip().upper()
     try:
         return PreInputEditPermission(text)
-    except ValueError:
-        raise PreInputError(f"Invalid edit permission: {value}")
+    except ValueError as caught_error:
+        raise PreInputError(f"Invalid edit permission: {value}") from caught_error
 
 
 # ── 共享文档（字符级 segment：每段文字记录原作者 + 最后修改者） ──
 
-def _build_document(main_text: str, creator_id: str) -> List[dict]:
+
+def _build_document(main_text: str, creator_id: str) -> list[dict]:
     return [{"text": str(main_text or ""), "created_by": creator_id, "updated_by": creator_id}]
 
 
-def _document_segments(pre_input: SddTaskPreInput) -> List[dict]:
+def _document_segments(pre_input: SddTaskPreInput) -> list[dict]:
     if isinstance(pre_input.document_json, list) and pre_input.document_json:
         return list(pre_input.document_json)
     return _build_document(pre_input.main_text, pre_input.creator_id)
 
 
-def _document_text(segments: List[dict]) -> str:
+def _document_text(segments: list[dict]) -> str:
     return "".join(str(s.get("text") or "") for s in segments)
 
 
 def _merge_document(
-    old_segments: List[dict],
+    old_segments: list[dict],
     new_text: str,
     editor_id: str,
     *,
     skip_permission_check: bool = False,
     is_expert: bool = False,
-    pre_input: Optional[SddTaskPreInput] = None,
-) -> List[dict]:
+    pre_input: SddTaskPreInput | None = None,
+) -> list[dict]:
     """字符级 diff 合并归属。
 
     - 未变化的字符保留原归属
@@ -160,26 +159,24 @@ def _merge_document(
     matcher = difflib.SequenceMatcher(a=old_text, b=new_text, autojunk=False)
     opcodes = matcher.get_opcodes()
 
-    if not skip_permission_check:
-        if any(tag in ("replace", "delete") for tag, _, _, _, _ in opcodes):
-            if pre_input is not None and not _shared_edit_allowed(
-                pre_input, user_id=editor_id, is_expert=is_expert
-            ):
-                raise PreInputError(
-                    "Modifying or deleting existing content requires edit permission",
-                    status_code=403,
-                )
+    if (not skip_permission_check and any((tag in ("replace", "delete") for tag, _, _, _, _ in opcodes))) and (
+        pre_input is not None and (not _shared_edit_allowed(pre_input, user_id=editor_id, is_expert=is_expert))
+    ):
+        raise PreInputError(
+            "Modifying or deleting existing content requires edit permission",
+            status_code=403,
+        )
 
     # 逐字符归属数组
-    created_by: List[str] = []
-    updated_by: List[str] = []
+    created_by: list[str] = []
+    updated_by: list[str] = []
     for seg in old_segments:
         n = len(str(seg.get("text") or ""))
         created_by.extend([str(seg.get("created_by"))] * n)
         updated_by.extend([str(seg.get("updated_by"))] * n)
 
-    new_created: List[str] = []
-    new_updated: List[str] = []
+    new_created: list[str] = []
+    new_updated: list[str] = []
     for tag, i1, i2, j1, j2 in opcodes:
         count = j2 - j1
         if tag == "equal":
@@ -199,7 +196,7 @@ def _merge_document(
                     new_updated.append(editor_id)
 
     # 压缩为连续同归属的 segment
-    segments: List[dict] = []
+    segments: list[dict] = []
     for index, char in enumerate(new_text):
         creator = new_created[index]
         updater = new_updated[index]
@@ -212,11 +209,12 @@ def _merge_document(
 
 # ── 序列化 ──
 
+
 def serialize_pre_input(db: Session, pre_input: SddTaskPreInput) -> dict:
     contribution_rows = list(pre_input.contributions or [])
     participant_ids = [c.user_id for c in contribution_rows]
     document = _document_segments(pre_input)
-    involved_ids = [pre_input.creator_id] + list(pre_input.mentioned_user_ids or [])
+    involved_ids = [pre_input.creator_id, *list(pre_input.mentioned_user_ids or [])]
     involved_ids += participant_ids
     involved_ids += [d.get("updated_by") for d in document if d.get("updated_by")]
     involved_ids += [d.get("created_by") for d in document if d.get("created_by")]
@@ -251,14 +249,16 @@ def serialize_pre_input(db: Session, pre_input: SddTaskPreInput) -> dict:
         updated_by = str(d.get("updated_by") or created_by)
         creator_member = member_of(created_by)
         updater_member = member_of(updated_by)
-        document_segments.append({
-            "text": d.get("text", ""),
-            "created_by": created_by,
-            "created_by_name": creator_member.get("display_name"),
-            "updated_by": updated_by,
-            "updated_by_name": updater_member.get("display_name"),
-            "modified": updated_by != created_by,
-        })
+        document_segments.append(
+            {
+                "text": d.get("text", ""),
+                "created_by": created_by,
+                "created_by_name": creator_member.get("display_name"),
+                "updated_by": updated_by,
+                "updated_by_name": updater_member.get("display_name"),
+                "modified": updated_by != created_by,
+            }
+        )
 
     return {
         "id": pre_input.id,
@@ -267,7 +267,9 @@ def serialize_pre_input(db: Session, pre_input: SddTaskPreInput) -> dict:
         "creator": member_of(pre_input.creator_id),
         "main_text": pre_input.main_text,
         "document_segments": document_segments,
-        "edit_permission": pre_input.edit_permission.value if hasattr(pre_input.edit_permission, "value") else str(pre_input.edit_permission),
+        "edit_permission": pre_input.edit_permission.value
+        if hasattr(pre_input.edit_permission, "value")
+        else str(pre_input.edit_permission),
         "status": pre_input.status.value if hasattr(pre_input.status, "value") else str(pre_input.status),
         "wait_seconds": pre_input.wait_seconds,
         "deadline_at": pre_input.deadline_at.isoformat() if pre_input.deadline_at else None,
@@ -290,9 +292,7 @@ async def _broadcast_pre_input_snapshot(
 ) -> None:
     """广播前在线程内序列化（懒加载 contributions/member 查询 off-loop）。"""
     try:
-        payload = await run_db_txn(
-            lambda db: serialize_pre_input(db, _get_pre_input_sync(db, pre_input_id))
-        )
+        payload = await run_db_txn(lambda db: serialize_pre_input(db, _get_pre_input_sync(db, pre_input_id)))
         await task_ws_manager.send_message_to_room(
             task_id,
             WSMessage(type=event_type, payload=payload),
@@ -308,10 +308,10 @@ def _get_pre_input_sync(db: Session, pre_input_id: str) -> SddTaskPreInput:
     return pre_input
 
 
-async def get_active_pre_input_brief(task_id: str) -> Optional[dict]:
+async def get_active_pre_input_brief(task_id: str) -> dict | None:
     """活跃预输入简报（id + creator），供 WS handler 做权限判断（off-loop）。"""
 
-    def _brief_sync(db: Session) -> Optional[dict]:
+    def _brief_sync(db: Session) -> dict | None:
         pre_input = get_active_pre_input(db, task_id)
         if pre_input is None:
             return None
@@ -322,13 +322,14 @@ async def get_active_pre_input_brief(task_id: str) -> Optional[dict]:
 
 # ── 创建 ──
 
+
 def _create_pre_input_sync(
     db: Session,
     *,
     task_id: str,
     creator_id: str,
     main_text: str,
-    mentioned_user_ids: Optional[List[str]],
+    mentioned_user_ids: list[str] | None,
     edit_permission: str,
     wait_seconds: int,
     agent_model=None,
@@ -338,8 +339,9 @@ def _create_pre_input_sync(
     if not task:
         raise PreInputError("Task not found", status_code=404)
 
-    from app.domains.local_resource.service import require_operation
     from app.domains.local_resource.client import ResourceError
+    from app.domains.local_resource.service import require_operation
+
     try:
         require_operation(db, task, creator_id)
     except ResourceError as exc:
@@ -347,9 +349,7 @@ def _create_pre_input_sync(
 
     task_status = task.status if isinstance(task.status, TaskStatus) else TaskStatus(str(task.status))
     if task_status in _PRE_INPUT_TERMINAL_TASK_STATUSES or task_status not in _PRE_INPUT_ALLOWED_TASK_STATUSES:
-        raise PreInputError(
-            f"Task status {task_status.value} does not allow pre input", status_code=409
-        )
+        raise PreInputError(f"Task status {task_status.value} does not allow pre input", status_code=409)
 
     existing = get_active_pre_input(db, task_id)
     if existing:
@@ -357,7 +357,7 @@ def _create_pre_input_sync(
 
     member_ids = _member_ids(db, task.workspace_id)
     creator_id = str(creator_id)
-    mentioned: List[str] = []
+    mentioned: list[str] = []
     seen: set = set()
     for uid in mentioned_user_ids or []:
         uid = str(uid or "").strip()
@@ -392,12 +392,15 @@ def _create_pre_input_sync(
     db.flush()
     if agent_model is not None:
         from app.agents.model_selection import apply_task_selection
+
         try:
             selected = apply_task_selection(db, task, agent_model)
         except ValueError as exc:
             raise PreInputError(str(exc), status_code=422) from exc
-        task.task_meta_json = {**(task.task_meta_json or {}),
-                              "pre_input_model": {"id": pre_input.id, "selection": selected}}
+        task.task_meta_json = {
+            **(task.task_meta_json or {}),
+            "pre_input_model": {"id": pre_input.id, "selection": selected},
+        }
     db.add(SddTaskPreInputContribution(pre_input_id=pre_input.id, user_id=creator_id, content=""))
     db.commit()
     return {
@@ -415,7 +418,7 @@ async def create_pre_input(
     task_id: str,
     creator_id: str,
     main_text: str,
-    mentioned_user_ids: Optional[List[str]] = None,
+    mentioned_user_ids: list[str] | None = None,
     edit_permission: str = "NONE",
     wait_seconds: int = DEFAULT_WAIT_SECONDS,
     agent_model=None,
@@ -441,9 +444,7 @@ async def create_pre_input(
 
     if created["mentioned"]:
         creator_info = (
-            await run_db_txn(
-                lambda db: _load_member_info(db, created["workspace_id"], [str(creator_id)])
-            )
+            await run_db_txn(lambda db: _load_member_info(db, created["workspace_id"], [str(creator_id)]))
         ).get(str(creator_id), {})
         creator_name = creator_info.get("display_name") or "成员"
         try:
@@ -469,6 +470,7 @@ async def create_pre_input(
 
 
 # ── 参与 / 文档编辑 ──
+
 
 def _require_collecting(pre_input: SddTaskPreInput) -> None:
     status = pre_input.status if isinstance(pre_input.status, PreInputStatus) else PreInputStatus(str(pre_input.status))
@@ -512,16 +514,15 @@ def _record_participation(db: Session, pre_input: SddTaskPreInput, user_id: str)
         db.add(SddTaskPreInputContribution(pre_input_id=pre_input.id, user_id=user_id, content=""))
 
 
-def _maybe_auto_submit(db: Session, pre_input: SddTaskPreInput) -> Optional[dict]:
+def _maybe_auto_submit(db: Session, pre_input: SddTaskPreInput) -> dict | None:
     """所有 @成员 均已参与（编辑过或标记完成）则立即提交。"""
     from app.domains.local_resource.service import is_local
+
     if is_local(db.get(SddTask, pre_input.task_id)):
         return False
     mentioned_ids = [str(m) for m in (pre_input.mentioned_user_ids or [])]
     participant_ids = [c.user_id for c in (pre_input.contributions or [])]
-    if mentioned_ids and all(uid in participant_ids for uid in mentioned_ids):
-        return True
-    return False
+    return bool(mentioned_ids and all(uid in participant_ids for uid in mentioned_ids))
 
 
 def _apply_document_change_sync(
@@ -529,7 +530,7 @@ def _apply_document_change_sync(
     *,
     pre_input_id: str,
     user_id: str,
-    segments: List[dict],
+    segments: list[dict],
     new_text: str,
 ) -> dict:
     pre_input = _get_pre_input_sync(db, pre_input_id)
@@ -546,12 +547,16 @@ async def _apply_document_change(
     pre_input_id: str,
     task_id: str,
     user_id: str,
-    segments: List[dict],
+    segments: list[dict],
     new_text: str,
 ) -> dict:
     state = await run_db_txn(
         lambda db: _apply_document_change_sync(
-            db, pre_input_id=pre_input_id, user_id=user_id, segments=segments, new_text=new_text,
+            db,
+            pre_input_id=pre_input_id,
+            user_id=user_id,
+            segments=segments,
+            new_text=new_text,
         )
     )
     if state["auto_submit"]:
@@ -582,26 +587,33 @@ async def edit_pre_input_document(
     if not text.strip():
         raise PreInputError("Document text is required")
 
-    def _prepare_sync(db: Session) -> List[dict]:
+    def _prepare_sync(db: Session) -> list[dict]:
         pre_input = _get_pre_input_sync(db, pre_input_id)
         _require_collecting(pre_input)
         old_doc = _document_segments(pre_input)
         return _merge_document(
-            old_doc, text, user_id,
-            pre_input=pre_input, is_expert=bool(is_expert),
+            old_doc,
+            text,
+            user_id,
+            pre_input=pre_input,
+            is_expert=bool(is_expert),
         )
 
     merged = await run_db_txn(_prepare_sync)
     return await _apply_document_change(
-        pre_input_id=pre_input_id, task_id=task_id, user_id=user_id, segments=merged, new_text=text,
+        pre_input_id=pre_input_id,
+        task_id=task_id,
+        user_id=user_id,
+        segments=merged,
+        new_text=text,
     )
 
 
-def _slice_segments(segments: List[dict], start: int, end: int) -> tuple[List[dict], List[dict], List[dict]]:
+def _slice_segments(segments: list[dict], start: int, end: int) -> tuple[list[dict], list[dict], list[dict]]:
     """把 segment 列表按字符区间切成 (前段, 区间内, 后段)，边界 segment 被拆分。"""
-    before: List[dict] = []
-    inside: List[dict] = []
-    after: List[dict] = []
+    before: list[dict] = []
+    inside: list[dict] = []
+    after: list[dict] = []
     cursor = 0
     for seg in segments:
         text = str(seg.get("text") or "")
@@ -624,6 +636,7 @@ def _slice_segments(segments: List[dict], start: int, end: int) -> tuple[List[di
             after.append({**seg, "text": text[local_e:]})
     return before, inside, after
 
+
 async def replace_pre_input_span(
     *,
     pre_input_id: str,
@@ -645,7 +658,7 @@ async def replace_pre_input_span(
     """
     user_id = str(user_id)
 
-    def _prepare_sync(db: Session) -> tuple[List[dict], str]:
+    def _prepare_sync(db: Session) -> tuple[list[dict], str]:
         pre_input = _get_pre_input_sync(db, pre_input_id)
         _require_collecting(pre_input)
         segments = _document_segments(pre_input)
@@ -653,8 +666,8 @@ async def replace_pre_input_span(
         try:
             start_ = max(0, min(int(start), len(text)))
             end_ = max(start_, min(int(end), len(text)))
-        except (TypeError, ValueError):
-            raise PreInputError("Invalid span offsets")
+        except (TypeError, ValueError) as caught_error_:
+            raise PreInputError("Invalid span offsets") from caught_error_
         if text[start_:end_] != str(anchor_text or ""):
             raise PreInputError("Selected text is outdated, please refresh", status_code=409)
 
@@ -671,7 +684,7 @@ async def replace_pre_input_span(
         if not new_text.strip():
             raise PreInputError("Document text is required")
 
-        merged: List[dict] = list(before)
+        merged: list[dict] = list(before)
         if is_pure_insert:
             if replacement_text:
                 merged.append({"text": replacement_text, "created_by": user_id, "updated_by": user_id})
@@ -679,7 +692,7 @@ async def replace_pre_input_span(
             # 与被替换文字等长的前缀保留原作者（created_by 取自区间起点），修改者=编辑者
             origin_author = str(inside[0]["created_by"]) if inside else user_id
             aligned = replacement_text[: end_ - start_]
-            extra = replacement_text[end_ - start_:]
+            extra = replacement_text[end_ - start_ :]
             if aligned:
                 merged.append({"text": aligned, "created_by": origin_author, "updated_by": user_id})
             if extra:
@@ -687,7 +700,7 @@ async def replace_pre_input_span(
         merged.extend(after)
 
         # 压缩相邻同归属段
-        compressed: List[dict] = []
+        compressed: list[dict] = []
         for seg in merged:
             if (
                 compressed
@@ -701,7 +714,11 @@ async def replace_pre_input_span(
 
     compressed, new_text = await run_db_txn(_prepare_sync)
     return await _apply_document_change(
-        pre_input_id=pre_input_id, task_id=task_id, user_id=user_id, segments=compressed, new_text=new_text,
+        pre_input_id=pre_input_id,
+        task_id=task_id,
+        user_id=user_id,
+        segments=compressed,
+        new_text=new_text,
     )
 
 
@@ -712,6 +729,7 @@ async def mark_pre_input_done(
     user_id: str,
 ) -> dict:
     """标记"无补充，已完成"：记为参与但不改动文档。"""
+
     def _mark_sync(db: Session) -> dict:
         pre_input = _get_pre_input_sync(db, pre_input_id)
         _require_collecting(pre_input)
@@ -731,6 +749,7 @@ async def mark_pre_input_done(
 
 # ── 提交 / 取消 ──
 
+
 def _build_merged_content(db: Session, pre_input: SddTaskPreInput) -> tuple[str, list[dict], list[dict]]:
     """合并内容 = 最终文档文本；同时产出参与名单与字符级 segment 归属（前端气泡渲染依据）。"""
     document = _document_segments(pre_input)
@@ -745,14 +764,16 @@ def _build_merged_content(db: Session, pre_input: SddTaskPreInput) -> tuple[str,
         updated_by = str(d.get("updated_by") or created_by)
         creator_member = info.get(created_by) or {}
         updater_member = info.get(updated_by) or {}
-        segments_meta.append({
-            "created_by": created_by,
-            "created_by_name": creator_member.get("display_name") or "成员",
-            "updated_by": updated_by,
-            "updated_by_name": updater_member.get("display_name") or "成员",
-            "modified": updated_by != created_by,
-            "text": d.get("text", ""),
-        })
+        segments_meta.append(
+            {
+                "created_by": created_by,
+                "created_by_name": creator_member.get("display_name") or "成员",
+                "updated_by": updated_by,
+                "updated_by_name": updater_member.get("display_name") or "成员",
+                "modified": updated_by != created_by,
+                "text": d.get("text", ""),
+            }
+        )
 
     text = _document_text(document)
     # 提交给 agent 与会话展示的都是最终文档原文（不拼接任何标签）
@@ -766,13 +787,15 @@ def _build_merged_content(db: Session, pre_input: SddTaskPreInput) -> tuple[str,
             continue
         seen.add(uid)
         member = info.get(uid) or {}
-        participants.append({
-            "user_id": uid,
-            "display_name": member.get("display_name") or "成员",
-            "is_expert": bool(member.get("is_expert")),
-            "role": "initiator" if uid == pre_input.creator_id else "participant",
-            "contributed": True,
-        })
+        participants.append(
+            {
+                "user_id": uid,
+                "display_name": member.get("display_name") or "成员",
+                "is_expert": bool(member.get("is_expert")),
+                "role": "initiator" if uid == pre_input.creator_id else "participant",
+                "contributed": True,
+            }
+        )
     return merged, participants, segments_meta
 
 
@@ -786,8 +809,9 @@ def _claim_submit_sync(
 ) -> dict:
     """CAS 抢占段（线程内）：状态检查 + COLLECTING→SUBMITTED + 合并内容组装。"""
     pre_input = _get_pre_input_sync(db, pre_input_id)
-    from app.domains.local_resource.service import require_operation
     from app.domains.local_resource.client import ResourceError
+    from app.domains.local_resource.service import require_operation
+
     try:
         require_operation(db, db.get(SddTask, pre_input.task_id), actor_user_id)
     except ResourceError as exc:
@@ -795,9 +819,7 @@ def _claim_submit_sync(
     if getattr(db.get(SddTask, pre_input.task_id), "execution_location", "SERVER") == "LOCAL" and reason != "manual":
         raise PreInputError("本地任务已关闭自动提交", status_code=403)
     current_status = (
-        pre_input.status
-        if isinstance(pre_input.status, PreInputStatus)
-        else PreInputStatus(str(pre_input.status))
+        pre_input.status if isinstance(pre_input.status, PreInputStatus) else PreInputStatus(str(pre_input.status))
     )
     if current_status == PreInputStatus.SUBMITTED:
         return {"claimed": False, "already": PreInputStatus.SUBMITTED.value}
@@ -869,25 +891,30 @@ def _claim_submit_sync(
     }
 
 
-def _writeback_submitted_message_sync(db: Session, *, pre_input_id: str, message_id: Optional[str]) -> None:
+def _writeback_submitted_message_sync(db: Session, *, pre_input_id: str, message_id: str | None) -> None:
     db.execute(
-        update(SddTaskPreInput)
-        .where(SddTaskPreInput.id == pre_input_id)
-        .values(submitted_message_id=message_id)
+        update(SddTaskPreInput).where(SddTaskPreInput.id == pre_input_id).values(submitted_message_id=message_id)
     )
 
 
 def _load_message_session_fields_sync(db: Session, message_id: str) -> dict:
-    row = db.query(ChatMessage.task_id, ChatMessage.session_turn_id, ChatMessage.session_generation).filter(
-        ChatMessage.id == message_id
-    ).first()
-    reading_change_seq: Optional[int] = None
+    row = (
+        db.query(ChatMessage.task_id, ChatMessage.session_turn_id, ChatMessage.session_generation)
+        .filter(ChatMessage.id == message_id)
+        .first()
+    )
+    reading_change_seq: int | None = None
     if row:
         from app.domains.task.models.reading import TaskReadingItem
-        reading_change_seq = db.query(TaskReadingItem.change_seq).filter(
-            TaskReadingItem.task_id == row[0],
-            TaskReadingItem.item_key == f"message:{message_id}",
-        ).scalar()
+
+        reading_change_seq = (
+            db.query(TaskReadingItem.change_seq)
+            .filter(
+                TaskReadingItem.task_id == row[0],
+                TaskReadingItem.item_key == f"message:{message_id}",
+            )
+            .scalar()
+        )
     return {
         "session_turn_id": row[1] if row else None,
         "session_generation": row[2] if row else None,
@@ -900,7 +927,7 @@ async def submit_pre_input(
     pre_input_id: str,
     actor_user_id: str,
     reason: str,
-) -> Optional[dict]:
+) -> dict | None:
     """CAS 抢占 COLLECTING→SUBMITTED；把最终文档作为一条消息交给 agent。
 
     WS 手动提交 / 全员参与自动提交 / worker 超时三方并发时只有一个成功。
@@ -910,7 +937,11 @@ async def submit_pre_input(
     now = datetime.utcnow()
     claimed_state = await run_db_txn(
         lambda db: _claim_submit_sync(
-            db, pre_input_id=pre_input_id, actor_user_id=actor_user_id, reason=reason, now=now,
+            db,
+            pre_input_id=pre_input_id,
+            actor_user_id=actor_user_id,
+            reason=reason,
+            now=now,
         )
     )
     if not claimed_state["claimed"]:
@@ -966,13 +997,16 @@ async def submit_pre_input(
                     SddTaskPreInput.id == pre_input_id,
                     SddTaskPreInput.status == PreInputStatus.SUBMITTED.value,
                 )
-                .values(status=PreInputStatus.COLLECTING.value, submitted_at=None, submitted_by_id=None, submit_reason=None)
+                .values(
+                    status=PreInputStatus.COLLECTING.value, submitted_at=None, submitted_by_id=None, submit_reason=None
+                )
             )
 
         await run_db_txn(_revert_sync)
         raise
 
     if message_id:
+
         def _writeback_sync(db: Session) -> None:
             _writeback_submitted_message_sync(db, pre_input_id=pre_input_id, message_id=message_id)
 
@@ -980,12 +1014,11 @@ async def submit_pre_input(
 
     message_fields = (
         await run_db_txn(lambda db: _load_message_session_fields_sync(db, message_id))
-        if message_id else {"session_turn_id": None, "session_generation": None}
+        if message_id
+        else {"session_turn_id": None, "session_generation": None}
     )
     creator_info = (
-        await run_db_txn(
-            lambda db: _load_member_info(db, claimed_state["workspace_id"], [claimed_state["creator_id"]])
-        )
+        await run_db_txn(lambda db: _load_member_info(db, claimed_state["workspace_id"], [claimed_state["creator_id"]]))
     ).get(claimed_state["creator_id"], {})
     if message_id:
         await task_ws_manager.send_message_to_room(
@@ -1008,7 +1041,11 @@ async def submit_pre_input(
                     session_turn_id=message_fields["session_turn_id"],
                     session_generation=message_fields["session_generation"],
                     reading_item_key=(f"message:{message_id}" if message_id else None),
-                    reading_change_seq=(str(message_fields["reading_change_seq"]) if message_fields.get("reading_change_seq") is not None else None),
+                    reading_change_seq=(
+                        str(message_fields["reading_change_seq"])
+                        if message_fields.get("reading_change_seq") is not None
+                        else None
+                    ),
                 ).model_dump(),
             ),
         )
@@ -1049,7 +1086,7 @@ async def submit_pre_input(
     return {"pre_input_id": pre_input_id, "chat_message_id": message_id, "ai_job_id": job_id}
 
 
-def _load_task_status_value(task_id: str) -> Optional[str]:
+def _load_task_status_value(task_id: str) -> str | None:
     """任务状态查询（线程内执行，由 run_db 包装调用）。"""
     from app.database import SessionLocal
 

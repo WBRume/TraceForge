@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -43,7 +42,7 @@ def create_evidence(
     db: Session,
     workspace_id: str,
     task_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: EvidenceCreateRequest,
     *,
     _skip_phase_check: bool = False,
@@ -100,7 +99,9 @@ def create_evidence(
         reason=payload.change_reason,
     )
     if evidence.task:
-        from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
+        from app.domains.workspace_asset.services.task_final_workflow.review_service import (
+            ensure_expert_review_for_task,
+        )
 
         ensure_expert_review_for_task(db, evidence.task, actor_id)
     created_id = evidence.id
@@ -113,7 +114,7 @@ def update_evidence(
     workspace_id: str,
     task_id: str,
     evidence_id: str,
-    actor_id: Optional[str],
+    actor_id: str | None,
     payload: EvidenceUpdateRequest,
 ) -> None:
     evidence = ensure_evidence(db, workspace_id, task_id, evidence_id)
@@ -135,7 +136,9 @@ def update_evidence(
     source_uri = payload.source_uri if payload_has_field(payload, "source_uri") else evidence.source_uri
     source_ref = payload.source_ref if payload_has_field(payload, "source_ref") else evidence.source_ref
     source_path = payload.source_path if payload_has_field(payload, "source_path") else evidence.source_path
-    source_metadata = payload.source_metadata if payload_has_field(payload, "source_metadata") else evidence.source_metadata_json
+    source_metadata = (
+        payload.source_metadata if payload_has_field(payload, "source_metadata") else evidence.source_metadata_json
+    )
     validate_evidence_source(
         source_type=source_type,
         source_uri=source_uri,
@@ -183,7 +186,9 @@ def update_evidence(
         reason=payload.change_reason,
     )
     if evidence.task:
-        from app.domains.workspace_asset.services.task_final_workflow.review_service import ensure_expert_review_for_task
+        from app.domains.workspace_asset.services.task_final_workflow.review_service import (
+            ensure_expert_review_for_task,
+        )
 
         ensure_expert_review_for_task(db, evidence.task, actor_id)
     db.commit()

@@ -20,6 +20,21 @@ tree/discovery/persisted ← lineage ← managed ← spawn/reclaim ← superviso
 本 ``__init__`` 只做公开 API 再导出，不含逻辑。
 """
 
+from app.agents.supervision.discovery import (
+    DiscoveredTokenProcess,
+    TokenDiscoverySnapshot,
+)
+from app.agents.supervision.identity import (
+    MemberBindingState,
+    MemberIdentity,
+)
+from app.agents.supervision.inspection import (
+    InspectionQueueSaturated,
+    run_process_inspection,
+    run_process_probe,
+)
+from app.agents.supervision.lineage import SpawnLineageCleanup
+from app.agents.supervision.managed import ManagedAgentProcess, monitor_tree
 from app.agents.supervision.model import (
     DETACHED_DESCENDANTS_UNRESOLVED,
     PROCESS_GROUP_UNKNOWN,
@@ -34,25 +49,10 @@ from app.agents.supervision.model import (
     agent_stop_result_from_termination,
     containment_id_for_run_token,
 )
-from app.agents.supervision.inspection import (
-    InspectionQueueSaturated,
-    run_process_inspection,
-    run_process_probe,
-)
-from app.agents.supervision.identity import (
-    MemberBindingState,
-    MemberIdentity,
-)
-from app.agents.supervision.discovery import (
-    DiscoveredTokenProcess,
-    TokenDiscoverySnapshot,
-)
 from app.agents.supervision.persisted import PersistedProcessSnapshot
-from app.agents.supervision.lineage import SpawnLineageCleanup
-from app.agents.supervision.tree import inspect_process_tree_snapshot
-from app.agents.supervision.managed import ManagedAgentProcess, monitor_tree
 from app.agents.supervision.spawn import containment_capability
 from app.agents.supervision.supervisor import ProcessSupervisor, process_supervisor
+from app.agents.supervision.tree import inspect_process_tree_snapshot
 
 __all__ = [
     "DiscoveredTokenProcess",

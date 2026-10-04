@@ -5,10 +5,22 @@ SDD 任务与计划节点模型
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, ForeignKey, Enum, Text, Integer, Float, BigInteger, JSON, Boolean, func,
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 
@@ -31,7 +43,7 @@ class TaskStatus(str, PyEnum):
 
 class TaskType(str, PyEnum):
     DEVELOPMENT = "DEVELOPMENT"  # 研发态任务（默认，存量数据兼容）
-    DIAGNOSIS = "DIAGNOSIS"      # 问题定位任务
+    DIAGNOSIS = "DIAGNOSIS"  # 问题定位任务
 
 
 class PlanNodeStatus(str, PyEnum):
@@ -83,9 +95,9 @@ class SddTask(Base):
     baselined_by_id = Column(String(36), ForeignKey("users.id"), nullable=True, index=True)
     baseline_snapshot_json = Column(JSON, nullable=True)
     baseline_version = Column(Integer, nullable=False, default=0)
-    requirement_duration_hours = Column(Integer, nullable=False, default=0) # 预估需求耗时(小时)
-    total_cost_usd = Column(Float, nullable=False, default=0.0) # 累计消耗费用
-    total_duration_ms = Column(BigInteger, nullable=False, default=0) # 累计执行耗时(ms)
+    requirement_duration_hours = Column(Integer, nullable=False, default=0)  # 预估需求耗时(小时)
+    total_cost_usd = Column(Float, nullable=False, default=0.0)  # 累计消耗费用
+    total_duration_ms = Column(BigInteger, nullable=False, default=0)  # 累计执行耗时(ms)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -176,9 +188,7 @@ class SddTaskFollower(Base):
     """A user's durable subscription to task messages."""
 
     __tablename__ = "sdd_task_followers"
-    __table_args__ = (
-        UniqueConstraint("task_id", "user_id", name="uq_sdd_task_followers_task_user"),
-    )
+    __table_args__ = (UniqueConstraint("task_id", "user_id", name="uq_sdd_task_followers_task_user"),)
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
     task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, index=True)

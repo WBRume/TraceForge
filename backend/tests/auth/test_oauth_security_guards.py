@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.config import settings  # noqa: E402
+from app.config import settings
 from app.domains.auth.errors import (
     ERR_OAUTH_IDENTITY_CONFLICT,
     ERR_OAUTH_PASSWORD_INVALID,
@@ -27,7 +27,6 @@ from app.domains.auth.errors import (
 )
 from app.domains.auth.models.oauth import OAuthIdentity, OAuthTicket
 from app.domains.auth.services import oauth_service
-
 from tests.conftest import (
     github_profile,
     make_identity,
@@ -48,12 +47,11 @@ def _identity_count(db: Session) -> int:
 
 # ══════════════════ 红线 1：路径 B 不提供密码 ══════════════════
 
+
 def test_path_b_missing_password_bind_and_login_fail(db, github_mock, client: TestClient):
     """🔴 不提供密码：绑定与登录均失败，DB 无 oauth_identities 新增（AC-S2）。"""
     victim = make_user(db, email="victim@example.com", password="Real-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(email="victim@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(email="victim@example.com"))
     assert params["status"] == "BIND_REQUIRED"
     ticket = params["ticket"]
 
@@ -63,9 +61,7 @@ def test_path_b_missing_password_bind_and_login_fail(db, github_mock, client: Te
     assert "access_token" not in resp.text
 
     # HTTP 层：空字符串密码同样被 schema 拒绝（min_length=1，无绕过路径）
-    resp = client.post(
-        "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": ""}
-    )
+    resp = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": ""})
     assert resp.status_code == 422
 
     # 服务层兜底：即使绕过 schema 直调服务，空密码也必须 401
@@ -80,19 +76,14 @@ def test_path_b_missing_password_bind_and_login_fail(db, github_mock, client: Te
 
 # ══════════════════ 红线 2：路径 B 错误密码 ══════════════════
 
-def test_path_b_wrong_password_fails_and_increments_failed_attempts(
-    db, github_mock, client: TestClient
-):
+
+def test_path_b_wrong_password_fails_and_increments_failed_attempts(db, github_mock, client: TestClient):
     """🔴 错误密码：401、无绑定新增、failed_attempts 递增。"""
     make_user(db, email="victim@example.com", password="Real-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(email="victim@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(email="victim@example.com"))
     ticket = params["ticket"]
 
-    resp = client.post(
-        "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Wrong-Pass"}
-    )
+    resp = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Wrong-Pass"})
     assert resp.status_code == 401
     body = resp.json()
     assert body["code"] == ERR_OAUTH_PASSWORD_INVALID
@@ -103,6 +94,7 @@ def test_path_b_wrong_password_fails_and_increments_failed_attempts(
 
 
 # ══════════════════ 红线 3：伪造 profile 永远登录不到受害者账号 ══════════════════
+
 
 def test_forged_profile_email_never_logs_into_victim_account(db, github_mock, client: TestClient):
     """🔴 AC-S1：账号归属唯一依据 (provider, provider_uid)。
@@ -116,9 +108,7 @@ def test_forged_profile_email_never_logs_into_victim_account(db, github_mock, cl
 
     params = run_login_flow(db, github_mock, profile=forged)
     # 严禁判定为 LOGIN_OK（路径 A）
-    assert params["status"] == "BIND_REQUIRED", (
-        "伪造三方 email 绝不允许命中路径 A 直接登录"
-    )
+    assert params["status"] == "BIND_REQUIRED", "伪造三方 email 绝不允许命中路径 A 直接登录"
     ticket = params["ticket"]
 
     # resolve（未认证端点）绝不签发 token
@@ -132,9 +122,7 @@ def test_forged_profile_email_never_logs_into_victim_account(db, github_mock, cl
     assert payload["email_masked"] == "v***@example.com"
 
     # 攻击者不知道受害者密码：随便猜 → 401
-    resp = client.post(
-        "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Guess-123"}
-    )
+    resp = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Guess-123"})
     assert resp.status_code == 401
 
     # 🔴 受害者名下没有任何新绑定产生
@@ -142,57 +130,46 @@ def test_forged_profile_email_never_logs_into_victim_account(db, github_mock, cl
     db.refresh(victim)
     assert victim.oauth_identities == []
     # 且受害者原密码登录不受影响
-    assert (
-        oauth_service.confirm_bind  # noqa: F401  占位保证 import 完整性
-        is not None
-    )
+    assert oauth_service.confirm_bind is not None
 
 
 # ══════════════════ 红线 4：UNIQUE(provider, provider_uid) 冲突 → 409 ══════════════════
 
+
 def test_unique_provider_uid_conflict_returns_409(db, github_mock, client: TestClient):
     """🔴 AC-S6：同一三方身份绑第二个账号时，IntegrityError 被捕获为 409。"""
-    user_a = make_user(db, email="alice@example.com", password="Alice-Pass-1")
+    make_user(db, email="alice@example.com", password="Alice-Pass-1")
     user_b = make_user(db, email="bob@example.com", password="Bob-Pass-1")
     assert user_b is not None
 
     # Alice 走路径 B：三方 email 与她的邮箱一致，uid=7777 尚未绑定任何人
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=7777, email="alice@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=7777, email="alice@example.com"))
     assert params["status"] == "BIND_REQUIRED"
     ticket = params["ticket"]
 
     # 并发窗口模拟：在 Alice 确认之前，uid=7777 已被 Bob 绑走
     make_identity(db, user_b, provider="github", provider_uid="7777")
 
-    resp = client.post(
-        "/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Alice-Pass-1"}
-    )
+    resp = client.post("/api/auth/oauth/bind/confirm", json={"ticket": ticket, "password": "Alice-Pass-1"})
     assert resp.status_code == 409
     assert resp.json()["code"] == ERR_OAUTH_IDENTITY_CONFLICT
 
     # 冲突后：uid=7777 仍只属于 Bob；Alice 名下无绑定
     rows = (
-        db.query(OAuthIdentity)
-        .filter(OAuthIdentity.provider == "github", OAuthIdentity.provider_uid == "7777")
-        .all()
+        db.query(OAuthIdentity).filter(OAuthIdentity.provider == "github", OAuthIdentity.provider_uid == "7777").all()
     )
     assert len(rows) == 1 and rows[0].user_id == user_b.id
 
 
 # ══════════════════ 红线 5：密码错误 vs 账号不存在 响应体逐字节一致 ══════════════════
 
-def test_wrong_password_vs_unknown_account_identical_response(
-    db, github_mock, client: TestClient
-):
+
+def test_wrong_password_vs_unknown_account_identical_response(db, github_mock, client: TestClient):
     """🔴 AC-S7 / K-7：两种失败的 HTTP 响应必须逐字节一致（不可探测账号存在性）。"""
     victim = make_user(db, email="victim@example.com", password="Real-Pass-1")
 
     # 场景 A：账号存在但密码错误
-    params_ok = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5100, email="victim@example.com")
-    )
+    params_ok = run_login_flow(db, github_mock, profile=github_profile(uid=5100, email="victim@example.com"))
     assert params_ok["status"] == "BIND_REQUIRED"
     resp_wrong_password = client.post(
         "/api/auth/oauth/bind/confirm",
@@ -200,9 +177,7 @@ def test_wrong_password_vs_unknown_account_identical_response(
     )
 
     # 场景 B：ticket 的目标账号已被删除（= 账号不存在）
-    params_gone = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5101, email="victim@example.com")
-    )
+    params_gone = run_login_flow(db, github_mock, profile=github_profile(uid=5101, email="victim@example.com"))
     ticket_gone = params_gone["ticket"]
     db.delete(victim)
     db.commit()
@@ -218,6 +193,7 @@ def test_wrong_password_vs_unknown_account_identical_response(
 
 # ══════════════════ 红线 6：state 重放被拒绝 ══════════════════
 
+
 def test_state_replay_rejected(db, github_mock, client: TestClient):
     """🔴 E-4d：同一 state 第二次 callback 必须以 state_invalid 拒绝。"""
     make_user(db, email="someone@example.com", password="Some-Pass-1")
@@ -226,9 +202,7 @@ def test_state_replay_rejected(db, github_mock, client: TestClient):
 
     from app.domains.auth.services import oauth_service
 
-    authz = oauth_service.build_authorize_url(
-        db, provider="github", intent="login", client_type="web", user_id=None
-    )
+    authz = oauth_service.build_authorize_url(db, provider="github", intent="login", client_type="web", user_id=None)
 
     # 第一次回调：成功签发 ticket
     first = client.get(
@@ -250,9 +224,7 @@ def test_state_replay_rejected(db, github_mock, client: TestClient):
     assert not replay_params.get("ticket")
 
     # 服务层直调同样拒绝（无双花路径）
-    cb = oauth_service.handle_callback(
-        db, provider="github", code="good-code", state=authz.state, error=None
-    )
+    cb = oauth_service.handle_callback(db, provider="github", code="good-code", state=authz.state, error=None)
     assert "error=state_invalid" in cb.redirect_url
 
 
@@ -264,6 +236,7 @@ def _parse_query(url: str) -> dict:
 
 # ══════════════════ 红线 7：密码失败重试语义 + E-18 锁定（T02 实现语义） ══════════════════
 
+
 def test_password_failure_retry_then_lockout_cooldown(db, github_mock):
     """T02 实现语义（有意偏离设计文档，以下列语义为准）：
 
@@ -272,9 +245,7 @@ def test_password_failure_retry_then_lockout_cooldown(db, github_mock):
       进入 15 分钟冷却（locked_until），再次提交 → 423 OAUTH_TICKET_LOCKED。
     """
     make_user(db, email="victim@example.com", password="Real-Pass-1")
-    params = run_login_flow(
-        db, github_mock, profile=github_profile(uid=5200, email="victim@example.com")
-    )
+    params = run_login_flow(db, github_mock, profile=github_profile(uid=5200, email="victim@example.com"))
     ticket = params["ticket"]
     max_attempts = int(settings.OAUTH_BIND_MAX_ATTEMPTS)
 
@@ -307,6 +278,7 @@ def test_password_failure_retry_then_lockout_cooldown(db, github_mock):
 
 
 # ══════════════════ 红线 8：bind-intent ticket 不可当登录凭证 ══════════════════
+
 
 def test_bind_intent_ticket_cannot_be_exchanged_for_login_token(db, github_mock):
     """T02 实现语义守护：intent=bind 且 status=LOGIN_OK 的 ticket 调 resolve

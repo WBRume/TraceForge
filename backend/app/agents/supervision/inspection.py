@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
 _INSPECTION_EXECUTOR: ThreadPoolExecutor | None = None
 _INSPECTION_EXECUTOR_LOCK = threading.Lock()
@@ -80,9 +81,7 @@ def submit_process_probe(fn: Callable[..., Any], *args: Any):
     回收迟到结果并释放资源（doc 审计 P1-2）。
     """
     if not _INSPECTION_QUEUE_PERMITS.acquire(blocking=False):
-        raise InspectionQueueSaturated(
-            "process inspection queue is saturated; retry later"
-        )
+        raise InspectionQueueSaturated("process inspection queue is saturated; retry later")
     executor = _inspection_executor()
     try:
         raw_future = executor.submit(fn, *args)
@@ -91,9 +90,7 @@ def submit_process_probe(fn: Callable[..., Any], *args: Any):
         # here, otherwise the permit would leak and shrink the queue forever.
         _INSPECTION_QUEUE_PERMITS.release()
         raise
-    raw_future.add_done_callback(
-        lambda _future: _INSPECTION_QUEUE_PERMITS.release()
-    )
+    raw_future.add_done_callback(lambda _future: _INSPECTION_QUEUE_PERMITS.release())
     return raw_future
 
 
@@ -110,9 +107,7 @@ async def run_process_probe(fn: Callable[..., Any], *args: Any) -> Any:
     路径负责回收迟到结果并释放资源（doc 审计 P1-2）。
     """
     loop = asyncio.get_running_loop()
-    return await asyncio.futures.wrap_future(
-        submit_process_probe(fn, *args), loop=loop
-    )
+    return await asyncio.futures.wrap_future(submit_process_probe(fn, *args), loop=loop)
 
 
 async def run_process_inspection(

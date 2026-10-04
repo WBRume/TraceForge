@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session, selectinload
 
@@ -21,16 +22,15 @@ from app.domains.workspace_asset.schemas.task_final_workflow import (
     FinalWorkflowReviewTargetPreviewMetadata,
     FinalWorkflowReviewTargetPreviewResponse,
 )
-from app.domains.workspace_asset.services.tasks import sections
-from app.domains.workspace_asset.services.task_final_workflow import workflow_state
 from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
 from app.domains.workspace_asset.services.common.primitives import enum_value
-
+from app.domains.workspace_asset.services.task_final_workflow import workflow_state
+from app.domains.workspace_asset.services.tasks import sections
 
 TARGET_TYPES = {"SPEC", "PLAN", "AI_CHANGE", "HUMAN_DELTA", "EVIDENCE", "DECISION", "TASK_FILE"}
 
 
-def _stringify(value: Any) -> Optional[str]:
+def _stringify(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -41,7 +41,7 @@ def _stringify(value: Any) -> Optional[str]:
     return text or None
 
 
-def _metadata_item(key: str, label: str, value: Any) -> Optional[FinalWorkflowReviewTargetPreviewMetadata]:
+def _metadata_item(key: str, label: str, value: Any) -> FinalWorkflowReviewTargetPreviewMetadata | None:
     text = _stringify(value)
     if text is None:
         return None
@@ -62,12 +62,12 @@ def _block(
     key: str,
     title: str,
     kind: str,
-    content: Optional[str] = None,
-    items: Optional[list[dict[str, Any]]] = None,
-    file_diffs: Optional[list[Any]] = None,
-    delta_regions: Optional[list[Any]] = None,
-    diff_text: Optional[str] = None,
-) -> Optional[FinalWorkflowReviewTargetPreviewBlock]:
+    content: str | None = None,
+    items: list[dict[str, Any]] | None = None,
+    file_diffs: list[Any] | None = None,
+    delta_regions: list[Any] | None = None,
+    diff_text: str | None = None,
+) -> FinalWorkflowReviewTargetPreviewBlock | None:
     if not content and not items and not file_diffs and not delta_regions and not diff_text:
         return None
     return FinalWorkflowReviewTargetPreviewBlock(
@@ -82,18 +82,22 @@ def _block(
     )
 
 
-def _append(blocks: list[FinalWorkflowReviewTargetPreviewBlock], block: Optional[FinalWorkflowReviewTargetPreviewBlock]) -> None:
+def _append(
+    blocks: list[FinalWorkflowReviewTargetPreviewBlock], block: FinalWorkflowReviewTargetPreviewBlock | None
+) -> None:
     if block:
         blocks.append(block)
 
 
-def _json_content(value: Any) -> Optional[str]:
+def _json_content(value: Any) -> str | None:
     if not value:
         return None
     return json.dumps(value, ensure_ascii=True, indent=2, default=str)
 
 
-def _target_from_task(db: Session, workspace_id: str, task_id: str, target_type: str, target_id: str) -> FinalWorkflowReviewTarget:
+def _target_from_task(
+    db: Session, workspace_id: str, task_id: str, target_type: str, target_id: str
+) -> FinalWorkflowReviewTarget:
     task = workflow_state._load_task(db, workspace_id, task_id)
     targets = workflow_state._review_targets(task).get(target_type, [])
     for target in targets:
@@ -277,8 +281,16 @@ def _evidence_preview(
     ]
     blocks: list[FinalWorkflowReviewTargetPreviewBlock] = []
     _append(blocks, _block(key="summary", title="Summary", kind="text", content=evidence.summary))
-    _append(blocks, _block(key="source", title="Source", kind="metadata", items=[item for item in source_items if item.get("value")]))
-    _append(blocks, _block(key="metadata", title="Metadata", kind="json", content=_json_content(evidence.source_metadata_json)))
+    _append(
+        blocks,
+        _block(
+            key="source", title="Source", kind="metadata", items=[item for item in source_items if item.get("value")]
+        ),
+    )
+    _append(
+        blocks,
+        _block(key="metadata", title="Metadata", kind="json", content=_json_content(evidence.source_metadata_json)),
+    )
 
     return FinalWorkflowReviewTargetPreviewResponse(
         target=target,
@@ -321,8 +333,16 @@ def _decision_preview(
     blocks: list[FinalWorkflowReviewTargetPreviewBlock] = []
     _append(blocks, _block(key="body", title="Decision", kind="text", content=decision.body))
     _append(blocks, _block(key="rationale", title="Rationale", kind="text", content=decision.rationale))
-    _append(blocks, _block(key="line_refs", title="Line references", kind="json", content=_json_content(decision.delta_line_refs_json)))
-    _append(blocks, _block(key="metadata", title="Metadata", kind="json", content=_json_content(decision.source_metadata_json)))
+    _append(
+        blocks,
+        _block(
+            key="line_refs", title="Line references", kind="json", content=_json_content(decision.delta_line_refs_json)
+        ),
+    )
+    _append(
+        blocks,
+        _block(key="metadata", title="Metadata", kind="json", content=_json_content(decision.source_metadata_json)),
+    )
 
     return FinalWorkflowReviewTargetPreviewResponse(
         target=target,

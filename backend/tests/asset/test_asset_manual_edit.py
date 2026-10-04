@@ -5,44 +5,24 @@
 并发版本校验、thread 锚点重映射与 close_hint 对账、docx 重建。
 """
 
-import os
-import sys
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-TEST_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if TEST_ROOT not in sys.path:
-    sys.path.insert(0, TEST_ROOT)
-
-from app.domains.asset.models.asset import (  # noqa: E402
-    SddAsset,
-    SddAssetThreadAnchorMapping,
+from app.domains.asset.models.asset import (
     SddAssetVersion,
 )
-from app.domains.asset.services import asset_discussion_service  # noqa: E402
-from app.domains.asset.services import asset_resolution_service  # noqa: E402
-from app.domains.asset.services.asset_resolution_service import (  # noqa: E402
+from app.domains.asset.services import (
+    asset_discussion_service,
+)
+from app.domains.asset.services.asset_resolution_service import (
     ResolutionServiceError,
     manual_edit_block,
 )
-from app.domains.asset.services.document.docx import looks_like_docx_bytes  # noqa: E402
-from app.domains.asset.services.document.versioning import (  # noqa: E402
+from app.domains.asset.services.document.docx import looks_like_docx_bytes
+from app.domains.asset.services.document.versioning import (
     create_asset_version_from_normalized_content,
     create_asset_version_from_upload,
 )
-from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
+from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session
 
-
-SPEC_MD = (
-    "# Requirement\n"
-    "\n"
-    "Login must work.\n"
-    "\n"
-    "- item one\n"
-    "\n"
-    "Second paragraph.\n"
-)
+SPEC_MD = "# Requirement\n\nLogin must work.\n\n- item one\n\nSecond paragraph.\n"
 
 
 def _seed_task_with_project(db, tmp_path, workspace_id="ws-manual", task_id="task-manual"):
@@ -240,13 +220,11 @@ def test_manual_edit_remaps_thread_anchor_when_selection_kept(tmp_path):
             )
 
             assert [t.id for t in affected] == [thread.id]
-            mapping = asset_discussion_service.get_thread_anchor_mapping(
-                db, thread_id=thread.id, version_id=version.id
-            )
+            mapping = asset_discussion_service.get_thread_anchor_mapping(db, thread_id=thread.id, version_id=version.id)
             assert mapping is not None
             assert mapping.selected_text == "must work"
             new_text = _block_text(version, "blk-2")
-            assert new_text[mapping.char_start:mapping.char_end] == "must work"
+            assert new_text[mapping.char_start : mapping.char_end] == "must work"
 
             anchor_eval = asset_discussion_service.resolve_thread_anchor_for_version(
                 db, thread=thread, context_version=version
@@ -286,9 +264,7 @@ def test_manual_edit_drops_anchor_selection_when_deleted(tmp_path):
             )
 
             assert [t.id for t in affected] == [thread.id]
-            mapping = asset_discussion_service.get_thread_anchor_mapping(
-                db, thread_id=thread.id, version_id=version.id
-            )
+            mapping = asset_discussion_service.get_thread_anchor_mapping(db, thread_id=thread.id, version_id=version.id)
             assert mapping is not None
             assert not mapping.selected_text
             assert mapping.char_start is None
@@ -330,9 +306,7 @@ def test_manual_edit_skips_threads_on_other_blocks(tmp_path):
 
             assert affected == []
             assert (
-                asset_discussion_service.get_thread_anchor_mapping(
-                    db, thread_id=thread.id, version_id=version.id
-                )
+                asset_discussion_service.get_thread_anchor_mapping(db, thread_id=thread.id, version_id=version.id)
                 is None
             )
     finally:
@@ -363,9 +337,9 @@ def test_manual_edit_restores_missing_anchor_clears_close_hint(tmp_path):
             )
             db.commit()
             assert (
-                asset_discussion_service.resolve_thread_anchor_for_version(
-                    db, thread=thread, context_version=v1
-                )["anchor_status"]
+                asset_discussion_service.resolve_thread_anchor_for_version(db, thread=thread, context_version=v1)[
+                    "anchor_status"
+                ]
                 == "missing"
             )
 

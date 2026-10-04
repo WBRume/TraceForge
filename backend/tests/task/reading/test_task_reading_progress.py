@@ -1,23 +1,28 @@
 """个人阅读状态与跨设备合并语义测试（第 6/8 节合同）。"""
+
 import pytest
 
-from app.domains.task.models.chat import ChatMessage
-from app.domains.task.models.reading import TaskReadingItem, TaskReadingReceipt
+from app.domains.task.models.reading import TaskReadingItem
 from app.domains.task.services import reading_capture_service as rcs
 from app.domains.task.services import reading_progress_service as rps
-
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
-
 
 
 @pytest.fixture()
 def ready_env(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="user", content="u1")
-    m2 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a1")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="user", content="u1"
+    )
+    m2 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="a1",
+    )
     return env, m1, m2
 
 
@@ -47,12 +52,23 @@ def test_repeated_open_does_not_reset_baseline(ready_env):
 def test_receipts_accept_exact_versions_and_advance_frontier(ready_env):
     env, m1, m2 = ready_env
     _open(env, "user-b")
-    m3 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a2")
+    m3 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="a2",
+    )
     env["db"].commit()
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[{"item_key": f"message:{m3.id}", "change_seq": "3"}], resume=None,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[{"item_key": f"message:{m3.id}", "change_seq": "3"}],
+        resume=None,
     )
     env["db"].commit()
     assert resp["accepted_items"] == [{"item_key": f"message:{m3.id}", "change_seq": "3"}]
@@ -61,13 +77,19 @@ def test_receipts_accept_exact_versions_and_advance_frontier(ready_env):
 
 def test_receipt_rejects_version_mismatch(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="user", content="u1")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="user", content="u1"
+    )
     env["db"].commit()
     _open(env, "user-b")
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "999"}], resume=None,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "999"}],
+        resume=None,
     )
     env["db"].commit()
     assert resp["skipped_items"] == [{"item_key": f"message:{m1.id}", "reason": "version_changed"}]
@@ -76,18 +98,29 @@ def test_receipt_rejects_version_mismatch(seeded_db):
 
 def test_duplicate_receipt_is_idempotent_and_does_not_bump_revision(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="assistant", content="a"
+    )
     env["db"].commit()
     _open(env, "user-b")
     first = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}], resume=None,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}],
+        resume=None,
     )
     env["db"].commit()
     second = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}], resume=None,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}],
+        resume=None,
     )
     env["db"].commit()
     assert second["state"]["state_revision"] == first["state"]["state_revision"]
@@ -95,10 +128,22 @@ def test_duplicate_receipt_is_idempotent_and_does_not_bump_revision(seeded_db):
 
 def test_receipts_merge_max_per_item(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a1")
-    m2 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a2")
+    task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="a1",
+    )
+    m2 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="a2",
+    )
     m2.content = "a2-updated"
     env["db"].add(m2)
     env["db"].flush()
@@ -106,10 +151,14 @@ def test_receipts_merge_max_per_item(seeded_db):
     env["db"].commit()
     _open(env, "user-b")
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
         raw_items=[
-            {"item_key": f"message:{m2.id}", "change_seq": "1"},   # 同批去重：保留 max
-            {"item_key": f"message:{m2.id}", "change_seq": "3"},   # 当前版本
+            {"item_key": f"message:{m2.id}", "change_seq": "1"},  # 同批去重：保留 max
+            {"item_key": f"message:{m2.id}", "change_seq": "3"},  # 当前版本
         ],
         resume=None,
     )
@@ -121,14 +170,19 @@ def test_receipts_merge_max_per_item(seeded_db):
 def test_own_user_input_never_blocks_own_frontier(seeded_db):
     env = seeded_db
     _open(env, "user-b")
-    m = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                       creator_id="user-b", role="user", content="my own words")
+    m = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-b",
+        role="user",
+        content="my own words",
+    )
     env["db"].commit()
     prog = rps.read_only_progress(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"])
     assert prog["has_unread"] is False
     # compact 推进越过本人输入
-    resp = rps.compact_progress(env["db"], user_id="user-b", workspace_id=env["ws_id"],
-                                task_id=env["task_id"], epoch=1)
+    resp = rps.compact_progress(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1)
     env["db"].commit()
     assert resp["advanced"] is True
     assert int(resp["state"]["read_frontier_seq"]) == int(m.metadata_json["order_index"]) + 1
@@ -137,15 +191,32 @@ def test_own_user_input_never_blocks_own_frontier(seeded_db):
 def test_compact_stops_at_first_real_unread(seeded_db):
     env = seeded_db
     _open(env, "user-b")
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a1")
-    m2 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a2")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="a1",
+    )
+    m2 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="a2",
+    )
     env["db"].commit()
     # 只回执 m2（跳过 m1）
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[{"item_key": f"message:{m2.id}", "change_seq": "2"}], resume=None,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[{"item_key": f"message:{m2.id}", "change_seq": "2"}],
+        resume=None,
     )
     env["db"].commit()
     # m1 未读 → 前缀停在 m1 之前
@@ -153,8 +224,13 @@ def test_compact_stops_at_first_real_unread(seeded_db):
     assert resp["state"]["has_unread"] is True
     # 补读缺口后推进到 m2
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}], resume=None,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}],
+        resume=None,
     )
     env["db"].commit()
     assert int(resp["state"]["read_frontier_seq"]) == 2
@@ -162,19 +238,30 @@ def test_compact_stops_at_first_real_unread(seeded_db):
 
 def test_resume_cas_rejects_stale_overwrite(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="assistant", content="a"
+    )
     env["db"].commit()
     _open(env, "user-b")
     ok = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[], resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.4, "expected_revision": "0"},
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[],
+        resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.4, "expected_revision": "0"},
     )
     env["db"].commit()
     assert ok["resume_applied"] is True
     late = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[], resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.9, "expected_revision": "0"},
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[],
+        resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.9, "expected_revision": "0"},
     )
     env["db"].commit()
     assert late["resume_applied"] is False
@@ -185,15 +272,21 @@ def test_resume_cas_rejects_stale_overwrite(seeded_db):
 
 def test_resume_validation_rejects_deleted_anchor(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="assistant", content="a"
+    )
     env["db"].commit()
     _open(env, "user-b")
     rcs.record_message_retractions(env["db"], task_id=env["task_id"], message_ids=[m1.id], operation_id="op-x")
     env["db"].commit()
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
-        raw_items=[], resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.4, "expected_revision": "0"},
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[],
+        resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.4, "expected_revision": "0"},
     )
     env["db"].commit()
     assert resp["resume_applied"] is False
@@ -204,11 +297,21 @@ def test_ack_bounded_by_window_upper(seeded_db):
     result = rps.open_reading_session(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"])
     env["db"].commit()
     assert result["state"]["read_frontier_seq"] == "0"  # 空任务基线 0
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="new after window")
+    task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="new after window",
+    )
     env["db"].commit()
     resp = rps.acknowledge_through_window(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
         window_token=result["window_token"],
     )
     env["db"].commit()
@@ -223,8 +326,15 @@ def test_epoch_conflict_on_stale_submission(seeded_db):
     task_conversation_history.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
     env["db"].commit()
     with pytest.raises(rps.ReadingEpochChanged):
-        rps.submit_receipts(env["db"], user_id="user-b", workspace_id=env["ws_id"],
-                            task_id=env["task_id"], epoch=1, raw_items=[], resume=None)
+        rps.submit_receipts(
+            env["db"],
+            user_id="user-b",
+            workspace_id=env["ws_id"],
+            task_id=env["task_id"],
+            epoch=1,
+            raw_items=[],
+            resume=None,
+        )
 
 
 def test_clear_history_resets_epoch_and_lazy_migrates(seeded_db):
@@ -243,10 +353,12 @@ def test_clear_history_resets_epoch_and_lazy_migrates(seeded_db):
 
 def test_reading_items_batch_identity(seeded_db):
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="a")
-    m2 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="assistant", content="b")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="assistant", content="a"
+    )
+    m2 = task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="assistant", content="b"
+    )
     env["db"].commit()
     result = rps.get_reading_items(env["db"], task_id=env["task_id"], message_ids=[m1.id, m2.id, "ghost"])
     assert len(result["items"]) == 2
@@ -261,10 +373,17 @@ def test_self_created_assistant_reply_is_exempt_from_unread(seeded_db):
     env = seeded_db
     _open(env, "user-a")
     _open(env, "user-b")
-    task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                   creator_id="user-a", role="user", content="A asks")
-    task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                   creator_id="user-a", role="assistant", content="AI replies to A")
+    task_conversation_messages.save_chat_message(
+        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id="user-a", role="user", content="A asks"
+    )
+    task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="AI replies to A",
+    )
     env["db"].commit()
     prog_a = rps.read_only_progress(env["db"], user_id="user-a", workspace_id=env["ws_id"], task_id=env["task_id"])
     assert prog_a["has_unread"] is False, prog_a["unread_count"]
@@ -275,21 +394,39 @@ def test_self_created_assistant_reply_is_exempt_from_unread(seeded_db):
 def test_resume_prefers_first_unread_over_saved_anchor(seeded_db):
     """从上次阅读处继续优先落在未读起点（最早未读），而非旧保存锚点。"""
     env = seeded_db
-    m1 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="user", content="old anchor msg")
+    m1 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="user",
+        content="old anchor msg",
+    )
     env["db"].commit()
     _open(env, "user-b")
     # 旧机制保存的锚点（指向 m1）
-    rps.submit_receipts(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"],
-                        epoch=1, raw_items=[],
-                        resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.5,
-                                "expected_revision": "0"})
+    rps.submit_receipts(
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
+        raw_items=[],
+        resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.5, "expected_revision": "0"},
+    )
     env["db"].commit()
     # 之后出现新未读（user-a 发言，user-b 未读）
-    m2 = task_conversation_messages.save_chat_message(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-                                        creator_id="user-a", role="user", content="new unread msg")
+    m2 = task_conversation_messages.save_chat_message(
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="user",
+        content="new unread msg",
+    )
     env["db"].commit()
     from app.domains.task.services import reading_resume_service as rrs
+
     res = rrs.resolve_resume(env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"])
     env["db"].commit()
     assert res["anchor_status"] == "ok", res
@@ -302,19 +439,30 @@ def test_retraction_does_not_leave_unread_after_sop_input(seeded_db):
     _open(env, "user-a")
     _open(env, "user-b")
     message = task_conversation_messages.save_chat_message(
-        db, task_id=env["task_id"], workspace_id=env["ws_id"],
-        creator_id="user-a", role="assistant", content="retracted reply",
+        db,
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="retracted reply",
     )
     rcs.record_message_retractions(
-        db, task_id=env["task_id"], message_ids=[message.id], operation_id="own-undo",
+        db,
+        task_id=env["task_id"],
+        message_ids=[message.id],
+        operation_id="own-undo",
     )
     db.delete(message)
     db.flush()
     notice = db.query(TaskReadingItem).filter_by(item_key="operation:own-undo").one()
     assert notice.active is True  # 保留撤回事实用于锚点恢复，但不计未读。
     task_conversation_messages.save_chat_message(
-        db, task_id=env["task_id"], workspace_id=env["ws_id"],
-        creator_id="user-a", role="user", content="请继续 SOP 的「补丁与回归」阶段",
+        db,
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="user",
+        content="请继续 SOP 的「补丁与回归」阶段",
     )
     db.commit()
 
@@ -326,7 +474,11 @@ def test_retraction_does_not_leave_unread_after_sop_input(seeded_db):
     observer = _open(env, "user-b")["state"]
     assert observer["unread_count"] == {"value": 1, "relation": "eq"}  # 仅剩新 SOP 输入
     compacted = rps.compact_progress(
-        db, user_id="user-a", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        db,
+        user_id="user-a",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
     )
     assert compacted["state"]["read_frontier_seq"] == state["latest_change_seq"]
 
@@ -336,14 +488,21 @@ def test_retracted_unread_disappears_for_every_reader(seeded_db, reader):
     env = seeded_db
     _open(env, reader)
     message = task_conversation_messages.save_chat_message(
-        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"],
-        creator_id="user-a", role="assistant", content="reply",
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id="user-a",
+        role="assistant",
+        content="reply",
     )
     env["db"].commit()
     before = _open(env, reader)["state"]
     assert before["unread_count"]["value"] == (0 if reader == "user-a" else 1)
     rcs.record_message_retractions(
-        env["db"], task_id=env["task_id"], message_ids=[message.id], operation_id="unknown-actor",
+        env["db"],
+        task_id=env["task_id"],
+        message_ids=[message.id],
+        operation_id="unknown-actor",
     )
     env["db"].delete(message)
     env["db"].commit()
@@ -351,10 +510,21 @@ def test_retracted_unread_disappears_for_every_reader(seeded_db, reader):
         state = _open(env, reader)["state"]
         assert state["has_unread"] is False
         assert state["unread_count"] == {"value": 0, "relation": "eq"}
-        assert rps._unread_query(
-            env["db"], user_id=reader, task_id=env["task_id"], epoch=1, lower=0,
-        ).count() == 0
+        assert (
+            rps._unread_query(
+                env["db"],
+                user_id=reader,
+                task_id=env["task_id"],
+                epoch=1,
+                lower=0,
+            ).count()
+            == 0
+        )
     result = rps.compact_progress(
-        env["db"], user_id=reader, workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id=reader,
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
     )
     assert result["state"]["read_frontier_seq"] == state["latest_change_seq"]

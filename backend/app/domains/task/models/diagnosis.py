@@ -8,23 +8,24 @@
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    JSON,
+    Boolean,
     Column,
     DateTime,
-    Boolean,
     ForeignKey,
     Integer,
     String,
     Text,
-    JSON,
     func,
 )
 from sqlalchemy.orm import relationship
+
 from app.database import Base
 from app.domains.auth.models.user import generate_uuid
 
 
 class DiagnosisResultStatus(str, PyEnum):
-    DRAFT = "DRAFT"          # 草稿：会话收敛中，可继续编辑
+    DRAFT = "DRAFT"  # 草稿：会话收敛中，可继续编辑
     CONFIRMED = "CONFIRMED"  # 已确认采纳：已生成案例草稿
 
 
@@ -33,22 +34,24 @@ class SddDiagnosisResult(Base):
     __table_args__ = {"extend_existing": True}
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    task_id = Column(String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    task_id = Column(
+        String(36), ForeignKey("sdd_tasks.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False, index=True)
     created_by_id = Column(String(36), ForeignKey("users.id"), nullable=False)
 
     # ── 定位结果产出（基础字段，案例映射视图） ──
-    summary = Column(Text, nullable=True)            # AI 返回的结果内容（结论概述）
-    root_cause = Column(Text, nullable=True)         # 根因结论
-    evidence_chain = Column(Text, nullable=True)     # 证据链
-    fix_suggestion = Column(Text, nullable=True)     # 修复方案说明
-    fix_code = Column(Text, nullable=True)           # 修复代码/补丁（仅方案建议）
+    summary = Column(Text, nullable=True)  # AI 返回的结果内容（结论概述）
+    root_cause = Column(Text, nullable=True)  # 根因结论
+    evidence_chain = Column(Text, nullable=True)  # 证据链
+    fix_suggestion = Column(Text, nullable=True)  # 修复方案说明
+    fix_code = Column(Text, nullable=True)  # 修复代码/补丁（仅方案建议）
     confidence = Column(Integer, nullable=False, default=0)  # 置信度 0-100
 
     # ── 结构化章节（完整结果返回） ──
-    code_context_json = Column(JSON, nullable=True)      # 相关代码上下文 [{file_path,start_line,end_line,snippet,note}]
-    similar_cases_json = Column(JSON, nullable=True)     # 相似案例 [{title,similarity,summary,reference}]
-    call_chain_json = Column(JSON, nullable=True)        # 调用链路 [{seq,module,function,file_path,description}]
+    code_context_json = Column(JSON, nullable=True)  # 相关代码上下文 [{file_path,start_line,end_line,snippet,note}]
+    similar_cases_json = Column(JSON, nullable=True)  # 相似案例 [{title,similarity,summary,reference}]
+    call_chain_json = Column(JSON, nullable=True)  # 调用链路 [{seq,module,function,file_path,description}]
 
     # ── 来源与会话卡片关联 ──
     source_chat_message_id = Column(

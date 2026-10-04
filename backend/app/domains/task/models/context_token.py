@@ -3,6 +3,7 @@
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Column,
     DateTime,
@@ -10,10 +11,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
-    Integer,
-    JSON,
     String,
-    Text,
     func,
 )
 from sqlalchemy.orm import relationship
@@ -106,7 +104,9 @@ class SddContextTokenSegment(Base):
     source_ref_id = Column(String(120), nullable=True, index=True)
     chat_message_id = Column(String(36), ForeignKey("chat_messages.id", ondelete="SET NULL"), nullable=True, index=True)
     asset_id = Column(String(36), ForeignKey("sdd_assets.id", ondelete="SET NULL"), nullable=True, index=True)
-    asset_version_id = Column(String(36), ForeignKey("sdd_asset_versions.id", ondelete="SET NULL"), nullable=True, index=True)
+    asset_version_id = Column(
+        String(36), ForeignKey("sdd_asset_versions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     skill_runtime_event_id = Column(
         String(36),
         ForeignKey("sdd_skill_runtime_events.id", ondelete="SET NULL"),

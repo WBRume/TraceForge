@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from collections.abc import Iterable
+from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -26,20 +27,20 @@ def enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
 
 
-def clean_optional(value: Optional[str], *, limit: Optional[int] = None) -> Optional[str]:
+def clean_optional(value: str | None, *, limit: int | None = None) -> str | None:
     normalized = str(value or "").strip()
     if not normalized:
         return None
     return normalized[:limit] if limit else normalized
 
 
-def normalize_list(values: Optional[Iterable[Any]]) -> List[str]:
+def normalize_list(values: Iterable[Any] | None) -> list[str]:
     if not values:
         return []
     return [text for value in values if (text := str(value or "").strip())]
 
 
-def json_dict(value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def json_dict(value: dict[str, Any] | None) -> dict[str, Any] | None:
     return value if isinstance(value, dict) and value else None
 
 
@@ -50,7 +51,7 @@ def payload_has_field(payload: Any, field_name: str) -> bool:
     return field_name in fields_set
 
 
-def normalize_enum(enum_cls: Any, value: Optional[str], default: Optional[Any] = None, label: str = "value") -> Any:
+def normalize_enum(enum_cls: Any, value: str | None, default: Any | None = None, label: str = "value") -> Any:
     raw = str(value or (default.value if hasattr(default, "value") else default) or "").strip().upper()
     if not raw:
         return None
@@ -60,7 +61,7 @@ def normalize_enum(enum_cls: Any, value: Optional[str], default: Optional[Any] =
         raise WorkspaceAssetError(f"Unsupported {label}: {value}", status_code=422) from exc
 
 
-def short_text(value: Any, limit: int = 280) -> Optional[str]:
+def short_text(value: Any, limit: int = 280) -> str | None:
     if value is None:
         return None
     text = value if isinstance(value, str) else str(value)
@@ -70,7 +71,7 @@ def short_text(value: Any, limit: int = 280) -> Optional[str]:
     return text if len(text) <= limit else f"{text[:limit].rstrip()}..."
 
 
-def json_text(payload: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optional[str]:
+def json_text(payload: dict[str, Any] | None, keys: Iterable[str]) -> str | None:
     """从 result/context JSON 里按候选 key 取第一个非空短文本。"""
     if not isinstance(payload, dict):
         return None
@@ -81,7 +82,7 @@ def json_text(payload: Optional[Dict[str, Any]], keys: Iterable[str]) -> Optiona
     return None
 
 
-def dedupe_by_id(items: Iterable[Any]) -> List[Any]:
+def dedupe_by_id(items: Iterable[Any]) -> list[Any]:
     seen = set()
     result = []
     for item in items:
@@ -129,11 +130,7 @@ def coverage_status(requirement_count: int, evidence_items: Iterable[Any]) -> st
         return "not_available"
 
     evidence_list = list(evidence_items)
-    confirmed = [
-        item
-        for item in evidence_list
-        if enum_value(item.status) == EvidenceStatus.CONFIRMED.value
-    ]
+    confirmed = [item for item in evidence_list if enum_value(item.status) == EvidenceStatus.CONFIRMED.value]
     if not confirmed:
         return "waiting_evidence"
     if not any(is_human_confirmation(item) for item in confirmed):

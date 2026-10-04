@@ -1,9 +1,9 @@
 from app.domains.api_mock.models.api_mock import (  # noqa: F401
-    SddApiMockProject,
-    SddApiMockSourceVersion,
+    SddApiMockCollabEvent,
     SddApiMockEndpoint,
     SddApiMockEntity,
-    SddApiMockRule,
-    SddApiMockCollabEvent,
     SddApiMockJob,
+    SddApiMockProject,
+    SddApiMockRule,
+    SddApiMockSourceVersion,
 )

@@ -70,24 +70,34 @@ def test_overview_uses_live_task_status_for_success_rate(db: Session):
 def test_overview_ignores_historical_metrics_for_success_rate(db: Session):
     workspace = _make_workspace(db)
     task = _add_task(db, workspace.id, "t-failed", TaskStatus.FAILED)
-    db.add_all([
-        SddDashboardMetric(
-            task_id=task.id, workspace_id=workspace.id,
-            metric_type="TASK_RESULT", metric_value=1.0,
-        ),
-        SddDashboardMetric(
-            task_id=task.id, workspace_id=workspace.id,
-            metric_type="COST", metric_value=1.25,
-        ),
-        SddDashboardMetric(
-            task_id=task.id, workspace_id=workspace.id,
-            metric_type="REQUIREMENT_DURATION", metric_value=3.0,
-        ),
-        SddDashboardMetric(
-            task_id=task.id, workspace_id=workspace.id,
-            metric_type="DURATION", metric_value=1800000.0,
-        ),
-    ])
+    db.add_all(
+        [
+            SddDashboardMetric(
+                task_id=task.id,
+                workspace_id=workspace.id,
+                metric_type="TASK_RESULT",
+                metric_value=1.0,
+            ),
+            SddDashboardMetric(
+                task_id=task.id,
+                workspace_id=workspace.id,
+                metric_type="COST",
+                metric_value=1.25,
+            ),
+            SddDashboardMetric(
+                task_id=task.id,
+                workspace_id=workspace.id,
+                metric_type="REQUIREMENT_DURATION",
+                metric_value=3.0,
+            ),
+            SddDashboardMetric(
+                task_id=task.id,
+                workspace_id=workspace.id,
+                metric_type="DURATION",
+                metric_value=1800000.0,
+            ),
+        ]
+    )
     db.commit()
 
     overview = dashboard_service.get_overview(db, workspace.id)
@@ -114,14 +124,22 @@ def test_retry_heatmap_returns_dense_seven_day_series(db: Session):
     workspace = _make_workspace(db)
     now = datetime.now()
     task = _add_task(
-        db, workspace.id, "t-today", TaskStatus.CODING,
-        retry_count=2, created_at=now,
+        db,
+        workspace.id,
+        "t-today",
+        TaskStatus.CODING,
+        retry_count=2,
+        created_at=now,
     )
-    db.add(SddDashboardMetric(
-        task_id=task.id, workspace_id=workspace.id,
-        metric_type="TASK_RESULT", metric_value=0.0,
-        recorded_at=now,
-    ))
+    db.add(
+        SddDashboardMetric(
+            task_id=task.id,
+            workspace_id=workspace.id,
+            metric_type="TASK_RESULT",
+            metric_value=0.0,
+            recorded_at=now,
+        )
+    )
     db.commit()
 
     rows = dashboard_service.get_retry_heatmap(db, workspace.id)

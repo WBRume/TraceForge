@@ -26,7 +26,8 @@ def test_connection_check_uses_draft_without_saving_or_inspecting_repositories(m
     monkeypatch.setattr(service, "probe_provider", probe)
     data = ConnectionInput(
         resource_id="resource" if existing else None,
-        backend="opencode", service_url="http://10.0.0.2:4096",
+        backend="opencode",
+        service_url="http://10.0.0.2:4096",
         resource_service_url="http://10.0.0.2:4098",
         host_token=None if existing else "draft-token",
     )
@@ -46,4 +47,6 @@ def test_connection_check_propagates_agent_failure(monkeypatch):
     monkeypatch.setattr(service, "ResourceClient", Mock(return_value=client))
     monkeypatch.setattr(service, "probe_provider", AsyncMock(side_effect=RuntimeError("offline")))
     with pytest.raises(ResourceError, match="Agent 协议或认证检测失败"):
-        service.verify_connection({"service_url": "http://10.0.0.2:4096", "resource_service_url": "http://10.0.0.2:4098"})
+        service.verify_connection(
+            {"service_url": "http://10.0.0.2:4096", "resource_service_url": "http://10.0.0.2:4098"}
+        )

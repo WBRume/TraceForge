@@ -1,4 +1,5 @@
 """Replay persists one visible reply/form even after the engine is recreated."""
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -16,8 +17,17 @@ from app.engine.session.frontend import FrontendFeed
 def engine_factory(db, monkeypatch):
     monkeypatch.setattr("app.engine.session.frontend.SessionLocal", sessionmaker(bind=db.get_bind()))
     db.add(SddTask(id="replay-task", workspace_id="workspace", creator_id="user", name="Replay"))
-    db.add(SddAiJob(id="replay-job", task_id="replay-task", workspace_id="workspace", creator_id="user",
-                    channel=AiJobChannel.TASK_CHAT, status=AiJobStatus.RUNNING, queue_key="TASK_CHAT:replay-task"))
+    db.add(
+        SddAiJob(
+            id="replay-job",
+            task_id="replay-task",
+            workspace_id="workspace",
+            creator_id="user",
+            channel=AiJobChannel.TASK_CHAT,
+            status=AiJobStatus.RUNNING,
+            queue_key="TASK_CHAT:replay-task",
+        )
+    )
     db.commit()
 
     def create():
@@ -32,9 +42,11 @@ def engine_factory(db, monkeypatch):
         engine.frontend.push = AsyncMock()
         engine.on_hitl, engine._emit_hook = None, AsyncMock()
         engine.running = True
-        engine.cli = SimpleNamespace(capabilities=SimpleNamespace(hitl_modes=["long_connection"]),
-                                     respond_to_ask_user=AsyncMock())
+        engine.cli = SimpleNamespace(
+            capabilities=SimpleNamespace(hitl_modes=["long_connection"]), respond_to_ask_user=AsyncMock()
+        )
         return engine
+
     return create
 
 
@@ -48,8 +60,12 @@ def test_reply_replay_from_new_engine_is_deduplicated_in_database(db, engine_fac
 
 @pytest.mark.asyncio
 async def test_pending_form_recovers_same_public_id_and_private_reply_route(db, engine_factory):
-    event = {"ask_user_id": "frm_private", "question": "Choose", "kind": "form",
-             "fields": [{"key": "answer", "type": "string"}]}
+    event = {
+        "ask_user_id": "frm_private",
+        "question": "Choose",
+        "kind": "form",
+        "fields": [{"key": "answer", "type": "string"}],
+    }
     first = engine_factory()
     await first._on_ask_user(event)
     original_id = next(iter(first._pending_confirmations))

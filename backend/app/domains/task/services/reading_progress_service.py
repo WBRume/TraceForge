@@ -9,6 +9,7 @@
 - 续读位置使用独立 resume_revision CAS，过期覆盖被拒绝且不回滚已合并回执；
 - 所有 BIGINT 序号 / epoch / revision 对外使用十进制字符串。
 """
+
 from __future__ import annotations
 
 import base64
@@ -16,10 +17,11 @@ import hashlib
 import hmac
 import json
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from collections.abc import Sequence
+from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import and_, func, or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -72,39 +74,52 @@ def _token_secret() -> str:
     return str(settings.SEARCH_CURSOR_SECRET or "")
 
 
-def sign_token(payload: Dict[str, Any]) -> str:
+def sign_token(payload: dict[str, Any]) -> str:
     if not _token_secret():
         raise HTTPException(503, "READING_UNAVAILABLE")
-    raw = base64.urlsafe_b64encode(
-        json.dumps(payload, separators=(",", ":")).encode()
-    ).decode().rstrip("=")
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
     mac = hmac.new(_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()
     return raw + "." + mac
 
 
-def unsign_token(token: str, purpose: str, user_id: str) -> Dict[str, Any]:
+def unsign_token(token: str, purpose: str, user_id: str) -> dict[str, Any]:
     try:
         if len(token) > 4096 or not _token_secret():
-            raise ValueError()
+            raise ValueError
         raw, mac = token.split(".")
         expected = hmac.new(_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(mac, expected):
-            raise ValueError()
+            raise ValueError
         data = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
         if data["purpose"] != purpose or data["user"] != user_id or data["expires"] < time.time():
-            raise ValueError()
+            raise ValueError
         return data
     except (ValueError, KeyError, TypeError):
         raise HTTPException(410, "READING_WINDOW_EXPIRED") from None
 
 
-def open_window_token(*, user_id: str, workspace_id: str, task_id: str, epoch: int,
-                      lower_seq: int, upper_seq: int, purpose: str = PURPOSE_WINDOW) -> str:
-    return sign_token(dict(
-        purpose=purpose, user=user_id, workspace=workspace_id, task=task_id,
-        epoch=str(epoch), lower_seq=str(lower_seq), upper_seq=str(upper_seq),
-        expires=int(time.time()) + WINDOW_TTL_SECONDS,
-    ))
+def open_window_token(
+    *,
+    user_id: str,
+    workspace_id: str,
+    task_id: str,
+    epoch: int,
+    lower_seq: int,
+    upper_seq: int,
+    purpose: str = PURPOSE_WINDOW,
+) -> str:
+    return sign_token(
+        {
+            "purpose": purpose,
+            "user": user_id,
+            "workspace": workspace_id,
+            "task": task_id,
+            "epoch": str(epoch),
+            "lower_seq": str(lower_seq),
+            "upper_seq": str(upper_seq),
+            "expires": int(time.time()) + WINDOW_TTL_SECONDS,
+        }
+    )
 
 
 # ── 未读判定 ──
@@ -124,8 +139,16 @@ def own_input_condition(user_id: str):
     )
 
 
-def _unread_query(db: Session, *, user_id: str, task_id: str, epoch: int,
-                  lower: int, upper: Optional[int] = None, limit: Optional[int] = None):
+def _unread_query(
+    db: Session,
+    *,
+    user_id: str,
+    task_id: str,
+    epoch: int,
+    lower: int,
+    upper: int | None = None,
+    limit: int | None = None,
+):
     """未读条目查询：active ∧ change_seq>frontier ∧ 无覆盖回执 ∧ 非本人输入。"""
     query = db.query(TaskReadingItem).filter(
         TaskReadingItem.task_id == task_id,
@@ -152,7 +175,7 @@ def _unread_query(db: Session, *, user_id: str, task_id: str, epoch: int,
 # ── 状态读取与序列化 ──
 
 
-def get_state(db: Session, user_id: str, task_id: str) -> Optional[TaskReadingState]:
+def get_state(db: Session, user_id: str, task_id: str) -> TaskReadingState | None:
     return (
         db.query(TaskReadingState)
         .filter(TaskReadingState.user_id == user_id, TaskReadingState.task_id == task_id)
@@ -160,7 +183,7 @@ def get_state(db: Session, user_id: str, task_id: str) -> Optional[TaskReadingSt
     )
 
 
-def lock_state(db: Session, user_id: str, task_id: str) -> Optional[TaskReadingState]:
+def lock_state(db: Session, user_id: str, task_id: str) -> TaskReadingState | None:
     return (
         db.query(TaskReadingState)
         .filter(TaskReadingState.user_id == user_id, TaskReadingState.task_id == task_id)
@@ -169,11 +192,11 @@ def lock_state(db: Session, user_id: str, task_id: str) -> Optional[TaskReadingS
     )
 
 
-def _str(value: Optional[int]) -> Optional[str]:
+def _str(value: int | None) -> str | None:
     return None if value is None else str(int(value))
 
 
-def serialize_resume(state: TaskReadingState) -> Optional[Dict[str, Any]]:
+def serialize_resume(state: TaskReadingState) -> dict[str, Any] | None:
     if not state.resume_message_id:
         return None
     return {
@@ -186,7 +209,7 @@ def serialize_resume(state: TaskReadingState) -> Optional[Dict[str, Any]]:
     }
 
 
-def serialize_state(db: Session, task: SddTask, state: Optional[TaskReadingState]) -> Dict[str, Any]:
+def serialize_state(db: Session, task: SddTask, state: TaskReadingState | None) -> dict[str, Any]:
     """按 8.1 合同序列化个人状态（GET 不写状态）。"""
     latest = int(task.reading_change_seq or 0)
     if state is None or int(state.reading_epoch or 0) != int(task.reading_epoch or 1):
@@ -220,7 +243,7 @@ def serialize_state(db: Session, task: SddTask, state: Optional[TaskReadingState
         .first()
         is not None
     )
-    unread_count: Dict[str, Any] = {"value": 0, "relation": "eq"}
+    unread_count: dict[str, Any] = {"value": 0, "relation": "eq"}
     if has_unread:
         rows = (
             _unread_query(
@@ -257,7 +280,7 @@ def serialize_state(db: Session, task: SddTask, state: Optional[TaskReadingState
 # ── 会话初始化（POST /reading-sessions；重复调用不重置基线）──
 
 
-def _find_cleared_notice(db: Session, task_id: str, epoch: int) -> Optional[TaskReadingItem]:
+def _find_cleared_notice(db: Session, task_id: str, epoch: int) -> TaskReadingItem | None:
     return (
         db.query(TaskReadingItem)
         .filter(
@@ -269,7 +292,7 @@ def _find_cleared_notice(db: Session, task_id: str, epoch: int) -> Optional[Task
     )
 
 
-def open_reading_session(db: Session, *, user_id: str, workspace_id: str, task_id: str) -> Dict[str, Any]:
+def open_reading_session(db: Session, *, user_id: str, workspace_id: str, task_id: str) -> dict[str, Any]:
     """首次建立基线 / 清空后懒迁移；返回当前状态与窗口令牌。"""
     task = lock_task_row(db, task_id)
     if task is None:
@@ -280,7 +303,7 @@ def open_reading_session(db: Session, *, user_id: str, workspace_id: str, task_i
         from app.domains.task.services import reading_backfill_service
 
         if not reading_backfill_service.ensure_reading_ready(db, task):
-            raise ReadingHistoryNotReady()
+            raise ReadingHistoryNotReady
     state = lock_state(db, user_id, task_id)
     current_epoch = int(task.reading_epoch or 1)
     if state is not None and int(state.reading_epoch or 0) == current_epoch:
@@ -318,13 +341,17 @@ def open_reading_session(db: Session, *, user_id: str, workspace_id: str, task_i
     return _session_payload(db, task, state)
 
 
-def _session_payload(db: Session, task: SddTask, state: TaskReadingState) -> Dict[str, Any]:
+def _session_payload(db: Session, task: SddTask, state: TaskReadingState) -> dict[str, Any]:
     epoch = int(state.reading_epoch)
     lower = int(state.read_frontier_seq or 0)
     upper = int(task.reading_change_seq or 0)
     token = open_window_token(
-        user_id=str(state.user_id), workspace_id=task.workspace_id, task_id=task.id,
-        epoch=epoch, lower_seq=lower, upper_seq=upper,
+        user_id=str(state.user_id),
+        workspace_id=task.workspace_id,
+        task_id=task.id,
+        epoch=epoch,
+        lower_seq=lower,
+        upper_seq=upper,
     )
     return {
         "state": serialize_state(db, task, state),
@@ -332,7 +359,7 @@ def _session_payload(db: Session, task: SddTask, state: TaskReadingState) -> Dic
     }
 
 
-def read_only_progress(db: Session, *, user_id: str, workspace_id: str, task_id: str) -> Dict[str, Any]:
+def read_only_progress(db: Session, *, user_id: str, workspace_id: str, task_id: str) -> dict[str, Any]:
     """GET /reading-progress：只读快照，不建状态、不写库、不触发通知。"""
     task = db.query(SddTask).filter(SddTask.id == task_id, SddTask.workspace_id == workspace_id).first()
     if task is None:
@@ -350,7 +377,7 @@ def compact_verified_prefix(
     *,
     upper: int,
     scan_budget: int = COMPACT_SCAN_BUDGET,
-) -> Tuple[bool, bool]:
+) -> tuple[bool, bool]:
     """按 change_seq 递增推进已证明可越过的前缀。
 
     返回 (advanced, compact_pending)：达到预算且未遇真实未读时 pending=True，
@@ -380,12 +407,14 @@ def compact_verified_prefix(
     keys = [row.item_key for row in rows]
     receipts = {
         receipt.item_key: int(receipt.seen_change_seq or 0)
-        for receipt in db.query(TaskReadingReceipt).filter(
+        for receipt in db.query(TaskReadingReceipt)
+        .filter(
             TaskReadingReceipt.user_id == state.user_id,
             TaskReadingReceipt.task_id == state.task_id,
             TaskReadingReceipt.reading_epoch == int(state.reading_epoch),
             TaskReadingReceipt.item_key.in_(keys),
-        ).all()
+        )
+        .all()
     }
     new_frontier = frontier
     stopped_at_unread = False
@@ -422,17 +451,17 @@ def _delete_covered_receipts(db: Session, state: TaskReadingState, *, up_to: int
 # ── 回执提交（POST /reading-receipts）──
 
 
-def _parse_receipt_items(raw_items: Sequence[Dict[str, Any]]) -> List[Tuple[str, int]]:
+def _parse_receipt_items(raw_items: Sequence[dict[str, Any]]) -> list[tuple[str, int]]:
     if len(raw_items) > MAX_RECEIPT_ITEMS:
         raise ReadingInvalidReceipt("TOO_MANY_ITEMS")
-    dedup: Dict[str, int] = {}
+    dedup: dict[str, int] = {}
     for entry in raw_items:
         if not isinstance(entry, dict):
-            raise ReadingInvalidReceipt()
+            raise ReadingInvalidReceipt
         item_key = str(entry.get("item_key") or "")
         if not item_key or len(item_key) > ITEM_KEY_MAX_LENGTH:
             raise ReadingInvalidReceipt("BAD_ITEM_KEY")
-        if not (item_key.startswith("message:") or item_key.startswith("operation:")):
+        if not (item_key.startswith(("message:", "operation:"))):
             raise ReadingInvalidReceipt("BAD_ITEM_KEY")
         try:
             change_seq = int(str(entry.get("change_seq") or ""))
@@ -451,30 +480,35 @@ def _upsert_receipts_max(
     user_id: str,
     task_id: str,
     epoch: int,
-    entries: Sequence[Tuple[str, int]],
-) -> List[str]:
+    entries: Sequence[tuple[str, int]],
+) -> list[str]:
     """同一条目使用最大 seen_change_seq 幂等合并；返回本次真正新增/更新的 key。"""
     keys = [item_key for item_key, _ in entries]
     existing = {
         receipt.item_key: receipt
-        for receipt in db.query(TaskReadingReceipt).filter(
+        for receipt in db.query(TaskReadingReceipt)
+        .filter(
             TaskReadingReceipt.user_id == user_id,
             TaskReadingReceipt.task_id == task_id,
             TaskReadingReceipt.reading_epoch == epoch,
             TaskReadingReceipt.item_key.in_(keys),
-        ).with_for_update().all()
+        )
+        .with_for_update()
+        .all()
     }
-    changed: List[str] = []
+    changed: list[str] = []
     for item_key, change_seq in entries:
         row = existing.get(item_key)
         if row is None:
-            db.add(TaskReadingReceipt(
-                user_id=user_id,
-                task_id=task_id,
-                reading_epoch=epoch,
-                item_key=item_key,
-                seen_change_seq=change_seq,
-            ))
+            db.add(
+                TaskReadingReceipt(
+                    user_id=user_id,
+                    task_id=task_id,
+                    reading_epoch=epoch,
+                    item_key=item_key,
+                    seen_change_seq=change_seq,
+                )
+            )
             changed.append(item_key)
         elif int(row.seen_change_seq or 0) < change_seq:
             row.seen_change_seq = change_seq
@@ -489,22 +523,22 @@ def submit_receipts(
     workspace_id: str,
     task_id: str,
     epoch: int,
-    raw_items: Sequence[Dict[str, Any]],
-    resume: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    raw_items: Sequence[dict[str, Any]],
+    resume: dict[str, Any] | None,
+) -> dict[str, Any]:
     """合并确切条目版本回执；可附带 CAS 续读位置。整个批次幂等可重放。"""
     task = lock_task_row(db, task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
     if int(epoch) != int(task.reading_epoch or 1):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
     state = lock_state(db, user_id, task_id)
     if state is None or int(state.reading_epoch or 0) != int(task.reading_epoch or 1):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
 
     entries = _parse_receipt_items(raw_items)
     keys = [item_key for item_key, _ in entries]
-    items_by_key: Dict[str, TaskReadingItem] = {}
+    items_by_key: dict[str, TaskReadingItem] = {}
     if keys:
         rows = (
             db.query(TaskReadingItem)
@@ -513,10 +547,10 @@ def submit_receipts(
         )
         items_by_key = {row.item_key: row for row in rows}
 
-    accepted: List[Dict[str, str]] = []
-    skipped: List[Dict[str, str]] = []
+    accepted: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
     state_changed = False
-    to_upsert: List[Tuple[str, int]] = []
+    to_upsert: list[tuple[str, int]] = []
     for item_key, change_seq in entries:
         item = items_by_key.get(item_key)
         if item is None or not item.active:
@@ -554,7 +588,7 @@ def submit_receipts(
     }
 
 
-def _apply_resume(db: Session, state: TaskReadingState, resume: Dict[str, Any]) -> Tuple[bool, bool]:
+def _apply_resume(db: Session, state: TaskReadingState, resume: dict[str, Any]) -> tuple[bool, bool]:
     """续读位置 CAS：expected_revision 不匹配时拒绝（保留已合并回执）。"""
     message_id = str(resume.get("message_id") or "").strip()
     if not message_id:
@@ -590,12 +624,16 @@ def _apply_resume(db: Session, state: TaskReadingState, resume: Dict[str, Any]) 
         return False, False
     state.resume_message_id = message_id
     state.resume_order_key = (
-        json.dumps([
-            item.order_created_at.isoformat() if item.order_created_at else None,
-            int(item.order_sort_seq) if item.order_sort_seq is not None else None,
-            str(item.order_message_id or message_id),
-        ], separators=(",", ":"))
-        if item.order_created_at else state.resume_order_key
+        json.dumps(
+            [
+                item.order_created_at.isoformat() if item.order_created_at else None,
+                int(item.order_sort_seq) if item.order_sort_seq is not None else None,
+                str(item.order_message_id or message_id),
+            ],
+            separators=(",", ":"),
+        )
+        if item.order_created_at
+        else state.resume_order_key
     )
     state.resume_content_seq = content_seq
     state.resume_offset_ratio = offset_ratio
@@ -615,23 +653,23 @@ def acknowledge_through_window(
     task_id: str,
     epoch: int,
     window_token: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """用户显式确认截至签名窗口上界的全部更新；只推进至 token.upper_seq。"""
     # 复用 /reading-sessions 签发的同一 window_token（purpose=reading-window）
     token = unsign_token(window_token, PURPOSE_WINDOW, user_id)
     if str(token.get("task")) != str(task_id) or str(token.get("workspace")) != str(workspace_id):
         raise HTTPException(410, "READING_WINDOW_EXPIRED")
     if str(token.get("epoch")) != str(int(epoch)):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
     upper = int(str(token.get("upper_seq") or "0"))
     task = lock_task_row(db, task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
     if int(epoch) != int(task.reading_epoch or 1):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
     state = lock_state(db, user_id, task_id)
     if state is None or int(state.reading_epoch or 0) != int(task.reading_epoch or 1):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
     state_changed = False
     if upper > int(state.read_frontier_seq or 0):
         state.read_frontier_seq = upper
@@ -649,15 +687,15 @@ def acknowledge_through_window(
 # ── compact 专用幂等写（POST /reading-progress/compact）──
 
 
-def compact_progress(db: Session, *, user_id: str, workspace_id: str, task_id: str, epoch: int) -> Dict[str, Any]:
+def compact_progress(db: Session, *, user_id: str, workspace_id: str, task_id: str, epoch: int) -> dict[str, Any]:
     task = lock_task_row(db, task_id)
     if task is None:
         raise HTTPException(404, "Task not found")
     if int(epoch) != int(task.reading_epoch or 1):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
     state = lock_state(db, user_id, task_id)
     if state is None or int(state.reading_epoch or 0) != int(task.reading_epoch or 1):
-        raise ReadingEpochChanged()
+        raise ReadingEpochChanged
     advanced, compact_pending = compact_verified_prefix(db, state, upper=int(task.reading_change_seq or 0))
     if advanced:
         state.state_revision = int(state.state_revision or 0) + 1
@@ -672,7 +710,7 @@ def compact_progress(db: Session, *, user_id: str, workspace_id: str, task_id: s
 # ── 有界批量补取阅读身份（GET /reading-items）──
 
 
-def get_reading_items(db: Session, *, task_id: str, message_ids: Sequence[str]) -> Dict[str, Any]:
+def get_reading_items(db: Session, *, task_id: str, message_ids: Sequence[str]) -> dict[str, Any]:
     ids = [str(mid).strip() for mid in message_ids if str(mid).strip()]
     if len(ids) > MAX_RECEIPT_ITEMS:
         raise ReadingInvalidReceipt("TOO_MANY_MESSAGE_IDS")
@@ -680,9 +718,7 @@ def get_reading_items(db: Session, *, task_id: str, message_ids: Sequence[str]) 
         return {"items": []}
     keys = [message_item_key(mid) for mid in ids]
     rows = (
-        db.query(TaskReadingItem)
-        .filter(TaskReadingItem.task_id == task_id, TaskReadingItem.item_key.in_(keys))
-        .all()
+        db.query(TaskReadingItem).filter(TaskReadingItem.task_id == task_id, TaskReadingItem.item_key.in_(keys)).all()
     )
     by_key = {row.item_key: row for row in rows}
     items = []
@@ -690,11 +726,13 @@ def get_reading_items(db: Session, *, task_id: str, message_ids: Sequence[str]) 
         row = by_key.get(message_item_key(mid))
         if row is None:
             continue
-        items.append({
-            "message_id": mid,
-            "item_key": row.item_key,
-            "change_seq": str(int(row.change_seq)),
-            "kind": row.kind,
-            "active": bool(row.active),
-        })
+        items.append(
+            {
+                "message_id": mid,
+                "item_key": row.item_key,
+                "change_seq": str(int(row.change_seq)),
+                "kind": row.kind,
+                "active": bool(row.active),
+            }
+        )
     return {"items": items}

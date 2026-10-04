@@ -2,8 +2,6 @@
 Product management API routes (products evolve through versions).
 """
 
-from typing import Optional
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
@@ -30,7 +28,7 @@ router = APIRouter(prefix="/management/products", tags=["Management Products"])
 @router.get("")
 def list_products(
     keyword: str = Query(default="", max_length=100),
-    status: Optional[str] = None,
+    status: str | None = None,
     include_versions: bool = Query(default=False),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -75,7 +73,7 @@ def create_product(
         )
         return product_service.serialize_product(product)
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.get("/{product_id}")
@@ -114,7 +112,7 @@ def update_product(
         )
         return product_service.serialize_product(updated)
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{product_id}")
@@ -129,7 +127,7 @@ def delete_product(
     try:
         product_service.delete_product(db, product)
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     audit_log(
         action="delete_product",
         outcome="success",
@@ -141,6 +139,7 @@ def delete_product(
 
 
 # ── Product base repository pool ───────────────────────────────────────────
+
 
 @router.post("/{product_id}/base-repos", status_code=201)
 def add_product_base_repo(
@@ -166,7 +165,7 @@ def add_product_base_repo(
             "repository_name": binding.repository.name if binding.repository else None,
         }
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{product_id}/base-repos/{repository_id}")
@@ -183,10 +182,11 @@ def remove_product_base_repo(
         product_service.remove_base_repo(db, product, repository_id)
         return {"msg": "Repository removed from product base"}
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 # ── Product versions ───────────────────────────────────────────────────────
+
 
 @router.post("/{product_id}/versions", status_code=201)
 def create_product_version(
@@ -224,7 +224,7 @@ def create_product_version(
         )
         return product_service.serialize_version(version)
     except (product_service.ProductServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
 
 @router.put("/{product_id}/versions/{version_id}")
@@ -249,7 +249,7 @@ def update_product_version(
         )
         return product_service.serialize_version(updated)
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{product_id}/versions/{version_id}")
@@ -265,7 +265,7 @@ def delete_product_version(
     try:
         product_service.delete_version(db, version)
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     audit_log(
         action="delete_product_version",
         outcome="success",
@@ -301,7 +301,7 @@ def add_baseline_exclusion(
             "repository_id": exclusion.repository_id,
         }
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.delete("/{product_id}/versions/{version_id}/baseline-exclusions/{repository_id}")
@@ -319,7 +319,7 @@ def remove_baseline_exclusion(
         product_service.remove_baseline_exclusion(db, version, repository_id)
         return {"msg": "Baseline repository exclusion removed"}
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @router.post("/{product_id}/versions/{version_id}/repos/batch-ref")
@@ -367,7 +367,7 @@ def update_version_repository_refs_batch(
             ],
         }
     except (product_service.ProductServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
 
 @router.post("/{product_id}/versions/{version_id}/repos", status_code=201)
@@ -411,7 +411,7 @@ def bind_version_repository(
             "ref_name": binding.ref_name,
         }
     except (product_service.ProductServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
 
 @router.put("/{product_id}/versions/{version_id}/repos/{repository_id}")
@@ -455,7 +455,7 @@ def update_version_repository_ref(
             "ref_name": binding.ref_name,
         }
     except (product_service.ProductServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
 
 @router.delete("/{product_id}/versions/{version_id}/repos/{repository_id}")
@@ -473,10 +473,11 @@ def unbind_version_repository(
         product_service.unbind_version_repo(db, version, repository_id)
         return {"msg": "Repository unbound from product version"}
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 # ── Legacy product-level binding (compat: binds to the latest version) ─────
+
 
 @router.post("/{product_id}/repos", status_code=201)
 def bind_product_repository_legacy(
@@ -509,7 +510,7 @@ def bind_product_repository_legacy(
             "ref_name": binding.ref_name,
         }
     except (product_service.ProductServiceError, GitRefAccessError) as exc:
-        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+        raise HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc)) from exc
 
 
 @router.delete("/{product_id}/repos/{repository_id}")
@@ -528,4 +529,4 @@ def unbind_product_repository_legacy(
         product_service.unbind_version_repo(db, product.versions[-1], repository_id)
         return {"msg": "Repository unbound from product"}
     except product_service.ProductServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

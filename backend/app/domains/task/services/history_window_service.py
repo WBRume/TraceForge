@@ -5,10 +5,11 @@ reading_resume_service 共同调用；保持旧搜索接口行为不变。
 签名/授权仍由各调用方自带（搜索 cursor 用 search purpose，
 阅读窗口令牌用 reading purpose），本模块只负责窗口几何。
 """
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import and_, or_
@@ -19,18 +20,18 @@ from app.domains.task.models.chat import ChatMessage
 ORDER_COLUMNS = (ChatMessage.created_at, ChatMessage.sort_seq, ChatMessage.id)
 
 
-def order_key_of(message: ChatMessage) -> Tuple[datetime, Optional[int], str]:
+def order_key_of(message: ChatMessage) -> tuple[datetime, int | None, str]:
     return (message.created_at, message.sort_seq, str(message.id))
 
 
-def parse_order_key(raw: Sequence) -> Tuple[datetime, Optional[int], str]:
+def parse_order_key(raw: Sequence) -> tuple[datetime, int | None, str]:
     created, seq, identity = raw[0], raw[1], raw[2]
     if isinstance(created, str):
         created = datetime.fromisoformat(created)
     return (created, int(seq) if seq is not None else None, str(identity))
 
 
-def keyset(key: Tuple[datetime, Optional[int], str], direction: str):
+def keyset(key: tuple[datetime, int | None, str], direction: str):
     """双向 keyset 谓词：(created_at, sort_seq, id) 严格前/后。"""
     created, seq, identity = key
     if isinstance(created, str):
@@ -46,9 +47,9 @@ def keyset(key: Tuple[datetime, Optional[int], str], direction: str):
 def find_neighbor_message(
     db: Session,
     task_id: str,
-    key: Tuple[datetime, Optional[int], str],
+    key: tuple[datetime, int | None, str],
     direction: str,
-) -> Optional[ChatMessage]:
+) -> ChatMessage | None:
     """同任务内按历史排序键找最近的一条仍存在消息（源被删后的邻域定位）。"""
     query = db.query(ChatMessage).filter(ChatMessage.task_id == task_id)
     if direction == "before":
@@ -90,7 +91,7 @@ def fetch_bounded_window(
     key = order_key_of(anchor)
     left, has_before = fetch(key, "before", before)
     right, has_after = fetch(key, "after", after)
-    rows: List[ChatMessage] = left + [anchor] + right
+    rows: list[ChatMessage] = [*left, anchor, *right]
     return {
         "anchor": anchor,
         "rows": rows,

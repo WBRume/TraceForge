@@ -12,12 +12,10 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi import WebSocketDisconnect
 
-
 BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if BACKEND_ROOT not in sys.path:
     sys.path.insert(0, BACKEND_ROOT)
 
-from app.domains.task.models.task import TaskStatus  # noqa: E402
 from app.domains.task.services import task_session_service  # noqa: E402
 from app.domains.websocket.ws import task_handler  # noqa: E402
 from app.domains.websocket.ws.task_handler import (  # noqa: E402
@@ -34,7 +32,7 @@ class _FakeWebSocket:
     async def receive_json(self):
         if self.incoming:
             return self.incoming.pop(0)
-        raise WebSocketDisconnect()
+        raise WebSocketDisconnect
 
     async def send_json(self, payload):
         self.sent_json.append(payload)
@@ -42,7 +40,7 @@ class _FakeWebSocket:
 
 class _DisconnectedWebSocket(_FakeWebSocket):
     async def send_json(self, payload):
-        raise WebSocketDisconnect()
+        raise WebSocketDisconnect
 
 
 class _EvictedWebSocket(_FakeWebSocket):
@@ -137,10 +135,18 @@ async def test_interrupted_retry_busy_returns_failed_ack_and_releases_claim(monk
     monkeypatch.setattr(handler, "_claim_chat_message", AsyncMock(return_value=claim))
     release = AsyncMock()
     monkeypatch.setattr(handler, "_mark_chat_claim_failed", release)
-    monkeypatch.setattr(handler, "_resume_interrupted_task", AsyncMock(side_effect=
-        task_session_service.TaskSessionUndoError("Old attempt still stopping", code="TASK_SESSION_BUSY")))
-    await handler._dispatch({"type": "chat_message", "payload": {
-        "content": "continue", "client_message_id": "retry-1"}})
+    monkeypatch.setattr(
+        handler,
+        "_resume_interrupted_task",
+        AsyncMock(
+            side_effect=task_session_service.TaskSessionUndoError(
+                "Old attempt still stopping", code="TASK_SESSION_BUSY"
+            )
+        ),
+    )
+    await handler._dispatch(
+        {"type": "chat_message", "payload": {"content": "continue", "client_message_id": "retry-1"}}
+    )
     release.assert_awaited_once_with(claim)
     ack = manager.outbound.sent_json[-1]
     assert ack["payload"]["status"] == "failed"
@@ -205,28 +211,38 @@ async def test_run_still_reports_unexpected_read_failure(monkeypatch):
 @pytest.mark.asyncio
 async def test_chat_message_returns_durable_preparation_receipt(monkeypatch):
     from app.domains.task.services import chat_submission_service
+
     manager = _FakeConnectionManager()
     receipt = {"id": "receipt-1", "task_id": "task-1", "client_message_id": "client-1", "status": "PREPARING"}
     accept = AsyncMock(return_value=receipt)
     monkeypatch.setattr(task_handler, "run_db", AsyncMock(return_value="CODING"))
     monkeypatch.setattr(chat_submission_service, "accept", accept)
-    await _handler(manager=manager)._dispatch({"type": "chat_message", "payload": {
-        "content": "hello", "client_message_id": "client-1"}})
+    await _handler(manager=manager)._dispatch(
+        {"type": "chat_message", "payload": {"content": "hello", "client_message_id": "client-1"}}
+    )
     assert manager.outbound.sent_json == [{"type": "chat_submission_update", "payload": receipt}]
     assert manager.room_messages == []  # No invented formal chat message before checkpoint.
-    accept.assert_awaited_once_with(task_id="task-1", actor_id="user-1",
-        client_message_id="client-1", content="hello", metadata={})
+    accept.assert_awaited_once_with(
+        task_id="task-1", actor_id="user-1", client_message_id="client-1", content="hello", metadata={}
+    )
 
 
 @pytest.mark.asyncio
 async def test_duplicate_chat_message_returns_existing_receipt(monkeypatch):
     from app.domains.task.services import chat_submission_service
+
     manager = _FakeConnectionManager()
-    receipt = {"id": "receipt-existing", "chat_message_id": "message-existing", "ai_job_id": "job-existing", "status": "EXECUTING"}
+    receipt = {
+        "id": "receipt-existing",
+        "chat_message_id": "message-existing",
+        "ai_job_id": "job-existing",
+        "status": "EXECUTING",
+    }
     monkeypatch.setattr(task_handler, "run_db", AsyncMock(return_value="CODING"))
     monkeypatch.setattr(chat_submission_service, "accept", AsyncMock(return_value=receipt))
-    await _handler(manager=manager)._dispatch({"type": "chat_message", "payload": {
-        "content": "hello", "client_message_id": "client-1"}})
+    await _handler(manager=manager)._dispatch(
+        {"type": "chat_message", "payload": {"content": "hello", "client_message_id": "client-1"}}
+    )
     assert manager.outbound.sent_json[0]["payload"] == receipt
 
 
@@ -281,7 +297,8 @@ async def test_unexpected_chat_failure_acks_failed(monkeypatch):
     handler = _handler(manager=manager)
     with pytest.raises(RuntimeError):
         await handler._persist_chat_message(
-            SimpleNamespace(content="hello", client_message_id="client-1", metadata={}), claim,
+            SimpleNamespace(content="hello", client_message_id="client-1", metadata={}),
+            claim,
         )
 
     mark_failed.assert_awaited_once_with(claim)

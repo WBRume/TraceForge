@@ -28,8 +28,7 @@ from app.domains.asset.services.document.versioning import (  # noqa: E402
 )
 from tests.workspace_asset.test_workspace_asset_boundary import _build_db, _seed_workspace, _session  # noqa: E402
 
-
-SPEC_MD = "# Requirement\n\nLogin must work.\n".encode("utf-8")
+SPEC_MD = b"# Requirement\n\nLogin must work.\n"
 
 
 def _seed_task_with_project(db, tmp_path, workspace_id="ws-docver", task_id="task-docver"):

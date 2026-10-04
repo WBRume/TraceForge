@@ -11,10 +11,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
+
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from sqlalchemy.orm import Session
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs.constants import FINAL_STATUSES
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID
@@ -30,9 +31,9 @@ def attempt_is_current_sync(
     db: Session,
     *,
     job_id: str,
-    run_token: Optional[str],
+    run_token: str | None,
     allow_waiting_hitl: bool = False,
-    allowed_statuses: Optional[set] = None,
+    allowed_statuses: set | None = None,
 ) -> bool:
     """Check the durable attempt fence inside the same DB transaction as a write."""
     if not run_token:
@@ -54,25 +55,50 @@ def attempt_is_current_sync(
     )
 
 
+def _active_job_values(
+    job, status, progress, message, error_message, session_id, agent_backend, context_patch, result_patch
+):
+    values: dict[str, Any] = {}
+    if status is not None:
+        values["status"] = status
+    if progress is not None:
+        values["progress"] = max(0, min(100, int(progress)))
+    if message is not None:
+        values["message"] = message
+    if error_message is not None:
+        values["error_message"] = error_message
+    if session_id is not None:
+        values["session_id"] = session_id
+    if agent_backend is not None:
+        values["agent_backend"] = agent_backend
+    if context_patch:
+        values["context_json"] = merge_json(job.context_json, context_patch)
+    if result_patch:
+        values["result_json"] = merge_json(job.result_json, result_patch)
+    if status == AiJobStatus.RUNNING and job.started_at is None:
+        values["started_at"] = datetime.utcnow()
+    return values
+
+
 def update_job_state_sync(
     job_id: str,
     *,
-    status: Optional[AiJobStatus] = None,
-    progress: Optional[int] = None,
-    message: Optional[str] = None,
-    context_patch: Optional[Dict[str, Any]] = None,
-    result_patch: Optional[Dict[str, Any]] = None,
-    error_message: Optional[str] = None,
-    session_id: Optional[str] = None,
-    agent_backend: Optional[str] = None,
+    status: AiJobStatus | None = None,
+    progress: int | None = None,
+    message: str | None = None,
+    context_patch: dict[str, Any] | None = None,
+    result_patch: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    session_id: str | None = None,
+    agent_backend: str | None = None,
     finalize: bool = False,
-    run_token: Optional[str] = None,
-    process_started: Optional[bool] = None,
-    termination_confirmed_dead: Optional[bool] = None,
-    failure_code: Optional[str] = None,
+    run_token: str | None = None,
+    process_started: bool | None = None,
+    termination_confirmed_dead: bool | None = None,
+    failure_code: str | None = None,
     remaining_pids: tuple = (),
-    evidence: Optional[Any] = None,
-) -> Optional[Dict[str, Any]]:
+    evidence: Any | None = None,
+) -> dict[str, Any] | None:
     """状态更新 DB 段（线程内执行，由 run_db 包装）。
 
     返回 {"payload": ..., "broadcast": bool, "is_final": bool}；
@@ -83,12 +109,12 @@ def update_job_state_sync(
     process_started/termination_confirmed_dead 只作为无身份 fallback 交给
     唯一 resolver。
     """
+    from app.domains.ai.services import ai_job_convergence_service as convergence
     from app.domains.ai.services.ai_job_convergence_service import (
         AttemptConvergenceRequest,
         ConvergenceIntent,
         resolve_attempt_evidence,
     )
-    from app.domains.ai.services import ai_job_convergence_service as convergence
 
     is_terminal_write = bool(finalize) or status in FINAL_STATUSES
     db = SessionLocal()
@@ -136,7 +162,9 @@ def update_job_state_sync(
             return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
         if job.channel == AiJobChannel.TASK_CHAT and job.task_id and job.session_revision is not None:
             task = db.query(SddTask).filter(SddTask.id == job.task_id).first()
-            if not task or int(task.session_revision if task.session_revision is not None else -1) != int(job.session_revision):
+            if not task or int(task.session_revision if task.session_revision is not None else -1) != int(
+                job.session_revision
+            ):
                 # An undo or a newer session generation has fenced this worker.
                 # Do not let a late callback resurrect the old job state.
                 return {"payload": serialize_job(job), "broadcast": False, "is_final": False}
@@ -146,25 +174,10 @@ def update_job_state_sync(
             AiJobStatus.WAITING_HITL,
             AiJobStatus.INTERRUPTED,
         }
-        values: Dict[str, Any] = {}
-        if status is not None:
-            values["status"] = status
-        if progress is not None:
-            values["progress"] = max(0, min(100, int(progress)))
-        if message is not None:
-            values["message"] = message
-        if error_message is not None:
-            values["error_message"] = error_message
-        if session_id is not None:
-            values["session_id"] = session_id
-        if agent_backend is not None:
-            values["agent_backend"] = agent_backend
-        if context_patch:
-            values["context_json"] = merge_json(job.context_json, context_patch)
-        if result_patch:
-            values["result_json"] = merge_json(job.result_json, result_patch)
-        if status == AiJobStatus.RUNNING and job.started_at is None:
-            values["started_at"] = datetime.utcnow()
+        values = _active_job_values(
+            job, status, progress, message, error_message, session_id, agent_backend, context_patch, result_patch
+        )
+
         # 单条 affected-row CAS（doc §4.5.3）：token/boot/状态/取消位全部在
         # UPDATE 谓词中判定，消除 SELECT 与 UPDATE 之间的窗口。affected != 1
         # 时按 fenced no-op 处理，不得广播调用方准备的旧 payload。
@@ -182,6 +195,7 @@ def update_job_state_sync(
         if int(affected or 0) == 1:
             db.expire_all()
             from app.domains.notification.services.task_awareness import capture_job
+
             capture_job(db, db.get(SddAiJob, job_id))
         db.commit()
         # synchronize_session=False 不会同步 identity map；expire 后重读，

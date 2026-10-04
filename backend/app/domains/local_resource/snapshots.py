@@ -1,6 +1,8 @@
 """Opaque checkpoint locators route undo to the task's bound resource host."""
+
 import base64
 from urllib.parse import urlsplit
+
 from app.core.offload import run_file_job
 from app.domains.local_resource.client import ResourceClient
 from app.domains.local_resource.service import task_profile

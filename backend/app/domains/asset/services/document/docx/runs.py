@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
-
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from app.domains.asset.services.document.docx.xml_utils import (
     DOCX_NS_MAP,
@@ -16,16 +15,14 @@ from app.domains.asset.services.document.docx.xml_utils import (
 )
 
 
-def _word_bool(node: Optional[ET.Element]) -> bool:
+def _word_bool(node: ET.Element | None) -> bool:
     if node is None:
         return False
     raw = str(node.attrib.get(xml_attr("val"), "") or "").strip().lower()
-    if raw in {"0", "false", "off", "none"}:
-        return False
-    return True
+    return raw not in {"0", "false", "off", "none"}
 
 
-def _word_highlight_to_hex(name: str) -> Optional[str]:
+def _word_highlight_to_hex(name: str) -> str | None:
     palette = {
         "yellow": "#fef08a",
         "green": "#86efac",
@@ -46,7 +43,7 @@ def _word_highlight_to_hex(name: str) -> Optional[str]:
     return palette.get(name.strip().lower())
 
 
-def _hex_color(raw: str) -> Optional[str]:
+def _hex_color(raw: str) -> str | None:
     normalized = raw.strip().replace("#", "").upper()
     if not normalized or normalized in {"AUTO", "NONE"}:
         return None
@@ -55,33 +52,8 @@ def _hex_color(raw: str) -> Optional[str]:
     return None
 
 
-def extract_run_style(run: ET.Element) -> Dict[str, Any]:
-    """提取 rPr 字符样式（粗体/斜体/下划线/颜色/字号/字体等）。"""
-    style: Dict[str, Any] = {}
-    r_pr = run.find("./w:rPr", DOCX_NS_MAP)
-    if r_pr is None:
-        return style
-
-    if _word_bool(r_pr.find("./w:b", DOCX_NS_MAP)):
-        style["bold"] = True
-    if _word_bool(r_pr.find("./w:i", DOCX_NS_MAP)):
-        style["italic"] = True
-
-    underline = r_pr.find("./w:u", DOCX_NS_MAP)
-    if underline is not None:
-        raw = str(underline.attrib.get(xml_attr("val"), "") or "").strip().lower()
-        if raw not in {"none", "0", "false", "off"}:
-            style["underline"] = True
-
-    if _word_bool(r_pr.find("./w:strike", DOCX_NS_MAP)) or _word_bool(r_pr.find("./w:dstrike", DOCX_NS_MAP)):
-        style["strike"] = True
-
-    vert_align = r_pr.find("./w:vertAlign", DOCX_NS_MAP)
-    if vert_align is not None:
-        align = str(vert_align.attrib.get(xml_attr("val"), "") or "").strip().lower()
-        if align in {"superscript", "subscript"}:
-            style[align] = True
-
+def _extract_font_properties(r_pr: ET.Element) -> dict[str, Any]:
+    style: dict[str, Any] = {}
     color_node = r_pr.find("./w:color", DOCX_NS_MAP)
     if color_node is not None:
         color = _hex_color(str(color_node.attrib.get(xml_attr("val"), "") or ""))
@@ -109,13 +81,44 @@ def extract_run_style(run: ET.Element) -> Dict[str, Any]:
         )
         if font_name:
             style["font_name"] = font_name
+    return style
+
+
+def extract_run_style(run: ET.Element) -> dict[str, Any]:
+    """提取 rPr 字符样式（粗体/斜体/下划线/颜色/字号/字体等）。"""
+    style: dict[str, Any] = {}
+    r_pr = run.find("./w:rPr", DOCX_NS_MAP)
+    if r_pr is None:
+        return style
+
+    if _word_bool(r_pr.find("./w:b", DOCX_NS_MAP)):
+        style["bold"] = True
+    if _word_bool(r_pr.find("./w:i", DOCX_NS_MAP)):
+        style["italic"] = True
+
+    underline = r_pr.find("./w:u", DOCX_NS_MAP)
+    if underline is not None:
+        raw = str(underline.attrib.get(xml_attr("val"), "") or "").strip().lower()
+        if raw not in {"none", "0", "false", "off"}:
+            style["underline"] = True
+
+    if _word_bool(r_pr.find("./w:strike", DOCX_NS_MAP)) or _word_bool(r_pr.find("./w:dstrike", DOCX_NS_MAP)):
+        style["strike"] = True
+
+    vert_align = r_pr.find("./w:vertAlign", DOCX_NS_MAP)
+    if vert_align is not None:
+        align = str(vert_align.attrib.get(xml_attr("val"), "") or "").strip().lower()
+        if align in {"superscript", "subscript"}:
+            style[align] = True
+
+    style.update(_extract_font_properties(r_pr))
 
     return style
 
 
 def extract_run_text(run: ET.Element) -> str:
     """提取 run 内的可见文本（w:t/tab/br/sym/instrText 等）。"""
-    parts: List[str] = []
+    parts: list[str] = []
     for node in list(run):
         lname = local_name(node.tag)
         if lname == "t" and node.text:
@@ -133,11 +136,11 @@ def extract_run_text(run: ET.Element) -> str:
     return "".join(parts)
 
 
-def merge_adjacent_runs(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def merge_adjacent_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """合并样式相同的相邻 run，跳过空文本。"""
     if not runs:
         return []
-    merged: List[Dict[str, Any]] = []
+    merged: list[dict[str, Any]] = []
     for run in runs:
         text = str(run.get("text") or "")
         if not text:
@@ -153,5 +156,5 @@ def merge_adjacent_runs(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return merged
 
 
-def render_runs_to_text(runs: List[Dict[str, Any]]) -> str:
+def render_runs_to_text(runs: list[dict[str, Any]]) -> str:
     return "".join(str(item.get("text") or "") for item in runs)

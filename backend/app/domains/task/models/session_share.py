@@ -15,8 +15,15 @@ TaskShareSuggestion：INPUT 模式下访客提交的待采纳输入；ADOPTED �
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, DateTime, Enum, Text, Integer,
-    UniqueConstraint, Index, func,
+    Column,
+    DateTime,
+    Enum,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
 )
 
 from app.database import Base
@@ -24,13 +31,13 @@ from app.domains.auth.models.user import generate_uuid
 
 
 class TaskSessionShareMode(str, PyEnum):
-    READ = "READ"    # 只读会话分享（未登录/无权限访客进入只读页）
+    READ = "READ"  # 只读会话分享（未登录/无权限访客进入只读页）
     INPUT = "INPUT"  # 邀请输入（任何人只能提交 prompt 给发起人）
 
 
 class TaskShareSuggestionStatus(str, PyEnum):
-    PENDING = "PENDING"    # 待发起人处理
-    ADOPTED = "ADOPTED"    # 已采纳到草稿（不表示已发送）
+    PENDING = "PENDING"  # 待发起人处理
+    ADOPTED = "ADOPTED"  # 已采纳到草稿（不表示已发送）
     DISMISSED = "DISMISSED"  # 已忽略（第一版不可恢复）
 
 
@@ -85,7 +92,10 @@ class TaskShareSuggestion(Base):
         UniqueConstraint("share_id", "visitor_id", "client_submission_id", name="uq_task_share_suggestion_idem"),
         Index(
             "ix_task_share_suggestions_recipient_task_status",
-            "recipient_user_id", "task_id", "status", "created_at",
+            "recipient_user_id",
+            "task_id",
+            "status",
+            "created_at",
         ),
     )
 

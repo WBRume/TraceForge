@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Optional
 
 from app.config import settings
 from app.core.logging import get_logger
@@ -28,6 +27,7 @@ async def _scan_once() -> int:
     若任务仍有活跃 WebSocket 窗口（有人在窗口），本次不自动提交，
     等待最后一人离开后由后续扫描提交。
     """
+
     def _due_sync() -> list[dict]:
         db = SessionLocal()
         try:
@@ -39,10 +39,7 @@ async def _scan_once() -> int:
                 )
                 .all()
             )
-            return [
-                {"id": str(row.id), "task_id": str(row.task_id), "creator_id": str(row.creator_id)}
-                for row in rows
-            ]
+            return [{"id": str(row.id), "task_id": str(row.task_id), "creator_id": str(row.creator_id)} for row in rows]
         finally:
             db.close()
 
@@ -71,7 +68,7 @@ async def _scan_once() -> int:
 
 
 async def run_pre_input_worker(
-    stop_event: Optional[asyncio.Event] = None,
+    stop_event: asyncio.Event | None = None,
 ) -> None:
     """后台入口。启动时由 FastAPI startup 创建任务。"""
     logger.info("Pre input deadline worker started")

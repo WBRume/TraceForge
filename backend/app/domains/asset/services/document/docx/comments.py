@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
-
 import xml.etree.ElementTree as ET
+from typing import Any
 
 from app.domains.asset.services.document.docx.xml_utils import (
     DOCX_NS_MAP,
@@ -35,9 +34,9 @@ def extract_comment_text(node: ET.Element) -> str:
     return "\n".join(lines).strip()
 
 
-def parse_comments(comments_root: Optional[ET.Element]) -> Dict[str, Dict[str, Any]]:
+def parse_comments(comments_root: ET.Element | None) -> dict[str, dict[str, Any]]:
     """解析 comments.xml → {comment_id: 元数据+正文}。"""
-    comments: Dict[str, Dict[str, Any]] = {}
+    comments: dict[str, dict[str, Any]] = {}
     if comments_root is None:
         return comments
 

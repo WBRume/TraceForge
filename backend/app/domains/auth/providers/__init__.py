@@ -49,7 +49,7 @@ def list_enabled_providers() -> list["ProviderInfo"]:
     from app.domains.auth.schemas.oauth import ProviderInfo  # 局部导入避免循环
 
     providers: list[ProviderInfo] = []
-    for name, cls in PROVIDER_REGISTRY.items():
+    for _name, cls in PROVIDER_REGISTRY.items():
         instance = cls()
         if not instance.is_configured():
             continue
@@ -65,5 +65,7 @@ def list_enabled_providers() -> list["ProviderInfo"]:
 
 
 # ── 底部集中 import 触发注册（新增 provider 时只加这一行）──
-from . import github  # noqa: E402,F401
-from . import stub  # noqa: E402,F401  # dev-only 本地 Demo provider（OAUTH_STUB_ENABLED=false 时不可见/不可用）
+from . import (  # noqa: E402  # Providers register against the registry defined above.
+    github,  # noqa: F401
+    stub,  # noqa: F401  # dev-only 本地 Demo provider（OAUTH_STUB_ENABLED=false 时不可见/不可用）
+)

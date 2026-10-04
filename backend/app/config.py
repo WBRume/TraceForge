@@ -5,17 +5,16 @@ TraceForge Platform - Global Configuration
 
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _ENV_FILE = _BACKEND_ROOT / ".env"
 
 
-def _resolve_backend_path(raw_value: Optional[str], *, fallback: str) -> str:
+def _resolve_backend_path(raw_value: str | None, *, fallback: str) -> str:
     raw = str(raw_value or "").strip()
     candidate = raw or str(fallback or "").strip()
     if not candidate:
@@ -33,9 +32,9 @@ class Settings(BaseSettings):
     LOCAL_RESOURCES_ALLOWED_NETWORKS: str = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128"
 
     DIAGNOSIS_PLAYBOOK_WORKER_ENABLED: bool = False
-    DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL: Literal[
-        "ADVISORY_GUARD", "WORKTREE_BROKER", "CONTAINER_SANDBOX"
-    ] = "ADVISORY_GUARD"
+    DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL: Literal["ADVISORY_GUARD", "WORKTREE_BROKER", "CONTAINER_SANDBOX"] = (
+        "ADVISORY_GUARD"
+    )
     DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT: str = str(_BACKEND_ROOT / "tmp" / "playbook_evidence")
     DIAGNOSIS_PLAYBOOK_TOOL_URL: str = "http://127.0.0.1:8000/api/playbook-tools"
     # Trusted deployment modules only; never populated from an API/spec input.
@@ -85,9 +84,9 @@ class Settings(BaseSettings):
     GIT_OFFLOAD_WORKERS: int = 4
     FILE_OFFLOAD_WORKERS: int = 2
     # 在飞任务上限（信号量背压）：提交方事件循环等待而非无限排队；默认 worker+排队额度
-    DB_OFFLOAD_MAX_INFLIGHT: Optional[int] = None
-    GIT_OFFLOAD_MAX_INFLIGHT: Optional[int] = None
-    FILE_OFFLOAD_MAX_INFLIGHT: Optional[int] = None
+    DB_OFFLOAD_MAX_INFLIGHT: int | None = None
+    GIT_OFFLOAD_MAX_INFLIGHT: int | None = None
+    FILE_OFFLOAD_MAX_INFLIGHT: int | None = None
     # 本地 git 命令硬超时（秒）：subprocess_runner 统一注入，超时整组回收，防止 offload 线程被挂死 git 永久占用
     GIT_COMMAND_TIMEOUT_SECONDS: int = 180
 
@@ -248,6 +247,7 @@ class Settings(BaseSettings):
         """Resolve SKILLS_STORAGE_ROOT against the backend root so the skill
         package path does not change when the process CWD changes."""
         return _resolve_backend_path(self.SKILLS_STORAGE_ROOT, fallback="storage/skills")
+
     API_MOCK_TEMP_ROOT: str = "tmp/api_mock_workspace"
     CLI_STATE_ROOT: str = "tmp/cli_state"
     WORKSPACE_ARCHIVE_ROOT: str = "tmp/workspace_archive"
@@ -258,10 +258,29 @@ class Settings(BaseSettings):
     # Directory names pruned at any depth. Tracked files always remain protected.
     # JSON array in environment; an empty array disables directory exclusions.
     TASK_SESSION_SNAPSHOT_EXCLUDED_DIRS: list[str] = [
-        "node_modules", "dist", "build", "coverage", ".next", ".nuxt", ".output",
-        ".vite", ".cache", ".turbo", ".parcel-cache", ".svelte-kit",
-        "target", ".gradle", ".venv", "venv", "__pycache__", ".pytest_cache",
-        ".mypy_cache", ".ruff_cache", ".tox", ".nox", "htmlcov",
+        "node_modules",
+        "dist",
+        "build",
+        "coverage",
+        ".next",
+        ".nuxt",
+        ".output",
+        ".vite",
+        ".cache",
+        ".turbo",
+        ".parcel-cache",
+        ".svelte-kit",
+        "target",
+        ".gradle",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".nox",
+        "htmlcov",
     ]
     TASK_SESSION_REVERT_WAIT_SECONDS: float = 30.0
     CLI_BOOTSTRAP_TIMEOUT: int = 1800  # seconds
@@ -316,9 +335,9 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5177",
         "http://127.0.0.1:5178",
         "null",
-        "http://localhost:3000"
+        "http://localhost:3000",
     ]
-    CORS_ORIGIN_REGEX: Optional[str] = r"^https?://(localhost|127\.0\.0\.1):\d+$"
+    CORS_ORIGIN_REGEX: str | None = r"^https?://(localhost|127\.0\.0\.1):\d+$"
 
     # ── Logging ──
     LOG_LEVEL: str = "INFO"

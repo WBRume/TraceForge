@@ -30,9 +30,15 @@ def test_agent_session_adapts_remote_events_and_closes(monkeypatch, backend_name
 
     monkeypatch.setattr(selection, "run_agent_backend_with_logging", run)
     events, logs = [], []
-    result = asyncio.run(cli_sync_service.run_agent_session(
-        backend_name, "workspace", "generate cases", on_event=events.append, on_output=logs.append,
-    ))
+    result = asyncio.run(
+        cli_sync_service.run_agent_session(
+            backend_name,
+            "workspace",
+            "generate cases",
+            on_event=events.append,
+            on_output=logs.append,
+        )
+    )
     factory.assert_called_once_with(backend_name, task_id=None)
     assert result == (['[{"name":"ok"}]'], ['[{"name":"ok"}]'])
     assert captured[0].project_path == "workspace"
@@ -53,7 +59,8 @@ def test_agent_session_uses_unified_claude_configuration(monkeypatch):
 def test_remote_cancellation_is_a_job_cancellation(monkeypatch):
     backend = SimpleNamespace(
         capabilities=SimpleNamespace(execution_kind="REMOTE_SESSION"),
-        close=AsyncMock(), cancel=AsyncMock(),
+        close=AsyncMock(),
+        cancel=AsyncMock(),
     )
     monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _, *, task_id=None: backend)
 
@@ -62,9 +69,14 @@ def test_remote_cancellation_is_a_job_cancellation(monkeypatch):
 
     monkeypatch.setattr(selection, "run_agent_backend_with_logging", run)
     with pytest.raises(JobCancelledError):
-        asyncio.run(cli_sync_service.run_agent_session(
-            "dsh", "workspace", "prompt", should_cancel=lambda: True,
-        ))
+        asyncio.run(
+            cli_sync_service.run_agent_session(
+                "dsh",
+                "workspace",
+                "prompt",
+                should_cancel=lambda: True,
+            )
+        )
     backend.cancel.assert_awaited_once()
     backend.close.assert_awaited_once()
 
@@ -76,7 +88,9 @@ def test_agent_failure_propagates_and_closes(monkeypatch):
     )
     monkeypatch.setattr(selection, "create_agent_backend_by_name", lambda _, *, task_id=None: backend)
     monkeypatch.setattr(
-        selection, "run_agent_backend_with_logging", AsyncMock(side_effect=RuntimeError("backend unavailable")),
+        selection,
+        "run_agent_backend_with_logging",
+        AsyncMock(side_effect=RuntimeError("backend unavailable")),
     )
     with pytest.raises(RuntimeError, match="backend unavailable"):
         asyncio.run(cli_sync_service.run_agent_session("dsh", "workspace", "prompt"))

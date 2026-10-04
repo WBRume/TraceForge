@@ -1,4 +1,5 @@
 from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -34,7 +35,9 @@ class TaskExecutionInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_binding(self):
-        if self.location == "LOCAL" and (not self.resource_id or not self.profile_revision or self.profile_revision < 1):
+        if self.location == "LOCAL" and (
+            not self.resource_id or not self.profile_revision or self.profile_revision < 1
+        ):
             raise ValueError("LOCAL execution requires resource_id and profile_revision")
         if self.location == "SERVER" and (self.resource_id is not None or self.profile_revision is not None):
             raise ValueError("SERVER execution cannot bind a local resource")

@@ -85,8 +85,10 @@ def _managed(returncode=0, pid=99999999, known=()):
 def test_group_unknown_must_not_become_dead():
     """root 退出 + group UNKNOWN：没有 LIVE 也绝不允许 CONFIRMED_DEAD。"""
     managed = _managed()
-    with patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())), \
-         patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.UNKNOWN, ())):
+    with (
+        patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())),
+        patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.UNKNOWN, ())),
+    ):
         result = tree_mod.inspect_process_tree_snapshot(managed)
     assert result.state == ProcessProbeState.UNKNOWN
     assert result.failure_code == "PROCESS_GROUP_UNKNOWN"
@@ -95,8 +97,10 @@ def test_group_unknown_must_not_become_dead():
 def test_job_probe_unknown_must_not_become_dead():
     """Windows Job 查询失败同样不能折叠成死亡（同一聚合不变量）。"""
     managed = _managed()
-    with patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.UNKNOWN, ())), \
-         patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())):
+    with (
+        patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.UNKNOWN, ())),
+        patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())),
+    ):
         result = tree_mod.inspect_process_tree_snapshot(managed)
     assert result.state == ProcessProbeState.UNKNOWN
 
@@ -104,8 +108,10 @@ def test_job_probe_unknown_must_not_become_dead():
 def test_all_sources_dead_stays_confirmed_dead():
     """对照：全部来源明确死亡仍然允许 CONFIRMED_DEAD（不收紧过度）。"""
     managed = _managed()
-    with patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())), \
-         patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())):
+    with (
+        patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())),
+        patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())),
+    ):
         result = tree_mod.inspect_process_tree_snapshot(managed)
     assert result.state == ProcessProbeState.CONFIRMED_DEAD
 
@@ -144,8 +150,10 @@ def test_mixed_live_and_unknown_descendants_are_both_kept(monkeypatch):
 def test_unknown_state_has_no_fillable_pid_is_still_unknown():
     """UNKNOWN 不依赖可填写的 PID（containment 未知但没有 PID）。"""
     managed = _managed(known=[])
-    with patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())), \
-         patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.UNKNOWN, ())):
+    with (
+        patch.object(tree_mod, "windows_job_probe", return_value=(ProcessProbeState.CONFIRMED_DEAD, ())),
+        patch.object(tree_mod, "posix_group_probe", return_value=(ProcessProbeState.UNKNOWN, ())),
+    ):
         result = tree_mod.inspect_process_tree_snapshot(managed)
     assert result.state == ProcessProbeState.UNKNOWN
     assert result.unknown_descendant_pids == ()
@@ -159,9 +167,7 @@ def _dead(**kwargs):
 
 
 def _live_pids(*pids):
-    return persisted_mod.PersistedProcessSnapshot(
-        state=ProcessProbeState.LIVE, live_pids=tuple(pids)
-    )
+    return persisted_mod.PersistedProcessSnapshot(state=ProcessProbeState.LIVE, live_pids=tuple(pids))
 
 
 def _token_outcome(token_return):
@@ -170,13 +176,9 @@ def _token_outcome(token_return):
         return discovery_mod.TokenContainmentOutcome()
     live_pids, unknown = token_return
     if unknown is not None:
-        return discovery_mod.TokenContainmentOutcome(
-            state=ProcessProbeState.UNKNOWN, unknown=unknown
-        )
+        return discovery_mod.TokenContainmentOutcome(state=ProcessProbeState.UNKNOWN, unknown=unknown)
     if live_pids:
-        return discovery_mod.TokenContainmentOutcome(
-            state=ProcessProbeState.LIVE, live_pids=tuple(live_pids)
-        )
+        return discovery_mod.TokenContainmentOutcome(state=ProcessProbeState.LIVE, live_pids=tuple(live_pids))
     return discovery_mod.TokenContainmentOutcome()
 
 
@@ -197,11 +199,7 @@ def _token_outcome(token_return):
     ],
 )
 async def test_persisted_aggregation_table(root_snapshot, group_snapshot, token_return, expect):
-    root = (
-        _dead()
-        if root_snapshot == "dead"
-        else _live_pids(99999999)
-    )
+    root = _dead() if root_snapshot == "dead" else _live_pids(99999999)
     if group_snapshot == "dead":
         group_snapshot = _dead()
     elif group_snapshot == "unknown":
@@ -221,22 +219,23 @@ async def test_persisted_aggregation_table(root_snapshot, group_snapshot, token_
                 failure_code=TOKEN_DISCOVERY_UNKNOWN,
             ),
         )
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=root)), \
-         patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=group_snapshot)), \
-         patch.object(
-             reclaim_mod,
-             "wait_group_gone",
-             AsyncMock(return_value=group_snapshot),
-         ), \
-         patch.object(os, "killpg"), patch.object(os, "kill"), \
-         patch.object(
-             reclaim_mod,
-             "run_token_containment",
-             AsyncMock(return_value=_token_outcome(token_return)),
-         ):
-        result = await reclaim_mod.stop_persisted(
-            99999999, None, "audit", run_token=run_token
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=root)),
+        patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=group_snapshot)),
+        patch.object(
+            reclaim_mod,
+            "wait_group_gone",
+            AsyncMock(return_value=group_snapshot),
+        ),
+        patch.object(os, "killpg"),
+        patch.object(os, "kill"),
+        patch.object(
+            reclaim_mod,
+            "run_token_containment",
+            AsyncMock(return_value=_token_outcome(token_return)),
+        ),
+    ):
+        result = await reclaim_mod.stop_persisted(99999999, None, "audit", run_token=run_token)
     expect_dead, expect_remaining = expect
     assert result.confirmed_dead is expect_dead, result
     assert set(result.remaining_pids) >= set(expect_remaining), (result, expect_remaining)
@@ -246,9 +245,11 @@ async def test_persisted_aggregation_table(root_snapshot, group_snapshot, token_
 async def test_confirmed_dead_returns_never_carry_unconfirmed_targets():
     """确认死亡的返回点不得携带未决来源（防御性不变量）。"""
     supervisor = reclaim_mod
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_dead())), \
-         patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=_dead())), \
-         patch.object(reclaim_mod, "run_token_containment", AsyncMock(return_value=_token_outcome(((), None)))):
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_dead())),
+        patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=_dead())),
+        patch.object(reclaim_mod, "run_token_containment", AsyncMock(return_value=_token_outcome(((), None)))),
+    ):
         result = await supervisor.stop_persisted(99999999, None, "audit", run_token="t")
     assert result.confirmed_dead is True
     assert result.remaining_pids == ()
@@ -270,12 +271,13 @@ def _reused_root(create_time=None):
 @pytest.mark.asyncio
 async def test_reused_root_without_group_sends_no_signal():
     """无 PGID：复用 root 无任何可归因 containment，不得发信号。"""
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root())), \
-         patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=_dead())), \
-         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill:
-        result = await reclaim_mod.stop_persisted(
-            987654, None, "audit", process_group_id=None
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root())),
+        patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=_dead())),
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill") as kill,
+    ):
+        result = await reclaim_mod.stop_persisted(987654, None, "audit", process_group_id=None)
     assert not killpg.called and not kill.called
     assert result.confirmed_dead is True
     assert result.error_code == "PID_REUSED"
@@ -286,19 +288,18 @@ async def test_reused_group_with_unverifiable_member_sends_no_signal():
     """复用 root + PGID 组员身份不可核实：绝不允许整组或单独发信号。"""
     member = _find_absent_pid()
     supervisor = reclaim_mod
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root())), \
-         patch.object(
-             supervisor,
-             "group_snapshot",
-             AsyncMock(return_value=_live_pids(member)),
-         ), \
-         patch.object(
-             identity_mod, "probe_member_identity_sync", lambda pid, **kw: identity_mod.MemberIdentity()
-         ), \
-         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill:
-        result = await reclaim_mod.stop_persisted(
-            987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root())),
+        patch.object(
+            supervisor,
+            "group_snapshot",
+            AsyncMock(return_value=_live_pids(member)),
+        ),
+        patch.object(identity_mod, "probe_member_identity_sync", lambda pid, **kw: identity_mod.MemberIdentity()),
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill") as kill,
+    ):
+        result = await reclaim_mod.stop_persisted(987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654)
     assert not killpg.called and not kill.called, killpg.call_args_list
     assert result.confirmed_dead is None
     assert member in result.remaining_pids
@@ -310,21 +311,22 @@ async def test_reused_group_new_member_created_after_reuse_is_ambiguous():
     member = _find_absent_pid()
     reused_ct = _PERSISTED_ROOT_START.timestamp() + 3600.0
     supervisor = reclaim_mod
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root(reused_ct))), \
-         patch.object(
-             supervisor,
-             "group_snapshot",
-             AsyncMock(return_value=_live_pids(member)),
-         ), \
-         patch.object(
-             identity_mod,
-             "probe_member_identity_sync",
-             lambda pid, **kw: identity_mod.MemberIdentity(create_time=reused_ct + 10.0),
-         ), \
-         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill:
-        result = await reclaim_mod.stop_persisted(
-            987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root(reused_ct))),
+        patch.object(
+            supervisor,
+            "group_snapshot",
+            AsyncMock(return_value=_live_pids(member)),
+        ),
+        patch.object(
+            identity_mod,
+            "probe_member_identity_sync",
+            lambda pid, **kw: identity_mod.MemberIdentity(create_time=reused_ct + 10.0),
+        ),
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill") as kill,
+    ):
+        result = await reclaim_mod.stop_persisted(987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654)
     assert not killpg.called and not kill.called
     assert result.confirmed_dead is None
     assert member in result.remaining_pids
@@ -357,21 +359,20 @@ async def test_reused_group_verified_leftover_is_signaled_individually():
             # 绑定句柄的 ESRCH：该实例在 KILL 后已退出。
             raise ProcessLookupError(member)
 
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root(reused_ct))), \
-         patch.object(
-             supervisor,
-             "group_snapshot",
-             AsyncMock(return_value=_live_pids(member)),
-         ), \
-         patch.object(
-             identity_mod, "probe_member_identity_sync", fake_identity_sync), \
-         patch.object(os, "killpg") as killpg, \
-         patch.object(os, "kill") as kill, \
-         patch.object(os, "close"), \
-         patch.object(signal, "pidfd_send_signal", side_effect=fake_pidfd_send):
-        result = await reclaim_mod.stop_persisted(
-            987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_reused_root(reused_ct))),
+        patch.object(
+            supervisor,
+            "group_snapshot",
+            AsyncMock(return_value=_live_pids(member)),
+        ),
+        patch.object(identity_mod, "probe_member_identity_sync", fake_identity_sync),
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill") as kill,
+        patch.object(os, "close"),
+        patch.object(signal, "pidfd_send_signal", side_effect=fake_pidfd_send),
+    ):
+        result = await reclaim_mod.stop_persisted(987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654)
     assert not killpg.called
     assert not kill.called, "绑定失败路径禁止退回数字 PID 发送"
     # 验证过的残留目标被逐个 SIGTERM/SIGKILL（pidfd，非整组）。
@@ -393,19 +394,18 @@ async def test_unverified_live_root_group_does_not_receive_group_signal():
         error_message="create time could not be verified",
     )
     supervisor = reclaim_mod
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=unverified_root)), \
-         patch.object(
-             supervisor,
-             "group_snapshot",
-             AsyncMock(return_value=_live_pids(member)),
-         ), \
-         patch.object(
-             identity_mod, "probe_member_identity_sync", lambda pid, **kw: identity_mod.MemberIdentity()
-         ), \
-         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill:
-        result = await reclaim_mod.stop_persisted(
-            987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=unverified_root)),
+        patch.object(
+            supervisor,
+            "group_snapshot",
+            AsyncMock(return_value=_live_pids(member)),
+        ),
+        patch.object(identity_mod, "probe_member_identity_sync", lambda pid, **kw: identity_mod.MemberIdentity()),
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill") as kill,
+    ):
+        result = await reclaim_mod.stop_persisted(987654, _PERSISTED_ROOT_START, "audit", process_group_id=987654)
     assert not killpg.called and not kill.called
     # root 自身 LIVE 证据保留（未确认，不是死亡证明）。
     assert result.confirmed_dead is False
@@ -415,13 +415,14 @@ async def test_unverified_live_root_group_does_not_receive_group_signal():
 @pytest.mark.asyncio
 async def test_root_gone_group_live_still_receives_group_signal():
     """对照：root 明确消失（未被复用占用）+ 原组存活 → killpg 正常清理。"""
-    with patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_dead())), \
-         patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=_live_pids(987655))), \
-         patch.object(reclaim_mod, "wait_group_gone", AsyncMock(return_value=_dead())), \
-         patch.object(os, "killpg") as killpg, patch.object(os, "kill") as kill:
-        result = await reclaim_mod.stop_persisted(
-            987654, None, "audit", process_group_id=987654
-        )
+    with (
+        patch.object(reclaim_mod, "root_snapshot", AsyncMock(return_value=_dead())),
+        patch.object(reclaim_mod, "group_snapshot", AsyncMock(return_value=_live_pids(987655))),
+        patch.object(reclaim_mod, "wait_group_gone", AsyncMock(return_value=_dead())),
+        patch.object(os, "killpg") as killpg,
+        patch.object(os, "kill"),
+    ):
+        result = await reclaim_mod.stop_persisted(987654, None, "audit", process_group_id=987654)
     assert killpg.called
     assert result.confirmed_dead is True
 
@@ -529,9 +530,7 @@ def test_token_identity_ok_no_longer_requires_marker():
         command="/bin/sleep 120",
         command_readable=True,
     )
-    assert discovery_mod.token_identity_ok(
-        match, not_before=None, not_after=None
-    )
+    assert discovery_mod.token_identity_ok(match, not_before=None, not_after=None)
 
 
 # ─────────────────────────── P1-2：inspection 许可所有权 ───────────────────────────
@@ -566,8 +565,10 @@ async def test_cancelled_queued_probe_releases_permit():
         started.set()
         gate.wait(5)
 
-    with patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor), \
-         patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits):
+    with (
+        patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor),
+        patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits),
+    ):
         first = asyncio.create_task(inspection_mod.run_process_probe(block))
         try:
             while not started.is_set():
@@ -598,8 +599,10 @@ async def test_cancelled_running_probe_keeps_permit_until_work_finishes():
         started.set()
         gate.wait(5)
 
-    with patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor), \
-         patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits):
+    with (
+        patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor),
+        patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits),
+    ):
         task = asyncio.create_task(inspection_mod.run_process_probe(block))
         try:
             while not started.is_set():
@@ -627,8 +630,10 @@ async def test_submit_failure_releases_permit():
         def submit(self, *args, **kwargs):
             raise RuntimeError("executor is shut down")
 
-    with patch.object(inspection_mod, "_inspection_executor", return_value=_BrokenExecutor()), \
-         patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits):
+    with (
+        patch.object(inspection_mod, "_inspection_executor", return_value=_BrokenExecutor()),
+        patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits),
+    ):
         with pytest.raises(RuntimeError):
             await inspection_mod.run_process_probe(lambda: None)
     assert fixture.available() == fixture.total
@@ -643,8 +648,10 @@ async def test_probe_runtime_error_releases_permit_exactly_once():
     def boom():
         raise RuntimeError("probe exploded")
 
-    with patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor), \
-         patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits):
+    with (
+        patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor),
+        patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits),
+    ):
         with pytest.raises(RuntimeError):
             await inspection_mod.run_process_probe(boom)
         fixture.executor.shutdown(wait=True)
@@ -655,8 +662,10 @@ async def test_probe_runtime_error_releases_permit_exactly_once():
 async def test_normal_probe_completion_restores_permits():
     fixture = _PermitFixture()
 
-    with patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor), \
-         patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits):
+    with (
+        patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor),
+        patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits),
+    ):
         assert await inspection_mod.run_process_probe(lambda: "ok") == "ok"
         fixture.executor.shutdown(wait=True)
     assert fixture.available() == fixture.total
@@ -673,8 +682,10 @@ async def test_cancellation_storm_does_not_permanently_saturate_queue():
         started.set()
         gate.wait(10)
 
-    with patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor), \
-         patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits):
+    with (
+        patch.object(inspection_mod, "_inspection_executor", return_value=fixture.executor),
+        patch.object(inspection_mod, "_INSPECTION_QUEUE_PERMITS", fixture.permits),
+    ):
         first = asyncio.create_task(inspection_mod.run_process_probe(block))
         try:
             while not started.is_set():

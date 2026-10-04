@@ -1,0 +1,87 @@
+# 与 requirements-dev.txt 同步升级，避免本地和自动化检查的规则漂移。
+required-version = "==0.16.7"
+# 与 README 声明的最低 Python 版本一致，不要求升级运行环境。
+target-version = "py310"
+line-length = 120
+indent-width = 4
+src = ["."]
+preview = false
+unsafe-fixes = false
+respect-gitignore = true
+force-exclude = true
+extend-exclude = [
+    "data",
+    "logs",
+    "scratch",
+    "storage",
+    "tmp",
+    "uploads",
+    "app/assets_store",
+    "app/skills_store",
+]
+
+[lint]
+select = [
+    "E4", "E7", "E9", # 导入、语句和语法错误；排版交给 formatter。
+    "W6",             # 无效转义。
+    "F",              # 未定义名称、未使用导入/变量等真实错误。
+    "I",              # 导入分组和排序。
+    "UP",             # 使用 Python 3.10 支持的现代写法。
+    "B",              # 可变默认值、闭包捕获、异常链等常见缺陷。
+    "C4",             # 清晰的容器与推导式写法。
+    "SIM",            # 简化重复或冗余逻辑。
+    "RET",            # 一致的返回行为与早返回。
+    "PIE",            # 无效占位、重复定义等冗余代码。
+    "RSE",            # 简化异常抛出。
+    "C901",           # 圈复杂度。
+    "PLR0912",        # 分支数。
+    "PLR0915",        # 语句数。
+    "RUF005",         # 清晰的集合展开。
+    "RUF006",         # 为后台 asyncio task 保留引用。
+    "RUF008",         # dataclass 可变默认值。
+    "RUF009",         # dataclass 默认值中的函数调用。
+    "RUF100",         # 清理失效的 noqa。
+]
+ignore = [
+    "SIM105", # 允许显式 try/except/pass，便于解释可忽略的异常。
+    "SIM108", # 允许 if/else，避免强制压成三元表达式。
+    "SIM117", # 允许嵌套 with 表达不同资源的生命周期。
+    "RET504", # 允许有意义的中间变量解释返回值。
+]
+# 模型注册、插件加载可能依赖导入副作用：仍报告 F401，但由开发者确认后删除。
+unfixable = ["F401"]
+
+[lint.isort]
+known-first-party = ["app"]
+
+[lint.flake8-bugbear]
+# FastAPI 声明的是参数/依赖元数据；保留 B008 对普通默认参数调用的检查。
+extend-immutable-calls = [
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Depends",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Query",
+    "fastapi.Security",
+]
+
+[lint.mccabe]
+max-complexity = 15
+
+[lint.pylint]
+max-branches = 15
+max-statements = 60
+
+[lint.per-file-ignores]
+# 测试场景和声明式迁移允许较长的顺序步骤，其他正确性与风格检查照常执行。
+"tests/**" = ["C901", "PLR0912", "PLR0915"]
+"alembic/versions/**" = ["C901", "PLR0912", "PLR0915"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+skip-magic-trailing-comma = false

@@ -5,17 +5,18 @@ Revises: 3685f1302be8
 Create Date: 2026-05-01 10:20:00.000000
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "7c2d9a4e5f6b"
-down_revision: Union[str, None] = "3685f1302be8"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "3685f1302be8"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 category_enum = sa.Enum(
@@ -65,7 +66,9 @@ def upgrade() -> None:
     op.create_index("ix_sdd_context_token_snapshots_ai_job_id", "sdd_context_token_snapshots", ["ai_job_id"])
     op.create_index("ix_sdd_context_token_snapshots_session_id", "sdd_context_token_snapshots", ["session_id"])
     op.create_index("ix_sdd_context_token_snapshots_status", "sdd_context_token_snapshots", ["status"])
-    op.create_index("ix_sdd_context_token_snapshots_task_created", "sdd_context_token_snapshots", ["task_id", "created_at"])
+    op.create_index(
+        "ix_sdd_context_token_snapshots_task_created", "sdd_context_token_snapshots", ["task_id", "created_at"]
+    )
     op.create_index("ix_sdd_context_token_snapshots_task_id", "sdd_context_token_snapshots", ["task_id"])
     op.create_index(
         "ix_sdd_context_token_snapshots_workspace_task",
@@ -111,13 +114,19 @@ def upgrade() -> None:
     )
     op.create_index("ix_sdd_context_token_segments_ai_job_id", "sdd_context_token_segments", ["ai_job_id"])
     op.create_index("ix_sdd_context_token_segments_asset_id", "sdd_context_token_segments", ["asset_id"])
-    op.create_index("ix_sdd_context_token_segments_asset_version_id", "sdd_context_token_segments", ["asset_version_id"])
+    op.create_index(
+        "ix_sdd_context_token_segments_asset_version_id", "sdd_context_token_segments", ["asset_version_id"]
+    )
     op.create_index("ix_sdd_context_token_segments_category", "sdd_context_token_segments", ["category"])
     op.create_index("ix_sdd_context_token_segments_chat_message_id", "sdd_context_token_segments", ["chat_message_id"])
     op.create_index("ix_sdd_context_token_segments_content_hash", "sdd_context_token_segments", ["content_hash"])
     op.create_index("ix_sdd_context_token_segments_created_at", "sdd_context_token_segments", ["created_at"])
-    op.create_index("ix_sdd_context_token_segments_skill_runtime_event_id", "sdd_context_token_segments", ["skill_runtime_event_id"])
-    op.create_index("ix_sdd_context_token_segments_snapshot_category", "sdd_context_token_segments", ["snapshot_id", "category"])
+    op.create_index(
+        "ix_sdd_context_token_segments_skill_runtime_event_id", "sdd_context_token_segments", ["skill_runtime_event_id"]
+    )
+    op.create_index(
+        "ix_sdd_context_token_segments_snapshot_category", "sdd_context_token_segments", ["snapshot_id", "category"]
+    )
     op.create_index(
         "ix_sdd_context_token_segments_snapshot_category_created",
         "sdd_context_token_segments",

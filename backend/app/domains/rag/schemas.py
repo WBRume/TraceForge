@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum as PyEnum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -53,7 +53,7 @@ class RagQueueStatus(str, PyEnum):
 class RagChunk(BaseModel):
     id: str
     text: str
-    heading: Optional[str] = None
+    heading: str | None = None
 
 
 class RagDocument(BaseModel):
@@ -67,8 +67,8 @@ class RagDocument(BaseModel):
     version: int = 1
     title: str = ""
     content: str = ""
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    chunks: List[RagChunk] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    chunks: list[RagChunk] = Field(default_factory=list)
 
 
 class RagQueueItem(BaseModel):
@@ -76,17 +76,17 @@ class RagQueueItem(BaseModel):
 
     id: str
     name: str
-    workspace_id: Optional[str] = None
+    workspace_id: str | None = None
     status: str = ""
     case_count: int = 0
     exported_count: int = 0
-    created_at: Optional[datetime] = None
-    consumed_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    consumed_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class RagQueuePageResponse(BaseModel):
-    items: List[RagQueueItem] = Field(default_factory=list)
+    items: list[RagQueueItem] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50
@@ -97,18 +97,18 @@ class RagQueueCaseItem(BaseModel):
 
     id: str
     doc_key: str
-    case_id: Optional[str] = None
-    workspace_id: Optional[str] = None
-    title: Optional[str] = None
-    version: Optional[int] = None
+    case_id: str | None = None
+    workspace_id: str | None = None
+    title: str | None = None
+    version: int | None = None
     status: str = ""
-    exported_at: Optional[datetime] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    exported_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
 class RagQueueCasePageResponse(BaseModel):
-    items: List[RagQueueCaseItem] = Field(default_factory=list)
+    items: list[RagQueueCaseItem] = Field(default_factory=list)
     total: int = 0
     page: int = 1
     page_size: int = 50

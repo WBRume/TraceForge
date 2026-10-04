@@ -6,16 +6,26 @@ from app.config import settings
 from app.core.offload import run_db_txn
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 
-BLOCKING = [AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL,
-            AiJobStatus.TERMINATING, AiJobStatus.ORPHANED]
+BLOCKING = [
+    AiJobStatus.PENDING,
+    AiJobStatus.RUNNING,
+    AiJobStatus.WAITING_HITL,
+    AiJobStatus.TERMINATING,
+    AiJobStatus.ORPHANED,
+]
 
 
 def active_statuses(db, task_id):
-    return [row[0] for row in db.query(SddAiJob.status).filter(
-        SddAiJob.task_id == task_id,
-        SddAiJob.channel == AiJobChannel.TASK_CHAT,
-        SddAiJob.status.in_(BLOCKING),
-    ).all()]
+    return [
+        row[0]
+        for row in db.query(SddAiJob.status)
+        .filter(
+            SddAiJob.task_id == task_id,
+            SddAiJob.channel == AiJobChannel.TASK_CHAT,
+            SddAiJob.status.in_(BLOCKING),
+        )
+        .all()
+    ]
 
 
 async def recover_task_attempts(task_id, *, run_txn=run_db_txn, wait_for_running=False):
@@ -29,9 +39,15 @@ async def recover_task_attempts(task_id, *, run_txn=run_db_txn, wait_for_running
     while statuses := await run_txn(lambda db: active_statuses(db, task_id)):
         # Queued/running/HITL turns still belong to the user. Ordinary chat
         # must reject these promptly, rather than request their cancellation.
-        if not wait_for_running and any(status in {
-            AiJobStatus.PENDING, AiJobStatus.RUNNING, AiJobStatus.WAITING_HITL,
-        } for status in statuses):
+        if not wait_for_running and any(
+            status
+            in {
+                AiJobStatus.PENDING,
+                AiJobStatus.RUNNING,
+                AiJobStatus.WAITING_HITL,
+            }
+            for status in statuses
+        ):
             return
         if asyncio.get_running_loop().time() >= deadline:
             return

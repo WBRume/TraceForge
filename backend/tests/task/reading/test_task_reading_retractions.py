@@ -1,4 +1,5 @@
 """撤回 / 清空 / 锚点恢复语义测试（第 7 节合同）。"""
+
 from datetime import datetime
 
 from app.domains.task.models.chat import ChatMessage
@@ -7,16 +8,19 @@ from app.domains.task.models.task import SddTask
 from app.domains.task.services import reading_capture_service as rcs
 from app.domains.task.services import reading_progress_service as rps
 from app.domains.task.services import reading_resume_service as rrs
-
 from app.domains.task.services.conversation import history as task_conversation_history
 from app.domains.task.services.conversation import messages as task_conversation_messages
 
 
-
 def _save(env, *, role="assistant", content, creator="user-a", index=None, message_type="text"):
     message = task_conversation_messages.save_chat_message(
-        env["db"], task_id=env["task_id"], workspace_id=env["ws_id"], creator_id=creator,
-        role=role, content=content, message_type=message_type,
+        env["db"],
+        task_id=env["task_id"],
+        workspace_id=env["ws_id"],
+        creator_id=creator,
+        role=role,
+        content=content,
+        message_type=message_type,
     )
     if index is not None:
         message.created_at = datetime(2026, 1, 1, 0, 0, index)
@@ -39,11 +43,19 @@ def test_single_retraction_creates_one_notice_and_deactivates(seeded_db):
     rcs.record_message_retractions(env["db"], task_id=env["task_id"], message_ids=[m1_id], operation_id="op-1")
     env["db"].query(ChatMessage).filter(ChatMessage.id == m1_id).delete(synchronize_session=False)
     env["db"].commit()
-    item = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == env["task_id"], TaskReadingItem.item_key == f"message:{m1_id}").first()
+    item = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == env["task_id"], TaskReadingItem.item_key == f"message:{m1_id}")
+        .first()
+    )
     assert not item.active and item.operation_id == "op-1"
-    notices = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == env["task_id"], TaskReadingItem.kind == "messages_retracted").all()
+    notices = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == env["task_id"], TaskReadingItem.kind == "messages_retracted")
+        .all()
+    )
     assert len(notices) == 1 and notices[0].affected_count == 1
     assert notices[0].content_fingerprint is None  # 不含正文
 
@@ -59,8 +71,12 @@ def test_bulk_retraction_single_notice_with_idempotency(seeded_db):
     # 幂等重放
     rcs.record_message_retractions(env["db"], task_id=env["task_id"], message_ids=ids, operation_id="op-bulk")
     env["db"].commit()
-    notices = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == env["task_id"], TaskReadingItem.kind == "messages_retracted").all()
+    notices = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == env["task_id"], TaskReadingItem.kind == "messages_retracted")
+        .all()
+    )
     assert len(notices) == 1
     assert notices[0].affected_count == 30
     assert notices[0].boundary_before_id == ids[0]
@@ -71,10 +87,16 @@ def test_retraction_of_hidden_only_messages_inserts_no_notice(seeded_db):
     env = seeded_db
     thinking = _save(env, content="t", message_type="thinking")
     _open(env, "user-b")
-    rcs.record_message_retractions(env["db"], task_id=env["task_id"], message_ids=[thinking.id], operation_id="op-hidden")
+    rcs.record_message_retractions(
+        env["db"], task_id=env["task_id"], message_ids=[thinking.id], operation_id="op-hidden"
+    )
     env["db"].commit()
-    notices = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == env["task_id"], TaskReadingItem.kind == "messages_retracted").all()
+    notices = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == env["task_id"], TaskReadingItem.kind == "messages_retracted")
+        .all()
+    )
     assert notices == []
 
 
@@ -83,7 +105,11 @@ def test_resume_resolution_updated_when_version_drifts(seeded_db):
     m1 = _save(env, content="v1")
     _open(env, "user-b")
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
         raw_items=[{"item_key": f"message:{m1.id}", "change_seq": "1"}],
         resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.5, "expected_revision": "0"},
     )
@@ -106,7 +132,11 @@ def test_resume_resolution_retracted_uses_saved_order_key(seeded_db):
     m2 = _save(env, content="second", index=2)
     _open(env, "user-b")
     resp = rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
         raw_items=[],
         resume={"message_id": m2.id, "content_seq": "2", "offset_ratio": 0.5, "expected_revision": "0"},
     )
@@ -129,7 +159,11 @@ def test_resume_resolution_missing_without_capture_record(seeded_db):
     m1 = _save(env, content="first", index=1)
     _open(env, "user-b")
     rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
         raw_items=[],
         resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.5, "expected_revision": "0"},
     )
@@ -147,7 +181,11 @@ def test_resume_resolution_empty_after_clearing_everything(seeded_db):
     m1 = _save(env, content="first", index=1)
     _open(env, "user-b")
     rps.submit_receipts(
-        env["db"], user_id="user-b", workspace_id=env["ws_id"], task_id=env["task_id"], epoch=1,
+        env["db"],
+        user_id="user-b",
+        workspace_id=env["ws_id"],
+        task_id=env["task_id"],
+        epoch=1,
         raw_items=[],
         resume={"message_id": m1.id, "content_seq": "1", "offset_ratio": 0.5, "expected_revision": "0"},
     )
@@ -170,8 +208,12 @@ def test_clear_history_deactivates_items_and_notices(seeded_db):
     env["db"].commit()
     task_conversation_history.clear_task_history(env["db"], task_id=env["task_id"], workspace_id=env["ws_id"])
     env["db"].commit()
-    active = env["db"].query(TaskReadingItem).filter(
-        TaskReadingItem.task_id == env["task_id"], TaskReadingItem.active.is_(True)).all()
+    active = (
+        env["db"]
+        .query(TaskReadingItem)
+        .filter(TaskReadingItem.task_id == env["task_id"], TaskReadingItem.active.is_(True))
+        .all()
+    )
     kinds = [item.kind for item in active]
     assert kinds == ["history_cleared"]
     task = env["db"].query(SddTask).get(env["task_id"])

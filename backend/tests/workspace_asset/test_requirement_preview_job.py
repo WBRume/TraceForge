@@ -1,50 +1,35 @@
 import asyncio
-import os
-import sys
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-
-BACKEND_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, BACKEND_ROOT)
-
-import app.domains.api_mock.models.api_mock  # noqa: F401,E402
-import app.domains.task.models.test_result  # noqa: F401,E402
-import app.domains.workflow.models.task_change  # noqa: F401,E402
-import app.domains.workspace_asset.models.workspace_asset  # noqa: F401,E402
+import app.domains.api_mock.models.api_mock
+import app.domains.task.models.test_result
+import app.domains.workflow.models.task_change
+import app.domains.workspace_asset.models.workspace_asset  # noqa: F401
+from app.database import Base
+from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob
 from app.domains.ai.services.jobs import (
-    attempts as ai_attempts,
-    constants as ai_constants,
     executors as ai_executors,
-    publishing as ai_publishing,
-    provider_turn as ai_provider_turn,
-    queue_runner as ai_queue_runner,
-    reaper as ai_reaper,
-    registry as ai_registry,
-    state as ai_state,
-    store as ai_store,
-    workers as ai_workers,
 )
-from app.domains.ai.services.jobs.executors import (
-    diagnosis_summary as ai_diagnosis_summary,
-    task_chat as ai_task_chat,
+from app.domains.ai.services.jobs import (
+    provider_turn as ai_provider_turn,
+)
+from app.domains.ai.services.jobs import (
+    registry as ai_registry,
 )
 from app.domains.ai.services.jobs.registry import runtime as ai_runtime
-from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
-from app.domains.ai.services.jobs.fencing import AgentAttemptFencedError
-from app.database import Base  # noqa: E402
-from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob  # noqa: E402
-from app.domains.auth.models.user import User, Workspace  # noqa: E402
-from app.domains.workspace_asset.models.workspace_asset import (  # noqa: E402
+from app.domains.auth.models.user import User, Workspace
+from app.domains.workspace_asset.models.workspace_asset import (
     SddRequirementImportBatch,
 )
-from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service  # noqa: E402
-from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner  # noqa: E402
-from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError  # noqa: E402
+from app.domains.workspace_asset.services.common.errors import WorkspaceAssetError
+from app.domains.workspace_asset.services.requirements.preview import job_service as preview_job_service
+from app.domains.workspace_asset.services.requirements.preview import runner as preview_runner
+from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
 
 def _build_session(*, expire_on_commit=False):
@@ -141,11 +126,7 @@ def test_run_import_preview_job_executes_from_persisted_context(tmp_path, monkey
     assert len(prompts) == 1
     assert "Feature A" in prompts[0]["prompt"]
 
-    batch = (
-        db.query(SddRequirementImportBatch)
-        .filter(SddRequirementImportBatch.workspace_id == "ws-1")
-        .one()
-    )
+    batch = db.query(SddRequirementImportBatch).filter(SddRequirementImportBatch.workspace_id == "ws-1").one()
     assert batch.item_count == 1
     assert batch.source_metadata_json["ai_preview"] is True
     assert batch.source_metadata_json["session_id"] == "sess-1"
@@ -211,7 +192,6 @@ def test_execute_job_dispatches_split_preview(monkeypatch):
         async def run_requirement_import_preview_job(job_id):
             raise AssertionError("import runner must not be used for split jobs")
 
-
     patch_ai_job_db(monkeypatch, SessionLocal)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
     monkeypatch.setattr(
@@ -245,9 +225,7 @@ def _seed_split_preview_target(db, tmp_path):
     )
     db.add(requirement)
     db.commit()
-    job = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
+    job = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-1", "user-1")
     return job.job_id
 
 
@@ -316,12 +294,12 @@ def test_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, monkeypatc
     monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
+    from datetime import datetime, timezone
+
     from app.agents.contract import (
         AgentAttemptRuntimeState,
         AgentProcessIdentity,
-        record_attempt_termination,
     )
-    from datetime import datetime, timezone
 
     runtime = AgentAttemptRuntimeState()
     identity = AgentProcessIdentity(
@@ -377,9 +355,7 @@ def test_split_preview_cancel_keeps_termination_state(tmp_path, monkeypatch):
         saved = db.query(SddAiJob).filter(SddAiJob.id == job_id).one()
         assert saved.status != AiJobStatus.FAILED
         assert saved.status != AiJobStatus.SUCCESS
-        assert db.query(SddRequirementImportBatch).filter(
-            SddRequirementImportBatch.workspace_id == "ws-1"
-        ).count() == 0
+        assert db.query(SddRequirementImportBatch).filter(SddRequirementImportBatch.workspace_id == "ws-1").count() == 0
     finally:
         ai_runtime.clear_cancel(job_id)
 
@@ -423,11 +399,12 @@ def test_preview_unknown_death_failure_stays_orphaned(tmp_path, monkeypatch):
     monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
+    from datetime import datetime, timezone
+
     from app.agents.contract import (
         AgentAttemptRuntimeState,
         AgentProcessIdentity,
     )
-    from datetime import datetime, timezone
 
     runtime = AgentAttemptRuntimeState()
     identity = AgentProcessIdentity(
@@ -475,11 +452,12 @@ def test_import_preview_parse_failure_keeps_runtime_death_evidence(tmp_path, mon
     monkeypatch.setattr(preview_runner, "run_cli_single_turn", fake_cli)
     monkeypatch.setattr("app.database.SessionLocal", SessionLocal)
 
+    from datetime import datetime, timezone
+
     from app.agents.contract import (
         AgentAttemptRuntimeState,
         AgentProcessIdentity,
     )
-    from datetime import datetime, timezone
 
     runtime = AgentAttemptRuntimeState()
     identity = AgentProcessIdentity(
@@ -515,30 +493,42 @@ def _bind_remote_attempt(job_id: str):
     from unittest.mock import patch  # noqa: F401
 
     from app.agents.contract import (
+        EXECUTION_KIND_REMOTE_SESSION,
         AgentAttemptContext,
         AgentAttemptRuntimeState,
-        EXECUTION_KIND_REMOTE_SESSION,
         bind_agent_attempt,
         bind_agent_attempt_runtime,
     )
 
-    owner = bind_agent_attempt(AgentAttemptContext(
-        job_id=job_id, task_id=None, queue_key="preview", run_token="audit-token",
-        worker_id="audit-worker", worker_boot_id="audit-boot", attempt_count=1,
-        execution_kind=EXECUTION_KIND_REMOTE_SESSION,
-    ))
+    owner = bind_agent_attempt(
+        AgentAttemptContext(
+            job_id=job_id,
+            task_id=None,
+            queue_key="preview",
+            run_token="audit-token",
+            worker_id="audit-worker",
+            worker_boot_id="audit-boot",
+            attempt_count=1,
+            execution_kind=EXECUTION_KIND_REMOTE_SESSION,
+        )
+    )
     binding = bind_agent_attempt_runtime(AgentAttemptRuntimeState(remote_session_started=True))
     return owner, binding
 
 
 def _decide_status(evidence, requested):
     from types import SimpleNamespace
-    from app.domains.ai.services import ai_job_convergence_service as convergence
+
     from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION
+    from app.domains.ai.services import ai_job_convergence_service as convergence
 
     request = convergence.AttemptConvergenceRequest(
-        job_id="audit-job", run_token="audit-token", worker_boot_id="audit-boot",
-        requested_status=requested, reason="done", evidence=evidence,
+        job_id="audit-job",
+        run_token="audit-token",
+        worker_boot_id="audit-boot",
+        requested_status=requested,
+        reason="done",
+        evidence=evidence,
         intent=convergence.ConvergenceIntent.NORMAL_FINALIZE,
     )
     return convergence._decide_final_status(SimpleNamespace(), request, EXECUTION_KIND_REMOTE_SESSION)[0]
@@ -583,10 +573,6 @@ async def _async_txn(fn):
     return fn(None)
 
 
-from unittest.mock import patch  # noqa: E402
-
-
-
 def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
     """split 预览：provider 正常返回（真实 helper + 明确 result 事件）→
     finalizer evidence 带 outcome → SUCCESS。"""
@@ -600,7 +586,9 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
         events=[
             {"type": "system", "subtype": "init", "session_id": "remote-1"},
             {
-                "type": "result", "subtype": "success", "is_error": False,
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
                 "result": '{"items": [{"title": "one", "body": "a"}, {"title": "two", "body": "b"}]}',
                 "session_id": "remote-1",
             },
@@ -608,19 +596,20 @@ def test_remote_split_preview_evidence_enables_convergence(monkeypatch):
     )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        monkeypatch.setattr(
-        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
-        )
+        monkeypatch.setattr(preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared)
         monkeypatch.setattr(preview_runner, "finalize_requirement_split_sync", capture)
-        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(preview_runner, "run_db_txn", _async_txn), \
-                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+        with (
+            patch("app.agents.selection.create_legacy_bridge", return_value=stub),
+            patch.object(preview_runner, "run_db_txn", _async_txn),
+            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+        ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
         assert _decide_status(evidence, AiJobStatus.SUCCESS) == AiJobStatus.SUCCESS
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+
         reset_agent_attempt_runtime(binding)
         reset_agent_attempt(owner)
 
@@ -637,7 +626,9 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
         events=[
             {"type": "system", "subtype": "init", "session_id": "remote-1"},
             {
-                "type": "result", "subtype": "success", "is_error": False,
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
                 "result": '{"items": [{"title": "Feature A", "body": "Body", "acceptance_criteria": [], "source_ref": "r1"}]}',
                 "session_id": "remote-1",
             },
@@ -645,27 +636,31 @@ def test_remote_import_preview_evidence_enables_convergence(monkeypatch):
     )
     try:
         context = {
-            "markdown": "# Feature A\n\nBody\n", "source_kind": "file",
-            "source_ref": "requirements.md", "source_uri": "", "file_name": "requirements.md",
-            "source_ext": ".md", "source_mime": "text/markdown", "render_json": {},
+            "markdown": "# Feature A\n\nBody\n",
+            "source_kind": "file",
+            "source_ref": "requirements.md",
+            "source_uri": "",
+            "file_name": "requirements.md",
+            "source_ext": ".md",
+            "source_mime": "text/markdown",
+            "render_json": {},
         }
         prepared = {"backend_name": "dsh", "prompt": "import", "project_path": "/tmp"}
-        monkeypatch.setattr(
-        preview_runner, "load_requirement_import_context_sync", lambda db, job_id: context
-        )
-        monkeypatch.setattr(
-        preview_runner, "prepare_requirement_import_sync", lambda db, **kw: prepared
-        )
+        monkeypatch.setattr(preview_runner, "load_requirement_import_context_sync", lambda db, job_id: context)
+        monkeypatch.setattr(preview_runner, "prepare_requirement_import_sync", lambda db, **kw: prepared)
         monkeypatch.setattr(preview_runner, "finalize_requirement_import_sync", capture)
-        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(preview_runner, "run_db_txn", _async_txn), \
-                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+        with (
+            patch("app.agents.selection.create_legacy_bridge", return_value=stub),
+            patch.object(preview_runner, "run_db_txn", _async_txn),
+            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+        ):
             assert asyncio.run(preview_runner.run_requirement_import_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
         assert _decide_status(evidence, AiJobStatus.SUCCESS) == AiJobStatus.SUCCESS
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+
         reset_agent_attempt_runtime(binding)
         reset_agent_attempt(owner)
 
@@ -683,7 +678,9 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
         events=[
             {"type": "system", "subtype": "init", "session_id": "remote-1"},
             {
-                "type": "result", "subtype": "success", "is_error": False,
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
                 "result": '{"items": [{"title": "Only one"}]}',
                 "session_id": "remote-1",
             },
@@ -691,13 +688,13 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
     )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        monkeypatch.setattr(
-        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
-        )
+        monkeypatch.setattr(preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared)
         monkeypatch.setattr(preview_runner, "fail_requirement_preview_sync", capture_fail)
-        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(preview_runner, "run_db_txn", _async_txn), \
-                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+        with (
+            patch("app.agents.selection.create_legacy_bridge", return_value=stub),
+            patch.object(preview_runner, "run_db_txn", _async_txn),
+            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+        ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is True
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is True
@@ -705,6 +702,7 @@ def test_remote_split_parse_failure_keeps_provider_outcome_evidence(monkeypatch)
         assert _decide_status(evidence, AiJobStatus.FAILED) == AiJobStatus.FAILED
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+
         reset_agent_attempt_runtime(binding)
         reset_agent_attempt(owner)
 
@@ -721,7 +719,9 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
     stub = _StubRemoteBridge(
         events=[
             {
-                "type": "result", "subtype": "error", "is_error": True,
+                "type": "result",
+                "subtype": "error",
+                "is_error": True,
                 "result": "provider rejected request",
             },
         ],
@@ -729,13 +729,13 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
     )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        monkeypatch.setattr(
-        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
-        )
+        monkeypatch.setattr(preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared)
         monkeypatch.setattr(preview_runner, "fail_requirement_preview_sync", capture_fail)
-        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(preview_runner, "run_db_txn", _async_txn), \
-                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+        with (
+            patch("app.agents.selection.create_legacy_bridge", return_value=stub),
+            patch.object(preview_runner, "run_db_txn", _async_txn),
+            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+        ):
             # 返回协议保持既有语义（异常路径返回 outcome 局部布尔）；
             # 收敛正确性由 finalizer evidence 决定。
             asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job"))
@@ -745,6 +745,7 @@ def test_real_single_turn_error_outcome_survives_preview_failure(monkeypatch):
         assert _decide_status(evidence, AiJobStatus.FAILED) == AiJobStatus.FAILED
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+
         reset_agent_attempt_runtime(binding)
         reset_agent_attempt(owner)
 
@@ -769,13 +770,13 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
     )
     try:
         prepared = {"backend_name": "dsh", "prompt": "split", "project_path": "/tmp"}
-        monkeypatch.setattr(
-        preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared
-        )
+        monkeypatch.setattr(preview_runner, "prepare_requirement_split_sync", lambda db, **kw: prepared)
         monkeypatch.setattr(preview_runner, "fail_requirement_preview_sync", capture_fail)
-        with patch("app.agents.selection.create_legacy_bridge", return_value=stub), \
-                patch.object(preview_runner, "run_db_txn", _async_txn), \
-                patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn):
+        with (
+            patch("app.agents.selection.create_legacy_bridge", return_value=stub),
+            patch.object(preview_runner, "run_db_txn", _async_txn),
+            patch.object(preview_runner, "run_cli_single_turn", ai_provider_turn.run_cli_single_turn),
+        ):
             assert asyncio.run(preview_runner.run_requirement_split_preview_job("audit-job")) is False
         evidence = captured["evidence"]
         assert evidence.provider_outcome_seen is False
@@ -783,6 +784,7 @@ def test_remote_preview_without_provider_outcome_stays_unresolved(monkeypatch):
         assert _decide_status(evidence, AiJobStatus.FAILED) == AiJobStatus.ORPHANED
     finally:
         from app.agents.contract import reset_agent_attempt, reset_agent_attempt_runtime
+
         reset_agent_attempt_runtime(binding)
         reset_agent_attempt(owner)
 
@@ -795,9 +797,7 @@ def test_preview_job_response_includes_kind_and_title(tmp_path):
     db = SessionLocal()
     _seed_split_preview_target(db, tmp_path)
 
-    response = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
+    response = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-1", "user-1")
     assert response.job_kind == "REQUIREMENT_SPLIT_PREVIEW"
     assert response.requirement_id == "req-1"
     assert response.requirement_title == "Big requirement"
@@ -826,12 +826,8 @@ def test_list_active_requirement_preview_jobs_filters_creator_and_status(tmp_pat
     db.add_all([other_user, other_requirement])
     db.commit()
 
-    pending = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
-    foreign = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-2", "user-2"
-    )
+    pending = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-1", "user-1")
+    foreign = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-2", "user-2")
 
     db.expire_all()
     done = db.query(SddAiJob).filter(SddAiJob.id == pending.job_id).one()
@@ -839,9 +835,7 @@ def test_list_active_requirement_preview_jobs_filters_creator_and_status(tmp_pat
     db.commit()
 
     # 成功后同一需求可以再次发起：幂等守卫只拦截未收敛作业
-    again = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
+    again = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-1", "user-1")
     assert again.job_id != pending.job_id
 
     active = preview_job_service.list_active_requirement_preview_jobs(db, "user-1")
@@ -862,9 +856,7 @@ def test_create_split_preview_job_reuses_unconverged_job_for_same_requirement(tm
     first_id = _seed_split_preview_target(db, tmp_path)
     _claim_running(first_id, SessionLocal)
 
-    second = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
+    second = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-1", "user-1")
     assert second.job_id == first_id
     assert second.status == AiJobStatus.RUNNING.value
 
@@ -880,9 +872,7 @@ def test_create_split_preview_job_reuses_unconverged_job_for_same_requirement(tm
     )
     db.add(other_requirement)
     db.commit()
-    other = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-2", "user-1"
-    )
+    other = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-2", "user-1")
     assert other.job_id != first_id
 
 
@@ -897,8 +887,6 @@ def test_create_split_preview_job_after_cancel_creates_fresh_job(tmp_path):
     cancelled.status = AiJobStatus.CANCELLED
     db.commit()
 
-    second = preview_job_service.create_requirement_split_preview_job(
-        db, "ws-1", "req-1", "user-1"
-    )
+    second = preview_job_service.create_requirement_split_preview_job(db, "ws-1", "req-1", "user-1")
     assert second.job_id != first_id
     assert second.status == AiJobStatus.PENDING.value

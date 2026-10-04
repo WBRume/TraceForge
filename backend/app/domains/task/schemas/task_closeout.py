@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
-
 
 LandingMethodValue = Literal[
     "AI_IMPLEMENTED",
@@ -40,28 +39,28 @@ FailureReasonValue = Literal[
 
 class CloseoutEvidenceAttachment(BaseModel):
     filename: str
-    source_uri: Optional[str] = None
-    source_path: Optional[str] = None
-    source_label: Optional[str] = None
-    content_type: Optional[str] = None
-    size: Optional[int] = None
+    source_uri: str | None = None
+    source_path: str | None = None
+    source_label: str | None = None
+    content_type: str | None = None
+    size: int | None = None
 
 
 class CompleteTaskCloseoutRequest(BaseModel):
-    requirement_id: Optional[str] = Field(default=None, min_length=1, max_length=36)
+    requirement_id: str | None = Field(default=None, min_length=1, max_length=36)
     completion_summary: str = Field(min_length=1)
     landing_method: LandingMethodValue
-    commit_id: Optional[str] = None
-    pr_url: Optional[str] = None
-    local_ref: Optional[str] = None
-    evidence_attachments: List[CloseoutEvidenceAttachment] = Field(default_factory=list)
+    commit_id: str | None = None
+    pr_url: str | None = None
+    local_ref: str | None = None
+    evidence_attachments: list[CloseoutEvidenceAttachment] = Field(default_factory=list)
 
 
 class FailTaskCloseoutRequest(BaseModel):
     failure_stage: FailureStageValue
     failure_reason: FailureReasonValue
     failure_summary: str = Field(min_length=1)
-    evidence_attachments: List[CloseoutEvidenceAttachment] = Field(default_factory=list)
+    evidence_attachments: list[CloseoutEvidenceAttachment] = Field(default_factory=list)
 
 
 class TaskCloseoutResponse(BaseModel):
@@ -69,5 +68,5 @@ class TaskCloseoutResponse(BaseModel):
     task_id: str
     workspace_id: str
     status: str
-    evidence_ids: List[str] = Field(default_factory=list)
-    final_summary_id: Optional[str] = None
+    evidence_ids: list[str] = Field(default_factory=list)
+    final_summary_id: str | None = None

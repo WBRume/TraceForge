@@ -9,7 +9,7 @@
 import copy
 import io
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 try:
     from docx import Document as DocxDocument  # type: ignore
@@ -56,7 +56,7 @@ def _rewrite_paragraph_text(p_el, new_text: str) -> None:
     p_el.append(run)
 
 
-def _style_name_for(block: Dict[str, Any]) -> Optional[str]:
+def _style_name_for(block: dict[str, Any]) -> str | None:
     btype = str(block.get("type") or "paragraph")
     meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
     if btype == "heading":
@@ -68,7 +68,7 @@ def _style_name_for(block: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _new_paragraph_element(doc, block: Dict[str, Any]):
+def _new_paragraph_element(doc, block: dict[str, Any]):
     """新建段落元素(含样式),返回其 XML 元素;失败返回纯段落。"""
     text = str(block.get("text") or "")
     style_name = _style_name_for(block)
@@ -85,11 +85,37 @@ def _new_paragraph_element(doc, block: Dict[str, Any]):
     return el
 
 
+def _insert_new_blocks(doc, body, final_list, el_by_base_id, deleted_ids) -> bool:
+    changed_any = False
+    # 插入 blk-new-*:放到后继仍存活的 base 元素之前;无后继则追加到 body 末尾(sectPr 之前)
+    for idx, final in enumerate(final_list):
+        fid = str(final.get("id") or "")
+        if not fid.startswith("blk-new-"):
+            continue
+        anchor_el = None
+        for later in final_list[idx + 1 :]:
+            lid = str(later.get("id") or "")
+            if lid in el_by_base_id and lid not in deleted_ids:
+                anchor_el = el_by_base_id[lid]
+                break
+        new_el = _new_paragraph_element(doc, final)
+        if anchor_el is not None:
+            anchor_el.addprevious(new_el)
+        else:
+            sect = body.find(f"{W_NS}sectPr")
+            if sect is not None:
+                sect.addprevious(new_el)
+            else:
+                body.append(new_el)
+        changed_any = True
+    return changed_any
+
+
 def apply_blocks_to_docx_inplace(
     original_path: str,
-    base_blocks: List[Dict[str, Any]],
-    final_blocks: List[Dict[str, Any]],
-) -> Optional[bytes]:
+    base_blocks: list[dict[str, Any]],
+    final_blocks: list[dict[str, Any]],
+) -> bytes | None:
     """在原 docx 上按 final_blocks 做原位编辑;成功返回新字节,失败返回 None。"""
     if DocxDocument is None:
         return None
@@ -113,11 +139,9 @@ def apply_blocks_to_docx_inplace(
     if len(non_empty) != len(base_list):
         return None
 
-    final_by_id: Dict[str, Dict[str, Any]] = {
-        str(b.get("id")): b for b in final_list if str(b.get("id") or "").strip()
-    }
+    final_by_id: dict[str, dict[str, Any]] = {str(b.get("id")): b for b in final_list if str(b.get("id") or "").strip()}
 
-    el_by_base_id: Dict[str, Any] = {}
+    el_by_base_id: dict[str, Any] = {}
     deleted_ids: set = set()
     changed_any = False
     cursor = 0
@@ -139,27 +163,7 @@ def apply_blocks_to_docx_inplace(
         _rewrite_paragraph_text(el, str(final.get("text") or ""))
         changed_any = True
 
-    # 插入 blk-new-*:放到后继仍存活的 base 元素之前;无后继则追加到 body 末尾(sectPr 之前)
-    for idx, final in enumerate(final_list):
-        fid = str(final.get("id") or "")
-        if not fid.startswith("blk-new-"):
-            continue
-        anchor_el = None
-        for later in final_list[idx + 1:]:
-            lid = str(later.get("id") or "")
-            if lid in el_by_base_id and lid not in deleted_ids:
-                anchor_el = el_by_base_id[lid]
-                break
-        new_el = _new_paragraph_element(doc, final)
-        if anchor_el is not None:
-            anchor_el.addprevious(new_el)
-        else:
-            sect = body.find(f"{W_NS}sectPr")
-            if sect is not None:
-                sect.addprevious(new_el)
-            else:
-                body.append(new_el)
-        changed_any = True
+    changed_any = _insert_new_blocks(doc, body, final_list, el_by_base_id, deleted_ids) or changed_any
 
     if not changed_any:
         return None

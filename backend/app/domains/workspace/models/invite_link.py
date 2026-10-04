@@ -5,8 +5,6 @@ Workspace invite-link model.
 接受后按预置配置加入工作区。支持有效期（expires_at）与次数上限（max_uses）。
 """
 
-from enum import Enum as PyEnum
-
 from sqlalchemy import (
     Boolean,
     Column,

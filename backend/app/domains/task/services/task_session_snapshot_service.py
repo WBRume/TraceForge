@@ -16,7 +16,8 @@ import shutil
 import subprocess
 import tempfile
 import uuid
-from typing import Any, Iterable, Optional
+from collections.abc import Iterable
+from typing import Any
 
 from loguru import logger
 
@@ -175,8 +176,14 @@ def _snapshot_policy() -> dict[str, Any]:
     }
 
 
-def _capture_worktree(task_root: str, repo_rel_paths: list[str], checkpoint_root: str,
-                      object_store: str, policy: dict[str, Any], extra_tracked: set[str] | None = None) -> dict[str, Any]:
+def _capture_worktree(
+    task_root: str,
+    repo_rel_paths: list[str],
+    checkpoint_root: str,
+    object_store: str,
+    policy: dict[str, Any],
+    extra_tracked: set[str] | None = None,
+) -> dict[str, Any]:
     metadata_dir = os.path.join(checkpoint_root, "git")
     os.makedirs(metadata_dir, exist_ok=True)
     repo_paths = _candidate_repo_paths(task_root, repo_rel_paths)
@@ -208,7 +215,7 @@ def _claude_store_dir(project_path: str) -> str:
     return os.path.join(home, "projects", key)
 
 
-def _locate_claude_file(store_dir: str, session_id: str) -> Optional[str]:
+def _locate_claude_file(store_dir: str, session_id: str) -> str | None:
     sid = str(session_id or "").strip()
     if not sid or not os.path.isdir(store_dir):
         return None
@@ -229,7 +236,9 @@ def _dsh_root() -> str:
         return os.path.abspath(configured) if configured else os.path.join(os.path.expanduser("~"), ".dsh", "sessions")
 
 
-def _provider_checkpoint_sync(provider: str, project_path: str, session_id: Optional[str], checkpoint_root: str) -> dict[str, Any]:
+def _provider_checkpoint_sync(
+    provider: str, project_path: str, session_id: str | None, checkpoint_root: str
+) -> dict[str, Any]:
     provider = str(provider or "").strip().lower()
     sid = str(session_id or "").strip() or None
     provider_dir = os.path.join(checkpoint_root, "provider")
@@ -248,7 +257,7 @@ def _provider_checkpoint_sync(provider: str, project_path: str, session_id: Opti
         shutil.copytree(source, copied)
     source_sha256 = None
     source_size = None
-    record_boundary: Optional[dict[str, Any]] = None
+    record_boundary: dict[str, Any] | None = None
     if source and os.path.isfile(source):
         source_sha256 = _sha256_file(source)
         source_size = os.path.getsize(source)
@@ -298,8 +307,10 @@ def _atomic_copy_file(source: str, target: str) -> None:
             os.remove(temp_path)
 
 
-def _restore_provider_sync(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:
-    with open(os.path.join(checkpoint_root, "provider.json"), "r", encoding="utf-8") as handle:
+def _restore_provider_sync(
+    checkpoint_root: str, provider: str, project_path: str, current_session_id: str | None
+) -> None:
+    with open(os.path.join(checkpoint_root, "provider.json"), encoding="utf-8") as handle:
         metadata = json.load(handle)
     from app.agents.session_checkpoint import session_checkpoint_adapter
 
@@ -312,8 +323,8 @@ def _restore_provider_sync(checkpoint_root: str, provider: str, project_path: st
 def _locate_provider_source_sync(
     provider: str,
     project_path: str,
-    session_id: Optional[str],
-) -> tuple[str, Optional[str]]:
+    session_id: str | None,
+) -> tuple[str, str | None]:
     from app.agents.session_checkpoint import session_checkpoint_adapter
 
     adapter = session_checkpoint_adapter(provider)
@@ -324,7 +335,7 @@ def _backup_current_provider_sync(
     checkpoint_root: str,
     provider: str,
     project_path: str,
-    session_id: Optional[str],
+    session_id: str | None,
 ) -> dict[str, Any]:
     """Save the live provider state so a later restore step can compensate."""
     kind, source = _locate_provider_source_sync(provider, project_path, session_id)
@@ -357,7 +368,7 @@ def _restore_provider_backup_sync(checkpoint_root: str) -> None:
     metadata_path = os.path.join(checkpoint_root, "current-provider.json")
     if not os.path.isfile(metadata_path):
         return
-    with open(metadata_path, "r", encoding="utf-8") as handle:
+    with open(metadata_path, encoding="utf-8") as handle:
         metadata = json.load(handle)
     from app.agents.session_checkpoint import session_checkpoint_adapter
 
@@ -383,8 +394,12 @@ def _restore_worktree_sync(checkpoint_root: str, task_root: str, current_backup_
         store.validate_objects(object_store, metadata["manifest"])
         repo_rels = [repo["repo_rel_path"] for repo in metadata["repositories"]]
         current = _capture_worktree(
-            task_root, repo_rels, current_backup_path, object_store,
-            metadata["policy"], set(metadata["tracked"]),
+            task_root,
+            repo_rels,
+            current_backup_path,
+            object_store,
+            metadata["policy"],
+            set(metadata["tracked"]),
         )
         store.restore(task_root, object_store, current["manifest"], metadata["manifest"])
         # Restore only Git metadata. checkout/reset --hard/clean would modify
@@ -463,9 +478,17 @@ def _cleanup_checkpoint_sync(path: str) -> None:
         task_git_snapshot_store.collect(object_store)
 
 
-def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
-                            workspace_id: str, workspace_name: str, task_id: str, task_name: str,
-                            initial_checkpoint: str | None = None) -> dict[str, Any]:
+def _create_checkpoint_sync(
+    task_root: str,
+    repo_rel_paths: list[str],
+    provider: str,
+    session_id: str | None,
+    workspace_id: str,
+    workspace_name: str,
+    task_id: str,
+    task_name: str,
+    initial_checkpoint: str | None = None,
+) -> dict[str, Any]:
     task_root = _task_root(task_root)
     configured_root = str(settings.TASK_SESSION_SNAPSHOT_ROOT or "").strip()
     if not configured_root:
@@ -505,7 +528,9 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
         from app.domains.task.services import task_git_snapshot_store
 
         with store.store_lock(root):
-            worktree = task_git_snapshot_store.capture(task_root, repo_rel_paths, operation_root, root, _snapshot_policy())
+            worktree = task_git_snapshot_store.capture(
+                task_root, repo_rel_paths, operation_root, root, _snapshot_policy()
+            )
         provider_state = _provider_checkpoint_sync(provider, task_root, session_id, operation_root)
         return {
             "root": operation_root,
@@ -520,21 +545,42 @@ def _create_checkpoint_sync(task_root: str, repo_rel_paths: list[str], provider:
         raise
 
 
-async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider: str, session_id: Optional[str],
-                            *, workspace_id: str, workspace_name: str, task_id: str, task_name: str,
-                            initial_checkpoint: str | None = None) -> dict[str, Any]:
-    from app.domains.local_resource.service import task_profile
-    from app.domains.local_resource import snapshots as remote
+async def create_checkpoint(
+    task_root: str,
+    repo_rel_paths: list[str],
+    provider: str,
+    session_id: str | None,
+    *,
+    workspace_id: str,
+    workspace_name: str,
+    task_id: str,
+    task_name: str,
+    initial_checkpoint: str | None = None,
+) -> dict[str, Any]:
     from app.core.offload import run_db
+    from app.domains.local_resource import snapshots as remote
+    from app.domains.local_resource.service import task_profile
+
     if await run_db(task_profile, task_id):
         return await remote.create(task_id, provider, session_id, initial_checkpoint=initial_checkpoint)
+    import asyncio
+
     from app.core.offload import run_git_job
 
-    import asyncio
-    operation = asyncio.create_task(run_git_job(
-        _create_checkpoint_sync, task_root, repo_rel_paths, provider, session_id,
-        workspace_id, workspace_name, task_id, task_name, initial_checkpoint,
-    ))
+    operation = asyncio.create_task(
+        run_git_job(
+            _create_checkpoint_sync,
+            task_root,
+            repo_rel_paths,
+            provider,
+            session_id,
+            workspace_id,
+            workspace_name,
+            task_id,
+            task_name,
+            initial_checkpoint,
+        )
+    )
     try:
         return await asyncio.shield(operation)
     except asyncio.CancelledError:
@@ -546,24 +592,29 @@ async def create_checkpoint(task_root: str, repo_rel_paths: list[str], provider:
         raise
 
 
-async def restore_provider(checkpoint_root: str, provider: str, project_path: str, current_session_id: Optional[str]) -> None:
+async def restore_provider(
+    checkpoint_root: str, provider: str, project_path: str, current_session_id: str | None
+) -> None:
     from app.core.offload import run_git_job
-
     from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root.startswith(remote.PREFIX):
-        return await remote.action(checkpoint_root, "restore_provider", provider=provider, session_id=current_session_id)
+        return await remote.action(
+            checkpoint_root, "restore_provider", provider=provider, session_id=current_session_id
+        )
     await run_git_job(_restore_provider_sync, checkpoint_root, provider, project_path, current_session_id)
+    return None
 
 
 async def backup_current_provider(
     checkpoint_root: str,
     provider: str,
     project_path: str,
-    session_id: Optional[str],
+    session_id: str | None,
 ) -> dict[str, Any]:
     from app.core.offload import run_git_job
-
     from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root.startswith(remote.PREFIX):
         return await remote.action(checkpoint_root, "backup_provider", provider=provider, session_id=session_id)
     return await run_git_job(
@@ -577,14 +628,15 @@ async def backup_current_provider(
 
 async def restore_provider_backup(checkpoint_root: str) -> None:
     from app.core.offload import run_git_job
-
     from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root.startswith(remote.PREFIX):
         return await remote.action(checkpoint_root, "restore_provider_backup")
     await run_git_job(_restore_provider_backup_sync, checkpoint_root)
+    return None
 
 
-def _fork_dsh_session_sync(session_id: str, target_cwd: str) -> Optional[str]:
+def _fork_dsh_session_sync(session_id: str, target_cwd: str) -> str | None:
     """Fork the already-restored DSH prefix to a cold provider identity.
 
     The DSH Web Host keeps a live Agent in memory after ``session.cancel`` and
@@ -653,10 +705,10 @@ def _cleanup_dsh_session_sync(session_id: str) -> None:
     shutil.rmtree(os.path.dirname(log_path), ignore_errors=False)
 
 
-async def fork_dsh_session(session_id: str, target_cwd: str, *, checkpoint_root: str | None = None) -> Optional[str]:
+async def fork_dsh_session(session_id: str, target_cwd: str, *, checkpoint_root: str | None = None) -> str | None:
     from app.core.offload import run_file_job
-
     from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root and checkpoint_root.startswith(remote.PREFIX):
         return (await remote.action(checkpoint_root, "fork_dsh", provider="dsh", session_id=session_id))["session_id"]
     return await run_file_job(_fork_dsh_session_sync, session_id, target_cwd)
@@ -664,35 +716,40 @@ async def fork_dsh_session(session_id: str, target_cwd: str, *, checkpoint_root:
 
 async def cleanup_dsh_session(session_id: str, *, checkpoint_root: str | None = None) -> None:
     from app.core.offload import run_file_job
-
     from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root and checkpoint_root.startswith(remote.PREFIX):
         return await remote.action(checkpoint_root, "cleanup_dsh", provider="dsh", session_id=session_id)
     await run_file_job(_cleanup_dsh_session_sync, session_id)
+    return None
 
 
 async def restore_worktree(checkpoint_root: str, task_root: str, current_backup_path: str) -> None:
     from app.core.offload import run_git_job
-
     from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root.startswith(remote.PREFIX):
         return await remote.action(checkpoint_root, "restore_worktree", backup_path=current_backup_path)
     await run_git_job(_restore_worktree_sync, checkpoint_root, task_root, current_backup_path)
+    return None
 
 
-async def cleanup_checkpoint(path: Optional[str]) -> None:
+async def cleanup_checkpoint(path: str | None) -> None:
     from app.domains.local_resource import snapshots as remote
+
     if path and path.startswith(remote.PREFIX):
         return await remote.action(path, "cleanup")
     if path:
         from app.core.offload import run_file_job
 
         await run_file_job(_cleanup_checkpoint_sync, path)
+    return None
 
 
 async def checkpoint_exists(checkpoint_root: str) -> bool:
-    from app.domains.local_resource import snapshots as remote
     from app.core.offload import run_file_job
+    from app.domains.local_resource import snapshots as remote
+
     if checkpoint_root.startswith(remote.PREFIX):
         return bool((await remote.action(checkpoint_root, "exists"))["exists"])
     return await run_file_job(os.path.isfile, os.path.join(checkpoint_root, "worktree.json"))

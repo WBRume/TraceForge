@@ -11,11 +11,12 @@ GitHub OAuth 适配器（B-11，首批唯一 provider，拍板 #2）。
 """
 
 import urllib.parse
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
 from app.domains.auth.errors import OAuthUpstreamError
+from app.domains.auth.providers import register_provider
 from app.domains.auth.providers.base import (
     OAuthCodeInvalidError,
     OAuthProfile,
@@ -24,7 +25,6 @@ from app.domains.auth.providers.base import (
     _request_with_retry,
     oauth_setting,
 )
-from app.domains.auth.providers import register_provider
 
 
 @register_provider("github")
@@ -70,15 +70,15 @@ class GitHubProvider(OAuthProvider):
 
         response = _request_with_retry(_do)
         if response.status_code >= 500:
-            raise OAuthUpstreamError()
+            raise OAuthUpstreamError
         if response.status_code != 200:
             # 4xx：code 无效 / 凭据配置错误，按 code 失效处理（E-4c）
-            raise OAuthCodeInvalidError()
+            raise OAuthCodeInvalidError
         data = self._parse_json(response)
         access_token = data.get("access_token")
         if not access_token or data.get("error"):
             # GitHub 换 token 失败时返回 200 + {"error": "bad_verification_code", ...}
-            raise OAuthCodeInvalidError()
+            raise OAuthCodeInvalidError
         return str(access_token)
 
     def fetch_profile(self, access_token: str) -> OAuthProfile:
@@ -94,14 +94,14 @@ class GitHubProvider(OAuthProvider):
 
         response = _request_with_retry(_do)
         if response.status_code != 200:
-            raise OAuthUpstreamError()
+            raise OAuthUpstreamError
         data = self._parse_json(response)
         provider_uid = data.get("id")
         if provider_uid is None:
-            raise OAuthUpstreamError()
+            raise OAuthUpstreamError
 
-        email: Optional[str] = data.get("email")
-        email_verified: Optional[bool] = None
+        email: str | None = data.get("email")
+        email_verified: bool | None = None
         if not email:
             # profile 未返回 email（可能为私密）→ 查 emails 端点取 primary 邮箱
             email, email_verified = self._fetch_primary_email(access_token)
@@ -115,7 +115,7 @@ class GitHubProvider(OAuthProvider):
             raw=data,
         )
 
-    def _fetch_primary_email(self, access_token: str) -> tuple[Optional[str], Optional[bool]]:
+    def _fetch_primary_email(self, access_token: str) -> tuple[str | None, bool | None]:
         """GET /user/emails，取 primary 邮箱及其验证状态；失败不阻断登录（email 可空走路径 C）。"""
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -149,7 +149,7 @@ class GitHubProvider(OAuthProvider):
         try:
             data = response.json()
         except ValueError as exc:
-            raise OAuthUpstreamError() from exc
+            raise OAuthUpstreamError from exc
         return data
 
     @staticmethod
@@ -157,5 +157,5 @@ class GitHubProvider(OAuthProvider):
         """安全解析 JSON 对象；非法响应按上游错误处理（严禁透传原始报文，NFR-U2）。"""
         data = GitHubProvider._parse_json_value(response)
         if not isinstance(data, dict):
-            raise OAuthUpstreamError()
+            raise OAuthUpstreamError
         return data
