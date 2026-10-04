@@ -5,6 +5,7 @@ import { ElMessage } from 'element-plus'
 import { Copy, GitCommitHorizontal, GitPullRequest, FileText, CheckCircle2, XCircle, Clock, AlertTriangle } from '@/components/icons'
 import { useTaskDetailSections } from '@/composables/useTaskDetailSections'
 import type { Evidence, TaskFinalSummary } from '@/types/workspaceAssets'
+import { closeoutOptionLabelKey, isDiagnosisLandingMethod } from '@/utils/taskCloseout'
 
 const props = defineProps<{
   visible: boolean
@@ -84,53 +85,26 @@ const sourceTypeLabel = (st?: string | null) => {
 const closeoutMeta = computed(() => {
   const meta = evidence.value?.source?.source_metadata
   if (!meta || !meta.kind || !(meta.kind as string).startsWith('closeout_')) return null
-  return meta as { kind: string; landing_method?: string }
+  return meta as { kind: string; landing_method?: string; failure_stage?: string; failure_reason?: string }
 })
 
 const landingMethodLabel = computed(() => {
   const method = closeoutMeta.value?.landing_method
   if (!method) return null
-  const map: Record<string, string> = {
-    AI_IMPLEMENTED: t('chat.closeout.landing.ai_implemented'),
-    HUMAN_ADJUSTED: t('chat.closeout.landing.human_adjusted'),
-    AI_REWRITTEN: t('chat.closeout.landing.ai_rewritten'),
-    AI_REFERENCE_ONLY: t('chat.closeout.landing.ai_reference_only'),
-  }
-  return map[method] || method
+  const key = closeoutOptionLabelKey('landing', method)
+  return key ? t(key) : method
 })
 
 const failureInfo = computed(() => {
   const risk = finalSummary.value?.remaining_risk
-  if (!risk) return null
-  const stageMatch = risk.match(/Failure stage:\s*([^;]+)/)
-  const reasonMatch = risk.match(/reason:\s*([^.]+)/)
-  if (!stageMatch && !reasonMatch) return null
-  const stage = stageMatch?.[1]?.trim()
-  const reason = reasonMatch?.[1]?.trim()
-  const stageMap: Record<string, string> = {
-    AI_SOLUTION: t('chat.closeout.failure_stage_options.ai_solution'),
-    CODING: t('chat.closeout.failure_stage_options.coding'),
-    COMPILE: t('chat.closeout.failure_stage_options.compile'),
-    PACKAGE: t('chat.closeout.failure_stage_options.package'),
-    DEVICE_TEST: t('chat.closeout.failure_stage_options.device_test'),
-    INTEGRATION: t('chat.closeout.failure_stage_options.integration'),
-    REQUIREMENT_CLARIFICATION: t('chat.closeout.failure_stage_options.requirement_clarification'),
-    OTHER: t('chat.closeout.failure_stage_options.other'),
-  }
-  const reasonMap: Record<string, string> = {
-    AI_DIRECTION_WRONG: t('chat.closeout.failure_reason_options.ai_direction_wrong'),
-    PROJECT_CONTEXT_INSUFFICIENT: t('chat.closeout.failure_reason_options.project_context_insufficient'),
-    COMPILE_ERROR: t('chat.closeout.failure_reason_options.compile_error'),
-    PACKAGE_ERROR: t('chat.closeout.failure_reason_options.package_error'),
-    DEVICE_TEST_FAILED: t('chat.closeout.failure_reason_options.device_test_failed'),
-    API_UNCLEAR: t('chat.closeout.failure_reason_options.api_unclear'),
-    REQUIREMENT_UNCLEAR: t('chat.closeout.failure_reason_options.requirement_unclear'),
-    ENVIRONMENT_ISSUE: t('chat.closeout.failure_reason_options.environment_issue'),
-    OTHER: t('chat.closeout.failure_reason_options.other'),
-  }
+  const stage = closeoutMeta.value?.failure_stage || risk?.match(/Failure stage:\s*([^;]+)/)?.[1]?.trim()
+  const reason = closeoutMeta.value?.failure_reason || risk?.match(/reason:\s*([^.]+)/)?.[1]?.trim()
+  if (!stage && !reason) return null
+  const stageKey = stage ? closeoutOptionLabelKey('failure_stage_options', stage) : null
+  const reasonKey = reason ? closeoutOptionLabelKey('failure_reason_options', reason) : null
   return {
-    stage: stage ? (stageMap[stage] || stage) : null,
-    reason: reason ? (reasonMap[reason] || reason) : null,
+    stage: stageKey ? t(stageKey) : stage,
+    reason: reasonKey ? t(reasonKey) : reason,
   }
 })
 
@@ -185,7 +159,7 @@ function hasSourceInfo(e: Evidence): boolean {
       </div>
 
       <div v-if="landingMethodLabel" class="detail-section">
-        <label>{{ t('chat.closeout.landing_method') }}</label>
+        <label>{{ t(isDiagnosisLandingMethod(closeoutMeta?.landing_method) ? 'chat.closeout.diagnosis.landing_method' : 'chat.closeout.landing_method') }}</label>
         <div class="closeout-info-row">
           <span class="closeout-value">{{ landingMethodLabel }}</span>
         </div>

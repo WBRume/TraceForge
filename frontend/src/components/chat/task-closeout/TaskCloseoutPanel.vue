@@ -93,6 +93,7 @@ async function submitFailure(payload: Omit<FailCloseoutPayload, 'evidence_attach
           />
           <FailCloseoutForm
             v-else
+            :task-type="taskType"
             :saving="closeout.saving.value"
             @cancel="emit('close')"
             @submit="submitFailure"

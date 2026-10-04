@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, get_args
 
 from pydantic import BaseModel, Field
 
-LandingMethodValue = Literal[
+DevelopmentLandingMethodValue = Literal[
     "AI_IMPLEMENTED",
     "HUMAN_ADJUSTED",
     "AI_REWRITTEN",
     "AI_REFERENCE_ONLY",
 ]
 
-FailureStageValue = Literal[
+DiagnosisLandingMethodValue = Literal[
+    "AI_DIAGNOSED",
+    "HUMAN_ASSISTED_DIAGNOSIS",
+    "HUMAN_DIAGNOSED",
+    "AI_CLUE_ONLY",
+]
+LandingMethodValue = DevelopmentLandingMethodValue | DiagnosisLandingMethodValue
+
+DevelopmentFailureStageValue = Literal[
     "AI_SOLUTION",
     "CODING",
     "COMPILE",
@@ -24,7 +32,17 @@ FailureStageValue = Literal[
     "OTHER",
 ]
 
-FailureReasonValue = Literal[
+DiagnosisFailureStageValue = Literal[
+    "INFORMATION_COLLECTION",
+    "HYPOTHESIS_ANALYSIS",
+    "REPRODUCTION",
+    "ROOT_CAUSE_CONFIRMATION",
+    "FIX_VERIFICATION",
+    "OTHER",
+]
+FailureStageValue = DevelopmentFailureStageValue | DiagnosisFailureStageValue
+
+DevelopmentFailureReasonValue = Literal[
     "AI_DIRECTION_WRONG",
     "PROJECT_CONTEXT_INSUFFICIENT",
     "COMPILE_ERROR",
@@ -35,6 +53,30 @@ FailureReasonValue = Literal[
     "ENVIRONMENT_ISSUE",
     "OTHER",
 ]
+
+DiagnosisFailureReasonValue = Literal[
+    "INSUFFICIENT_EVIDENCE",
+    "NOT_REPRODUCIBLE",
+    "HYPOTHESES_REFUTED",
+    "ROOT_CAUSE_UNCONFIRMED",
+    "FIX_NOT_VERIFIED",
+    "ENVIRONMENT_ISSUE",
+    "OTHER",
+]
+FailureReasonValue = DevelopmentFailureReasonValue | DiagnosisFailureReasonValue
+
+TASK_CLOSEOUT_VALUES = {
+    "DEVELOPMENT": {
+        "landing_method": get_args(DevelopmentLandingMethodValue),
+        "failure_stage": get_args(DevelopmentFailureStageValue),
+        "failure_reason": get_args(DevelopmentFailureReasonValue),
+    },
+    "DIAGNOSIS": {
+        "landing_method": get_args(DiagnosisLandingMethodValue),
+        "failure_stage": get_args(DiagnosisFailureStageValue),
+        "failure_reason": get_args(DiagnosisFailureReasonValue),
+    },
+}
 
 
 class CloseoutEvidenceAttachment(BaseModel):

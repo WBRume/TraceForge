@@ -1,29 +1,20 @@
-export type LandingMethod =
-  | 'AI_IMPLEMENTED'
-  | 'HUMAN_ADJUSTED'
-  | 'AI_REWRITTEN'
-  | 'AI_REFERENCE_ONLY'
+export const TASK_CLOSEOUT_OPTIONS = {
+  DEVELOPMENT: {
+    landing: ['AI_IMPLEMENTED', 'HUMAN_ADJUSTED', 'AI_REWRITTEN', 'AI_REFERENCE_ONLY'],
+    failure_stage_options: ['AI_SOLUTION', 'CODING', 'COMPILE', 'PACKAGE', 'DEVICE_TEST', 'INTEGRATION', 'REQUIREMENT_CLARIFICATION', 'OTHER'],
+    failure_reason_options: ['AI_DIRECTION_WRONG', 'PROJECT_CONTEXT_INSUFFICIENT', 'COMPILE_ERROR', 'PACKAGE_ERROR', 'DEVICE_TEST_FAILED', 'API_UNCLEAR', 'REQUIREMENT_UNCLEAR', 'ENVIRONMENT_ISSUE', 'OTHER'],
+  },
+  DIAGNOSIS: {
+    landing: ['AI_DIAGNOSED', 'HUMAN_ASSISTED_DIAGNOSIS', 'HUMAN_DIAGNOSED', 'AI_CLUE_ONLY'],
+    failure_stage_options: ['INFORMATION_COLLECTION', 'HYPOTHESIS_ANALYSIS', 'REPRODUCTION', 'ROOT_CAUSE_CONFIRMATION', 'FIX_VERIFICATION', 'OTHER'],
+    failure_reason_options: ['INSUFFICIENT_EVIDENCE', 'NOT_REPRODUCIBLE', 'HYPOTHESES_REFUTED', 'ROOT_CAUSE_UNCONFIRMED', 'FIX_NOT_VERIFIED', 'ENVIRONMENT_ISSUE', 'OTHER'],
+  },
+} as const
 
-export type FailureStage =
-  | 'AI_SOLUTION'
-  | 'CODING'
-  | 'COMPILE'
-  | 'PACKAGE'
-  | 'DEVICE_TEST'
-  | 'INTEGRATION'
-  | 'REQUIREMENT_CLARIFICATION'
-  | 'OTHER'
-
-export type FailureReason =
-  | 'AI_DIRECTION_WRONG'
-  | 'PROJECT_CONTEXT_INSUFFICIENT'
-  | 'COMPILE_ERROR'
-  | 'PACKAGE_ERROR'
-  | 'DEVICE_TEST_FAILED'
-  | 'API_UNCLEAR'
-  | 'REQUIREMENT_UNCLEAR'
-  | 'ENVIRONMENT_ISSUE'
-  | 'OTHER'
+type CloseoutOptions = typeof TASK_CLOSEOUT_OPTIONS[keyof typeof TASK_CLOSEOUT_OPTIONS]
+export type LandingMethod = CloseoutOptions['landing'][number]
+export type FailureStage = CloseoutOptions['failure_stage_options'][number]
+export type FailureReason = CloseoutOptions['failure_reason_options'][number]
 
 export type CloseoutEvidenceAttachment = {
   filename: string
