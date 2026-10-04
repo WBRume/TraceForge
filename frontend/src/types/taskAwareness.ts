@@ -7,6 +7,7 @@ export interface TaskRuntimeEvent {
   workspace: { id: string; name: string }
   task: { id: string; title: string; url: string }
   initiator: { id: string; name: string }
+  actor?: { id: string; name: string } | null
   summary: string
   run: { id: string; version: number; started_at: string; finished_at?: string | null; client_message_id?: string | null; session_generation?: number }
 }
