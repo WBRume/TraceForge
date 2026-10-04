@@ -720,6 +720,32 @@
       "completion_summary": "Completion Summary",
       "completion_summary_placeholder": "Describe what was completed locally and what still needs later confirmation...",
       "landing_method": "Landing Method",
+      "diagnosis": {
+        "landing_method": "Diagnosis Method",
+        "completion_summary": "Diagnosis Conclusion",
+        "completion_summary_placeholder": "Describe the identified root cause, key evidence, verification results, and remaining follow-up...",
+        "failure_summary_placeholder": "Explain why diagnosis could not be completed, hypotheses ruled out, missing evidence, and next investigation steps...",
+        "landing": {
+          "ai_diagnosed": "Root cause identified through AI analysis",
+          "human_assisted_diagnosis": "Root cause identified with additional human investigation",
+          "human_diagnosed": "Root cause identified through independent human investigation",
+          "ai_clue_only": "AI provided clues; a human completed the diagnosis"
+        },
+        "failure_stage_options": {
+          "information_collection": "Information and evidence collection",
+          "hypothesis_analysis": "Hypothesis analysis and elimination",
+          "reproduction": "Issue reproduction and verification",
+          "root_cause_confirmation": "Root cause confirmation",
+          "fix_verification": "Fix verification"
+        },
+        "failure_reason_options": {
+          "insufficient_evidence": "Insufficient information or evidence",
+          "not_reproducible": "Issue cannot be reproduced",
+          "hypotheses_refuted": "All current hypotheses refuted",
+          "root_cause_unconfirmed": "Root cause remains unconfirmed",
+          "fix_not_verified": "Fix verification failed"
+        }
+      },
       "landing": {
         "ai_implemented": "Mostly implemented as the AI plan",
         "human_adjusted": "Implemented after human adjustment",

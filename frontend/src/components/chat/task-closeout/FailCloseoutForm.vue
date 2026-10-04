@@ -1,16 +1,18 @@
 <script setup lang="ts">
-import { computed, reactive, shallowRef } from 'vue'
+import { computed, reactive, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import CloseoutEvidenceUploader from './CloseoutEvidenceUploader.vue'
+import { closeoutOptionLabelKey, getCloseoutOptions } from '@/utils/taskCloseout'
 import type {
   FailCloseoutPayload,
   FailureReason,
   FailureStage,
 } from '@/types/taskCloseout'
 
-defineProps<{
+const props = defineProps<{
   saving?: boolean
+  taskType?: string
 }>()
 
 const emit = defineEmits<{
@@ -19,6 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const isDiagnosis = computed(() => props.taskType === 'DIAGNOSIS')
 const files = shallowRef<File[]>([])
 const errors = reactive({
   summary: false,
@@ -30,28 +33,18 @@ const form = reactive({
   failure_summary: '',
 })
 
-const failureStageOptions = computed(() => [
-  { label: t('chat.closeout.failure_stage_options.ai_solution'), value: 'AI_SOLUTION' },
-  { label: t('chat.closeout.failure_stage_options.coding'), value: 'CODING' },
-  { label: t('chat.closeout.failure_stage_options.compile'), value: 'COMPILE' },
-  { label: t('chat.closeout.failure_stage_options.package'), value: 'PACKAGE' },
-  { label: t('chat.closeout.failure_stage_options.device_test'), value: 'DEVICE_TEST' },
-  { label: t('chat.closeout.failure_stage_options.integration'), value: 'INTEGRATION' },
-  { label: t('chat.closeout.failure_stage_options.requirement_clarification'), value: 'REQUIREMENT_CLARIFICATION' },
-  { label: t('chat.closeout.failure_stage_options.other'), value: 'OTHER' },
-])
+const failureStageOptions = computed(() => getCloseoutOptions(props.taskType).failure_stage_options.map(value => ({
+  label: t(closeoutOptionLabelKey('failure_stage_options', value)!), value,
+})))
 
-const failureReasonOptions = computed(() => [
-  { label: t('chat.closeout.failure_reason_options.ai_direction_wrong'), value: 'AI_DIRECTION_WRONG' },
-  { label: t('chat.closeout.failure_reason_options.project_context_insufficient'), value: 'PROJECT_CONTEXT_INSUFFICIENT' },
-  { label: t('chat.closeout.failure_reason_options.compile_error'), value: 'COMPILE_ERROR' },
-  { label: t('chat.closeout.failure_reason_options.package_error'), value: 'PACKAGE_ERROR' },
-  { label: t('chat.closeout.failure_reason_options.device_test_failed'), value: 'DEVICE_TEST_FAILED' },
-  { label: t('chat.closeout.failure_reason_options.api_unclear'), value: 'API_UNCLEAR' },
-  { label: t('chat.closeout.failure_reason_options.requirement_unclear'), value: 'REQUIREMENT_UNCLEAR' },
-  { label: t('chat.closeout.failure_reason_options.environment_issue'), value: 'ENVIRONMENT_ISSUE' },
-  { label: t('chat.closeout.failure_reason_options.other'), value: 'OTHER' },
-])
+const failureReasonOptions = computed(() => getCloseoutOptions(props.taskType).failure_reason_options.map(value => ({
+  label: t(closeoutOptionLabelKey('failure_reason_options', value)!), value,
+})))
+
+watch(isDiagnosis, diagnosis => {
+  form.failure_stage = diagnosis ? 'ROOT_CAUSE_CONFIRMATION' : 'CODING'
+  form.failure_reason = 'OTHER'
+}, { immediate: true })
 
 function trimmed(value: string): string | null {
   const next = value.trim()
@@ -93,7 +86,7 @@ function submitForm() {
           v-model="form.failure_summary"
           :class="{ invalid: errors.summary }"
           :disabled="saving"
-          :placeholder="t('chat.closeout.failure_summary_placeholder')"
+          :placeholder="t(isDiagnosis ? 'chat.closeout.diagnosis.failure_summary_placeholder' : 'chat.closeout.failure_summary_placeholder')"
           @input="errors.summary = false"
         />
       </div>

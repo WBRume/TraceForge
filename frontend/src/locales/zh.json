@@ -720,6 +720,32 @@
       "completion_summary": "完成说明",
       "completion_summary_placeholder": "说明本地最终完成了什么、哪些内容仍需后续确认...",
       "landing_method": "落地方式",
+      "diagnosis": {
+        "landing_method": "定位方式",
+        "completion_summary": "定位结论",
+        "completion_summary_placeholder": "说明已定位的根因、关键证据、验证结果及仍需跟进的问题...",
+        "failure_summary_placeholder": "说明未能完成定位的原因、已排除的假设、缺失证据和后续排查方向...",
+        "landing": {
+          "ai_diagnosed": "依据 AI 分析定位根因",
+          "human_assisted_diagnosis": "人工补充排查后定位根因",
+          "human_diagnosed": "人工独立排查定位根因",
+          "ai_clue_only": "AI 仅提供线索，由人工完成定位"
+        },
+        "failure_stage_options": {
+          "information_collection": "信息与证据收集",
+          "hypothesis_analysis": "假设分析与排除",
+          "reproduction": "问题复现与验证",
+          "root_cause_confirmation": "根因确认",
+          "fix_verification": "修复方案验证"
+        },
+        "failure_reason_options": {
+          "insufficient_evidence": "关键信息或证据不足",
+          "not_reproducible": "问题无法复现",
+          "hypotheses_refuted": "现有假设均被证伪",
+          "root_cause_unconfirmed": "根因尚未确认",
+          "fix_not_verified": "修复方案未通过验证"
+        }
+      },
       "landing": {
         "ai_implemented": "基本按 AI 方案实现",
         "human_adjusted": "人工调整后实现",

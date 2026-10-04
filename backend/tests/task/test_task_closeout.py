@@ -205,7 +205,7 @@ def test_diagnosis_completion_links_leaf_requirement_and_rejects_parent_before_w
         endpoint = f"/api/workspaces/{workspace.id}/tasks/{task.id}/closeout/complete"
         payload = {
             "completion_summary": "Root cause confirmed",
-            "landing_method": "HUMAN_ADJUSTED",
+            "landing_method": "HUMAN_ASSISTED_DIAGNOSIS",
             "requirement_id": "parent",
         }
         assert client.post(endpoint, json=payload).status_code == 409

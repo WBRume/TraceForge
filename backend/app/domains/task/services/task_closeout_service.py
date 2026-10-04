@@ -1,6 +1,6 @@
 """Lightweight Task closeout orchestration.
 
-This service records the key local-development facts produced when a user
+This service records the key development or diagnosis facts produced when a user
 finishes or fails a Task. It deliberately delegates process-asset writes to
 workspace_asset task_process writes and does not mutate Traceability directly.
 """
@@ -12,8 +12,9 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.domains.dashboard.models.metric import SddDashboardMetric
-from app.domains.task.models.task import SddTask, TaskStatus
+from app.domains.task.models.task import SddTask, TaskStatus, TaskType
 from app.domains.task.schemas.task_closeout import (
+    TASK_CLOSEOUT_VALUES,
     CloseoutEvidenceAttachment,
     CompleteTaskCloseoutRequest,
     FailTaskCloseoutRequest,
@@ -47,6 +48,17 @@ def _clean(value: str | None) -> str | None:
 def _short(value: str | None, limit: int = 500) -> str | None:
     cleaned = _clean(value)
     return cleaned[:limit] if cleaned else None
+
+
+def _validate_closeout_values(task: SddTask, payload: CompleteTaskCloseoutRequest | FailTaskCloseoutRequest) -> None:
+    task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
+    allowed = TASK_CLOSEOUT_VALUES[task_type]
+    fields = (
+        ("landing_method",) if isinstance(payload, CompleteTaskCloseoutRequest) else ("failure_stage", "failure_reason")
+    )
+    for field in fields:
+        if getattr(payload, field) not in allowed[field]:
+            raise TaskCloseoutError(f"{field} is not valid for {task_type.value} tasks.", status_code=422)
 
 
 def _get_open_task(db: Session, workspace_id: str, task_id: str) -> SddTask:
@@ -90,7 +102,9 @@ def _attachment_evidence(
     )
 
 
-def _complete_evidence_payloads(payload: CompleteTaskCloseoutRequest) -> list[EvidenceCreateRequest]:
+def _complete_evidence_payloads(
+    payload: CompleteTaskCloseoutRequest, task_type: TaskType
+) -> list[EvidenceCreateRequest]:
     evidence: list[EvidenceCreateRequest] = []
     commit_id = _clean(payload.commit_id)
     pr_url = _clean(payload.pr_url)
@@ -143,10 +157,16 @@ def _complete_evidence_payloads(payload: CompleteTaskCloseoutRequest) -> list[Ev
                 change_reason="Task completion closeout.",
             )
         )
+    for item in evidence:
+        item.source_metadata = {
+            **(item.source_metadata or {}),
+            "task_type": task_type.value,
+            "landing_method": payload.landing_method,
+        }
     return evidence
 
 
-def _failure_evidence_payloads(payload: FailTaskCloseoutRequest) -> list[EvidenceCreateRequest]:
+def _failure_evidence_payloads(payload: FailTaskCloseoutRequest, task_type: TaskType) -> list[EvidenceCreateRequest]:
     evidence = [
         _attachment_evidence(
             attachment,
@@ -156,6 +176,13 @@ def _failure_evidence_payloads(payload: FailTaskCloseoutRequest) -> list[Evidenc
         )
         for attachment in payload.evidence_attachments
     ]
+    for item in evidence:
+        item.source_metadata = {
+            **(item.source_metadata or {}),
+            "task_type": task_type.value,
+            "failure_stage": payload.failure_stage,
+            "failure_reason": payload.failure_reason,
+        }
     return evidence
 
 
@@ -188,7 +215,10 @@ def complete_task_closeout(
     from app.domains.local_resource.service import require_operation
 
     require_operation(db, task, actor_id)
-    evidence_payloads = _complete_evidence_payloads(payload)
+    _validate_closeout_values(task, payload)
+    task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
+    is_diagnosis = task_type == TaskType.DIAGNOSIS
+    evidence_payloads = _complete_evidence_payloads(payload, task_type)
 
     if payload.requirement_id:
         requirement = db.query(SddRequirement).filter_by(id=payload.requirement_id, workspace_id=workspace_id).first()
@@ -233,10 +263,18 @@ def complete_task_closeout(
         TaskFinalSummaryUpsertRequest(
             final_status="PARTIAL",
             summary=payload.completion_summary,
-            remaining_risk="Task is marked DONE from local development closeout. Coverage Verified still depends on real Evidence and human confirmation.",
-            next_steps="Review Task Detail evidence and promote reusable knowledge when needed.",
+            remaining_risk=(
+                "Task is marked DONE from diagnosis closeout. Root-cause and fix verification still depend on supporting evidence and human confirmation."
+                if is_diagnosis
+                else "Task is marked DONE from local development closeout. Coverage Verified still depends on real Evidence and human confirmation."
+            ),
+            next_steps=(
+                "Review the root cause and diagnostic evidence, follow up on any unverified fix, and archive reusable investigation findings."
+                if is_diagnosis
+                else "Review Task Detail evidence and promote reusable knowledge when needed."
+            ),
             final_evidence_ids=evidence_ids,
-            change_reason="Task completion closeout.",
+            change_reason=f"Task completion closeout. Method: {payload.landing_method}.",
         ),
     )
     from app.domains.notification.services.task_awareness import capture_business
@@ -268,7 +306,9 @@ def fail_task_closeout(
     from app.domains.local_resource.service import require_operation
 
     require_operation(db, task, actor_id)
-    evidence_payloads = _failure_evidence_payloads(payload)
+    _validate_closeout_values(task, payload)
+    task_type = TaskType(task.task_type or TaskType.DEVELOPMENT)
+    evidence_payloads = _failure_evidence_payloads(payload, task_type)
 
     evidence_ids = [
         evidence_writes.create_evidence(db, workspace_id, task_id, actor_id, evidence_payload, _skip_phase_check=True)
@@ -284,7 +324,11 @@ def fail_task_closeout(
             final_status="REJECTED",
             summary=payload.failure_summary,
             remaining_risk=f"Failure stage: {payload.failure_stage}; reason: {payload.failure_reason}.",
-            next_steps="Review failure evidence, clarify requirements or environment, then initialize a fresh session if needed.",
+            next_steps=(
+                "Collect missing diagnostic evidence, revisit reproduction conditions and hypotheses, then resume investigation in a fresh session if needed."
+                if task_type == TaskType.DIAGNOSIS
+                else "Review failure evidence, clarify requirements or environment, then initialize a fresh session if needed."
+            ),
             final_evidence_ids=evidence_ids,
             change_reason="Task failure closeout.",
         ),

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, reactive, shallowRef } from 'vue'
+import { computed, reactive, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import BaseSelect from '@/components/BaseSelect.vue'
 import CloseoutEvidenceUploader from './CloseoutEvidenceUploader.vue'
 import type { CompleteCloseoutPayload, LandingMethod } from '@/types/taskCloseout'
 import { ChevronRight, FileText } from '@/components/icons'
 import type { RequirementOption } from '@/types/taskRail'
+import { closeoutOptionLabelKey, getCloseoutOptions } from '@/utils/taskCloseout'
 
 const props = defineProps<{
   saving?: boolean
@@ -21,6 +22,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const isDiagnosis = computed(() => props.taskType === 'DIAGNOSIS')
+const summaryKey = computed(() => isDiagnosis.value ? 'chat.closeout.diagnosis.completion_summary' : 'chat.closeout.completion_summary')
 const files = shallowRef<File[]>([])
 const errors = reactive({
   summary: false,
@@ -34,12 +37,13 @@ const form = reactive({
   local_ref: '',
 })
 
-const landingOptions = computed(() => [
-  { label: t('chat.closeout.landing.ai_implemented'), value: 'AI_IMPLEMENTED' },
-  { label: t('chat.closeout.landing.human_adjusted'), value: 'HUMAN_ADJUSTED' },
-  { label: t('chat.closeout.landing.ai_rewritten'), value: 'AI_REWRITTEN' },
-  { label: t('chat.closeout.landing.ai_reference_only'), value: 'AI_REFERENCE_ONLY' },
-])
+const landingOptions = computed(() => getCloseoutOptions(props.taskType).landing.map(value => ({
+  label: t(closeoutOptionLabelKey('landing', value)!), value,
+})))
+
+watch(isDiagnosis, diagnosis => {
+  form.landing_method = diagnosis ? 'HUMAN_ASSISTED_DIAGNOSIS' : 'HUMAN_ADJUSTED'
+}, { immediate: true })
 
 function trimmed(value: string): string | null {
   const next = value.trim()
@@ -71,18 +75,18 @@ function submitForm() {
     </button>
     <div class="form-section">
       <div class="form-field full-width" :class="{ invalid: errors.summary }">
-        <label class="required">{{ t('chat.closeout.completion_summary') }}</label>
+        <label class="required">{{ t(summaryKey) }}</label>
         <textarea
           v-model="form.completion_summary"
           :class="{ invalid: errors.summary }"
           :disabled="saving"
-          :placeholder="t('chat.closeout.completion_summary_placeholder')"
+          :placeholder="t(`${summaryKey}_placeholder`)"
           @input="errors.summary = false"
         />
       </div>
 
       <div class="form-field">
-        <label class="required">{{ t('chat.closeout.landing_method') }}</label>
+        <label class="required">{{ t(isDiagnosis ? 'chat.closeout.diagnosis.landing_method' : 'chat.closeout.landing_method') }}</label>
         <BaseSelect v-model="form.landing_method" :options="landingOptions" :disabled="saving" />
       </div>
     </div>
