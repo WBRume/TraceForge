@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
+import { Star, StarSolid } from '@/components/icons'
 import ChatTaskListItem from '@/components/chat/ChatTaskListItem.vue'
 
 vi.mock('@/components/DeleteActionButton.vue', () => ({
@@ -63,5 +64,22 @@ describe('ChatTaskListItem', () => {
     await wrapper.find('.follow-btn').trigger('click')
     expect(wrapper.emitted('toggleFollow')?.[0]).toEqual([task])
     expect(wrapper.emitted('select')).toBeUndefined()
+  })
+
+  it('renders outline star when not following, and solid star when following', async () => {
+    const wrapper = mountItem()
+    const followBtn = wrapper.find('.follow-btn')
+
+    expect(followBtn.classes()).not.toContain('active')
+    expect(followBtn.attributes('aria-pressed')).toBe('false')
+    expect(wrapper.findComponent(Star).exists()).toBe(true)
+    expect(wrapper.findComponent(StarSolid).exists()).toBe(false)
+
+    await wrapper.setProps({ task: { ...task, is_following: true } })
+
+    expect(followBtn.classes()).toContain('active')
+    expect(followBtn.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findComponent(StarSolid).exists()).toBe(true)
+    expect(wrapper.findComponent(Star).exists()).toBe(false)
   })
 })

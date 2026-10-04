@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
 import { formatTime } from '@/utils/chatFormatters'
-import { Star } from '@/components/icons'
+import { Star, StarSolid } from '@/components/icons'
 import TaskRequirementBadges from './task-rail/TaskRequirementBadges.vue'
 import type { RequirementOption } from '@/types/taskRail'
 
@@ -36,8 +36,14 @@ const isDiagnosis = computed(() => props.task.task_type === 'DIAGNOSIS')
 const hasMetadata = computed(() => Boolean(props.task.creator_name || props.task.created_at))
 
 const selectTask = () => emit('select', props.task)
-const deleteTask = () => emit('delete', props.task)
-const toggleFollow = () => emit('toggleFollow', props.task)
+const deleteTask = (event?: MouseEvent) => {
+  (event?.currentTarget as HTMLElement)?.blur?.()
+  emit('delete', props.task)
+}
+const toggleFollow = (event?: MouseEvent) => {
+  (event?.currentTarget as HTMLElement)?.blur?.()
+  emit('toggleFollow', props.task)
+}
 </script>
 
 <template>
@@ -86,9 +92,10 @@ const toggleFollow = () => emit('toggleFollow', props.task)
       :title="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
       :aria-label="$t(task.is_following ? 'chat.task_unfollow_messages' : 'chat.task_follow_messages')"
       :aria-pressed="Boolean(task.is_following)"
-      @click.stop="toggleFollow"
+      @click.stop="toggleFollow($event)"
     >
-      <Star class="follow-icon" :fill="task.is_following ? 'currentColor' : 'none'" />
+      <StarSolid v-if="task.is_following" class="follow-icon" />
+      <Star v-else class="follow-icon" />
     </button>
 
     <DeleteActionButton
@@ -96,7 +103,7 @@ const toggleFollow = () => emit('toggleFollow', props.task)
       class="delete-btn"
       :title="$t('common.delete')"
       :disabled="!canDelete"
-      @click="deleteTask"
+      @click="deleteTask($event)"
     />
   </article>
 </template>
@@ -332,36 +339,46 @@ const toggleFollow = () => emit('toggleFollow', props.task)
 }
 
 .follow-icon {
-  width: 0.8rem;
-  height: 0.8rem;
+  width: 0.875rem;
+  height: 0.875rem;
 }
 
-/* 选中或悬停任务项时：按钮透明度提升并加深背景颜色 */
-.task-item:hover .follow-btn,
+/* 选中或悬停任务项时：默认未收藏按钮与删除按钮透明度提升并加深背景颜色 */
+.task-item:hover .follow-btn:not(.active),
 .task-item:hover .delete-btn.delete-action-btn,
-.task-item:focus-within .follow-btn,
-.task-item:focus-within .delete-btn.delete-action-btn,
-.task-item.active .follow-btn,
+.task-item:has(:focus-visible) .follow-btn:not(.active),
+.task-item:has(:focus-visible) .delete-btn.delete-action-btn,
+.task-item.active .follow-btn:not(.active),
 .task-item.active .delete-btn.delete-action-btn {
   opacity: 1;
   background: #f1f5f9;
 }
 
-/* 按钮自身 hover / active 时的微交互高亮 */
-.follow-btn:hover,
-.task-item:hover .follow-btn:hover,
-.task-item:focus-within .follow-btn:hover,
-.task-item.active .follow-btn:hover {
-  color: #94a3b8;
+/* 未收藏按钮自身 hover 时的微交互高亮 */
+.follow-btn:not(.active):hover,
+.task-item:hover .follow-btn:not(.active):hover,
+.task-item:has(:focus-visible) .follow-btn:not(.active):hover,
+.task-item.active .follow-btn:not(.active):hover {
+  color: #d97706;
   background: #fef3c7;
-  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.25);
   transform: translateY(-1px);
 }
 
+/* 已收藏状态：高辨识度视觉，常驻可见、实心饱满金黄与无边框浅色底 */
 .follow-btn.active {
   color: #d97706;
   background: #fef3c7;
   opacity: 1;
+}
+
+.follow-btn.active:hover,
+.task-item:hover .follow-btn.active:hover,
+.task-item:has(:focus-visible) .follow-btn.active:hover,
+.task-item.active .follow-btn.active:hover {
+  color: #b45309;
+  background: #fde68a;
+  box-shadow: 0 2px 6px rgba(217, 119, 6, 0.18);
+  transform: translateY(-1px);
 }
 
 .delete-btn.delete-action-btn:hover:not(:disabled) {
