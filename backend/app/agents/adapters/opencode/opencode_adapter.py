@@ -126,47 +126,15 @@ class OpenCodeAdapter(AgentBackend):
 
     async def _available_models(self, params: dict[str, str]) -> list[dict[str, Any]]:
         client = await self._ensure_client()
-
-        async def snapshot():
-            response = await client.get(f"{self.server_url}/api/model", params=params)
-            self._check_response(response, "list models")
-            payload = response.json()
-            return [m for m in payload["data"] if m.get("enabled", True)], payload.get("location")
-
-        models, location = await snapshot()
-        if models:
-            return models
-        # OpenCode boots location plugins asynchronously. An initial empty
-        # snapshot can precede catalog.updated; it is not yet a settled list.
-        try:
-            async with asyncio.timeout(5):
-                async with client.stream("GET", f"{self.server_url}/api/event") as response:
-                    if response.status_code != 200:
-                        raise AgentError(f"OpenCode model events failed: HTTP {response.status_code}")
-                    async for line in response.aiter_lines():
-                        if not line.startswith("data:"):
-                            continue
-                        event = json.loads(line[5:])
-                        kind = event.get("type")
-                        event_location = event.get("location") or {}
-                        same_location = location and all(
-                            event_location.get(key) == location.get(key) for key in ("directory", "workspaceID")
-                        )
-                        if kind == "server.connected":
-                            # Subscribe before re-reading so an update between
-                            # the first GET and SSE subscription cannot be lost.
-                            models, location = await snapshot()
-                            if models:
-                                return models
-                        elif kind == "catalog.updated" and same_location:
-                            models, _ = await snapshot()
-                            return models
-        except TimeoutError:
-            pass
-        # Bound waiting for genuinely empty catalogues and recover an update
-        # missed if the event stream closes before delivering it.
-        models, _ = await snapshot()
-        return models
+        # OpenCode 2.x integration.list awaits Plugin.awaitActivation for this
+        # location. model.list is only a snapshot: even a nonempty built-in list
+        # can precede configured providers, model filters and defaults. Cross the
+        # read-only activation barrier before taking the catalogue snapshot.
+        response = await client.get(f"{self.server_url}/api/integration", params=params)
+        self._check_response(response, "initialize model integrations")
+        response = await client.get(f"{self.server_url}/api/model", params=params)
+        self._check_response(response, "list models")
+        return [model for model in response.json()["data"] if model.get("enabled", True)]
 
     async def model_catalog(self, *, project_path: str = "", session_id: str | None = None) -> dict:
         from app.agents.model_selection import model_option
