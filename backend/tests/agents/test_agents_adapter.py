@@ -470,6 +470,9 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
         def json(self):
             return self._payload
 
+        def raise_for_status(self):
+            httpx.Response(self.status_code, request=httpx.Request("GET", "http://agent")).raise_for_status()
+
         @property
         def text(self):
             return str(self._payload)
@@ -479,6 +482,9 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
             self.lines = lines
             self.status_code = 200
             self.text = ""
+
+        def raise_for_status(self):
+            assert self.status_code == 200
 
         def aiter_lines(self):
             async def _gen():
@@ -499,26 +505,28 @@ class OpenCodeAdapterRunTest(unittest.IsolatedAsyncioTestCase):
         async def post(self, url: str, json: dict | None = None, **kwargs):
             if url.endswith("/api/session"):
                 return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "ses_test"}})
-            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "msg_test"}})
+            self.prompt_id = json['id']
+            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": self.prompt_id}})
 
         async def get(self, url: str, params: dict | None = None, **kwargs):
             if url.endswith("/message"):
                 return OpenCodeAdapterRunTest._FakeResponse(200,
-                    {'data': [{'id':'msg_test','type':'user'}, {'id':'reply', 'finish': 'stop',
+                    {'data': [{'id':self.prompt_id,'type':'user'}, {'id':'reply', 'finish': 'stop',
                                'cost': 0,
                                'tokens': {'input': 1,
                                           'output': 1,
                                           'reasoning': 0,
                                           'cache': {'read': 0, 'write': 0}},
                                'type': 'assistant',
-                      'content': [{'type': 'text', 'text': 'ok'}]}], 'cursor': {}}
+                      'time': {'completed': 123}, 'content': [{'type': 'text', 'text': 'ok'}]},
+                      {'type': 'idle', 'outcome': 'succeeded'}], 'cursor': {}}
                 )
             return OpenCodeAdapterRunTest._FakeResponse(200, {})
 
         def stream(self, method: str, url: str, **kwargs):
             return OpenCodeAdapterRunTest._FakeStream([
                 'data: {"type":"server.connected","data":{}}',
-                'data: {"id":"e1","type":"session.text.ended","data":{"sessionID":"ses_test","text":"ok"}}',
+                'data: {"id":"e1","type":"session.text.ended","data":{"sessionID":"ses_test","assistantMessageID":"reply","textID":"text-0","text":"ok"}}',
                 'data: {"id":"e2","type":"session.step.ended","data":{"sessionID":"ses_test","finish":"stop","cost":0,"tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}}',
                 'data: {"type":"session.execution.succeeded","data":{"sessionID":"ses_test"}}',
             ])
@@ -566,19 +574,20 @@ class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
         async def post(self, url: str, json: dict | None = None, **kwargs):
             if url.endswith("/api/session"):
                 return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "ses_test"}})
-            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": "msg_test"}})
+            self.prompt_id = json['id']
+            return OpenCodeAdapterRunTest._FakeResponse(200, {"data": {"id": self.prompt_id}})
 
         async def get(self, url: str, params: dict | None = None, **kwargs):
             if url.endswith("/message"):
                 return OpenCodeAdapterRunTest._FakeResponse(200,
-                    {'data': [{'id':'msg_test','type':'user'}, {'id':'reply', 'finish': 'stop',
+                    {'data': [{'id':self.prompt_id,'type':'user'}, {'id':'reply', 'finish': 'stop',
                                'cost': 0,
                                'tokens': {'input': 10,
                                           'output': 2,
                                           'reasoning': 3,
                                           'cache': {'read': 0, 'write': 0}},
                                'type': 'assistant',
-                      'content': [{'type': 'text', 'text': 'done'},
+                      'time': {'completed': 123}, 'content': [{'type': 'text', 'text': 'done'},
                                 {'type': 'reasoning', 'text': 'thinking here'},
                                 {'type': 'tool',
                                  'id': 'call-1',
@@ -586,7 +595,8 @@ class OpenCodeAdapterFallbackTest(unittest.IsolatedAsyncioTestCase):
                                  'state': {'status': 'completed',
                                            'input': {'path': 'a'},
                                            'structured': {'entries': [{'path': 'a'}]},
-                                           'content': [{'type': 'text', 'text': 'file content'}]}}]}], 'cursor': {}}
+                                           'content': [{'type': 'text', 'text': 'file content'}]}}]},
+                      {'type': 'idle', 'outcome': 'succeeded'}], 'cursor': {}}
                 )
             return OpenCodeAdapterRunTest._FakeResponse(200, {})
 

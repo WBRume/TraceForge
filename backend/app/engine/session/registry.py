@@ -101,8 +101,15 @@ async def shutdown_active_engines() -> None:
     _idle_sweeper_task = None
     engines = list(_active_engines.values())
     if engines:
+        async def shutdown_engine(engine):
+            from app.domains.ai.services.jobs.remote_recovery import valid_checkpoint
+            if (valid_checkpoint(getattr(engine, "remote_execution_checkpoint", None))
+                    and not getattr(engine, "_interrupt_requested", False)):
+                await engine.cli.close()
+            else:
+                await engine.stop()
         await asyncio.gather(
-            *(engine.stop() for engine in engines),
+            *(shutdown_engine(engine) for engine in engines),
             return_exceptions=True,
         )
     _active_engines.clear()

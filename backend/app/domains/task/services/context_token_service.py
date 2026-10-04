@@ -554,7 +554,7 @@ def record_segments_batch(
                     content=kwargs.get("output"),
                     title="Tool Result",
                     metadata_json={"is_error": bool(kwargs.get("is_error"))},
-                    dedupe=False,
+                    dedupe=bool(kwargs.get("dedupe")),
                     commit=False,
                 )
             elif recorder == "thinking":
@@ -587,7 +587,7 @@ def record_segments_batch(
                     content=content,
                     title="Confirmation" if is_confirmation else "HITL",
                     metadata_json=metadata,
-                    dedupe=False,
+                    dedupe=is_confirmation and bool(interaction_id),
                     commit=False,
                 )
 

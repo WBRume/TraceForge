@@ -30,6 +30,7 @@ from app.agents import (
     record_attempt_remote_stop,
 )
 from app.agents.run_logging import run_agent_backend_with_logging
+from app.agents.errors import AgentExecutionDetached
 from app.config import settings
 from app.core.logging import bind_ai_context, bind_task_context, get_logger
 from app.core.offload import run_db, run_git_job
@@ -281,7 +282,7 @@ class TaskAgentEngine:
         self._pending_confirmations.clear()
         self.thinking.reset()
 
-    async def run(self, prompt: str, *, fresh_session: bool = False):
+    async def run(self, prompt: str, *, fresh_session: bool = False, recovery: Optional[dict] = None):
         """
         主入口：将用户 prompt 发送给 agent backend 并处理事件流
         支持首次启动和恢复会话
@@ -304,6 +305,7 @@ class TaskAgentEngine:
             self._last_idle_since = time.monotonic()
             register_engine(self)
             self._reset_turn_state()
+            self.remote_execution_checkpoint = dict(recovery or {})
 
             logger.info(f"TaskAgentEngine run: task={self.task_id}, prompt_length={len(prompt)}")
 
@@ -322,7 +324,8 @@ class TaskAgentEngine:
                 await update_task_status(self, TaskStatus.CODING)
 
                 project_path = await run_db(turn_setup.resolve_project_path_sync, self.task_id)
-                await run_git_job(turn_setup.materialize_task_skills_sync, self.task_id)
+                if not recovery:
+                    await run_git_job(turn_setup.materialize_task_skills_sync, self.task_id)
                 self._runtime_skill_index = await run_db(turn_setup.build_runtime_skill_index_sync, self.task_id)
                 env_overrides = turn_setup.build_env_overrides(
                     ws_id=self.ws_id,
@@ -351,6 +354,9 @@ class TaskAgentEngine:
                         attempt=self.attempt,
                         on_process_started=self._on_process_started,
                     )
+                    if self.cli.name == "opencode" and self.attempt is not None:
+                        request.execution_checkpoint = dict(recovery or {})
+                        request.on_execution_checkpoint = self._save_execution_checkpoint
                     result = await run_agent_backend_with_logging(
                         self.cli,
                         request,
@@ -379,6 +385,10 @@ class TaskAgentEngine:
                     if hasattr(self.cli, "wait"):
                         await self.cli.wait()
 
+            except AgentExecutionDetached:
+                # The job remains RUNNING and recoverable. No remote stop and no
+                # interrupted result may be written by a disconnected observer.
+                raise
             except AgentTimeoutError as e:
                 logger.warning(f"TaskAgentEngine timed out (resumable): {e}")
                 self.last_termination_confirmed_dead = getattr(
@@ -392,6 +402,8 @@ class TaskAgentEngine:
                 await update_task_status(self, TaskStatus.INTERRUPTED, str(e))
                 await self.frontend.push_status("INTERRUPTED", f"引擎超时，可继续发送消息恢复: {e}")
             except Exception as e:
+                if recovery and not self._interrupt_requested:
+                    raise AgentExecutionDetached(f"OpenCode recovery deferred: {e}") from e
                 if hasattr(e, "termination_confirmed_dead"):
                     self.last_termination_confirmed_dead = getattr(
                         e, "termination_confirmed_dead"
@@ -437,6 +449,11 @@ class TaskAgentEngine:
                     unregister_engine(self.task_id)
                 # 其余为可恢复态（INTERRUPTED/WAITING_HITL/超时）：保留以快速 resume，
                 # 由空闲收割器按 ENGINE_IDLE_TTL_SECONDS 兜底摘除
+
+    async def _save_execution_checkpoint(self, checkpoint: dict) -> None:
+        from app.domains.ai.services.jobs.remote_recovery import save_checkpoint_sync
+        await run_db(save_checkpoint_sync, self.attempt, checkpoint)
+        self.remote_execution_checkpoint = dict(checkpoint)
 
     def _persist_provider_state_sync(self, result: AgentRunResult) -> None:
         """线程内执行：Attach provider IDs to the metadata-only turn audit row."""
@@ -639,7 +656,9 @@ class TaskAgentEngine:
                     if self._guide_turn:
                         self._guide_text = (self._guide_text + text)[-200001:]
                     await self.thinking.finish()
-                    await self.frontend.push_chat("assistant", text)
+                    key = payload.get("provider_event_key")
+                    await self.frontend.push_chat("assistant", text,
+                                                  **({"metadata": {"provider_event_key": key}} if key else {}))
             elif event_type == "thinking":
                 text = str(payload.get("text") or "")
                 if text:
@@ -761,6 +780,7 @@ class TaskAgentEngine:
             tool_use_id=tool_use_id,
             output=output,
             is_error=is_error,
+            dedupe=bool(payload.get("provider_replay")),
         )
         await self.frontend.push_tool_result(tool_use_id, output)
         skill_runtime_trace_service.enqueue_tool_result_trace(
@@ -798,7 +818,9 @@ class TaskAgentEngine:
         """Persist a visible confirmation message and register its private provider locator."""
         if not self.is_current():
             return
-        interaction_id = str(uuid.uuid4())
+        interaction_id = (str(uuid.uuid5(uuid.NAMESPACE_URL,
+                          f"{self.current_job_id}:{self.session_id}:{provider_request_id}"))
+                          if provider_request_id else str(uuid.uuid4()))
         if hitl_type == "form" and fields:
             normalized_kind = "form"
         elif hitl_type in {"boolean", "approval"}:
@@ -835,6 +857,7 @@ class TaskAgentEngine:
             metadata={
                 "confirmation": confirmation,
                 "context": context or "",
+                "provider_event_key": f"confirmation:{interaction_id}",
             },
         )
         if payload:

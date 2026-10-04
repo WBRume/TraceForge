@@ -184,6 +184,8 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             raw=event,
             time=_iso_time(),
         ))
+    elif event_type == "session.tool.progress":
+        events.append(AgentEvent(type="tool_progress", payload=data, provider=PROVIDER, raw=event))
     elif event_type == "session.tool.success":
         events.append(AgentEvent(
             type="tool_result",
@@ -505,7 +507,7 @@ def map_opencode_event(event: dict[str, Any]) -> List[AgentEvent]:
             ))
     elif event_type in ("session.text.started", "session.step.started",
                         "session.tool.input.started", "session.tool.input.ended",
-                        "session.tool.progress", "session.prompted",
+                        "session.prompted",
                         "session.prompt.admitted", "session.idle", "message.updated"):
         # 这些事件对 TaskAgentEngine 不是必需事件；作为 log 保留审计信息。
         events.append(AgentEvent(

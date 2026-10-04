@@ -366,13 +366,13 @@ class ClaudeCodeAdapter(AgentBackend):
                 "worker_boot_id": str((env_overrides or {}).get("WORKER_BOOT_ID") or "").strip() or None,
             },
             timeout_seconds=float(
-                getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
+                settings.agent_max_runtime_seconds
             ),
             startup_timeout_seconds=float(
                 getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
             ),
             idle_timeout_seconds=float(
-                getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+                settings.agent_idle_timeout_seconds
             ),
             # The supervisor enforces the real attach timeout (DB attach), so
             # the outer startup watchdog is only a secondary safety net.

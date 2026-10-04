@@ -159,13 +159,13 @@ def build_agent_run_request(
             "LOCAL_PROCESS",
         ) or "LOCAL_PROCESS",
         timeout_seconds=float(
-            getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200
+            settings.agent_max_runtime_seconds
         ),
         startup_timeout_seconds=float(
             getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
         ),
         idle_timeout_seconds=float(
-            getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+            settings.agent_idle_timeout_seconds
         ),
         # Supervisor-side attach timeout (real DB attach); the
         # engine watchdog stays a secondary outer guard only.

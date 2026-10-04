@@ -180,8 +180,18 @@ class Settings(BaseSettings):
     # unless the platform provides attempt containment (cgroup provider or
     # /proc run-token discovery fallback).
     AGENT_REQUIRE_PROCESS_CONTAINMENT: bool = False
-    AGENT_IDLE_TIMEOUT_SECONDS: int = 600
-    AGENT_MAX_RUNTIME_SECONDS: int = 7200
+    AGENT_IDLE_TIMEOUT_MINUTES: float = Field(default=10, gt=0, allow_inf_nan=False)
+    AGENT_MAX_RUNTIME_HOURS: float = Field(default=24, gt=0, allow_inf_nan=False)
+    OPENCODE_RECONCILE_INTERVAL_SECONDS: float = Field(default=30, gt=0, allow_inf_nan=False)
+
+    @property
+    def agent_max_runtime_seconds(self) -> float:
+        return self.AGENT_MAX_RUNTIME_HOURS * 3600
+
+    @property
+    def agent_idle_timeout_seconds(self) -> float:
+        return self.AGENT_IDLE_TIMEOUT_MINUTES * 60
+
     PLATFORM_API_BASE_URL: str = "http://localhost:8000"
 
     # Durable AI job ownership.  The lease is intentionally shorter than the

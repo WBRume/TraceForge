@@ -23,6 +23,7 @@ MEANINGFUL_ACTIVITY_TYPES = frozenset(
         "text_delta",
         "tool_use",
         "tool_result",
+        "tool_progress",
         "ask_user",
         "usage",
         "context_compacted",
@@ -63,11 +64,27 @@ class AgentActivityWatchdog:
         self._idle_paused = True
         self._state_changed.set()
 
+    def confirm_remote_liveness(self) -> None:
+        """Only call after verifying this execution is active at the provider."""
+        self._has_activity = True
+        self._last_activity_at = time.monotonic()
+        self._state_changed.set()
+
+    @property
+    def quiet_seconds(self) -> float:
+        return time.monotonic() - self._last_activity_at
+
     def resume_idle(self) -> None:
         self._idle_paused = False
         self._has_activity = True
         self._last_activity_at = time.monotonic()
         self._state_changed.set()
+
+    def set_idle_paused(self, paused: bool) -> None:
+        """Change observation state without manufacturing new progress."""
+        if self._idle_paused != paused:
+            self._idle_paused = paused
+            self._state_changed.set()
 
     def _next_timeout(self) -> tuple[str, float, float]:
         now = time.monotonic()
@@ -89,27 +106,32 @@ class AgentActivityWatchdog:
 
     async def wait(self, awaitable: Awaitable[T]) -> T:
         task = awaitable if isinstance(awaitable, asyncio.Task) else asyncio.create_task(awaitable)
-        while True:
-            self._state_changed.clear()
-            phase, limit, remaining = self._next_timeout()
-            if remaining <= 0:
+        try:
+            while True:
+                self._state_changed.clear()
+                phase, limit, remaining = self._next_timeout()
+                if remaining <= 0:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    raise AgentTimeoutError(
+                        self._message(phase, limit),
+                        phase=phase,
+                        limit_seconds=limit,
+                    )
+                changed = asyncio.create_task(self._state_changed.wait())
+                try:
+                    done, _ = await asyncio.wait(
+                        {task, changed}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    changed.cancel()
+                    await asyncio.gather(changed, return_exceptions=True)
+                if task in done:
+                    return await task
+        finally:
+            if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                raise AgentTimeoutError(
-                    self._message(phase, limit),
-                    phase=phase,
-                    limit_seconds=limit,
-                )
-            changed = asyncio.create_task(self._state_changed.wait())
-            try:
-                done, _ = await asyncio.wait(
-                    {task, changed}, timeout=remaining, return_when=asyncio.FIRST_COMPLETED,
-                )
-            finally:
-                changed.cancel()
-                await asyncio.gather(changed, return_exceptions=True)
-            if task in done:
-                return await task
 
     @staticmethod
     def _message(phase: str, limit: float) -> str:

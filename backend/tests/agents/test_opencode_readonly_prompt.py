@@ -21,6 +21,7 @@ class _FakeResponse:
     status_code = 200
     text = ""
     def json(self): return {"data": {"id": "msg_test"}}
+    def raise_for_status(self): return None
 
 
 class _FakeClient:

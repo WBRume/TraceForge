@@ -36,6 +36,7 @@ from app.domains.ai.services.ai_job_convergence_service import (
 )
 from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import store
+from app.agents.errors import AgentExecutionDetached
 from app.domains.ai.services.jobs.constants import (
     FINAL_STATUSES,
     JOB_KIND_DIAGNOSIS_SUMMARY,
@@ -80,12 +81,18 @@ async def job_heartbeat_loop(attempt: AgentAttemptContext) -> None:
         while True:
             await asyncio.sleep(interval)
             if not await run_db(store.heartbeat_job_sync, attempt.job_id, attempt.run_token):
+                from .remote_recovery import detach_local_observer
+                if detach_local_observer(attempt):
+                    return
                 await attempt_ops.terminate_attempt(attempt, "LEASE_LOST")
                 return
     except asyncio.CancelledError:
         raise
     except Exception:
         logger.exception("AI job heartbeat failed: job_id={}", attempt.job_id)
+        from .remote_recovery import detach_local_observer
+        if detach_local_observer(attempt):
+            return
         await attempt_ops.terminate_attempt(attempt, "HEARTBEAT_FAILURE")
 
 
@@ -249,13 +256,14 @@ async def _converge_runner_exit(
 # ────────────────────────── 队列主循环 ──────────────────────────
 
 
-async def run_queue(queue_key: str) -> None:
+async def run_queue(queue_key: str, *, recovered_job_id: str | None = None) -> None:
     lock = runtime.queue_lock(queue_key)
     async with lock:
         while True:
             if runtime.shutdown_in_progress():
                 return
-            job_id = await claim_next_pending_job_id(queue_key)
+            job_id = recovered_job_id or await claim_next_pending_job_id(queue_key)
+            recovered_job_id = None
             if not job_id:
                 return
             attempt = await run_db(attempt_ops.load_attempt_context_sync, job_id)
@@ -289,7 +297,16 @@ async def run_queue(queue_key: str) -> None:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
                 runtime.heartbeat_tasks.pop(job_id, None)
-                if not runtime.shutdown_in_progress():
+                detached = job_id in runtime.detached_jobs or isinstance(outcome.error, AgentExecutionDetached)
+                if detached and not runtime.shutdown_in_progress():
+                    try:
+                        from .remote_recovery import defer_observation_sync
+                        payload = await run_db(defer_observation_sync, attempt)
+                        if payload:
+                            await publishing.broadcast_job_payload(payload)
+                    except Exception:
+                        logger.exception("Remote observer retry state could not be saved: job={}", job_id)
+                if not runtime.shutdown_in_progress() and not detached:
                     try:
                         await _converge_runner_exit(attempt, runtime_state, outcome)
                     except asyncio.CancelledError:
@@ -300,6 +317,9 @@ async def run_queue(queue_key: str) -> None:
                         )
                 reset_agent_attempt_runtime(runtime_token)
                 reset_agent_attempt(context_token)
+                runtime.detached_jobs.discard(job_id)
+            if detached:
+                return
             status = await store.get_job_status(job_id)
             if status in {AiJobStatus.WAITING_HITL, AiJobStatus.INTERRUPTED}:
                 return

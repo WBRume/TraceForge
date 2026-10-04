@@ -42,14 +42,17 @@ async def test_invalid_response_fails_without_legacy_retry(method):
 
 @pytest.mark.asyncio
 async def test_model_update_does_not_repeat_session_started():
+    prompt_id = None
     event = {'type':'session.model.switched','data':{'sessionID':'session','model':{'id':'real-model'}}}
     def handler(request):
+        nonlocal prompt_id
         if request.url.path == '/api/event':
             return httpx.Response(200, text='data: '+json.dumps({'type':'server.connected','data':{}})+'\n\ndata: '+json.dumps(event)+'\n\ndata: '+json.dumps({'type':'session.step.ended','data':{'sessionID':'session','finish':'stop'}})+'\n\ndata: '+json.dumps({'type':'session.execution.succeeded','data':{'sessionID':'session'}})+'\n\n', headers={'Content-Type':'text/event-stream'})
         if request.url.path.endswith('/prompt'):
-            return httpx.Response(200,json={'data':{'id':'user'}})
+            prompt_id = json.loads(request.content)['id']
+            return httpx.Response(200,json={'data':{'id':prompt_id}})
         if request.url.path.endswith('/message'):
-            return httpx.Response(200, json={'data':[{'id':'user','type':'user'}, {'id':'reply','type':'assistant','finish':'stop','content':[{'type':'text','text':'done'}]}],'cursor':{}})
+            return httpx.Response(200, json={'data':[{'id':prompt_id,'type':'user'}, {'id':'reply','type':'assistant','finish':'stop','time':{'completed':123},'content':[{'type':'text','text':'done'}]}, {'type':'idle','outcome':'succeeded'}],'cursor':{}})
         raise AssertionError(request.url.path)
     adapter = OpenCodeAdapter('http://agent')
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))

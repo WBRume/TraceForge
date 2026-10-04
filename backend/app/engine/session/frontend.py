@@ -215,6 +215,8 @@ class FrontendFeed:
             )
         except Exception as exc:
             logger.exception(f"Persist chat message failed: {exc}")
+            if (metadata or {}).get("provider_event_key"):
+                raise
             return
         if not payload:
             return
@@ -244,10 +246,25 @@ class FrontendFeed:
         owner = self._owner
         db = SessionLocal()
         try:
+            key = (metadata or {}).get("provider_event_key")
+            if key and owner.current_job_id:
+                from app.domains.ai.models.ai_job import SddAiJob
+                # Serialize replay dedupe with ownership claims on the same job.
+                db.query(SddTask).filter(SddTask.id == owner.task_id).with_for_update().first()
+                db.query(SddAiJob).filter(SddAiJob.id == owner.current_job_id).with_for_update().first()
             # 关键写入兜底 fence：job 未撤销/取消且 session_revision 未变
             gate = owner.gate
             if gate is not None and not gate.fence_sync(db):
                 return None
+
+            if key:
+                from app.domains.task.models.chat import ChatMessage
+                existing = db.query(ChatMessage.id).filter(
+                    ChatMessage.task_id == owner.task_id,
+                    ChatMessage.metadata_json["provider_event_key"].as_string() == key,
+                ).first()
+                if existing:
+                    return None
 
             generation = owner.session_generation
             if generation is None:

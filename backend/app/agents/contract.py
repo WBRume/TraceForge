@@ -696,9 +696,9 @@ class AgentRunRequest:
     provider_options: dict[str, Any] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
     skills: list[SkillRef] = field(default_factory=list)
-    # Backward-compatible hard runtime ceiling.  Liveness is governed primarily
-    # by startup/idle activity timeouts so a productive long turn is not killed.
-    timeout_seconds: float = 7200.0
+    # Absolute runtime ceiling; reconnect/recovery retain the original deadline.
+    # Startup and idle checks detect inactivity within that budget.
+    timeout_seconds: float = 86400.0
     startup_timeout_seconds: float = 60.0
     idle_timeout_seconds: float = 600.0
     # Supervisor-side attach timeout for on_process_started (covers the real
@@ -708,6 +708,9 @@ class AgentRunRequest:
     permission_mode: str = "default"
     metadata: dict[str, Any] = field(default_factory=dict)
     on_process_started: AgentProcessStartedCallback | None = None
+    # Private, durable remote execution locator; never a new prompt on reattach.
+    execution_checkpoint: dict[str, Any] = field(default_factory=dict)
+    on_execution_checkpoint: Callable[[dict[str, Any]], Awaitable[None]] | None = None
     # 显式执行类别（doc 7 数据流链路）：与 backend capability 声明一致，
     # 由 bridge/engine 填充；不得通过“是否有本地 PID”推断。
     execution_kind: ExecutionKind = EXECUTION_KIND_LOCAL_PROCESS
