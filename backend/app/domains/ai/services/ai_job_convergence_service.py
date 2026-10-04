@@ -1088,6 +1088,12 @@ def request_attempt_termination_in_txn(
         request.interrupt_session_id or (job.session_id or "")
     ).strip() or None
 
+    # Preserve why termination began even if a later reaper finalizes it as CANCELLED.
+    context = dict(job.context_json or {})
+    if request.mode != "WORKER_SHUTDOWN" or context.get("termination_mode") not in {"CANCEL", "INTERRUPT"}:
+        context["termination_mode"] = request.mode
+    job.context_json = context
+
     clean_interrupted = job.status == AiJobStatus.INTERRUPTED and not any(
         getattr(job, field, None) is not None
         for field in (

@@ -140,12 +140,21 @@ def test_manual_business_event_is_distinct_and_idempotent(seeded):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("seconds", [2, 30])
 @pytest.mark.parametrize("confirmed_dead", [True, False])
-async def test_existing_interrupt_ends_only_the_run_and_broadcasts_if_opted_in(seeded, monkeypatch, seconds, confirmed_dead):
+@pytest.mark.parametrize("other_actor", [False, True])
+async def test_interrupt_notifies_initiator_unless_they_confirmed_the_stop(seeded, monkeypatch, seconds, confirmed_dead, other_actor):
     from app.agents.supervision import TerminationResult
     from app.domains.ai.services.jobs import publishing, registry
     from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
 
     db, factory, user, workspace, task = seeded
+    actor = user
+    if other_actor:
+        actor = User(id="operator-b", email="b@example.com", hashed_password="x", display_name="用户 B")
+        db.add(actor)
+        db.add(WorkspaceMember(workspace_id=workspace.id, user_id=actor.id, role=WorkspaceRole.DEVELOPER))
+        task.creator_id = actor.id  # The task creator must not replace this run's initiator.
+        db.commit()
+        endpoint(db, "user:operator-b", user_id=actor.id)
     default_endpoint = endpoint(db, "user:me", user_id=user.id, events=routes.DEFAULT_EVENTS.copy())
     opted_in = endpoint(db, "workspace:ws", workspace_id=workspace.id, events=["AI_RUN_INTERRUPTED"])
     job = start(db, user, workspace, task, seconds=seconds)
@@ -171,23 +180,158 @@ async def test_existing_interrupt_ends_only_the_run_and_broadcasts_if_opted_in(s
     monkeypatch.setattr(task_session_control_service, "get_engine", lambda _: Engine())
     monkeypatch.setattr(task_session_control_service, "_broadcast_task_event", ignore)
     monkeypatch.setattr(publishing, "publish_job", ignore)
-    await task_session_control_service.interrupt_task(db, task=task, actor_user_id=user.id, reason="暂停本轮，稍后继续")
+    await task_session_control_service.interrupt_task(db, task=task, actor_user_id=actor.id, reason="暂停本轮，稍后继续")
     db.refresh(job); db.refresh(task)
     assert task.status == TaskStatus.INTERRUPTED and task.business_state == "TASK_IN_PROGRESS"
     assert db.query(ChatMessage).count() == 1
     assert latest(db, "TASK_COMPLETED") is None and latest(db, "TASK_CANCELLED") is None
     assert job.status == (AiJobStatus.INTERRUPTED if confirmed_dead else AiJobStatus.ORPHANED)
-    row = latest(db, "AI_RUN_INTERRUPTED" if confirmed_dead else "AI_RUN_ERROR")
+    expected_stop = confirmed_dead and not other_actor
+    row = latest(db, "AI_RUN_INTERRUPTED" if expected_stop else "AI_RUN_ERROR")
     assert row is not None and job.awareness_pending_json == []
+    assert row.creator_id == user.id and row.payload_json["initiator"]["id"] == user.id
+    assert row.payload_json["actor"] == {"id": actor.id, "name": actor.display_name}
     if confirmed_dead:
-        assert row.payload_json["summary"] == "暂停本轮，稍后继续"
+        expected_summary = "任务被 用户 B 中断了。暂停本轮，稍后继续" if other_actor else "暂停本轮，稍后继续"
+        assert row.payload_json["summary"] == expected_summary
         assert job.session_id == "preserved-session" and job.run_token is None
-        assert latest(db, "AI_RUN_FINISHED") is None and latest(db, "AI_RUN_ERROR") is None
+    else:
+        assert f"{actor.display_name} 请求中断任务，但尚未确认执行已停止" in row.payload_json["summary"]
+    assert latest(db, "AI_RUN_FINISHED") is None
+    if expected_stop:
+        assert latest(db, "AI_RUN_ERROR") is None
     else:
         assert latest(db, "AI_RUN_INTERRUPTED") is None
     hooks.prepare_deliveries(db, row, datetime.utcnow()); db.commit()
-    expected = [opted_in.id if confirmed_dead else default_endpoint.id] if seconds >= 10 else []
+    expected = ([opted_in.id] if seconds >= 10 else []) if expected_stop else [default_endpoint.id]
     assert [item.endpoint_id for item in db.query(TaskWebhookDelivery).all()] == expected
+    claimed = hooks.claim_deliveries(db, location="server")
+    assert len(claimed) == len(expected)
+    if claimed:
+        assert claimed[0]["body"] == row.payload_json
+    relayed = [item for item in worker._claim_events(db) if item["notify"]]
+    assert len(relayed) == 1 and relayed[0]["payload"]["initiator"]["id"] == user.id
+
+
+@pytest.mark.parametrize("timeout", [True, False])
+@pytest.mark.parametrize("stop_ack", [True, False])
+@pytest.mark.parametrize("location", ["server", "desktop"])
+def test_remote_system_interruption_always_notifies_even_when_error_is_cleared(seeded, timeout, stop_ack, location):
+    from app.agents.contract import EXECUTION_KIND_REMOTE_SESSION, AttemptFinalizerEvidence
+    from app.domains.ai.services.jobs import registry
+    from app.domains.ai.services.jobs.executors.task_chat import _finalize_task_chat_job_sync
+
+    db, _, user, workspace, task = seeded
+    endpoint(db, "user:me", user_id=user.id, location=location, events=routes.DEFAULT_EVENTS.copy())
+    job = start(db, user, workspace, task, seconds=2)
+    job.run_token = "remote-attempt"
+    job.worker_boot_id = registry.WORKER_BOOT_ID
+    job.process_execution_kind = EXECUTION_KIND_REMOTE_SESSION
+    task.status = TaskStatus.CODING
+    db.commit()
+    reason = "Agent produced no meaningful activity for 600s" if timeout else "Provider execution failed"
+    evidence = AttemptFinalizerEvidence(
+        execution_kind=EXECUTION_KIND_REMOTE_SESSION, process_started=False,
+        termination_confirmed_dead=None, remote_stop_acknowledged=stop_ack,
+        failure_code="AGENT_IDLE_TIMEOUT" if timeout else "PROVIDER_ERROR",
+        error_message=reason, remaining_pids=(), source="remote", remote_session_started=True,
+    )
+    payload = _finalize_task_chat_job_sync(
+        db, job_id=job.id, last_result_success=False, last_result_text=reason,
+        is_timeout_interrupted=timeout, engine_session_id="retained-session",
+        run_token=job.run_token, evidence=evidence,
+    )
+    db.commit()
+    assert payload is not None
+    assert job.status == (AiJobStatus.INTERRUPTED if stop_ack else AiJobStatus.ORPHANED)
+    if stop_ack:
+        assert task.status == TaskStatus.INTERRUPTED
+        assert job.error_message is None and job.interrupt_reason == reason
+    row = latest(db, "AI_RUN_ERROR")
+    assert row is not None and row.creator_id == user.id
+    assert row.payload_json["actor"] is None and row.payload_json["summary"] == reason
+    assert latest(db, "AI_RUN_STOPPED") is None and latest(db, "TASK_FAILED") is None
+    hooks.prepare_deliveries(db, row, datetime.utcnow()); db.commit()
+    claimed = hooks.claim_deliveries(db, location=location, user_id=user.id if location == "desktop" else None)
+    assert len(claimed) == 1 and claimed[0]["body"] == row.payload_json
+
+
+def test_recovery_and_repeated_error_convergence_do_not_duplicate_notifications(seeded):
+    db, _, user, workspace, task = seeded
+    endpoint(db, "user:me", user_id=user.id)
+    job = start(db, user, workspace, task, seconds=2)
+    job.failure_code = "OBSERVER_DETACHED"
+    job.message = "等待后端重连并接管"
+    db.commit()
+    assert latest(db, "AI_RUN_ERROR") is None
+    job.status = AiJobStatus.ORPHANED
+    job.error_message = "远程任务停止状态无法确认"
+    job.finished_at = datetime.utcnow()
+    db.commit()
+    row = latest(db, "AI_RUN_ERROR")
+    hooks.prepare_deliveries(db, row, datetime.utcnow()); db.commit()
+    job.status = AiJobStatus.INTERRUPTED
+    job.error_message = None
+    job.interrupt_reason = "已确认远程任务停止"
+    db.commit()
+    capture_job(db, job)
+    hooks.prepare_deliveries(db, row, datetime.utcnow()); db.commit()
+    assert db.query(TaskAwarenessEvent).filter_by(event_type="AI_RUN_ERROR").count() == 1
+    assert db.query(TaskWebhookDelivery).count() == 1
+
+
+@pytest.mark.parametrize("mode,other_actor", [
+    ("WORKER_SHUTDOWN", False), ("INTERRUPT", True), ("INTERRUPT", False), ("CANCEL", False),
+])
+def test_reaper_retains_notification_cause_when_finalizing_as_cancelled(seeded, monkeypatch, mode, other_actor):
+    from app.domains.ai.services.ai_job_convergence_service import (
+        AttemptTerminationRequest, request_attempt_termination_in_txn,
+    )
+    from app.domains.ai.services.jobs import attempts, registry
+    from tests.ai.jobs.ai_job_test_utils import patch_ai_job_db
+
+    db, factory, user, workspace, task = seeded
+    endpoint(db, "user:me", user_id=user.id, events=routes.DEFAULT_EVENTS.copy())
+    actor_id = user.id
+    if other_actor:
+        actor_id = "operator-b"
+        db.add(User(id=actor_id, email="b@example.com", hashed_password="x", display_name="用户 B"))
+        db.commit()
+    job = start(db, user, workspace, task, seconds=2)
+    job.run_token = "reaper-attempt"
+    job.worker_boot_id = registry.WORKER_BOOT_ID
+    db.commit()
+    reason = "后端关闭导致运行停止" if mode == "WORKER_SHUTDOWN" else "用户请求停止"
+    request_attempt_termination_in_txn(db, AttemptTerminationRequest(
+        job_id=job.id, reason=reason, mode=mode,
+        actor_user_id=actor_id if mode == "INTERRUPT" else None,
+    ))
+    db.commit()
+    if mode == "INTERRUPT":
+        # Shutdown may take over an already requested manual stop; its origin stays manual.
+        request_attempt_termination_in_txn(db, AttemptTerminationRequest(
+            job_id=job.id, reason="WORKER_SHUTDOWN", mode="WORKER_SHUTDOWN",
+        ))
+        db.commit()
+    patch_ai_job_db(monkeypatch, factory)
+    payload = attempts.finish_termination_sync(
+        job.id, "reaper-attempt", confirmed_dead=True, reason=reason, failure_code=mode,
+    )
+    db.refresh(job)
+    assert payload is not None and job.status == AiJobStatus.CANCELLED
+    assert job.context_json["termination_mode"] == mode
+    unexpected = mode == "WORKER_SHUTDOWN" or other_actor
+    kind = "AI_RUN_ERROR" if unexpected else "AI_RUN_INTERRUPTED" if mode == "INTERRUPT" else "AI_RUN_STOPPED"
+    assert job.awareness_state == kind
+    row = latest(db, kind)
+    if unexpected:
+        assert reason in row.payload_json["summary"]
+        if other_actor:
+            assert row.payload_json["summary"].startswith("任务被 用户 B 中断了")
+        hooks.prepare_deliveries(db, row, datetime.utcnow()); db.commit()
+        assert len(hooks.claim_deliveries(db, location="server")) == 1
+    else:
+        assert latest(db, "AI_RUN_ERROR") is None
 
 
 def test_task_cancel_is_not_a_business_event_or_route(seeded):

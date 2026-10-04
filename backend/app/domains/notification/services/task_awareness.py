@@ -28,17 +28,21 @@ def iso(item):
 
 def run_state(job):
     status = value(job.status)
+    context = job.context_json if isinstance(job.context_json, dict) else {}
+    termination_mode = context.get("termination_mode")
     if status in {"RUNNING", "WAITING_HITL"}:
         return "AI_HITL_SUSPENDED" if job.awareness_pending_json or status == "WAITING_HITL" else "AI_RUNNING"
     if status == "SUCCESS":
         return "AI_RUN_FINISHED"
     if status in {"FAILED", "ORPHANED"}:
         return "AI_RUN_ERROR"
-    if status == "INTERRUPTED":
-        if job.interrupted_by_id:
+    if status == "CANCELLED" and termination_mode == "WORKER_SHUTDOWN":
+        return "AI_RUN_ERROR"
+    if status == "INTERRUPTED" or (status == "CANCELLED" and termination_mode == "INTERRUPT"):
+        # Only the run initiator's own confirmed stop is expected by its recipient.
+        if job.interrupted_by_id and job.interrupted_by_id == job.creator_id:
             return "AI_RUN_INTERRUPTED"
-        if job.error_message:
-            return "AI_RUN_ERROR"
+        return "AI_RUN_ERROR"
     return "AI_RUN_STOPPED"
 
 
@@ -58,14 +62,30 @@ def task_context(db, *, task_id, workspace_id, initiator_id):
 def run_payload(db, job, *, summary=None):
     context = job.context_json if isinstance(job.context_json, dict) else {}
     state = job.awareness_state or run_state(job)
+    interrupted = state in {"AI_RUN_ERROR", "AI_RUN_INTERRUPTED"}
+    actor_id = job.interrupted_by_id if interrupted else None
+    actor = db.get(User, actor_id) if actor_id else None
+    actor_name = (actor.display_name if actor else None) or actor_id
+    details = summary or job.error_message or (
+        (job.interrupt_reason or job.terminal_reason) if interrupted else None
+    ) or job.message or ""
+    if actor_id and state == "AI_RUN_ERROR":
+        if value(job.status) in {"INTERRUPTED", "CANCELLED"}:
+            prefix = f"任务被 {actor_name} 中断了"
+        elif value(job.status) == "ORPHANED":
+            prefix = f"{actor_name} 请求中断任务，但尚未确认执行已停止"
+        else:
+            prefix = f"任务执行异常，中断操作人：{actor_name}"
+        details = f"{prefix}。{details}" if details else prefix
     return {
         "schema_version": 1, "event_type": state,
         **task_context(db, task_id=job.task_id, workspace_id=job.workspace_id, initiator_id=job.creator_id),
+        "actor": {"id": actor_id, "name": actor_name} if actor_id else None,
         "run": {"id": job.id, "version": int(job.awareness_version or 0),
                 "started_at": iso(job.started_at), "finished_at": iso(job.finished_at),
                 "client_message_id": context.get("client_message_id"),
                 "session_generation": job.session_generation},
-        "summary": str(summary or (job.interrupt_reason if state == "AI_RUN_INTERRUPTED" else None) or job.error_message or job.message or "")[:500],
+        "summary": str(details)[:500],
     }
 
 
@@ -154,6 +174,8 @@ def webhook_eligible(event, job, now=None):
         return True
     if event.event_type not in RUNTIME_EVENTS or not job or not job.started_at:
         return False
+    if event.event_type == "AI_RUN_ERROR":
+        return True
     if event.event_type == "AI_HITL_SUSPENDED" and (job.awareness_state != "AI_HITL_SUSPENDED"
         or event.payload_json.get("run", {}).get("version") != job.awareness_version):
         return False

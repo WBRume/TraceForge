@@ -52,7 +52,7 @@ export const useTaskAwarenessStore = defineStore('taskAwareness', () => {
       const active = ['AI_RUNNING', 'AI_HITL_SUSPENDED'].includes(event.event_type)
       const stopped = ['AI_RUN_INTERRUPTED', 'AI_RUN_STOPPED'].includes(event.event_type)
       if (active && !inView) run.wasAway = true
-      const qualified = longEnough(event, now)
+      const qualified = event.event_type === 'AI_RUN_ERROR' || longEnough(event, now)
       const item = floats.items.find(item => item.kind === 'task' && item.taskId === event.task.id)
       const manual = item && item.source !== 'automatic'
       const ownProbe = item?.source === 'automatic' && item.runId === id

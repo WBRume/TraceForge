@@ -39,9 +39,24 @@ describe('explicit long-run awareness', () => {
     vi.advanceTimersByTime(7999); expect(floats.items).toHaveLength(1)
     vi.advanceTimersByTime(1); expect(floats.items).toHaveLength(0)
   })
-  it('suppresses short execution in all personal UI channels', () => {
+  it('suppresses short successful execution in all personal UI channels', () => {
     store.arm('t1', 'c1'); store.ingest(event()); store.view('', false); vi.advanceTimersByTime(5000); store.ingest(event('AI_RUN_FINISHED', 2))
     vi.advanceTimersByTime(20_000); expect(floats.items).toHaveLength(0); expect(native.mock.calls.some(([x]) => x.flash)).toBe(false)
+  })
+  it.each([
+    { summary: '空闲超时，任务已中断', actor: null },
+    { summary: '任务被 用户 B 中断了。暂停本轮', actor: { id: 'u2', name: '用户 B' } },
+  ])('immediately alerts the initiator about a short unexpected stop: $summary', ({ summary, actor }) => {
+    store.arm('t1', 'c1'); store.ingest(event()); store.view('', false); vi.advanceTimersByTime(2000)
+    const stopped = event('AI_RUN_ERROR', 2, { summary, actor })
+    store.ingest(stopped)
+    expect(floats.items).toHaveLength(1)
+    expect(floats.items[0]).toMatchObject({ runtimeState: 'AI_RUN_ERROR', runtimeSummary: summary })
+    expect(native).toHaveBeenLastCalledWith({ flash: true, hitlCount: 0 })
+    // Reading or replaying this event in B's account must never notify B instead of A.
+    store.reset('u2'); store.arm('t1', 'c1'); store.ingest(stopped)
+    expect(floats.items).toHaveLength(0); expect(store.runs).toEqual({})
+    expect(native).toHaveBeenLastCalledWith({ flash: false, hitlCount: 0 })
   })
   it('keeps the task foreground free of pills and consumes a foreground finish', () => {
     store.arm('t1', 'c1'); store.ingest(event()); vi.advanceTimersByTime(20_000); expect(floats.items).toHaveLength(0)
@@ -58,7 +73,7 @@ describe('explicit long-run awareness', () => {
     store.ingest(event('AI_RUN_FINISHED', 2)); vi.advanceTimersByTime(60_000)
     expect(floats.items).toHaveLength(1); expect(floats.items[0]).toMatchObject({ source: 'manual', minimized: false })
   })
-  it('human interruption removes a temporary probe and clears HITL without a new native alert', () => {
+  it('a stop by the initiator removes a temporary probe and clears HITL without a new native alert', () => {
     store.arm('t1', 'c1'); store.ingest(event()); store.view('', false); vi.advanceTimersByTime(10_000)
     store.ingest(event('AI_HITL_SUSPENDED', 2))
     expect(floats.items).toHaveLength(1); expect(native).toHaveBeenLastCalledWith({ flash: true, hitlCount: 1 })
