@@ -249,6 +249,7 @@ def _load_task_chat_turn_state_sync(db, job_id: str) -> Optional[Dict[str, Any]]
         "job_session_id": job.session_id,
         "session_turn_id": getattr(job, "session_turn_id", None),
         "session_revision": getattr(job, "session_revision", None),
+        "recovery": dict(job.provider_execution_json or {}),
     }
 
 
@@ -256,7 +257,8 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
     state_row = await run_db_txn(lambda db: _load_task_chat_turn_state_sync(db, job_id))
     if state_row is None:
         return None
-    fresh_session = state_row["fresh_session"]
+    recovery = state_row.get("recovery")
+    fresh_session = state_row["fresh_session"] and not recovery
     task_backend = state_row["task_backend"]
     attempt = current_agent_attempt()
     engine = get_engine(state_row["task_id"])
@@ -307,7 +309,10 @@ async def _run_task_chat_turn(job_id: str, prompt: str) -> Optional[bool]:
     ):
         await state.update_job_state(job_id, status=AiJobStatus.RUNNING, progress=55, message="AI is processing")
 
-        if fresh_session:
+        if recovery:
+            engine.session_id = recovery["session_id"]
+            await engine.run(prompt, recovery=recovery)
+        elif fresh_session:
             await engine.run(prompt, fresh_session=True)
         elif engine.session_id and not engine.running:
             await engine.send_message(prompt, job_id=job_id)

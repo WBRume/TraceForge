@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from app.agents import AgentRunResult, current_agent_attempt
+from app.agents.errors import AgentExecutionDetached
 from app.core.logging import bind_ai_context, get_logger
 from app.core.offload import run_db
 from app.database import SessionLocal
@@ -194,6 +195,9 @@ async def execute_job(job_id: str) -> JobExecutionOutcome:
                     provider_outcome_seen=bool(provider_seen),
                 )
             raise ValueError(f"Unsupported AI job channel: {channel}")
+        except AgentExecutionDetached as exc:
+            logger.warning("Remote job observer detached: job={}, reason={}", job_id, str(exc))
+            return JobExecutionOutcome(requested_status=None, error=exc)
         except Exception as exc:
             logger.exception(f"AI job execution failed: job={job_id}, error={exc}")
             failure_context = await run_db(load_failure_context_sync, job_id)

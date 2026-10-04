@@ -274,12 +274,12 @@ class LegacyBridgeShim:
                 "user_id": str((env_overrides or {}).get("USER_ID") or "").strip() or None,
                 "ai_job_id": str((env_overrides or {}).get("AI_JOB_ID") or "").strip() or None,
             },
-            timeout_seconds=float(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200),
+            timeout_seconds=float(settings.agent_max_runtime_seconds),
             startup_timeout_seconds=float(
                 getattr(settings, "AGENT_STARTUP_TIMEOUT_SECONDS", 60) or 60
             ),
             idle_timeout_seconds=float(
-                getattr(settings, "AGENT_IDLE_TIMEOUT_SECONDS", 600) or 600
+                settings.agent_idle_timeout_seconds
             ),
             # Supervisor-side attach timeout (real DB attach) so the outer
             # startup watchdog is not the only ownership guarantee.

@@ -73,15 +73,22 @@ def test_v2_form_maps_all_questions_and_options_to_unified_confirmation():
 
 @pytest.mark.asyncio
 async def test_v2_form_filters_nested_session_owner_before_mapping():
+    prompt_id = None
     events = [
         {'type': 'server.connected', 'data': {}},
         form_event('ses_other', 'frm_other'), form_event(),
         {'type': 'session.execution.succeeded', 'data': {'sessionID': 'ses_test'}},
     ]
     def handler(request):
+        nonlocal prompt_id
         if request.url.path == '/api/event':
             return httpx.Response(200, text=''.join('data: ' + json.dumps(e) + '\n\n' for e in events))
-        return httpx.Response(200, json={'data': {'id': 'msg_user'}})
+        if request.url.path.endswith('/message'):
+            return httpx.Response(200, json={'data': [
+                {'id': prompt_id, 'type': 'user'}, {'type': 'idle', 'outcome': 'succeeded'},
+            ], 'cursor': {}})
+        prompt_id = json.loads(request.content)['id']
+        return httpx.Response(200, json={'data': {'id': prompt_id}})
     adapter = OpenCodeAdapter('http://agent')
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     collected = []
@@ -100,6 +107,7 @@ async def test_v2_form_filters_nested_session_owner_before_mapping():
 async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
     from unittest.mock import AsyncMock
     replies = []
+    prompt_id = None
     class Stream(httpx.AsyncByteStream):
         async def __aiter__(self):
             for event in [{'type': 'server.connected', 'data': {}}, form_event()]:
@@ -111,6 +119,7 @@ async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
             else:
                 await asyncio.sleep(10)
     def handler(request):
+        nonlocal prompt_id
         if request.url.path == '/api/event':
             return httpx.Response(200, stream=Stream())
         if request.url.path.endswith('/form/frm_test'):
@@ -118,7 +127,18 @@ async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
         if request.url.path.endswith('/form/frm_test/reply'):
             replies.append(json.loads(request.content))
             return httpx.Response(400 if after_reply == 'reply_error' else 204, json={'message': 'invalid answer'})
-        return httpx.Response(200, json={'data': {'id': 'msg_user'}})
+        if request.url.path.endswith('/prompt'):
+            prompt_id = json.loads(request.content)['id']
+            return httpx.Response(200, json={'data': {'id': prompt_id}})
+        if request.url.path.endswith('/message'):
+            rows = [{'id': prompt_id, 'type': 'user'}]
+            if after_reply == 'complete' and replies:
+                rows.append({'type': 'idle', 'outcome': 'succeeded'})
+            return httpx.Response(200, json={'data': rows, 'cursor': {}})
+        if request.url.path.endswith('/form'):
+            pending = [form_event()['data']['form']] if after_reply in {'reply_error', 'hard_timeout'} else []
+            return httpx.Response(200, json={'data': pending})
+        return httpx.Response(200, json={'data': {} if request.url.path.endswith('/active') else []})
     adapter = OpenCodeAdapter('http://agent')
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     adapter._fetch_final_message = AsyncMock(return_value={})
@@ -152,6 +172,7 @@ async def test_v2_form_waits_for_human_then_restarts_idle_timeout(after_reply):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('outcome', ['succeeded', 'failed'])
 async def test_v2_stream_waits_for_execution_after_step_and_filters_other_sessions(outcome):
+    prompt_id = None
     events = [
         {"type": "server.connected", "data": {}},
         {"type": "session.execution.succeeded", "data": {"sessionID": "other"}},
@@ -160,11 +181,19 @@ async def test_v2_stream_waits_for_execution_after_step_and_filters_other_sessio
         {"type": "session.execution." + outcome, "data": {"sessionID": "ses_test"}},
     ]
     def handler(request):
+        nonlocal prompt_id
         if request.url.path == '/api/event':
             return httpx.Response(200, text=''.join('data: ' + json.dumps(event) + '\n\n' for event in events))
+        if request.url.path.endswith('/message'):
+            return httpx.Response(200, json={'data': [
+                {'id': prompt_id, 'type': 'user'}, {'type': 'idle', 'outcome': outcome},
+            ], 'cursor': {}})
         assert request.url.path == '/api/session/ses_test/prompt'
-        assert json.loads(request.content) == {"text": "hi"}
-        return httpx.Response(200, json={"data": {"id": "msg_user"}})
+        body = json.loads(request.content)
+        assert body['text'] == 'hi'
+        assert body['id'].startswith('msg_')
+        prompt_id = body['id']
+        return httpx.Response(200, json={"data": {"id": prompt_id}})
     adapter = OpenCodeAdapter('http://agent')
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     collected = []

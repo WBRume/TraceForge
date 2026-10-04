@@ -90,6 +90,8 @@ class SddAiJob(Base):
     message = Column(Text, nullable=True)
     prompt_text = Column(Text, nullable=True)
     context_json = Column(JSON, nullable=True)
+    # Provider locator/deadline used to attach after restart; excluded from API payloads.
+    provider_execution_json = Column(JSON, nullable=True)
     result_json = Column(JSON, nullable=True)
     error_message = Column(Text, nullable=True)
     session_id = Column(String(120), nullable=True)

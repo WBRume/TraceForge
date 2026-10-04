@@ -39,6 +39,7 @@ AI_JOB_DB_MODULES = (
     "app.domains.ai.services.jobs.attempts",
     "app.domains.ai.services.jobs.publishing",
     "app.domains.ai.services.jobs.reaper",
+    "app.domains.ai.services.jobs.remote_recovery",
     "app.domains.ai.services.jobs.queue_runner",
     "app.domains.ai.services.jobs.executors",
     "app.domains.ai.services.jobs.executors.task_chat",

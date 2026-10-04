@@ -36,6 +36,10 @@ class AgentError(RuntimeError):
         self.provider_call_id = provider_call_id
 
 
+class AgentExecutionDetached(AgentError):
+    """Observation stopped; the durable remote execution must remain recoverable."""
+
+
 class AgentTimeoutError(AgentError):
     """Agent 回合超时。"""
 

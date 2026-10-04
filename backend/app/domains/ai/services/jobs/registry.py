@@ -36,6 +36,7 @@ class JobRuntime:
         # reaper / dispatcher 常驻 worker 任务（由 workers 模块写入）。
         self.worker_tasks: Dict[str, asyncio.Task] = {}
         self.shutting_down: bool = False
+        self.detached_jobs: set[str] = set()
 
     # ── 关停 ────────────────────────────────────────────────────────────
 
@@ -75,7 +76,7 @@ class JobRuntime:
         if lock is not None and not lock.locked():
             self.queue_locks.pop(queue_key, None)
 
-    def schedule_queue(self, queue_key: str) -> None:
+    def schedule_queue(self, queue_key: str, *, recovered_job_id: str | None = None) -> None:
         from app.domains.ai.services.jobs.queue_runner import run_queue
 
         if self.shutdown_in_progress():
@@ -87,7 +88,9 @@ class JobRuntime:
         running = self.queue_runners.get(queue_key)
         if running and not running.done():
             return
-        runner = loop.create_task(run_queue(queue_key))
+        coroutine = (run_queue(queue_key, recovered_job_id=recovered_job_id)
+                     if recovered_job_id else run_queue(queue_key))
+        runner = loop.create_task(coroutine)
         self.queue_runners[queue_key] = runner
         runner.add_done_callback(lambda task: self.reap_queue_runner(queue_key, task))
 

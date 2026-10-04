@@ -13,6 +13,7 @@ AgentEventType = Literal[
     "thinking",
     "tool_use",
     "tool_result",
+    "tool_progress",
     "ask_user",
     "result",
     "error",

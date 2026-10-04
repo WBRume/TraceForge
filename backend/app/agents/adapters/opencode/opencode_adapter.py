@@ -1,7 +1,7 @@
 """OpenCode 2.x server adapter using /api routes and native session events.
 
 Subscribe before enqueuing a prompt. A step ending is not a turn ending;
-only session.execution.* terminal events settle an execution.
+durable idle messages settle execution even when its terminal event was missed.
 """
 
 from __future__ import annotations
@@ -24,9 +24,8 @@ from app.agents.contract import (
     TokenUsage,
 )
 from app.agents.activity_watchdog import AgentActivityWatchdog
-from app.agents.errors import AgentError, AgentTimeoutError, SessionForkError
+from app.agents.errors import AgentError, AgentExecutionDetached, AgentTimeoutError, SessionForkError
 from app.agents.events import AgentEvent
-from app.agents.adapters.opencode.event_mapper import map_opencode_event, opencode_event_session_id
 
 
 class OpenCodeAdapter(AgentBackend):
@@ -60,6 +59,7 @@ class OpenCodeAdapter(AgentBackend):
         self._user_message_id: Optional[str] = None
         self._watchdog: Optional[AgentActivityWatchdog] = None
         self._pending_asks: set[str] = set()
+        self._execution_checkpoint: dict[str, Any] = {}
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -259,11 +259,17 @@ class OpenCodeAdapter(AgentBackend):
             permissions.extend({"action": f"traceforge_playbook_{tool}", "resource": "*", "effect": "allow"} for tool in allowed)
             configured = await client.patch(self._session_url(session_id), json={"permissions": permissions})
             self._check_response(configured, "session permissions")
-        response = await client.post(self._session_url(session_id, "/prompt"), json={"text": prompt_text})
+        body = {"text": prompt_text}
+        if self._user_message_id:
+            body["id"] = self._user_message_id
+        response = await client.post(self._session_url(session_id, "/prompt"), json=body)
+        response.raise_for_status()
         self._check_response(response, "prompt")
         data = response.json().get("data", {})
         if not isinstance(data, dict) or not data.get("id"):
             raise AgentError("OpenCode prompt returned no inbox message id")
+        if self._user_message_id and self._user_message_id != str(data["id"]):
+            raise AgentExecutionDetached("OpenCode returned a different input ID; submission must be reconciled")
         self._user_message_id = str(data["id"])
         self._message_ids.add(self._user_message_id)
 
@@ -276,16 +282,16 @@ class OpenCodeAdapter(AgentBackend):
     def _check_response(cls, response: httpx.Response, operation: str) -> None:
         if response.status_code == 204 or (response.status_code == 200 and cls._is_json_response(response)):
             return
+        if response.status_code >= 500 or response.status_code in {408, 429}:
+            response.raise_for_status()
         raise AgentError(f"OpenCode {operation} failed: HTTP {response.status_code} {response.text[:300]}")
 
     async def _fetch_final_message(self, session_id: str) -> dict[str, Any]:
         messages = await self.list_messages(session_id)
         # Do not return an earlier turn when the current prompt produced no answer.
         if self._user_message_id:
-            boundary = next((i for i, item in enumerate(messages) if item.get("id") == self._user_message_id), None)
-            if boundary is None:
-                return {}
-            messages = messages[boundary + 1:]
+            from .execution import turn_messages
+            messages = turn_messages(messages, self._user_message_id)
         assistants = [item for item in messages if item.get("type") == "assistant" and item.get("agent") not in {"title", "summary"}]
         if not assistants:
             return {}
@@ -499,58 +505,12 @@ class OpenCodeAdapter(AgentBackend):
     async def _consume_sse(
         self, session_id: str, request: AgentRunRequest, on_event: AgentEventSink,
     ) -> tuple[dict[str, Any], set[str]]:
-        """Open the v2 live stream before submitting the prompt to its inbox."""
-        client = await self._ensure_client()
-        seen_types: set[str] = set()
-        sent = False
-        finish_reason = "completed"
-        async with client.stream("GET", f"{self.server_url}/api/event", timeout=httpx.Timeout(30.0, read=None)) as response:
-            if response.status_code != 200:
-                raise AgentError(f"OpenCode event stream failed: HTTP {response.status_code}")
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                try:
-                    event = json.loads(line[5:].strip())
-                    if isinstance(event, str):
-                        event = json.loads(event)
-                except (ValueError, TypeError):
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                if event.get("type") == "server.connected" and not sent:
-                    await self._send_prompt(session_id, request)
-                    sent = True
-                    continue
-                data = event.get("data")
-                if not sent or not isinstance(data, dict) or opencode_event_session_id(event) != session_id:
-                    continue
-                kind = event.get("type")
-                if kind in {"form.replied", "form.cancelled"}:
-                    form = data.get("form") if isinstance(data.get("form"), dict) else {}
-                    self._complete_ask(str(form.get("id") or data.get("id") or ""))
-                if kind in {"session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"}:
-                    success = kind == "session.execution.succeeded"
-                    if kind == "session.execution.failed":
-                        await on_event(AgentEvent(type="error", payload={"success": False, "finish_reason": "error", "result": str(data.get("error") or "OpenCode execution failed")}, provider="opencode", raw=event))
-                    return {"success": success, "finish_reason": finish_reason if success else ("interrupted" if kind.endswith("interrupted") else "error")}, seen_types
-                message_id = data.get("assistantMessageID") or data.get("messageID")
-                if message_id:
-                    self._message_ids.add(str(message_id))
-                if kind in {"session.model.switched", "session.step.started"}:
-                    model = data.get("model") or {}
-                    if model.get("id"):
-                        name = f"{model['providerID']}/{model['id']}" if model.get("providerID") else model["id"]
-                        await on_event(AgentEvent(type="model", payload={"model": name, "provider_session_id": session_id}, provider="opencode"))
-                for unified in map_opencode_event(event):
-                    seen_types.add(unified.type)
-                    if unified.type == "result":
-                        finish_reason = unified.payload.get("finish_reason") or finish_reason
-                        continue
-                    await on_event(unified)
-                    if unified.type == "error":
-                        finish_reason = "error"
-        raise AgentError("OpenCode v2 event stream closed before the turn completed")
+        from .execution import ExecutionMonitor
+        monitor = getattr(self, "_execution_monitor", None)
+        if monitor is None:
+            monitor = ExecutionMonitor(self, session_id, request, on_event)
+            self._execution_monitor = monitor
+        return await monitor.run()
 
     async def run(self, request: AgentRunRequest, on_event: AgentEventSink) -> AgentRunResult:
         await self._ensure_client()
@@ -560,11 +520,14 @@ class OpenCodeAdapter(AgentBackend):
         self._message_ids = set()
         self._user_message_id = None
         self._pending_asks.clear()
+        self._execution_checkpoint = dict(request.execution_checkpoint)
+        self._execution_monitor = None
         started_at = time.monotonic()
         watchdog = AgentActivityWatchdog(
             startup_timeout_seconds=request.startup_timeout_seconds,
             idle_timeout_seconds=request.idle_timeout_seconds,
-            hard_timeout_seconds=request.timeout_seconds,
+            hard_timeout_seconds=(float(request.execution_checkpoint["deadline"]) - time.time()
+                                  if request.execution_checkpoint else request.timeout_seconds),
         )
         self._watchdog = watchdog
 
@@ -593,23 +556,39 @@ class OpenCodeAdapter(AgentBackend):
                 provider="opencode",
             ))
 
-            consume_task = asyncio.create_task(
-                self._consume_sse(session_id, request, _tracked_event)
-            )
+            consumed, seen_types = None, set()
+            if request.execution_checkpoint.get("phase") in {"submitting", "submitted"}:
+                from .execution import ExecutionMonitor
+                self._execution_monitor = ExecutionMonitor(self, session_id, request, _tracked_event)
+                # An execution may have finished while this backend was down,
+                # even if its original deadline has now passed.
+                async with asyncio.timeout(30):
+                    consumed = await self._execution_monitor.reconcile()
+                seen_types = self._execution_monitor.seen_types
             try:
-                consumed, seen_types = await watchdog.wait(consume_task)
+                if consumed is None:
+                    consumed, seen_types = await watchdog.wait(
+                        self._consume_sse(session_id, request, _tracked_event)
+                    )
             except AgentTimeoutError:
-                stop = await self.interrupt(session_id=session_id)
-                from app.agents.contract import record_attempt_remote_stop
-
-                record_attempt_remote_stop(stop)
-                consume_task.cancel()
-                await asyncio.gather(consume_task, return_exceptions=True)
-                final = await self._fetch_final_message(session_id)
-                await self._emit_missing_final_events(
-                    final, set(), _tracked_event,
-                )
-                raise
+                monitor = self._execution_monitor
+                if monitor and monitor.checkpoint["phase"] in {"submitting", "submitted"}:
+                    async with asyncio.timeout(30):
+                        consumed = await monitor.reconcile()
+                    seen_types = monitor.seen_types
+                if consumed is None:
+                    # A replaced owner must never interrupt its successor.
+                    if request.on_execution_checkpoint and self._execution_checkpoint:
+                        stopping = {**self._execution_checkpoint, "phase": "stopping"}
+                        # Persist the stop intent atomically with the ownership
+                        # check. A successor can no longer attach in the gap
+                        # between this check and the remote interrupt request.
+                        await request.on_execution_checkpoint(stopping)
+                        self._execution_checkpoint.update(stopping)
+                    stop = await self.interrupt(session_id=session_id)
+                    from app.agents.contract import record_attempt_remote_stop
+                    record_attempt_remote_stop(stop)
+                    raise
 
             finish_reason = consumed.get("finish_reason")
             success = bool(consumed.get("success"))
@@ -653,6 +632,10 @@ class OpenCodeAdapter(AgentBackend):
                 },
             )
         except Exception as exc:
+            if isinstance(exc, AgentExecutionDetached) and not request.on_execution_checkpoint:
+                raise AgentError(str(exc)) from exc
+            if self._execution_checkpoint and request.on_execution_checkpoint and not isinstance(exc, (AgentExecutionDetached, AgentTimeoutError)):
+                raise AgentExecutionDetached(f"OpenCode observation detached: {exc}") from exc
             if isinstance(exc, AgentError):
                 raise
             raise AgentError(f"OpenCode run failed: {exc}") from exc

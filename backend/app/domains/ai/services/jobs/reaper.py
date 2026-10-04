@@ -33,6 +33,7 @@ from app.domains.ai.services.jobs import attempts as attempt_ops
 from app.domains.ai.services.jobs import publishing
 from app.domains.ai.services.jobs.registry import WORKER_BOOT_ID, WORKER_ID
 from app.domains.ai.services.jobs.store import row_has_leaked_interrupted_ownership
+from app.domains.ai.services.jobs import remote_recovery
 
 logger = get_logger(__name__, category="ai_session")
 
@@ -114,6 +115,7 @@ def list_reclaimable_jobs_sync(task_id: Optional[str] = None) -> List[Dict[str, 
                     "execution_kind": str(job.process_execution_kind or "").strip() or None,
                     "agent_backend": str(job.agent_backend or "").strip() or None,
                     "session_id": str(job.session_id or "").strip() or None,
+                    "recoverable_remote": remote_recovery.recoverable(job) and remote_recovery.current_task(db, job),
                 }
             )
         return result
@@ -321,6 +323,8 @@ async def reap_stale_jobs(*, task_id: Optional[str] = None) -> int:
         rows = await run_db(list_reclaimable_jobs_sync, task_id)
     reclaimed = 0
     for row in rows:
+        if await remote_recovery.attach_reclaimable(row):
+            continue
         token = row["run_token"] or str(uuid.uuid4())
         if not await run_db(
             adopt_reclaimable_job_sync,
@@ -396,6 +400,9 @@ def mark_worker_jobs_terminating_sync(reason: str) -> List[Dict[str, Any]]:
         result: List[Dict[str, Any]] = []
         changed = False
         for job_id in sorted(candidate_ids):
+            candidate = db.get(SddAiJob, job_id)
+            if remote_recovery.recoverable(candidate) and remote_recovery.current_task(db, candidate):
+                continue
             termination = request_attempt_termination_in_txn(
                 db,
                 AttemptTerminationRequest(

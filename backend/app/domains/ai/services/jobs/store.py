@@ -55,7 +55,7 @@ from app.domains.task.models.task_cli_bootstrap import SddTaskCliBootstrap
 # cleanup must never race the hard runtime watchdog and mark a live job failed.
 _RUNNING_STALE_MINUTES = max(
     10,
-    int(getattr(settings, "AGENT_MAX_RUNTIME_SECONDS", 7200) or 7200) // 60 + 5,
+    int(settings.agent_max_runtime_seconds) // 60 + 5,
 )
 
 logger = get_logger(__name__, category="ai_session")

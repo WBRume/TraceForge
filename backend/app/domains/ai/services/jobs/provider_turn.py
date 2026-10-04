@@ -155,7 +155,7 @@ async def run_cli_single_turn(
                     monitor_task = asyncio.create_task(_cancel_monitor())
 
                 # 文档讨论是异步作业，允许更长执行时长，避免误超时。
-                wait_seconds = max(600, int(settings.AGENT_MAX_RUNTIME_SECONDS or 7200))
+                wait_seconds = max(600, int(settings.agent_max_runtime_seconds))
                 if hasattr(bridge, "wait"):
                     try:
                         await asyncio.wait_for(bridge.wait(), timeout=wait_seconds)
