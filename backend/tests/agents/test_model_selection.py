@@ -11,6 +11,7 @@ from app.agents.adapters.claude_code.models import model_catalog
 from app.agents.adapters.dsh.dsh_server_adapter import DshServerAdapter
 from app.agents.adapters.opencode.opencode_adapter import OpenCodeAdapter
 from app.agents.contract import AgentRunRequest
+from app.agents.errors import AgentError
 from app.agents.model_selection import apply_task_selection, validate_selection
 
 
@@ -177,47 +178,25 @@ async def test_opencode_new_task_default_precedence(agent_model, config_model, e
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["cold", "subscription_race", "empty", "timeout", "cancel"])
-async def test_opencode_first_catalog_waits_for_location_initialization(scenario, monkeypatch):
+@pytest.mark.parametrize("initial_models", [[], [{"providerID": "opencode", "id": "fledge-alpha-free"}]])
+@pytest.mark.parametrize("session_id", [None, "existing"])
+async def test_opencode_first_catalog_waits_for_location_initialization(initial_models, session_id):
     location = {"directory": "/work/project"}
     ready = False
-    reads = 0
-    closed = False
-    connected = asyncio.Event()
-    real_timeout = asyncio.timeout
-    if scenario == "timeout":
-        monkeypatch.setattr(asyncio, "timeout", lambda _: real_timeout(0.02))
+    settled_models = [{"providerID": "private", "id": "current"}]
 
-    class Events(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            nonlocal ready
-            if scenario == "subscription_race":
-                ready = True
-            yield b'data: {"type":"server.connected","data":{}}\n\n'
-            connected.set()
-            if scenario in ("timeout", "cancel"):
-                await asyncio.Event().wait()
-            # Another workspace's update must not settle this empty catalogue.
-            yield b'data: {"type":"catalog.updated","location":{"directory":"/other"},"data":{}}\n\n'
-            assert reads == 2
-            ready = True
-            yield (
-                "data: " + json.dumps({"type": "catalog.updated", "location": location, "data": {}}) + "\n\n"
-            ).encode()
-
-        async def aclose(self):
-            nonlocal closed
-            closed = True
-
-    def handler(request):
-        nonlocal reads
-        if request.url.path == "/api/event":
-            return httpx.Response(200, stream=Events(), headers={"content-type": "text/event-stream"})
+    async def handler(request):
+        nonlocal ready
+        if request.url.path == "/api/session/existing":
+            return httpx.Response(200, json={"data": {"model": {"providerID": "private", "id": "session"}}})
         assert request.url.params["location[directory]"] == location["directory"]
+        if request.url.path == "/api/integration":
+            # This read waits for plugin activation, unlike /api/model snapshots.
+            await asyncio.sleep(0)
+            ready = True
+            return httpx.Response(200, json={"location": location, "data": []})
         if request.url.path == "/api/model":
-            reads += 1
-            models = [{"providerID": "private", "id": "current"}] if ready and scenario != "empty" else []
-            return httpx.Response(200, json={"location": location, "data": models})
+            return httpx.Response(200, json={"location": location, "data": settled_models if ready else initial_models})
         if request.url.path == "/api/config":
             return httpx.Response(200, json=[{"info": {"model": "private/current"}}])
         assert request.url.path == "/api/agent"
@@ -226,20 +205,78 @@ async def test_opencode_first_catalog_waits_for_location_initialization(scenario
     adapter = OpenCodeAdapter("http://agent")
     adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     try:
-        request = asyncio.create_task(adapter.model_catalog(project_path=location["directory"]))
-        if scenario == "cancel":
-            await connected.wait()
-            request.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await request
-        else:
-            result = await request
-            if scenario in ("empty", "timeout"):
-                assert result == {"options": [], "default_model": None}
-            else:
-                assert result["default_model"] == "private/current"
-                assert result["options"][0]["value"] == "private/current"
-            assert reads == (2 if scenario == "subscription_race" else 3)
-        assert closed
+        result = await adapter.model_catalog(project_path=location["directory"], session_id=session_id)
+        assert result["default_model"] == ("private/session" if session_id else "private/current")
+        assert [option["value"] for option in result["options"]] == ["private/current"]
+        assert await adapter.model_catalog(project_path=location["directory"], session_id=session_id) == result
     finally:
+        await adapter._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_opencode_settled_empty_catalog_does_not_wait_for_an_update():
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        assert request.url.path != "/api/event"
+        return httpx.Response(200, json=[] if request.url.path == "/api/config" else {"data": []})
+
+    adapter = OpenCodeAdapter("http://agent")
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        assert await adapter.model_catalog() == {"options": [], "default_model": None}
+        assert paths.count("/api/model") == 1
+    finally:
+        await adapter._client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure,error", [(401, AgentError), (503, httpx.HTTPStatusError), ("timeout", httpx.ReadTimeout)]
+)
+async def test_opencode_unsettled_catalog_does_not_fall_back_to_builtin_models(failure, error):
+    def handler(request):
+        if request.url.path == "/api/integration":
+            if failure == "timeout":
+                raise httpx.ReadTimeout("plugin initialization timed out", request=request)
+            return httpx.Response(failure, text="not ready")
+        if request.url.path == "/api/model":
+            return httpx.Response(200, json={"data": [{"providerID": "opencode", "id": "fledge-alpha-free"}]})
+        return httpx.Response(200, json=[] if request.url.path == "/api/config" else {"data": []})
+
+    adapter = OpenCodeAdapter("http://agent")
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(error):
+            await adapter.model_catalog(project_path="/work/project")
+    finally:
+        await adapter._client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_opencode_catalog_initialization_can_be_cancelled():
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def handler(request):
+        assert request.url.path == "/api/integration"
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            stopped.set()
+
+    adapter = OpenCodeAdapter("http://agent")
+    adapter._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    request = asyncio.create_task(adapter.model_catalog(project_path="/work/project"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert stopped.is_set()
+    finally:
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
         await adapter._client.aclose()
