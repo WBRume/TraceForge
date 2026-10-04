@@ -120,6 +120,9 @@ import {
   XCircleIcon as RawXCircleIcon,
   XMarkIcon as RawXMarkIcon,
 } from '@heroicons/vue/24/outline'
+import {
+  StarIcon as RawStarSolidIcon,
+} from '@heroicons/vue/24/solid'
 
 import GitBranchIconComponent from './GitBranchIcon.vue'
 import GitPullRequestIconComponent from './GitPullRequestIcon.vue'
@@ -265,6 +268,7 @@ export const Square2StackIcon = wrapIcon(RawSquare2StackIcon, 'Square2StackIcon'
 export const Square3Stack3DIcon = wrapIcon(RawSquare3Stack3DIcon, 'Square3Stack3DIcon')
 export const Squares2X2Icon = wrapIcon(RawSquares2X2Icon, 'Squares2X2Icon')
 export const StarIcon = wrapIcon(RawStarIcon, 'StarIcon')
+export const StarSolidIcon = wrapIcon(RawStarSolidIcon, 'StarSolidIcon')
 export const StopIcon = wrapIcon(RawStopIcon, 'StopIcon')
 export const SwatchIcon = wrapIcon(RawSwatchIcon, 'SwatchIcon')
 export const TableCellsIcon = wrapIcon(RawTableCellsIcon, 'TableCellsIcon')
@@ -450,6 +454,7 @@ export const SlidersHorizontal = AdjustmentsHorizontalIcon
 export const Sparkles = SparklesIcon
 export const Square = StopIcon
 export const Star = StarIcon
+export const StarSolid = StarSolidIcon
 export const Stethoscope = BugAntIcon
 export const Tag = TagIcon
 export const Target = CheckCircleIcon
