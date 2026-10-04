@@ -1,15 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { AlertCircle, Loader2 } from '@/components/icons'
+import ChatMessageContent from '@/components/chat/ChatMessageContent.vue'
+import { mapHistoryMessages, type ChatMessageFields } from '@/composables/chat/shared/messageIdentity'
+import { formatMessageTime } from '@/composables/chat/message/presenters'
 import api from '@/utils/api'
 import { useTaskAwarenessStore } from '@/stores/taskAwareness'
-
-interface HistoryMessageItem {
-  id: string
-  role: 'user' | 'assistant' | 'system' | string
-  content: string
-  created_at?: string
-}
 
 const props = defineProps<{
   workspaceId: string
@@ -19,7 +15,14 @@ const props = defineProps<{
 
 const loading = ref(false)
 const error = ref('')
-const messages = ref<HistoryMessageItem[]>([])
+const messages = ref<ChatMessageFields[]>([])
+const displayMessages = computed(() => messages.value.map(msg => ({
+  ...msg,
+  senderLabel: msg.role === 'user'
+    ? msg.creator_display_name?.trim() || (msg.creator_id ? `用户 ${msg.creator_id}` : '未知用户')
+    : msg.role === 'system' ? '系统' : 'AI 助手',
+  isExpert: msg.role === 'user' && msg.creator_is_workspace_expert,
+})))
 const awareness = useTaskAwarenessStore()
 const liveOutput = computed(() => awareness.outputs[props.taskId]?.text || '')
 let requestVersion = 0
@@ -37,27 +40,18 @@ const fetchHistory = async () => {
     })
     if (version !== requestVersion) return
     const rawMessages = res.data?.messages || []
-    messages.value = rawMessages.map((m: any) => ({
+    messages.value = mapHistoryMessages(rawMessages.map((m: any) => ({
+      ...m,
       id: String(m.id),
-      role: m.role || 'assistant',
+      role: String(m.role || 'assistant').toLowerCase(),
       content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
       created_at: m.created_at
-    }))
+    })))
   } catch (err: any) {
     if (version !== requestVersion) return
     error.value = err.response?.data?.detail || '加载会话上下文失败，请检查网络或重试。'
   } finally {
     if (version === requestVersion) loading.value = false
-  }
-}
-
-const formatTime = (ts?: string) => {
-  if (!ts) return ''
-  try {
-    const d = new Date(ts)
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  } catch {
-    return ''
   }
 }
 
@@ -106,31 +100,14 @@ watch(() => [props.workspaceId, props.taskId], () => {
 
     <!-- 可滚动查看的对话上下文列表（纯只读，无点击功能） -->
     <div v-else class="context-scroll-list">
-      <div
-        v-for="msg in messages"
+      <ChatMessageContent
+        v-for="msg in displayMessages"
         :key="msg.id"
-        class="context-msg-row"
-        :class="msg.role === 'user' ? 'is-user' : msg.role === 'system' ? 'is-system' : 'is-assistant'"
-      >
-        <!-- 系统消息 -->
-        <div v-if="msg.role === 'system'" class="system-msg-text">
-          {{ msg.content }}
-        </div>
-
-        <!-- 用户或助手消息：纯净文本呈现，无彩色 icon -->
-        <template v-else>
-          <div class="msg-content-col">
-            <div class="msg-meta">
-              <span class="sender-label">{{ msg.role === 'user' ? '用户' : 'AI 助手' }}</span>
-              <span v-if="msg.created_at" class="msg-time">{{ formatTime(msg.created_at) }}</span>
-            </div>
-            <!-- 气泡内容：纯文本只读展示，不可点击触发任何操作 -->
-            <div class="msg-bubble">
-              {{ msg.content }}
-            </div>
-          </div>
-        </template>
-      </div>
+        :msg="msg"
+        :author-label="msg.senderLabel"
+        :time-label="formatMessageTime(msg.created_at)"
+        :is-expert="msg.isExpert"
+      />
     </div>
   </div>
 </template>
@@ -214,86 +191,4 @@ watch(() => [props.workspaceId, props.taskId], () => {
   user-select: text; /* 允许选中文本查阅复制 */
 }
 
-/* 针对内部所有可能嵌套的内容，禁用外部点击跳转 */
-.context-scroll-list :deep(a),
-.context-scroll-list :deep(button:not(.retry-btn)) {
-  pointer-events: none !important;
-  cursor: default !important;
-  text-decoration: none !important;
-}
-
-.context-msg-row {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.context-msg-row.is-user {
-  flex-direction: row-reverse;
-}
-
-.context-msg-row.is-system {
-  justify-content: center;
-}
-
-.system-msg-text {
-  font-size: 11px;
-  color: #94a3b8;
-  background: #f1f5f9;
-  padding: 2px 10px;
-  border-radius: 999px;
-}
-
-.msg-content-col {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  max-width: 90%;
-  width: 100%;
-}
-
-.is-user .msg-content-col {
-  align-items: flex-end;
-}
-
-.msg-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: #64748b;
-}
-
-.sender-label {
-  font-weight: 600;
-}
-
-.msg-time {
-  font-size: 10px;
-  color: #94a3b8;
-}
-
-.msg-bubble {
-  padding: 8px 12px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  border-radius: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.is-user .msg-bubble {
-  background: linear-gradient(135deg, #0ea5e9, #0284c7);
-  color: #ffffff;
-  border-bottom-right-radius: 2px;
-  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.2);
-}
-
-.is-assistant .msg-bubble {
-  background: #ffffff;
-  color: #1e293b;
-  border: 1px solid #e2e8f0;
-  border-bottom-left-radius: 2px;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
-}
 </style>
