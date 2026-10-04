@@ -13,6 +13,7 @@ const chatHistoryPanelSource = source('../../components/chat/sections/ChatHistor
 const taskSidebarSource = source('../../components/chat/sections/TaskSidebar.vue')
 const specSidebarSource = source('../../components/chat/sections/spec/SpecSidebar.vue')
 const chatMessageBubbleSource = source('../../components/chat/ChatMessageBubble.vue')
+const chatMessageContentSource = source('../../components/chat/ChatMessageContent.vue')
 const diagnosisResultCardSource = source('../../components/chat/DiagnosisResultCard.vue')
 const chatExecutionInputSource = source('../../components/chat/ChatExecutionInput.vue')
 const chatViewSource = source('../ChatView.vue')
@@ -61,8 +62,8 @@ describe('ChatView diagnosis summary layout containment', () => {
   })
 
   it('bounds diagnosis result messages even when generated content has unbroken paths', () => {
-    expect(chatMessageBubbleSource).toContain("'is-diagnosis-result': isDiagnosisResult")
-    expect(declarations(chatMessageBubbleSource, '.message-wrapper.is-diagnosis-result')).toContain('width: min(78%, 720px)')
+    expect(chatMessageContentSource).toContain("'is-diagnosis-result': diagnosisResult")
+    expect(declarations(chatMessageContentSource, '.message-wrapper.is-diagnosis-result')).toContain('width: min(78%, 720px)')
 
     const cardRule = declarations(diagnosisResultCardSource, '.diagnosis-card')
     expect(cardRule).toContain('width: 100%')
