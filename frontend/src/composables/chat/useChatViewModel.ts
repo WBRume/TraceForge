@@ -172,13 +172,6 @@ export function useChatViewModel() {
     newTaskRequirement.value = taskRail.view === 'requirement' ? taskRail.selectedRequirement : null
     taskList.openNewTaskModal()
   }
-  const resetTaskView = () => {
-    taskList.taskStatusFilter.value = 'ALL'
-    taskList.taskTypeFilter.value = 'ALL'
-    taskList.taskRelationFilter.value = []
-    if (taskRail.view === 'all') void taskList.loadTasks({ reset: true, trySelectRouteTask: false })
-    else taskRail.selectView('all')
-  }
 
   const jobs = useChatJobs({
     getWorkspaceId,
@@ -988,8 +981,6 @@ export function useChatViewModel() {
     taskListError: taskList.taskListError,
     retryTaskList: () => taskList.loadTasks({ reset: true, trySelectRouteTask: false }),
     taskViewLabel,
-    taskRailView: computed(() => taskRail.view),
-    resetTaskView,
     newTaskRequirement,
     applyTaskStatusFilter: taskList.applyTaskStatusFilter,
     applyTaskTypeFilter: taskList.applyTaskTypeFilter,
