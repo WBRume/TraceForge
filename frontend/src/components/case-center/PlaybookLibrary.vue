@@ -22,6 +22,7 @@ import type { PlaybookSpec } from '@/types/diagnosisPlaybook'
 import { DEMO_PLAYBOOK_YAML } from './demoPlaybook'
 import ConfirmActionModal from '@/components/ConfirmActionModal.vue'
 import DeleteActionButton from '@/components/DeleteActionButton.vue'
+import LibraryPagination from './LibraryPagination.vue'
 
 const ERROR_MESSAGES: Record<string, string> = {
   SHELL_OR_BUNDLE_INVALID: '规程必须声明 execution.bundle（可信执行包地址）且 execution.shell 必须为 false',
@@ -326,12 +327,7 @@ const loadDemoYaml = () => {
       </div>
     </div>
 
-    <nav v-if="total > 0" class="pl-pagination" aria-label="规程分页">
-      <span>共 {{ total }} 条</span>
-      <button class="btn-secondary" :disabled="loading || page <= 1" @click="changePage(page - 1)">上一页</button>
-      <span>{{ page }} / {{ pageCount }}</span>
-      <button class="btn-secondary" :disabled="loading || page >= pageCount" @click="changePage(page + 1)">下一页</button>
-    </nav>
+    <LibraryPagination class="pl-pagination" :total="total" :page="page" :page-count="pageCount" :loading="loading" label="规程分页" @change="changePage" />
 
     <!-- 弹窗 2：导入规程版本 YAML -->
     <div v-if="showImportModal" class="modal-backdrop" @click.self="showImportModal = false">
@@ -394,7 +390,6 @@ const loadDemoYaml = () => {
 </template>
 
 <style scoped>
-.pl-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 .pl-title-link { border: 0; padding: 0; color: inherit; background: none; text-align: left; font: inherit; cursor: pointer; }
 .pl-title-link:hover { color: #0284c7; }
 

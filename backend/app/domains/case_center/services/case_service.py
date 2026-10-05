@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.logging import audit_log, get_logger
@@ -19,6 +20,7 @@ from app.domains.case_center.models.case import (
 from app.domains.case_center.schemas.case import (
     CaseCreateRequest,
     CaseDraftCreateRequest,
+    CaseListQuery,
     CaseUpdateRequest,
 )
 from app.domains.rag.services import outbox_service as rag_outbox_service
@@ -180,18 +182,32 @@ def serialize_case(case: SddCase) -> dict:
     }
 
 
-def _apply_case_filters(
-    query,
-    *,
-    keyword: str | None = None,
-    category: str | None = None,
-    status: str | None = None,
-    priority: str | None = None,
-    source_task_id: str | None = None,
-):
-    if source_task_id:
-        query = query.filter(SddCase.source_task_id == source_task_id)
-    if keyword:
+def _product_filter_column(column):
+    """Match the product fallback shown by serialize_case, including older cases."""
+    from app.domains.management.models.management import SddManagementProduct, SddManagementProjectProduct
+
+    product_column = SddManagementProduct.name if column.key == "product_name" else SddManagementProduct.version_no
+    fallback = (
+        select(product_column)
+        .select_from(Workspace)
+        .join(SddManagementProjectProduct, SddManagementProjectProduct.project_id == Workspace.project_id)
+        .join(SddManagementProduct, SddManagementProduct.id == SddManagementProjectProduct.product_id)
+        .where(Workspace.id == SddCase.workspace_id)
+        .order_by(SddManagementProjectProduct.created_at.asc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    return func.coalesce(func.nullif(func.trim(column), ""), fallback)
+
+
+def _apply_case_filters(query, filters: CaseListQuery):
+    from app.domains.diagnosis_playbook.models import CasePlaybookLink
+
+    if filters.created_from and filters.created_to and filters.created_from > filters.created_to:
+        raise CaseError("创建开始日期不能晚于结束日期", status_code=422)
+    if filters.source_task_id:
+        query = query.filter(SddCase.source_task_id == filters.source_task_id)
+    if keyword := _clean(filters.keyword):
         like = f"%{keyword}%"
         query = query.filter(
             SddCase.title.ilike(like)
@@ -201,21 +217,38 @@ def _apply_case_filters(
             | SddCase.code_context.ilike(like)
             | SddCase.site_name.ilike(like)
         )
-    if category:
-        query = query.filter(SddCase.category == category)
-    if status:
-        query = query.filter(SddCase.status == status)
-    if priority:
-        query = query.filter(SddCase.priority == priority)
+    for field in ("category", "status", "priority", "site_name"):
+        if value := _clean(getattr(filters, field)):
+            column = getattr(SddCase, field)
+            query = query.filter(column.ilike(f"%{value}%") if field == "site_name" else column == value)
+    for field in ("product_name", "product_version"):
+        if value := _clean(getattr(filters, field)):
+            column = getattr(SddCase, field)
+            query = query.filter(_product_filter_column(column).ilike(f"%{value}%"))
+    if creator := _clean(filters.creator_name):
+        query = query.filter(SddCase.creator.has(User.display_name.ilike(f"%{creator}%")))
+    if filters.created_from:
+        query = query.filter(SddCase.created_at >= datetime.combine(filters.created_from, time.min))
+    if filters.created_to:
+        query = query.filter(SddCase.created_at <= datetime.combine(filters.created_to, time.max))
+    if filters.has_playbook is not None:
+        promoted = (
+            query.session.query(CasePlaybookLink.id)
+            .filter(CasePlaybookLink.case_id == SddCase.id, CasePlaybookLink.spec_id.isnot(None))
+            .exists()
+        )
+        query = query.filter(promoted if filters.has_playbook else ~promoted)
     return query
 
 
-def _paginate_cases(query, page: int, page_size: int) -> tuple[list[SddCase], int]:
+def _paginate_cases(query, filters: CaseListQuery) -> tuple[list[SddCase], int]:
     total = query.count()
+    column = getattr(SddCase, filters.sort_by)
+    ordering = column.asc() if filters.sort_order == "asc" else column.desc()
     items = (
-        query.order_by(SddCase.updated_at.desc(), SddCase.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+        query.order_by(column.is_(None), ordering, SddCase.created_at.desc(), SddCase.id.asc())
+        .offset((filters.page - 1) * filters.page_size)
+        .limit(filters.page_size)
         .all()
     )
     from app.domains.diagnosis_playbook.models import CasePlaybookLink
@@ -235,46 +268,30 @@ def list_cases(
     db: Session,
     workspace_id: str,
     *,
-    keyword: str | None = None,
-    category: str | None = None,
-    status: str | None = None,
-    priority: str | None = None,
-    source_task_id: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
+    filters: CaseListQuery | None = None,
 ) -> tuple[list[SddCase], int]:
+    filters = filters or CaseListQuery()
     query = _apply_case_filters(
         _case_query(db).filter(SddCase.workspace_id == workspace_id),
-        keyword=keyword,
-        category=category,
-        status=status,
-        priority=priority,
-        source_task_id=source_task_id,
+        filters,
     )
-    return _paginate_cases(query, page, page_size)
+    return _paginate_cases(query, filters)
 
 
 def list_cases_in_workspaces(
     db: Session,
     workspace_ids: list[str],
     *,
-    keyword: str | None = None,
-    category: str | None = None,
-    status: str | None = None,
-    priority: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
+    filters: CaseListQuery | None = None,
 ) -> tuple[list[SddCase], int]:
     if not workspace_ids:
         return [], 0
+    filters = filters or CaseListQuery()
     query = _apply_case_filters(
         _case_query(db).filter(SddCase.workspace_id.in_(workspace_ids)),
-        keyword=keyword,
-        category=category,
-        status=status,
-        priority=priority,
+        filters,
     )
-    return _paginate_cases(query, page, page_size)
+    return _paginate_cases(query, filters)
 
 
 def get_case(db: Session, case_id: str, workspace_id: str) -> SddCase | None:

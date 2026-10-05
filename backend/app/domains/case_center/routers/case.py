@@ -9,6 +9,7 @@ from app.dependencies import get_current_user, get_db
 from app.domains.auth.models.user import User, WorkspacePermission
 from app.domains.case_center.schemas.case import (
     CaseCreateRequest,
+    CaseListQuery,
     CaseListResponse,
     CaseResponse,
     CaseReviewRequest,
@@ -58,28 +59,15 @@ def _raise_case_error(exc: case_service.CaseError) -> None:
 @router.get("", response_model=CaseListResponse)
 def list_cases(
     ws_id: str,
-    keyword: str | None = Query(default=None),
-    category: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    priority: str | None = Query(default=None),
-    source_task_id: str | None = Query(default=None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    filters: CaseListQuery = Depends(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     _verify_access(ws_id, current_user, db)
-    items, total = case_service.list_cases(
-        db,
-        ws_id,
-        keyword=keyword,
-        category=category,
-        status=status,
-        priority=priority,
-        source_task_id=source_task_id,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        items, total = case_service.list_cases(db, ws_id, filters=filters)
+    except case_service.CaseError as exc:
+        _raise_case_error(exc)
     member = _verify_access(ws_id, current_user, db)
     return {
         "items": [
@@ -87,20 +75,15 @@ def list_cases(
             for item in items
         ],
         "total": total,
-        "page": page,
-        "page_size": page_size,
+        "page": filters.page,
+        "page_size": filters.page_size,
     }
 
 
 @global_router.get("", response_model=CaseListResponse)
 def list_all_cases(
     ws_id: str | None = Query(default=None),
-    keyword: str | None = Query(default=None),
-    category: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    priority: str | None = Query(default=None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
+    filters: CaseListQuery = Depends(),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -112,16 +95,10 @@ def list_all_cases(
     else:
         workspace_ids = accessible_ids
 
-    items, total = case_service.list_cases_in_workspaces(
-        db,
-        workspace_ids,
-        keyword=keyword,
-        category=category,
-        status=status,
-        priority=priority,
-        page=page,
-        page_size=page_size,
-    )
+    try:
+        items, total = case_service.list_cases_in_workspaces(db, workspace_ids, filters=filters)
+    except case_service.CaseError as exc:
+        _raise_case_error(exc)
     serialized = []
     for item in items:
         payload = case_service.serialize_case(item)
@@ -136,8 +113,8 @@ def list_all_cases(
     return {
         "items": serialized,
         "total": total,
-        "page": page,
-        "page_size": page_size,
+        "page": filters.page,
+        "page_size": filters.page_size,
     }
 
 
