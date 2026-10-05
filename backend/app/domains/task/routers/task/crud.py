@@ -180,7 +180,8 @@ def list_tasks(
     db: Session = Depends(get_db),
 ):
     verify_workspace_access(ws_id, current_user.id, db)
-    items, total = task_task_records_queries.list_tasks(
+    # 多取一条探测是否还有下一页，避免为展示计数额外执行 COUNT 查询。
+    items, _ = task_task_records_queries.list_tasks(
         db,
         ws_id,
         status,
@@ -192,7 +193,12 @@ def list_tasks(
         requirement_id=requirement_id,
         independent=independent,
         following=following,
+        with_total=False,
+        limit=page_size + 1,
     )
+    has_more = len(items) > page_size
+    if has_more:
+        items = items[:page_size]
     following_ids = task_task_records_queries.list_following_task_ids(
         db,
         ws_id,
@@ -206,7 +212,7 @@ def list_tasks(
         serialized_items.append(payload)
     return {
         "items": serialized_items,
-        "total": total,
+        "has_more": has_more,
         "page": page,
         "page_size": page_size,
     }

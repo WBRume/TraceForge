@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import api from '@/utils/api'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
@@ -25,15 +25,13 @@ export function useTaskList(options: {
   const taskRelationFilter = ref<TaskRelationFilter[]>([])
   const taskTypeFilter = ref<TaskTypeFilterValue>('ALL')
   const taskListPage = ref(1)
-  const taskListTotal = ref(0)
+  const taskListHasMore = ref(false)
   const taskListLoading = ref(false)
   const taskListLoadingMore = ref(false)
   const showTaskModal = ref(false)
   const taskListError = ref(false)
   let requestGeneration = 0
   let requestController: AbortController | undefined
-
-  const taskListHasMore = computed(() => tasks.value.length < taskListTotal.value)
 
   const resolveTaskStatusQuery = (): 'DONE' | 'FAILED' | undefined => {
     if (taskStatusFilter.value === 'DONE') return 'DONE'
@@ -61,7 +59,7 @@ export function useTaskList(options: {
       taskListPage.value = 1
       if (shouldClear) {
         tasks.value = []
-        taskListTotal.value = 0
+        taskListHasMore.value = false
       }
       if (taskListContainer.value) taskListContainer.value.scrollTop = 0
     } else {
@@ -99,7 +97,7 @@ export function useTaskList(options: {
       const res = await api.get(`/workspaces/${wsId}/tasks`, { params, signal: requestController.signal })
       if (generation !== requestGeneration || wsId !== options.getWorkspaceId()) return
       const items = Array.isArray(res.data?.items) ? res.data.items : []
-      taskListTotal.value = Number(res.data?.total || 0)
+      taskListHasMore.value = Boolean(res.data?.has_more)
       tasks.value = reset ? items : [...tasks.value, ...items]
       loadOptions?.onLoaded?.()
 
@@ -220,7 +218,6 @@ export function useTaskList(options: {
   }
 
   return {
-    taskListTotal,
     taskListError,
     dispose: () => { requestGeneration++; requestController?.abort() },
     tasks,

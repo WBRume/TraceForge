@@ -25,7 +25,7 @@ const advancedFilterOpen = ref(false)
   <aside class="task-sidebar glass-panel">
     <div class="sidebar-header">
       <div class="sidebar-title-row">
-        <h3 :title="props.vm.taskViewLabel">{{ props.vm.taskViewLabel }} <span class="task-total">{{ props.vm.taskListTotal }}</span></h3>
+        <h3 :title="props.vm.taskViewLabel">{{ props.vm.taskViewLabel }}</h3>
         <div class="sidebar-title-actions">
           <span class="advanced-filter-anchor">
             <button
@@ -115,7 +115,6 @@ const advancedFilterOpen = ref(false)
 <style scoped>
 .sidebar-title-row h3 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; }
 .sidebar-title-actions { flex-shrink:0; }
-.task-total { color:var(--color-text-muted); font-size:.75rem; font-weight:400; }
 .reset-view { align-self:flex-start; border:0; padding:0; background:transparent; font-size:.72rem; color:var(--color-primary-600); cursor:pointer; }
 .retry-list { border:0; background:transparent; cursor:pointer; }
 .task-sidebar {

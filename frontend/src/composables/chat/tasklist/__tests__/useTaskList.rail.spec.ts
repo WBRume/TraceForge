@@ -26,20 +26,19 @@ describe('task list rail filters', () => {
     const oldRequest = list.loadTasks()
     filter.view = 'requirement'
     filter.requirementId = 'req-101'
-    api.get.mockResolvedValueOnce({ data:{ items:[{ id:'new' }], total:21 } })
+    api.get.mockResolvedValueOnce({ data:{ items:[{ id:'new' }], has_more:true } })
     await list.loadTasks({ trySelectRouteTask:false })
-    finishOld({ data:{ items:[{ id:'stale' }], total:999 } })
+    finishOld({ data:{ items:[{ id:'stale' }], has_more:false } })
     await oldRequest
     expect(list.tasks.value.map((task) => task.id)).toEqual(['new'])
-    expect(list.taskListTotal.value).toBe(21)
     expect(api.get.mock.calls[1]?.[1].params).toMatchObject({ requirement_id:'req-101', page:1 })
     list.upsertTask({ id:'unrelated' })
     expect(list.tasks.value.map((task) => task.id)).toEqual(['new'])
-    api.get.mockResolvedValueOnce({ data:{ items:[{ id:'next' }], total:21 } })
+    api.get.mockResolvedValueOnce({ data:{ items:[{ id:'next' }], has_more:false } })
     await list.loadMoreTasks()
     expect(api.get.mock.calls[2]?.[1].params.page).toBe(2)
     filter.view = 'independent'
-    api.get.mockResolvedValueOnce({ data:{ items:[], total:0 } })
+    api.get.mockResolvedValueOnce({ data:{ items:[], has_more:false } })
     await list.loadTasks({ trySelectRouteTask:false })
     expect(api.get.mock.calls[3]?.[1].params).toMatchObject({ independent:'true', page:1 })
     expect(list.tasks.value).toEqual([])
@@ -52,7 +51,7 @@ describe('task list rail filters', () => {
     filter.view = 'following'
     list.tasks.value = [{ id:'favorite', is_following:true }]
     api.delete.mockResolvedValueOnce({ data:{ is_following:false } })
-    api.get.mockResolvedValueOnce({ data:{ items:[], total:0 } })
+    api.get.mockResolvedValueOnce({ data:{ items:[], has_more:false } })
     expect(await list.toggleTaskFollow(list.tasks.value[0])).toBe(false)
     expect(list.tasks.value).toEqual([])
     expect(api.get.mock.calls.at(-1)?.[1].params).toMatchObject({ following:'true' })
@@ -69,7 +68,7 @@ describe('task list rail filters', () => {
     expect(list.taskListLoading.value).toBe(true)
     expect(list.tasks.value).toHaveLength(2)
 
-    resolveReload({ data: { items: [{ id: 'task-1' }], total: 1 } })
+    resolveReload({ data: { items: [{ id: 'task-1' }], has_more: false } })
     await flight
     expect(list.tasks.value).toEqual([{ id: 'task-1' }])
 

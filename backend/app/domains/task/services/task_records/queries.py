@@ -21,6 +21,8 @@ def list_tasks(
     requirement_id: str | None = None,
     independent: bool = False,
     following: bool = False,
+    with_total: bool = True,
+    limit: int | None = None,
 ) -> tuple[list[SddTask], int]:
     query = (
         db.query(SddTask)
@@ -102,8 +104,10 @@ def list_tasks(
         if relation_filters:
             query = query.filter(or_(*relation_filters))
 
-    total = query.count()
-    items = query.order_by(SddTask.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    # 列表分页只需要「是否还有下一页」，不必为展示计数额外执行 COUNT。
+    total = query.count() if with_total else 0
+    fetch_limit = page_size if limit is None else limit
+    items = query.order_by(SddTask.created_at.desc()).offset((page - 1) * page_size).limit(fetch_limit).all()
     return items, total
 
 

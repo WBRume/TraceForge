@@ -985,7 +985,6 @@ export function useChatViewModel() {
     taskListHasMore: taskList.taskListHasMore,
     taskListLoading: taskList.taskListLoading,
     taskListLoadingMore: taskList.taskListLoadingMore,
-    taskListTotal: taskList.taskListTotal,
     taskListError: taskList.taskListError,
     retryTaskList: () => taskList.loadTasks({ reset: true, trySelectRouteTask: false }),
     taskViewLabel,
