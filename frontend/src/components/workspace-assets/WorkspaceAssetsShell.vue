@@ -1,13 +1,12 @@
 <script setup lang="ts">
-import { computed, shallowRef, watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import type { Component } from 'vue'
 import { useWorkspaceAssets } from '@/composables/useWorkspaceAssets'
 import RequirementsWorkbench from '@/components/workspace-assets/requirements/RequirementsWorkbench.vue'
 import TaskTableWorkbench from '@/components/workspace-assets/tasks/TaskTableWorkbench.vue'
-import SpecCoverageMatrix from '@/components/workspace-assets/traceability/SpecCoverageMatrix.vue'
-import type { SpecCoverageMatrixRow } from '@/types/workspaceAssets'
+import WorkspaceAssetsUnderConstruction from '@/components/workspace-assets/WorkspaceAssetsUnderConstruction.vue'
 import {
   Database,
   FileText,
@@ -16,7 +15,6 @@ import {
 } from '@/components/icons'
 
 type WorkspaceAssetsSection = 'requirements' | 'tasks' | 'traceability' | 'knowledgeBase'
-type TraceabilityView = 'coverage' | 'evidence' | 'delta' | 'risk'
 
 type NavItem = {
   key: WorkspaceAssetsSection
@@ -24,18 +22,6 @@ type NavItem = {
   description: string
   to: string
   icon: Component
-}
-
-type StatusItem = {
-  label: string
-  detail: string
-}
-
-type TraceabilityOption = {
-  key: TraceabilityView
-  title: string
-  label: string
-  body: string
 }
 
 const props = defineProps<{
@@ -48,16 +34,11 @@ const {
   loading,
   requirements,
   tasks,
-  traceability,
-  knowledgeAssets,
   loadRequirements,
   loadTasks,
-  loadTraceability,
-  loadKnowledgeAssets,
 } = useWorkspaceAssets()
 
 const wsId = computed(() => String(route.params.wsId || ''))
-const selectedTraceabilityView = shallowRef<TraceabilityView>('coverage')
 
 const navItems = computed<NavItem[]>(() => [
   {
@@ -92,93 +73,6 @@ const navItems = computed<NavItem[]>(() => [
 
 const requirementItems = computed(() => requirements.value?.items ?? [])
 const taskItems = computed(() => tasks.value?.items ?? [])
-const knowledgeAssetItems = computed(() => knowledgeAssets.value?.items ?? [])
-const selectedTraceabilityApiView = computed(() => {
-  const keyMap: Record<TraceabilityView, string> = {
-    coverage: 'spec_coverage_matrix',
-    evidence: 'evidence_registry',
-    delta: 'human_delta_dashboard',
-    risk: 'risk_board',
-  }
-  return traceability.value?.views.find((item) => item.key === keyMap[selectedTraceabilityView.value]) || null
-})
-const selectedTraceabilityItems = computed(() => selectedTraceabilityApiView.value?.items ?? [])
-const specCoverageMatrixRows = computed<SpecCoverageMatrixRow[]>(() => {
-  const matrix = traceability.value?.views.find((item) => item.key === 'spec_coverage_matrix')
-  return (matrix?.items ?? []) as SpecCoverageMatrixRow[]
-})
-const traceabilityOptions = computed<TraceabilityOption[]>(() => [
-  {
-    key: 'coverage',
-    title: t('workspace_assets.traceability.coverage_title'),
-    label: t('workspace_assets.traceability.coverage_label'),
-    body: t('workspace_assets.traceability.coverage_body'),
-  },
-  {
-    key: 'evidence',
-    title: t('workspace_assets.traceability.evidence_title'),
-    label: t('workspace_assets.traceability.evidence_label'),
-    body: t('workspace_assets.traceability.evidence_body'),
-  },
-  {
-    key: 'delta',
-    title: t('workspace_assets.traceability.delta_title'),
-    label: t('workspace_assets.traceability.delta_label'),
-    body: t('workspace_assets.traceability.delta_body'),
-  },
-  {
-    key: 'risk',
-    title: t('workspace_assets.traceability.risk_title'),
-    label: t('workspace_assets.traceability.risk_label'),
-    body: t('workspace_assets.traceability.risk_body'),
-  },
-])
-
-const selectedTraceabilityOption = computed(() => (
-  traceabilityOptions.value.find((item) => item.key === selectedTraceabilityView.value) || traceabilityOptions.value[0]
-))
-
-const knowledgeTypes = computed<StatusItem[]>(() => [
-  {
-    label: t('workspace_assets.knowledge.business_title'),
-    detail: t('workspace_assets.knowledge.business_body'),
-  },
-  {
-    label: t('workspace_assets.knowledge.api_title'),
-    detail: t('workspace_assets.knowledge.api_body'),
-  },
-  {
-    label: t('workspace_assets.knowledge.framework_title'),
-    detail: t('workspace_assets.knowledge.framework_body'),
-  },
-  {
-    label: t('workspace_assets.knowledge.constraint_title'),
-    detail: t('workspace_assets.knowledge.constraint_body'),
-  },
-  {
-    label: t('workspace_assets.knowledge.adr_title'),
-    detail: t('workspace_assets.knowledge.adr_body'),
-  },
-])
-
-const promotionSources = computed<StatusItem[]>(() => [
-  {
-    label: t('workspace_assets.knowledge.promotion.decision'),
-    detail: t('workspace_assets.knowledge.promotion.waiting'),
-  },
-  {
-    label: t('workspace_assets.knowledge.promotion.human_delta'),
-    detail: t('workspace_assets.knowledge.promotion.waiting'),
-  },
-  {
-    label: t('workspace_assets.knowledge.promotion.clarification'),
-    detail: t('workspace_assets.knowledge.promotion.waiting'),
-  },
-  {
-    label: t('workspace_assets.knowledge.promotion.review_comment'),
-    detail: t('workspace_assets.knowledge.promotion.waiting'),
-  },
-])
 
 watch(
   [wsId, () => props.section],
@@ -194,11 +88,6 @@ watch(
       await loadTasks(currentWsId)
       return
     }
-    if (currentSection === 'traceability') {
-      await loadTraceability(currentWsId)
-      return
-    }
-    await loadKnowledgeAssets(currentWsId)
   },
   { immediate: true },
 )
@@ -250,98 +139,19 @@ watch(
         </section>
 
         <section v-else-if="section === 'traceability'" class="structured-page">
-          <section class="traceability-switcher" :aria-label="t('workspace_assets.traceability.switcher_label')">
-            <button
-              v-for="item in traceabilityOptions"
-              :key="item.key"
-              type="button"
-              :class="{ 'is-active': selectedTraceabilityView === item.key }"
-              @click="selectedTraceabilityView = item.key"
-            >
-              <span>{{ item.title }}</span>
-              <small>{{ item.label }}</small>
-            </button>
-          </section>
-
-          <section class="selected-view-container">
-            <div class="view-frame">
-              <span class="eyebrow">{{ selectedTraceabilityOption?.label }}</span>
-              <h3>{{ selectedTraceabilityOption?.title }}</h3>
-              <p>{{ selectedTraceabilityOption?.body }}</p>
-              <SpecCoverageMatrix
-                v-if="selectedTraceabilityView === 'coverage'"
-                :rows="specCoverageMatrixRows"
-                :workspace-id="wsId"
-              />
-              <ul v-else-if="selectedTraceabilityItems.length" class="data-list compact-list">
-                <li
-                  v-for="(item, index) in selectedTraceabilityItems"
-                  :key="String(item.id || index)"
-                  class="data-row"
-                >
-                  <strong>{{ selectedTraceabilityOption?.title }}</strong>
-                  <small>{{ selectedTraceabilityOption?.label }}</small>
-                  <span>{{ String(item.id || item.task_id || item.requirement_id || index + 1) }}</span>
-                </li>
-              </ul>
-              <div v-else class="empty-container compact">
-                <GitBranch class="empty-icon" />
-                <strong>{{ t('workspace_assets.empty_state_title') }}</strong>
-                <p>{{ t('workspace_assets.empty_state.traceability') }}</p>
-              </div>
-            </div>
-            <aside class="drilldown-panel">
-              <h3>{{ t('workspace_assets.traceability.drilldown_title') }}</h3>
-              <p>{{ t('workspace_assets.traceability.drilldown_body') }}</p>
-            </aside>
-          </section>
+          <WorkspaceAssetsUnderConstruction
+            :badge="t('workspace_assets.under_construction.badge')"
+            :title="t('workspace_assets.under_construction.traceability_title')"
+            :description="t('workspace_assets.under_construction.traceability_body')"
+          />
         </section>
 
         <section v-else class="structured-page">
-          <section class="knowledge-types">
-            <div class="section-title-row">
-              <div>
-                <h3>{{ t('workspace_assets.knowledge.types_title') }}</h3>
-                <p>{{ t('workspace_assets.knowledge.types_body') }}</p>
-              </div>
-            </div>
-            <ul class="status-list">
-              <li v-for="item in knowledgeTypes" :key="item.label">
-                <Database class="list-icon" />
-                <span>
-                  <strong>{{ item.label }}</strong>
-                  <small>{{ item.detail }}</small>
-                </span>
-              </li>
-            </ul>
-          </section>
-
-          <section class="promotion-section">
-            <div class="source-panel">
-              <div>
-                <h3>{{ t('workspace_assets.knowledge.promotion_title') }}</h3>
-                <p>{{ t('workspace_assets.knowledge.promotion_body') }}</p>
-              </div>
-            </div>
-            <ul class="promotion-list">
-              <li v-for="item in promotionSources" :key="item.label">
-                <span>{{ item.label }}</span>
-                <small>{{ item.detail }}</small>
-              </li>
-            </ul>
-            <ul v-if="knowledgeAssetItems.length" class="data-list">
-              <li v-for="item in knowledgeAssetItems" :key="item.id" class="data-row">
-                <strong>{{ item.title }}</strong>
-                <small>{{ item.asset_type }} · {{ item.status }}</small>
-                <span>{{ item.source_task_id || item.source_evidence_id || t('workspace_assets.pending_badge') }}</span>
-              </li>
-            </ul>
-            <div v-else class="empty-container">
-              <Database class="empty-icon" />
-              <strong>{{ t('workspace_assets.empty_state_title') }}</strong>
-              <p>{{ t('workspace_assets.empty_state.knowledgeBase') }}</p>
-            </div>
-          </section>
+          <WorkspaceAssetsUnderConstruction
+            :badge="t('workspace_assets.under_construction.badge')"
+            :title="t('workspace_assets.under_construction.knowledge_base_title')"
+            :description="t('workspace_assets.under_construction.knowledge_base_body')"
+          />
         </section>
       </main>
     </div>
@@ -618,75 +428,6 @@ watch(
   padding: 0.5rem 0.75rem;
   border-radius: 8px;
   width: fit-content;
-}
-
-.task-detail-entry,
-.drilldown-panel,
-.knowledge-types,
-.promotion-section {
-  background: rgba(14, 165, 233, 0.03);
-  border: 1px solid rgba(14, 165, 233, 0.1);
-  border-radius: 2rem;
-  padding: 2.5rem;
-  transition: all 0.3s;
-}
-
-.task-detail-entry:hover,
-.drilldown-panel:hover,
-.knowledge-types:hover,
-.promotion-section:hover {
-  background: rgba(14, 165, 233, 0.05);
-  border-color: rgba(14, 165, 233, 0.2);
-}
-
-/* Traceability Switcher */
-.traceability-switcher {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1.25rem;
-  background: rgba(248, 250, 252, 0.6);
-  padding: 0.75rem;
-  border-radius: 1.5rem;
-  border: 1px solid #e2e8f0;
-}
-
-.traceability-switcher button {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 1rem;
-  padding: 1.25rem;
-  text-align: left;
-  transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  cursor: pointer;
-}
-
-.traceability-switcher button:hover {
-  background: white;
-  border-color: #e2e8f0;
-  transform: translateY(-4px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-}
-
-.traceability-switcher button.is-active {
-  background: white;
-  border-color: #0ea5e9;
-  box-shadow: 0 10px 20px -5px rgba(14, 165, 233, 0.15);
-}
-
-.traceability-switcher span {
-  display: block;
-  font-weight: 800;
-  font-family: 'Poppins', sans-serif;
-  color: #1e3a8a;
-  margin-bottom: 0.25rem;
-  font-size: 1rem;
-}
-
-.traceability-switcher small {
-  color: #64748b;
-  font-size: 0.8125rem;
-  line-height: 1.5;
-  font-weight: 500;
 }
 
 /* Empty State */

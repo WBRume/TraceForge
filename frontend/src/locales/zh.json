@@ -1976,6 +1976,13 @@
       "traceability": "派生聚合视图",
       "knowledge_base": "长期知识沉淀"
     },
+    "under_construction": {
+      "badge": "施工中",
+      "traceability_title": "追溯视图施工中",
+      "traceability_body": "追溯视图尚未实现，正在施工中。后续将提供 Spec Coverage、Evidence Registry、Human Delta 与 Risk 等聚合能力。",
+      "knowledge_base_title": "知识库施工中",
+      "knowledge_base_body": "知识库尚未实现，正在施工中。后续将沉淀业务概念、API 用法、框架模式、约束规则与可复用 ADR 等长期资产。"
+    },
     "requirements": {
       "repository": {
         "eyebrow": "需求仓库",
