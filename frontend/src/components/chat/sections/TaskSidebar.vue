@@ -51,7 +51,6 @@ const advancedFilterOpen = ref(false)
           </button>
         </div>
       </div>
-      <button v-if="props.vm.taskRailView !== 'all' || props.vm.taskRelationFilter.length || props.vm.taskStatusFilter !== 'ALL' || props.vm.taskTypeFilter !== 'ALL'" type="button" class="reset-view" @click="props.vm.resetTaskView">{{ t('task_rail.reset') }}</button>
       <div class="sidebar-filter-row">
         <div class="sidebar-filter-item">
           <span class="sidebar-filter-label">{{ t('chat.session_filter_label') }}</span>
@@ -115,7 +114,6 @@ const advancedFilterOpen = ref(false)
 <style scoped>
 .sidebar-title-row h3 { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.9rem; }
 .sidebar-title-actions { flex-shrink:0; }
-.reset-view { align-self:flex-start; border:0; padding:0; background:transparent; font-size:.72rem; color:var(--color-primary-600); cursor:pointer; }
 .retry-list { border:0; background:transparent; cursor:pointer; }
 .task-sidebar {
   width: 280px;
