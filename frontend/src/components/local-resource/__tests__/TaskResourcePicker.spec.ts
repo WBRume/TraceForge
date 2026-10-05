@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import TaskResourcePicker from '../TaskResourcePicker.vue'
 import BaseSelect from '@/components/BaseSelect.vue'
@@ -10,6 +10,7 @@ describe('TaskResourcePicker', () => {
   let enabled: boolean
   beforeEach(() => {
     vi.clearAllMocks()
+    window.sddDesktop = { runtime: 'electron' } as NonNullable<Window['sddDesktop']>
     enabled = true
     vi.mocked(api.get).mockImplementation(async (url: string) => ({
       data: url.endsWith('/agent-backends')
@@ -20,8 +21,10 @@ describe('TaskResourcePicker', () => {
         ] },
     }))
   })
+  afterEach(() => { delete window.sddDesktop })
 
-  it('switches to a saved local resource and emits its profile revision', async () => {
+  it.each(['electron', 'tauri'] as const)('allows %s to select a local resource with its profile revision', async (runtime) => {
+    window.sddDesktop = { runtime } as NonNullable<Window['sddDesktop']>
     const wrapper = mount(TaskResourcePicker, { props: { workspaceId: 'ws' } })
     await flushPromises()
 
@@ -52,6 +55,20 @@ describe('TaskResourcePicker', () => {
     const localButton = wrapper.findAll('.exec-seg-item')[1]
     expect(localButton.attributes('disabled')).toBeDefined()
     expect(wrapper.findComponent(BaseSelect).exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('hides the execution picker in browsers while retaining server execution', async () => {
+    delete window.sddDesktop
+    const wrapper = mount(TaskResourcePicker, { props: { workspaceId: 'ws' } })
+    await flushPromises()
+    expect(wrapper.find('.resource-picker').exists()).toBe(false)
+    expect(wrapper.text()).toBe('')
+    expect(api.get).not.toHaveBeenCalled()
+    expect(wrapper.emitted('change')?.at(-1)).toEqual([{ location: 'SERVER' }])
+    await wrapper.setProps({ workspaceId: 'other-ws' })
+    expect(wrapper.emitted('change')?.at(-1)).toEqual([{ location: 'SERVER' }])
+    expect(api.get).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 })

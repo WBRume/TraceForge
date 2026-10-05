@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import AsyncExitStack
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.distributed_lock import LockAcquireTimeout, lock_task, lock_workspace_repo
@@ -53,9 +53,19 @@ def create_task(
     ws_id: str,
     data: TaskCreate,
     background_tasks: BackgroundTasks,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    if data.execution.location == "LOCAL" and request.headers.get("X-TraceForge-Client") != "desktop":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "LOCAL_TASK_DESKTOP_REQUIRED",
+                "message": "本地资源任务仅允许在客户端创建，请使用 TraceForge 客户端",
+            },
+        )
+
     verify_workspace_permission(
         ws_id,
         current_user.id,

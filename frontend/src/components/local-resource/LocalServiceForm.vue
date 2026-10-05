@@ -122,6 +122,7 @@ watch(
     selected.value = ''
     serviceStarted.value = false
     currentStep.value = 0
+    if (!desktop.value) return
     await load()
     try {
       const [workspace, backend] = await Promise.all([
@@ -178,7 +179,7 @@ function edit() {
 }
 
 async function persist() {
-  if (currentStep.value !== 2 || busy.value || starting.value || !connectionChecked.value) return
+  if (!desktop.value || currentStep.value !== 2 || busy.value || starting.value || !connectionChecked.value) return
   saveFeedback.value = ''
 
   const defaultName = form.name?.trim() || (selected.value ? '' : '我的本地服务')
@@ -339,13 +340,13 @@ const steps = [
             </span>
           </div>
           <p class="subtitle">
-            配置当前账号专属的本地 Agent 与同机资源计算节点。支持 Web 与 Electron 跨端任务调用。
+            在 TraceForge 客户端配置本地 Agent 与内置资源服务，本地资源任务仅可在客户端创建。
           </p>
         </div>
       </div>
 
       <!-- Top Right Controls -->
-      <div class="header-controls">
+      <div v-if="desktop" class="header-controls">
         <div class="profile-select-wrapper">
           <BaseSelect
             v-model="selected"
@@ -362,7 +363,15 @@ const steps = [
     </header>
 
     <!-- Guard States: Not Enabled or Engine Unsupported -->
-    <div v-if="!enabled" class="state-banner warning" role="status">
+    <div v-if="!desktop" class="state-banner warning" role="status">
+      <Info class="w-5 h-5 flex-shrink-0" />
+      <div>
+        <strong>请使用 TraceForge 客户端</strong>
+        <p>本地资源服务由客户端内置管理，浏览器仅支持创建服务器资源任务。</p>
+      </div>
+    </div>
+
+    <div v-else-if="!enabled" class="state-banner warning" role="status">
       <AlertTriangle class="w-5 h-5 flex-shrink-0" />
       <div>
         <strong>服务器未启用本地资源功能</strong>
@@ -545,7 +554,6 @@ const steps = [
                 class="form-input font-mono"
               />
               <button
-                v-if="desktop?.git?.selectDirectory"
                 type="button"
                 class="btn-affix-action"
                 @click="selectWorkspaceRoot"

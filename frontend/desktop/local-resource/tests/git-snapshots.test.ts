@@ -2,9 +2,9 @@ import { afterEach, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { captureGitSnapshot, restoreGitSnapshot, collectGitSnapshots } from '../src/git-snapshots'
-import { snapshot } from '../src/snapshots'
-import { git, type Receipt } from '../src/filesystem'
+import { captureGitSnapshot, restoreGitSnapshot, collectGitSnapshots } from '../git-snapshots'
+import { snapshot } from '../snapshots'
+import { git, type Receipt } from '../filesystem'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }) })

@@ -3,7 +3,7 @@ name: Desktop packages
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['frontend/**', 'resource-host/**', '.github/workflows/desktop-packages.yml']
+    paths: ['frontend/**', '.github/workflows/desktop-packages.yml']
   push:
     tags: ['v*']
 
@@ -31,12 +31,16 @@ jobs:
       - run: npm ci
       - name: Test desktop integration
         run: npm run test:run -- src/desktop/__tests__ src/utils/__tests__/runtime-api-ws.spec.ts electron/ipc/__tests__/localResources.spec.ts
+      - name: Test embedded local resources
+        run: npm run test:desktop:resources
       - name: Build Tauri NSIS
         run: npm run build:tauri -- --bundles nsis
       - name: Smoke test compiled host
         run: node --test desktop/tests/host.smoke.mjs
       - name: Build Electron NSIS
         run: npm run build:electron -- --win --x64
+      - name: Smoke test Electron local resources
+        run: npx electron electron/tests/localResourceService.smoke.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: TraceForge-desktop-windows-x64

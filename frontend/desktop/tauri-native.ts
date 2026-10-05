@@ -54,7 +54,7 @@ export const dialog = {
 const ownedChildren = new Set<ReturnType<typeof spawn>>()
 export const utilityProcess = {
   fork(_module: string, args: string[], options: { cwd: string }) {
-    const child = spawn(process.execPath, ['--resource-host', ...args], {
+    const child = spawn(process.execPath, ['--local-resource-service', ...args], {
       cwd: options.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     })
     ownedChildren.add(child)

@@ -8,6 +8,7 @@ import api from '@/utils/api'
 import { readRepoPreferences, saveRepoPreferences } from '@/composables/localRepoPreferences'
 import { useLocalServiceConnectionsStore } from '@/stores/localServiceConnections'
 import { useLocalAgentStore } from '@/stores/localAgent'
+import { getSddDesktop } from '@/utils/runtime'
 
 const desktopMock = vi.hoisted(() => ({
   platform: 'win32',
@@ -36,7 +37,7 @@ const desktopMock = vi.hoisted(() => ({
 
 vi.mock('@/utils/runtime', () => ({
   isDesktop: () => true,
-  getSddDesktop: () => desktopMock,
+  getSddDesktop: vi.fn(() => desktopMock),
 }))
 
 vi.mock('@/utils/api', () => ({
@@ -53,6 +54,7 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    vi.mocked(getSddDesktop).mockReturnValue(desktopMock as any)
     vi.spyOn(ElMessage, 'success').mockReturnValue({ close: vi.fn() })
     vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '新建本地服务', action: 'confirm' } as any)
     localStorage.clear()
@@ -123,6 +125,18 @@ describe('LocalServiceForm Component (Scheme 2: Stepper Flow with BaseSelect)', 
         name: '新建本地服务',
       },
     } as any)
+  })
+
+  it('shows a desktop-only notice in browsers without loading or saving local resources', async () => {
+    vi.mocked(getSddDesktop).mockReturnValue(null)
+    const wrapper = mount(LocalServiceForm, { props: { workspaceId: 'ws-123' } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('请使用 TraceForge 客户端')
+    expect(wrapper.find('form').exists()).toBe(false)
+    expect(api.get).not.toHaveBeenCalled()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(api.put).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('renders section title, BaseSelect dropdown, and initial Step 0', async () => {

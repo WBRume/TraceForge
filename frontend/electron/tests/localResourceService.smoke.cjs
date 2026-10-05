@@ -18,11 +18,11 @@ app.whenReady().then(async () => {
     const config = join(root, 'host.json')
     const token = randomBytes(32).toString('hex')
     writeFileSync(config, JSON.stringify({ state_root: root, allowed_roots: [], token, port, listen_host: '127.0.0.1' }))
-    host = utilityProcess.fork(resolve('dist-electron/resourceHost.js'), [config], { stdio: 'pipe' })
+    host = utilityProcess.fork(resolve('dist-electron/localResourceService.js'), [config], { stdio: 'pipe' })
     host.stderr.on('data', data => process.stderr.write(data))
     await Promise.race([
       new Promise((resolve, reject) => {
-        host.stdout.on('data', data => { if (data.toString().includes('Resource Host ready')) resolve() })
+        host.stdout.on('data', data => { if (data.toString().includes('local resource service ready')) resolve() })
         host.once('exit', code => reject(new Error(`Host exited: ${code}`)))
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('Host startup timed out')), 15000)),
@@ -44,7 +44,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(await (await execute()).json(), provision)
     const journal = await (await fetch(url + '/v1/operations/smoke', { headers })).json()
     assert.equal(journal.state, 'SUCCEEDED')
-    console.log('Electron Resource Host: identity, auth, dynamic grants, provision, journal and replay passed')
+    console.log('Electron local resources: identity, auth, dynamic grants, provision, journal and replay passed')
   } catch (error) {
     console.error(error)
     process.exitCode = 1

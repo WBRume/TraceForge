@@ -6,9 +6,9 @@ import { handlers, receiveNative, sender, send, shutdownNative } from './tauri-n
 import { shutdownCommands } from '../electron/ipc/process'
 import { shutdownLocalServices } from '../electron/ipc/localResources'
 
-if (process.argv[2] === '--resource-host') {
+if (process.argv[2] === '--local-resource-service') {
   const configPath = resolve(process.argv[3]!)
-  const { startServer } = await import('../../resource-host/src/server')
+  const { startServer } = await import('./local-resource/server')
   const host = await startServer(
     { ...JSON.parse(readFileSync(configPath, 'utf8')), roots_config_path: configPath },
     { workerUrl: new URL('./worker.js', import.meta.url).href },

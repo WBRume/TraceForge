@@ -1,8 +1,8 @@
 import { parentPort } from 'node:worker_threads'
 import { DatabaseSync } from 'node:sqlite'
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib'
-import { configurePlatform } from '../../resource-host/src/platform'
-import { Runtime } from '../../resource-host/src/runtime'
+import { configurePlatform } from '../desktop/local-resource/platform'
+import { Runtime } from '../desktop/local-resource/runtime'
 
 configurePlatform({
   database: file => {

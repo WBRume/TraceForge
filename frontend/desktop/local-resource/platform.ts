@@ -13,6 +13,6 @@ export interface RuntimePlatform {
 let configured: RuntimePlatform | undefined
 export function configurePlatform(platform: RuntimePlatform) { configured = platform }
 export function platform(): RuntimePlatform {
-  if (!configured) throw new Error('Resource Host runtime platform is not configured')
+  if (!configured) throw new Error('Desktop local resource runtime platform is not configured')
   return configured
 }
