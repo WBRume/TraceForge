@@ -15,6 +15,7 @@ import stat
 import tempfile
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 from loguru import logger
 
@@ -25,11 +26,18 @@ VERSION = 4
 ATTRIBUTES = b"* -text -filter -ident -working-tree-encoding -eol\n"
 
 
-def git(root: str, args: list[str], data: bytes | None = None) -> bytes:
-    result = run_git(args, cwd=root, decode_text=False, input_data=data)
+def git(root: str, args: list[str], data: bytes | None = None, *, stdin_file: BinaryIO | None = None) -> bytes:
+    result = run_git(args, cwd=root, decode_text=False, input_data=data, stdin_file=stdin_file)
     if result.returncode:
         raise ValueError(f"Snapshot Git {args[0]} failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
     return result.stdout
+
+
+def shadow_git(
+    directory: str, args: list[str], data: bytes | None = None, *, stdin_file: BinaryIO | None = None
+) -> bytes:
+    """Keep GIT_DIR short; Git checks its UTF-8 length even with longpaths enabled."""
+    return git(directory, ["--git-dir=.", "-c", "core.longpaths=true", *args], data, stdin_file=stdin_file)
 
 
 def nul(paths) -> bytes:
@@ -86,10 +94,9 @@ class Shadow:
         self.cold = not os.path.exists(self.directory)
 
     def run(self, args: list[str], data: bytes | None = None) -> bytes:
-        return git(
-            self.cwd,
+        return shadow_git(
+            self.directory,
             [
-                "--git-dir=" + self.directory,
                 "--work-tree=" + self.cwd,
                 "-c",
                 "core.autocrlf=false",
@@ -119,7 +126,8 @@ class Shadow:
                 raise ValueError("Snapshot initialization did not finish")
             return
         fmt = git(self.source, ["rev-parse", "--show-object-format"]).decode().strip() if self.source else "sha1"
-        self.run(["init", "--object-format=" + fmt, self.directory])
+        os.makedirs(self.directory, exist_ok=True)
+        self.run(["init", "--object-format=" + fmt, "."])
         for key, value in [
             ("core.bare", "false"),
             ("core.worktree", self.cwd),
@@ -300,22 +308,18 @@ class Shadow:
                     stream.write(b"\n")
                 stream.write(b"done\n")
             with open(stream_path, "rb") as stream:
-                result = run_git(
+                shadow_git(
+                    self.directory,
                     [
-                        "--git-dir=" + self.directory,
                         "-c",
                         "core.fsync=committed",
                         "fast-import",
                         "--quiet",
                         "--done",
-                        "--export-marks=" + marks_path,
+                        "--export-marks=" + os.path.relpath(marks_path, self.directory),
                     ],
-                    cwd=self.cwd,
-                    decode_text=False,
                     stdin_file=stream,
                 )
-            if result.returncode:
-                raise ValueError(f"Snapshot pack import failed: {result.stderr.decode('utf-8', 'replace')[-500:]}")
             marks = dict(line.split() for line in Path(marks_path).read_text().splitlines())
             index = b"".join(
                 f"{mode} {marks[':' + str(number)]}\t".encode() + os.fsencode(relative) + b"\0"
@@ -327,7 +331,7 @@ class Shadow:
 
 def tree_entries(part: dict, root: str, paths: files.ReadPhasePaths | None = None) -> dict:
     paths = paths or files.ReadPhasePaths(root)
-    out = git(root, ["--git-dir=" + part["git_dir"], "ls-tree", "-r", "-z", part["tree"]])
+    out = shadow_git(part["git_dir"], ["ls-tree", "-r", "-z", part["tree"]])
     result = {}
     for row in out.split(b"\0"):
         if not row:
@@ -433,7 +437,7 @@ def entries(payload: dict) -> dict:
 def validate(payload: dict) -> dict:
     result = entries(payload)
     for part in payload["partitions"]:
-        git(payload["task_root"], ["--git-dir=" + part["git_dir"], "fsck", "--full", "--no-dangling", part["tree"]])
+        shadow_git(part["git_dir"], ["fsck", "--full", "--no-dangling", part["tree"]])
     return result
 
 
@@ -476,7 +480,7 @@ def _restore_worktree_files(root, current, saved, before, desired, changed):
         if os.path.isdir(path):
             os.rmdir(path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        data = git(root, ["--git-dir=" + item["git_dir"], "cat-file", "blob", item["oid"]])
+        data = shadow_git(item["git_dir"], ["cat-file", "blob", item["oid"]])
         if item["mode"] == "120000":
             os.symlink(os.fsdecode(data), path, target_is_directory=rel in saved.get("directory_links", []))
         else:
@@ -579,16 +583,14 @@ def collect(object_store: str) -> None:
                 live.setdefault(part["git_dir"], set()).add(part["ref"])
     for directory in Path(object_store, "shadow").glob("*"):
         refs = (
-            git(
-                object_store, ["--git-dir=" + str(directory), "for-each-ref", "--format=%(refname)", "refs/traceforge/"]
-            )
+            shadow_git(str(directory), ["for-each-ref", "--format=%(refname)", "refs/traceforge/"])
             .decode()
             .splitlines()
         )
         for ref in set(refs) - live.get(str(directory), set()):
-            git(object_store, ["--git-dir=" + str(directory), "update-ref", "-d", ref])
+            shadow_git(str(directory), ["update-ref", "-d", ref])
         # Git's index also roots the live state. Keep the index for the next turn.
         # Reclaim unreachable objects without searching the whole workspace for
         # new deltas on every undo. Existing compressed representations can be
         # reused; snapshot cleanup is not an archival compression job.
-        git(object_store, ["--git-dir=" + str(directory), "-c", "pack.window=0", "gc", "--prune=now"])
+        shadow_git(str(directory), ["-c", "pack.window=0", "gc", "--prune=now"])
