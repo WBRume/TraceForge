@@ -1974,6 +1974,13 @@
       "traceability": "Derived aggregate views",
       "knowledge_base": "Long-term knowledge memory"
     },
+    "under_construction": {
+      "badge": "Under construction",
+      "traceability_title": "Traceability view under construction",
+      "traceability_body": "The traceability view is not implemented yet and is under construction. It will later provide Spec Coverage, Evidence Registry, Human Delta and Risk aggregate views.",
+      "knowledge_base_title": "Knowledge base under construction",
+      "knowledge_base_body": "The knowledge base is not implemented yet and is under construction. It will later accumulate long-term assets such as business concepts, API usage, framework patterns, constraint rules and reusable ADRs."
+    },
     "requirements": {
       "repository": {
         "eyebrow": "Requirement Repository",
