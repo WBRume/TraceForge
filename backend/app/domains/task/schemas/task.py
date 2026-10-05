@@ -114,7 +114,7 @@ class TaskResponse(BaseModel):
 
 class TaskListResponse(BaseModel):
     items: list[TaskResponse]
-    total: int
+    has_more: bool
     page: int
     page_size: int
 

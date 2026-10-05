@@ -178,7 +178,7 @@ def test_views_use_real_links_and_current_user_favorites_with_sql_pagination(see
     app.include_router(crud.router, prefix="/api")
     client = TestClient(app)
     base = f"/api/workspaces/{workspace.id}/tasks"
-    assert client.get(base).json()["total"] == 3
+    assert len(client.get(base).json()["items"]) == 3
     solo = client.get(base, params={"independent": True}).json()
     assert [item["id"] for item in solo["items"]] == ["solo"]
     assert solo["items"][0]["requirements"] == []
@@ -187,10 +187,10 @@ def test_views_use_real_links_and_current_user_favorites_with_sql_pagination(see
     assert favorites["items"][0]["is_following"] is True
     first = client.get(base, params={"requirement_id": "req-101", "page_size": 1}).json()
     second = client.get(base, params={"requirement_id": "req-101", "page_size": 1, "page": 2}).json()
-    assert first["total"] == second["total"] == 2
+    assert first["has_more"] is True and second["has_more"] is False
     assert first["items"][0]["id"] != second["items"][0]["id"]
-    assert client.get(base, params={"requirement_id": "foreign-req"}).json()["total"] == 0
-    assert client.get(base, params={"following": True, "task_type": "DIAGNOSIS"}).json()["total"] == 0
+    assert client.get(base, params={"requirement_id": "foreign-req"}).json()["items"] == []
+    assert client.get(base, params={"following": True, "task_type": "DIAGNOSIS"}).json()["items"] == []
     detail = client.get(f"{base}/{task.id}").json()
     assert {item["id"] for item in detail["requirements"]} == {"req-101", "req-102"}
 

@@ -91,7 +91,7 @@ const resolveByUrl = (target: string) => {
   if (target.endsWith('/agent-models')) return Promise.resolve({ data: {
     backend: 'dsh', current_model: 'private/a', options: [{ value: 'private/a', label: 'A' }, { value: 'private/b', label: 'B' }],
   } })
-  if (target.endsWith('/tasks')) return Promise.resolve({ data: { items: [], total: 0, page: 1, page_size: 20 } })
+  if (target.endsWith('/tasks')) return Promise.resolve({ data: { items: [], has_more: false, page: 1, page_size: 20 } })
   if (target.includes('/permissions/me')) return Promise.resolve({ data: { permissions: {} } })
   if (target.endsWith('/history')) return Promise.resolve({ data: { messages: [], logs: [], has_more: false } })
   if (target.includes('/session-state')) return Promise.resolve({
