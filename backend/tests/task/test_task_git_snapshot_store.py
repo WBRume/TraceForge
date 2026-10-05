@@ -187,6 +187,45 @@ def test_gc_preserves_other_checkpoint_and_hot_index(tmp_path):
     capture(tmp_path, "turn-c")
 
 
+@pytest.mark.parametrize("seeded", [False, True], ids=["non-git", "seeded-git"])
+def test_long_snapshot_path_creates_reuses_restores_and_collects(tmp_path_factory, monkeypatch, seeded):
+    # Git for Windows also limits cwd to MAX_PATH; reproduce the separate
+    # UTF-8 GIT_DIR limit with the same Unicode task name in a short temp root.
+    tmp_path = tmp_path_factory.mktemp("snap")
+    root = tmp_path / "task"
+    original = b"original\r\n\x00\xff"
+    if seeded:
+        init(root)
+    write(root, "shared/a.txt", original)
+    if seeded:
+        git(root, "add", ".")
+        git(root, "commit", "-m", "seed")
+        source_index = (root / ".git/index").read_bytes()
+    snapshot_root = tmp_path / "snapshots"
+    monkeypatch.setattr(service.settings, "TASK_SESSION_SNAPSHOT_ROOT", str(snapshot_root))
+    identity = (
+        "86c8697d-ccea-4a6e-b494-5bbec15f1726",
+        "test",
+        "0040c159-98fa-4437-b428-b7c70a0eaab8",
+        "系统层：用户权限、Claude Runtime 节点管理、MCP 服务网关与操作",
+    )
+    first = service._create_checkpoint_sync(str(root), [], "none", None, *identity)
+    directory = first["worktree"]["partitions"][0]["git_dir"]
+    assert len(directory.encode("utf-8")) > 220
+    write(root, "shared/a.txt", b"second turn")
+    second = service._create_checkpoint_sync(str(root), [], "none", None, *identity, initial_checkpoint=first["root"])
+    assert second["worktree"]["partitions"][0]["git_dir"] == directory
+    write(root, "new.txt", b"created later")
+    service._restore_worktree_sync(first["root"], str(root), str(Path(first["root"], "current-worktree")))
+    assert (root / "shared/a.txt").read_bytes() == original
+    assert not (root / "new.txt").exists()
+    if seeded:
+        assert (root / ".git/index").read_bytes() == source_index
+    service._cleanup_checkpoint_sync(second["root"])
+    assert snapshots.validate(first["worktree"])["shared/a.txt"]["git_dir"] == directory
+    service._create_checkpoint_sync(str(root), [], "none", None, *identity, initial_checkpoint=first["root"])
+
+
 @pytest.mark.parametrize("packed", [False, True])
 def test_seed_objects_survive_source_object_store_replacement(tmp_path, packed):
     root = tmp_path / "task"

@@ -107,3 +107,29 @@ test('snapshot collection preserves retained trees and the current index', () =>
   const warm = captureGitSnapshot(receipt, path.join(store, 'turn-next'), store)
   expect(git(task, '--git-dir=' + part.git_dir, 'show', warm.partitions[0].tree + ':a')).toBe('current')
 }, 60_000)
+
+test.each([false, true])('long Unicode snapshot paths support capture, reuse, restore, and collection (seeded: %s)', (seeded) => {
+  const { store: base, task, receipt } = setup()
+  const store = path.join(base, '86c8697d-ccea-4a6e-b494-5bbec15f1726_test', '0040c159-98fa-4437-b428-b7c70a0eaab8_系统层：用户权限、Claude Runtime 节点管理、MCP 服务网关与操作')
+  const checkpoint = path.join(store, 'turn-a')
+  const original = Buffer.from([65, 13, 10, 0, 255])
+  if (seeded) { git(task, 'init'); git(task, 'config', 'user.name', 'Test'); git(task, 'config', 'user.email', 'test@example.test') }
+  fs.writeFileSync(path.join(task, 'a'), original)
+  if (seeded) { git(task, 'add', '.'); git(task, 'commit', '-m', 'seed') }
+  const sourceIndex = seeded ? fs.readFileSync(path.join(task, '.git/index')) : null
+  const first = captureGitSnapshot(receipt, checkpoint, store)
+  expect(Buffer.byteLength(first.partitions[0].git_dir, 'utf8')).toBeGreaterThan(220)
+  fs.writeFileSync(path.join(task, 'a'), 'second turn')
+  const removed = path.join(store, 'turn-removed')
+  const second = captureGitSnapshot(receipt, removed, store)
+  expect(second.partitions[0].git_dir).toBe(first.partitions[0].git_dir)
+  fs.writeFileSync(path.join(task, 'new'), 'created later')
+  restoreGitSnapshot(receipt, checkpoint, path.join(checkpoint, 'current-worktree'), store)
+  expect(fs.readFileSync(path.join(task, 'a'))).toEqual(original)
+  expect(fs.existsSync(path.join(task, 'new'))).toBe(false)
+  if (sourceIndex) expect(fs.readFileSync(path.join(task, '.git/index'))).toEqual(sourceIndex)
+  fs.rmSync(removed, { recursive: true })
+  collectGitSnapshots(store)
+  const warm = captureGitSnapshot(receipt, path.join(store, 'turn-next'), store)
+  expect(warm.partitions[0].tree).toBe(first.partitions[0].tree)
+}, 60_000)

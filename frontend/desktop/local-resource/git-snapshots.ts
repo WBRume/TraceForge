@@ -15,6 +15,10 @@ function git(cwd: string, args: string[], input?: Buffer, inputFile?: number): B
   if (result.status !== 0) fail(`SNAPSHOT_GIT_ERROR: ${result.stderr.toString().slice(-500)}`)
   return result.stdout
 }
+function shadowGit(directory: string, args: string[], input?: Buffer, inputFile?: number): Buffer {
+  // Git checks GIT_DIR's UTF-8 length before core.longpaths can help.
+  return git(directory, ['--git-dir=.', '-c', 'core.longpaths=true', ...args], input, inputFile)
+}
 const text = (cwd: string, ...args: string[]) => git(cwd, args).toString().trim()
 function safe(root: string, relative: string, checked?: Set<string>) {
   if (!relative || relative.includes(':') || relative.includes('\\') || relative.split('/').some(p => !p || ['.', '..', '.git'].includes(p.toLowerCase()))) fail('INVALID_SNAPSHOT_PATH')
@@ -74,11 +78,12 @@ function repoState(root: string, repo: string, destination: string): Repo {
 function capturePart(root: string, store: string, relative: string, source: string | null, protectedPaths: string[], ref: string): Part {
   const cwd = relative === '.' ? root : safe(root, relative)
   const directory = path.join(store, 'shadow', hash(relative).slice(0, 24))
-  const run = (args: string[], input?: Buffer) => git(cwd, ['--git-dir=' + directory, '--work-tree=' + cwd, '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.attributesFile=', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', ...args], input)
+  const run = (args: string[], input?: Buffer) => shadowGit(directory, ['--work-tree=' + cwd, '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.attributesFile=', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=', ...args], input)
   const cold = !fs.existsSync(directory)
   if (cold) {
     const format = source ? text(source, 'rev-parse', '--show-object-format') : 'sha1'
-    run(['init', '--object-format=' + format, directory])
+    fs.mkdirSync(directory, { recursive: true })
+    run(['init', '--object-format=' + format, '.'])
     for (const [key, value] of Object.entries({ 'core.bare': 'false', 'core.worktree': cwd, 'core.autocrlf': 'false', 'core.symlinks': 'true', 'core.longpaths': 'true', 'core.fsmonitor': 'false', 'index.version': '4', 'index.threads': 'true', 'core.untrackedCache': 'true', 'gc.auto': '0' })) run(['config', key, value])
     fs.writeFileSync(path.join(directory, 'info/attributes'), '* -text -filter -ident -working-tree-encoding -eol\n')
     if (source) {
@@ -188,7 +193,7 @@ function importBlobs(cwd: string, directory: string, changed: string[], run: (ar
       fs.writeSync(output, 'done\n')
     } finally { fs.closeSync(output) }
     const input = fs.openSync(streamPath, 'r')
-    try { git(cwd, ['--git-dir=' + directory, '-c', 'core.fsync=committed', 'fast-import', '--quiet', '--done', '--export-marks=' + marksPath], undefined, input) }
+    try { shadowGit(directory, ['-c', 'core.fsync=committed', 'fast-import', '--quiet', '--done', '--export-marks=' + path.relative(directory, marksPath)], undefined, input) }
     finally { fs.closeSync(input) }
     const marks = new Map(fs.readFileSync(marksPath, 'utf8').trim().split('\n').map(line => line.split(' ') as [string, string]))
     run(['update-index', '-z', '--index-info'], Buffer.from(changed.map((name, i) => `${modes[i]} ${marks.get(':' + (i + 1))}\t${name}\0`).join('')))
@@ -232,7 +237,7 @@ function entries(saved: GitSnapshot): Record<string, Entry> {
   const checked = new Set<string>()
   for (const part of saved.partitions) {
     if (!path.resolve(part.git_dir).startsWith(path.resolve(saved.object_store) + path.sep)) fail('SNAPSHOT_STORE_ESCAPE')
-    const rows = git(saved.task_root, ['--git-dir=' + part.git_dir, 'ls-tree', '-r', '-z', part.tree]).toString().split('\0').filter(Boolean)
+    const rows = shadowGit(part.git_dir, ['ls-tree', '-r', '-z', part.tree]).toString().split('\0').filter(Boolean)
     for (const row of rows) {
       const i = row.indexOf('\t'), [mode, kind, oid] = row.slice(0, i).split(' '), name = row.slice(i + 1)
       const rel = part.relative === '.' ? name : part.relative + '/' + name
@@ -248,7 +253,7 @@ export function restoreGitSnapshot(receipt: Receipt, checkpoint: string, backup:
   const saved = readJson<GitSnapshot>(path.join(checkpoint, 'worktree.json')), root = path.resolve(receipt.task_root)
   if (saved.version !== 4 || saved.task_root !== root || saved.object_store !== store) fail('SNAPSHOT_IDENTITY_CHANGED')
   const desired = entries(saved)
-  for (const part of saved.partitions) git(root, ['--git-dir=' + part.git_dir, 'fsck', '--full', '--no-dangling', part.tree])
+  for (const part of saved.partitions) shadowGit(part.git_dir, ['fsck', '--full', '--no-dangling', part.tree])
   for (const [rel, parked] of Object.entries(saved.quarantined_controls || {})) {
     if (!path.resolve(parked).startsWith(path.resolve(checkpoint) + path.sep)) fail('SNAPSHOT_CONTROL_ESCAPE')
     const directory = rel === '.' ? root : safe(root, rel), target = path.join(directory, '.git')
@@ -272,7 +277,7 @@ export function restoreGitSnapshot(receipt: Receipt, checkpoint: string, backup:
   for (const rel of changed.filter(p => desired[p]).sort()) {
     const entry = desired[rel], p = safe(root, rel)
     if (fs.existsSync(p) && fs.lstatSync(p).isDirectory()) fs.rmdirSync(p)
-    const data = git(root, ['--git-dir=' + entry.git_dir, 'cat-file', 'blob', entry.oid])
+    const data = shadowGit(entry.git_dir, ['cat-file', 'blob', entry.oid])
     fs.mkdirSync(path.dirname(p), { recursive: true })
     if (entry.mode === '120000') fs.symlinkSync(data.toString(), p, saved.directory_links.includes(rel) ? 'dir' : 'file')
     else { atomic(p, data); fs.chmodSync(p, saved.modes[rel]) }
@@ -304,8 +309,8 @@ export function collectGitSnapshots(store: string) {
   if (!fs.existsSync(shadows)) return
   for (const name of fs.readdirSync(shadows)) {
     const directory = path.join(shadows, name)
-    const refs = text(store, '--git-dir=' + directory, 'for-each-ref', '--format=%(refname)', 'refs/traceforge/').split('\n').filter(Boolean)
-    for (const ref of refs) if (!live.get(directory)?.has(ref)) git(store, ['--git-dir=' + directory, 'update-ref', '-d', ref])
-    git(store, ['--git-dir=' + directory, '-c', 'pack.window=0', 'gc', '--prune=now'])
+    const refs = shadowGit(directory, ['for-each-ref', '--format=%(refname)', 'refs/traceforge/']).toString().trim().split('\n').filter(Boolean)
+    for (const ref of refs) if (!live.get(directory)?.has(ref)) shadowGit(directory, ['update-ref', '-d', ref])
+    shadowGit(directory, ['-c', 'pack.window=0', 'gc', '--prune=now'])
   }
 }
