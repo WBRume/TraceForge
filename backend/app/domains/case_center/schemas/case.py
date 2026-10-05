@@ -2,7 +2,7 @@
 案例知识中心 Pydantic Schemas
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -10,6 +10,25 @@ from pydantic import BaseModel, Field
 CaseCategoryValue = Literal["PUBLIC", "PRODUCT", "SITE", "TEMPORARY"]
 CasePriorityValue = Literal["P0", "P1", "P2", "P3"]
 CaseStatusValue = Literal["DRAFT", "PENDING_REVIEW", "IN_REVIEW", "APPROVED", "REJECTED", "TECHNICALLY_VERIFIED"]
+
+
+class CaseListQuery(BaseModel):
+    keyword: str | None = None
+    category: CaseCategoryValue | None = None
+    status: CaseStatusValue | None = None
+    priority: CasePriorityValue | None = None
+    source_task_id: str | None = None
+    product_name: str | None = None
+    product_version: str | None = None
+    site_name: str | None = None
+    creator_name: str | None = None
+    created_from: date | None = None
+    created_to: date | None = None
+    has_playbook: bool | None = None
+    sort_by: Literal["updated_at", "created_at", "priority", "title"] = "updated_at"
+    sort_order: Literal["asc", "desc"] = "desc"
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
 
 
 class CaseCreateRequest(BaseModel):

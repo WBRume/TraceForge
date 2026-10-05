@@ -1,16 +1,16 @@
 /**
  * 案例知识中心视图模型：列表检索过滤、案例详情、CRUD 与评审状态机动作。
  */
-import { computed, ref } from 'vue'
+import { computed, reactive, ref, toRefs } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
+import { createCaseListFilters } from '@/types/caseCenter'
+import type { CaseListItem } from '@/types/caseCenter'
 
 export type CaseFilterValue = 'ALL' | string
-
-const PAGE_SIZE = 20
 
 interface UseCaseCenterOptions {
   workspaceId?: () => string
@@ -28,53 +28,77 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
   })
 
   // ─── 列表 ───
-  const items = ref<any[]>([])
+  const items = ref<CaseListItem[]>([])
   const total = ref(0)
   const page = ref(1)
+  const pageSize = ref(20)
   const loading = ref(false)
-  const keyword = ref('')
-  const status = ref<CaseFilterValue>('ALL')
-  const priority = ref<CaseFilterValue>('ALL')
-  const hasMore = computed(() => items.value.length < total.value)
+  const listError = ref('')
+  const filters = reactive(createCaseListFilters())
+  const { keyword, status, priority } = toRefs(filters)
+  const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+  let listGeneration = 0
+  let listWorkspace: string | undefined
 
   const buildParams = (pageNo: number, pageSize: number) => {
     const params: Record<string, string | number> = { page: pageNo, page_size: pageSize }
-    if (keyword.value.trim()) params.keyword = keyword.value.trim()
-    if (status.value !== 'ALL') params.status = status.value
-    if (priority.value !== 'ALL') params.priority = priority.value
+    for (const [key, value] of Object.entries(filters)) {
+      const normalized = value.trim()
+      if (normalized && normalized !== 'ALL') params[key] = normalized
+    }
     return params
   }
 
-  const loadCases = async (options?: { reset?: boolean }) => {
+  const loadCases = async (options?: { reset?: boolean; page?: number }) => {
     const reset = options?.reset ?? true
-    if (loading.value) return
-    if (!reset && !hasMore.value) return
+    const captured = ++listGeneration
     loading.value = true
-    const pageNo = reset ? 1 : page.value + 1
+    listError.value = ''
+    const pageNo = options?.page ?? (reset ? 1 : page.value)
     try {
       const wsId = workspaceId.value
+      if (listWorkspace !== wsId) {
+        listWorkspace = wsId
+        items.value = []
+        total.value = 0
+        page.value = 1
+      }
       const endpoint = wsId ? `/workspaces/${wsId}/cases` : '/cases'
-      const res = await api.get(endpoint, { params: buildParams(pageNo, PAGE_SIZE) })
+      const res = await api.get(endpoint, { params: buildParams(pageNo, pageSize.value) })
+      if (captured !== listGeneration) return
       const nextItems = Array.isArray(res.data?.items) ? res.data.items : []
       total.value = Number(res.data?.total || 0)
-      items.value = reset ? nextItems : [...items.value, ...nextItems]
+      if (pageNo > pageCount.value) {
+        await loadCases({ page: pageCount.value })
+        return
+      }
+      items.value = nextItems
       page.value = pageNo
     } catch (e) {
+      if (captured !== listGeneration) return
       console.error('Failed to load cases', e)
-      ElMessage.error(formatApiError(e, t('case_center.load_failed'), t))
+      listError.value = formatApiError(e, t('case_center.load_failed'), t)
+      ElMessage.error(listError.value)
     } finally {
-      loading.value = false
+      if (captured === listGeneration) loading.value = false
     }
   }
 
-  const loadMore = () => void loadCases({ reset: false })
+  const changePage = (next: number) => {
+    if (loading.value || next < 1 || next > pageCount.value || next === page.value) return
+    return loadCases({ page: next })
+  }
 
-  const applyFilters = () => void loadCases({ reset: true })
+  const changePageSize = (size: number) => {
+    pageSize.value = size
+    return loadCases({ reset: true })
+  }
+
+  const applyFilters = () => loadCases({ reset: true })
 
   const resetFilters = () => {
-    keyword.value = ''
-    status.value = 'ALL'
-    priority.value = 'ALL'
+    Object.assign(filters, createCaseListFilters())
+    return applyFilters()
   }
 
   // ─── 详情抽屉 ───
@@ -330,13 +354,18 @@ export function useCaseCenter(options: UseCaseCenterOptions = {}) {
   return {
     items,
     total,
+    page,
+    pageSize,
+    pageCount,
     loading,
-    hasMore,
+    listError,
+    filters,
     keyword,
     status,
     priority,
     loadCases,
-    loadMore,
+    changePage,
+    changePageSize,
     applyFilters,
     resetFilters,
     drawerOpen,

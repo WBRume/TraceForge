@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
 
 const apiMock = vi.hoisted(() => ({
   get: vi.fn(),
@@ -67,7 +68,7 @@ describe('useCaseCenter', () => {
     await vm.loadCases({ reset: true })
 
     expect(apiMock.get).toHaveBeenCalledWith('/workspaces/ws-1/cases', {
-      params: { page: 1, page_size: 20, keyword: '连接池', status: 'DRAFT', priority: 'P0' },
+      params: { page: 1, page_size: 20, keyword: '连接池', status: 'DRAFT', priority: 'P0', sort_by: 'updated_at', sort_order: 'desc' },
     })
     expect(vm.items.value).toHaveLength(1)
     expect(vm.total.value).toBe(1)
@@ -81,9 +82,94 @@ describe('useCaseCenter', () => {
     await vm.loadCases({ reset: true })
 
     expect(apiMock.get).toHaveBeenCalledWith('/cases', {
-      params: { page: 1, page_size: 20 },
+      params: { page: 1, page_size: 20, sort_by: 'updated_at', sort_order: 'desc' },
     })
     expect(vm.items.value).toHaveLength(1)
+  })
+
+  it('replaces rows when paging, retains filters, and resets after changing page size', async () => {
+    apiMock.get.mockResolvedValueOnce({ data: { items: [caseItem()], total: 42 } })
+    const vm = useCaseCenter()
+    vm.filters.category = 'PRODUCT'
+    vm.filters.sort_by = 'priority'
+    vm.filters.sort_order = 'asc'
+    await vm.loadCases()
+    apiMock.get.mockResolvedValueOnce({ data: { items: [caseItem({ id: 'case-2' })], total: 42 } })
+    await vm.changePage(2)
+    expect(vm.page.value).toBe(2)
+    expect(vm.pageCount.value).toBe(3)
+    expect(vm.items.value.map(item => item.id)).toEqual(['case-2'])
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workspaces/ws-1/cases', { params: {
+      page: 2, page_size: 20, category: 'PRODUCT', sort_by: 'priority', sort_order: 'asc',
+    } })
+    apiMock.get.mockResolvedValueOnce({ data: { items: [], total: 42 } })
+    await vm.changePageSize(50)
+    expect(vm.page.value).toBe(1)
+    expect(vm.pageCount.value).toBe(1)
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workspaces/ws-1/cases', { params: {
+      page: 1, page_size: 50, category: 'PRODUCT', sort_by: 'priority', sort_order: 'asc',
+    } })
+  })
+
+  it('sends advanced filters and clears them together on reset', async () => {
+    apiMock.get.mockResolvedValue({ data: { items: [], total: 0 } })
+    const vm = useCaseCenter()
+    Object.assign(vm.filters, { product_name: ' 网关 ', product_version: '2.1', creator_name: '张', site_name: '华东',
+      created_from: '2026-10-01', created_to: '2026-10-05', has_playbook: 'false' })
+    await vm.applyFilters()
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workspaces/ws-1/cases', { params: {
+      page: 1, page_size: 20, sort_by: 'updated_at', sort_order: 'desc', product_name: '网关', product_version: '2.1',
+      creator_name: '张', site_name: '华东', created_from: '2026-10-01', created_to: '2026-10-05', has_playbook: 'false',
+    } })
+    await vm.resetFilters()
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workspaces/ws-1/cases', { params: {
+      page: 1, page_size: 20, sort_by: 'updated_at', sort_order: 'desc',
+    } })
+  })
+
+  it('ignores old results when switching workspace during a request', async () => {
+    let resolveOld!: (result: unknown) => void
+    apiMock.get.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+    const workspaceId = ref('ws-1')
+    const vm = useCaseCenter({ workspaceId: () => workspaceId.value })
+    const oldRequest = vm.loadCases()
+    workspaceId.value = 'ws-2'
+    apiMock.get.mockResolvedValueOnce({ data: { items: [caseItem({ id: 'new-case' })], total: 1 } })
+    await vm.loadCases()
+    resolveOld({ data: { items: [caseItem()], total: 9 } })
+    await oldRequest
+    expect(vm.items.value[0].id).toBe('new-case')
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workspaces/ws-2/cases', { params: {
+      page: 1, page_size: 20, sort_by: 'updated_at', sort_order: 'desc',
+    } })
+  })
+
+  it('keeps only the latest query when responses arrive out of order', async () => {
+    let resolveOld!: (result: unknown) => void
+    apiMock.get.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+    const vm = useCaseCenter()
+    const oldRequest = vm.loadCases()
+    vm.keyword.value = '新的筛选'
+    apiMock.get.mockResolvedValueOnce({ data: { items: [caseItem({ id: 'new-case' })], total: 1 } })
+    await vm.applyFilters()
+    resolveOld({ data: { items: [caseItem()], total: 42 } })
+    await oldRequest
+    expect(vm.items.value[0].id).toBe('new-case')
+    expect(vm.total.value).toBe(1)
+    expect(vm.loading.value).toBe(false)
+  })
+
+  it('returns to the last available page when the result count shrinks', async () => {
+    const vm = useCaseCenter()
+    apiMock.get.mockResolvedValueOnce({ data: { items: [], total: 21 } })
+    apiMock.get.mockResolvedValueOnce({ data: { items: [caseItem()], total: 21 } })
+    await vm.loadCases({ page: 3 })
+    expect(vm.page.value).toBe(2)
+    expect(vm.pageCount.value).toBe(2)
+    expect(vm.items.value).toHaveLength(1)
+    expect(apiMock.get).toHaveBeenLastCalledWith('/workspaces/ws-1/cases', { params: {
+      page: 2, page_size: 20, sort_by: 'updated_at', sort_order: 'desc',
+    } })
   })
 
   it('opens case detail and exposes permission flags', async () => {
