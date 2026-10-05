@@ -5,19 +5,19 @@ import { DatabaseSync } from 'node:sqlite'
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
-import type { Config } from '../../resource-host/src/runtime'
+import type { Config } from '../desktop/local-resource/runtime'
 
 const configPath = resolve(process.argv[2]!)
 const config: Config = { ...JSON.parse(readFileSync(configPath, 'utf8')), roots_config_path: configPath }
 if (!config.token || config.token.length < 32 || !isAbsolute(config.state_root)
   || !Array.isArray(config.allowed_roots) || config.allowed_roots.some(root => !isAbsolute(root))) {
-  throw new Error('Invalid Resource Host configuration')
+  throw new Error('Invalid desktop local resource configuration')
 }
 mkdirSync(config.state_root, { recursive: true })
 const identityFile = join(config.state_root, 'identity.json')
 if (!existsSync(identityFile)) writeFileSync(identityFile, JSON.stringify({ host_id: randomUUID(), protocol_version: 1 }))
 const identity = JSON.parse(readFileSync(identityFile, 'utf8'))
-const workerFile = './resourceWorker.js'
+const workerFile = './localResourceWorker.js'
 const worker = new Worker(new URL(workerFile, import.meta.url))
 const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void }>()
 worker.on('message', ({ id, result, error }) => {
@@ -68,4 +68,4 @@ const server = createServer(async (request, response) => {
 server.requestTimeout = 0
 await dispatch('configure', config)
 db = new DatabaseSync(join(config.state_root, 'journal.sqlite3'), { readOnly: true })
-server.listen(config.port ?? 4098, config.listen_host || '127.0.0.1', () => console.log('TraceForge Resource Host ready'))
+server.listen(config.port ?? 4098, config.listen_host || '127.0.0.1', () => console.log('TraceForge desktop local resource service ready'))

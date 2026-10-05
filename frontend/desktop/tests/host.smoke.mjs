@@ -124,7 +124,7 @@ test('compiled resource mode loads its bundled worker and enforces host authenti
   const token = 'x'.repeat(32)
   const config = join(root, 'host.json')
   writeFileSync(config, JSON.stringify({ state_root: join(root, 'state'), allowed_roots: [workspace], token, listen_host: '127.0.0.1', port }))
-  const child = spawn(executable, ['--resource-host', config], { windowsHide: true, stdio: 'pipe' })
+  const child = spawn(executable, ['--local-resource-service', config], { windowsHide: true, stdio: 'pipe' })
   let stderr = ''
   child.stderr.on('data', data => { stderr += data })
   child.stdout.resume()
@@ -134,7 +134,7 @@ test('compiled resource mode loads its bundled worker and enforces host authenti
     const deadline = Date.now() + 15000
     let ready = false
     while (Date.now() < deadline && !ready) {
-      if (child.exitCode !== null) throw new Error(`Resource host exited: ${stderr}`)
+      if (child.exitCode !== null) throw new Error(`Local resource service exited: ${stderr}`)
       ready = await fetch(`${url}/v1/identity`, { headers }).then(response => response.ok).catch(() => false)
       if (!ready) await new Promise(resolve => setTimeout(resolve, 50))
     }

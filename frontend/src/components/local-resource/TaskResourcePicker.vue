@@ -3,10 +3,12 @@ import { computed, ref, watch } from 'vue'
 import { Laptop, Server } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import api from '@/utils/api'
+import { isDesktop } from '@/utils/runtime'
 import { useLocalResources, type TaskExecution } from '@/composables/useLocalResources'
 
 const props = defineProps<{ workspaceId: string }>()
 const emit = defineEmits<{ change: [value: TaskExecution] }>()
+const desktop = isDesktop()
 
 const { items, enabled, error, load } = useLocalResources(() => props.workspaceId)
 type ExecutionMode = 'SERVER' | 'LOCAL'
@@ -15,11 +17,11 @@ const selectedResourceId = ref('')
 const backend = ref('')
 
 const available = computed(() => (items.value ?? []).filter(r => r.backend === backend.value))
-const localEnabled = computed(() => enabled.value && available.value.length > 0)
+const localEnabled = computed(() => desktop && enabled.value && available.value.length > 0)
 const resourceOptions = computed(() => available.value.map(resource => ({ label: resource.name, value: resource.id })))
 
 function emitCurrent() {
-  if (mode.value === 'LOCAL') {
+  if (desktop && mode.value === 'LOCAL') {
     const item = available.value.find(r => r.id === selectedResourceId.value)
     if (item) {
       emit('change', { location: 'LOCAL', resource_id: item.id, profile_revision: item.profile_revision })
@@ -46,7 +48,9 @@ function chooseResource(value: unknown) {
 watch(() => props.workspaceId, async () => {
   mode.value = 'SERVER'
   selectedResourceId.value = ''
+  backend.value = ''
   emit('change', { location: 'SERVER' })
+  if (!desktop) return
   await load()
   try { backend.value = (await api.get(`/workspaces/${props.workspaceId}/agent-backends`)).data.effective_agent_backend }
   catch { backend.value = '' }
@@ -54,7 +58,7 @@ watch(() => props.workspaceId, async () => {
 </script>
 
 <template>
-  <div class="resource-picker">
+  <div v-if="desktop" class="resource-picker">
     <div class="resource-picker-head">
       <div class="resource-picker-title-group">
         <span class="resource-picker-label">执行位置</span>

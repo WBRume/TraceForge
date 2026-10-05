@@ -1,12 +1,12 @@
-import '../src/platform-bun'
+import '../platform-bun'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { tmpdir } from 'node:os'
-import { startServer } from '../src/server'
-import { canonical } from '../src/runtime'
-import { git, hash, inside, remoteKey } from '../src/filesystem'
-import { encodeSegment, forkSession, locateSession, projectKey } from '../src/provider'
+import { startServer } from '../server'
+import { canonical } from '../runtime'
+import { git, hash, inside, remoteKey } from '../filesystem'
+import { encodeSegment, forkSession, locateSession, projectKey } from '../provider'
 
 let root: string, workspace: string, host: Awaited<ReturnType<typeof startServer>>, gitServer: ReturnType<typeof Bun.serve> | null
 const headers = { Authorization: 'Bearer ' + 'x'.repeat(32), 'Content-Type': 'application/json' }
@@ -64,18 +64,13 @@ describe('HTTP protocol and ownership', () => {
     }
     expect(fs.existsSync(path.join(workspace, 'tasks/escape'))).toBe(false)
   })
-  test('serves monitoring dashboard and status API without requiring bearer auth', async () => {
-    const dashRes = await fetch(new URL('/', host.server.url))
-    expect(dashRes.status).toBe(200)
-    expect(dashRes.headers.get('content-type')).toContain('text/html')
-    const dashHtml = await dashRes.text()
-    expect(dashHtml).toContain('TraceForge Resource Host')
-
-    const statusRes = await fetch(new URL('/v1/status', host.server.url))
-    expect(statusRes.status).toBe(200)
-    const statusData = await statusRes.json() as any
-    expect(statusData.status).toBe('running')
-    expect(statusData.port).toBe(host.server.port)
+  test('does not expose standalone dashboard or system controls', async () => {
+    for (const [method, pathname] of [['GET', '/'], ['GET', '/dashboard'], ['GET', '/v1/status'],
+      ['POST', '/v1/system/open-folder'], ['POST', '/v1/system/shutdown']]) {
+      const url = new URL(pathname!, host.server.url)
+      expect((await fetch(url, { method })).status).toBe(401)
+      expect((await fetch(url, { method, headers })).status).toBe(404)
+    }
   })
   test('checks personal fork across all fetch remotes and keeps the original dirty tree', async () => {
     const { source, repo } = await repository()

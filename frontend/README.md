@@ -2,6 +2,10 @@
 
 Vue 3 + TypeScript 的同一套页面同时运行于 Web、Electron 和 Tauri 2。业务通过 `getSddDesktop()` 和 `SddDesktopApi` 调用配置、Git、补丁、文件保存、命令输出、OAuth 和本地资源服务。
 
+浏览器仅允许创建服务器资源任务；本地资源任务的创建和本地服务配置仅在 Electron、Tauri 客户端开放。请求拦截器根据原生桥接设置 `X-TraceForge-Client: desktop` 或 `web`，任务创建 API 对缺少桌面端标识的 `LOCAL` 请求返回 `403 / LOCAL_TASK_DESKTOP_REQUIRED`，且不创建任务记录或资源准备作业。
+
+本地文件、Git worktree、快照、补丁、Skills 和文档操作实现位于 `desktop/local-resource/`，由客户端启动并管理，不再提供独立资源服务的安装包、启动器或托盘。原有任务执行绑定和本地状态目录继续使用。
+
 ## 开发
 
 ```powershell
@@ -29,7 +33,7 @@ npm run build:tauri -- --bundles nsis
 
 Tauri 的业务 HTTP 请求使用原生 HTTP 通道，支持已配置的 HTTP/HTTPS 后端地址，避免 WebView 来源导致的 CORS 拒绝；Axios 的认证头、错误拦截器和超时行为继续生效。
 
-Tauri 包含独立编译的桌面服务和 Resource Host Worker，使用系统 WebView2；系统缺少 WebView2 时，安装器会联网下载，安装包体积不包含该下载大小。两轨共享版本号，安装标识和配置目录各自独立，允许并存。默认构建未签名。
+Tauri 包含编译后的桌面服务和内置本地资源 Worker，使用系统 WebView2；系统缺少 WebView2 时，安装器会联网下载，安装包体积不包含该下载大小。两轨共享版本号，安装标识和配置目录各自独立，允许并存。默认构建未签名。
 
 桌面构建使用相对资源路径和 hash 路由，并用系统字体回退避免远程字体失败阻断页面加载。Web 构建继续使用原有根路径和字体设置。Windows CI 会构建两种 NSIS 包、运行桥接和可执行文件测试、上传安装包。
 
@@ -39,6 +43,7 @@ Tauri 包含独立编译的桌面服务和 Resource Host Worker，使用系统 W
 
 ```powershell
 npm run test:run -- src/desktop/__tests__ electron/ipc/__tests__/localResources.spec.ts
+npm run test:desktop:resources
 npx vue-tsc -b --pretty false
 npm run build:desktop:host
 node --test desktop/tests/host.smoke.mjs

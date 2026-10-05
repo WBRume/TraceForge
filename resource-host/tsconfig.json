@@ -1,8 +1,0 @@
-{
-  "compilerOptions": {
-    "target": "ESNext", "module": "ESNext", "moduleResolution": "Bundler",
-    "strict": true, "noEmit": true, "skipLibCheck": true,
-    "types": ["bun"], "allowImportingTsExtensions": true
-  },
-  "include": ["src", "scripts", "tests"]
-}

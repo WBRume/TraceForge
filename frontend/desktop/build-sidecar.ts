@@ -15,7 +15,7 @@ if (!targets[target]) throw new Error(`Unsupported desktop sidecar target: ${tar
 mkdirSync(resolve(root, 'src-tauri/binaries'), { recursive: true })
 const staging = resolve(root, '.verify/desktop-host')
 const bundled = await Bun.build({
-  entrypoints: [resolve(root, 'desktop/host.ts'), resolve(root, '../resource-host/src/worker.ts')],
+  entrypoints: [resolve(root, 'desktop/host.ts'), resolve(root, 'desktop/local-resource/worker.ts')],
   target: 'bun',
   outdir: staging,
   naming: '[name].js',

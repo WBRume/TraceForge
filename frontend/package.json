@@ -28,7 +28,7 @@
     "test:watch": "vitest --watch",
     "pretest:run": "npm run check:file-lines",
     "test:run": "vitest run",
-    "build:resource-host": "npm --prefix ../resource-host run build"
+    "test:desktop:resources": "bun test desktop/local-resource/tests"
   },
   "dependencies": {
     "@guolao/vue-monaco-editor": "^1.6.0",

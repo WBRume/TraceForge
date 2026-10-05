@@ -52,6 +52,7 @@ export const initializeApiFromDesktopConfig = async (): Promise<void> => {
 
 // Request interceptor: add auth token
 api.interceptors.request.use((config) => {
+  config.headers.set('X-TraceForge-Client', isDesktop() ? 'desktop' : 'web')
   const authStore = useAuthStore()
   if (authStore.token) {
     config.headers.Authorization = `Bearer ${authStore.token}`

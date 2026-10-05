@@ -114,8 +114,8 @@ async function startServices(payload: { backend: string }) {
   let failure: Error | undefined
   let resourceExit: number | null = null
   const resource = hostReady ? null : utilityProcess.fork(
-    join(app.getAppPath(), 'dist-electron/resourceHost.js'), [configFile],
-    { cwd: stateRoot, stdio: 'pipe', serviceName: 'TraceForge Resource Host' },
+    join(app.getAppPath(), 'dist-electron/localResourceService.js'), [configFile],
+    { cwd: stateRoot, stdio: 'pipe', serviceName: 'TraceForge Local Resources' },
   )
   if (resource) {
     resourceChildren.add(resource)
