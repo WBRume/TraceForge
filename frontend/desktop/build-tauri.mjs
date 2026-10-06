@@ -3,12 +3,26 @@ import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import speechBuild from './speech/build-options.cjs'
 
 const frontend = fileURLToPath(new URL('../', import.meta.url))
 const args = process.argv.slice(2)
 
 try {
-  await run(['build', ...args], 'npm run tauri --')
+  const speech = speechBuild.speechBuildOptions()
+  const targetArg = args.find(arg => arg.startsWith('--target='))?.split('=')[1]
+    || (args.includes('--target') ? args[args.indexOf('--target') + 1]
+      : args.includes('-t') ? args[args.indexOf('-t') + 1] : '')
+  const platform = targetArg ? targetArg.includes('windows') ? 'win32' : targetArg.includes('apple') ? 'darwin' : 'linux' : process.platform
+  const arch = targetArg ? targetArg.startsWith('aarch64') ? 'arm64' : targetArg.startsWith('x86_64') ? 'x64' : targetArg.split('-')[0] : process.arch
+  speechBuild.validateSpeechAssets(speech, platform, arch)
+  const speechConfig = {
+    bundle: {
+      resources: speech.bundled ? { [`${speech.assetsDirectory.replaceAll('\\', '/')}/`]: 'offline-speech/' } : {},
+      ...(speech.mode !== 'off' ? { macOS: { infoPlist: 'Info.speech.plist' } } : {}),
+    },
+  }
+  await run(['build', ...args, '--config', JSON.stringify(speechConfig)], 'npm run tauri --')
   if (!args.some(arg => ['--no-bundle', '--help', '-h'].includes(arg))) {
     const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--format-version', '1'], {
       cwd: join(frontend, 'src-tauri'), encoding: 'utf8', windowsHide: true,

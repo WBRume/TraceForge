@@ -14,6 +14,11 @@ export function createDesktopApi(bridge: DesktopBridge): SddDesktopApi {
   return {
     runtime: bridge.runtime,
     platform: bridge.platform,
+    speech: {
+      status: () => invoke('speech:status'),
+      transcribe: payload => invoke('speech:transcribe', payload),
+      cancel: id => invoke('speech:cancel', { id }),
+    },
     attention: { set: payload => invoke('attention:set', payload) },
     webhooks: { send: payload => invoke('webhooks:send', payload) },
     resources: {

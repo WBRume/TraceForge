@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
+import { speechBuildOptions } from './desktop/speech/build-options.cjs'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
@@ -8,8 +9,11 @@ export default defineConfig(({ mode }) => {
   // 本地后端地址（与 deploy/docker/nginx/default.conf 的 /api、/ws 代理保持一致）
   const backendTarget = env.VITE_DEV_API_TARGET || 'http://localhost:8000'
   const desktopMode = process.env.TRACEFORGE_DESKTOP === '1'
+  const speech = speechBuildOptions()
+  const speechMode = speech.mode === 'offline' && !desktopMode ? 'off' : speech.mode
 
   return {
+    define: { 'import.meta.env.VITE_SPEECH_MODE': JSON.stringify(speechMode) },
     base: desktopMode ? './' : '/',
     // Only the application entry is executable source. Rust/installer output also
     // contains HTML, including bundled pages that are expensive to scan again.

@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerDesktopCommands } from '../desktop/register'
 import { registerAttentionWindow } from '../desktop/attention'
+import { shutdownSpeech } from './ipc/speech'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const devServerUrl = process.env.VITE_DEV_SERVER_URL
@@ -92,7 +93,17 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  void shutdownSpeech()
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+let speechShutdownComplete = false
+app.on('before-quit', event => {
+  if (speechShutdownComplete) return
+  event.preventDefault()
+  void shutdownSpeech().finally(() => {
+    speechShutdownComplete = true
+    app.quit()
+  })
 })

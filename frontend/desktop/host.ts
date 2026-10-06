@@ -5,6 +5,7 @@ import { registerDesktopCommands } from './register'
 import { handlers, receiveNative, sender, send, shutdownNative } from './tauri-native'
 import { shutdownCommands } from '../electron/ipc/process'
 import { shutdownLocalServices } from '../electron/ipc/localResources'
+import { shutdownSpeech } from '../electron/ipc/speech'
 
 if (process.argv[2] === '--local-resource-service') {
   const configPath = resolve(process.argv[3]!)
@@ -21,9 +22,13 @@ if (process.argv[2] === '--local-resource-service') {
   console.log = console.error
   console.info = console.error
   registerDesktopCommands()
-  const shutdown = () => {
+  let shuttingDown = false
+  const shutdown = async () => {
+    if (shuttingDown) return
+    shuttingDown = true
     shutdownCommands()
     shutdownLocalServices()
+    await shutdownSpeech()
     shutdownNative()
     process.exit(0)
   }

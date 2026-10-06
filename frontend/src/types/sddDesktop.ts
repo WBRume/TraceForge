@@ -102,6 +102,7 @@ export type DesktopOAuthTicketListener = (payload: DesktopOAuthStartResult) => v
 import type { OAuthClientType, OAuthIntent } from './oauth'
 
 export type SddDesktopApi = {
+  speech?: import('./offlineSpeech').OfflineSpeechApi
   attention?: { set: (payload: { flash: boolean; hitlCount: number }) => Promise<{ ok: boolean }> }
   webhooks?: { send: (payload: import('./taskAwareness').WebhookRequest) => Promise<{ ok: boolean; error?: string }> }
   runtime?: 'electron' | 'tauri'

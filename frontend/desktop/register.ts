@@ -8,6 +8,7 @@ import { registerProcessIpc } from '../electron/ipc/process'
 import { registerSystemIpc } from '../electron/ipc/system'
 import { registerAttentionIpc } from '../electron/ipc/attention'
 import { registerWebhooksIpc } from '../electron/ipc/webhooks'
+import { registerSpeechIpc } from '../electron/ipc/speech'
 
 export function registerDesktopCommands() {
   registerLocalResourcesIpc()
@@ -20,4 +21,5 @@ export function registerDesktopCommands() {
   registerSystemIpc()
   registerAttentionIpc()
   registerWebhooksIpc()
+  registerSpeechIpc()
 }

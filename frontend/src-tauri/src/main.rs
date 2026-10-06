@@ -177,6 +177,7 @@ fn start_bridge(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>
         .args([
             state_root.to_string_lossy().to_string(),
             downloads.to_string_lossy().to_string(),
+            app.path().resource_dir()?.to_string_lossy().to_string(),
         ])
         .spawn()?;
     *app.state::<Bridge>().child.lock().unwrap() = Some(child);
@@ -346,9 +347,14 @@ fn main() {
         .expect("Failed to build TraceForge desktop")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                // Let the host release owned workers before the final kill fallback.
+                // Wait for the host to terminate inference and remove its recording.
                 let _ = app.state::<Bridge>().write(&json!({ "kind": "shutdown" }));
-                std::thread::sleep(std::time::Duration::from_millis(200));
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while app.state::<Bridge>().child.lock().unwrap().is_some()
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
                 if let Some(child) = app.state::<Bridge>().child.lock().unwrap().take() {
                     let _ = child.kill();
                 }

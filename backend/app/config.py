@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +26,12 @@ def _resolve_backend_path(raw_value: str | None, *, fallback: str) -> str:
 
 class Settings(BaseSettings):
     """应用全局配置"""
+
+    SPEECH_API_ENABLED: bool = False
+    SPEECH_API_KEY: SecretStr = SecretStr("")
+    SPEECH_API_REGION: Literal["beijing", "singapore"] = "beijing"
+    SPEECH_TOKEN_TTL_SECONDS: int = Field(default=120, ge=60, le=300)
+    SPEECH_TOKEN_REQUESTS_PER_MINUTE: int = Field(default=6, ge=1, le=60)
 
     LOCAL_RESOURCES_MODE: Literal["disabled", "intranet"] = "disabled"
     LOCAL_RESOURCES_ENCRYPTION_KEY: str = ""
