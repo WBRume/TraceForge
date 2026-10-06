@@ -13,7 +13,7 @@
     "prebuild": "npm run check:file-lines",
     "build": "vue-tsc -b && vite build",
     "build:electron:main": "vite build --config vite.electron.config.ts",
-    "build:electron": "npm run build:desktop:frontend && npm run build:electron:main && electron-builder",
+    "build:electron": "npm run build:desktop:frontend && npm run build:electron:main && electron-builder --config desktop/electron-builder.config.cjs",
     "build:desktop:frontend": "cross-env TRACEFORGE_DESKTOP=1 npm run build",
     "tauri": "tauri",
     "dev:tauri": "cross-env TRACEFORGE_DESKTOP=1 tauri dev",
@@ -28,7 +28,9 @@
     "test:watch": "vitest --watch",
     "pretest:run": "npm run check:file-lines",
     "test:run": "vitest run",
-    "test:desktop:resources": "bun test desktop/local-resource/tests"
+    "test:desktop:resources": "bun test desktop/local-resource/tests",
+    "speech:prepare": "bun desktop/speech/prepare.ts",
+    "test:desktop:speech": "node --test desktop/tests/speech.smoke.mjs"
   },
   "dependencies": {
     "@guolao/vue-monaco-editor": "^1.6.0",

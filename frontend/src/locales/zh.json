@@ -1,4 +1,21 @@
 {
+  "speech": {
+    "missing_assets": "此客户端缺少离线语音资源，请联系管理员。",
+    "stop": "停止录音并识别",
+    "cancel": "取消语音输入",
+    "starting": "正在启用麦克风…",
+    "recording_connecting": "请开始说话，正在录音，文字稍后显示…",
+    "recording": "请开始说话，正在录音…",
+    "transcribing": "正在完成识别…",
+    "permission_denied": "无法访问麦克风，请在系统设置中允许访问。",
+    "no_microphone": "未找到麦克风。",
+    "unsupported": "当前客户端不支持麦克风录音。",
+    "too_short": "录音太短，请重试。",
+    "failed": "语音识别失败，请检查网络、麦克风或语音资源后重试。",
+    "no_speech": "未识别到语音，请重试。",
+    "start_api": "语音输入（百炼在线识别）",
+    "start_offline": "语音输入（本地离线识别）"
+  },
   "task_rail": {
     "back_to_session": "返回任务会话",
     "link_requirement": "关联需求",

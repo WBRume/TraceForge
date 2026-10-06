@@ -22,7 +22,7 @@ from app.core.logging import (
 from app.core.offload import run_db, shutdown_offload_executors
 from app.core.redis_client import close_redis_client
 from app.database import SessionLocal
-from app.domains.ai.routers import agent, queue
+from app.domains.ai.routers import agent, queue, speech
 from app.domains.ai.services.jobs import workers as ai_job_workers
 from app.domains.api_mock.models.api_mock import ApiMockCollabEventType, SddApiMockProject
 from app.domains.api_mock.routers import api_mock
@@ -221,6 +221,7 @@ app.include_router(notification_router.router, prefix="/api")
 
 app.include_router(task_awareness_router, prefix="/api")
 app.include_router(agent.router, prefix="/api")
+app.include_router(speech.router, prefix="/api")
 app.include_router(products_router, prefix="/api")
 app.include_router(projects_router, prefix="/api")
 app.include_router(repositories_router, prefix="/api")

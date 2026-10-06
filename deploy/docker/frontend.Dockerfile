@@ -12,6 +12,8 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm install --legacy-peer-deps
 
 COPY frontend/ ./
+ARG TRACEFORGE_SPEECH_MODE=api
+ENV TRACEFORGE_SPEECH_MODE=${TRACEFORGE_SPEECH_MODE}
 # Web 模式构建产物 = dist/（跳过 vue-tsc 类型检查，直接 vite build）
 RUN npx vite build
 

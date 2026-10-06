@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import { builtinModules } from 'node:module'
 import { resolve } from 'node:path'
+import { speechBuildOptions } from './desktop/speech/build-options.cjs'
 
 const external = [
   'electron',
@@ -10,6 +11,7 @@ const external = [
 ]
 
 export default defineConfig({
+  define: { __OFFLINE_SPEECH__: JSON.stringify(speechBuildOptions().enabled) },
   build: {
     emptyOutDir: false,
     outDir: 'dist-electron',

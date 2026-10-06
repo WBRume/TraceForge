@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { speechBuildOptions } from './speech/build-options.cjs'
 
 const root = resolve(import.meta.dir, '..')
 const target = process.env.TAURI_ENV_TARGET_TRIPLE || execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim()
@@ -15,6 +16,7 @@ if (!targets[target]) throw new Error(`Unsupported desktop sidecar target: ${tar
 mkdirSync(resolve(root, 'src-tauri/binaries'), { recursive: true })
 const staging = resolve(root, '.verify/desktop-host')
 const bundled = await Bun.build({
+  define: { __OFFLINE_SPEECH__: JSON.stringify(speechBuildOptions().enabled) },
   entrypoints: [resolve(root, 'desktop/host.ts'), resolve(root, 'desktop/local-resource/worker.ts')],
   target: 'bun',
   outdir: staging,

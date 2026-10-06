@@ -71,6 +71,8 @@ codebuddy-sdk-doc.txt
 /.playwright-cli/
 /output/
 /frontend/demos/
+/frontend/offline-speech/
+/frontend/.speech-prepare-*/
 /examples/
 # Rebuildable local BM25 index and isolated promotion CLI working directories.
 /backend/data/search-bm25.sqlite3*

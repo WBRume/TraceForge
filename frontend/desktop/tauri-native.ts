@@ -39,6 +39,7 @@ export const app = {
   },
   getAppPath: () => dirname(process.execPath),
 }
+export const speechResourcesPath = () => process.argv[4] || dirname(process.execPath)
 export const BrowserWindow = {
   fromWebContents: () => null,
   getAllWindows: () => [{ webContents: sender, isDestroyed: () => false }],

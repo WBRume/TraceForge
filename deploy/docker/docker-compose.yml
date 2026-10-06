@@ -168,6 +168,8 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/frontend.Dockerfile
+      args:
+        TRACEFORGE_SPEECH_MODE: ${TRACEFORGE_SPEECH_MODE:-api}
     container_name: traceforge-web
     restart: unless-stopped
     ports:

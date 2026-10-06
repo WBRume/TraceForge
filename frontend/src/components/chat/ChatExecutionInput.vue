@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Search, ShieldCheck, Send, X, Loader2, Square } from '@/components/icons'
 import BaseSelect from '@/components/BaseSelect.vue'
 import AgentModelSelect from '@/components/agent/AgentModelSelect.vue'
 import type { AgentModelOption } from '@/composables/useAgentModels'
 import UserAvatar from '@/components/user/UserAvatar.vue'
+import { speechMode } from '@/utils/speech/mode'
+import { SpeechInsertion } from '@/utils/speech/insertion'
 
 const { t } = useI18n()
 
@@ -19,6 +21,7 @@ type MentionOption = {
 
 const props = defineProps<{
   modelValue: string
+  contextKey?: string
   disabled: boolean
   running: boolean
   canInterrupt: boolean
@@ -53,6 +56,39 @@ const emit = defineEmits<{
 
 // ── 文本域：多行自动增高 ──
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
+const speechBusy = ref(false)
+const speechAvailable = speechMode() !== 'off'
+const SpeechInputButton = defineAsyncComponent(() => import('./SpeechInputButton.vue'))
+const speechButtonRef = ref<{ cancel: () => void } | null>(null)
+let speechInsertion: SpeechInsertion | undefined
+const setSpeechBusy = (busy: boolean) => {
+  speechBusy.value = busy
+  const input = textareaRef.value
+  speechInsertion = busy ? new SpeechInsertion(props.modelValue, input?.selectionStart ?? props.modelValue.length, input?.selectionEnd ?? props.modelValue.length) : undefined
+}
+const insertTranscript = (text: string) => {
+  if (props.disabled || !speechInsertion || !text.trim()) return
+  const input = textareaRef.value
+  // The DOM value includes updates emitted earlier in the same event loop turn.
+  const current = input?.value ?? props.modelValue
+  const previousCaret = speechInsertion.caret
+  const selectionStart = input?.selectionStart ?? previousCaret
+  const selectionEnd = input?.selectionEnd ?? previousCaret
+  const followsSpeech = selectionStart === previousCaret && selectionEnd === previousCaret
+  const focusSpeech = Boolean(document.activeElement?.closest('.speech-input'))
+  const next = speechInsertion.update(current, text)
+  if (!next) { speechButtonRef.value?.cancel(); return }
+  if (next.value === current) return
+  if (input) input.value = next.value
+  emit('update:modelValue', next.value)
+  void nextTick(() => {
+    if (!input) return
+    if (focusSpeech) input.focus({ preventScroll: true })
+    const shift = next.value.length - current.length
+    const position = (value: number) => value >= previousCaret ? value + shift : Math.min(value, next.caret)
+    input.setSelectionRange(followsSpeech || focusSpeech ? next.caret : position(selectionStart), followsSpeech || focusSpeech ? next.caret : position(selectionEnd))
+  })
+}
 
 const autoGrow = () => {
   const el = textareaRef.value
@@ -66,10 +102,12 @@ watch(() => props.modelValue, () => {
 })
 
 const onTextareaInput = (event: Event) => {
-  emit('update:modelValue', (event.target as HTMLTextAreaElement).value)
+  const value = (event.target as HTMLTextAreaElement).value
+  if (speechInsertion && !speechInsertion.rebase(value)) speechButtonRef.value?.cancel()
+  emit('update:modelValue', value)
 }
 
-const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabled)
+const canSend = computed(() => Boolean(props.modelValue.trim()) && !props.disabled && !speechBusy.value)
 
 const handleKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' && !event.shiftKey) {
@@ -357,6 +395,8 @@ defineExpose({ resetPreInputForm, focusInput })
           @update:model-value="emit('update:selectedModel', $event)" @retry="emit('reload-models')"
           @refresh="emit('reload-models')"
         />
+        <SpeechInputButton v-if="speechAvailable" ref="speechButtonRef" :disabled="props.disabled || props.running"
+          :context-key="props.contextKey || ''" @transcript="insertTranscript" @busy="setSpeechBusy" />
         <!-- 主按钮：运行中切换为停止（替换发送位置，带过渡动效） -->
         <Transition name="action-swap" mode="out-in">
           <button

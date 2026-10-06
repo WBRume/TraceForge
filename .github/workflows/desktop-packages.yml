@@ -13,6 +13,9 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    env:
+      TRACEFORGE_SPEECH_MODE: ${{ vars.TRACEFORGE_SPEECH_MODE || 'api' }}
+      TRACEFORGE_BUNDLE_SPEECH: '0'
     defaults:
       run:
         working-directory: frontend
@@ -30,7 +33,7 @@ jobs:
           workspaces: frontend/src-tauri
       - run: npm ci
       - name: Test desktop integration
-        run: npm run test:run -- src/desktop/__tests__ src/utils/__tests__/runtime-api-ws.spec.ts electron/ipc/__tests__/localResources.spec.ts
+        run: npm run test:run -- src/desktop/__tests__ src/utils/__tests__/runtime-api-ws.spec.ts electron/ipc/__tests__/localResources.spec.ts desktop/speech/__tests__ src/utils/speech/__tests__ src/components/chat/__tests__/SpeechInputButton.spec.ts
       - name: Test embedded local resources
         run: npm run test:desktop:resources
       - name: Build Tauri NSIS

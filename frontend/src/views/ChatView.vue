@@ -285,6 +285,7 @@ watch(
       <ChatExecutionInput
         v-if="vm.suggestionOnly || !vm.preInputIsCollecting"
         ref="chatInputRef"
+        :context-key="vm.route.fullPath"
         v-model="vm.chatInput"
         v-model:pre-input-mode="preInputMode"
         :show-model-selector="!vm.suggestionOnly"
