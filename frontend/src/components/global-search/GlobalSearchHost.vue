@@ -18,8 +18,15 @@ const onServerChanged = () => {
 }
 
 window.addEventListener('sdd-server-changed', onServerChanged)
+window.addEventListener('traceforge-features-changed', onServerChanged)
+const refresh = () => { if (auth.isAuthenticated && !document.hidden) void searchStore.loadCapabilities(true) }
+window.addEventListener('focus', refresh)
+const capabilityTimer = window.setInterval(refresh, 15000)
 onScopeDispose(() => {
   window.removeEventListener('sdd-server-changed', onServerChanged)
+  window.removeEventListener('traceforge-features-changed', onServerChanged)
+  window.removeEventListener('focus', refresh)
+  window.clearInterval(capabilityTimer)
 })
 
 // 全局双击 Shift 快捷键唤起

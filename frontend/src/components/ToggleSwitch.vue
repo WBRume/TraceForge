@@ -8,6 +8,7 @@ defineProps<{
   modelValue?: boolean
   disabled?: boolean
   ariaLabel?: string
+  id?: string
 }>()
 
 const emit = defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -20,6 +21,7 @@ const onChange = (event: Event) => {
 <template>
   <label class="toggle-switch">
     <input
+      :id="id"
       type="checkbox"
       role="switch"
       class="toggle-input"
@@ -49,50 +51,60 @@ const onChange = (event: Event) => {
 }
 
 .toggle-track {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  width: 34px;
-  height: 18px;
+  width: 40px;
+  height: 22px;
   padding: 2px;
   border-radius: 999px;
-  background: #cbd5e1;
+  background: #e2e8f0;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06), inset 0 1px 2px rgba(15, 23, 42, 0.1);
   box-sizing: border-box;
-  transition: background 0.2s ease;
+  transition: background 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease;
 }
 
 .toggle-thumb {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.3);
-  transition: transform 0.2s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.25), 0 0 0 1px rgba(15, 23, 42, 0.04);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .toggle-input:checked + .toggle-track {
   background: var(--toggle-active, #0ea5e9);
+  box-shadow: inset 0 0 0 1px rgba(2, 132, 199, 0.15), inset 0 1px 2px rgba(2, 132, 199, 0.25), 0 2px 6px rgba(14, 165, 233, 0.28);
 }
 
 .toggle-input:checked + .toggle-track .toggle-thumb {
-  transform: translateX(16px);
+  transform: translateX(18px);
 }
 
 .toggle-input:disabled + .toggle-track {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: default;
 }
 
 .toggle-input:not(:disabled) + .toggle-track:hover {
-  background: #94a3b8;
+  background: #cbd5e1;
 }
 
 .toggle-input:checked:not(:disabled) + .toggle-track:hover {
   background: var(--toggle-active, #0ea5e9);
-  filter: brightness(1.08);
+  filter: brightness(1.06);
 }
 
 .toggle-input:focus-visible + .toggle-track {
-  outline: 2px solid #7dd3fc;
-  outline-offset: 1px;
+  outline: 2px solid rgba(14, 165, 233, 0.5);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toggle-track,
+  .toggle-thumb {
+    transition: none;
+  }
 }
 </style>

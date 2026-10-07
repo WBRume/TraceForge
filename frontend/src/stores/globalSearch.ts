@@ -18,19 +18,25 @@ export const useGlobalSearchStore = defineStore('globalSearch', () => {
   let controller: AbortController | undefined
   let generation = 0
 
-  const loadCapabilities = async () => {
+  const loadCapabilities = async (preserveOpen = false) => {
     const token = ++generation
     controller?.abort()
     controller = new AbortController()
-    isOpen.value = false
-    capabilities.value = { enabled: false, ready: false, hybrid_available: false }
+    if (!preserveOpen || !auth.isAuthenticated) {
+      isOpen.value = false
+      capabilities.value = { enabled: false, ready: false, hybrid_available: false }
+    }
     if (!auth.isAuthenticated) return
     try {
       const result = await searchApi.capabilities(controller.signal)
-      if (token === generation) {
+      if (token === generation && result && typeof result.enabled === 'boolean') {
         capabilities.value = result
+        if (!result.enabled) isOpen.value = false
       }
     } catch {
+      if (token === generation && preserveOpen) {
+        capabilities.value = { ...capabilities.value, ready: false, hybrid_available: false }
+      }
       /* Search failure does not affect the application shell. */
     }
   }

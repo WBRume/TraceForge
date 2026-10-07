@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.domains.search.projection import es_version
 
 

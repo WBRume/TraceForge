@@ -3,7 +3,7 @@
 import asyncio
 import logging
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.domains.search.worker import run
 
 logger = logging.getLogger(__name__)

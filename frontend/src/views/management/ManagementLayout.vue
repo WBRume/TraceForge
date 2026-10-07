@@ -6,7 +6,7 @@ Serves centers distinguished by route meta.center:
   - 'knowledge' (知识中心 / Knowledge Center): business / framework / maintenance / cases
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Package, FolderKanban, GitFork, ServerCog, Wrench, BookMarked, Briefcase, Layers, SlidersHorizontal } from '@/components/icons'
@@ -19,6 +19,10 @@ const router = useRouter()
 const { t } = useI18n()
 const authStore = useAuthStore()
 const systemConfigStore = useSystemConfigStore()
+const narrowScreen = ref(window.innerWidth <= 700)
+const resize = () => { narrowScreen.value = window.innerWidth <= 700 }
+onMounted(() => window.addEventListener('resize', resize))
+onUnmounted(() => window.removeEventListener('resize', resize))
 
 const routeName = computed(() => String(route.name ?? ''))
 const center = computed(() => String(route.meta.center || 'config'))
@@ -72,7 +76,7 @@ const configNavItems = computed(() => {
       label: t('management.nav_system_config'),
       icon: SlidersHorizontal,
       to: '/management/system',
-      active: routeName.value === 'systemConfigHome',
+      active: routeName.value === 'systemConfigHome' || routeName.value === 'systemConfigDetail',
     })
   }
   return items
@@ -151,7 +155,7 @@ const goBack = () => {
       :nav-items="navItems"
       :back-title="t('management.back_to_workspaces')"
       :collapsible="true"
-      :default-collapsed="false"
+      :default-collapsed="narrowScreen"
       :show-back="true"
       :show-toggle="true"
       @back="goBack"
@@ -164,3 +168,8 @@ const goBack = () => {
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
+<style scoped>
+@media (max-width: 700px) {
+  .mgmt-content { padding: 16px 12px; }
+}
+</style>

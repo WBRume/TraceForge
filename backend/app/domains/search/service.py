@@ -6,9 +6,10 @@ import json
 import time
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import load_only
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.auth.models.user import User, Workspace, WorkspaceMember
 from app.domains.case_center.models.case import SddCase
@@ -54,10 +55,31 @@ def authorized_scope(db, user_id, workspace_id=None, task_id=None):
 
 
 def configuration(db):
-    target = db.query(SearchIndexTarget).filter(SearchIndexTarget.status == "active").first()
+    target = (
+        db.query(SearchIndexTarget)
+        .filter(
+            SearchIndexTarget.status == "active",
+            or_(
+                SearchIndexTarget.connection_fingerprint.is_(None),
+                SearchIndexTarget.connection_fingerprint == digest(settings.SEARCH_ES_URL),
+            ),
+        )
+        .first()
+    )
     if not target:
         return None, None
     profile = db.get(SearchEmbeddingProfile, target.embedding_profile_id) if target.embedding_profile_id else None
+    if (
+        profile
+        and target.physical_index.startswith("traceforge-search-runtime-")
+        and (
+            profile.endpoint != settings.SEARCH_EMBEDDING_ENDPOINT
+            or profile.model_id != settings.SEARCH_EMBEDDING_MODEL
+        )
+    ):
+        return None, None
+    if settings.has_override("SEARCH_EMBEDDING_API_KEY") and not settings.SEARCH_EMBEDDING_API_KEY:
+        profile = None
     data = dto(target)
     pending = (
         db.query(SearchEmbeddingJob.id)

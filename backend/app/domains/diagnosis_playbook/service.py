@@ -276,7 +276,7 @@ def attach(db, task, spec_id, inputs, key, creator_id, environment_ref, advisory
             "delivered": False,
         }
     ]
-    from app.config import settings
+    from app.core.feature_settings import feature_settings as settings
 
     missing = []
     if not settings.DIAGNOSIS_PLAYBOOK_WORKER_ENABLED:

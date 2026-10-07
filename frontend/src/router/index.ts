@@ -128,6 +128,11 @@ const router = createRouter({
           component: () => import('../views/management/SystemConfigView.vue'),
         },
         {
+          path: 'system/:feature',
+          name: 'systemConfigDetail',
+          component: () => import('../views/management/SystemConfigDetailView.vue'),
+        },
+        {
           path: '',
           redirect: '/management/products',
         },

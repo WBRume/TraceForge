@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, shallowRef } from 'vue'
+import { onMounted, shallowRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { BrainCircuit, RefreshCw } from '@/components/icons'
@@ -7,7 +7,7 @@ import api from '@/utils/api'
 import { formatApiError } from '@/utils/error'
 
 interface EmbeddingProfile {
-  id: number
+  id: string
   revision: number
   endpoint: string
   model_id: string
@@ -23,11 +23,9 @@ interface SearchTarget {
 }
 
 const { t } = useI18n()
+const props = defineProps<{ revision: number }>()
+const emit = defineEmits<{ changed: [] }>()
 const profile = shallowRef<EmbeddingProfile | null>(null)
-const endpoint = shallowRef('https://api.siliconflow.cn/v1/embeddings')
-const model = shallowRef('BAAI/bge-m3')
-const key = shallowRef('')
-const clearKey = shallowRef(false)
 const busy = shallowRef(false)
 const targets = shallowRef<SearchTarget[]>([])
 
@@ -35,12 +33,6 @@ const load = async () => {
   const { data } = await api.get('/admin/search/embedding')
   targets.value = (data.targets || []) as SearchTarget[]
   profile.value = (data.profiles?.[0] || null) as EmbeddingProfile | null
-  if (profile.value) {
-    endpoint.value = profile.value.endpoint
-    model.value = profile.value.model_id
-  }
-  key.value = ''
-  clearKey.value = false
 }
 
 const perform = async (action: () => Promise<unknown>) => {
@@ -48,6 +40,7 @@ const perform = async (action: () => Promise<unknown>) => {
   try {
     await action()
     await load()
+    emit('changed')
     ElMessage.success(t('system_config.embedding_operation_success'))
   } catch (err) {
     ElMessage.error(formatApiError(err, t('system_config.embedding_operation_failed'), t))
@@ -56,90 +49,39 @@ const perform = async (action: () => Promise<unknown>) => {
   }
 }
 
-const save = () =>
-  perform(() =>
-    api.put('/admin/search/embedding', {
-      id: profile.value?.id,
-      revision: profile.value?.revision || 0,
-      endpoint: endpoint.value,
-      model_id: model.value,
-      ...(key.value ? { api_key: key.value } : {}),
-      clear_api_key: clearKey.value,
-    }),
-  )
-
 const refreshStatus = () => perform(async () => {})
 
 onMounted(() => {
   void load().catch(() => ElMessage.error(t('system_config.embedding_load_failed')))
 })
+watch(() => props.revision, () => {
+  void load().catch(() => ElMessage.error(t('system_config.embedding_load_failed')))
+})
 </script>
 
 <template>
-  <div class="mgmt-card">
+  <section class="index-management" :aria-label="t('feature_config.index_management')">
     <div class="sys-config-row">
       <div class="sys-config-info">
         <h3 class="sys-config-name">
           <BrainCircuit class="w-4 h-4" />
-          {{ $t('system_config.embedding_title') }}
+          {{ t('feature_config.index_management') }}
         </h3>
-        <p class="mgmt-hint">{{ $t('system_config.embedding_desc') }}</p>
+        <p class="mgmt-hint">{{ t('feature_config.index_hint') }}</p>
       </div>
     </div>
 
-    <div class="sys-config-field">
-      <label for="embedding-endpoint">{{ $t('system_config.embedding_endpoint_label') }}</label>
-      <input
-        id="embedding-endpoint"
-        v-model="endpoint"
-        type="text"
-        class="mgmt-input"
-        :disabled="busy"
-      />
-    </div>
-
-    <div class="sys-config-field">
-      <label for="embedding-model">{{ $t('system_config.embedding_model_label') }}</label>
-      <input
-        id="embedding-model"
-        v-model="model"
-        type="text"
-        class="mgmt-input"
-        :disabled="busy"
-      />
-    </div>
-
-    <div class="sys-config-field">
-      <label for="embedding-key">{{ $t('system_config.embedding_api_key_label') }}</label>
-      <input
-        id="embedding-key"
-        v-model="key"
-        type="password"
-        class="mgmt-input"
-        autocomplete="new-password"
-        :disabled="busy || clearKey"
-        :placeholder="profile?.has_api_key
-          ? $t('system_config.embedding_api_key_keep')
-          : $t('system_config.embedding_api_key_placeholder')"
-      />
-      <label class="sys-config-checkbox">
-        <input v-model="clearKey" type="checkbox" :disabled="busy" />
-        <span>{{ $t('system_config.embedding_clear_key') }}</span>
-      </label>
-    </div>
-
     <div class="sys-config-actions">
-      <button class="btn-primary" :disabled="busy" @click="save">
-        {{ $t('system_config.embedding_save') }}
-      </button>
       <button
+        type="button"
         class="btn-secondary"
-        :disabled="busy || !profile || !!key || endpoint !== profile.endpoint || model !== profile.model_id"
+        :disabled="busy || !profile"
         @click="perform(() => api.post(`/admin/search/embedding/${profile?.id}/test`))"
       >
         {{ $t('system_config.embedding_test') }}
       </button>
       <button
+        type="button"
         class="btn-secondary"
         :disabled="busy || !profile?.dimension"
         @click="perform(() => api.post(`/admin/search/embedding/${profile?.id}/build`))"
@@ -150,10 +92,12 @@ onMounted(() => {
 
     <div v-if="profile" class="sys-config-status">
       <span class="mgmt-status-pill blue">{{ profile.status }}</span>
+      <span>{{ profile.model_id }}</span>
       <span>
         {{ $t('system_config.embedding_dimension') }}：{{ profile.dimension || $t('system_config.embedding_dimension_unknown') }}
       </span>
     </div>
+    <p v-else class="index-empty">{{ t('feature_config.index_empty') }}</p>
 
     <div v-if="targets.length > 0" class="sys-config-targets">
       <div v-for="target in targets" :key="target.target_id" class="sys-config-target-row">
@@ -168,6 +112,7 @@ onMounted(() => {
         </div>
         <div class="sys-config-target-actions">
           <button
+            type="button"
             class="btn-secondary btn-compact"
             :disabled="busy"
             @click="perform(() => api.post(`/admin/search/targets/${target.target_id}/verify`))"
@@ -175,6 +120,7 @@ onMounted(() => {
             {{ $t('system_config.embedding_verify') }}
           </button>
           <button
+            type="button"
             class="btn-secondary btn-compact"
             :disabled="busy || !target.verified || target.status === 'active'"
             @click="perform(() => api.post(`/admin/search/targets/${target.target_id}/activate`))"
@@ -186,35 +132,27 @@ onMounted(() => {
     </div>
 
     <div class="sys-config-refresh">
-      <button class="btn-ghost" :disabled="busy" @click="refreshStatus">
+      <button type="button" class="btn-ghost" :disabled="busy" @click="refreshStatus">
         <RefreshCw class="w-4 h-4" />
         {{ $t('system_config.embedding_refresh') }}
       </button>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped src="@/styles/management/management-shared.css"></style>
 
 <style scoped>
+.index-management { margin-top: 32px; padding-top: 24px; border-top: 1px solid #e2e8f0; }
+.index-empty { color: #64748b; font-size: 12px; }
 .sys-config-status {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-top: 0.9rem;
   font-size: 0.82rem;
   color: #475569;
-}
-
-label.sys-config-checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin-top: 0.15rem;
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: #475569;
-  cursor: pointer;
 }
 
 .sys-config-targets {

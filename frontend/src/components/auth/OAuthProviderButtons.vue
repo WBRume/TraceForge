@@ -55,7 +55,7 @@ const handleAuthorize = async (provider: OAuthProviderInfo): Promise<void> => {
 }
 
 onMounted(() => {
-  oauthStore.loadProviders().catch(() => {
+  oauthStore.loadProviders(true).catch(() => {
     // provider 列表加载失败不阻塞邮箱密码登录，仅隐藏按钮区
     oauthStore.providers = []
   })

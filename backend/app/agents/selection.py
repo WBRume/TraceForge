@@ -26,7 +26,7 @@ from app.agents.contract import (
     record_attempt_remote_stop,
 )
 from app.agents.run_logging import run_agent_backend_with_logging
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.core.logging import get_logger
 from app.engine.claude_bridge import create_cli_bridge
 
@@ -154,9 +154,15 @@ def create_agent_backend_by_name(backend_name: str | None = None, *, task_id: st
     if name in ("claude-code", "mock"):
         return create_cli_bridge()
     if name == "opencode":
-        return get_agent_backend("opencode", **opencode_server_kwargs())
+        return get_agent_backend("opencode", runtime_credentials=True, **opencode_server_kwargs())
     if name == "dsh":
-        return get_agent_backend("dsh", server_url=str(settings.DSH_SERVER_URL).strip())
+        return get_agent_backend(
+            "dsh",
+            server_url=str(settings.DSH_SERVER_URL).strip(),
+            browser_token=settings.DSH_BROWSER_TOKEN,
+            browser_cookie=settings.DSH_BROWSER_COOKIE,
+            runtime_credentials=True,
+        )
     return get_agent_backend(name)
 
 

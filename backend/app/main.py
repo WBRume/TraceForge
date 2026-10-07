@@ -59,6 +59,7 @@ from app.domains.notification.ws.notification_manager import notification_ws_man
 from app.domains.rag.routers import outbox as rag_outbox_router
 from app.domains.search import router as search_router
 from app.domains.skill.routers import skill
+from app.domains.system_config.routers import features as feature_configs
 from app.domains.system_config.routers import system_config
 from app.domains.task.models.task import SddTask
 from app.domains.task.routers import public_session_shares, task, task_closeout
@@ -107,6 +108,10 @@ async def _shutdown_websocket_hubs():
 async def lifespan(app: FastAPI):
     global _pre_input_worker_task
     app.state.ai_runtime_ready = False
+    from app.domains.system_config.services.feature_runtime import FeatureRuntime
+
+    app.state.feature_runtime = FeatureRuntime(app)
+    await app.state.feature_runtime.initialize()
     from app.runtime.evidence_runner.registry import load_configured_bundles
 
     load_configured_bundles(settings.DIAGNOSIS_PLAYBOOK_BUNDLE_FACTORIES)
@@ -114,12 +119,12 @@ async def lifespan(app: FastAPI):
         from app.runtime.evidence_runner.bundles.mysql_deadlock.bundle import install
 
         install(settings.DIAGNOSIS_PLAYBOOK_MYSQL_ENVIRONMENTS_FILE)
-    playbook_worker_task = None
-    if settings.DIAGNOSIS_PLAYBOOK_WORKER_ENABLED:
-        from app.domains.diagnosis_playbook.worker import PlaybookWorker
-
-        playbook_worker_task = asyncio.create_task(PlaybookWorker(settings.DIAGNOSIS_PLAYBOOK_EVIDENCE_ROOT).run())
     await search_router.start(app)
+    try:
+        await app.state.feature_runtime.refresh()
+    except Exception as exc:
+        logger.warning("Feature runtime initialization deferred: {}", type(exc).__name__)
+    app.state.feature_runtime.start()
     from app.domains.notification.services.task_awareness_worker import run_worker as run_task_awareness_worker
 
     _pre_input_worker_task = asyncio.create_task(pre_input_deadline_worker.run_pre_input_worker())
@@ -134,9 +139,7 @@ async def lifespan(app: FastAPI):
         app.state.ai_runtime_ready = False
         task_awareness_worker.cancel()
         await asyncio.gather(task_awareness_worker, return_exceptions=True)
-        if playbook_worker_task is not None:
-            playbook_worker_task.cancel()
-            await asyncio.gather(playbook_worker_task, return_exceptions=True)
+        await app.state.feature_runtime.close()
         if _pre_input_worker_task is not None:
             _pre_input_worker_task.cancel()
             await asyncio.gather(_pre_input_worker_task, return_exceptions=True)
@@ -227,6 +230,7 @@ app.include_router(projects_router, prefix="/api")
 app.include_router(repositories_router, prefix="/api")
 app.include_router(repo_groups_router, prefix="/api")
 app.include_router(system_config.router, prefix="/api")
+app.include_router(feature_configs.router, prefix="/api")
 app.include_router(rag_outbox_router.router, prefix="/api")
 app.include_router(api_mock.gateway_router)
 

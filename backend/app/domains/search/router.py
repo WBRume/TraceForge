@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.core.logging import audit_log
 from app.core.offload import run_db_txn
 from app.dependencies import get_current_user, require_admin
@@ -47,12 +47,35 @@ async def start(app):
     app.state.search_runtime.start()
 
 
+async def replace_client(app):
+    old = app.state.search_es
+    app.state.search_es = create_client()
+    app.state.search_service = SearchService(app.state.search_es, app.state.search_http)
+
+    # Existing requests retain their old service/client until their request budget expires.
+    async def retire():
+        await asyncio.sleep(10)
+        await old.close()
+
+    if not hasattr(app.state, "search_retired_clients"):
+        app.state.search_retired_clients = []
+    app.state.search_retired_clients = [
+        (client, task) for client, task in app.state.search_retired_clients if not task.done()
+    ]
+    app.state.search_retired_clients.append((old, asyncio.create_task(retire())))
+
+
 async def stop(app):
     if hasattr(app.state, "search_runtime"):
         await app.state.search_runtime.stop()
     if hasattr(app.state, "search_es"):
         await app.state.search_es.close()
         await app.state.search_http.aclose()
+    for client, task in getattr(app.state, "search_retired_clients", []):
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await client.close()
+    app.state.search_retired_clients = []
 
 
 @router.get("/search/capabilities")
@@ -314,7 +337,12 @@ async def test_profile(profile_id: str, request: Request, user=Depends(require_a
 
     profile = await run_db_txn(read)
     try:
-        vectors = await embed(request.app.state.search_http, profile, ["数据库连接池耗尽", "连接未释放导致请求排队"])
+        vectors = await embed(
+            request.app.state.search_http,
+            profile,
+            ["数据库连接池耗尽", "连接未释放导致请求排队"],
+            runtime_credentials=False,
+        )
     except EmbeddingError as exc:
         raise HTTPException(422, exc.code) from None
     dimension = len(vectors[0])

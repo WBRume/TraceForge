@@ -44,7 +44,7 @@ def bind(run, spec_row, bundle, environment):
         "ENVIRONMENT_NOT_ISOLATED",
     )
     enforcement = environment.get("enforcement")
-    from app.config import settings
+    from app.core.feature_settings import feature_settings as settings
 
     requested = settings.DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL
     if requested != "ADVISORY_GUARD":

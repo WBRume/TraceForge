@@ -12,8 +12,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.core.distributed_lock import get_lock_provider, lock_task
+from app.core.feature_settings import feature_settings as settings
 from app.core.logging import get_logger
 from app.core.offload import run_db, run_db_txn, run_db_txn_with_bind
 from app.domains.ai.models.ai_job import AiJobChannel, AiJobStatus, SddAiJob

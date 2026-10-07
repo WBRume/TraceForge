@@ -242,17 +242,29 @@ class DshServerAdapter(AgentBackend):
         *,
         browser_token: str | None = None,
         browser_cookie: str | None = None,
+        runtime_credentials: bool = False,
     ) -> None:
         self.server_url = server_url.rstrip("/")
         self._browser_token = browser_token
         self._browser_cookie = browser_cookie
         self._client: httpx.AsyncClient | None = None
+        self._runtime_credentials = runtime_credentials
+        self._retired_clients: list[httpx.AsyncClient] = []
         self._running = False
         self._session_id: str | None = None
         self._pending_asks: dict[str, dict[str, Any]] = {}
         self._gateway_protocol: bool | None = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
+        from app.core.feature_settings import feature_settings
+
+        if self._runtime_credentials and self.server_url == feature_settings.DSH_SERVER_URL.rstrip("/"):
+            credentials = (feature_settings.DSH_BROWSER_TOKEN, feature_settings.DSH_BROWSER_COOKIE)
+            if credentials != (self._browser_token, self._browser_cookie):
+                self._browser_token, self._browser_cookie = credentials
+                if self._client is not None:
+                    self._retired_clients.append(self._client)
+                    self._client = None
         if self._client is None or self._client.is_closed:
             headers: dict[str, str] = {}
             cookie = (
@@ -912,6 +924,9 @@ class DshServerAdapter(AgentBackend):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        for client in self._retired_clients:
+            await client.aclose()
+        self._retired_clients.clear()
 
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         if not ask_user_id or ask_user_id not in self._pending_asks:
