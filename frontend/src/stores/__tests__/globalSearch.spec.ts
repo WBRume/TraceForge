@@ -72,4 +72,28 @@ describe('globalSearch store', () => {
     searchStore.openSearch()
     expect(searchStore.isOpen).toBe(false)
   })
+
+  it('refreshes semantic readiness without closing an open search', async () => {
+    const auth = useAuthStore()
+    auth.token = 'mock-token'
+    const searchStore = useGlobalSearchStore()
+    searchStore.capabilities = { enabled: true, ready: true, hybrid_available: false }
+    searchStore.openSearch()
+    vi.mocked(searchApi.capabilities).mockResolvedValueOnce({ enabled: true, ready: true, hybrid_available: true })
+    await searchStore.loadCapabilities(true)
+    expect(searchStore.isOpen).toBe(true)
+    expect(searchStore.capabilities.hybrid_available).toBe(true)
+  })
+
+  it('closes the dialog when runtime search is disabled', async () => {
+    const auth = useAuthStore()
+    auth.token = 'mock-token'
+    const searchStore = useGlobalSearchStore()
+    searchStore.capabilities = { enabled: true, ready: true, hybrid_available: true }
+    searchStore.openSearch()
+    vi.mocked(searchApi.capabilities).mockResolvedValueOnce({ enabled: false, ready: false, hybrid_available: false })
+    await searchStore.loadCapabilities(true)
+    expect(searchStore.isOpen).toBe(false)
+    expect(searchStore.enabled).toBe(false)
+  })
 })

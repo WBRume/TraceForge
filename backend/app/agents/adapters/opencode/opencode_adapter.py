@@ -49,11 +49,18 @@ class OpenCodeAdapter(AgentBackend):
     )
 
     def __init__(
-        self, server_url: str = "http://127.0.0.1:4097", *, username: str = "opencode", password: str = ""
+        self,
+        server_url: str = "http://127.0.0.1:4097",
+        *,
+        username: str = "opencode",
+        password: str = "",
+        runtime_credentials: bool = False,
     ) -> None:
         self.server_url = server_url.rstrip("/")
         self._auth = (username, password) if password else None
         self._client: httpx.AsyncClient | None = None
+        self._runtime_credentials = runtime_credentials
+        self._retired_clients: list[httpx.AsyncClient] = []
         self._running = False
         self._run_id: str | None = None
         self._session_id: str | None = None
@@ -65,6 +72,17 @@ class OpenCodeAdapter(AgentBackend):
         self._execution_checkpoint: dict[str, Any] = {}
 
     async def _ensure_client(self) -> httpx.AsyncClient:
+        from app.core.feature_settings import feature_settings
+
+        if self._runtime_credentials and self.server_url == feature_settings.OPENCODE_SERVER_URL.rstrip("/"):
+            password = feature_settings.OPENCODE_SERVER_PASSWORD
+            auth = (feature_settings.OPENCODE_SERVER_USERNAME, password) if password else None
+            if auth != self._auth:
+                self._auth = auth
+                if self._client is not None:
+                    # Existing event streams finish on their original connection.
+                    self._retired_clients.append(self._client)
+                    self._client = None
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(30.0),
@@ -785,6 +803,9 @@ class OpenCodeAdapter(AgentBackend):
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+        for client in self._retired_clients:
+            await client.aclose()
+        self._retired_clients.clear()
 
     async def respond_to_ask_user(self, ask_user_id: str, response: str) -> None:
         sid = self._session_id

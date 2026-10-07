@@ -4,12 +4,14 @@ import argparse
 import asyncio
 import json
 import random
+import time
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 import httpx
 from sqlalchemy import and_, or_
 
+from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.search.capture import mark_connection
 from app.domains.search.embedding import EmbeddingError, embed
@@ -22,6 +24,34 @@ from app.domains.search.models import (
     SearchOutbox,
 )
 from app.domains.search.projection import build_embedding_chunks, build_search_projection, digest, embedding_text
+
+worker_heartbeats = {}
+_redis_heartbeat_at = {}
+
+
+def heartbeat_binding(url=None, backend=None):
+    return digest(
+        [
+            url if url is not None else settings.SEARCH_ES_URL,
+            backend if backend is not None else settings.SEARCH_BACKEND,
+        ]
+    )
+
+
+async def report_heartbeat(kind):
+    now = time.monotonic()
+    worker_heartbeats[kind] = now
+    if now - _redis_heartbeat_at.get(kind, 0) < 5:
+        return
+    _redis_heartbeat_at[kind] = now
+    try:
+        from app.core.redis_client import get_redis_client
+
+        async with asyncio.timeout(1):
+            redis = await get_redis_client()
+            await redis.set("traceforge:feature:search-worker:" + kind, heartbeat_binding(), ex=30)
+    except Exception:
+        pass
 
 
 def dto(row):
@@ -159,7 +189,13 @@ def read_work(db, job):
     docs = [doc for key in keys if (doc := current_document(db, key)) is not None]
     targets = [
         dto(t)
-        for t in db.query(SearchIndexTarget).filter(SearchIndexTarget.status.in_(["active", "building", "standby"]))
+        for t in db.query(SearchIndexTarget).filter(
+            SearchIndexTarget.status.in_(["active", "building", "standby"]),
+            or_(
+                SearchIndexTarget.connection_fingerprint.is_(None),
+                SearchIndexTarget.connection_fingerprint == digest(settings.SEARCH_ES_URL),
+            ),
+        )
     ]
     profiles = {
         p.id: dto(p)
@@ -292,6 +328,7 @@ def embedding_snapshot(db, job):
     if (
         not target
         or target.status == "retired"
+        or target.connection_fingerprint not in (None, digest(settings.SEARCH_ES_URL))
         or target.embedding_profile_id != job["profile_id"]
         or not profile
         or not doc
@@ -358,7 +395,7 @@ def _advance_search_backfill(db):
 
 
 async def run(kind, once=False, stop_event=None):
-    from app.config import settings
+    from app.core.feature_settings import feature_settings as settings
     from app.domains.search.registry import load_models
 
     load_models()
@@ -373,6 +410,7 @@ async def run(kind, once=False, stop_event=None):
             if kind == "search":
                 await run_db_txn(_advance_search_backfill)
             job = await run_db_txn(lambda db: claim(db, model))
+            await report_heartbeat(kind)
             if job:
                 try:
                     if kind == "embedding":
@@ -427,4 +465,6 @@ if __name__ == "__main__":
     parser.add_argument("--kind", choices=["search", "embedding"], required=True)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
-    asyncio.run(run(args.kind, args.once))
+    from app.domains.search.standalone import main
+
+    asyncio.run(main(args.kind, args.once))

@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 from sqlalchemy import and_, func, or_
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.search.embedding import embed, encrypt_key
 from app.domains.search.es import create_client, index_mapping
@@ -97,7 +97,12 @@ async def create_index(es, name, profile_id=None):
     await es.indices.create(index=name, body=index_mapping(dimension))
 
     def save(db):
-        t = SearchIndexTarget(physical_index=name, embedding_profile_id=profile_id, dimension=dimension)
+        t = SearchIndexTarget(
+            physical_index=name,
+            embedding_profile_id=profile_id,
+            dimension=dimension,
+            connection_fingerprint=digest(settings.SEARCH_ES_URL),
+        )
         db.add(t)
         db.flush()
         return {"target_id": t.target_id, "physical_index": name}

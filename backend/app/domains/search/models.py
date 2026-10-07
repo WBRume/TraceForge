@@ -81,6 +81,7 @@ class SearchIndexTarget(Base):
     __tablename__ = "search_index_targets"
     target_id = Column(String(36), primary_key=True, default=uid)
     physical_index = Column(String(120), nullable=False, unique=True)
+    connection_fingerprint = Column(String(64), nullable=True)
     schema_version = Column(Integer, nullable=False, default=1)
     embedding_profile_id = Column(String(36))
     dimension = Column(Integer)

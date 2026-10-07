@@ -20,7 +20,7 @@ from typing import ClassVar
 
 import httpx
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.domains.auth.errors import OAuthUpstreamError
 
 # 仅对这些网络类异常重试（K-3）；HTTPError / 协议错误 / 4xx 不重试
@@ -109,6 +109,8 @@ class OAuthProvider(abc.ABC):
 
     def is_configured(self) -> bool:
         """是否已启用：client_id 与 client_secret 均非空（NFR-M2，空 = 不启用）。"""
+        if self.name == "github" and not settings.OAUTH_GITHUB_ENABLED:
+            return False
         return bool(oauth_setting(self.name, "CLIENT_ID")) and bool(oauth_setting(self.name, "CLIENT_SECRET"))
 
     def resolve_redirect_uri(self, client_type: str, loopback_port: int | None = None) -> str:

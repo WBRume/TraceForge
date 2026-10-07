@@ -103,13 +103,13 @@ class BackendRuntimeControl:
         self.policy = None
         self.environment = None
 
-    async def negotiate(self, environment):
+    async def negotiate(self, environment, *, configured_enforcement=None):
         from app.agents.errors import AgentConfigurationError
-        from app.config import settings
+        from app.core.feature_settings import feature_settings as settings
 
         version = await self.backend.probe()
         self.environment = dict(environment)
-        enforcement = settings.DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL
+        enforcement = configured_enforcement or settings.DIAGNOSIS_PLAYBOOK_ENFORCEMENT_LEVEL
         if enforcement != EnforcementLevel.ADVISORY_GUARD and not (
             environment.get("backend_isolation_verified") is True
             and environment.get("backend_host_identity") == self.host_identity

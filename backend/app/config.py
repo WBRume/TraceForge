@@ -27,6 +27,10 @@ def _resolve_backend_path(raw_value: str | None, *, fallback: str) -> str:
 class Settings(BaseSettings):
     """应用全局配置"""
 
+    # Infrastructure key: never configurable through the API. If empty, use a
+    # purpose-separated key derived from the existing deployment JWT secret.
+    FEATURE_CONFIG_MASTER_KEY: SecretStr = SecretStr("")
+    SPEECH_MODE: Literal["api", "offline", "off"] | None = None
     SPEECH_API_ENABLED: bool = False
     SPEECH_API_KEY: SecretStr = SecretStr("")
     SPEECH_API_REGION: Literal["beijing", "singapore"] = "beijing"
@@ -60,6 +64,8 @@ class Settings(BaseSettings):
     SEARCH_CURSOR_SECRET: str = ""
     SEARCH_CONFIG_ENCRYPTION_KEY: str = ""
     SEARCH_EMBEDDING_API_KEY: str = ""
+    SEARCH_EMBEDDING_ENDPOINT: str = "https://api.siliconflow.cn/v1/embeddings"
+    SEARCH_EMBEDDING_MODEL: str = "BAAI/bge-m3"
     SEARCH_SESSION_NAMESPACE: str = "traceforge:search"
     SEARCH_EMBEDDING_TIMEOUT: float = 10.0
     SEARCH_QUERY_EMBEDDING_TIMEOUT: float = 0.8

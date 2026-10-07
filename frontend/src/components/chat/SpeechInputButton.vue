@@ -12,7 +12,7 @@ const { mode, ready, state, error, connecting, seconds, level, busy, visible, st
   disabled: () => props.disabled, contextKey: () => props.contextKey,
   onTranscript: text => emit('transcript', text),
 })
-const buttonLabel = () => t(state.value === 'recording' ? 'speech.stop' : `speech.start_${mode}`)
+const buttonLabel = () => t(state.value === 'recording' ? 'speech.stop' : `speech.start_${mode.value}`)
 watch(busy, value => emit('busy', value), { flush: 'sync' })
 defineExpose({ cancel })
 </script>
@@ -24,7 +24,7 @@ defineExpose({ cancel })
       class="speech-button"
       :class="{ recording: state === 'recording' }"
       :disabled="disabled || !ready || state === 'starting' || state === 'transcribing'"
-      :title="!ready ? t('speech.missing_assets') : buttonLabel()"
+      :title="!ready ? t(mode === 'offline' ? 'speech.missing_assets' : 'speech.service_unavailable') : buttonLabel()"
       :aria-label="buttonLabel()"
       :aria-pressed="state === 'recording'"
       @click="state === 'recording' ? stop() : start()"

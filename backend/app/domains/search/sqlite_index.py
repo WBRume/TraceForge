@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 
 from .projection import es_version
 

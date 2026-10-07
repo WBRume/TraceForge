@@ -14,15 +14,15 @@ type ApiConnection = {
 }
 
 export function useSpeechInput(options: { disabled: () => boolean; contextKey: () => string; onTranscript: (text: string) => void }) {
-  const mode = speechMode()
-  const ready = ref(mode === 'api')
+  const mode = ref(speechMode())
+  const ready = ref(mode.value === 'api')
   const state = ref<'idle' | 'starting' | 'recording' | 'transcribing'>('idle')
   const error = ref('')
   const connecting = ref(false)
   const seconds = ref(0)
   const level = ref(0)
   const busy = computed(() => state.value !== 'idle')
-  const visible = mode !== 'off'
+  const visible = computed(() => mode.value !== 'off')
   let recorder: SpeechRecorder | undefined
   let connection: ApiConnection | undefined
   let prepared: ApiConnection | undefined
@@ -35,6 +35,9 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   let requestId = ''
   let timer: number | undefined
   let disposed = false
+  let capabilityTimer: number | undefined
+  let capabilityGeneration = ''
+  let capabilityRequest = 0
 
   function clearTimer() { window.clearInterval(timer); timer = undefined }
 
@@ -90,13 +93,13 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   }
 
   function prepare() {
-    if (!mounted || mode !== 'api' || busy.value || options.disabled() || disposed || document.hidden || !foreground || prepared) return
+    if (!mounted || mode.value !== 'api' || busy.value || options.disabled() || disposed || document.hidden || !foreground || prepared) return
     prepared = createConnection()
   }
 
   function schedulePreparation(delay = 0) {
     window.clearTimeout(preparationTimer)
-    if (!mounted || disposed || mode !== 'api') return
+    if (!mounted || disposed || mode.value !== 'api') return
     preparationTimer = window.setTimeout(prepare, delay)
   }
 
@@ -113,7 +116,23 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
   }
 
   async function refresh() {
-    if (mode !== 'offline') return
+    const request = ++capabilityRequest
+    try {
+      const { data } = await api.get('/speech/capabilities')
+      if (disposed || request !== capabilityRequest) return
+      if (data && ['api', 'offline', 'off'].includes(data.mode)) {
+        const next = data.mode === 'offline' && !window.sddDesktop?.speech ? 'off' : data.mode
+        if (mode.value !== next || capabilityGeneration !== data.generation) {
+          cachedSession = undefined
+          cancel(false)
+          mode.value = next
+          capabilityGeneration = data.generation
+        }
+        ready.value = next === 'api' && data.configured !== false
+        schedulePreparation()
+      }
+    } catch { /* Older servers retain the build-time fallback. */ }
+    if (mode.value !== 'offline') return
     try {
       const next = await window.sddDesktop!.speech!.status()
       if (!disposed) ready.value = next.ready
@@ -138,14 +157,14 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     error.value = ''; seconds.value = 0; state.value = 'starting'
     const failed = (reason: Error) => { if (current === generation) { cancel(); failure(reason) } }
     try {
-      if (mode === 'api') {
+      if (mode.value === 'api') {
         connection = prepared ?? createConnection()
         prepared = undefined; clearStandby(connection)
         connecting.value = !connection.ready
       }
-      await capture.start(mode === 'api' ? pcm => {
+      await capture.start(mode.value === 'api' ? pcm => {
         if (current === generation) connection?.stream.sendPcm(pcm)
-      } : undefined, () => failed(new Error('Microphone disconnected')), mode === 'api' ? sampleRate => {
+      } : undefined, () => failed(new Error('Microphone disconnected')), mode.value === 'api' ? sampleRate => {
         if (current !== generation || !connection) return
         // Some devices ignore the requested 16 kHz. Match their actual format before any PCM arrives.
         if (connection.sampleRate !== sampleRate) {
@@ -207,27 +226,30 @@ export function useSpeechInput(options: { disabled: () => boolean; contextKey: (
     else prepare()
   }
   function blurred() { foreground = false; suspendPreparation() }
-  function focused() { foreground = true; prepare() }
+  function focused() { foreground = true; void refresh(); prepare() }
   function pageHidden() { foreground = false; cancel(false) }
-  function contextChanged() { cachedSession = undefined; cancel(false); schedulePreparation() }
+  function contextChanged() { cachedSession = undefined; capabilityGeneration = ''; cancel(false); void refresh(); schedulePreparation() }
   onMounted(() => {
     mounted = true
     void refresh()
+    capabilityTimer = window.setInterval(() => { if (!document.hidden) void refresh() }, 15000)
     prepare()
     window.addEventListener('pagehide', pageHidden)
     window.addEventListener('pageshow', focused)
     window.addEventListener('blur', blurred)
     window.addEventListener('focus', focused)
     window.addEventListener('sdd-server-changed', contextChanged)
+    window.addEventListener('traceforge-features-changed', refresh)
     document.addEventListener('visibilitychange', visibilityChanged)
   })
   onBeforeUnmount(() => {
-    disposed = true; cachedSession = undefined; cancel(false)
+    disposed = true; cachedSession = undefined; window.clearInterval(capabilityTimer); cancel(false)
     window.removeEventListener('pagehide', pageHidden)
     window.removeEventListener('pageshow', focused)
     window.removeEventListener('blur', blurred)
     window.removeEventListener('focus', focused)
     window.removeEventListener('sdd-server-changed', contextChanged)
+    window.removeEventListener('traceforge-features-changed', refresh)
     document.removeEventListener('visibilitychange', visibilityChanged)
   })
   return { mode, ready, state, error, connecting, seconds, level, busy, visible, start, stop, cancel: () => cancel() }

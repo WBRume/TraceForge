@@ -1,211 +1,280 @@
-<!--
-SystemConfigView: 系统配置项（管理员）。三项配置以 Tab 切换，每个 Tab 一张卡片：
-1. 新建工作区时是否启用“项目管理/产品管理”选择功能。
-2. 工作区根目录：默认取 env（WORKSPACE_ROOT_DIR）；界面保存非空值后覆盖 env，清空后回退 env。
-   生效时新建工作区路径默认为 根目录/workspace/工作区名称，且仅允许位于该目录之内。
-3. 历史搜索 · 向量模型：Embeddings 配置、索引构建与目标核验/切换。
--->
+<!-- System configuration central hub overview page (Platform Service Matrix & Workspace Settings) -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { ElMessage } from 'element-plus'
-import { BrainCircuit, FolderRoot, SlidersHorizontal } from '@/components/icons'
-import SearchEmbeddingConfig from '@/components/global-search/SearchEmbeddingConfig.vue'
+import { computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  FolderIcon,
+  AdjustmentsHorizontalIcon,
+  MicrophoneIcon,
+  MagnifyingGlassIcon,
+  ShieldCheckIcon,
+  KeyIcon,
+  CpuChipIcon,
+  ArrowPathIcon,
+  ChevronRightIcon,
+} from '@heroicons/vue/24/outline'
 import AdminGuard from '@/components/management/AdminGuard.vue'
-import { formatApiError } from '@/utils/error'
+import { useServiceCapabilities, type serviceFeatures } from '@/composables/useServiceCapabilities'
 import { useSystemConfigStore } from '@/stores/systemConfig'
 
-type ConfigTab = 'mgmt' | 'root' | 'embedding'
-
-const { t } = useI18n()
+const router = useRouter()
 const systemConfigStore = useSystemConfigStore()
 
-const activeTab = ref<ConfigTab>('mgmt')
-const enabled = ref(false)
-const rootDir = ref('')
-const loading = ref(false)
-const savingMgmt = ref(false)
-const savingRoot = ref(false)
+const { services, loading, error, readyCount, refresh } = useServiceCapabilities()
 
-const rootDirInvalid = computed(() => {
-  const value = rootDir.value.trim()
-  if (!value) return false
-  // Windows 绝对路径（C:\ 或 C:/ 或 UNC），或 POSIX 绝对路径（/ 开头）
-  return !(/^[a-zA-Z]:[/\\]/.test(value) || value.startsWith('\\\\') || value.startsWith('/'))
+const degradedCount = computed(() => {
+  return services.value.filter(item => item.capability?.status === 'DEGRADED').length
 })
 
-const load = async () => {
-  loading.value = true
-  try {
-    await systemConfigStore.load(true)
-    enabled.value = systemConfigStore.projectProductManagementEnabled
-    rootDir.value = systemConfigStore.workspaceRootDir
-  } finally {
-    loading.value = false
+const getServiceIcon = (feature: (typeof serviceFeatures)[number]) => {
+  switch (feature) {
+    case 'speech': return MicrophoneIcon
+    case 'search': return MagnifyingGlassIcon
+    case 'diagnosis': return ShieldCheckIcon
+    case 'oauth': return KeyIcon
+    case 'agent': return CpuChipIcon
+    default: return AdjustmentsHorizontalIcon
   }
 }
 
-const saveMgmtSelection = async () => {
-  if (savingMgmt.value) return
-  savingMgmt.value = true
-  try {
-    await systemConfigStore.updateProjectProductManagementEnabled(enabled.value)
-    ElMessage.success(t('system_config.saved'))
-  } catch (err) {
-    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
-    await load()
-  } finally {
-    savingMgmt.value = false
-  }
-}
-
-const saveRootDir = async () => {
-  if (savingRoot.value) return
-  if (rootDirInvalid.value) {
-    ElMessage.error(t('system_config.workspace_root_invalid'))
-    return
-  }
-  savingRoot.value = true
-  try {
-    await systemConfigStore.updateWorkspaceRootDir(rootDir.value.trim())
-    ElMessage.success(t('system_config.saved'))
-  } catch (err) {
-    ElMessage.error(formatApiError(err, t('management.common.operation_failed'), t))
-    await load()
-  } finally {
-    savingRoot.value = false
-  }
+const goToDetail = (target: string) => {
+  void router.push(`/management/system/${target}`)
 }
 
 onMounted(() => {
-  void load()
+  void systemConfigStore.load(true)
 })
 </script>
 
 <template>
-  <div>
+  <div class="sys-hub-page">
     <div class="mgmt-page-header">
       <div>
         <h2>{{ $t('system_config.title') }}</h2>
-        <p class="mgmt-subtitle">{{ $t('system_config.subtitle') }}</p>
+        <p class="mgmt-subtitle">{{ $t('feature_config.subtitle') }}</p>
+      </div>
+      <div class="header-actions">
+        <button type="button" class="btn-refresh-hub" :disabled="loading" @click="refresh(true)">
+          <ArrowPathIcon class="icon-sm" :class="{ spinning: loading }" />
+          <span>{{ $t(loading ? 'feature_config.probing' : 'feature_config.refresh') }}</span>
+        </button>
       </div>
     </div>
 
-    <div class="sys-tabs" role="tablist" :aria-label="$t('system_config.title')">
-      <button
-        type="button"
-        role="tab"
-        class="sys-tab"
-        :class="{ active: activeTab === 'mgmt' }"
-        :aria-selected="activeTab === 'mgmt'"
-        @click="activeTab = 'mgmt'"
-      >
-        <SlidersHorizontal class="w-4 h-4" />
-        <span>{{ $t('system_config.tab_mgmt_selection') }}</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="sys-tab"
-        :class="{ active: activeTab === 'root' }"
-        :aria-selected="activeTab === 'root'"
-        @click="activeTab = 'root'"
-      >
-        <FolderRoot class="w-4 h-4" />
-        <span>{{ $t('system_config.tab_workspace_root') }}</span>
-      </button>
-      <button
-        type="button"
-        role="tab"
-        class="sys-tab"
-        :class="{ active: activeTab === 'embedding' }"
-        :aria-selected="activeTab === 'embedding'"
-        @click="activeTab = 'embedding'"
-      >
-        <BrainCircuit class="w-4 h-4" />
-        <span>{{ $t('system_config.tab_embedding') }}</span>
-      </button>
-    </div>
-
-    <!-- Tab 1：项目管理/产品管理选择开关 -->
-    <div v-show="activeTab === 'mgmt'" class="mgmt-card mgmt-compact-card">
-      <div class="sys-config-row">
-        <div class="sys-config-info">
-          <h3 class="sys-config-name">
-            <SlidersHorizontal class="w-4 h-4" />
-            {{ $t('system_config.mgmt_selection_label') }}
-          </h3>
-          <p class="mgmt-hint">{{ $t('system_config.mgmt_selection_desc') }}</p>
-          <ul class="sys-config-effects">
-            <li>{{ $t('system_config.effect_on') }}</li>
-            <li>{{ $t('system_config.effect_off_pages') }}</li>
-            <li>{{ $t('system_config.effect_off_names') }}</li>
-            <li>{{ $t('system_config.effect_off_branch') }}</li>
-            <li>{{ $t('system_config.effect_session_branch') }}</li>
-          </ul>
+    <AdminGuard show-hint>
+      <!-- Top Overview Metrics Bar -->
+      <section class="hub-metrics-row">
+        <div class="metric-card">
+          <div class="metric-info">
+            <span class="metric-indicator-dot" />
+            <span class="metric-lbl">受管核心服务</span>
+          </div>
+          <div class="metric-val">{{ services.length }} <small>项</small></div>
         </div>
-        <AdminGuard>
-          <label class="sys-switch">
-            <input v-model="enabled" type="checkbox" :disabled="loading || savingMgmt" />
-            <span class="sys-switch-slider"></span>
-            <span class="sys-switch-state" :class="{ on: enabled }">
-              {{ enabled ? $t('system_config.state_on') : $t('system_config.state_off') }}
-            </span>
-          </label>
-        </AdminGuard>
-      </div>
-
-      <AdminGuard>
-        <div class="sys-config-actions">
-          <button class="btn-primary" :disabled="loading || savingMgmt" @click="saveMgmtSelection">
-            {{ savingMgmt ? $t('system_config.saving') : $t('system_config.save') }}
-          </button>
+        <div class="metric-card">
+          <div class="metric-info">
+            <span class="metric-indicator-dot success" />
+            <span class="metric-lbl">{{ $t('feature_config.ready') }} (READY)</span>
+          </div>
+          <div class="metric-val text-green">{{ readyCount }} <small>项正常</small></div>
         </div>
-      </AdminGuard>
-    </div>
-
-    <!-- Tab 2：工作区根目录 -->
-    <div v-show="activeTab === 'root'" class="mgmt-card mgmt-compact-card">
-      <div class="sys-config-row">
-        <div class="sys-config-info">
-          <h3 class="sys-config-name">
-            <FolderRoot class="w-4 h-4" />
-            {{ $t('system_config.workspace_root_label') }}
-          </h3>
-          <p class="mgmt-hint">{{ $t('system_config.workspace_root_desc') }}</p>
-          <ul class="sys-config-effects">
-            <li>{{ $t('system_config.workspace_root_effect_env') }}</li>
-            <li>{{ $t('system_config.workspace_root_effect_default') }}</li>
-            <li>{{ $t('system_config.workspace_root_effect_scope') }}</li>
-          </ul>
+        <div class="metric-card">
+          <div class="metric-info">
+            <span class="metric-indicator-dot warning" :class="{ active: degradedCount > 0 }" />
+            <span class="metric-lbl">{{ $t('feature_config.status_DEGRADED') }}</span>
+          </div>
+          <div class="metric-val" :class="{ 'text-amber': degradedCount > 0 }">
+            {{ degradedCount }} <small>项降级</small>
+          </div>
         </div>
-      </div>
-
-      <AdminGuard>
-        <div class="sys-config-field">
-          <label>{{ $t('system_config.workspace_root_label') }}</label>
-          <input
-            v-model="rootDir"
-            type="text"
-            class="mgmt-input"
-            :placeholder="$t('system_config.workspace_root_placeholder')"
-            :disabled="loading || savingRoot"
-          />
-          <p v-if="rootDirInvalid" class="sys-config-input-error">
-            {{ $t('system_config.workspace_root_invalid') }}
-          </p>
+        <div class="metric-card">
+          <div class="metric-info">
+            <span class="metric-indicator-dot" />
+            <span class="metric-lbl">{{ $t('feature_config.workspace_settings') }}</span>
+          </div>
+          <div class="metric-val">2 <small>项基础规则</small></div>
         </div>
-        <div class="sys-config-actions">
-          <button class="btn-primary" :disabled="loading || savingRoot" @click="saveRootDir">
-            {{ savingRoot ? $t('system_config.saving') : $t('system_config.save') }}
-          </button>
-        </div>
-      </AdminGuard>
-    </div>
+      </section>
 
-    <!-- Tab 3：历史搜索 · 向量模型 -->
-    <AdminGuard v-if="activeTab === 'embedding'" show-hint>
-      <SearchEmbeddingConfig />
+      <p v-if="error" class="hub-error-alert" role="alert">{{ error }}</p>
+
+      <!-- Section: Platform Services Matrix -->
+      <section class="hub-section">
+        <div class="section-title-bar">
+          <div>
+            <h3 class="section-title">{{ $t('feature_config.title') }}</h3>
+            <p class="section-desc">在线配置云端或本地推理通道，连接连通性与服务健康独立探测</p>
+          </div>
+          <span class="badge-count">{{ readyCount }} / {{ services.length }} {{ $t('feature_config.ready') }}</span>
+        </div>
+
+        <div class="cards-grid">
+          <div
+            v-for="item in services"
+            :key="item.feature"
+            class="hub-feature-card"
+            role="button"
+            tabindex="0"
+            @click="goToDetail(item.feature)"
+            @keydown.enter="goToDetail(item.feature)"
+          >
+            <div>
+              <div class="card-head">
+                <div class="card-brand">
+                  <div class="card-icon-box">
+                    <component :is="getServiceIcon(item.feature)" class="card-icon" />
+                  </div>
+                  <div>
+                    <h4 class="card-name">{{ item.title }}</h4>
+                    <span class="card-id">{{ item.feature }}</span>
+                  </div>
+                </div>
+
+                <span v-if="item.capability" class="card-status-pill" :class="item.capability.status">
+                  <i />
+                  {{ $t('feature_config.status_' + item.capability.status) }}
+                </span>
+                <span v-else class="card-status-pill loading">
+                  <i />
+                  {{ $t(loading ? 'feature_config.probing' : 'feature_config.status_unknown') }}
+                </span>
+              </div>
+
+              <div class="card-body">
+                <div v-if="item.capability" class="setting-row">
+                  <span class="setting-label">当前模式</span>
+                  <span
+                    class="setting-value"
+                    :class="{ disabled: item.capability.status === 'DISABLED' || item.capability.mode === 'off' }"
+                  >
+                    {{ $t('feature_config.options.' + item.capability.mode, item.capability.mode) }}
+                  </span>
+                </div>
+                <div v-if="item.capability?.explanation" class="prop-explanation">
+                  {{ item.capability.explanation }}
+                </div>
+                <div v-else class="prop-explanation placeholder">
+                  {{ $t(loading ? 'feature_config.probing' : 'feature_config.config_unavailable') }}
+                </div>
+              </div>
+            </div>
+
+            <div class="card-foot">
+              <span class="foot-hint">{{ item.config ? '参数已就绪' : '默认环境配置' }}</span>
+              <div class="btn-goto">
+                <span>{{ $t('feature_config.configure') }}</span>
+                <ChevronRightIcon class="icon-xs" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section: Workspace Core Settings -->
+      <section class="hub-section">
+        <div class="section-title-bar">
+          <div>
+            <h3 class="section-title">{{ $t('feature_config.workspace_settings') }}</h3>
+            <p class="section-desc">集中管控工作区磁盘根目录存储边界与项目产品生成联动规则</p>
+          </div>
+          <span class="badge-count">2 项基础参数</span>
+        </div>
+
+        <div class="cards-grid">
+          <!-- Card 1: Project / Product management toggle -->
+          <div
+            class="hub-feature-card workspace-card"
+            role="button"
+            tabindex="0"
+            @click="goToDetail('mgmt')"
+            @keydown.enter="goToDetail('mgmt')"
+          >
+            <div>
+              <div class="card-head">
+                <div class="card-brand">
+                  <div class="card-icon-box neutral">
+                    <AdjustmentsHorizontalIcon class="card-icon" />
+                  </div>
+                  <div>
+                    <h4 class="card-name">{{ $t('system_config.tab_mgmt_selection') }}</h4>
+                    <span class="card-id">project-product-mgmt</span>
+                  </div>
+                </div>
+                <span class="card-status-pill" :class="systemConfigStore.projectProductManagementEnabled ? 'READY' : 'DEGRADED'">
+                  <i />
+                  {{ systemConfigStore.projectProductManagementEnabled ? $t('system_config.state_on') : $t('system_config.state_off') }}
+                </span>
+              </div>
+
+              <div class="card-body">
+                <div class="setting-row">
+                  <span class="setting-label">状态</span>
+                  <span
+                    class="setting-value"
+                    :class="{ disabled: !systemConfigStore.projectProductManagementEnabled }"
+                  >
+                    {{ systemConfigStore.projectProductManagementEnabled ? '已启用规范关联' : '已关闭，自由填写' }}
+                  </span>
+                </div>
+                <p class="prop-explanation">{{ $t('system_config.mgmt_selection_desc') }}</p>
+              </div>
+            </div>
+
+            <div class="card-foot">
+              <span class="foot-hint">平台全局规则</span>
+              <div class="btn-goto">
+                <span>{{ $t('feature_config.configure') }}</span>
+                <ChevronRightIcon class="icon-xs" />
+              </div>
+            </div>
+          </div>
+
+          <!-- Card 2: Workspace root directory -->
+          <div
+            class="hub-feature-card workspace-card"
+            role="button"
+            tabindex="0"
+            @click="goToDetail('root')"
+            @keydown.enter="goToDetail('root')"
+          >
+            <div>
+              <div class="card-head">
+                <div class="card-brand">
+                  <div class="card-icon-box neutral">
+                    <FolderIcon class="card-icon" />
+                  </div>
+                  <div>
+                    <h4 class="card-name">{{ $t('system_config.tab_workspace_root') }}</h4>
+                    <span class="card-id">WORKSPACE_ROOT_DIR</span>
+                  </div>
+                </div>
+                <span class="card-status-pill READY">
+                  <i />
+                  {{ systemConfigStore.workspaceRootDir ? '自定义覆盖' : '环境变量默认' }}
+                </span>
+              </div>
+
+              <div class="card-body">
+                <div class="setting-row">
+                  <span class="setting-label">生效路径</span>
+                  <span class="setting-value mono">
+                    {{ systemConfigStore.workspaceRootDir || 'env 默认路径' }}
+                  </span>
+                </div>
+                <p class="prop-explanation">{{ $t('system_config.workspace_root_desc') }}</p>
+              </div>
+            </div>
+
+            <div class="card-foot">
+              <span class="foot-hint">存储目录隔离约束</span>
+              <div class="btn-goto">
+                <span>{{ $t('feature_config.configure') }}</span>
+                <ChevronRightIcon class="icon-xs" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </AdminGuard>
   </div>
 </template>
@@ -213,108 +282,403 @@ onMounted(() => {
 <style scoped src="@/styles/management/management-shared.css"></style>
 
 <style scoped>
-.sys-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem;
-  margin-bottom: 1.25rem;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(12px);
+.sys-hub-page {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-bottom: 50px;
 }
 
-.sys-tab {
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.btn-refresh-hub {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  min-height: 36px;
-  padding: 0.4rem 0.9rem;
-  border: none;
-  border-radius: 9px;
-  background: transparent;
-  color: #64748b;
-  font-family: inherit;
-  font-size: 0.85rem;
+  gap: 7px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #334155;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  transition: all 0.2s ease;
 }
 
-.sys-tab:hover {
-  color: #0f172a;
+.btn-refresh-hub:hover:not(:disabled) {
+  background: #f0f9ff;
+  border-color: #0ea5e9;
+  color: #0369a1;
+  box-shadow: 0 2px 6px rgba(14, 165, 233, 0.15);
+}
+
+/* Metrics Row - 紧凑轻量概览指示条，降低视觉权重，不喧宾夺主 */
+.hub-metrics-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 22px;
+}
+
+@media (max-width: 860px) {
+  .hub-metrics-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.metric-card {
   background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.02);
+  transition: all 0.2s ease;
 }
 
-.sys-tab.active {
-  color: #075985;
-  background: linear-gradient(135deg, #e0f2fe 0%, #ecfeff 100%);
-  box-shadow: 0 1px 3px rgba(14, 165, 233, 0.18);
+.metric-card:hover {
+  border-color: #cbd5e1;
 }
 
-.sys-switch {
+.metric-info {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.metric-indicator-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  flex-shrink: 0;
+}
+
+.metric-indicator-dot.success {
+  background: #10b981;
+}
+
+.metric-indicator-dot.warning.active {
+  background: #f59e0b;
+}
+
+.metric-lbl {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.metric-val {
+  font-size: 16px;
+  font-weight: 700;
+  color: #1e293b;
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.metric-val small {
+  font-size: 11px;
+  font-weight: 500;
+  color: #64748b;
+}
+
+.metric-val.text-green { color: #166534; }
+.metric-val.text-amber { color: #b45309; }
+
+.hub-error-alert {
+  padding: 12px 18px;
+  border-radius: 8px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+  font-size: 13px;
+  margin-bottom: 20px;
+}
+
+/* Sections */
+.hub-section {
+  margin-bottom: 34px;
+}
+
+.section-title-bar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 16px;
+}
+
+.section-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.section-desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.badge-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #0369a1;
+  background: #e0f2fe;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+/* Cards Grid */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 20px;
+}
+
+.hub-feature-card {
+  background: #ffffff;
+  border: 1px solid #dbe4ed;
+  border-radius: 14px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.03);
+}
+
+.hub-feature-card:hover {
+  transform: translateY(-2px);
+  border-color: #0ea5e9;
+  box-shadow: 0 8px 24px rgba(14, 165, 233, 0.12);
+}
+
+.hub-feature-card:focus-visible {
+  outline: 2px solid #0284c7;
+  outline-offset: 2px;
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.card-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.card-icon-box {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: #f0f9ff;
+  color: #0284c7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.2s, color 0.2s;
+}
+
+.hub-feature-card:hover .card-icon-box {
+  background: #0ea5e9;
+  color: #ffffff;
+}
+
+.card-icon-box.neutral {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.hub-feature-card:hover .card-icon-box.neutral {
+  background: #334155;
+  color: #ffffff;
+}
+
+.card-icon {
+  width: 22px;
+  height: 22px;
+}
+
+.card-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.card-id {
+  display: block;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.card-status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.6rem;
-  cursor: pointer;
-  flex-shrink: 0;
-  padding-top: 0.2rem;
-}
-
-.sys-switch input {
-  display: none;
-}
-
-.sys-switch-slider {
-  position: relative;
-  width: 44px;
-  height: 24px;
+  gap: 6px;
+  padding: 3px 9px;
   border-radius: 999px;
-  background: #cbd5e1;
-  transition: background 0.2s;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.sys-switch-slider::after {
-  content: '';
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
+.card-status-pill i {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
+}
+
+.card-status-pill.READY {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+.card-status-pill.READY i { background: #10b981; }
+
+.card-status-pill.DEGRADED {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fde68a;
+}
+.card-status-pill.DEGRADED i { background: #f59e0b; }
+
+.card-status-pill.NOT_CONFIGURED {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+.card-status-pill.NOT_CONFIGURED i { background: #ef4444; }
+
+.card-status-pill.loading {
+  background: #f8fafc;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
+}
+.card-status-pill.loading i { background: #94a3b8; }
+
+.card-body {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+
+/* 工业级配置项只读行规范 */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.setting-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  flex-shrink: 0;
+}
+
+/* 白底微边框配置生效值槽：扎实专业，绝无浮夸 AI 感 */
+.setting-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
   background: #ffffff;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 3px 10px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  letter-spacing: -0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 72%;
+}
+
+.setting-value.disabled {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #94a3b8;
+  box-shadow: none;
+  font-weight: 500;
+}
+
+.setting-value.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.prop-explanation {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.prop-explanation.placeholder {
+  color: #94a3b8;
+}
+
+.card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 14px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.foot-hint {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.btn-goto {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0284c7;
   transition: transform 0.2s;
 }
 
-.sys-switch input:checked + .sys-switch-slider {
-  background: #0ea5e9;
-}
-
-.sys-switch input:checked + .sys-switch-slider::after {
-  transform: translateX(20px);
-}
-
-.sys-switch-state {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #64748b;
-  min-width: 2.4rem;
-}
-
-.sys-switch-state.on {
+.hub-feature-card:hover .btn-goto {
+  transform: translateX(3px);
   color: #0369a1;
 }
 
-.w-4 {
-  width: 1rem;
-  height: 1rem;
-}
+.icon-sm { width: 16px; height: 16px; }
+.icon-xs { width: 14px; height: 14px; }
 
-.btn-primary {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-}
+.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 </style>

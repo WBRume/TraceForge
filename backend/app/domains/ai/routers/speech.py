@@ -1,5 +1,6 @@
 """Authenticated credential issuance; audio flows directly to Bailian."""
 
+import hmac
 import time
 from contextlib import asynccontextmanager
 
@@ -7,7 +8,7 @@ import httpx
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.core.redis_client import get_redis_client
 from app.dependencies import get_current_user
 from app.domains.auth.models.user import User
@@ -15,9 +16,6 @@ from app.domains.auth.models.user import User
 
 @asynccontextmanager
 async def speech_lifespan(app: FastAPI):
-    if not settings.SPEECH_API_ENABLED:
-        yield
-        return
     # Reuse TLS/HTTP connections instead of initializing a client on every click.
     async with httpx.AsyncClient(
         timeout=8.0,
@@ -80,16 +78,40 @@ async def create_speech_session(
     request: Request, response: Response, user: User = Depends(get_current_user)
 ) -> SpeechSession:
     api_key = settings.SPEECH_API_KEY.get_secret_value().strip()
-    if not settings.SPEECH_API_ENABLED or not api_key:
+    if settings.SPEECH_MODE != "api" or not api_key:
         raise HTTPException(503, "API voice input is not configured")
     client = getattr(request.app.state, "speech_http_client", None)
     if client is None:
         raise HTTPException(503, "Speech credential service is not ready")
-    await _check_budget(user.id)
     host = "dashscope.aliyuncs.com" if settings.SPEECH_API_REGION == "beijing" else "dashscope-intl.aliyuncs.com"
+    await _check_budget(user.id)
     started = time.perf_counter()
     token, expires_at = await _issue_token(client, host, api_key)
     response.headers["Cache-Control"] = "no-store, private"
     response.headers["Pragma"] = "no-cache"
     response.headers["Server-Timing"] = f"speech-token;dur={(time.perf_counter() - started) * 1000:.1f}"
     return SpeechSession(token=token, expires_at=expires_at, websocket_url=f"wss://{host}/api-ws/v1/inference")
+
+
+@router.get("/capabilities")
+async def speech_capabilities(response: Response, user: User = Depends(get_current_user)):
+    from app.config import settings as environment
+    from app.domains.system_config.services.feature_config_service import fingerprint
+
+    response.headers["Cache-Control"] = "no-store, private"
+    # Opaque generation changes release browser standby streams and credentials.
+    generation = fingerprint(
+        {
+            "mode": settings.SPEECH_MODE,
+            "region": settings.SPEECH_API_REGION,
+            "key": settings.SPEECH_API_KEY.get_secret_value(),
+            "token_ttl": settings.SPEECH_TOKEN_TTL_SECONDS,
+            "requests_per_minute": settings.SPEECH_TOKEN_REQUESTS_PER_MINUTE,
+        }
+    )
+    generation = hmac.new(environment.JWT_SECRET_KEY.encode(), generation.encode(), "sha256").hexdigest()
+    return {
+        "mode": settings.SPEECH_MODE,
+        "generation": generation,
+        "configured": settings.SPEECH_MODE != "api" or bool(settings.SPEECH_API_KEY.get_secret_value()),
+    }

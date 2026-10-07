@@ -5,7 +5,7 @@ from functools import partial
 
 from fastapi import HTTPException
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 from app.core.offload import run_db_txn
 from app.domains.search import sqlite_index
 from app.domains.search.embedding import EmbeddingError, embed

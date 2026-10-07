@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from app.config import settings
+from app.core.feature_settings import feature_settings as settings
 
 
 class EmbeddingError(RuntimeError):
@@ -25,13 +25,21 @@ def cipher():
 def encrypt_key(key):
     if not key.strip() or set(key.strip()) <= {"*", "•"}:
         raise EmbeddingError("EMBEDDING_INVALID_KEY")
-    return cipher().encrypt(key.strip().encode()).decode()
+    if settings.SEARCH_CONFIG_ENCRYPTION_KEY:
+        return cipher().encrypt(key.strip().encode()).decode()
+    from app.domains.system_config.services.feature_config_service import cipher as feature_cipher
+
+    return "feature:v1:" + feature_cipher().encrypt(key.strip().encode()).decode()
 
 
 def decrypt_key(encrypted):
     if not encrypted:
         raise EmbeddingError("EMBEDDING_KEY_MISSING")
     try:
+        if encrypted.startswith("feature:v1:"):
+            from app.domains.system_config.services.feature_config_service import cipher as feature_cipher
+
+            return feature_cipher().decrypt(encrypted.removeprefix("feature:v1:").encode()).decode()
         return cipher().decrypt(encrypted.encode()).decode()
     except InvalidToken:
         raise EmbeddingError("EMBEDDING_KEY_DECRYPT_FAILED") from None
@@ -75,19 +83,32 @@ def validate_vectors(payload, count, dimension=None):
     return vectors
 
 
-async def embed(client, profile, texts, *, query=False):
+def profile_key(profile, runtime_credentials):
+    if runtime_credentials and settings.has_override("SEARCH_EMBEDDING_API_KEY"):
+        if not settings.SEARCH_EMBEDDING_API_KEY:
+            raise EmbeddingError("EMBEDDING_KEY_MISSING")
+        if (
+            profile["endpoint"] == settings.SEARCH_EMBEDDING_ENDPOINT
+            and profile["model_id"] == settings.SEARCH_EMBEDDING_MODEL
+        ):
+            return settings.SEARCH_EMBEDDING_API_KEY
+    return decrypt_key(profile["encrypted_api_key"])
+
+
+async def embed(client, profile, texts, *, query=False, runtime_credentials=True):
     if not 1 <= len(texts) <= 16 or not all(isinstance(t, str) and t.strip() for t in texts):
         raise EmbeddingError("EMBEDDING_INVALID_INPUT")
     timeout = settings.SEARCH_QUERY_EMBEDDING_TIMEOUT if query else settings.SEARCH_EMBEDDING_TIMEOUT
     prefix = profile.get("query_prefix" if query else "document_prefix", "")
     import httpx
 
+    key = profile_key(profile, runtime_credentials)
     try:
         async with asyncio.timeout(timeout):
             async with client.stream(
                 "POST",
                 validate_endpoint(profile["endpoint"]),
-                headers={"Authorization": "Bearer " + decrypt_key(profile["encrypted_api_key"])},
+                headers={"Authorization": "Bearer " + key},
                 json={"model": profile["model_id"], "input": [prefix + t for t in texts], "encoding_format": "float"},
             ) as response:
                 if response.status_code != 200:

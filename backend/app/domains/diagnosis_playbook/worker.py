@@ -104,6 +104,7 @@ async def _runner_cancelled(*, run_id, run, envelope):
 
 class PlaybookWorker:
     def __init__(self, evidence_root):
+        self.last_poll_at = 0.0
         self.runner = EvidenceRunner(Path(evidence_root))
         self.owner_id = str(uuid.uuid4())
 
@@ -362,7 +363,7 @@ class PlaybookWorker:
 
     async def run_agent(self, run, environment, hypothesis_id=None):
         from app.agents.errors import AgentError
-        from app.config import settings
+        from app.core.feature_settings import feature_settings as settings
         from app.engine.session.engine import TaskAgentEngine
 
         from .execution_profile import DiagnosisExecutionProfile
@@ -466,6 +467,7 @@ class PlaybookWorker:
                             .all()
                         ]
                     )
+                    self.last_poll_at = time.monotonic()
                     for run_id in ids:
                         if run_id not in active and len(active) < 4:
                             active[run_id] = asyncio.create_task(dispatch(run_id))

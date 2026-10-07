@@ -33,8 +33,23 @@ def create_agent_backend(name: str, **kwargs: Any) -> AgentBackend:
 
 def get_agent_backend(name: str | None = None, **kwargs: Any) -> AgentBackend:
     """创建当前配置对应的 Agent backend 实例。"""
-    if name is None:
-        from app.config import settings
+    from app.core.feature_settings import feature_settings as settings
 
+    if name is None:
         name = getattr(settings, "AGENT_BACKEND", None) or "claude-code"
+    defaults = {
+        "opencode": {
+            "server_url": "OPENCODE_SERVER_URL",
+            "username": "OPENCODE_SERVER_USERNAME",
+            "password": "OPENCODE_SERVER_PASSWORD",
+        },
+        "dsh": {
+            "server_url": "DSH_SERVER_URL",
+            "browser_token": "DSH_BROWSER_TOKEN",
+            "browser_cookie": "DSH_BROWSER_COOKIE",
+        },
+    }
+    for key, setting in defaults.get(name, {}).items():
+        if settings.has_override(setting):
+            kwargs.setdefault(key, getattr(settings, setting))
     return create_agent_backend(name, **kwargs)

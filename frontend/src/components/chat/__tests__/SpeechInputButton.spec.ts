@@ -6,11 +6,11 @@ import zh from '@/locales/zh.json'
 
 const mocks = vi.hoisted(() => ({
   captureStart: vi.fn(), captureStop: vi.fn(), dispose: vi.fn(),
-  streamStart: vi.fn(), streamFinish: vi.fn(), streamCancel: vi.fn(), beginCapture: vi.fn(), keepAlive: vi.fn(), pcm: vi.fn(), post: vi.fn(),
+  streamStart: vi.fn(), streamFinish: vi.fn(), streamCancel: vi.fn(), beginCapture: vi.fn(), keepAlive: vi.fn(), pcm: vi.fn(), post: vi.fn(), get: vi.fn(),
   transcript: undefined as ((text: string) => void) | undefined,
   failure: undefined as ((reason: Error) => void) | undefined,
 }))
-vi.mock('@/utils/api', () => ({ default: { post: mocks.post } }))
+vi.mock('@/utils/api', () => ({ default: { post: mocks.post, get: mocks.get } }))
 vi.mock('@/utils/speech/recorder', () => ({ SpeechRecorder: class {
   start = mocks.captureStart; stop = mocks.captureStop; dispose = mocks.dispose
 } }))
@@ -25,6 +25,7 @@ const mountButton = () => mount(SpeechInputButton, { props: { disabled: false, c
 const start = async (wrapper: ReturnType<typeof mountButton>) => { await wrapper.get('button').trigger('click'); await flushPromises() }
 
 beforeEach(() => {
+  mocks.get.mockRejectedValue(new Error('Legacy server without capabilities'))
   vi.stubEnv('VITE_SPEECH_MODE', 'api')
   mocks.captureStart.mockImplementation(async (_pcm, _ended, beforeCapture) => { await beforeCapture?.(16000) })
   mocks.captureStop.mockResolvedValue('wav')
@@ -35,6 +36,41 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); delete window.sddDesktop })
 
 describe('voice input modes and lifecycle', () => {
+  it('uses server mode after a build with voice input disabled', async () => {
+    vi.stubEnv('VITE_SPEECH_MODE', 'off')
+    mocks.get.mockResolvedValue({ data: { mode: 'api', generation: 'first', configured: true } })
+    const wrapper = mountButton()
+    await flushPromises()
+    expect(wrapper.find('button').exists()).toBe(true)
+    await start(wrapper)
+    expect(mocks.captureStart).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('hides the microphone and releases cached streams after a runtime disable', async () => {
+    mocks.get.mockResolvedValueOnce({ data: { mode: 'api', generation: 'first', configured: true } })
+    const wrapper = mountButton()
+    await flushPromises()
+    mocks.get.mockResolvedValue({ data: { mode: 'off', generation: 'disabled', configured: true } })
+    window.dispatchEvent(new Event('traceforge-features-changed'))
+    await flushPromises()
+    expect(wrapper.find('button').exists()).toBe(false)
+    expect(mocks.streamCancel).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('invalidates prepared credentials when the server generation changes', async () => {
+    mocks.get.mockResolvedValueOnce({ data: { mode: 'api', generation: 'first', configured: true } })
+    const wrapper = mountButton()
+    await flushPromises()
+    const before = mocks.post.mock.calls.length
+    mocks.get.mockResolvedValue({ data: { mode: 'api', generation: 'changed-key', configured: true } })
+    window.dispatchEvent(new Event('traceforge-features-changed'))
+    await flushPromises()
+    await start(wrapper)
+    expect(mocks.post.mock.calls.length).toBeGreaterThan(before)
+    wrapper.unmount()
+  })
   it('writes interim recognition to the input immediately, without a separate preview', async () => {
     const wrapper = mountButton(); await start(wrapper)
     mocks.transcript?.('你好'); await flushPromises()
