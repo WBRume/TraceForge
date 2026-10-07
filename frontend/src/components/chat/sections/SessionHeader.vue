@@ -167,10 +167,11 @@ const workspaceStore = useWorkspaceStore()
 
 <style scoped>
 .chat-header {
-  height: 60px;
+  min-height: 60px;
   min-width: 0;
-  padding: 0 var(--space-6);
+  padding: var(--space-2) var(--space-6);
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: var(--space-4);
@@ -186,7 +187,7 @@ const workspaceStore = useWorkspaceStore()
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  flex: 1 1 auto;
+  flex: 1 1 280px;
   min-width: 0;
   overflow: hidden;
 }
@@ -196,7 +197,7 @@ const workspaceStore = useWorkspaceStore()
 .header-left h2 {
   margin: 0;
   flex: 0 1 auto;
-  max-width: min(100%, 480px);
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -284,8 +285,9 @@ const workspaceStore = useWorkspaceStore()
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
 }
 .header-actions > * {
