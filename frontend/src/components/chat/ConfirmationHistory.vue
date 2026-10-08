@@ -15,6 +15,7 @@ const rows = computed(() => props.record.rows.map((row, index) => ({
   title: row.title || row.description || t('chat.confirmation_history.item', { index: index + 1 }),
   description: row.title ? row.description : '',
   answer: confirmationValueText(row.values, t),
+  isUnselected: !row.values.length || row.values.every(v => v == null || v === ''),
 })))
 </script>
 
@@ -37,7 +38,7 @@ const rows = computed(() => props.record.rows.map((row, index) => ({
           <div v-if="record.kind === 'question' && row.options.length" class="question-options" :aria-label="t('chat.confirmation_history.options')">
             <span v-for="(option, optionIndex) in row.options" :key="optionIndex" class="question-option">{{ option }}</span>
           </div>
-          <p v-if="record.kind !== 'question'" class="question-answer">{{ row.answer }}</p>
+          <p v-if="record.kind !== 'question'" class="question-answer" :class="{ 'is-unselected': row.isUnselected }">{{ row.answer }}</p>
         </div>
       </li>
     </ol>
@@ -62,16 +63,157 @@ const rows = computed(() => props.record.rows.map((row, index) => ({
 .question-description { margin: 3px 0 0; color: var(--history-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .question-options { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .question-option { color: var(--history-option-text, #475569); background: var(--history-option-bg, #f1f5f9); padding: 2px 7px; border-radius: 4px; font-size: 11px; overflow-wrap: anywhere; max-width: 100%; }
-.history-answer { --history-accent: #047857; }
-.history-answer .question-title { color: var(--history-muted); font-size: 12px; font-weight: 500; }
-.history-answer .question-description { display: none; }
-.question-answer { margin: 3px 0 0; font-weight: 550; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 用户回答会话与确认记录气泡现代化优化 */
+.history-answer,
+.history-resolution.state-answered {
+  --history-accent: #059669;
+}
+
+.history-answer .history-heading,
+.history-resolution.state-answered .history-heading {
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #0f172a;
+}
+
+.history-answer .history-icon,
+.history-resolution.state-answered .history-icon {
+  width: 20px;
+  height: 20px;
+  padding: 3px;
+  border-radius: 6px;
+  background-color: #ecfdf5;
+  color: #059669;
+}
+
+.history-answer .history-title,
+.history-resolution.state-answered .history-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.history-answer .history-rows,
+.history-resolution.state-answered .history-rows {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-answer .history-row,
+.history-resolution.state-answered .history-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 8px;
+  border-top: none;
+  border-radius: 6px;
+  background-color: #f8fafc;
+  transition: background-color 0.15s ease;
+}
+
+.history-answer .history-row:hover,
+.history-resolution.state-answered .history-row:hover {
+  background-color: #f1f5f9;
+}
+
+.history-answer .question-number,
+.history-resolution.state-answered .question-number {
+  flex: 0 0 auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 10.5px;
+  color: #94a3b8;
+  padding-top: 0;
+}
+
+.history-answer .question-detail,
+.history-resolution.state-answered .question-detail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.history-answer .question-title,
+.history-resolution.state-answered .question-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.history-answer .question-description,
+.history-resolution.state-answered .question-description {
+  display: none;
+}
+
+.history-answer .question-answer,
+.history-resolution.state-answered .question-answer {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0f172a;
+  text-align: right;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.history-answer .question-answer.is-unselected,
+.history-resolution.state-answered .question-answer.is-unselected {
+  color: #94a3b8;
+  font-weight: 400;
+  font-style: italic;
+}
+
 .history-resolution { --history-accent: #047857; }
 .history-resolution.state-cancelled, .history-resolution.state-closed { --history-accent: #64748b; }
 .history-resolution.state-rejected { --history-accent: #b45309; }
+
+/* 终端/暗色模式适配 */
 .confirmation-history.is-terminal { --history-text: #d4deea; --history-muted: #9aafc9; --history-number: #8ba0bc; --history-line: #29384e; --history-option-text: #c6d8ed; --history-option-bg: #1d2b40; --history-accent: #8fc5ff; }
 .confirmation-history.is-terminal.history-answer, .confirmation-history.is-terminal.state-answered, .confirmation-history.is-terminal.state-approved { --history-accent: #79e2b0; }
 .confirmation-history.is-terminal.state-rejected { --history-accent: #f2c36c; }
 .is-terminal .history-unconfirmed { color: #f2c36c; }
+
+.confirmation-history.is-terminal.history-answer .history-heading,
+.confirmation-history.is-terminal.state-answered .history-heading {
+  border-bottom-color: #334155;
+  color: #f1f5f9;
+}
+.confirmation-history.is-terminal.history-answer .history-icon,
+.confirmation-history.is-terminal.state-answered .history-icon {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+}
+.confirmation-history.is-terminal.history-answer .history-title,
+.confirmation-history.is-terminal.state-answered .history-title {
+  color: #f1f5f9;
+}
+.confirmation-history.is-terminal.history-answer .history-row,
+.confirmation-history.is-terminal.state-answered .history-row {
+  background-color: rgba(30, 41, 59, 0.6);
+}
+.confirmation-history.is-terminal.history-answer .history-row:hover,
+.confirmation-history.is-terminal.state-answered .history-row:hover {
+  background-color: rgba(30, 41, 59, 0.9);
+}
+.confirmation-history.is-terminal.history-answer .question-title,
+.confirmation-history.is-terminal.state-answered .question-title {
+  color: #94a3b8;
+}
+.confirmation-history.is-terminal.history-answer .question-answer,
+.confirmation-history.is-terminal.state-answered .question-answer {
+  color: #f8fafc;
+}
+.confirmation-history.is-terminal.history-answer .question-answer.is-unselected,
+.confirmation-history.is-terminal.state-answered .question-answer.is-unselected {
+  color: #64748b;
+}
+
 @media (max-width: 480px) { .history-row { gap: 8px; } }
 </style>
